@@ -11,11 +11,11 @@ interface FlyMachine {
 }
 
 async function flyRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (!env.FLY_API_TOKEN) throw new Error("FLY_API_TOKEN is not set");
+  if (!env.FLY_ORG_TOKEN) throw new Error("FLY_ORG_TOKEN is not set");
   const res = await fetch(`${FLY_API}${path}`, {
     ...init,
     headers: {
-      authorization: `Bearer ${env.FLY_API_TOKEN}`,
+      authorization: `Bearer ${env.FLY_ORG_TOKEN}`,
       "content-type": "application/json",
       ...(init.headers ?? {}),
     },
