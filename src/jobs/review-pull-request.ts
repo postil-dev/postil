@@ -1,5 +1,6 @@
 import { logger, task } from "@trigger.dev/sdk";
 import { z } from "zod";
+import { env } from "@/lib/env";
 import { installationOctokit, mintInstallationToken } from "@/lib/github";
 import { getSandboxDriver } from "@/sandbox";
 
@@ -13,11 +14,23 @@ export const reviewPullRequestPayload = z.object({
 
 export type ReviewPullRequestPayload = z.infer<typeof reviewPullRequestPayload>;
 
-// TODO(postil): move to prompts/ once multiple prompt variants exist.
-const REVIEW_PROMPT_STUB = `
-You are Postil, an AI code reviewer. Review the diff at HEAD and produce
-structured findings as JSON: { "summary": string, "findings": Finding[] }.
-Finding = { "path": string, "line": number, "severity": "info"|"warn"|"error", "body": string }.
+// Prompt passed to opencode inside the sandbox. The sandbox image
+// (ghcr.io/postil-dev/reviewer) is expected to ship with opencode pre-installed
+// and its OpenRouter credential provisioned via OPENROUTER_API_KEY env var.
+// TODO(postil): move to prompts/review.md with versioning once stable.
+const REVIEW_PROMPT = `
+You are Postil, an AI code reviewer. The sandbox has already cloned the repo
+at the PR head. Read the diff against the PR base and produce structured
+findings as a single JSON object, written to stdout:
+
+{
+  "summary": "one paragraph summary of the PR",
+  "findings": [
+    { "path": "src/foo.ts", "line": 42, "severity": "info"|"warn"|"error", "body": "..." }
+  ]
+}
+
+Focus on correctness, security, and obvious bugs. Do not nitpick style.
 `.trim();
 
 export const reviewPullRequest = task({
@@ -25,24 +38,30 @@ export const reviewPullRequest = task({
   maxDuration: 15 * 60,
   run: async (raw: unknown) => {
     const payload = reviewPullRequestPayload.parse(raw);
-    logger.info("starting review", { payload });
+    logger.info("starting review", { payload, model: env.REVIEW_MODEL });
+
+    if (!env.OPENROUTER_API_KEY) {
+      throw new Error("OPENROUTER_API_KEY is not set");
+    }
 
     const token = await mintInstallationToken(payload.installationId);
     const driver = getSandboxDriver();
 
-    // Spawn a sandbox that: clones the repo at headSha, runs the claude-code CLI
-    // with the review prompt, and writes findings.json to stdout.
+    // Spawn the reviewer sandbox. Entrypoint /usr/local/bin/review.sh runs
+    // inside: clones repo, checks out HEAD_SHA, invokes:
+    //   opencode run -m openrouter/$REVIEW_MODEL --format json "$REVIEW_PROMPT"
+    // and writes the resulting JSON envelope to stdout for us to consume.
     const handle = await driver.spawn({
       image: "ghcr.io/postil-dev/reviewer:latest", // TODO(postil): publish this image
-      command: [
-        "/usr/local/bin/review.sh",
-        payload.repoFullName,
-        payload.headSha,
-      ],
+      command: ["/usr/local/bin/review.sh"],
       env: {
         GITHUB_TOKEN: token,
-        REVIEW_PROMPT: REVIEW_PROMPT_STUB,
-        // ANTHROPIC_API_KEY is injected by the sandbox image via Fly secrets.
+        REPO_FULL_NAME: payload.repoFullName,
+        HEAD_SHA: payload.headSha,
+        PULL_NUMBER: String(payload.pullNumber),
+        REVIEW_PROMPT,
+        OPENROUTER_API_KEY: env.OPENROUTER_API_KEY,
+        REVIEW_MODEL: env.REVIEW_MODEL,
       },
       timeoutMs: 12 * 60 * 1000,
       memoryMb: 2048,
@@ -56,7 +75,7 @@ export const reviewPullRequest = task({
     }
 
     // TODO(postil): parse result.stdout as the structured findings envelope,
-    // then post review via Octokit (pulls.createReview).
+    // then post review via Octokit (pulls.createReview) with inline comments.
     const octokit = await installationOctokit(payload.installationId);
     logger.info("would post review via octokit", {
       repoFullName: payload.repoFullName,
@@ -64,6 +83,6 @@ export const reviewPullRequest = task({
     });
     void octokit;
 
-    return { ok: true };
+    return { ok: true, model: env.REVIEW_MODEL };
   },
 });

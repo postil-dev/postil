@@ -49,3 +49,5 @@ next-env.d.ts
 
 # biome
 .biome_cache/
+.playwright-mcp/
+HANDOFF.md
