@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
 import { env } from "@/lib/env";
 
+export const dynamic = "force-dynamic";
+
 // Thin entry point: bounce the user to GitHub's App install page.
 // If the App slug isn't configured, fall back to a human-readable landing.
 export default function InstallPage() {
