@@ -62,9 +62,9 @@ export const reviews = pgTable(
   "reviews",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organizations.id, { onDelete: "cascade" }),
+    organizationId: uuid("organization_id").references(() => organizations.id, {
+      onDelete: "set null",
+    }),
     installationId: bigint("installation_id", { mode: "number" }).notNull(),
     repoFullName: text("repo_full_name").notNull(),
     pullNumber: integer("pull_number").notNull(),
