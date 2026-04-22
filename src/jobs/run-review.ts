@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadReviewConfig, type PostilConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException } from "@/lib/posthog";
@@ -53,6 +54,35 @@ function parseEnvelope(text: string): ReviewEnvelope {
   };
 }
 
+const SEVERITY_RANK: Record<Finding["severity"], number> = {
+  info: 0,
+  warn: 1,
+  error: 2,
+};
+
+function matchesGlob(path: string, glob: string): boolean {
+  // Minimal glob → regex: `**` matches any path segment(s), `*` matches non-slash.
+  const re = new RegExp(
+    "^" +
+      glob
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*\*/g, "§§DOUBLESTAR§§")
+        .replace(/\*/g, "[^/]*")
+        .replace(/§§DOUBLESTAR§§/g, ".*") +
+      "$",
+  );
+  return re.test(path);
+}
+
+function applyConfig(env: ReviewEnvelope, cfg: PostilConfig): ReviewEnvelope {
+  const threshold = SEVERITY_RANK[cfg.severityThreshold];
+  const filtered = env.findings
+    .filter((f) => SEVERITY_RANK[f.severity] >= threshold)
+    .filter((f) => !cfg.ignore.some((glob) => matchesGlob(f.path, glob)))
+    .slice(0, cfg.maxFindings);
+  return { summary: env.summary, findings: filtered };
+}
+
 function isFinding(x: unknown): x is Finding {
   if (!x || typeof x !== "object") return false;
   const f = x as Record<string, unknown>;
@@ -97,6 +127,11 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
   const octokit = await installationOctokit(payload.installationId);
   const [owner, repo] = payload.repoFullName.split("/");
 
+  const { config } = await loadReviewConfig(octokit, owner, repo, payload.headSha);
+  if (!config.enabled) {
+    return { summary: "Postil is disabled for this repo via config.", findings: [] };
+  }
+
   const diffRes = await octokit.request(
     "GET /repos/{owner}/{repo}/pulls/{pull_number}",
     {
@@ -111,7 +146,8 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
   const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
 
   const modelOutput = await callOpenRouter(truncated);
-  const envelope = parseEnvelope(modelOutput);
+  let envelope = parseEnvelope(modelOutput);
+  envelope = applyConfig(envelope, config);
 
   const body = envelope.findings.length
     ? `**Postil** reviewed this PR with \`${env.REVIEW_MODEL}\`.\n\n${envelope.summary}`

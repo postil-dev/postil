@@ -9,6 +9,7 @@ export default function Home() {
       <ReviewDemo />
       <WhatItCatches />
       <HowItWorks />
+      <Privacy />
       <Pricing />
       <SelfHostStrip />
       <SiteFooter />
@@ -122,7 +123,7 @@ function Hero() {
 /** Stylised PR review card for the hero — fake but specific. */
 function HeroArtifact() {
   return (
-    <div className="relative rounded-xl border border-border bg-card/70 p-4 font-mono text-[12.5px] shadow-[0_40px_80px_-30px_rgba(0,0,0,0.8)] backdrop-blur-sm">
+    <div className="lift relative rounded-xl border border-border bg-card/70 p-4 font-mono text-[12.5px] shadow-[0_40px_80px_-30px_rgba(0,0,0,0.8)] backdrop-blur-sm">
       <div className="mb-3 flex items-center justify-between text-muted-foreground">
         <span className="truncate">postil-dev/postil-sandbox · PR #42</span>
         <span className="rounded-full bg-[color:var(--diff-add)] px-2 py-0.5 text-[10px] tracking-widest uppercase text-[color:oklch(0.85_0.14_165)]">
@@ -145,8 +146,9 @@ function HeroArtifact() {
           <span>Postil · correctness</span>
         </div>
         <p className="font-sans text-[13px] text-foreground">
-          Emails were indexed case-insensitively but compared case-sensitively
-          above. This fix aligns them. <span className="cursor-blink" />
+          <span className="typing">
+            Emails were indexed case-insensitively but compared case-sensitively.
+          </span>
         </p>
       </div>
     </div>
@@ -162,7 +164,7 @@ function ReviewDemo() {
             <span className="font-mono text-xs tracking-widest text-primary uppercase">
               What a review looks like
             </span>
-            <h2 className="font-display text-4xl leading-tight sm:text-5xl">
+            <h2 className="font-display text-3xl leading-tight sm:text-4xl">
               Inline, on the lines that matter.
             </h2>
             <p className="text-muted-foreground">
@@ -186,7 +188,7 @@ function ReviewDemo() {
             </ul>
           </div>
 
-          <div className="overflow-hidden rounded-xl border border-border bg-card/60">
+          <div className="lift overflow-hidden rounded-xl border border-border bg-card/60">
             <div className="flex items-center justify-between border-b border-border bg-background/40 px-4 py-2 font-mono text-xs text-muted-foreground">
               <span>src/server/handler.ts</span>
               <span>main ← feat/retry</span>
@@ -255,7 +257,7 @@ function WhatItCatches() {
           <span className="font-mono text-xs tracking-widest text-primary uppercase">
             Signal over noise
           </span>
-          <h2 className="mt-3 font-display text-4xl leading-tight sm:text-5xl">
+          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
             What Postil actually catches.
           </h2>
         </div>
@@ -301,7 +303,7 @@ function HowItWorks() {
           <span className="font-mono text-xs tracking-widest text-primary uppercase">
             Flow
           </span>
-          <h2 className="mt-3 font-display text-4xl leading-tight sm:text-5xl">
+          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
             Three steps from install to first review.
           </h2>
         </div>
@@ -319,6 +321,53 @@ function HowItWorks() {
   );
 }
 
+function Privacy() {
+  const items = [
+    {
+      k: "Your code stays yours",
+      v: "Diffs are sent to the model provider only for the duration of a single review. No training, no retention on Postil servers, no resale.",
+    },
+    {
+      k: "Short-lived credentials",
+      v: "Reviews run with a per-installation GitHub token that expires in an hour. Sandboxes use fresh creds per run and are torn down after.",
+    },
+    {
+      k: "EU-resident by default",
+      v: "Database and analytics run in eu-central-1. You can pick the model region on OpenRouter to keep inference on-continent.",
+    },
+    {
+      k: "Bring your own key",
+      v: "Point Postil at your own OpenRouter, Anthropic, or OpenAI key and the diff never leaves your vendor relationship.",
+    },
+  ];
+
+  return (
+    <section className="border-b border-border/50 py-24">
+      <div className="mx-auto max-w-6xl px-5">
+        <div className="mb-12 max-w-2xl">
+          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+            Privacy
+          </span>
+          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
+            Your code is read once, then forgotten.
+          </h2>
+          <p className="mt-3 text-muted-foreground">
+            Postil reviews code. It doesn&apos;t collect it, store it, or train on it.
+          </p>
+        </div>
+        <div className="grid gap-px overflow-hidden rounded-xl bg-border/50 sm:grid-cols-2">
+          {items.map((it) => (
+            <div key={it.k} className="bg-background p-6">
+              <h3 className="font-display text-xl">{it.k}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{it.v}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function Pricing() {
   return (
     <section id="pricing" className="border-b border-border/50 py-24">
@@ -327,19 +376,19 @@ function Pricing() {
           <span className="font-mono text-xs tracking-widest text-primary uppercase">
             Pricing
           </span>
-          <h2 className="mt-3 font-display text-4xl leading-tight sm:text-5xl">
+          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
             Pick the one that fits.
           </h2>
         </div>
-        <div className="grid gap-5 lg:grid-cols-3">
+        <div className="grid gap-5 lg:grid-cols-2">
           <PlanCard
             name="Hobby"
             price="Free"
-            sub="Beta. Unlimited public repos."
+            sub="While in beta."
             bullets={[
-              "All public repos, as many as you want",
+              "Unlimited public repos",
               "Up to 3 private repos",
-              "Postil.dev managed",
+              "Managed at postil.dev",
               "Community support",
             ]}
             cta={{ label: "Install on GitHub", href: "/install" }}
@@ -353,24 +402,20 @@ function Pricing() {
               "Unlimited private repos",
               "Org-wide install",
               "Priority review queue",
-              "Email support",
+              "Email support within one business day",
             ]}
             cta={{ label: "Install on GitHub", href: "/install" }}
           />
-          <PlanCard
-            name="Self-host"
-            price="Free · Apache-2.0"
-            sub="Your infrastructure, your model keys."
-            bullets={[
-              "Full source under Apache-2.0",
-              "Fly, E2B, or Docker sandbox",
-              "Bring your own OpenRouter / Anthropic / OpenAI key",
-              "Same webhook + config surface as managed",
-            ]}
-            cta={{ label: "Deploy guide", href: "https://github.com/postil-dev/postil#self-host" }}
-            muted
-          />
         </div>
+        <p className="mt-8 text-sm text-muted-foreground">
+          Prefer to run it yourself? Postil is Apache-2.0.{" "}
+          <Link
+            href="https://github.com/postil-dev/postil#self-host"
+            className="underline decoration-dotted underline-offset-4 hover:text-foreground"
+          >
+            Self-host guide →
+          </Link>
+        </p>
       </div>
     </section>
   );
