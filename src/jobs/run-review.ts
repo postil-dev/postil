@@ -46,12 +46,19 @@ function parseEnvelope(text: string): ReviewEnvelope {
   const raw = fenced ? fenced[1] : text;
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("no JSON object in model output");
-  const json = JSON.parse(raw.slice(start, end + 1));
-  return {
-    summary: String(json.summary ?? ""),
-    findings: Array.isArray(json.findings) ? json.findings.filter(isFinding) : [],
-  };
+  if (start !== -1 && end !== -1) {
+    try {
+      const json = JSON.parse(raw.slice(start, end + 1));
+      return {
+        summary: String(json.summary ?? ""),
+        findings: Array.isArray(json.findings) ? json.findings.filter(isFinding) : [],
+      };
+    } catch {
+      // fall through to prose fallback
+    }
+  }
+  // Prose fallback: post the model's reply verbatim as a summary, no inline findings.
+  return { summary: text.trim().slice(0, 4000), findings: [] };
 }
 
 const SEVERITY_RANK: Record<Finding["severity"], number> = {
@@ -111,7 +118,8 @@ async function callOpenRouter(diff: string): Promise<string> {
         { role: "user", content: `Diff:\n\n${diff}` },
       ],
       temperature: 0.2,
-      max_tokens: 1500,
+      max_tokens: 2500,
+      response_format: { type: "json_object" },
     }),
   });
   if (!res.ok) {
