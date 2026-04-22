@@ -36,7 +36,7 @@ export default function Home() {
           </CardHeader>
           <CardContent>
             <Link
-              href="https://github.com/postil/postil"
+              href="https://github.com/postil-dev/postil"
               className={buttonVariants({ variant: "outline" })}
             >
               GitHub
