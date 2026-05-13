@@ -13,6 +13,20 @@ Open-source AI pull request reviewer. Managed SaaS at postil.dev, or self-host u
 - Cloudflare DNS + CDN in front of Fly.io Machines
 - Sandbox drivers: Fly Machines (default), E2B (stub), Docker (self-host stub)
 
+## GitHub App permissions
+
+Postil requires a GitHub App with the following permissions:
+
+| Permission        | Access level | Purpose                                      |
+| ----------------- | ------------ | -------------------------------------------- |
+| `pull_requests`   | Read & write | Post inline review comments                  |
+| `checks`          | Write        | Create and update the `postil/review` check-run |
+| `contents`        | Read         | Read PR diffs and repo files                 |
+| `metadata`        | Read         | Basic repo information                       |
+| `issues`          | Write        | Post summary comments on PRs                 |
+
+> **Re-consent required:** If you add or upgrade the `checks: write` permission on an existing installation, every organization that has installed the App must re-consent via the GitHub Apps settings page before the check-run can be posted.
+
 ## Local dev
 
 ```bash
