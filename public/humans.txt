@@ -1,15 +1,4 @@
-/* TEAM */
-Maintainer: Postil Project
-Contact: contact@postil.dev
+Postil is maintained by postil-dev.
 Site: https://postil.dev
-GitHub: https://github.com/postildev/postil
-License: Apache-2.0
-
-/* THANKS */
-Name: Paperclip Managed Company
-
-/* SITE */
-Last update: 2026-05-13
-Standards: HTML5, CSS3
-Components: React, Next.js, Tailwind CSS
-Software: Node.js, TypeScript, GitHub Actions
+Source: https://github.com/postil-dev/postil
+Contact: hello@postil.dev

@@ -9,6 +9,7 @@ export const reviewPayload = z.object({
   repoFullName: z.string(),
   pullNumber: z.number().int(),
   headSha: z.string(),
+  checkRunId: z.number().int().optional(),
 });
 
 export type ReviewPayload = z.infer<typeof reviewPayload>;
@@ -189,6 +190,41 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       issue_number: payload.pullNumber,
       body: `${body}\n\n_(inline review failed; posted as comment)_`,
     });
+  }
+
+  if (payload.checkRunId) {
+    const conclusion = envelope.findings.some((f) => f.severity === "error")
+      ? "failure"
+      : envelope.findings.some((f) => f.severity === "warn")
+        ? "neutral"
+        : "success";
+    const outputText =
+      envelope.findings
+        .map((f) => `**${f.severity.toUpperCase()}** · ${f.path}:${f.line} — ${f.body}`)
+        .join("\n\n") || "No issues found.";
+    try {
+      await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+        owner,
+        repo,
+        check_run_id: payload.checkRunId,
+        status: "completed",
+        conclusion,
+        completed_at: new Date().toISOString(),
+        output: {
+          title: "Postil Review",
+          summary: envelope.summary,
+          text: outputText.slice(0, 65535),
+        },
+      });
+    } catch (err) {
+      captureException(err, {
+        properties: {
+          op: "update_check_run",
+          repoFullName: payload.repoFullName,
+          pullNumber: payload.pullNumber,
+        },
+      });
+    }
   }
 
   return envelope;
