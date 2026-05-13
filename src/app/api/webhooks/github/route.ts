@@ -4,6 +4,7 @@ import { after, NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
 import { runReview } from "@/jobs/run-review";
 import { env } from "@/lib/env";
+import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
 
 export const runtime = "nodejs";
@@ -93,6 +94,31 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
     }
   }
 
+  // Create an in-progress check-run so the PR shows "postil/review" immediately.
+  let checkRunId: number | undefined;
+  try {
+    const octokit = await installationOctokit(installation.id);
+    const [owner, repo] = repoFullName.split("/");
+    const checkRun = await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
+      owner,
+      repo,
+      name: "postil/review",
+      head_sha: headSha,
+      status: "in_progress",
+      started_at: new Date().toISOString(),
+      output: {
+        title: "Postil is reviewing...",
+        summary: "The review is in progress.",
+      },
+    });
+    checkRunId = checkRun.data.id;
+  } catch (err) {
+    captureException(err, {
+      properties: { op: "create_check_run", repoFullName, pullNumber, headSha },
+    });
+    // Continue without check-run; inline comments still work.
+  }
+
   const reviewRow = await db
     .insert(schema.reviews)
     .values({
@@ -101,6 +127,8 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
       pullNumber,
       headSha,
       status: "running",
+      checkRunId: checkRunId ?? null,
+      checkRunId: checkRunId ?? null,
     })
     .onConflictDoNothing()
     .returning({ id: schema.reviews.id });
@@ -113,19 +141,23 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
     headSha,
     installationId: installation.id,
     reviewId,
+    checkRunId,
   });
 
   // Run the review after the webhook response is sent back to GitHub,
   // so we stay well under the 10s webhook timeout.
   after(async () => {
     const started = Date.now();
+
     try {
       const result = await runReview({
         installationId: installation.id,
         repoFullName,
         pullNumber,
         headSha,
+        checkRunId,
       });
+
       if (reviewId) {
         await db
           .update(schema.reviews)
@@ -155,6 +187,29 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
             completedAt: new Date(),
           })
           .where(eq(schema.reviews.id, reviewId));
+      }
+      // If the review itself failed, mark the check-run as failed too.
+      if (checkRunId) {
+        try {
+          const octokit = await installationOctokit(installation.id);
+          const [owner, repo] = repoFullName.split("/");
+          await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+            owner,
+            repo,
+            check_run_id: checkRunId,
+            status: "completed",
+            conclusion: "failure",
+            completed_at: new Date().toISOString(),
+            output: {
+              title: "Postil review failed",
+              summary: "The review encountered an error. Check logs for details.",
+            },
+          });
+        } catch (updateErr) {
+          captureException(updateErr, {
+            properties: { op: "update_check_run", repoFullName, pullNumber, headSha },
+          });
+        }
       }
     }
   });
