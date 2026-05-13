@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Block pushes that contain secrets in any commit being sent to the remote.
+set -euo pipefail
+
+if ! command -v infisical >/dev/null 2>&1; then
+  printf 'pre-push: infisical CLI not installed; skipping secret scan.\n' >&2
+  exit 0
+fi
+
+# stdin format: <local_ref> <local_sha> <remote_ref> <remote_sha>
+zero=0000000000000000000000000000000000000000
+any_fail=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue   # delete, nothing to scan
+
+  if [ "$remote_sha" = "$zero" ]; then
+    range="$local_sha"                     # new branch — scan all reachable commits on it
+  else
+    range="${remote_sha}..${local_sha}"    # just the new commits
+  fi
+
+  if ! infisical scan --log-opts="$range" --redact --verbose --exit-code 2; then
+    printf '\npre-push: secrets detected in range %s\n' "$range" >&2
+    any_fail=1
+  fi
+done
+
+if [ "$any_fail" -ne 0 ]; then
+  printf '           rewrite history to remove secrets before re-pushing; rotate any exposed credentials.\n' >&2
+  exit 1
+fi

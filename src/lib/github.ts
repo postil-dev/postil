@@ -6,16 +6,20 @@ import { env } from "@/lib/env";
 
 const PostilOctokit = Octokit.plugin(throttling, retry);
 
-type ThrottleOpts = {
-  method: string;
-  url: string;
-};
+type ThrottleOpts = { method: string; url: string };
 
 function throttleHandlers() {
   return {
-    onRateLimit: (retryAfter: number, options: ThrottleOpts, _octokit: unknown, retryCount: number) => {
+    onRateLimit: (
+      retryAfter: number,
+      options: ThrottleOpts,
+      _octokit: unknown,
+      retryCount: number,
+    ) => {
       if (retryCount < 2) return true;
-      console.warn(`[github] rate limit on ${options.method} ${options.url}, retryAfter=${retryAfter}s`);
+      console.warn(
+        `[github] rate limit on ${options.method} ${options.url}, retryAfter=${retryAfter}s`,
+      );
       return false;
     },
     onSecondaryRateLimit: (_retryAfter: number, options: ThrottleOpts) => {
@@ -25,29 +29,41 @@ function throttleHandlers() {
   };
 }
 
-export function appOctokit(): Octokit {
-  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
-    throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set");
+/**
+ * Resolve the App private key from either:
+ * - `GITHUB_APP_PRIVATE_KEY_B64` (base64-encoded PEM), preferred — no `\n`
+ *   escaping required and survives copy/paste round-trips,
+ * - or `GITHUB_APP_PRIVATE_KEY` (raw PEM, optionally with literal `\n`).
+ */
+function resolvePrivateKey(): string {
+  if (env.GITHUB_APP_PRIVATE_KEY_B64) {
+    return Buffer.from(env.GITHUB_APP_PRIVATE_KEY_B64, "base64").toString("utf8");
   }
+  if (env.GITHUB_APP_PRIVATE_KEY) {
+    return env.GITHUB_APP_PRIVATE_KEY.replace(/\\n/g, "\n");
+  }
+  throw new Error("GITHUB_APP_PRIVATE_KEY_B64 or GITHUB_APP_PRIVATE_KEY must be set");
+}
+
+function requireAppId(): string {
+  if (!env.GITHUB_APP_ID) throw new Error("GITHUB_APP_ID must be set");
+  return env.GITHUB_APP_ID;
+}
+
+export function appOctokit(): Octokit {
   return new PostilOctokit({
     authStrategy: createAppAuth,
-    auth: {
-      appId: env.GITHUB_APP_ID,
-      privateKey: env.GITHUB_APP_PRIVATE_KEY.replace(/\\n/g, "\n"),
-    },
+    auth: { appId: requireAppId(), privateKey: resolvePrivateKey() },
     throttle: throttleHandlers(),
   });
 }
 
 export async function installationOctokit(installationId: number): Promise<Octokit> {
-  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
-    throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set");
-  }
   return new PostilOctokit({
     authStrategy: createAppAuth,
     auth: {
-      appId: env.GITHUB_APP_ID,
-      privateKey: env.GITHUB_APP_PRIVATE_KEY.replace(/\\n/g, "\n"),
+      appId: requireAppId(),
+      privateKey: resolvePrivateKey(),
       installationId,
     },
     throttle: throttleHandlers(),
@@ -55,12 +71,9 @@ export async function installationOctokit(installationId: number): Promise<Octok
 }
 
 export async function mintInstallationToken(installationId: number): Promise<string> {
-  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
-    throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set");
-  }
   const auth = createAppAuth({
-    appId: env.GITHUB_APP_ID,
-    privateKey: env.GITHUB_APP_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    appId: requireAppId(),
+    privateKey: resolvePrivateKey(),
   });
   const { token } = await auth({ type: "installation", installationId });
   return token;
