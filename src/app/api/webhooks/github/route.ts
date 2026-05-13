@@ -128,7 +128,6 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
       headSha,
       status: "running",
       checkRunId: checkRunId ?? null,
-      checkRunId: checkRunId ?? null,
     })
     .onConflictDoNothing()
     .returning({ id: schema.reviews.id });
