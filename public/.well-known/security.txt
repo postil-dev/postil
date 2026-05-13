@@ -1,0 +1,5 @@
+Contact: https://github.com/postil-dev/postil/security/advisories/new
+Expires: 2027-04-22T00:00:00Z
+Policy: https://github.com/postil-dev/postil/security/policy
+Preferred-Languages: en
+Canonical: https://postil.dev/.well-known/security.txt
