@@ -41,13 +41,13 @@ function SiteHeader() {
             href="https://github.com/postil-dev/postil"
             className="hidden px-3 py-1.5 text-muted-foreground transition hover:text-foreground sm:block"
           >
-            GitHub
+            Source on GitHub
           </Link>
           <Link
             href="/install"
             className={`${buttonVariants({ size: "sm" })} ml-2`}
           >
-            Install on GitHub
+            Add the GitHub App
           </Link>
         </nav>
       </div>
@@ -88,15 +88,15 @@ function Hero() {
           </h1>
           <p className="anim-reveal delay-2 max-w-xl text-lg leading-relaxed text-muted-foreground">
             Postil spins up on every new PR, reads the diff in context, and
-            leaves inline comments only on the things that actually matter.
-            Correctness. Security. The obvious bug. No drive-by style gripes.
+            leaves inline comments on the things that matter.
+            Correctness. Security. The bug you missed. No drive-by style gripes.
           </p>
           <div className="anim-reveal delay-3 flex flex-wrap items-center gap-3">
             <Link
               href="/install"
               className={buttonVariants({ size: "lg" })}
             >
-              Install on GitHub
+              Add the GitHub App
             </Link>
             <Link
               href="#demo"
@@ -106,7 +106,7 @@ function Hero() {
             </Link>
           </div>
           <p className="anim-reveal delay-4 font-mono text-xs text-muted-foreground">
-            Free while in beta · Hosted at postil.dev · <Link className="underline decoration-dotted underline-offset-4 hover:text-foreground" href="https://github.com/postil-dev/postil">source</Link>
+            No charge during public beta · Hosted at postil.dev · <Link className="underline decoration-dotted underline-offset-4 hover:text-foreground" href="https://github.com/postil-dev/postil">source on GitHub</Link>
           </p>
         </div>
         <div className="anim-reveal-slow delay-3 lg:col-span-5">
@@ -221,12 +221,12 @@ function WhatItCatches() {
     {
       kind: "correctness",
       title: "Off-by-one, silent catches, case mismatches.",
-      body: "Postil reads the diff in context of the surrounding code and flags the obvious bug before a human has to.",
+      body: "Postil reads the diff in context of the surrounding code and flags the bug before a human has to.",
     },
     {
       kind: "security",
       title: "Missing auth checks, PII in logs, raw SQL.",
-      body: "Security patterns get opinionated treatment with direct suggestions and the reason a reviewer might object.",
+      body: "Security patterns get opinionated treatment with suggestions and the reason a reviewer might object.",
     },
     {
       kind: "scope",
@@ -258,7 +258,7 @@ function WhatItCatches() {
             Signal over noise
           </span>
           <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
-            What Postil actually catches.
+            What Postil catches.
           </h2>
         </div>
         <div className="grid gap-x-8 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
@@ -281,7 +281,7 @@ function HowItWorks() {
   const steps = [
     {
       n: "01",
-      title: "Install",
+      title: "Add the GitHub App",
       body: "Add the Postil GitHub App to a repo or org. Takes a minute.",
     },
     {
@@ -304,7 +304,7 @@ function HowItWorks() {
             Flow
           </span>
           <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
-            Three steps from install to first review.
+            Three steps from setup to first review.
           </h2>
         </div>
         <ol className="grid gap-0 divide-y divide-border/60 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
@@ -384,14 +384,14 @@ function Pricing() {
           <PlanCard
             name="Hobby"
             price="Free"
-            sub="While in beta."
+            sub="No charge during public beta."
             bullets={[
-              "Unlimited public repos",
+              "All public repositories included",
               "Up to 3 private repos",
               "Managed at postil.dev",
               "Community support",
             ]}
-            cta={{ label: "Install on GitHub", href: "/install" }}
+            cta={{ label: "Add the GitHub App", href: "/install" }}
           />
           <PlanCard
             featured
@@ -399,12 +399,12 @@ function Pricing() {
             price="$19"
             sub="per contributor / month"
             bullets={[
-              "Unlimited private repos",
+              "All private repositories included",
               "Org-wide install",
               "Priority review queue",
               "Email support within one business day",
             ]}
-            cta={{ label: "Install on GitHub", href: "/install" }}
+            cta={{ label: "Add the GitHub App", href: "/install" }}
           />
         </div>
         <p className="mt-8 text-sm text-muted-foreground">
@@ -413,7 +413,7 @@ function Pricing() {
             href="https://github.com/postil-dev/postil#self-host"
             className="underline decoration-dotted underline-offset-4 hover:text-foreground"
           >
-            Self-host guide →
+            Self-host guide on GitHub →
           </Link>
         </p>
       </div>
@@ -488,7 +488,7 @@ function SelfHostStrip() {
             Open-source, for keeps
           </span>
           <p className="mt-2 max-w-2xl font-display text-2xl leading-snug">
-            Apache-2.0, source on GitHub, receipts kept.
+            Apache-2.0, source on GitHub.
             You can read, fork, self-host, or swap the reviewer model. Managed
             postil.dev is the same code, run by us.
           </p>
@@ -498,13 +498,13 @@ function SelfHostStrip() {
             href="https://github.com/postil-dev/postil"
             className={buttonVariants({ variant: "outline" })}
           >
-            View source
+            View source on GitHub
           </Link>
           <Link
             href="https://github.com/postil-dev/postil#self-host"
             className={buttonVariants()}
           >
-            Self-host guide
+            Self-host guide on GitHub
           </Link>
         </div>
       </div>
@@ -524,10 +524,10 @@ function SiteFooter() {
           </p>
         </div>
         <nav className="grid grid-cols-2 gap-x-10 gap-y-2 text-xs sm:grid-cols-3">
-          <Link href="/install" className="hover:text-foreground">Install</Link>
+          <Link href="/install" className="hover:text-foreground">Set up</Link>
           <Link href="#pricing" className="hover:text-foreground">Pricing</Link>
-          <Link href="https://github.com/postil-dev/postil" className="hover:text-foreground">GitHub</Link>
-          <Link href="https://github.com/postil-dev/postil/security/advisories/new" className="hover:text-foreground">Report a vuln</Link>
+          <Link href="https://github.com/postil-dev/postil" className="hover:text-foreground">Source on GitHub</Link>
+          <Link href="https://github.com/postil-dev/postil/security/advisories/new" className="hover:text-foreground">Report a vuln on GitHub</Link>
           <Link href="/.well-known/security.txt" className="hover:text-foreground">security.txt</Link>
           <span>© {new Date().getFullYear()} Postil</span>
         </nav>
