@@ -11,7 +11,7 @@ export default function InstallPage() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center gap-6 p-8 text-center">
-      <h1 className="text-3xl font-semibold">Install Postil</h1>
+      <h1 className="text-3xl font-semibold">Add the GitHub App</h1>
       <p className="text-muted-foreground">
         The GitHub App isn&apos;t configured yet. Check back shortly.
       </p>
