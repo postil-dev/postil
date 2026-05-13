@@ -1,0 +1,6 @@
+Postil is maintained by the Postil open-source team.
+
+Maintainer: Postil Core Team
+Contact: https://github.com/postil-dev/postil/issues
+Repository: https://github.com/postil-dev/postil
+License: Apache-2.0
