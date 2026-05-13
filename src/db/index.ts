@@ -8,10 +8,10 @@ let _db: ReturnType<typeof drizzle<typeof schema>> | undefined;
 
 export function getPool(): Pool {
   if (!_pool) {
-    if (!env.DATABASE_URL) {
-      throw new Error("DATABASE_URL is not set");
+    if (!env.databaseUrl) {
+      throw new Error("NEON_CONNECTION_STRING or DATABASE_URL is not set");
     }
-    _pool = new Pool({ connectionString: env.DATABASE_URL, max: 10 });
+    _pool = new Pool({ connectionString: env.databaseUrl, max: 10 });
   }
   return _pool;
 }

@@ -7,9 +7,9 @@ import { env } from "@/lib/env";
 // TODO(postil): replace in-memory adapter with a Drizzle adapter wiring
 // Better Auth's user/session/account tables to our Postgres instance.
 // Tracking: https://www.better-auth.com/docs/adapters/drizzle
-const polarClient = env.POLAR_ACCESS_TOKEN
+const polarClient = env.POLAR_API_KEY
   ? new Polar({
-      accessToken: env.POLAR_ACCESS_TOKEN,
+      accessToken: env.POLAR_API_KEY,
       server: env.POLAR_ENVIRONMENT,
     })
   : undefined;

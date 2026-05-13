@@ -1,0 +1,17 @@
+# Infisical/gitleaks scan config. Extend the default ruleset and allowlist
+# test fixtures we intentionally check in.
+
+[extend]
+useDefault = true
+
+[allowlist]
+  description = "test fixtures and example values"
+  paths = [
+    '''^\.env\.example$''',
+    '''^.*\.test\.(ts|tsx)$''',
+  ]
+  regexes = [
+    '''test-secret''',
+    '''dev-secret-change-me''',
+    '''postgres:postgres@''',
+  ]

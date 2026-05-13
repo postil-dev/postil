@@ -4,9 +4,9 @@ import { env } from "@/lib/env";
 let _client: PostHog | undefined;
 
 export function posthog(): PostHog | undefined {
-  if (!env.POSTHOG_API_KEY) return undefined;
+  if (!env.POSTHOG_PROJECT_TOKEN) return undefined;
   if (!_client) {
-    _client = new PostHog(env.POSTHOG_API_KEY, {
+    _client = new PostHog(env.POSTHOG_PROJECT_TOKEN, {
       host: env.POSTHOG_HOST,
       flushAt: 1,
       flushInterval: 0,

@@ -1,12 +1,14 @@
 import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
+import { runReview } from "@/jobs/run-review";
 import { env } from "@/lib/env";
 import { captureException, track } from "@/lib/posthog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
 
@@ -36,14 +38,12 @@ export async function POST(req: Request): Promise<Response> {
 
   const payload = JSON.parse(body);
 
-  // Dedupe on delivery id.
   const db = getDb();
   try {
     await db
       .insert(schema.webhookDeliveries)
       .values({ source: "github", deliveryId, event, payload });
   } catch (err) {
-    // Unique violation = duplicate delivery; ack idempotently.
     if ((err as { code?: string }).code === "23505") {
       return NextResponse.json({ ok: true, deduped: true });
     }
@@ -51,23 +51,8 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "storage failure" }, { status: 500 });
   }
 
-  try {
-    switch (event) {
-      case "pull_request":
-        await handlePullRequest(payload);
-        break;
-      case "pull_request_review":
-      case "issue_comment":
-      case "installation":
-      case "installation_repositories":
-        // TODO(postil): route these to specific handlers.
-        break;
-      default:
-        break;
-    }
-  } catch (err) {
-    captureException(err, { properties: { event, deliveryId } });
-    return NextResponse.json({ error: "handler failure" }, { status: 500 });
+  if (event === "pull_request") {
+    await handlePullRequest(payload);
   }
 
   return NextResponse.json({ ok: true });
@@ -95,8 +80,6 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
   const pullNumber = pull_request.number;
   const headSha = pull_request.head.sha;
 
-  // Debounce synchronize: if there is an in-flight review for this PR within
-  // the debounce window, skip enqueuing a new one.
   if (action === "synchronize") {
     const existing = await db.query.reviews.findFirst({
       where: and(
@@ -110,12 +93,69 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
     }
   }
 
-  // TODO(postil): resolve organizationId from installation.id via installations table.
-  // TODO(postil): enqueue trigger.dev task `reviewPullRequest`.
+  const reviewRow = await db
+    .insert(schema.reviews)
+    .values({
+      installationId: installation.id,
+      repoFullName,
+      pullNumber,
+      headSha,
+      status: "running",
+    })
+    .onConflictDoNothing()
+    .returning({ id: schema.reviews.id });
+
+  const reviewId = reviewRow[0]?.id;
+
   track("system", "review_enqueued", {
     repoFullName,
     pullNumber,
     headSha,
     installationId: installation.id,
+    reviewId,
+  });
+
+  // Run the review after the webhook response is sent back to GitHub,
+  // so we stay well under the 10s webhook timeout.
+  after(async () => {
+    const started = Date.now();
+    try {
+      const result = await runReview({
+        installationId: installation.id,
+        repoFullName,
+        pullNumber,
+        headSha,
+      });
+      if (reviewId) {
+        await db
+          .update(schema.reviews)
+          .set({
+            status: "completed",
+            result,
+            completedAt: new Date(),
+          })
+          .where(eq(schema.reviews.id, reviewId));
+      }
+      track("system", "review_completed", {
+        repoFullName,
+        pullNumber,
+        findings: result.findings.length,
+        durationMs: Date.now() - started,
+      });
+    } catch (err) {
+      captureException(err, {
+        properties: { op: "review", repoFullName, pullNumber, headSha },
+      });
+      if (reviewId) {
+        await db
+          .update(schema.reviews)
+          .set({
+            status: "failed",
+            errorMessage: String(err instanceof Error ? err.message : err),
+            completedAt: new Date(),
+          })
+          .where(eq(schema.reviews.id, reviewId));
+      }
+    }
   });
 }
