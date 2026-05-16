@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>postil — about hero</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0A0A0F;color:#FFFFFF;font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+  .hero{width:1200px;height:630px;background:#14141A;display:flex;align-items:center;justify-content:space-between;padding:80px 120px;position:relative;overflow:hidden;gap:64px}
+  .hero::before{content:'';position:absolute;inset:0;background:radial-gradient(600px 400px at 90% 10%,rgba(0,210,170,0.08),transparent)}
+  .text{flex:1;display:flex;flex-direction:column;gap:20px;z-index:1}
+  .headline{font-size:56px;font-weight:700;letter-spacing:-0.02em;line-height:1.1}
+  .headline span{color:#00D2AA}
+  .sub{font-size:20px;color:#9A9AA0;max-width:520px;line-height:1.5}
+  .stat{display:flex;gap:48px;margin-top:12px}
+  .stat-item{display:flex;flex-direction:column;gap:4px}
+  .stat-number{font-size:36px;font-weight:700;color:#5C4DFF}
+  .stat-label{font-size:14px;color:#9A9AA0;text-transform:uppercase;letter-spacing:0.08em}
+  .mark{width:200px;height:200px;flex-shrink:0;z-index:1}
+  .mark svg{width:100%;height:100%}
+</style>
+</head>
+<body>
+<div class="hero">
+  <div class="text">
+    <h1 class="headline">Built by engineers,<br><span>for engineers.</span></h1>
+    <p class="sub">postil is the open-source AI reviewer that runs in your own CI. Zero infrastructure, full auditability, transparent pricing.</p>
+    <div class="stat">
+      <div class="stat-item"><span class="stat-number">Apache 2.0</span><span class="stat-label">License</span></div>
+      <div class="stat-item"><span class="stat-number">0 infra</span><span class="stat-label">Setup</span></div>
+      <div class="stat-item"><span class="stat-number">100 %</span><span class="stat-label">Auditability</span></div>
+    </div>
+  </div>
+  <div class="mark">
+    <svg viewBox="0 0 280 280" xmlns="http://www.w3.org/2000/svg"><circle cx="140" cy="140" r="90" fill="none" stroke="#5C4DFF" stroke-width="20" stroke-linecap="round" stroke-dasharray="420 100"/><circle cx="140" cy="140" r="18" fill="#FF8C42"/></svg>
+  </div>
+</div>
+</body>
+</html>
