@@ -43,7 +43,7 @@ jobs:
               return;
             }
             const pr = prs[0];
-            if (pr.state === 'closed' && pr.merged) {
+            if (pr.state === 'closed' && pr.merged_at) {
               console.log(`PR #${pr.number} is already merged; review gate satisfied`);
               return;
             }
