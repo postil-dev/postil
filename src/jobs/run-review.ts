@@ -158,6 +158,31 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
 
   const { config } = await loadReviewConfig(octokit, owner, repo, payload.headSha);
   if (!config.enabled) {
+    if (payload.checkRunId) {
+      try {
+        await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+          owner,
+          repo,
+          check_run_id: payload.checkRunId,
+          status: "completed",
+          conclusion: "neutral",
+          completed_at: new Date().toISOString(),
+          output: {
+            title: "Postil Review",
+            summary: "Postil is disabled for this repo via config.",
+          },
+        });
+      } catch (err) {
+        console.error("[check-run] PATCH failed (disabled):", err instanceof Error ? err.message : err);
+        captureException(err, {
+          properties: {
+            op: "update_check_run_disabled",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
+        });
+      }
+    }
     return { summary: "Postil is disabled for this repo via config.", findings: [] };
   }
 
@@ -251,6 +276,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
         },
       });
     } catch (err) {
+      console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
       captureException(err, {
         properties: {
           op: "update_check_run",
