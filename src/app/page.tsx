@@ -60,11 +60,11 @@ function Wordmark() {
     <span className="flex items-center gap-2">
       <span
         aria-hidden
-        className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground font-display text-base italic"
+        className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground font-display text-base"
       >
         P
       </span>
-      <span className="font-display text-lg italic">Postil</span>
+      <span className="font-display text-lg">Postil</span>
     </span>
   );
 }
@@ -126,7 +126,7 @@ function HeroArtifact() {
     <div className="lift relative rounded-xl border border-border bg-card/70 p-4 font-mono text-[12.5px] shadow-[0_40px_80px_-30px_rgba(0,0,0,0.8)] backdrop-blur-sm">
       <div className="mb-3 flex items-center justify-between text-muted-foreground">
         <span className="truncate">postil-dev/postil-sandbox · PR #42</span>
-        <span className="rounded-full bg-[color:var(--diff-add)] px-2 py-0.5 text-[10px] tracking-widest uppercase text-[color:oklch(0.85_0.14_165)]">
+        <span className="rounded-full bg-[color:var(--diff-add)] px-2 py-0.5 text-[10px] tracking-widest uppercase text-[#00D2AA]">
           reviewed
         </span>
       </div>
@@ -194,10 +194,10 @@ function ReviewDemo() {
               <span>main ← feat/retry</span>
             </div>
             <pre className="overflow-x-auto p-4 font-mono text-[12.5px] leading-6">
-<span className="block bg-[color:var(--diff-del)] text-[color:oklch(0.8_0.12_25)]">{`- return await fetch(url).then(r => r.json());`}</span>
-<span className="block bg-[color:var(--diff-add)] text-[color:oklch(0.85_0.12_165)]">{`+ const r = await fetch(url);`}</span>
-<span className="block bg-[color:var(--diff-add)] text-[color:oklch(0.85_0.12_165)]">{`+ if (!r.ok) throw new ResponseError(r.status);`}</span>
-<span className="block bg-[color:var(--diff-add)] text-[color:oklch(0.85_0.12_165)]">{`+ return await r.json();`}</span>
+<span className="block bg-[color:var(--diff-del)] text-[#FF5A5A]">{`- return await fetch(url).then(r => r.json());`}</span>
+<span className="block bg-[color:var(--diff-add)] text-[#00D2AA]">{`+ const r = await fetch(url);`}</span>
+<span className="block bg-[color:var(--diff-add)] text-[#00D2AA]">{`+ if (!r.ok) throw new ResponseError(r.status);`}</span>
+<span className="block bg-[color:var(--diff-add)] text-[#00D2AA]">{`+ return await r.json();`}</span>
             </pre>
             <div className="border-t border-border bg-background/40 p-4">
               <div className="mb-2 flex items-center gap-2 font-mono text-[11px] tracking-widest text-primary uppercase">
@@ -443,7 +443,7 @@ function PlanCard({
       className={[
         "relative flex flex-col gap-5 rounded-xl border p-7",
         featured
-          ? "border-primary/60 bg-card/80 shadow-[0_20px_60px_-30px_oklch(0.85_0.14_85_/_35%)]"
+          ? "border-primary/60 bg-card/80 shadow-[0_20px_60px_-30px_#5C4DFF59]"
           : "border-border bg-card/40",
         muted ? "opacity-95" : "",
       ].join(" ")}
