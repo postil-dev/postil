@@ -37,7 +37,7 @@ and produce structured findings as JSON. Rules:
 
 Reply with ONLY a single JSON object, no prose, no markdown fence:
 {
-  "summary": "<one short paragraph>",
+  "summary": "<2-4 sentences max summarizing overall risk posture. Do NOT restate individual findings.>",
   "findings": [ { "path": "...", "line": <int>, "severity": "info|warn|error", "body": "..." } ]
 }
 `.trim();
@@ -100,6 +100,15 @@ function truncateUtf8(text: string, maxBytes: number): string {
     end--;
   }
   return new TextDecoder().decode(bytes.slice(0, end));
+}
+
+function diffStats(diff: string): { files: string[]; lines: number } {
+  const files = new Set<string>();
+  for (const line of diff.split("\n")) {
+    const m = line.match(/^diff --git a\/(.+) b\/.+$/);
+    if (m) files.add(m[1]);
+  }
+  return { files: Array.from(files), lines: diff.split("\n").length };
 }
 
 function isFinding(x: unknown): x is Finding {
@@ -169,9 +178,23 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
   let envelope = parseEnvelope(modelOutput);
   envelope = applyConfig(envelope, config);
 
-  const body = envelope.findings.length
-    ? `**Postil** reviewed this PR with \`${env.REVIEW_MODEL}\`.\n\n${envelope.summary}`
-    : `**Postil** reviewed this PR with \`${env.REVIEW_MODEL}\`. No issues found.\n\n${envelope.summary}`;
+  // Concise main review body (POSA-80)
+  const { files: diffFiles } = diffStats(diff);
+  const fileList = diffFiles.slice(0, 5).join(", ") + (diffFiles.length > 5 ? ", …" : "");
+
+  const metaDetails = `<details>
+<summary>🔍 Resources & metadata</summary>
+
+- **Model used:** \`${env.REVIEW_MODEL}\`
+- **Scan timestamp:** ${new Date().toISOString()}
+- **Files reviewed:** ${diffFiles.length} (${fileList || "N/A"})
+- **Diff lines:** ${diff.split("\n").length}
+- **Links:** [Postil](https://postil.dev), [Config docs](https://github.com/postil-dev/postil/blob/main/docs/config.md)
+
+</details>`;
+
+  const mainReview = envelope.summary || "Postil reviewed this PR. No issues found.";
+  const body = `${mainReview}\n\n${metaDetails}`;
 
   const comments = envelope.findings.map((f) => ({
     path: f.path,
