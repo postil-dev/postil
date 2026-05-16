@@ -91,6 +91,17 @@ function applyConfig(env: ReviewEnvelope, cfg: PostilConfig): ReviewEnvelope {
   return { summary: env.summary, findings: filtered };
 }
 
+function truncateUtf8(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(text);
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end] & 0b11000000) === 0b10000000) {
+    end--;
+  }
+  return new TextDecoder().decode(bytes.slice(0, end));
+}
+
 function isFinding(x: unknown): x is Finding {
   if (!x || typeof x !== "object") return false;
   const f = x as Record<string, unknown>;
@@ -213,7 +224,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
         output: {
           title: "Postil Review",
           summary: envelope.summary,
-          text: outputText.slice(0, 65535),
+          text: truncateUtf8(outputText, 65535),
         },
       });
     } catch (err) {
