@@ -1,0 +1,50 @@
+name: 'Postil AI Review'
+description: 'AI pull-request reviewer for serious teams — open-source, zero-infra, fully auditable.'
+author: 'Postil'
+branding:
+  icon: 'git-pull-request'
+  color: 'blue'
+
+inputs:
+  api-key:
+    description: 'API key for the LLM provider (OpenAI or Anthropic)'
+    required: true
+  provider:
+    description: 'LLM provider: openai or anthropic (default: openai)'
+    required: false
+    default: 'openai'
+  model:
+    description: 'Model name to use (e.g. gpt-4o-mini, claude-3-5-haiku-20241022)'
+    required: false
+  config-path:
+    description: 'Optional path to a configuration file'
+    required: false
+  github-token:
+    description: 'GitHub token for posting review comments (default: github.token)'
+    required: false
+    default: '${{ github.token }}'
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+    - name: Install and build
+      run: npm ci && npm run build
+      shell: bash
+      working-directory: ${{ github.action_path }}
+    - name: Run Postil Review
+      run: node dist/action.js
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_CONFIG_PATH: ${{ inputs.config-path }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_EVENT_PATH: ${{ github.event_path }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
