@@ -38,11 +38,24 @@ jobs:
               repo: context.repo.repo,
               commit_sha: context.sha,
             });
-            if (prs.length === 0) {
+            let pr = prs.length > 0 ? prs[0] : null;
+            // Fallback: listPullRequestsAssociatedWithCommit may omit merge commits on main.
+            // Search recent closed PRs by merge_commit_sha instead.
+            if (!pr) {
+              const { data: closedPrs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'closed',
+                sort: 'updated',
+                direction: 'desc',
+                per_page: 20,
+              });
+              pr = closedPrs.find(p => p.merge_commit_sha === context.sha && p.merged_at);
+            }
+            if (!pr) {
               core.setFailed('No postil/review check found on this commit, and no associated PR');
               return;
             }
-            const pr = prs[0];
             if (pr.state === 'closed' && pr.merged_at) {
               console.log(`PR #${pr.number} is already merged; review gate satisfied`);
               return;
