@@ -1,21 +1,14 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans, Instrument_Serif } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { Geist, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const display = Instrument_Serif({
-  weight: ["400"],
-  style: ["normal", "italic"],
-  subsets: ["latin"],
-  variable: "--font-display",
-});
-
-const body = IBM_Plex_Sans({
-  weight: ["400", "500", "600"],
+const body = Inter({
   subsets: ["latin"],
   variable: "--font-body",
 });
 
-const mono = IBM_Plex_Mono({
+const mono = JetBrains_Mono({
   weight: ["400", "500"],
   subsets: ["latin"],
   variable: "--font-mono",
@@ -50,7 +43,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${display.variable} ${body.variable} ${mono.variable}`}>
+    <html lang="en" className={`${GeistSans.variable} ${body.variable} ${mono.variable}`}>
       <body>{children}</body>
     </html>
   );
