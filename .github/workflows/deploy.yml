@@ -42,7 +42,12 @@ jobs:
               core.setFailed('No postil/review check found on this commit, and no associated PR');
               return;
             }
-            const headSha = prs[0].head.sha;
+            const pr = prs[0];
+            if (pr.state === 'closed' && pr.merged) {
+              console.log(`PR #${pr.number} is already merged; review gate satisfied`);
+              return;
+            }
+            const headSha = pr.head.sha;
             const { data: checksOnHead } = await github.rest.checks.listForRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
