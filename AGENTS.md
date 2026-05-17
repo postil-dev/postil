@@ -8,6 +8,22 @@
 | Casey Park | designer | CEO | Brand strategy, visual identity, marketing assets, SVG design, color systems |
 | Riley Patel | qa | CEO | Review diff, evidence capture, regression tracking |
 
+## Model policy
+
+> When hiring a new agent or changing an existing agent's model, default to an **open-weight** model from OpenRouter. Do not select an Anthropic, OpenAI, or Google-closed model unless the operator explicitly approves that choice in the hire/change request.
+
+### Reasonable defaults by role
+
+| Role | Suggested default | Rationale |
+|------|-------------------|-----------|
+| ceo | `meta-llama/llama-4-maverick` | Broad-capable; closest match to Sonnet for strategy/review |
+| engineer | `qwen/qwen3-coder` | Specialist in code/CSS; cheaper; good for infra work |
+| devops | `deepseek/deepseek-v3.1-terminus` | Strong general model; very cost-efficient; good fallback |
+| designer | `meta-llama/llama-4-maverick` | Versatile for visual/UI tasks and asset generation |
+| qa | `google/gemma-4-26b-a4b-it` | Lightweight, open, sufficient for review and diff analysis |
+
+When creating or updating an agent via the Paperclip API, always set `adapterConfig.model` to the open-weight slug above (or a newer verified open-weight equivalent).
+
 ## Commit conventions
 
 All commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
@@ -43,6 +59,22 @@ Each worktree must set:
 [tag]
     gpgsign = true
 ```
+
+## Model policy
+
+Open-weight models are the default for all agents. Closed (frontier-vendor) models are only used when the operator explicitly approves that choice.
+
+> When hiring a new agent or changing an existing agent's model, default to an **open-weight** model from OpenRouter. Do not select an Anthropic, OpenAI, or Google-closed model unless the operator explicitly approves that choice in the hire/change request.
+
+Current roster:
+
+| Agent | Role | Model |
+|---|---|---|
+| Morgan Chen | CEO | `meta-llama/llama-4-maverick` |
+| Alex Kim | Engineer | `qwen/qwen3-coder` |
+| Jordan Lee | DevOps | `deepseek/deepseek-v3.1-terminus` |
+| Casey Park | Designer | `meta-llama/llama-4-maverick` |
+| Riley Patel | QA | `google/gemma-4-26b-a4b-it` |
 
 ## Branch and PR workflow
 
