@@ -5,6 +5,7 @@ export default function Home() {
   return (
     <div className="relative z-[1] flex min-h-screen flex-col">
       <SiteHeader />
+      <main className="flex-1">
       <Hero />
       <ReviewDemo />
       <WhatItCatches />
@@ -12,6 +13,7 @@ export default function Home() {
       <Privacy />
       <Pricing />
       <SelfHostStrip />
+      </main>
       <SiteFooter />
     </div>
   );
@@ -161,7 +163,7 @@ function ReviewDemo() {
       <div className="mx-auto max-w-6xl px-5">
         <div className="grid gap-8 lg:grid-cols-[1fr_1.2fr] lg:items-center lg:gap-16">
           <div className="flex flex-col gap-4">
-            <span className="font-mono text-xs tracking-widest text-primary uppercase">
+            <span className="font-mono text-xs tracking-widest text-primary-foreground uppercase">
               What a review looks like
             </span>
             <h2 className="font-display text-3xl leading-tight sm:text-4xl">
@@ -200,7 +202,7 @@ function ReviewDemo() {
 <span className="block bg-[color:var(--diff-add)] text-[#00D2AA]">{`+ return await r.json();`}</span>
             </pre>
             <div className="border-t border-border bg-background/40 p-4">
-              <div className="mb-2 flex items-center gap-2 font-mono text-[11px] tracking-widest text-primary uppercase">
+              <div className="mb-2 flex items-center gap-2 font-mono text-[11px] tracking-widest text-primary-foreground uppercase">
                 <span>●</span> Postil · security
               </div>
               <p className="font-sans text-sm leading-snug text-foreground">
@@ -254,7 +256,7 @@ function WhatItCatches() {
     <section id="features" className="border-b border-border/50 py-24">
       <div className="mx-auto max-w-6xl px-5">
         <div className="mb-14 max-w-3xl">
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+          <span className="font-mono text-xs tracking-widest text-primary-foreground uppercase">
             Signal over noise
           </span>
           <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
@@ -300,7 +302,7 @@ function HowItWorks() {
     <section className="border-b border-border/50 py-24">
       <div className="mx-auto max-w-6xl px-5">
         <div className="mb-12 max-w-2xl">
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+          <span className="font-mono text-xs tracking-widest text-primary-foreground uppercase">
             Flow
           </span>
           <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
@@ -345,7 +347,7 @@ function Privacy() {
     <section className="border-b border-border/50 py-24">
       <div className="mx-auto max-w-6xl px-5">
         <div className="mb-12 max-w-2xl">
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+          <span className="font-mono text-xs tracking-widest text-primary-foreground uppercase">
             Privacy
           </span>
           <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
@@ -373,7 +375,7 @@ function Pricing() {
     <section id="pricing" className="border-b border-border/50 py-24">
       <div className="mx-auto max-w-6xl px-5">
         <div className="mb-12 max-w-2xl">
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+          <span className="font-mono text-xs tracking-widest text-primary-foreground uppercase">
             Pricing
           </span>
           <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
@@ -449,7 +451,7 @@ function PlanCard({
       ].join(" ")}
     >
       {featured ? (
-        <span className="absolute -top-3 left-6 rounded-full border border-primary/50 bg-background px-2.5 py-0.5 font-mono text-[10px] tracking-widest text-primary uppercase">
+        <span className="absolute -top-3 left-6 rounded-full border border-primary/50 bg-background px-2.5 py-0.5 font-mono text-[10px] tracking-widest text-primary-foreground uppercase">
           most teams
         </span>
       ) : null}
@@ -484,7 +486,7 @@ function SelfHostStrip() {
     <section className="border-b border-border/50 py-16">
       <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+          <span className="font-mono text-xs tracking-widest text-primary-foreground uppercase">
             Open-source, for keeps
           </span>
           <p className="mt-2 max-w-2xl font-display text-2xl leading-snug">
