@@ -1,27 +1,42 @@
-# postil agent roster
+# Postil Agent Roster & Operating Conventions
 
-| Agent | Role | Reports to | Capabilities |
-|-------|------|------------|--------------|
-| Morgan Chen (CEO) | ceo | Board | Strategy, coordination, triage, orchestration |
-| Alex Kim | engineer | CEO | Full-stack, infra, CI/CD, TypeScript |
-| Jordan Lee | devops | CEO | PR signing, Git ops, leak-screen, deploy author |
-| Casey Park | designer | CEO | Brand strategy, visual identity, marketing assets, SVG design, color systems |
-| Riley Patel | qa | CEO | Review diff, evidence capture, regression tracking |
+## Agent roles and GPG keys
 
-## Designer engagement
+Every commit on `main` must be GPG-signed. Set your per-role signing key in the worktree before committing:
 
-**Scope:** postil brand identity (POSA-81). Deliverables: brand voice document, logo system, color palette (WCAG AA verified), typography stack, GitHub App avatar, and example marketing card layouts.
+| Role | `user.name` | Signing key | Fingerprint |
+|---|---|---|---|
+| Postil Agent: CEO | `Postil Agent: CEO` | ed25519 (2026–2028) | `B7DA2AF44360F73544910A3BE67B3ED28F912C39` |
+| Postil Agent: Engineer | `Postil Agent: Engineer` | ed25519 (2026–2028) | `42FFD8002C23BE6E26645B583042E9D027D54A4D` |
+| Postil Agent: Publisher | `Postil Agent: Publisher` | ed25519 (2026–2028) | `E886B5929E793E5F1028ECFFE34EBF666300F324` |
+| Postil Agent: Designer | `Postil Agent: Designer` | ed25519 (2026–2028) | `EA90006C90DDC61167F1CD584DC74D29019640AD` |
+| Postil Agent: Watcher | `Postil Agent: Watcher` | ed25519 (2026–2028) | `EF18DEECEA90356D69B4B62D194F4214FF5E4103` |
+| Operator | `Mörgæsis` | ed25519 (2026–2029) | `02E45A9532C85D4432AA048151A8809EA950397A` |
 
-**Hard constraints:**
-- All assets land in `brand/` directory.
-- PNG avatar must be 280x280 with transparency.
-- SVGs must be viewBox-consistent and optimized.
-- Never mention paperclip/hermes/morgaesis in any committed metadata.
-- All work published via a single PR titled `brand: initial visual identity`.
+**Fallback:** `~paperclip/.gitconfig` sets `signingkey=42FFD8002C23BE6E26645B583042E9D027D54A4D` (Engineer). Override per role in the worktree.
 
-**Workflow:**
-1. CEO scopes and opens the child issue.
-2. Designer works in a feature branch and opens the PR.
-3. Publisher signs and pushes.
-4. Watcher verifies no leaks.
-5. CEO accepts or requests revision.
+## Commit conventions
+
+- **Format:** [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `build:`, `ci:`, `chore:`, `style:`, `revert:`).
+- **Subject:** imperative, lowercase, ≤72 characters, no trailing period.
+- **No ticket IDs in the subject.** Use trailers instead.
+- **Required trailers on every commit:**
+  ```
+  Co-Authored-By: Paperclip <noreply@paperclip.ing>
+  Paperclip-Id: POSA-NNN
+  ```
+- `Author`/`Committer` email is always `morgaesis+git@morgaes.is`.
+
+## Branch and PR workflow
+
+1. **Create a feature branch from `main`.** Naming: `<type>/<short-slug>` (e.g. `feat/ci-overhaul`, `fix/sitemap-robots`).
+2. **Open a PR** — direct push to `main` is blocked by the ruleset.
+3. **PR description** must follow `.github/pull_request_template.md` and include `<!-- paperclip-id: <uuid> -->`.
+4. **PR title** must be in Conventional Commits format, because it becomes the single squash-merge commit subject on `main`.
+5. **Squash-merge only.** The PR body becomes the squash commit message.
+
+## Hard constraints
+
+- No `.mailmap`.
+- No history rewrites after the operator-driven cleanup — forward-only.
+- Assets for brand work (POSA-81) must remain in the `brand/` directory.
