@@ -2,11 +2,11 @@
 
 | Agent | Role | Reports to | Capabilities |
 |-------|------|------------|--------------|
-| CEO | ceo | Board | Strategy, coordination, triage, orchestration |
-| Founding Engineer | engineer | CEO | Full-stack, infra, CI/CD, TypeScript |
-| Publisher | devops | CEO | PR signing, Git ops, leak-screen, deploy author |
-| Designer | designer | CEO | Brand strategy, visual identity, marketing assets, SVG design, color systems |
-| Watcher | qa | CEO | Review diff, evidence capture, regression tracking |
+| Morgan Chen (CEO) | ceo | Board | Strategy, coordination, triage, orchestration |
+| Alex Kim | engineer | CEO | Full-stack, infra, CI/CD, TypeScript |
+| Jordan Lee | devops | CEO | PR signing, Git ops, leak-screen, deploy author |
+| Casey Park | designer | CEO | Brand strategy, visual identity, marketing assets, SVG design, color systems |
+| Riley Patel | qa | CEO | Review diff, evidence capture, regression tracking |
 
 ## Designer engagement
 
