@@ -1,0 +1,39 @@
+name: Commitlint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint-pr:
+    name: Lint PR title and body
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR metadata
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const body = context.payload.pull_request.body || '';
+
+            const ccRegex = /^(feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert)(\(.+\))?: .+$/;
+            if (!ccRegex.test(title)) {
+              core.setFailed(`PR title does not follow Conventional Commits: "${title}"`);
+              return;
+            }
+
+            if (!body.includes('Co-Authored-By: Paperclip <noreply@paperclip.ing>')) {
+              core.setFailed('PR body is missing required Co-Authored-By trailer.');
+              return;
+            }
+
+            if (!body.includes('<!-- paperclip-id:')) {
+              core.setFailed('PR body is missing required <!-- paperclip-id: ... --> comment.');
+              return;
+            }
+
+            console.log('PR title and body look good.');
