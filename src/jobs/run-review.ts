@@ -186,28 +186,30 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     return { summary: "Postil is disabled for this repo via config.", findings: [] };
   }
 
-  const diffRes = await octokit.request(
-    "GET /repos/{owner}/{repo}/pulls/{pull_number}",
-    {
-      owner,
-      repo,
-      pull_number: payload.pullNumber,
-      mediaType: { format: "diff" },
-    },
-  );
-  const diff = String(diffRes.data);
-  const MAX = 120_000;
-  const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
+  let checkRunCompleted = false;
+  try {
+    const diffRes = await octokit.request(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        owner,
+        repo,
+        pull_number: payload.pullNumber,
+        mediaType: { format: "diff" },
+      },
+    );
+    const diff = String(diffRes.data);
+    const MAX = 120_000;
+    const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
 
-  const modelOutput = await callOpenRouter(truncated);
-  let envelope = parseEnvelope(modelOutput);
-  envelope = applyConfig(envelope, config);
+    const modelOutput = await callOpenRouter(truncated);
+    let envelope = parseEnvelope(modelOutput);
+    envelope = applyConfig(envelope, config);
 
-  // Concise main review body (POSA-80)
-  const { files: diffFiles } = diffStats(diff);
-  const fileList = diffFiles.slice(0, 5).join(", ") + (diffFiles.length > 5 ? ", …" : "");
+    // Concise main review body (POSA-80)
+    const { files: diffFiles } = diffStats(diff);
+    const fileList = diffFiles.slice(0, 5).join(", ") + (diffFiles.length > 5 ? ", …" : "");
 
-  const metaDetails = `<details>
+    const metaDetails = `<details>
 <summary>🔍 Resources & metadata</summary>
 
 - **Model used:** \`${env.REVIEW_MODEL}\`
@@ -218,75 +220,107 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
 
 </details>`;
 
-  const mainReview = envelope.summary || "Postil reviewed this PR. No issues found.";
-  const body = `${mainReview}\n\n${metaDetails}`;
+    const mainReview = envelope.summary || "Postil reviewed this PR. No issues found.";
+    const body = `${mainReview}\n\n${metaDetails}`;
 
-  const comments = envelope.findings.map((f) => ({
-    path: f.path,
-    line: f.line,
-    side: "RIGHT" as const,
-    body: `**${f.severity.toUpperCase()}** · ${f.body}`,
-  }));
+    const comments = envelope.findings.map((f) => ({
+      path: f.path,
+      line: f.line,
+      side: "RIGHT" as const,
+      body: `**${f.severity.toUpperCase()}** · ${f.body}`,
+    }));
 
-  try {
-    await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
-      owner,
-      repo,
-      pull_number: payload.pullNumber,
-      commit_id: payload.headSha,
-      event: "COMMENT",
-      body,
-      comments: comments.length ? comments : undefined,
-    });
-  } catch (err) {
-    captureException(err, {
-      properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
-    });
-    // Fall back to an issue comment if inline review API rejected the payload.
-    await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
-      owner,
-      repo,
-      issue_number: payload.pullNumber,
-      body: `${body}\n\n_(inline review failed; posted as comment)_`,
-    });
-  }
-
-  if (payload.checkRunId) {
-    const conclusion = envelope.findings.some((f) => f.severity === "error")
-      ? "failure"
-      : envelope.findings.some((f) => f.severity === "warn")
-        ? "neutral"
-        : "success";
-    const outputText =
-      envelope.findings
-        .map((f) => `**${f.severity.toUpperCase()}** · ${f.path}:${f.line} — ${f.body}`)
-        .join("\n\n") || "No issues found.";
     try {
-      await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+      await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
         owner,
         repo,
-        check_run_id: payload.checkRunId,
-        status: "completed",
-        conclusion,
-        completed_at: new Date().toISOString(),
-        output: {
-          title: "Postil Review",
-          summary: envelope.summary,
-          text: truncateUtf8(outputText, 65535),
-        },
+        pull_number: payload.pullNumber,
+        commit_id: payload.headSha,
+        event: "COMMENT",
+        body,
+        comments: comments.length ? comments : undefined,
       });
     } catch (err) {
-      console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
       captureException(err, {
-        properties: {
-          op: "update_check_run",
-          repoFullName: payload.repoFullName,
-          pullNumber: payload.pullNumber,
-        },
+        properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
+      });
+      // Fall back to an issue comment if inline review API rejected the payload.
+      await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+        owner,
+        repo,
+        issue_number: payload.pullNumber,
+        body: `${body}\n\n_(inline review failed; posted as comment)_`,
       });
     }
-  }
 
-  return envelope;
+    if (payload.checkRunId) {
+      const conclusion = envelope.findings.some((f) => f.severity === "error")
+        ? "failure"
+        : envelope.findings.some((f) => f.severity === "warn")
+          ? "neutral"
+          : "success";
+      const outputText =
+        envelope.findings
+          .map((f) => `**${f.severity.toUpperCase()}** · ${f.path}:${f.line} — ${f.body}`)
+          .join("\n\n") || "No issues found.";
+      try {
+        await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+          owner,
+          repo,
+          check_run_id: payload.checkRunId,
+          status: "completed",
+          conclusion,
+          completed_at: new Date().toISOString(),
+          output: {
+            title: "Postil Review",
+            summary: envelope.summary,
+            text: truncateUtf8(outputText, 65535),
+          },
+        });
+        checkRunCompleted = true;
+      } catch (err) {
+        console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
+        captureException(err, {
+          properties: {
+            op: "update_check_run",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
+        });
+      }
+    }
+
+    return envelope;
+  } catch (err) {
+    if (payload.checkRunId && !checkRunCompleted) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[check-run] Review threw; completing check-run with failure:", message);
+      try {
+        await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+          owner,
+          repo,
+          check_run_id: payload.checkRunId,
+          status: "completed",
+          conclusion: "failure",
+          completed_at: new Date().toISOString(),
+          output: {
+            title: "Postil Review",
+            summary: "Review failed to complete.",
+            text: `Error: ${message}`,
+          },
+        });
+      } catch (patchErr) {
+        console.error("[check-run] Emergency PATCH failed:", patchErr instanceof Error ? patchErr.message : patchErr);
+        captureException(patchErr, {
+          properties: {
+            op: "emergency_complete_check_run",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
+        });
+      }
+    }
+    throw err;
+  }
 }
 // verify new review format
