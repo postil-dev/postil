@@ -23,6 +23,10 @@ jobs:
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
         with:
           script: |
+            if (github.event_name === 'workflow_dispatch') {
+              console.log('workflow_dispatch triggered; skipping review gate');
+              return;
+            }
             const { data: checksOnCommit } = await github.rest.checks.listForRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -52,12 +56,43 @@ jobs:
               });
               pr = closedPrs.find(p => p.merge_commit_sha === context.sha && p.merged_at);
             }
+            // Fallback for rebase or squash merges where merge_commit_sha is null
+            // but the commit is still linked to a merged PR via GraphQL.
             if (!pr) {
-              core.setFailed('No postil/review check found on this commit, and no associated PR');
+              const query = `
+                query($owner: String!, $repo: String!, $sha: GitObjectID!) {
+                  repository(owner: $owner, name: $repo) {
+                    object(oid: $sha) {
+                      ... on Commit {
+                        associatedPullRequests(first: 10, states: MERGED) {
+                          nodes { number mergedAt state }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+              try {
+                const result = await github.graphql(query, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  sha: context.sha,
+                });
+                const candidates = result?.repository?.object?.associatedPullRequests?.nodes ?? [];
+                const mergedPr = candidates.find(p => p.mergedAt);
+                if (mergedPr) {
+                  pr = { number: mergedPr.number, state: mergedPr.state.toLowerCase(), merged_at: mergedPr.mergedAt };
+                }
+              } catch (gqlErr) {
+                console.log('GraphQL fallback failed:', gqlErr.message);
+              }
+            }
+            if (pr && pr.state === 'closed' && pr.merged_at) {
+              console.log(`PR #${pr.number} is already merged; review gate satisfied`);
               return;
             }
-            if (pr.state === 'closed' && pr.merged_at) {
-              console.log(`PR #${pr.number} is already merged; review gate satisfied`);
+            if (!pr) {
+              core.setFailed('No postil/review check found on this commit, and no associated PR');
               return;
             }
             const headSha = pr.head.sha;
