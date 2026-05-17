@@ -273,7 +273,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           completed_at: new Date().toISOString(),
           output: {
             title: "Postil Review",
-            summary: envelope.summary,
+            summary: envelope.summary || "Postil review completed.",
             text: truncateUtf8(outputText, 65535),
           },
         });
