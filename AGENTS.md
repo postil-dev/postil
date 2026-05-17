@@ -2,11 +2,11 @@
 
 | Agent | Role | Reports to | Capabilities |
 |-------|------|------------|--------------|
-| Morgan Chen (CEO) | ceo | Board | Strategy, coordination, triage, orchestration |
-| Alex Kim | engineer | CEO | Full-stack, infra, CI/CD, TypeScript |
-| Jordan Lee | devops | CEO | PR signing, Git ops, leak-screen, deploy author |
-| Casey Park | designer | CEO | Brand strategy, visual identity, marketing assets, SVG design, color systems |
-| Riley Patel | qa | CEO | Review diff, evidence capture, regression tracking |
+| Elena Vance (CEO) | ceo | Board | Strategy, coordination, triage, orchestration |
+| Marcus Chen | engineer | CEO | Full-stack, infra, CI/CD, TypeScript |
+| Riley Okafor | devops | CEO | PR signing, Git ops, leak-screen, deploy author |
+| Sofia Moreau | designer | CEO | Brand strategy, visual identity, marketing assets, SVG design, color systems |
+| Jin Park | qa | CEO | Review diff, evidence capture, regression tracking |
 
 ## Designer engagement
 
