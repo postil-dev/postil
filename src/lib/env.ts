@@ -70,6 +70,9 @@ const schema = z.object({
 
   // Sandbox driver selection
   SANDBOX_DRIVER: z.enum(["fly", "e2b", "docker"]).default("fly"),
+
+  // Operator metrics endpoint auth
+  METRICS_API_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof schema>;
