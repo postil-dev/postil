@@ -159,7 +159,7 @@ jobs:
                   repository(owner: $owner, name: $repo) {
                     object(oid: $sha) {
                       ... on Commit {
-                        associatedPullRequests(first: 10, states: MERGED) {
+                        associatedPullRequests(first: 10) {
                           nodes { number mergedAt state }
                         }
                       }
