@@ -67,7 +67,7 @@ function Wordmark() {
         aria-hidden
         className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground"
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" role="img" aria-label="Postil logo">
           <path d="M4 4L8 8L4 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           <path d="M9 12H12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
         </svg>
