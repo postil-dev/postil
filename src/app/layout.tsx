@@ -1,12 +1,18 @@
 import type { Metadata } from "next";
-import { GeistSans } from "geist/font/sans";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { DM_Sans, DM_Serif_Display, JetBrains_Mono } from "next/font/google";
 import { PostHogProvider } from "@/components/providers/posthog-provider";
 import "./globals.css";
 
-const body = Inter({
+const body = DM_Sans({
   subsets: ["latin"],
   variable: "--font-body",
+  weight: ["400", "500", "600"],
+});
+
+const display = DM_Serif_Display({
+  subsets: ["latin"],
+  variable: "--font-display",
+  weight: ["400"],
 });
 
 const mono = JetBrains_Mono({
@@ -44,7 +50,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${GeistSans.variable} ${body.variable} ${mono.variable}`}>
+    <html lang="en" className={`${body.variable} ${display.variable} ${mono.variable}`}>
       <body>
         <PostHogProvider>{children}</PostHogProvider>
       </body>
