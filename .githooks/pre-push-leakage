@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# pre-push: refuse to push commits that contain operator-internal tokens.
+# Installed automatically by paperclip into the postil repo worktree.
+set -euo pipefail
+
+zero=0000000000000000000000000000000000000000
+any_fail=0
+
+# Forbidden token list — keep in sync with paperclip-side AGENTS.md policy.
+FORBIDDEN_RE='paperclip|noreply@paperclip\.ing|<!-- paperclip-id|Paperclip-Id:|POSA-[0-9]+|/home/paperclip|GNUPGHOME|\bMorgan Chen\b|\bAlex Kim\b|\bJordan Lee\b|\bCasey Park\b|\bRiley Patel\b|\bSam Rivera\b|proj_doapikwt|4dcf4a68b32b97c5222025b15d8d4719|paperclip\.dev\.morgaes\.is|morgaesis-dev'
+
+# False-positive guard: never match inside `uses:`, `tags:`, `image:`, or SHA refs.
+filter_lines() {
+  grep -vE '^\+(.*uses:|.*tags:|.*image:|.*action: ).*' \
+  | grep -vE '^\+.*@[a-f0-9]{40}'
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ]; then
+    range="$local_sha"
+  else
+    range="${remote_sha}..${local_sha}"
+  fi
+  # Scan the DIFF (added lines) for forbidden tokens
+  matches=$(git log -p "$range" 2>/dev/null | grep '^+' | filter_lines | grep -iE "$FORBIDDEN_RE" || true)
+  if [ -n "$matches" ]; then
+    printf '\npre-push: forbidden tokens found in commits %s:\n' "$range" >&2
+    printf '%s\n' "$matches" | head -10 >&2
+    any_fail=1
+  fi
+
+  # Authorship check: every commit author must be Mörgæsis
+  bad_authors=$(git log --format='%H %an <%ae>' "$range" 2>/dev/null | grep -v 'morgaesis+git@morgaes.is' || true)
+  if [ -n "$bad_authors" ]; then
+    printf '\npre-push: commits with wrong author email (must be morgaesis+git@morgaes.is):\n' >&2
+    printf '%s\n' "$bad_authors" | head -5 >&2
+    any_fail=1
+  fi
+
+  # GPG-signed check: every commit must have a good signature
+  unsigned=$(git log --format='%H %G?' "$range" 2>/dev/null | awk '$2 != "G"' || true)
+  if [ -n "$unsigned" ]; then
+    printf '\npre-push: commits with no/bad GPG signature:\n' >&2
+    printf '%s\n' "$unsigned" | head -5 >&2
+    any_fail=1
+  fi
+done
+
+if [ "$any_fail" -ne 0 ]; then
+  printf '\npre-push: fix the above and try again. NEVER bypass with --no-verify.\n' >&2
+  exit 1
+fi
+exit 0

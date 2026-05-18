@@ -198,69 +198,87 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    // Always post a review — every PR gets both a check-run AND a PR review.
+    // Always post a review — every PR gets both a check-run AND a PR review
+    // (unless review.enabled=false or review.on_clean=skip in .postil.yaml).
     // Clean PRs with no findings receive an APPROVE with a default body.
     // When approving, enable squash auto-merge so the PR merges once all checks pass.
     {
       const hasFindings = comments.length > 0;
-      const reviewBody = envelope.summary || (hasFindings ? undefined : "No issues found.");
-      let approved = false;
-      try {
-        await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
-          owner,
-          repo,
-          pull_number: payload.pullNumber,
-          commit_id: payload.headSha,
-          event: hasFindings ? "COMMENT" : "APPROVE",
-          body: reviewBody,
-          comments: hasFindings ? comments : undefined,
-        });
-        approved = !hasFindings;
-      } catch (err) {
-        captureException(err, {
-          properties: {
-            op: "post_review",
-            repoFullName: payload.repoFullName,
-            pullNumber: payload.pullNumber,
-          },
-        });
-        // Fall back to an issue comment if inline review API rejected the payload.
-        await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
-          owner,
-          repo,
-          issue_number: payload.pullNumber,
-          body: reviewBody ?? "Postil reviewed this PR — no issues found.",
-        });
+
+      // Determine whether to post the review at all.
+      let shouldPost = config.review.enabled;
+      if (shouldPost && !hasFindings && config.review.on_clean === "skip") {
+        shouldPost = false;
       }
 
-      // Enable squash auto-merge on approved clean PRs so they merge once
-      // all required checks (including our check-run) turn green.
-      if (approved) {
+      if (shouldPost) {
+        // Determine the review event:
+        // - findings present -> COMMENT (inline comments)
+        // - no findings, on_clean=comment -> COMMENT (empty PR, notify anyway)
+        // - no findings, on_clean=approve -> APPROVE
+        const event: "APPROVE" | "COMMENT" =
+          hasFindings || config.review.on_clean === "comment" ? "COMMENT" : "APPROVE";
+
+        const reviewBody =
+          envelope.summary || (event === "APPROVE" ? "No issues found." : undefined);
+        let approved = false;
         try {
-          await octokit.request("PUT /repos/{owner}/{repo}/pulls/{pull_number}/auto_merge", {
+          await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
             owner,
             repo,
             pull_number: payload.pullNumber,
-            merge_method: "squash",
+            commit_id: payload.headSha,
+            event,
+            body: reviewBody,
+            comments: hasFindings ? comments : undefined,
           });
-          track("system", "auto_merge_enabled", {
-            repoFullName: payload.repoFullName,
-            pullNumber: payload.pullNumber,
-          });
+          approved = event === "APPROVE";
         } catch (err) {
-          // Non-fatal: auto-merge might not be enabled on the repo, or the PR
-          // might already be auto-merging. Log and move on.
-          console.warn(
-            "[auto-merge] Could not enable auto-merge:",
-            err instanceof Error ? err.message : err,
-          );
           captureException(err, {
             properties: {
-              op: "enable_auto_merge",
+              op: "post_review",
               repoFullName: payload.repoFullName,
               pullNumber: payload.pullNumber,
             },
           });
+          // Fall back to an issue comment if inline review API rejected the payload.
+          await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+            owner,
+            repo,
+            issue_number: payload.pullNumber,
+            body: reviewBody ?? "Postil reviewed this PR — no issues found.",
+          });
+        }
+
+        // Enable squash auto-merge on approved clean PRs so they merge once
+        // all required checks (including our check-run) turn green.
+        if (approved) {
+          try {
+            await octokit.request("PUT /repos/{owner}/{repo}/pulls/{pull_number}/auto_merge", {
+              owner,
+              repo,
+              pull_number: payload.pullNumber,
+              merge_method: "squash",
+            });
+            track("system", "auto_merge_enabled", {
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+            });
+          } catch (err) {
+            // Non-fatal: auto-merge might not be enabled on the repo, or the PR
+            // might already be auto-merging. Log and move on.
+            console.warn(
+              "[auto-merge] Could not enable auto-merge:",
+              err instanceof Error ? err.message : err,
+            );
+            captureException(err, {
+              properties: {
+                op: "enable_auto_merge",
+                repoFullName: payload.repoFullName,
+                pullNumber: payload.pullNumber,
+              },
+            });
+          }
         }
       }
     }
