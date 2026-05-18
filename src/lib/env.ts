@@ -45,7 +45,7 @@ const schema = z.object({
   // Fly
   FLY_ORG_TOKEN: z.string().optional(),
   FLY_ORG_SLUG: z.string().default("personal"),
-  FLY_SANDBOX_APP: z.string().default("postil-sandbox"),
+  FLY_SANDBOX_APP: z.string().optional(),
 
   // PostHog (EU)
   POSTHOG_PROJECT_TOKEN: z.string().optional(),
@@ -62,7 +62,7 @@ const schema = z.object({
 
   // Cloudflare
   CLOUDFLARE_API_TOKEN: z.string().optional(),
-  CLOUDFLARE_ZONE_ID: z.string().default("4dcf4a68b32b97c5222025b15d8d4719"),
+  CLOUDFLARE_ZONE_ID: z.string().optional(),
 
   // Sandbox driver selection
   SANDBOX_DRIVER: z.enum(["fly", "e2b", "docker"]).default("fly"),
