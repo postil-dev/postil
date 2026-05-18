@@ -1,0 +1,27 @@
+name: Deploy to Fly
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Fly
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@9402a95e5fd04d14b314b3f569b165b513116b0f
+
+      - name: Deploy to Fly
+        run: flyctl deploy --remote-only --app "${FLY_APP_NAME}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP_NAME: ${{ vars.FLY_APP_NAME || secrets.FLY_APP_NAME }}
