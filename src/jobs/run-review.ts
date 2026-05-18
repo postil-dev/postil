@@ -22,9 +22,19 @@ export type Finding = {
   body: string;
 };
 
+export type TokenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+/** Zero-valued usage for paths that never call the LLM. */
+const ZERO_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
 export type ReviewEnvelope = {
   summary: string;
   findings: Finding[];
+  usage: TokenUsage;
 };
 
 const SYSTEM_PROMPT = `
@@ -43,7 +53,7 @@ Reply with ONLY a single JSON object, no prose, no markdown fence:
 }
 `.trim();
 
-function parseEnvelope(text: string): ReviewEnvelope {
+function parseEnvelope(text: string, usage: TokenUsage): ReviewEnvelope {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   const raw = fenced ? fenced[1] : text;
   const start = raw.indexOf("{");
@@ -54,13 +64,14 @@ function parseEnvelope(text: string): ReviewEnvelope {
       return {
         summary: String(json.summary ?? ""),
         findings: Array.isArray(json.findings) ? json.findings.filter(isFinding) : [],
+        usage,
       };
     } catch {
       // fall through to prose fallback
     }
   }
   // Prose fallback: post the model's reply verbatim as a summary, no inline findings.
-  return { summary: text.trim().slice(0, 4000), findings: [] };
+  return { summary: text.trim().slice(0, 4000), findings: [], usage };
 }
 
 const SEVERITY_RANK: Record<Finding["severity"], number> = {
@@ -89,7 +100,7 @@ function applyConfig(env: ReviewEnvelope, cfg: PostilConfig): ReviewEnvelope {
     .filter((f) => SEVERITY_RANK[f.severity] >= threshold)
     .filter((f) => !cfg.ignore.some((glob) => matchesGlob(f.path, glob)))
     .slice(0, cfg.maxFindings);
-  return { summary: env.summary, findings: filtered };
+  return { summary: env.summary, findings: filtered, usage: env.usage };
 }
 
 function isFinding(x: unknown): x is Finding {
@@ -103,7 +114,9 @@ function isFinding(x: unknown): x is Finding {
   );
 }
 
-async function callOpenRouter(diff: string): Promise<string> {
+type OpenRouterResult = { content: string; usage: TokenUsage };
+
+async function callOpenRouter(diff: string): Promise<OpenRouterResult> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000);
@@ -133,8 +146,15 @@ async function callOpenRouter(diff: string): Promise<string> {
   }
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   };
-  return data.choices?.[0]?.message?.content ?? "";
+  const orUsage = data.usage;
+  const usage: TokenUsage = {
+    promptTokens: orUsage?.prompt_tokens ?? 0,
+    completionTokens: orUsage?.completion_tokens ?? 0,
+    totalTokens: orUsage?.total_tokens ?? 0,
+  };
+  return { content: data.choices?.[0]?.message?.content ?? "", usage };
 }
 
 export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope> {
@@ -158,7 +178,10 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           },
         });
       } catch (err) {
-        console.error("[check-run] PATCH failed (disabled):", err instanceof Error ? err.message : err);
+        console.error(
+          "[check-run] PATCH failed (disabled):",
+          err instanceof Error ? err.message : err,
+        );
         captureException(err, {
           properties: {
             op: "update_check_run_disabled",
@@ -168,26 +191,27 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
         });
       }
     }
-    return { summary: "Postil is disabled for this repo via config.", findings: [] };
+    return {
+      summary: "Postil is disabled for this repo via config.",
+      findings: [],
+      usage: ZERO_USAGE,
+    };
   }
 
   let checkRunCompleted = false;
   try {
-    const diffRes = await octokit.request(
-      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
-      {
-        owner,
-        repo,
-        pull_number: payload.pullNumber,
-        mediaType: { format: "diff" },
-      },
-    );
+    const diffRes = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+      owner,
+      repo,
+      pull_number: payload.pullNumber,
+      mediaType: { format: "diff" },
+    });
     const diff = String(diffRes.data);
     const MAX = 120_000;
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
 
-    const modelOutput = await callOpenRouter(truncated);
-    let envelope = parseEnvelope(modelOutput);
+    const { content: modelOutput, usage } = await callOpenRouter(truncated);
+    let envelope = parseEnvelope(modelOutput, usage);
     envelope = applyConfig(envelope, config);
 
     // Concise main review body — no filler or self-promotion
@@ -211,7 +235,11 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
         });
       } catch (err) {
         captureException(err, {
-          properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
+          properties: {
+            op: "post_review",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
         });
         // Fall back to an issue comment if inline review API rejected the payload.
         if (envelope.summary) {
@@ -233,7 +261,9 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
         : counts.warn
           ? `${counts.warn} warning${counts.warn > 1 ? "s" : ""}`
           : "No issues";
-      const outputText = envelope.findings.length ? "See inline review comments." : "No issues found.";
+      const outputText = envelope.findings.length
+        ? "See inline review comments."
+        : "No issues found.";
       const conclusion = counts.error ? "failure" : counts.warn ? "neutral" : "success";
       try {
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
@@ -245,7 +275,11 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           completed_at: new Date().toISOString(),
           output: {
             title,
-            summary: envelope.summary || (counts.error || counts.warn || counts.info ? "See inline review comments." : "No issues found."),
+            summary:
+              envelope.summary ||
+              (counts.error || counts.warn || counts.info
+                ? "See inline review comments."
+                : "No issues found."),
             text: outputText,
           },
         });
@@ -287,7 +321,10 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           },
         });
       } catch (patchErr) {
-        console.error("[check-run] Emergency PATCH failed:", patchErr instanceof Error ? patchErr.message : patchErr);
+        console.error(
+          "[check-run] Emergency PATCH failed:",
+          patchErr instanceof Error ? patchErr.message : patchErr,
+        );
         captureException(patchErr, {
           properties: {
             op: "emergency_complete_check_run",

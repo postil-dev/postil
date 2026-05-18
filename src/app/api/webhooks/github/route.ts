@@ -1,12 +1,12 @@
 import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
-import { after } from "next/server";
 import { runReview } from "@/jobs/run-review";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
+import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -159,7 +159,22 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
         repoFullName,
         pullNumber,
         findings: result.findings.length,
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        totalTokens: result.usage.totalTokens,
       });
+
+      // Record usage events for billing/observability.
+      try {
+        if (reviewId) {
+          await recordReviewCompleted(installation.id, reviewId);
+          await recordTokenUsage(installation.id, reviewId, result.usage);
+        }
+      } catch (usageErr) {
+        captureException(usageErr, {
+          properties: { op: "record_usage", repoFullName, pullNumber },
+        });
+      }
     } catch (err) {
       if (reviewId) {
         await db
