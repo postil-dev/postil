@@ -1,0 +1,15 @@
+{
+  "prReview": {
+    "event": "COMMENT",
+    "body": "Potential off-by-one and missing null guard.",
+    "comments": [
+      { "body": "**ERROR** · Off-by-one in loop bound" },
+      { "body": "**WARN** · Consider null-check before access" }
+    ]
+  },
+  "checkRun": {
+    "title": "1 error, 1 warning",
+    "summary": "Potential off-by-one and missing null guard.",
+    "text": "See inline review comments."
+  }
+}

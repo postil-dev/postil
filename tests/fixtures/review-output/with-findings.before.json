@@ -1,0 +1,15 @@
+{
+  "prReview": {
+    "event": "COMMENT",
+    "body": "Postil reviewed this PR. No issues found.\n\n<details>\n<summary>🔍 Resources & metadata</summary>\n\n- **Model used:** `openai/gpt-4o`\n- **Scan timestamp:** 2026-05-18T01:00:00.000Z\n- **Files reviewed:** 2 (src/index.ts, src/lib.ts)\n- **Diff lines:** 89\n- **Links:** [Postil](https://postil.dev), [Config docs](https://github.com/postil-dev/postil/blob/main/docs/config.md)\n\n</details>",
+    "comments": [
+      { "body": "**ERROR** · Off-by-one in loop bound" },
+      { "body": "**WARN** · Consider null-check before access" }
+    ]
+  },
+  "checkRun": {
+    "title": "Postil Review",
+    "summary": "Potential off-by-one and missing null guard.",
+    "text": "**ERROR** · src/index.ts:42 — Off-by-one in loop bound\n\n**WARN** · src/lib.ts:17 — Consider null-check before access"
+  }
+}
