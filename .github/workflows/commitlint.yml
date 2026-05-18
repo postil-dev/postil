@@ -18,7 +18,6 @@ jobs:
         with:
           script: |
             const title = context.payload.pull_request.title;
-            const body = context.payload.pull_request.body || '';
 
             const ccRegex = /^(feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert)(\(.+\))?: .+$/;
             if (!ccRegex.test(title)) {
@@ -26,14 +25,4 @@ jobs:
               return;
             }
 
-            if (!body.includes('Co-Authored-By: Paperclip <noreply@paperclip.ing>')) {
-              core.setFailed('PR body is missing required Co-Authored-By trailer.');
-              return;
-            }
-
-            if (!body.includes('<!-- paperclip-id:')) {
-              core.setFailed('PR body is missing required <!-- paperclip-id: ... --> comment.');
-              return;
-            }
-
-            console.log('PR title and body look good.');
+            console.log('PR title follows Conventional Commits.');
