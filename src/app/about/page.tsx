@@ -1,8 +1,11 @@
 import Link from "next/link";
 
-export const metadata = {
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
   title: "About",
   description: "What Postil is, who builds it, and how to get in touch.",
+  alternates: { canonical: "/about" },
 };
 
 export default function AboutPage() {

@@ -23,6 +23,9 @@ const mono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://postil.dev"),
+  alternates: {
+    canonical: "/",
+  },
   title: {
     default: "Postil — AI pull request reviews",
     template: "%s · Postil",

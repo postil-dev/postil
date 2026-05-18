@@ -2,14 +2,15 @@ import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
-import { reviewPullRequest } from "@/jobs/review-pull-request";
+import { after } from "next/server";
+import { runReview } from "@/jobs/run-review";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
 
@@ -134,21 +135,52 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
 
   const reviewId = reviewRow[0]?.id;
 
-  const handle = await reviewPullRequest.trigger({
-    installationId: installation.id,
-    repoFullName,
-    pullNumber,
-    headSha,
-    checkRunId: checkRunId ?? undefined,
-    reviewId: reviewId ?? undefined,
+  after(async () => {
+    try {
+      const result = await runReview({
+        installationId: installation.id,
+        repoFullName,
+        pullNumber,
+        headSha,
+        checkRunId: checkRunId ?? undefined,
+        reviewId: reviewId ?? undefined,
+      });
+      if (reviewId) {
+        await db
+          .update(schema.reviews)
+          .set({
+            status: "completed",
+            result,
+            completedAt: new Date(),
+          })
+          .where(eq(schema.reviews.id, reviewId));
+      }
+      track("system", "review_completed_after", {
+        repoFullName,
+        pullNumber,
+        findings: result.findings.length,
+      });
+    } catch (err) {
+      if (reviewId) {
+        await db
+          .update(schema.reviews)
+          .set({
+            status: "failed",
+            errorMessage: String(err instanceof Error ? err.message : err),
+            completedAt: new Date(),
+          })
+          .where(eq(schema.reviews.id, reviewId));
+      }
+      captureException(err, {
+        properties: {
+          op: "after_review",
+          repoFullName,
+          pullNumber,
+          headSha,
+        },
+      });
+    }
   });
-
-  if (reviewId) {
-    await db
-      .update(schema.reviews)
-      .set({ triggerRunId: handle.id })
-      .where(eq(schema.reviews.id, reviewId));
-  }
 
   track("system", "review_enqueued", {
     repoFullName,
@@ -157,6 +189,5 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
     installationId: installation.id,
     reviewId,
     checkRunId,
-    triggerRunId: handle.id,
   });
 }

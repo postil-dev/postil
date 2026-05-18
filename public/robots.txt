@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+Disallow: /install
+Disallow: /login
+
+Sitemap: https://postil.dev/sitemap.xml
