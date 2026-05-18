@@ -34,11 +34,12 @@ and produce structured findings as JSON. Rules:
 - Do not flag style, formatting, imports, or naming unless they cause a bug.
 - Every finding cites a specific path and line number that exists in the diff.
 - Severity is one of: info, warn, error.
-- If the diff looks fine, return an empty findings array and a short summary.
+- If the diff looks fine, return an empty findings array.
+- If you would APPROVE without any inline findings, leave summary empty too — no "no risk to correctness or security" filler.
 
 Reply with ONLY a single JSON object, no prose, no markdown fence:
 {
-  "summary": "<2-4 sentences max summarizing overall risk posture. Do NOT restate individual findings.>",
+  "summary": "<2-4 sentences max summarizing overall risk posture. Leave empty if you would APPROVE with no findings. Do NOT restate individual findings.>",
   "findings": [ { "path": "...", "line": <int>, "severity": "info|warn|error", "body": "..." } ]
 }
 `.trim();
@@ -198,33 +199,33 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    if (envelope.findings.length > 0 || envelope.summary) {
-      try {
-        await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+    try {
+      await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+        owner,
+        repo,
+        pull_number: payload.pullNumber,
+        commit_id: payload.headSha,
+        event: comments.length ? "COMMENT" : "APPROVE",
+        // Only include a body on COMMENT reviews (when there are inline findings).
+        // On clean APPROVEs the approval state itself is the signal; filler like
+        // "no risk to correctness or security" is noise.
+        body: comments.length ? (envelope.summary || undefined) : undefined,
+        comments: comments.length ? comments : undefined,
+      });
+    } catch (err) {
+      captureException(err, {
+        properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
+      });
+      // Fall back to an issue comment if inline review API rejected the payload.
+      if (envelope.summary) {
+        await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
           owner,
           repo,
-          pull_number: payload.pullNumber,
-          commit_id: payload.headSha,
-          event: comments.length ? "COMMENT" : "APPROVE",
-          body: envelope.summary || undefined,
-          comments: comments.length ? comments : undefined,
+          issue_number: payload.pullNumber,
+          body: envelope.summary,
         });
-      } catch (err) {
-        captureException(err, {
-          properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
-        });
-        // Fall back to an issue comment if inline review API rejected the payload.
-        if (envelope.summary) {
-          await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
-            owner,
-            repo,
-            issue_number: payload.pullNumber,
-            body: envelope.summary,
-          });
-        }
       }
     }
-
     if (payload.checkRunId) {
       const counts = { error: 0, warn: 0, info: 0 };
       for (const f of envelope.findings) counts[f.severity]++;
