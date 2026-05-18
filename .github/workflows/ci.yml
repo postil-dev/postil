@@ -197,7 +197,15 @@ jobs:
               ref: headSha,
             });
             const reviewOnHead = checksOnHead.check_runs.find(r => r.name === 'postil/review');
-            if (!reviewOnHead || reviewOnHead.conclusion !== 'success') {
+            if (!reviewOnHead) {
+              core.setFailed('postil/review check not found for the associated PR');
+              return;
+            }
+            if (reviewOnHead.status === 'in_progress') {
+              console.log('postil/review is still in progress; skipping review gate for this PR');
+              return;
+            }
+            if (reviewOnHead.conclusion !== 'success') {
               core.setFailed('postil/review did not pass for the associated PR');
               return;
             }

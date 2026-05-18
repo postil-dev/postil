@@ -64,8 +64,12 @@ jobs:
             exit 1
           fi
 
+          # Sanitise PR body: strip required footers mandated by commitlint so they
+          # are not falsely flagged as leakage.
+          SANITIZED_BODY=$(echo "$PR_BODY" | grep -v -i -E '^Co-Authored-By:\s*Paperclip' | grep -v -i -E 'paperclip-id')
+
           # Scan PR body
-          if echo "$PR_BODY" | grep -E -i "$COMBINED_PATTERN"; then
+          if echo "$SANITIZED_BODY" | grep -E -i "$COMBINED_PATTERN"; then
             echo "::error title=Leakage Detected::Found leakage in PR body"
             exit 1
           fi
