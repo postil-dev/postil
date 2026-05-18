@@ -9,6 +9,7 @@ useDefault = true
   paths = [
     '''^\.env\.example$''',
     '''^.*\.test\.(ts|tsx)$''',
+    '''^CHANGELOG\.md$''',
   ]
   regexes = [
     '''test-secret''',

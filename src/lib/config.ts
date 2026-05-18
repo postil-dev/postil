@@ -12,8 +12,8 @@
  * config that serves multiple reviewers.
  */
 
-import { z } from "zod";
 import type { Octokit } from "@octokit/rest";
+import { z } from "zod";
 
 const PostilConfig = z.object({
   enabled: z.boolean().default(true),
@@ -26,6 +26,13 @@ const PostilConfig = z.object({
       focus: z.array(z.string()).default([]),
     })
     .default({ tone: "neutral", focus: [] }),
+  review: z
+    .object({
+      enabled: z.boolean().default(true),
+      on_clean: z.enum(["approve", "comment", "skip"]).default("approve"),
+      auto_merge: z.boolean().default(false),
+    })
+    .default({ enabled: true, on_clean: "approve", auto_merge: false }),
 });
 
 export type PostilConfig = z.infer<typeof PostilConfig>;
@@ -65,10 +72,13 @@ async function fetchFile(
   path: string,
 ): Promise<string | undefined> {
   try {
-    const res = await octokit.request(
-      "GET /repos/{owner}/{repo}/contents/{path}",
-      { owner, repo, path, ref, mediaType: { format: "raw" } },
-    );
+    const res = await octokit.request("GET /repos/{owner}/{repo}/contents/{path}", {
+      owner,
+      repo,
+      path,
+      ref,
+      mediaType: { format: "raw" },
+    });
     // With mediaType.format=raw the SDK returns the raw string in data.
     return typeof res.data === "string" ? res.data : undefined;
   } catch (err) {
@@ -86,7 +96,8 @@ async function parseYaml(text: string): Promise<unknown> {
 
 function fromCoderabbit(raw: CoderabbitConfig): Partial<PostilConfig> {
   return {
-    ignore: raw.reviews?.path_filters?.filter((p) => p.startsWith("!")).map((p) => p.slice(1)) ?? [],
+    ignore:
+      raw.reviews?.path_filters?.filter((p) => p.startsWith("!")).map((p) => p.slice(1)) ?? [],
   };
 }
 
@@ -114,7 +125,10 @@ export async function loadReviewConfig(
       }
       if (c.kind === "coderabbit") {
         return {
-          config: PostilConfig.parse({ ...defaults, ...fromCoderabbit(parsed as CoderabbitConfig) }),
+          config: PostilConfig.parse({
+            ...defaults,
+            ...fromCoderabbit(parsed as CoderabbitConfig),
+          }),
           source: c.name,
         };
       }

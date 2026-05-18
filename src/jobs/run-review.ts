@@ -158,7 +158,10 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           },
         });
       } catch (err) {
-        console.error("[check-run] PATCH failed (disabled):", err instanceof Error ? err.message : err);
+        console.error(
+          "[check-run] PATCH failed (disabled):",
+          err instanceof Error ? err.message : err,
+        );
         captureException(err, {
           properties: {
             op: "update_check_run_disabled",
@@ -173,15 +176,12 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
 
   let checkRunCompleted = false;
   try {
-    const diffRes = await octokit.request(
-      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
-      {
-        owner,
-        repo,
-        pull_number: payload.pullNumber,
-        mediaType: { format: "diff" },
-      },
-    );
+    const diffRes = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+      owner,
+      repo,
+      pull_number: payload.pullNumber,
+      mediaType: { format: "diff" },
+    });
     const diff = String(diffRes.data);
     const MAX = 120_000;
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
@@ -198,28 +198,68 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    if (envelope.findings.length > 0 || envelope.summary) {
+    // Always post a review — every PR gets both a check-run AND a PR review.
+    // Clean PRs with no findings receive an APPROVE with a default body.
+    // When approving, enable squash auto-merge so the PR merges once all checks pass.
+    {
+      const hasFindings = comments.length > 0;
+      const reviewBody = envelope.summary || (hasFindings ? undefined : "No issues found.");
+      let approved = false;
       try {
         await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
           owner,
           repo,
           pull_number: payload.pullNumber,
           commit_id: payload.headSha,
-          event: comments.length ? "COMMENT" : "APPROVE",
-          body: envelope.summary || undefined,
-          comments: comments.length ? comments : undefined,
+          event: hasFindings ? "COMMENT" : "APPROVE",
+          body: reviewBody,
+          comments: hasFindings ? comments : undefined,
         });
+        approved = !hasFindings;
       } catch (err) {
         captureException(err, {
-          properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
+          properties: {
+            op: "post_review",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
         });
         // Fall back to an issue comment if inline review API rejected the payload.
-        if (envelope.summary) {
-          await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+        await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+          owner,
+          repo,
+          issue_number: payload.pullNumber,
+          body: reviewBody ?? "Postil reviewed this PR — no issues found.",
+        });
+      }
+
+      // Enable squash auto-merge on approved clean PRs so they merge once
+      // all required checks (including our check-run) turn green.
+      if (approved) {
+        try {
+          await octokit.request("PUT /repos/{owner}/{repo}/pulls/{pull_number}/auto_merge", {
             owner,
             repo,
-            issue_number: payload.pullNumber,
-            body: envelope.summary,
+            pull_number: payload.pullNumber,
+            merge_method: "squash",
+          });
+          track("system", "auto_merge_enabled", {
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          });
+        } catch (err) {
+          // Non-fatal: auto-merge might not be enabled on the repo, or the PR
+          // might already be auto-merging. Log and move on.
+          console.warn(
+            "[auto-merge] Could not enable auto-merge:",
+            err instanceof Error ? err.message : err,
+          );
+          captureException(err, {
+            properties: {
+              op: "enable_auto_merge",
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+            },
           });
         }
       }
@@ -233,7 +273,9 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
         : counts.warn
           ? `${counts.warn} warning${counts.warn > 1 ? "s" : ""}`
           : "No issues";
-      const outputText = envelope.findings.length ? "See inline review comments." : "No issues found.";
+      const outputText = envelope.findings.length
+        ? "See inline review comments."
+        : "No issues found.";
       const conclusion = counts.error ? "failure" : counts.warn ? "neutral" : "success";
       try {
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
@@ -245,7 +287,11 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           completed_at: new Date().toISOString(),
           output: {
             title,
-            summary: envelope.summary || (counts.error || counts.warn || counts.info ? "See inline review comments." : "No issues found."),
+            summary:
+              envelope.summary ||
+              (counts.error || counts.warn || counts.info
+                ? "See inline review comments."
+                : "No issues found."),
             text: outputText,
           },
         });
@@ -264,6 +310,38 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
             pullNumber: payload.pullNumber,
           },
         });
+      }
+    }
+
+    // Auto-merge: if enabled and review concluded clean (success), enable GH auto-merge
+    if (config.review.auto_merge && payload.checkRunId) {
+      const counts = { error: 0, warn: 0, info: 0 };
+      for (const f of envelope.findings) counts[f.severity]++;
+      const conclusion = counts.error ? "failure" : counts.warn ? "neutral" : "success";
+      if (conclusion === "success") {
+        try {
+          await octokit.request("PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge", {
+            owner,
+            repo,
+            pull_number: payload.pullNumber,
+            merge_method: "squash",
+          });
+          track("system", "auto_merge_triggered", {
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          });
+        } catch (err) {
+          // Non-fatal: auto-merge may fail if branch protection blocks it,
+          // required checks aren't green yet, or the PR isn't mergeable.
+          console.warn("[auto-merge] Failed:", err instanceof Error ? err.message : err);
+          captureException(err, {
+            properties: {
+              op: "auto_merge",
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+            },
+          });
+        }
       }
     }
 
@@ -287,7 +365,10 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           },
         });
       } catch (patchErr) {
-        console.error("[check-run] Emergency PATCH failed:", patchErr instanceof Error ? patchErr.message : patchErr);
+        console.error(
+          "[check-run] Emergency PATCH failed:",
+          patchErr instanceof Error ? patchErr.message : patchErr,
+        );
         captureException(patchErr, {
           properties: {
             op: "emergency_complete_check_run",
