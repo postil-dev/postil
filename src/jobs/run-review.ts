@@ -3,6 +3,12 @@ import { loadReviewConfig, type PostilConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
+import {
+  fetchPRThread,
+  fetchLastClosedPRThread,
+  formatPRThread,
+  type PRThread,
+} from "@/lib/review-context";
 
 export const reviewPayload = z.object({
   installationId: z.number().int(),
@@ -34,11 +40,14 @@ and produce structured findings as JSON. Rules:
 - Do not flag style, formatting, imports, or naming unless they cause a bug.
 - Every finding cites a specific path and line number that exists in the diff.
 - Severity is one of: info, warn, error.
-- If the diff looks fine, return an empty findings array and a short summary.
+- If the diff looks fine, return an empty findings array.
+- If you would APPROVE without any inline findings, leave summary empty too — no "no risk to correctness or security" filler.
+- Treat operator/reviewer feedback in the Prior thread as gospel — adjust your output to match.
+  If a prior dismissal said "approve with empty body", leave APPROVE body empty next time.
 
 Reply with ONLY a single JSON object, no prose, no markdown fence:
 {
-  "summary": "<2-4 sentences max summarizing overall risk posture. Do NOT restate individual findings.>",
+  "summary": "<2-4 sentences max summarizing overall risk posture. Leave empty if you would APPROVE with no findings. Do NOT restate individual findings.>",
   "findings": [ { "path": "...", "line": <int>, "severity": "info|warn|error", "body": "..." } ]
 }
 `.trim();
@@ -103,10 +112,25 @@ function isFinding(x: unknown): x is Finding {
   );
 }
 
-async function callOpenRouter(diff: string): Promise<string> {
+async function callOpenRouter(diff: string, threadBlock?: string): Promise<string> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000);
+
+  const messages: { role: string; content: string }[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+  ];
+
+  if (threadBlock) {
+    messages.push({
+      role: "user",
+      content: `Prior thread on this PR:\n${threadBlock}\n\nTake this feedback into account when reviewing the new diff below.`,
+    });
+    messages.push({ role: "assistant", content: "Understood. I will treat the thread feedback as gospel and adjust my review accordingly." });
+  }
+
+  messages.push({ role: "user", content: `Diff:\n\n${diff}` });
+
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     signal: controller.signal,
     method: "POST",
@@ -118,10 +142,7 @@ async function callOpenRouter(diff: string): Promise<string> {
     },
     body: JSON.stringify({
       model: env.REVIEW_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `Diff:\n\n${diff}` },
-      ],
+      messages,
       temperature: 0.2,
       max_tokens: 2500,
       response_format: { type: "json_object" },
@@ -186,7 +207,29 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     const MAX = 120_000;
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
 
-    const modelOutput = await callOpenRouter(truncated);
+    // Fetch thread context: current PR's reviews/comments + last closed PR's thread
+    const [currentThread, lastClosedThread] = await Promise.all([
+      fetchPRThread(octokit, owner, repo, payload.pullNumber).catch(() => null),
+      fetchLastClosedPRThread(octokit, owner, repo).catch(() => null),
+    ]);
+    const threadParts: string[] = [];
+    if (currentThread) {
+      const formatted = formatPRThread(currentThread);
+      if (formatted) {
+        threadParts.push("Prior thread on this PR:");
+        threadParts.push(formatted);
+      }
+    }
+    if (lastClosedThread) {
+      const formatted = formatPRThread(lastClosedThread);
+      if (formatted) {
+        threadParts.push("\nPrior thread from last closed PR:");
+        threadParts.push(formatted);
+      }
+    }
+    const threadBlock = threadParts.length ? threadParts.join("\n") : undefined;
+
+    const modelOutput = await callOpenRouter(truncated, threadBlock);
     let envelope = parseEnvelope(modelOutput);
     envelope = applyConfig(envelope, config);
 
@@ -198,33 +241,34 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    if (envelope.findings.length > 0 || envelope.summary) {
-      try {
-        await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+    // Always post a review — on clean diffs this is an APPROVE with no body
+    try {
+      await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+        owner,
+        repo,
+        pull_number: payload.pullNumber,
+        commit_id: payload.headSha,
+        event: comments.length ? "COMMENT" : "APPROVE",
+        // Only include a body on COMMENT reviews (when there are inline findings).
+        // On clean APPROVEs the approval state itself is the signal; filler like
+        // "no risk to correctness or security" is noise.
+        body: comments.length ? (envelope.summary || undefined) : undefined,
+        comments: comments.length ? comments : undefined,
+      });
+    } catch (err) {
+      captureException(err, {
+        properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
+      });
+      // Fall back to an issue comment if inline review API rejected the payload.
+      if (envelope.summary) {
+        await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
           owner,
           repo,
-          pull_number: payload.pullNumber,
-          commit_id: payload.headSha,
-          event: comments.length ? "COMMENT" : "APPROVE",
-          body: envelope.summary || undefined,
-          comments: comments.length ? comments : undefined,
+          issue_number: payload.pullNumber,
+          body: envelope.summary,
         });
-      } catch (err) {
-        captureException(err, {
-          properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
-        });
-        // Fall back to an issue comment if inline review API rejected the payload.
-        if (envelope.summary) {
-          await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
-            owner,
-            repo,
-            issue_number: payload.pullNumber,
-            body: envelope.summary,
-          });
-        }
       }
     }
-
     if (payload.checkRunId) {
       const counts = { error: 0, warn: 0, info: 0 };
       for (const f of envelope.findings) counts[f.severity]++;
