@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { GeistSans } from "geist/font/sans";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { PostHogProvider } from "@/components/providers/posthog-provider";
 import "./globals.css";
 
 const body = Inter({
@@ -44,7 +45,9 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${GeistSans.variable} ${body.variable} ${mono.variable}`}>
-      <body>{children}</body>
+      <body>
+        <PostHogProvider>{children}</PostHogProvider>
+      </body>
     </html>
   );
 }

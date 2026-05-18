@@ -2,7 +2,7 @@ import { z } from "zod";
 import { loadReviewConfig, type PostilConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
-import { captureException } from "@/lib/posthog";
+import { captureException, track } from "@/lib/posthog";
 
 export const reviewPayload = z.object({
   installationId: z.number().int(),
@@ -250,6 +250,11 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           },
         });
         checkRunCompleted = true;
+        track("system", "update_check_run", {
+          repoFullName: payload.repoFullName,
+          pullNumber: payload.pullNumber,
+          conclusion,
+        });
       } catch (err) {
         console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
         captureException(err, {

@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import { logger, task } from "@trigger.dev/sdk";
 import { getDb, schema } from "@/db";
-import { captureException, track } from "@/lib/posthog";
+import { captureException, hashInstallationId, track } from "@/lib/posthog";
+import { env } from "@/lib/env";
 import { reviewPayload, runReview } from "./run-review";
 
 // Trigger.dev-flavoured wrapper around runReview. Identical business logic;
@@ -14,6 +15,14 @@ export const reviewPullRequest = task({
     const payload = reviewPayload.parse(raw);
     logger.info("starting review", { payload });
     const started = Date.now();
+
+    track("system", "review_started", {
+      repoFullName: payload.repoFullName,
+      pullNumber: payload.pullNumber,
+      headSha: payload.headSha,
+      modelUsed: env.REVIEW_MODEL,
+      installationHash: hashInstallationId(payload.installationId),
+    });
 
     try {
       const result = await runReview(payload);
@@ -61,6 +70,13 @@ export const reviewPullRequest = task({
           })
           .where(eq(schema.reviews.id, payload.reviewId));
       }
+
+      track("system", "review_failed", {
+        repoFullName: payload.repoFullName,
+        pullNumber: payload.pullNumber,
+        headSha: payload.headSha,
+        error: String(err instanceof Error ? err.message : err),
+      });
 
       // runReview already attempts to mark the check-run as failed before
       // re-throwing; rethrow here so Trigger.dev retries fire if configured.

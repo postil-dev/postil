@@ -1,7 +1,16 @@
+import { createHash } from "node:crypto";
 import { PostHog } from "posthog-node";
 import { env } from "@/lib/env";
 
 let _client: PostHog | undefined;
+
+export function hashInstallationId(installationId: number): string {
+  const salt = env.POSTHOG_PROJECT_TOKEN ?? "postil-default-salt";
+  return createHash("sha256")
+    .update(`${installationId}:${salt}`)
+    .digest("hex")
+    .slice(0, 16);
+}
 
 export function posthog(): PostHog | undefined {
   if (!env.POSTHOG_PROJECT_TOKEN) return undefined;
