@@ -1,28 +1,26 @@
 import type { MetadataRoute } from "next";
 
-export default function sitemap(): MetadataRoute.Sitemap {
-  const base = "https://postil.dev";
+const baseUrl = "https://postil.dev";
 
-  const staticRoutes: MetadataRoute.Sitemap = [
+export default function sitemap(): MetadataRoute.Sitemap {
+  return [
     {
-      url: `${base}/`,
+      url: baseUrl,
       lastModified: new Date(),
       changeFrequency: "weekly",
       priority: 1,
     },
     {
-      url: `${base}/about`,
+      url: `${baseUrl}/about`,
       lastModified: new Date(),
       changeFrequency: "monthly",
       priority: 0.8,
     },
     {
-      url: `${base}/install`,
+      url: `${baseUrl}/privacy`,
       lastModified: new Date(),
-      changeFrequency: "weekly",
-      priority: 0.8,
+      changeFrequency: "yearly",
+      priority: 0.3,
     },
   ];
-
-  return staticRoutes;
 }

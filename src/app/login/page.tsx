@@ -1,8 +1,10 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Sign in",
   description: "Sign in to Postil with GitHub.",
+  alternates: { canonical: "/login" },
 };
 
 export default function LoginPage() {

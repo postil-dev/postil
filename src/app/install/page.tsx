@@ -1,7 +1,12 @@
 import { redirect } from "next/navigation";
 import { env } from "@/lib/env";
+import type { Metadata } from "next";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  robots: { index: false, follow: false },
+};
 
 // Thin entry point: bounce the user to GitHub's App install page.
 // If the App slug isn't configured, fall back to a human-readable landing.
