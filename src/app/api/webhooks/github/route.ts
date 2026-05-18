@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { after, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
-import { runReview } from "@/jobs/run-review";
+import { reviewPullRequest } from "@/jobs/review-pull-request";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
@@ -134,6 +134,22 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
 
   const reviewId = reviewRow[0]?.id;
 
+  const handle = await reviewPullRequest.trigger({
+    installationId: installation.id,
+    repoFullName,
+    pullNumber,
+    headSha,
+    checkRunId: checkRunId ?? undefined,
+    reviewId: reviewId ?? undefined,
+  });
+
+  if (reviewId) {
+    await db
+      .update(schema.reviews)
+      .set({ triggerRunId: handle.id })
+      .where(eq(schema.reviews.id, reviewId));
+  }
+
   track("system", "review_enqueued", {
     repoFullName,
     pullNumber,
@@ -141,75 +157,6 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
     installationId: installation.id,
     reviewId,
     checkRunId,
-  });
-
-  // Run the review after the webhook response is sent back to GitHub,
-  // so we stay well under the 10s webhook timeout.
-  after(async () => {
-    const started = Date.now();
-
-    try {
-      const result = await runReview({
-        installationId: installation.id,
-        repoFullName,
-        pullNumber,
-        headSha,
-        checkRunId,
-      });
-
-      if (reviewId) {
-        await db
-          .update(schema.reviews)
-          .set({
-            status: "completed",
-            result,
-            completedAt: new Date(),
-          })
-          .where(eq(schema.reviews.id, reviewId));
-      }
-      track("system", "review_completed", {
-        repoFullName,
-        pullNumber,
-        findings: result.findings.length,
-        durationMs: Date.now() - started,
-      });
-    } catch (err) {
-      captureException(err, {
-        properties: { op: "review", repoFullName, pullNumber, headSha },
-      });
-      if (reviewId) {
-        await db
-          .update(schema.reviews)
-          .set({
-            status: "failed",
-            errorMessage: String(err instanceof Error ? err.message : err),
-            completedAt: new Date(),
-          })
-          .where(eq(schema.reviews.id, reviewId));
-      }
-      // If the review itself failed, mark the check-run as failed too.
-      if (checkRunId) {
-        try {
-          const octokit = await installationOctokit(installation.id);
-          const [owner, repo] = repoFullName.split("/");
-          await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
-            owner,
-            repo,
-            check_run_id: checkRunId,
-            status: "completed",
-            conclusion: "failure",
-            completed_at: new Date().toISOString(),
-            output: {
-              title: "Postil review failed",
-              summary: "The review encountered an error. Check logs for details.",
-            },
-          });
-        } catch (updateErr) {
-          captureException(updateErr, {
-            properties: { op: "update_check_run", repoFullName, pullNumber, headSha },
-          });
-        }
-      }
-    }
+    triggerRunId: handle.id,
   });
 }
