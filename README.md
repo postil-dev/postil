@@ -1,66 +1,76 @@
-# Postil
+# 📝 Postil — AI pull request reviews
 
-Open-source AI pull request reviewer. Managed SaaS at postil.dev, or self-host under Apache-2.0.
+Reviews that ship with the PR. Managed at [postil.dev](https://postil.dev), or self-host under Apache-2.0.
 
-## Stack
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![GitHub release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/postil-dev/postil/releases)
+[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-ready-blue?logo=githubactions)](https://github.com/postil-dev/postil/blob/main/action.yml)
 
-- Next.js 15 (App Router, TypeScript) on Bun
-- Better Auth + @polar-sh/better-auth (billing)
-- Trigger.dev v4 for durable jobs
-- Drizzle ORM on Postgres (Neon in managed mode)
-- GitHub App via Octokit
-- PostHog (EU) for analytics, errors, logs
-- Cloudflare DNS + CDN in front of Fly.io Machines
-- Sandbox drivers: Fly Machines (default), E2B (stub), Docker (self-host stub)
+Postil reviews every pull request in place — one severity-ranked summary with inline suggestions, right inside GitHub. No dashboards, no context switching, no noise. Install the GitHub App and get a review on every PR within seconds. Or self-host the action under Apache-2.0 and wire your own model provider.
 
-## GitHub App permissions
+[Install on GitHub →](https://postil.dev)
 
-Postil requires a GitHub App with the following permissions:
+## 30-second demo
 
-| Permission        | Access level | Purpose                                      |
-| ----------------- | ------------ | -------------------------------------------- |
-| `pull_requests`   | Read & write | Post inline review comments                  |
-| `checks`          | Write        | Create and update the `postil/review` check-run |
-| `contents`        | Read         | Read PR diffs and repo files                 |
-| `metadata`        | Read         | Basic repo information                       |
-| `issues`          | Write        | Post summary comments on PRs                 |
+Open any pull request in a repo that has Postil installed. You will see a single review comment with a severity-ranked summary and inline suggestions — no extra tabs, no login walls.
 
-> **Re-consent required:** If you add or upgrade the `checks: write` permission on an existing installation, every organization that has installed the App must re-consent via the GitHub Apps settings page before the check-run can be posted.
+## How it works
 
-## Local dev
+- Install the GitHub App or wire the action into your repo.
+- Every PR gets one summary review with severity-ranked findings.
+- Open the PR and the review is inline — no separate dashboard.
 
-```bash
-bun install
-cp .env.example .env.local   # fill in secrets
-make db-up                   # postgres + redis
-bun run db:migrate
-bun run dev
+## Get started
+
+### Managed (recommended)
+
+Go to [postil.dev](https://postil.dev) and click **Install** on the GitHub App page. Choose the repositories you want reviewed and you are done. Pricing is at [postil.dev/#pricing](https://postil.dev/#pricing).
+
+### Self-host
+
+Add this workflow to `.github/workflows/postil.yml`:
+
+```yaml
+name: Postil Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      checks: write
+      contents: read
+    steps:
+      - uses: postil-dev/postil@v1
+        with:
+          api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          model: moonshotai/kimi-k2.6
 ```
 
-In a second shell, `bun run trigger:dev` for the Trigger.dev worker.
+Required secrets: add `OPENROUTER_API_KEY` (or the key for your model provider) in your repo's **Settings → Secrets and variables → Actions**.
 
-## Self-host
+## Configuration
 
-```bash
-docker compose --profile app up --build
-```
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `api-key` | yes | — | API key for your model provider |
+| `model` | no | — | Model name (e.g. `moonshotai/kimi-k2.6`) |
+| `provider` | no | `openai` | Provider slug (`openai` or `anthropic`) |
+| `config-path` | no | — | Path to optional configuration file |
+| `github-token` | no | `github.token` | Token for posting review comments |
 
-See the `SandboxDriver` interface in `src/sandbox/driver.ts` if you want to plug in
-your own execution backend.
+For a full list of options, see [`action.yml`](./action.yml).
 
-## Commands
+## Privacy
 
-| target              | description                     |
-| ------------------- | ------------------------------- |
-| `bun run dev`       | Next dev server (turbopack)     |
-| `bun run build`     | Production build                |
-| `bun run lint`      | Biome lint                      |
-| `bun run format`    | Biome format                    |
-| `bun run typecheck` | TypeScript check                |
-| `bun run test`      | Vitest unit tests               |
-| `bun run test:e2e`  | Playwright end-to-end           |
-| `make smoke`        | typecheck + lint + test + build |
+Postil reads the diff and changed file contents from each PR. It sends that context to the model provider you configure and returns the review. It does not store your code, use it for training, or retain it after the review completes.
 
 ## License
 
-Apache-2.0.
+Apache-2.0. Self-host all you want; you do not owe us anything.
+
+## Links
+
+→ [postil.dev](https://postil.dev) · → [Releases](https://github.com/postil-dev/postil/releases) · → [Changelog](https://github.com/postil-dev/postil/releases)
