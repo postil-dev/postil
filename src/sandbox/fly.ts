@@ -27,11 +27,16 @@ async function flyRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+function getFlyApp(): string {
+  if (!env.FLY_SANDBOX_APP) throw new Error("FLY_SANDBOX_APP is not set");
+  return env.FLY_SANDBOX_APP;
+}
+
 export class FlySandboxDriver implements SandboxDriver {
   readonly name = "fly" as const;
 
   async spawn(opts: SandboxSpawnOptions): Promise<SandboxHandle> {
-    const app = env.FLY_SANDBOX_APP;
+    const app = getFlyApp();
     const config = {
       image: opts.image,
       env: opts.env ?? {},
@@ -58,7 +63,7 @@ export class FlySandboxDriver implements SandboxDriver {
   }
 
   private async wait(machineId: string, timeoutMs: number): Promise<SandboxExecResult> {
-    const app = env.FLY_SANDBOX_APP;
+    const app = getFlyApp();
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const machine = await flyRequest<FlyMachine & { exit_event?: { exit_code?: number } }>(
@@ -78,7 +83,7 @@ export class FlySandboxDriver implements SandboxDriver {
   }
 
   async destroy(handleId: string): Promise<void> {
-    await flyRequest(`/apps/${env.FLY_SANDBOX_APP}/machines/${handleId}?force=true`, {
+    await flyRequest(`/apps/${getFlyApp()}/machines/${handleId}?force=true`, {
       method: "DELETE",
     });
   }

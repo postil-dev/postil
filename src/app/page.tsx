@@ -127,7 +127,7 @@ function HeroArtifact() {
   return (
     <div className="lift relative rounded-xl border border-border bg-card/70 p-4 font-mono text-[12.5px] shadow-[0_40px_80px_-30px_rgba(0,0,0,0.8)] backdrop-blur-sm">
       <div className="mb-3 flex items-center justify-between text-muted-foreground">
-        <span className="truncate">postil-dev/postil-sandbox · PR #42</span>
+        <span className="truncate">acme-corp/project-alpha · PR #1</span>
         <span className="rounded-full bg-[color:var(--diff-add)] px-2 py-0.5 text-[10px] tracking-widest uppercase text-[#00D2AA]">
           reviewed
         </span>
