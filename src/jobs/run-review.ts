@@ -91,26 +91,6 @@ function applyConfig(env: ReviewEnvelope, cfg: PostilConfig): ReviewEnvelope {
   return { summary: env.summary, findings: filtered };
 }
 
-function truncateUtf8(text: string, maxBytes: number): string {
-  const encoder = new TextEncoder();
-  const bytes = encoder.encode(text);
-  if (bytes.length <= maxBytes) return text;
-  let end = maxBytes;
-  while (end > 0 && (bytes[end] & 0b11000000) === 0b10000000) {
-    end--;
-  }
-  return new TextDecoder().decode(bytes.slice(0, end));
-}
-
-function diffStats(diff: string): { files: string[]; lines: number } {
-  const files = new Set<string>();
-  for (const line of diff.split("\n")) {
-    const m = line.match(/^diff --git a\/(.+) b\/.+$/);
-    if (m) files.add(m[1]);
-  }
-  return { files: Array.from(files), lines: diff.split("\n").length };
-}
-
 function isFinding(x: unknown): x is Finding {
   if (!x || typeof x !== "object") return false;
   const f = x as Record<string, unknown>;
@@ -205,24 +185,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     let envelope = parseEnvelope(modelOutput);
     envelope = applyConfig(envelope, config);
 
-    // Concise main review body (POSA-80)
-    const { files: diffFiles } = diffStats(diff);
-    const fileList = diffFiles.slice(0, 5).join(", ") + (diffFiles.length > 5 ? ", …" : "");
-
-    const metaDetails = `<details>
-<summary>🔍 Resources & metadata</summary>
-
-- **Model used:** \`${env.REVIEW_MODEL}\`
-- **Scan timestamp:** ${new Date().toISOString()}
-- **Files reviewed:** ${diffFiles.length} (${fileList || "N/A"})
-- **Diff lines:** ${diff.split("\n").length}
-- **Links:** [Postil](https://postil.dev), [Config docs](https://github.com/postil-dev/postil/blob/main/docs/config.md)
-
-</details>`;
-
-    const mainReview = envelope.summary || "Postil reviewed this PR. No issues found.";
-    const body = `${mainReview}\n\n${metaDetails}`;
-
+    // Concise main review body — no filler or self-promotion
     const comments = envelope.findings.map((f) => ({
       path: f.path,
       line: f.line,
@@ -230,39 +193,43 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    try {
-      await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
-        owner,
-        repo,
-        pull_number: payload.pullNumber,
-        commit_id: payload.headSha,
-        event: "COMMENT",
-        body,
-        comments: comments.length ? comments : undefined,
-      });
-    } catch (err) {
-      captureException(err, {
-        properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
-      });
-      // Fall back to an issue comment if inline review API rejected the payload.
-      await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
-        owner,
-        repo,
-        issue_number: payload.pullNumber,
-        body: `${body}\n\n_(inline review failed; posted as comment)_`,
-      });
+    if (envelope.findings.length > 0 || envelope.summary) {
+      try {
+        await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+          owner,
+          repo,
+          pull_number: payload.pullNumber,
+          commit_id: payload.headSha,
+          event: comments.length ? "COMMENT" : "APPROVE",
+          body: envelope.summary || undefined,
+          comments: comments.length ? comments : undefined,
+        });
+      } catch (err) {
+        captureException(err, {
+          properties: { op: "post_review", repoFullName: payload.repoFullName, pullNumber: payload.pullNumber },
+        });
+        // Fall back to an issue comment if inline review API rejected the payload.
+        if (envelope.summary) {
+          await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+            owner,
+            repo,
+            issue_number: payload.pullNumber,
+            body: envelope.summary,
+          });
+        }
+      }
     }
 
     if (payload.checkRunId) {
-      const conclusion = envelope.findings.some((f) => f.severity === "error")
-        ? "failure"
-        : envelope.findings.some((f) => f.severity === "warn")
-          ? "neutral"
-          : "success";
-      const outputText =
-        envelope.findings
-          .map((f) => `**${f.severity.toUpperCase()}** · ${f.path}:${f.line} — ${f.body}`)
-          .join("\n\n") || "No issues found.";
+      const counts = { error: 0, warn: 0, info: 0 };
+      for (const f of envelope.findings) counts[f.severity]++;
+      const title = counts.error
+        ? `${counts.error} error${counts.error > 1 ? "s" : ""}`
+        : counts.warn
+          ? `${counts.warn} warning${counts.warn > 1 ? "s" : ""}`
+          : "No issues";
+      const outputText = envelope.findings.length ? "See inline review comments." : "No issues found.";
+      const conclusion = counts.error ? "failure" : counts.warn ? "neutral" : "success";
       try {
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
           owner,
@@ -272,9 +239,9 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           conclusion,
           completed_at: new Date().toISOString(),
           output: {
-            title: "Postil Review",
-            summary: envelope.summary || "Postil review completed.",
-            text: truncateUtf8(outputText, 65535),
+            title,
+            summary: envelope.summary || (counts.error || counts.warn || counts.info ? "See inline review comments." : "No issues found."),
+            text: outputText,
           },
         });
         checkRunCompleted = true;
@@ -323,4 +290,3 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     throw err;
   }
 }
-// verify new review format

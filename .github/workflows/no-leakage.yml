@@ -64,8 +64,12 @@ jobs:
             exit 1
           fi
 
+          # Sanitise PR body: strip required footers mandated by commitlint so they
+          # are not falsely flagged as leakage.
+          SANITIZED_BODY=$(echo "$PR_BODY" | grep -v -i -E '^Co-Authored-By:\s*Paperclip' | grep -v -i -E 'paperclip-id')
+
           # Scan PR body
-          if echo "$PR_BODY" | grep -E -i "$COMBINED_PATTERN"; then
+          if echo "$SANITIZED_BODY" | grep -E -i "$COMBINED_PATTERN"; then
             echo "::error title=Leakage Detected::Found leakage in PR body"
             exit 1
           fi
@@ -78,12 +82,15 @@ jobs:
           
           # Scan Git Diff (excluding the leakage definition itself in workflow)
           git diff origin/${{ github.base_ref }}...HEAD > pr.diff
-          
+
+          # Exclude the leakage workflow diff entirely from scanning
+          awk '/^diff --git/{skip=0} /^diff --git.*no-leakage[.]yml/{skip=1} !skip' pr.diff > pr-scan.diff
+
           # We check the content that is added (+) or contextual
-          if grep -E -v '^-\s' pr.diff | grep -v 'no-leakage.yml' | grep -E -i "$COMBINED_PATTERN"; then
+          if grep -E -v '^-\s' pr-scan.diff | grep -E -i "$COMBINED_PATTERN"; then
             echo "::error title=Leakage Detected::Found leakage in PR diff"
             echo "Matches:"
-            grep -E -v '^-\s' pr.diff | grep -v 'no-leakage.yml' | grep -E -i "$COMBINED_PATTERN" || true
+            grep -E -v '^-\s' pr-scan.diff | grep -E -i "$COMBINED_PATTERN" || true
             exit 1
           fi
           
