@@ -70,7 +70,7 @@ export const reviews = pgTable(
     pullNumber: integer("pull_number").notNull(),
     headSha: text("head_sha").notNull(),
     status: text("status").notNull().default("pending"), // pending|running|completed|failed
-    checkRunId: integer("check_run_id"),
+    checkRunId: bigint("check_run_id", { mode: "number" }),
     triggerRunId: text("trigger_run_id"),
     result: jsonb("result").$type<unknown>(),
     errorMessage: text("error_message"),
