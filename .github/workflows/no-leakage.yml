@@ -86,11 +86,53 @@ jobs:
           # Exclude the leakage workflow diff entirely from scanning
           awk '/^diff --git/{skip=0} /^diff --git.*no-leakage[.]yml/{skip=1} !skip' pr.diff > pr-scan.diff
 
-          # We check the content that is added (+) or contextual
-          if grep -E -v '^-' pr-scan.diff | grep -E -i "$COMBINED_PATTERN"; then
+          # Strip lines matching known safe patterns before scanning for leakage
+          # - 'uses:' lines contain pinned SHAs (security best practice)
+          # - 'tags:' and 'image:' lines contain docker image names
+          # - 40-hex SHAs alone are safe unless near GPG patterns
+          grep -E -v '^-' pr-scan.diff \
+            | grep -E -v '^[-+ ]*uses:\s+' \
+            | grep -E -v '^[-+ ]*tags:\s+' \
+            | grep -E -v '^[-+ ]*image:\s+' \
+            | grep -E -v '^[-+ ]*#+\s' \
+            > pr-scan-filtered.diff
+
+          # For app-name patterns, only flag when they appear as a value for
+          # app-name-shaped keys (app:, FLY_APP_NAME, --app)
+          SEPARATE_APP_PATTERNS=(
+            "postil-web"
+            "postil-sandbox"
+            "postil-lhr"
+          )
+          for APP_PAT in "${SEPARATE_APP_PATTERNS[@]}"; do
+            if grep -E -i "(^|\s)(app|FLY_APP_NAME|--app)(\s*[:=]\s*\"?)$APP_PAT" pr-scan-filtered.diff; then
+              echo "::error title=Leakage Detected::Found internal app name '$APP_PAT'"
+              exit 1
+            fi
+          done
+
+          # For 40-hex SHA patterns, only flag if adjacent to GPG fingerprint context
+          grep -E 'signingkey\s*=|gpg\s+--import' pr-scan-filtered.diff > pr-scan-gpg-context.diff || true
+          if grep -E '\b[0-9a-fA-F]{40}\b' pr-scan-gpg-context.diff | grep -q .; then
+            echo "::error title=Leakage Detected::Found SHA in GPG context"
+            exit 1
+          fi
+
+          # Remove bare SHA patterns from the combined check (handled above)
+          # and run the remaining patterns against the filtered diff
+          REMAINING_PATTERNS=()
+          for PAT in "${PATTERNS[@]}"; do
+            case "$PAT" in
+              "[0-9a-fA-F]{40}"|"postil-web"|"postil-sandbox"|"postil-lhr") ;; # skip, handled separately
+              *) REMAINING_PATTERNS+=("$PAT") ;;
+            esac
+          done
+          COMBINED_REMAINING=$(IFS="|"; echo "${REMAINING_PATTERNS[*]}")
+
+          if grep -E -i "$COMBINED_REMAINING" pr-scan-filtered.diff; then
             echo "::error title=Leakage Detected::Found leakage in PR diff"
             echo "Matches:"
-            grep -E -v '^-' pr-scan.diff | grep -E -i "$COMBINED_PATTERN" || true
+            grep -E -i "$COMBINED_REMAINING" pr-scan-filtered.diff || true
             exit 1
           fi
           

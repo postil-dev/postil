@@ -1,0 +1,10 @@
+diff --git a/fly.toml b/fly.toml
+index abc1234..def5678 100644
+--- a/fly.toml
++++ b/fly.toml
+@@ -1,5 +1,5 @@
+ app = "postil-sandbox"
+ 
+ [env]
+-  FLY_APP_NAME = "dev"
++  FLY_APP_NAME = "postil-web"

@@ -1,0 +1,21 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index abc1234..def5678 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -88,6 +88,23 @@
+       - name: Build application
+         run: bun run build
++  docker-build:
++    name: Docker build
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout
++        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
++      - name: Set up Docker Buildx
++        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c23231 # v3.10.0
++      - name: Build Docker image (no push)
++        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
++        with:
++          context: .
++          push: false
++          tags: postil-web:ci-${{ github.sha }}
