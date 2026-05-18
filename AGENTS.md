@@ -48,7 +48,7 @@ CI runs on every PR via GitHub Actions (`.github/workflows/ci.yml`):
 
 Additional workflows:
 
-- **commitlint** (`.github/workflows/commitlint.yml`) — enforces Conventional Commits format and required trailers on PR titles
+- **commitlint** (`.github/workflows/commitlint.yml`) — enforces Conventional Commits format in PR titles
 
 ## Style
 
