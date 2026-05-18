@@ -87,10 +87,10 @@ jobs:
           awk '/^diff --git/{skip=0} /^diff --git.*no-leakage[.]yml/{skip=1} !skip' pr.diff > pr-scan.diff
 
           # We check the content that is added (+) or contextual
-          if grep -E -v '^-\s' pr-scan.diff | grep -E -i "$COMBINED_PATTERN"; then
+          if grep -E -v '^-' pr-scan.diff | grep -E -i "$COMBINED_PATTERN"; then
             echo "::error title=Leakage Detected::Found leakage in PR diff"
             echo "Matches:"
-            grep -E -v '^-\s' pr-scan.diff | grep -E -i "$COMBINED_PATTERN" || true
+            grep -E -v '^-' pr-scan.diff | grep -E -i "$COMBINED_PATTERN" || true
             exit 1
           fi
           
