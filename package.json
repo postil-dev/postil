@@ -5,6 +5,7 @@
   "description": "Open-source AI PR reviewer",
   "license": "Apache-2.0",
   "scripts": {
+    "postinstall": "npx tsx scripts/install-hooks.ts",
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
