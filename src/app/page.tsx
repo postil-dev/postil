@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { TrackedLink } from "@/components/tracked-link";
 import { buttonVariants } from "@/components/ui/button";
 
 export default function Home() {
@@ -33,24 +34,26 @@ function SiteHeader() {
           >
             Features
           </Link>
-          <Link
+          <TrackedLink
             href="#pricing"
+            cta="Pricing"
             className="hidden px-3 py-1.5 text-muted-foreground transition hover:text-foreground sm:block"
           >
             Pricing
-          </Link>
+          </TrackedLink>
           <Link
             href="https://github.com/postil-dev/postil"
             className="hidden px-3 py-1.5 text-muted-foreground transition hover:text-foreground sm:block"
           >
             Source on GitHub
           </Link>
-          <Link
+          <TrackedLink
             href="/install"
+            cta="Install on GitHub"
             className={`${buttonVariants({ size: "sm" })} ml-2`}
           >
             Add the GitHub App
-          </Link>
+          </TrackedLink>
         </nav>
       </div>
     </header>
@@ -94,18 +97,20 @@ function Hero() {
             Correctness. Security. The bug you missed. No drive-by style gripes.
           </p>
           <div className="anim-reveal delay-3 flex flex-wrap items-center gap-3">
-            <Link
+            <TrackedLink
               href="/install"
+              cta="Install on GitHub"
               className={buttonVariants({ size: "lg" })}
             >
               Add the GitHub App
-            </Link>
-            <Link
+            </TrackedLink>
+            <TrackedLink
               href="#demo"
+              cta="See a review"
               className={buttonVariants({ variant: "outline", size: "lg" })}
             >
               See a review
-            </Link>
+            </TrackedLink>
           </div>
           <p className="anim-reveal delay-4 font-mono text-xs text-muted-foreground">
             No charge during public beta · Hosted at postil.dev · <Link className="underline decoration-dotted underline-offset-4 hover:text-foreground" href="https://github.com/postil-dev/postil">source on GitHub</Link>
@@ -411,12 +416,13 @@ function Pricing() {
         </div>
         <p className="mt-8 text-sm text-muted-foreground">
           Prefer to run it yourself? Postil is Apache-2.0.{" "}
-          <Link
+          <TrackedLink
             href="https://github.com/postil-dev/postil#self-host"
+            cta="Self-host"
             className="underline decoration-dotted underline-offset-4 hover:text-foreground"
           >
             Self-host guide on GitHub →
-          </Link>
+          </TrackedLink>
         </p>
       </div>
     </section>
@@ -468,15 +474,16 @@ function PlanCard({
           </li>
         ))}
       </ul>
-      <Link
+      <TrackedLink
         href={cta.href}
+        cta={cta.label === "Add the GitHub App" ? "Install on GitHub" : cta.label}
         className={buttonVariants({
           size: "lg",
           variant: featured ? "default" : "outline",
         })}
       >
         {cta.label}
-      </Link>
+      </TrackedLink>
     </div>
   );
 }
@@ -496,18 +503,20 @@ function SelfHostStrip() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <Link
+          <TrackedLink
             href="https://github.com/postil-dev/postil"
+            cta="Self-host"
             className={buttonVariants({ variant: "outline" })}
           >
             View source on GitHub
-          </Link>
-          <Link
+          </TrackedLink>
+          <TrackedLink
             href="https://github.com/postil-dev/postil#self-host"
+            cta="Self-host"
             className={buttonVariants()}
           >
             Self-host guide on GitHub
-          </Link>
+          </TrackedLink>
         </div>
       </div>
     </section>
@@ -526,8 +535,8 @@ function SiteFooter() {
           </p>
         </div>
         <nav className="grid grid-cols-2 gap-x-10 gap-y-2 text-xs sm:grid-cols-3">
-          <Link href="/install" className="hover:text-foreground">Set up</Link>
-          <Link href="#pricing" className="hover:text-foreground">Pricing</Link>
+          <TrackedLink href="/install" cta="Install on GitHub" className="hover:text-foreground">Set up</TrackedLink>
+          <TrackedLink href="#pricing" cta="Pricing" className="hover:text-foreground">Pricing</TrackedLink>
           <Link href="https://github.com/postil-dev/postil" className="hover:text-foreground">Source on GitHub</Link>
           <Link href="https://github.com/postil-dev/postil/security/advisories/new" className="hover:text-foreground">Report a vuln on GitHub</Link>
           <Link href="/.well-known/security.txt" className="hover:text-foreground">security.txt</Link>

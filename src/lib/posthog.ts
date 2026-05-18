@@ -1,7 +1,16 @@
+import { createHash } from "node:crypto";
 import { PostHog } from "posthog-node";
 import { env } from "@/lib/env";
 
 let _client: PostHog | undefined;
+
+export function hashInstallationId(installationId: number): string {
+  const salt = env.POSTHOG_PROJECT_TOKEN ?? "postil-default-salt";
+  return createHash("sha256")
+    .update(`${installationId}:${salt}`)
+    .digest("hex")
+    .slice(0, 16);
+}
 
 export function posthog(): PostHog | undefined {
   if (!env.POSTHOG_PROJECT_TOKEN) return undefined;
@@ -36,6 +45,29 @@ export function captureException(
   }
   const error = err instanceof Error ? err : new Error(String(err));
   p.captureException(error, context?.userId ?? "anonymous", context?.properties);
+}
+
+export async function runSmokeTest(): Promise<void> {
+  const p = posthog();
+  if (!p) {
+    console.warn("[posthog] smoke test skipped (POSTHOG_PROJECT_TOKEN not set)");
+    return;
+  }
+
+  try {
+    track("system", "smoke_test_boot", {
+      timestamp: Date.now(),
+      source: "postil-server",
+    });
+    await p.flush();
+    console.log("[posthog] smoke test event flushed successfully");
+  } catch (err) {
+    console.error("[posthog] smoke test failed to flush:", err);
+    captureException(err, {
+      properties: { op: "posthog_smoke_test" },
+    });
+    throw err;
+  }
 }
 
 export async function shutdownPosthog(): Promise<void> {

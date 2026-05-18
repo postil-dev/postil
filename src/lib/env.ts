@@ -54,6 +54,10 @@ const schema = z.object({
   POSTHOG_PROJECT_ID: z.string().optional(),
   POSTHOG_PERSONAL_API_KEY: z.string().optional(),
 
+  // PostHog client-side (marketing site)
+  NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
+  NEXT_PUBLIC_POSTHOG_HOST: z.string().url().default("https://eu.i.posthog.com"),
+
   // OpenRouter (AI provider for the review bot, invoked via opencode CLI
   // inside the sandbox). Management key is used to vend per-workspace keys.
   OPENROUTER_API_KEY: z.string().optional(),
