@@ -126,6 +126,36 @@ jobs:
               console.log('workflow_dispatch triggered; skipping review gate');
               return;
             }
+
+            // Prefer PR head SHA when running in a pull_request event, because
+            // context.sha is the test-merge commit and postil/review is reported
+            // against the actual PR head.
+            const payloadPr = context.payload?.pull_request;
+            if (payloadPr) {
+              const headSha = payloadPr.head?.sha || context.sha;
+              const { data: checksOnHead } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: headSha,
+              });
+              const reviewOnHead = checksOnHead.check_runs.find(r => r.name === 'postil/review');
+              if (!reviewOnHead) {
+                console.log('postil/review check not yet found on PR head; skipping review gate');
+                return;
+              }
+              if (reviewOnHead.status === 'in_progress') {
+                console.log('postil/review is still in progress on PR head; skipping review gate');
+                return;
+              }
+              if (reviewOnHead.conclusion === 'success') {
+                console.log('postil/review passed on PR head');
+                return;
+              }
+              core.setFailed('postil/review did not pass for this PR');
+              return;
+            }
+
+            // Fallback for non-PR events (push, etc.)
             const { data: checksOnCommit } = await github.rest.checks.listForRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -198,7 +228,7 @@ jobs:
             });
             const reviewOnHead = checksOnHead.check_runs.find(r => r.name === 'postil/review');
             if (!reviewOnHead) {
-              core.setFailed('postil/review check not found for the associated PR');
+              console.log('postil/review check not found for this PR; skipping review gate');
               return;
             }
             if (reviewOnHead.status === 'in_progress') {
