@@ -1,0 +1,90 @@
+name: Enforce No Leakage Policy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  check-leakage:
+    name: Check for Leakage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR Subject and Diff
+        id: check_leakage
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -e
+
+          # Patterns to check for leakage
+          PATTERNS=(
+            "paperclip"
+            "noreply@paperclip\.ing"
+            "Co-Authored-By: Paperclip"
+            "Paperclip-Id"
+            "paperclip-id"
+            "Morgan\s+[A-Za-z]+"
+            "Alex\s+Kim"
+            "Jordan\s+Lee"
+            "Casey\s+Park"
+            "Riley\s+Patel"
+            "Sam\s+Rivera"
+            "(POSA|MOR)-\d+"
+            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+            "/home/paperclip"
+            "~/\.paperclip"
+            "/opt/paperclip"
+            "\b[0-9a-fA-F]{40}\b"
+            "GNUPGHOME"
+            "proj_doapikwt"
+            "4dcf4a68b32b97c5222025b15d8d4719"
+            "postil-web"
+            "postil-sandbox"
+            "postil-lhr"
+            "paperclip\.dev\.morgaes\.is"
+            "morgaesis-dev"
+          )
+          
+          # Combine patterns with OR and make case-insensitive regex
+          COMBINED_PATTERN=$(IFS="|"; echo "${PATTERNS[*]}")
+          
+          echo "Scanning for leakage..."
+          
+          # We use grep -E -i (extended regex, case-insensitive)
+          
+          # Scan PR title
+          if echo "$PR_TITLE" | grep -E -i "$COMBINED_PATTERN"; then
+            echo "::error title=Leakage Detected::Found leakage in PR title"
+            exit 1
+          fi
+
+          # Scan PR body
+          if echo "$PR_BODY" | grep -E -i "$COMBINED_PATTERN"; then
+            echo "::error title=Leakage Detected::Found leakage in PR body"
+            exit 1
+          fi
+
+          # Scan branch naming
+          if echo "${{ github.head_ref }}" | grep -E -i "$COMBINED_PATTERN"; then
+             echo "::error title=Leakage Detected::Found leakage in branch name"
+             exit 1
+          fi
+          
+          # Scan Git Diff (excluding the leakage definition itself in workflow)
+          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+          
+          # We check the content that is added (+) or contextual
+          if grep -E -v '^-\s' pr.diff | grep -v 'no-leakage.yml' | grep -E -i "$COMBINED_PATTERN"; then
+            echo "::error title=Leakage Detected::Found leakage in PR diff"
+            echo "Matches:"
+            grep -E -v '^-\s' pr.diff | grep -v 'no-leakage.yml' | grep -E -i "$COMBINED_PATTERN" || true
+            exit 1
+          fi
+          
+          echo "No leakage found. Passed."
