@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 
