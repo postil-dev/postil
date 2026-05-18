@@ -38,6 +38,29 @@ export function captureException(
   p.captureException(error, context?.userId ?? "anonymous", context?.properties);
 }
 
+export async function runSmokeTest(): Promise<void> {
+  const p = posthog();
+  if (!p) {
+    console.warn("[posthog] smoke test skipped (POSTHOG_PROJECT_TOKEN not set)");
+    return;
+  }
+
+  try {
+    track("system", "smoke_test_boot", {
+      timestamp: Date.now(),
+      source: "postil-server",
+    });
+    await p.flush();
+    console.log("[posthog] smoke test event flushed successfully");
+  } catch (err) {
+    console.error("[posthog] smoke test failed to flush:", err);
+    captureException(err, {
+      properties: { op: "posthog_smoke_test" },
+    });
+    throw err;
+  }
+}
+
 export async function shutdownPosthog(): Promise<void> {
   if (_client) await _client.shutdown();
 }
