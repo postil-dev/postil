@@ -10,6 +10,7 @@ export const reviewPayload = z.object({
   pullNumber: z.number().int(),
   headSha: z.string(),
   checkRunId: z.number().int().optional(),
+  reviewId: z.string().uuid().optional(),
 });
 
 export type ReviewPayload = z.infer<typeof reviewPayload>;
@@ -104,7 +105,10 @@ function isFinding(x: unknown): x is Finding {
 
 async function callOpenRouter(diff: string): Promise<string> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    signal: controller.signal,
     method: "POST",
     headers: {
       authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
@@ -123,6 +127,7 @@ async function callOpenRouter(diff: string): Promise<string> {
       response_format: { type: "json_object" },
     }),
   });
+  clearTimeout(timeout);
   if (!res.ok) {
     throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 400)}`);
   }
