@@ -3,6 +3,7 @@
 export function OptOutButton() {
   return (
     <button
+      type="button"
       className="rounded-md border border-border bg-background px-4 py-2 text-sm hover:bg-muted"
       onClick={() => {
         const ph = (window as unknown as { posthog?: { opt_out_capturing: () => void } }).posthog;

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import posthog from "posthog-js";
-import { type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 export function TrackedLink({
   href,

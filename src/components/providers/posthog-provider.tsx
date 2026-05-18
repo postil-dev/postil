@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { Suspense, useEffect, type ReactNode } from "react";
 
 import posthog from "posthog-js";
@@ -8,7 +8,6 @@ import { PostHogProvider as PHProvider } from "posthog-js/react";
 
 function PostHogPageView() {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
 
   useEffect(() => {
     if (pathname) {
@@ -16,7 +15,7 @@ function PostHogPageView() {
         $current_url: window.location.href,
       });
     }
-  }, [pathname, searchParams]);
+  }, [pathname]);
 
   return null;
 }
