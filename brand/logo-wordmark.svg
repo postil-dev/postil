@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 160" width="600" height="160">
   <g transform="translate(20,20)">
-    <circle cx="60" cy="60" r="46" fill="none" stroke="#5C4DFF" stroke-width="12" stroke-linecap="round" stroke-dasharray="210 50" />
-    <circle cx="60" cy="60" r="10" fill="#FF8C42" />
+    <circle cx="60" cy="60" r="46" fill="none" stroke="#D97706" stroke-width="12" stroke-linecap="round" stroke-dasharray="210 50" />
+    <circle cx="60" cy="60" r="10" fill="#10B981" />
   </g>
-  <text x="140" y="96" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="72" font-weight="700" fill="#FFFFFF" letter-spacing="-0.05em">postil</text>
+  <text x="140" y="96" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="72" font-weight="700" fill="currentColor" letter-spacing="-0.05em">postil</text>
 </svg>
