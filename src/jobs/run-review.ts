@@ -1,3 +1,4 @@
+import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
 import { loadReviewConfig, type PostilConfig } from "@/lib/config";
 import { env } from "@/lib/env";
@@ -37,6 +38,17 @@ export type ReviewEnvelope = {
   usage: TokenUsage;
 };
 
+const ALLOWED_REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]);
+
+type ReviewThreadEvent = {
+  kind: "review" | "review-comment" | "issue-comment";
+  author: string;
+  body: string;
+  state?: string;
+  path?: string;
+  line?: number | null;
+};
+
 const SYSTEM_PROMPT = `
 You are Postil, a code reviewer. You receive a unified diff for a pull request
 and produce structured findings as JSON. Rules:
@@ -72,6 +84,129 @@ function parseEnvelope(text: string, usage: TokenUsage): ReviewEnvelope {
   }
   // Prose fallback: post the model's reply verbatim as a summary, no inline findings.
   return { summary: text.trim().slice(0, 4000), findings: [], usage };
+}
+
+function formatReviewContext(items: ReviewThreadEvent[]): string {
+  if (!items.length) {
+    return "";
+  }
+
+  const quote = (body: string) => `"${body.slice(0, 300)}"`;
+  const lines: string[] = [];
+  const reviews = items.filter((item) => item.kind === "review").slice(0, 5);
+  const inlineComments = items.filter((item) => item.kind === "review-comment").slice(0, 5);
+  const issueComments = items.filter((item) => item.kind === "issue-comment").slice(0, 3);
+
+  if (reviews.length) {
+    lines.push("Existing reviews:");
+    for (const item of reviews) {
+      lines.push(`- [${item.state}] @${item.author}: ${quote(item.body)}`);
+    }
+  }
+
+  if (inlineComments.length) {
+    if (lines.length) lines.push("");
+    lines.push("Inline comments (unresolved):");
+    for (const item of inlineComments) {
+      lines.push(
+        `- @${item.author} at ${item.path}:${item.line ?? "unknown"}: ${quote(item.body)}`,
+      );
+    }
+  }
+
+  if (issueComments.length) {
+    if (lines.length) lines.push("");
+    lines.push("PR comments:");
+    for (const item of issueComments) {
+      lines.push(`- @${item.author}: ${quote(item.body)}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function fetchReviewContext(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<string> {
+  try {
+    const [reviewsRes, reviewCommentRes, issueCommentRes] = await Promise.all([
+      octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+        owner,
+        repo,
+        pull_number: pullNumber,
+        per_page: 30,
+      }),
+      octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/comments", {
+        owner,
+        repo,
+        pull_number: pullNumber,
+        per_page: 30,
+      }),
+      octokit.request("GET /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+        owner,
+        repo,
+        issue_number: pullNumber,
+        per_page: 10,
+      }),
+    ]);
+
+    const items: ReviewThreadEvent[] = [];
+
+    if (Array.isArray(reviewsRes.data)) {
+      for (const rawReview of reviewsRes.data) {
+        const state = String((rawReview as { state?: unknown }).state ?? "");
+        if (!ALLOWED_REVIEW_STATES.has(state)) continue;
+        const body = String((rawReview as { body?: unknown }).body ?? "").trim();
+        const dismissalMessage = String(
+          (rawReview as { dismissal_message?: unknown }).dismissal_message ?? "",
+        ).trim();
+        const authorObj = (rawReview as { user?: { login?: unknown } | null }).user ?? null;
+        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        items.push({
+          kind: "review",
+          author,
+          body: [body, dismissalMessage].filter(Boolean).join(" ") || "(no body)",
+          state,
+        });
+      }
+    }
+
+    if (Array.isArray(reviewCommentRes.data)) {
+      for (const rawComment of reviewCommentRes.data) {
+        const body = String((rawComment as { body?: unknown }).body ?? "").trim();
+        const authorObj = (rawComment as { user?: { login?: unknown } | null }).user ?? null;
+        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        items.push({
+          kind: "review-comment",
+          author,
+          body: body || "(no body)",
+          path: String((rawComment as { path?: unknown }).path ?? ""),
+          line: (rawComment as { line?: number | null }).line ?? null,
+        });
+      }
+    }
+
+    if (Array.isArray(issueCommentRes.data)) {
+      for (const rawComment of issueCommentRes.data) {
+        const body = String((rawComment as { body?: unknown }).body ?? "").trim();
+        const authorObj = (rawComment as { user?: { login?: unknown } | null }).user ?? null;
+        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        items.push({
+          kind: "issue-comment",
+          author,
+          body: body || "(no body)",
+        });
+      }
+    }
+
+    return formatReviewContext(items);
+  } catch (err) {
+    console.error("[review-context] fetch failed:", err instanceof Error ? err.message : err);
+    return "";
+  }
 }
 
 const SEVERITY_RANK: Record<Finding["severity"], number> = {
@@ -116,10 +251,11 @@ function isFinding(x: unknown): x is Finding {
 
 type OpenRouterResult = { content: string; usage: TokenUsage };
 
-async function callOpenRouter(diff: string): Promise<OpenRouterResult> {
+async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRouterResult> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000);
+  const userContent = reviewContext ? `${reviewContext}\n\nDiff:\n\n${diff}` : `Diff:\n\n${diff}`;
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     signal: controller.signal,
     method: "POST",
@@ -133,7 +269,7 @@ async function callOpenRouter(diff: string): Promise<OpenRouterResult> {
       model: env.REVIEW_MODEL,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `Diff:\n\n${diff}` },
+        { role: "user", content: userContent },
       ],
       temperature: 0.2,
       max_tokens: 2500,
@@ -209,8 +345,9 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     const diff = String(diffRes.data);
     const MAX = 120_000;
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
+    const reviewContext = await fetchReviewContext(octokit, owner, repo, payload.pullNumber);
 
-    const { content: modelOutput, usage } = await callOpenRouter(truncated);
+    const { content: modelOutput, usage } = await callOpenRouter(truncated, reviewContext);
     let envelope = parseEnvelope(modelOutput, usage);
     envelope = applyConfig(envelope, config);
 
