@@ -4,7 +4,8 @@
 FROM oven/bun:1.3 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --ignore-scripts
+COPY scripts/install-hooks.sh scripts/install-hooks.sh
+RUN bun install --frozen-lockfile
 
 # --- builder ---
 FROM oven/bun:1.3 AS builder
