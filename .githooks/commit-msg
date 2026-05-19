@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Validates commit message follows Conventional Commits.
+# Forbidden-token scanning is handled by the external pre-push hook,
+# NOT here. This file is committed to the repo and must never contain
+# forbidden tokens or agent roster information.
+set -eo pipefail
+
+msg_file="$1"
+msg=$(head -n 1 "$msg_file")
+cc_regex='^(feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert)(\(.+\))?: .+$'
+
+if ! echo "$msg" | grep -qE "$cc_regex"; then
+  printf 'commit-msg: title does not follow Conventional Commits.\n' >&2
+  printf '            expected: <type>: <description>\n' >&2
+  printf '            allowed types: feat, fix, perf, refactor, docs, test, build, ci, chore, style, revert\n' >&2
+  exit 1
+fi
+
+if [ "${#msg}" -gt 72 ]; then
+  printf 'commit-msg: subject line exceeds 72 characters (%d).\n' "${#msg}" >&2
+  exit 1
+fi
+
+if echo "$msg" | grep -qE '\.$'; then
+  printf 'commit-msg: subject line must not end with a period.\n' >&2
+  exit 1
+fi

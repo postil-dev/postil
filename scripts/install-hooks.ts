@@ -9,7 +9,7 @@ if (!existsSync(".git")) {
 }
 
 // Hooks live outside the worktree so agents cannot edit them.
-// The real hooks are at ~/.paperclip/hooks/ (owned by the paperclip system).
+// The real hooks are at ~/.paperclip/hooks/ (owned by the host system).
 const hooksDir = process.env.PAPERCLIP_HOOKS_DIR || join(homedir(), ".paperclip", "hooks");
 
 if (!existsSync(hooksDir)) {
