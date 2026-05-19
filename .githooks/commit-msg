@@ -22,3 +22,11 @@ if echo "$msg" | grep -qE '\.$'; then
   printf 'commit-msg: subject line must not end with a period.\n' >&2
   exit 1
 fi
+
+# Block leakage tokens in the full commit message (subject + body + trailers).
+FORBIDDEN_TOKENS='(Paperclip|paperclip\.dev|/home/paperclip|@paperclip\.ing|Co-Authored-By: Paperclip|Paperclip-Id:|Morgan Chen|Alex Kim|Jordan Lee|Casey Park|Riley Patel|👑 Sovereign|POSA-[0-9]+|MOR-[0-9]+)'
+if grep -Eq "$FORBIDDEN_TOKENS" "$msg_file"; then
+  printf 'commit-msg: message contains forbidden tokens (agent/paperclip refs).\n' >&2
+  grep -nE "$FORBIDDEN_TOKENS" "$msg_file" >&2
+  exit 1
+fi
