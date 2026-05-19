@@ -23,8 +23,13 @@ while IFS= read -r line; do
   [ "$local_sha" = "$zero" ] && continue
 
   if [ "$remote_sha" = "$zero" ]; then
-    range="$local_sha"
-    revlist=$(git rev-list "$local_sha" --not --remotes=origin 2>/dev/null || git rev-list "$local_sha")
+    base=$(git merge-base "$local_sha" origin/main 2>/dev/null || echo "")
+    if [ -n "$base" ] && [ "$base" != "$local_sha" ]; then
+      range="${base}..${local_sha}"
+    else
+      range="$local_sha"
+    fi
+    revlist=$(git rev-list "$local_sha" --not --remotes=origin 2>/dev/null || git rev-list "$range")
   else
     range="${remote_sha}..${local_sha}"
     revlist=$(git rev-list "$range")
