@@ -127,6 +127,20 @@ jobs:
       - name: Run E2E tests
         run: bun run test:e2e
 
+  pr-body:
+    name: PR body style
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check PR body style
+        env:
+          GH_PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/check-pr-body.sh
+
   verify-review:
     name: Verify postil/review passed
     runs-on: ubuntu-latest

@@ -16,9 +16,30 @@ npm run dev                   # starts at http://localhost:3000
 - All commits must be GPG-signed
 - Squash-merge only
 
-### PR body template
+### PR body style
 
-Use the [pull request template](.github/pull_request_template.md). Include a clear summary of what changed and why, plus a test plan.
+Write the PR body like a human would in 30 seconds — plain prose, 1-4 sentences.
+
+- No markdown headings (`## Summary`, `## Changes`, `## Test plan`, etc.)
+- No horizontal dividers
+- No checkbox lists (`- [x] ...`)
+- No "generated-by" footers
+- Testing context, if worth mentioning, weaves into the same paragraph
+
+Good example:
+> Adds a metrics endpoint at /api/metrics so we can track review reliability and token spend without hitting the DB. Auth uses a bearer-token header set via fly secrets.
+
+Bad example:
+> ## Summary
+> Adds a metrics endpoint.
+> ## Changes
+> - New route at /api/metrics
+> - Auth guard for bearer token
+> ## Test plan
+> - [x] Hit /api/metrics with valid token
+> - [x] Verify 401 without token
+
+CI enforces this rule — `scripts/check-pr-body.sh` fails the build if the PR body contains `## ` headings or `- [x]` checkboxes.
 
 ## Commit conventions
 

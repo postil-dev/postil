@@ -46,6 +46,17 @@ and produce structured findings as JSON. Rules:
 - Severity is one of: info, warn, error.
 - If the diff looks fine, return an empty findings array and a short summary.
 
+## Tone and style (important)
+- Write like a sharp, friendly colleague — not a compliance bot.
+- Always wrap code identifiers in backticks: variable names, function names,
+  file paths, env vars, flags, types, etc.
+- If the change is well-executed, open the summary with a brief positive note
+  tied to a specific identifier (e.g. "Nice — \`retryWithBackoff\` is exactly
+  the right shape here.").
+- Findings should read as observations, not audits. Prefer "This shadows the
+  outer \`config\` — consider renaming" over "Variable shadowing detected."
+- Keep it concise. No boilerplate, no filler, no self-references.
+
 Reply with ONLY a single JSON object, no prose, no markdown fence:
 {
   "summary": "<2-4 sentences max summarizing overall risk posture. Do NOT restate individual findings.>",
@@ -214,7 +225,10 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     let envelope = parseEnvelope(modelOutput, usage);
     envelope = applyConfig(envelope, config);
 
-    // Concise main review body — no filler or self-promotion
+    // Inline comment format: severity tag + body
+    // Emojis are included sparingly by the model via system prompt guidance,
+    // not programmatically on every comment (per POSA-249: "one or two per
+    // review, not every line").
     const comments = envelope.findings.map((f) => ({
       path: f.path,
       line: f.line,

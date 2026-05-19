@@ -1,6 +1,1 @@
-## Summary
-<!-- what changed and why -->
-
-## Test plan
-<!-- list the steps to verify this PR -->
-- [ ] 
+Write 1-4 sentences describing what this PR does and why. No headings, no checkboxes, no boilerplate. A human would write this in 30 seconds.
