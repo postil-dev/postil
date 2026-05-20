@@ -1,13 +1,28 @@
 import { eq } from "drizzle-orm";
-import { logger, task } from "@trigger.dev/sdk";
+import { auth, logger, task } from "@trigger.dev/sdk/v3";
 import { getDb, schema } from "@/db";
+import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { env } from "@/lib/env";
 import { reviewPayload, runReview } from "./run-review";
 
-// Trigger.dev-flavoured wrapper around runReview. Identical business logic;
-// this path is used once a Trigger.dev worker is deployed. The webhook
-// currently invokes runReview inline via Next.js `after()`.
+let triggerConfigured = false;
+
+function ensureTriggerConfigured(): void {
+  if (triggerConfigured) return;
+  if (!env.TRIGGER_API_KEY) {
+    throw new Error("TRIGGER_API_KEY must be set to dispatch review tasks");
+  }
+
+  auth.configure({
+    baseURL: env.TRIGGER_API_URL,
+    accessToken: env.TRIGGER_API_KEY,
+  });
+  triggerConfigured = true;
+}
+
+// Trigger.dev-flavoured wrapper around runReview. The webhook enqueues this
+// task so the review work runs through the CLI runner.
 export const reviewPullRequest = task({
   id: "review-pull-request",
   maxDuration: 10 * 60,
@@ -28,15 +43,25 @@ export const reviewPullRequest = task({
       const result = await runReview(payload);
 
       if (payload.reviewId) {
-        const db = getDb();
-        await db
-          .update(schema.reviews)
-          .set({
-            status: "completed",
-            result,
-            completedAt: new Date(),
-          })
-          .where(eq(schema.reviews.id, payload.reviewId));
+        try {
+          const db = getDb();
+          await db
+            .update(schema.reviews)
+            .set({
+              status: "completed",
+              result,
+              completedAt: new Date(),
+            })
+            .where(eq(schema.reviews.id, payload.reviewId));
+        } catch (dbErr) {
+          captureException(dbErr, {
+            properties: {
+              op: "update_review_completed",
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+            },
+          });
+        }
       }
 
       track("system", "review_completed", {
@@ -47,6 +72,21 @@ export const reviewPullRequest = task({
         modelUsed: env.REVIEW_MODEL,
         installationHash: hashInstallationId(payload.installationId),
       });
+
+      try {
+        if (payload.reviewId) {
+          await recordReviewCompleted(payload.installationId, payload.reviewId);
+          await recordTokenUsage(payload.installationId, payload.reviewId, result.usage);
+        }
+      } catch (usageErr) {
+        captureException(usageErr, {
+          properties: {
+            op: "record_usage",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
+        });
+      }
 
       return { ok: true, findings: result.findings.length };
     } catch (err) {
@@ -60,17 +100,27 @@ export const reviewPullRequest = task({
       });
 
       if (payload.reviewId) {
-        const db = getDb();
-        await db
-          .update(schema.reviews)
-          .set({
-            status: "failed",
-            errorMessage: String(
-              err instanceof Error ? err.message : err,
-            ),
-            completedAt: new Date(),
-          })
-          .where(eq(schema.reviews.id, payload.reviewId));
+        try {
+          const db = getDb();
+          await db
+            .update(schema.reviews)
+            .set({
+              status: "failed",
+              errorMessage: String(
+                err instanceof Error ? err.message : err,
+              ),
+              completedAt: new Date(),
+            })
+            .where(eq(schema.reviews.id, payload.reviewId));
+        } catch (dbErr) {
+          captureException(dbErr, {
+            properties: {
+              op: "update_review_failed",
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+            },
+          });
+        }
       }
 
       track("system", "review_failed", {
@@ -89,3 +139,11 @@ export const reviewPullRequest = task({
     }
   },
 });
+
+export async function enqueueReviewPullRequest(
+  payload: import("./run-review").ReviewPayload,
+  idempotencyKey: string,
+) {
+  ensureTriggerConfigured();
+  return reviewPullRequest.trigger(payload, { idempotencyKey });
+}

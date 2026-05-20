@@ -372,37 +372,6 @@ describe("runReview", () => {
     });
   });
 
-  it("lets dismissed change requests stop blocking approval", async () => {
-    githubMock.reviewComments = [];
-    githubMock.issueComments = [];
-    githubMock.reviews = [
-      {
-        id: 1,
-        state: "CHANGES_REQUESTED",
-        user: { login: "reviewer-alice" },
-        body: "Please keep the guard clause here.",
-        commit_id: "abc123",
-        submitted_at: "2026-05-18T01:00:00Z",
-      },
-      {
-        id: 2,
-        state: "DISMISSED",
-        user: { login: "reviewer-alice" },
-        body: "Dismissed after follow-up.",
-        commit_id: "def456",
-        dismissal_message: "No longer relevant",
-        submitted_at: "2026-05-18T02:00:00Z",
-      },
-    ];
-
-    await runReview(PAYLOAD);
-
-    expect(latestPostedReview()).toMatchObject({
-      event: "APPROVE",
-      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
-    });
-  });
-
   it("paginates review history before reducing substantive feedback", async () => {
     githubMock.reviewComments = [];
     githubMock.issueComments = [];

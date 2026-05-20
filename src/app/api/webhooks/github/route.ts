@@ -1,12 +1,11 @@
 import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { after, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
-import { runReview } from "@/jobs/run-review";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
-import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
+import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,7 +38,6 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const payload = JSON.parse(body);
-
   const db = getDb();
   try {
     await db
@@ -54,7 +52,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   if (event === "pull_request") {
-    await handlePullRequest(payload);
+    await handlePullRequest(db, payload, deliveryId);
   }
   if (event === "workflow_run") {
     await handleWorkflowRun(payload);
@@ -106,13 +104,15 @@ type WorkflowJob = {
   }>;
 };
 
-async function handlePullRequest(p: PullRequestPayload): Promise<void> {
+async function handlePullRequest(
+  db: ReturnType<typeof getDb>,
+  p: PullRequestPayload,
+  deliveryId: string,
+): Promise<void> {
   const { action, pull_request, repository, installation } = p;
   if (!installation) return;
   if (!["opened", "reopened", "synchronize", "ready_for_review"].includes(action)) return;
   if (pull_request.draft) return;
-
-  const db = getDb();
   const repoFullName = repository.full_name;
   const pullNumber = pull_request.number;
   const headSha = pull_request.head.sha;
@@ -125,34 +125,13 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
       ),
       orderBy: (r, { desc }) => [desc(r.createdAt)],
     });
-    if (existing && Date.now() - existing.createdAt.getTime() < SYNCHRONIZE_DEBOUNCE_MS) {
+    if (
+      existing &&
+      existing.status !== "failed" &&
+      Date.now() - existing.createdAt.getTime() < SYNCHRONIZE_DEBOUNCE_MS
+    ) {
       return;
     }
-  }
-
-  // Create an in-progress check-run so the PR shows "postil/review" immediately.
-  let checkRunId: number | undefined;
-  try {
-    const octokit = await installationOctokit(installation.id);
-    const [owner, repo] = repoFullName.split("/");
-    const checkRun = await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
-      owner,
-      repo,
-      name: "postil/review",
-      head_sha: headSha,
-      status: "in_progress",
-      started_at: new Date().toISOString(),
-      output: {
-        title: "Postil is reviewing...",
-        summary: "The review is in progress.",
-      },
-    });
-    checkRunId = checkRun.data.id;
-  } catch (err) {
-    captureException(err, {
-      properties: { op: "create_check_run", repoFullName, pullNumber, headSha },
-    });
-    // Continue without check-run; inline comments still work.
   }
 
   const reviewRow = await db
@@ -163,83 +142,192 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
       pullNumber,
       headSha,
       status: "running",
-      checkRunId: checkRunId ?? null,
+      checkRunId: null,
     })
     .onConflictDoNothing()
     .returning({ id: schema.reviews.id });
 
-  const reviewId = reviewRow[0]?.id;
+  let reviewId: string | undefined = reviewRow[0]?.id;
+  let checkRunId: number | undefined;
 
-  after(async () => {
+  if (!reviewId) {
+    const existing = await db.query.reviews.findFirst({
+      where: and(
+        eq(schema.reviews.repoFullName, repoFullName),
+        eq(schema.reviews.pullNumber, pullNumber),
+        eq(schema.reviews.headSha, headSha),
+      ),
+      orderBy: (r, { desc }) => [desc(r.createdAt)],
+      columns: { id: true, checkRunId: true },
+    });
+    reviewId = existing?.id;
+    checkRunId = existing?.checkRunId ?? undefined;
+  }
+
+  if (!reviewId) {
+    throw new Error("failed to initialize review row");
+  }
+
+  if (!checkRunId) {
+    // Create an in-progress check-run so the PR shows "postil/review" immediately.
     try {
-      const result = await runReview({
+      const octokit = await installationOctokit(installation.id);
+      const [owner, repo] = repoFullName.split("/");
+      const checkRun = await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
+        owner,
+        repo,
+        name: "postil/review",
+        head_sha: headSha,
+        status: "in_progress",
+        started_at: new Date().toISOString(),
+        output: {
+          title: "Postil is reviewing...",
+          summary: "The review is in progress.",
+        },
+      });
+      checkRunId = checkRun.data.id;
+      await db
+        .update(schema.reviews)
+        .set({
+          checkRunId,
+        })
+        .where(eq(schema.reviews.id, reviewId));
+    } catch (err) {
+      captureException(err, {
+        properties: { op: "create_check_run", repoFullName, pullNumber, headSha },
+      });
+      // Continue without check-run; the review task still posts review feedback.
+    }
+  }
+
+  try {
+    const triggerRun = await enqueueReviewPullRequest(
+      {
         installationId: installation.id,
         repoFullName,
         pullNumber,
         headSha,
-        checkRunId: checkRunId ?? undefined,
-        reviewId: reviewId ?? undefined,
-      });
-      if (reviewId) {
-        await db
-          .update(schema.reviews)
-          .set({
-            status: "completed",
-            result,
-            completedAt: new Date(),
-          })
-          .where(eq(schema.reviews.id, reviewId));
-      }
-      track("system", "review_completed_after", {
-        repoFullName,
-        pullNumber,
-        findings: result.findings.length,
-        promptTokens: result.usage.promptTokens,
-        completionTokens: result.usage.completionTokens,
-        totalTokens: result.usage.totalTokens,
-      });
+        checkRunId,
+        reviewId,
+      },
+      deliveryId,
+    );
 
-      // Record usage events for billing/observability.
-      try {
-        if (reviewId) {
-          await recordReviewCompleted(installation.id, reviewId);
-          await recordTokenUsage(installation.id, reviewId, result.usage);
-        }
-      } catch (usageErr) {
-        captureException(usageErr, {
-          properties: { op: "record_usage", repoFullName, pullNumber },
-        });
-      }
-    } catch (err) {
-      if (reviewId) {
-        await db
-          .update(schema.reviews)
-          .set({
-            status: "failed",
-            errorMessage: String(err instanceof Error ? err.message : err),
-            completedAt: new Date(),
-          })
-          .where(eq(schema.reviews.id, reviewId));
-      }
-      captureException(err, {
+    try {
+      await db
+        .update(schema.reviews)
+        .set({
+          triggerRunId: triggerRun.id,
+        })
+        .where(eq(schema.reviews.id, reviewId));
+    } catch (updateErr) {
+      captureException(updateErr, {
         properties: {
-          op: "after_review",
+          op: "record_trigger_run_id",
           repoFullName,
           pullNumber,
           headSha,
+          reviewId,
+          triggerRunId: triggerRun.id,
         },
       });
     }
-  });
 
-  track("system", "review_enqueued", {
-    repoFullName,
-    pullNumber,
-    headSha,
-    installationId: installation.id,
-    reviewId,
-    checkRunId,
-  });
+    try {
+      track("system", "review_enqueued", {
+        repoFullName,
+        pullNumber,
+        headSha,
+        installationId: installation.id,
+        reviewId,
+        checkRunId,
+        triggerRunId: triggerRun.id,
+      });
+    } catch (trackErr) {
+      captureException(trackErr, {
+        properties: {
+          op: "track_review_enqueued",
+          repoFullName,
+          pullNumber,
+          headSha,
+          reviewId,
+          triggerRunId: triggerRun.id,
+        },
+      });
+    }
+    return;
+  } catch (err) {
+    try {
+      await db
+        .update(schema.reviews)
+        .set({
+          status: "failed",
+          errorMessage: String(err instanceof Error ? err.message : err),
+          completedAt: new Date(),
+        })
+        .where(eq(schema.reviews.id, reviewId));
+    } catch (updateErr) {
+      captureException(updateErr, {
+        properties: {
+          op: "record_dispatch_failed",
+          repoFullName,
+          pullNumber,
+          headSha,
+          reviewId,
+        },
+      });
+    }
+    captureException(err, {
+      properties: {
+        op: "trigger_review_pull_request",
+        repoFullName,
+        pullNumber,
+        headSha,
+        },
+      });
+    if (checkRunId) {
+      try {
+        const octokit = await installationOctokit(installation.id);
+        const [owner, repo] = repoFullName.split("/");
+        await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+          owner,
+          repo,
+          check_run_id: checkRunId,
+          status: "completed",
+          conclusion: "failure",
+          completed_at: new Date().toISOString(),
+          output: {
+            title: "Postil review dispatch failed",
+            summary: "The review could not be enqueued.",
+          },
+          });
+      } catch (checkRunErr) {
+        captureException(checkRunErr, {
+          properties: {
+            op: "fail_check_run_after_enqueue_error",
+            repoFullName,
+            pullNumber,
+            headSha,
+          },
+        });
+      }
+    }
+    try {
+      await db
+        .delete(schema.webhookDeliveries)
+        .where(
+          and(
+            eq(schema.webhookDeliveries.source, "github"),
+            eq(schema.webhookDeliveries.deliveryId, deliveryId),
+          ),
+        );
+    } catch (deleteErr) {
+      captureException(deleteErr, {
+        properties: { op: "delete_webhook_delivery_after_enqueue_error", deliveryId },
+      });
+    }
+    throw err;
+  }
 }
 
 async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
