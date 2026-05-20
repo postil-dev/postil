@@ -374,6 +374,9 @@ function isFinding(x: unknown): x is Finding {
 
 type OpenRouterResult = { content: string; usage: TokenUsage; modelUsed: string };
 
+const OPENROUTER_MODEL_TIMEOUT_MS = 120_000;
+const OPENROUTER_CASCADE_TIMEOUT_MS = 6 * 60_000;
+
 function formatReviewStatusLine(
   envelope: ReviewEnvelope,
   inlineComments: number,
@@ -393,10 +396,20 @@ async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRou
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
   const userContent = reviewContext ? `${reviewContext}\n\nDiff:\n\n${diff}` : `Diff:\n\n${diff}`;
   const failures: string[] = [];
+  const cascadeStartedAt = Date.now();
 
   for (const model of parseReviewModelCascade(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL)) {
+    const remainingMs = OPENROUTER_CASCADE_TIMEOUT_MS - (Date.now() - cascadeStartedAt);
+    if (remainingMs <= 0) {
+      failures.push(`${model}: skipped after cascade timeout`);
+      break;
+    }
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      Math.min(OPENROUTER_MODEL_TIMEOUT_MS, remainingMs),
+    );
     try {
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         signal: controller.signal,

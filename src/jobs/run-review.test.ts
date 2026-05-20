@@ -257,6 +257,36 @@ describe("runReview", () => {
     ]);
   });
 
+  it("stops the review model cascade when the shared timeout budget is spent", async () => {
+    envMock.REVIEW_MODEL_CASCADE = "test/primary, test/backup, test/late";
+    const nowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(359_999)
+      .mockReturnValueOnce(360_000);
+    fetchSpy.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : (url as Request).url;
+      if (urlStr?.includes("openrouter")) {
+        const body = init ? JSON.parse(init.body as string) : null;
+        openRouterMock.body = body;
+        openRouterMock.bodies.push(body);
+        return new Response("rate limited", { status: 429 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    await expect(runReview(PAYLOAD)).rejects.toThrow(
+      "test/late: skipped after cascade timeout",
+    );
+
+    expect(openRouterMock.bodies).toMatchObject([
+      { model: "test/primary" },
+      { model: "test/backup" },
+    ]);
+    nowSpy.mockRestore();
+  });
+
   it("ends clean posted reviews with a status line", async () => {
     githubMock.reviews = [];
     githubMock.reviewComments = [];
