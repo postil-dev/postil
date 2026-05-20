@@ -1,11 +1,5 @@
 import { readFileSync } from "node:fs";
-import {
-  parseEnvelope,
-  SYSTEM_PROMPT,
-  type Finding,
-  type TokenUsage,
-} from "./run-review";
-import { callOpenRouterReview } from "./openrouter-review";
+import type { Finding } from "./run-review";
 import { REVIEW_MODEL_RESEARCH_CANDIDATES } from "./review-models";
 
 type ExpectedFinding = {
@@ -15,22 +9,15 @@ type ExpectedFinding = {
   bodyIncludes?: string;
 };
 
-type CaseModelOutput = {
+type ModelOutput = {
   summary: string;
   findings: Finding[];
 };
 
-type CaseRunOutput = CaseModelOutput & {
-  rawContent: string;
-  modelUsed: string;
-  usage: TokenUsage;
-};
-
 export type ReviewModelEvalCase = {
   id: string;
-  prompt: string;
   expectedFindings: ExpectedFinding[];
-  modelOutputs?: Record<string, CaseModelOutput>;
+  modelOutputs: Record<string, ModelOutput>;
 };
 
 export type ReviewModelEvalResult = {
@@ -45,18 +32,10 @@ export type ReviewModelEvalResult = {
   actionableRate: number;
 };
 
-export type ReviewModelEvalCaseRun = {
-  id: string;
-  prompt: string;
-  expectedFindings: ExpectedFinding[];
-  outputs: Record<string, CaseRunOutput>;
-};
-
 export type ReviewModelEvalReport = {
   candidates: string[];
   recommendedFixturePrimary: string | null;
   results: ReviewModelEvalResult[];
-  caseRuns: ReviewModelEvalCaseRun[];
 };
 
 function matchesExpected(finding: Finding, expected: ExpectedFinding): boolean {
@@ -70,10 +49,7 @@ function roundRate(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
-function scoreCaseRuns(caseRuns: ReviewModelEvalCaseRun[]): ReviewModelEvalReport {
-  const candidateOrder = new Map(
-    REVIEW_MODEL_RESEARCH_CANDIDATES.map((model, index) => [model, index]),
-  );
+export function evaluateReviewModelFixtures(cases: ReviewModelEvalCase[]): ReviewModelEvalReport {
   const results = REVIEW_MODEL_RESEARCH_CANDIDATES.map((model) => {
     let expectedActionableFindings = 0;
     let actionableFindings = 0;
@@ -82,9 +58,9 @@ function scoreCaseRuns(caseRuns: ReviewModelEvalCaseRun[]): ReviewModelEvalRepor
     let cleanCaseNoiseFindings = 0;
     let severityMismatches = 0;
 
-    for (const evalCase of caseRuns) {
+    for (const evalCase of cases) {
       const expectedFindings = evalCase.expectedFindings;
-      const output = evalCase.outputs[model];
+      const output = evalCase.modelOutputs[model];
       if (!output) {
         missedActionableFindings += expectedFindings.length;
         expectedActionableFindings += expectedFindings.length;
@@ -119,7 +95,7 @@ function scoreCaseRuns(caseRuns: ReviewModelEvalCaseRun[]): ReviewModelEvalRepor
 
     return {
       model,
-      cases: caseRuns.length,
+      cases: cases.length,
       expectedActionableFindings,
       actionableFindings,
       missedActionableFindings,
@@ -130,6 +106,9 @@ function scoreCaseRuns(caseRuns: ReviewModelEvalCaseRun[]): ReviewModelEvalRepor
     };
   });
 
+  const candidateOrder = new Map(
+    REVIEW_MODEL_RESEARCH_CANDIDATES.map((model, index) => [model, index]),
+  );
   const recommendedFixturePrimary =
     [...results].sort((a, b) => {
       if (b.actionableRate !== a.actionableRate) return b.actionableRate - a.actionableRate;
@@ -146,7 +125,6 @@ function scoreCaseRuns(caseRuns: ReviewModelEvalCaseRun[]): ReviewModelEvalRepor
     candidates: [...REVIEW_MODEL_RESEARCH_CANDIDATES],
     recommendedFixturePrimary,
     results,
-    caseRuns,
   };
 }
 
@@ -154,45 +132,8 @@ function loadCases(path: string): ReviewModelEvalCase[] {
   return JSON.parse(readFileSync(path, "utf8")) as ReviewModelEvalCase[];
 }
 
-export async function runReviewModelEvaluation(
-  cases: ReviewModelEvalCase[],
-): Promise<ReviewModelEvalReport> {
-  const caseRuns: ReviewModelEvalCaseRun[] = [];
-
-  for (const evalCase of cases) {
-    const outputs: Record<string, CaseRunOutput> = {};
-    for (const model of REVIEW_MODEL_RESEARCH_CANDIDATES) {
-      const result = await callOpenRouterReview(model, SYSTEM_PROMPT, evalCase.prompt);
-      const parsed = parseEnvelope(result.content, result.usage, result.modelUsed);
-      outputs[model] = {
-        rawContent: result.content,
-        summary: parsed.summary,
-        findings: parsed.findings,
-        modelUsed: parsed.modelUsed ?? model,
-        usage: result.usage,
-      };
-    }
-
-    caseRuns.push({
-      id: evalCase.id,
-      prompt: evalCase.prompt,
-      expectedFindings: evalCase.expectedFindings,
-      outputs,
-    });
-  }
-
-  return scoreCaseRuns(caseRuns);
-}
-
-async function main(): Promise<void> {
-  const fixturePath = process.argv[2] ?? "tests/fixtures/review-model-eval/cases.json";
-  const report = await runReviewModelEvaluation(loadCases(fixturePath));
-  console.log(JSON.stringify(report, null, 2));
-}
-
 if (import.meta.url === `file://${process.argv[1]}`) {
-  void main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
-    process.exitCode = 1;
-  });
+  const fixturePath = process.argv[2] ?? "tests/fixtures/review-model-eval/cases.json";
+  const report = evaluateReviewModelFixtures(loadCases(fixturePath));
+  console.log(JSON.stringify(report, null, 2));
 }

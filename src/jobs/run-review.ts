@@ -5,10 +5,6 @@ import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
 import { parseReviewModelCascade } from "./review-models";
-import {
-  callOpenRouterReview,
-  type OpenRouterResult,
-} from "./openrouter-review";
 
 export const reviewPayload = z.object({
   installationId: z.number().int(),
@@ -61,7 +57,7 @@ type ReviewContext = {
   outstandingChangeRequestReviewers: string[];
 };
 
-export const SYSTEM_PROMPT = `
+const SYSTEM_PROMPT = `
 You are Postil, a code reviewer. You receive a unified diff for a pull request
 and produce structured findings as JSON. Rules:
 - Focus on correctness, security, and obvious bugs.
@@ -77,7 +73,7 @@ Reply with ONLY a single JSON object, no prose, no markdown fence:
 }
 `.trim();
 
-export function parseEnvelope(text: string, usage: TokenUsage, modelUsed?: string): ReviewEnvelope {
+function parseEnvelope(text: string, usage: TokenUsage, modelUsed?: string): ReviewEnvelope {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   const raw = fenced ? fenced[1] : text;
   const start = raw.indexOf("{");
@@ -376,12 +372,7 @@ function isFinding(x: unknown): x is Finding {
   );
 }
 
-type OpenRouterCascadeError = Error & {
-  modelUsed?: string;
-  attemptedModels?: string[];
-};
-
-const OPENROUTER_CASCADE_TIMEOUT_MS = 6 * 60_000;
+type OpenRouterResult = { content: string; usage: TokenUsage; modelUsed: string };
 
 function formatReviewStatusLine(
   envelope: ReviewEnvelope,
@@ -398,46 +389,60 @@ function appendReviewStatusLine(body: string, statusLine: string): string {
   return trimmed ? `${trimmed}\n\n${statusLine}` : statusLine;
 }
 
-export function buildReviewUserContent(reviewContext: string, diff: string): string {
-  return reviewContext ? `${reviewContext}\n\nDiff:\n\n${diff}` : `Diff:\n\n${diff}`;
-}
-
 async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRouterResult> {
-  const userContent = buildReviewUserContent(reviewContext, diff);
+  if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
+  const userContent = reviewContext ? `${reviewContext}\n\nDiff:\n\n${diff}` : `Diff:\n\n${diff}`;
   const failures: string[] = [];
-  const attemptedModels: string[] = [];
-  const configuredModels = parseReviewModelCascade(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
-  const cascadeStartedAt = Date.now();
 
-  for (const model of configuredModels) {
-    const remainingMs = OPENROUTER_CASCADE_TIMEOUT_MS - (Date.now() - cascadeStartedAt);
-    if (remainingMs <= 0) {
-      failures.push(`${model}: skipped after cascade timeout`);
-      break;
-    }
-    attemptedModels.push(model);
-
+  for (const model of parseReviewModelCascade(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL)) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), remainingMs);
+    const timeout = setTimeout(() => controller.abort(), 120_000);
     try {
-      const result = await callOpenRouterReview(
-        model,
-        SYSTEM_PROMPT,
-        userContent,
-        controller.signal,
-      );
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        signal: controller.signal,
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          "content-type": "application/json",
+          "http-referer": "https://postil.dev",
+          "x-title": "Postil",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userContent },
+          ],
+          temperature: 0.2,
+          max_tokens: 2500,
+          response_format: { type: "json_object" },
+        }),
+      });
       clearTimeout(timeout);
-      return result;
+
+      if (!res.ok) {
+        failures.push(`${model}: openrouter ${res.status}: ${(await res.text()).slice(0, 400)}`);
+        continue;
+      }
+
+      const data = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+        usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      };
+      const orUsage = data.usage;
+      const usage: TokenUsage = {
+        promptTokens: orUsage?.prompt_tokens ?? 0,
+        completionTokens: orUsage?.completion_tokens ?? 0,
+        totalTokens: orUsage?.total_tokens ?? 0,
+      };
+      return { content: data.choices?.[0]?.message?.content ?? "", usage, modelUsed: model };
     } catch (err) {
       clearTimeout(timeout);
       failures.push(`${model}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  const error = new Error(`openrouter model cascade failed: ${failures.join(" | ")}`) as OpenRouterCascadeError;
-  error.modelUsed = attemptedModels.at(-1) ?? configuredModels[0];
-  error.attemptedModels = attemptedModels;
-  throw error;
+  throw new Error(`openrouter model cascade failed: ${failures.join(" | ")}`);
 }
 
 export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope> {

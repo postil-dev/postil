@@ -17,22 +17,3 @@ export function parseReviewModelCascade(
 
   return models.length ? models : [fallback];
 }
-
-export function selectedReviewModel(
-  configured: string | undefined,
-  fallback: string,
-): string {
-  return parseReviewModelCascade(configured, fallback)[0] ?? fallback;
-}
-
-export function resolveReviewModelUsed(
-  value: unknown,
-  fallback: string,
-): string {
-  if (value && typeof value === "object") {
-    const modelUsed = (value as { modelUsed?: unknown }).modelUsed;
-    if (typeof modelUsed === "string" && modelUsed.trim()) return modelUsed;
-  }
-
-  return fallback;
-}
