@@ -2,6 +2,25 @@ import crypto from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockRequest = vi.fn();
+const dbMock = vi.hoisted(() => ({
+  webhookDeliveries: {},
+  reviews: {},
+  insertCalls: [] as unknown[],
+  deleteCalls: [] as unknown[],
+  updateCalls: [] as Array<Record<string, unknown>>,
+  reviewInsertResult: [{ id: "review-1" }],
+  findFirst: vi.fn(async () => undefined),
+  failTriggerRunIdUpdate: false,
+  failFailedStatusUpdate: false,
+  failDeliveryDelete: false,
+}));
+const reviewJobMock = vi.hoisted(() => ({
+  enqueueReviewPullRequest: vi.fn(async () => ({ id: "trigger-run-123" })),
+}));
+const posthogMock = vi.hoisted(() => ({
+  captureException: vi.fn(),
+  track: vi.fn(),
+}));
 
 vi.mock("@/lib/env", () => ({
   env: {
@@ -12,19 +31,58 @@ vi.mock("@/lib/env", () => ({
 
 vi.mock("@/db", () => ({
   getDb: () => ({
-    insert: () => ({ values: async () => undefined }),
-    query: { reviews: { findFirst: async () => undefined } },
+    insert: (table: unknown) => {
+      dbMock.insertCalls.push(table);
+      if (table === dbMock.webhookDeliveries) {
+        return { values: async () => undefined };
+      }
+      return {
+        values: () => ({
+          onConflictDoNothing: () => ({
+            returning: async () => dbMock.reviewInsertResult,
+          }),
+        }),
+      };
+    },
+    delete: (table: unknown) => {
+      dbMock.deleteCalls.push(table);
+      return {
+        where: async () => {
+          if (dbMock.failDeliveryDelete && table === dbMock.webhookDeliveries) {
+            throw new Error("delete failed");
+          }
+          return undefined;
+        },
+      };
+    },
+    update: () => ({
+      set: (values: Record<string, unknown>) => ({
+        where: async () => {
+          dbMock.updateCalls.push(values);
+          if (dbMock.failFailedStatusUpdate && values.status === "failed") {
+            throw new Error("failed status update failed");
+          }
+          if (dbMock.failTriggerRunIdUpdate && "triggerRunId" in values) {
+            throw new Error("trigger run update failed");
+          }
+          return undefined;
+        },
+      }),
+    }),
+    query: { reviews: { findFirst: dbMock.findFirst } },
   }),
-  schema: { webhookDeliveries: {}, reviews: {} },
+  schema: { webhookDeliveries: dbMock.webhookDeliveries, reviews: dbMock.reviews },
 }));
 
 vi.mock("@/lib/github", () => ({
   installationOctokit: vi.fn(async () => ({ request: mockRequest })),
 }));
 
+vi.mock("@/jobs/review-pull-request", () => reviewJobMock);
+
 vi.mock("@/lib/posthog", () => ({
-  captureException: vi.fn(),
-  track: vi.fn(),
+  captureException: posthogMock.captureException,
+  track: posthogMock.track,
 }));
 
 // Import after mock declarations so the route uses the stubs above.
@@ -52,6 +110,12 @@ function signedRequest(event: string, deliveryId: string, payload: unknown): Req
 describe("github webhook", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    dbMock.insertCalls = [];
+    dbMock.deleteCalls = [];
+    dbMock.updateCalls = [];
+    dbMock.failTriggerRunIdUpdate = false;
+    dbMock.failFailedStatusUpdate = false;
+    dbMock.failDeliveryDelete = false;
   });
 
   it("rejects missing signature", async () => {
@@ -70,6 +134,190 @@ describe("github webhook", () => {
     const body = JSON.stringify({ zen: "hi" });
     const res = await POST(signedRequest("ping", "b", JSON.parse(body)));
     expect(res.status).toBe(200);
+  });
+
+  it("enqueues review work through the runner for opened pull requests", async () => {
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    const res = await POST(
+      signedRequest("pull_request", "pr-opened", {
+        action: "opened",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        pull_request: {
+          number: 68,
+          draft: false,
+          head: { sha: "abc123def456" },
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(reviewJobMock.enqueueReviewPullRequest).toHaveBeenCalledWith({
+      installationId: 123,
+      repoFullName: "acme/widget",
+      pullNumber: 68,
+      headSha: "abc123def456",
+      checkRunId: 321,
+      reviewId: "review-1",
+    }, "pr-opened");
+    expect(dbMock.insertCalls).toEqual([dbMock.webhookDeliveries, dbMock.reviews]);
+    expect(dbMock.updateCalls).toContainEqual({ triggerRunId: "trigger-run-123" });
+  });
+
+  it("keeps the delivery log open when enqueue fails", async () => {
+    reviewJobMock.enqueueReviewPullRequest.mockRejectedValueOnce(new Error("trigger failed"));
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    await expect(
+      POST(
+        signedRequest("pull_request", "pr-failed", {
+          action: "opened",
+          installation: { id: 123 },
+          repository: { full_name: "acme/widget" },
+          pull_request: {
+            number: 68,
+            draft: false,
+            head: { sha: "abc123def456" },
+          },
+        }),
+      ),
+    ).rejects.toThrow("trigger failed");
+    expect(dbMock.insertCalls).toEqual([dbMock.webhookDeliveries, dbMock.reviews]);
+    expect(dbMock.deleteCalls).toEqual([dbMock.webhookDeliveries]);
+    expect(
+      mockRequest.mock.calls.some(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not fail dispatch when post-enqueue bookkeeping fails", async () => {
+    dbMock.failTriggerRunIdUpdate = true;
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    const res = await POST(
+      signedRequest("pull_request", "pr-bookkeeping", {
+        action: "opened",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        pull_request: {
+          number: 68,
+          draft: false,
+          head: { sha: "abc123def456" },
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(reviewJobMock.enqueueReviewPullRequest).toHaveBeenCalledWith(
+      {
+        installationId: 123,
+        repoFullName: "acme/widget",
+        pullNumber: 68,
+        headSha: "abc123def456",
+        checkRunId: 321,
+        reviewId: "review-1",
+      },
+      "pr-bookkeeping",
+    );
+    expect(dbMock.deleteCalls).toEqual([]);
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          op: "record_trigger_run_id",
+          repoFullName: "acme/widget",
+          pullNumber: 68,
+        }),
+      }),
+    );
+  });
+
+  it("bubbles delivery-delete failures after an enqueue error", async () => {
+    dbMock.failDeliveryDelete = true;
+    reviewJobMock.enqueueReviewPullRequest.mockRejectedValueOnce(new Error("trigger failed"));
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    await expect(
+      POST(
+        signedRequest("pull_request", "pr-delete-failed", {
+          action: "opened",
+          installation: { id: 123 },
+          repository: { full_name: "acme/widget" },
+          pull_request: {
+            number: 68,
+            draft: false,
+            head: { sha: "abc123def456" },
+          },
+        }),
+      ),
+    ).rejects.toThrow("trigger failed");
+    expect(dbMock.deleteCalls).toEqual([dbMock.webhookDeliveries]);
+  });
+
+  it("still deletes the delivery log when recording dispatch failure metadata fails", async () => {
+    dbMock.failFailedStatusUpdate = true;
+    reviewJobMock.enqueueReviewPullRequest.mockRejectedValueOnce(new Error("trigger failed"));
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    await expect(
+      POST(
+        signedRequest("pull_request", "pr-status-update-failed", {
+          action: "opened",
+          installation: { id: 123 },
+          repository: { full_name: "acme/widget" },
+          pull_request: {
+            number: 68,
+            draft: false,
+            head: { sha: "abc123def456" },
+          },
+        }),
+      ),
+    ).rejects.toThrow("trigger failed");
+    expect(dbMock.deleteCalls).toEqual([dbMock.webhookDeliveries]);
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          op: "record_dispatch_failed",
+        }),
+      }),
+    );
   });
 
   it("creates one recovery issue for a failed pull request workflow run", async () => {

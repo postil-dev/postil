@@ -592,8 +592,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     if (payload.checkRunId) {
       const counts = { error: 0, warn: 0, info: 0 };
       for (const f of envelope.findings) counts[f.severity]++;
-      const hasOutstandingChangeRequests =
-        reviewContext.outstandingChangeRequestReviewers.length > 0;
+      const hasOutstandingChangeRequests = reviewContext.outstandingChangeRequestReviewers.length > 0;
       const changeRequestSummary = hasOutstandingChangeRequests
         ? `Outstanding change requests: ${reviewContext.outstandingChangeRequestReviewers
             .map((a) => `@${a}`)
@@ -628,12 +627,13 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           completed_at: new Date().toISOString(),
           output: {
             title,
-            summary: hasOutstandingChangeRequests
-              ? [envelope.summary, changeRequestSummary].filter(Boolean).join("\n\n")
-              : envelope.summary ||
-                (counts.error || counts.warn || counts.info
-                  ? "See inline review comments."
-                  : "No issues found."),
+            summary:
+              hasOutstandingChangeRequests
+                ? [envelope.summary, changeRequestSummary].filter(Boolean).join("\n\n")
+                : envelope.summary ||
+                  (counts.error || counts.warn || counts.info
+                    ? "See inline review comments."
+                    : "No issues found."),
             text: outputText,
           },
         });

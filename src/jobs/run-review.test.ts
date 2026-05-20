@@ -255,6 +255,7 @@ describe("runReview", () => {
 
   it("does not auto-approve clean results while human change requests are outstanding", async () => {
     githubMock.reviewComments = [];
+    githubMock.issueComments = [];
     githubMock.reviews = [
       {
         id: 1,
