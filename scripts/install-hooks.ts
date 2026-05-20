@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -8,18 +8,16 @@ if (!existsSync(".git")) {
   process.exit(0);
 }
 
-// Hooks live outside the worktree so agents cannot edit them.
-// The real hooks are at ~/.paperclip/hooks/ (owned by the host system).
-const hooksDir = process.env.PAPERCLIP_HOOKS_DIR || join(homedir(), ".paperclip", "hooks");
+const hooksDir = process.env.POSTIL_HOOKS_DIR || join(homedir(), ".config", "postil", "hooks");
 
 if (!existsSync(hooksDir)) {
-  console.warn(`External hooks directory not found at ${hooksDir} — skipping`);
+  console.warn("External hooks directory not found; skipping hook install");
   process.exit(0);
 }
 
 try {
   execSync(`git config core.hooksPath "${hooksDir}"`, { stdio: "pipe" });
-  console.log(`Git hooks path configured to external directory: ${hooksDir}`);
+  console.log("Git hooks path configured to external directory");
 } catch {
   console.warn("Failed to configure git hooks path — skipping");
   process.exit(0);

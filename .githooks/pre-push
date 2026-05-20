@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Delegates to the workspace-local pre-push hook installed by workspace bootstrap.
-# This file is safe to commit — it contains no forbidden tokens or agent roster.
-# The actual leakage-prevention logic lives in the hooks directory set by
-# scripts/install-hooks.ts, which reads the forbidden-token regex from
-# the PAPERCLIP_FORBIDDEN_TOKENS env var at workspace setup time.
-HOOKS_DIR="${PAPERCLIP_HOOKS_DIR:-$HOME/.paperclip/hooks}"
+# Delegates to the local pre-push hook installed by the development bootstrap.
+# The policy implementation lives outside this repository and is configured by
+# scripts/install-hooks.ts.
+HOOKS_DIR="${POSTIL_HOOKS_DIR:-$HOME/.config/postil/hooks}"
 if [ -x "$HOOKS_DIR/pre-push" ]; then
   exec "$HOOKS_DIR/pre-push" "$@"
 fi
