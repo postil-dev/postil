@@ -4,10 +4,6 @@ import { getDb, schema } from "@/db";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { env } from "@/lib/env";
-import {
-  resolveReviewModelUsed,
-  selectedReviewModel,
-} from "./review-models";
 import { reviewPayload, runReview } from "./run-review";
 
 let triggerConfigured = false;
@@ -34,13 +30,12 @@ export const reviewPullRequest = task({
     const payload = reviewPayload.parse(raw);
     logger.info("starting review", { payload });
     const started = Date.now();
-    const reviewModelUsed = selectedReviewModel(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
 
     track("system", "review_started", {
       repoFullName: payload.repoFullName,
       pullNumber: payload.pullNumber,
       headSha: payload.headSha,
-      modelUsed: reviewModelUsed,
+      modelUsed: env.REVIEW_MODEL,
       installationHash: hashInstallationId(payload.installationId),
     });
 
@@ -74,7 +69,7 @@ export const reviewPullRequest = task({
         pullNumber: payload.pullNumber,
         findings: result.findings.length,
         durationMs: Date.now() - started,
-        modelUsed: resolveReviewModelUsed(result, reviewModelUsed),
+        modelUsed: result.modelUsed ?? env.REVIEW_MODEL,
         installationHash: hashInstallationId(payload.installationId),
       });
 
@@ -134,7 +129,7 @@ export const reviewPullRequest = task({
         headSha: payload.headSha,
         error: String(err instanceof Error ? err.message : err),
         errorClass: err instanceof Error ? err.name : "unknown",
-        modelUsed: resolveReviewModelUsed(err, reviewModelUsed),
+        modelUsed: env.REVIEW_MODEL,
         installationHash: hashInstallationId(payload.installationId),
       });
 
