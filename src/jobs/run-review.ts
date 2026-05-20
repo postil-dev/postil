@@ -53,7 +53,6 @@ type ReviewThreadEvent = {
 type ReviewContext = {
   prompt: string;
   outstandingChangeRequestReviewers: string[];
-  hasUnresolvedHumanFeedback: boolean;
 };
 
 const SYSTEM_PROMPT = `
@@ -136,7 +135,6 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
-      hasUnresolvedHumanFeedback: false,
     };
   }
 
@@ -151,12 +149,6 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
     items.filter((item) => item.kind === "issue-comment" && hasSubstantiveBody(item)),
   ).slice(0, 5);
   const outstandingReviewers = outstandingChangeRequestReviewers(items);
-  const hasUnresolvedHumanFeedback =
-    outstandingReviewers.length > 0 ||
-    substantiveReviews.some((item) => item.state === "COMMENTED") ||
-    inlineComments.length > 0 ||
-    issueComments.length > 0;
-
   if (reviewItems.length) {
     const stateCounts = reviewItems.reduce<Record<string, number>>((counts, item) => {
       const state = item.state ?? "UNKNOWN";
@@ -186,7 +178,7 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
 
   if (inlineComments.length) {
     if (lines.length) lines.push("");
-    lines.push("Inline comments (unresolved):");
+    lines.push("Inline comments:");
     for (const item of inlineComments) {
       lines.push(
         `- @${item.author} at ${item.path}:${item.line ?? "unknown"}: ${quote(item.body)}`,
@@ -205,7 +197,6 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
   return {
     prompt: lines.join("\n"),
     outstandingChangeRequestReviewers: outstandingReviewers,
-    hasUnresolvedHumanFeedback,
   };
 }
 
@@ -334,7 +325,6 @@ async function fetchReviewContext(
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
-      hasUnresolvedHumanFeedback: false,
     };
   }
 }
@@ -504,12 +494,13 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    // Always post a review when there are findings or human feedback needing attention.
+    // Always post a review when there are findings or explicit change requests.
     // Clean PRs can skip the PR review when review.on_clean=skip in .postil.yaml.
-    // Clean PRs receive an APPROVE only when no unresolved human feedback remains.
     {
       const hasFindings = comments.length > 0;
-      const needsAttention = hasFindings || reviewContext.hasUnresolvedHumanFeedback;
+      const hasOutstandingChangeRequests =
+        reviewContext.outstandingChangeRequestReviewers.length > 0;
+      const needsAttention = hasFindings || hasOutstandingChangeRequests;
       const statusLabel = needsAttention ? "needs-attention" : "clean";
       const statusLine = formatReviewStatusLine(envelope, comments.length, statusLabel);
 

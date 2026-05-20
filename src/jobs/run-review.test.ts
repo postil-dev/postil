@@ -186,7 +186,7 @@ describe("runReview", () => {
     });
   });
 
-  it("includes newest substantive human review feedback in the OpenRouter prompt", async () => {
+  it("includes newest substantive review context in the OpenRouter prompt", async () => {
     await runReview(PAYLOAD);
 
     expect(openRouterMock.body).not.toBeNull();
@@ -204,7 +204,7 @@ describe("runReview", () => {
     expect(content.indexOf("This still needs a regression test.")).toBeLessThan(
       content.indexOf("Please keep the guard clause here."),
     );
-    expect(content).toContain("Inline comments (unresolved):");
+    expect(content).toContain("Inline comments:");
     expect(content).toContain("src/index.ts");
     expect(content).toContain("PR comments:");
     expect(content).toContain("contributor-carol");
@@ -292,9 +292,7 @@ describe("runReview", () => {
     });
   });
 
-  it("does not auto-approve clean results while commented reviews remain", async () => {
-    githubMock.reviewComments = [];
-    githubMock.issueComments = [];
+  it("still approves clean results while commented reviews remain", async () => {
     githubMock.reviews = [
       {
         id: 1,
@@ -309,12 +307,12 @@ describe("runReview", () => {
     await runReview(PAYLOAD);
 
     expect(latestPostedReview()).toMatchObject({
-      event: "COMMENT",
-      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+      event: "APPROVE",
+      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
     });
   });
 
-  it("does not auto-approve clean results while inline or PR comments remain", async () => {
+  it("still approves clean results while inline or PR comments remain", async () => {
     githubMock.reviews = [];
     githubMock.reviewComments = [
       {
@@ -338,8 +336,39 @@ describe("runReview", () => {
     await runReview(PAYLOAD);
 
     expect(latestPostedReview()).toMatchObject({
-      event: "COMMENT",
-      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+      event: "APPROVE",
+      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+    });
+  });
+
+  it("lets dismissed change requests stop blocking approval", async () => {
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    githubMock.reviews = [
+      {
+        id: 1,
+        state: "CHANGES_REQUESTED",
+        user: { login: "reviewer-alice" },
+        body: "Please keep the guard clause here.",
+        commit_id: "abc123",
+        submitted_at: "2026-05-18T01:00:00Z",
+      },
+      {
+        id: 2,
+        state: "DISMISSED",
+        user: { login: "reviewer-alice" },
+        body: "Dismissed after follow-up.",
+        commit_id: "def456",
+        dismissal_message: "No longer relevant",
+        submitted_at: "2026-05-18T02:00:00Z",
+      },
+    ];
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toMatchObject({
+      event: "APPROVE",
+      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
     });
   });
 
