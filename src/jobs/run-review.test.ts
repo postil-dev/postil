@@ -1,6 +1,26 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock env first so the module uses test values
+const githubMock = vi.hoisted(() => ({
+  request: vi.fn(),
+  reviews: [] as Record<string, unknown>[],
+  reviewComments: [] as Record<string, unknown>[],
+  issueComments: [] as Record<string, unknown>[],
+  postedReviews: [] as Record<string, unknown>[],
+}));
+
+const openRouterMock = vi.hoisted(() => ({
+  body: null as unknown,
+  content: '{"summary":"ok","findings":[]}',
+}));
+
+const configMock = vi.hoisted(() => ({
+  review: {
+    enabled: true,
+    on_clean: "approve" as "approve" | "skip",
+    auto_merge: false,
+  },
+}));
+
 vi.mock("@/lib/env", () => ({
   env: {
     OPENROUTER_API_KEY: "test-openrouter-key",
@@ -9,90 +29,26 @@ vi.mock("@/lib/env", () => ({
   },
 }));
 
-// Track the last OpenRouter request body to assert on it
-let capturedOpenRouterBody: unknown = null;
-
 vi.mock("@/lib/github", () => ({
   installationOctokit: vi.fn().mockResolvedValue({
-    request: vi.fn().mockImplementation((path: string) => {
-      // Return mock review comments (must check before /reviews so it doesn't
-      // get caught by the broader "/reviews" substring match)
-      if (path.includes("/comments") && path.includes("pulls")) {
-        return Promise.resolve({
-          data: [
-            {
-              id: 10,
-              user: { login: "reviewer-alice" },
-              path: "src/index.ts",
-              line: 42,
-              body: "Consider using a constant here.",
-            },
-          ],
-        });
-      }
-      // Return mock reviews: one APPROVED, one DISMISSED with dismissal message
-      if (path.includes("/reviews")) {
-        return Promise.resolve({
-          data: [
-            {
-              id: 1,
-              state: "APPROVED",
-              user: { login: "reviewer-alice" },
-              body: "LGTM, nice fix",
-              commit_id: "abc123",
-            },
-            {
-              id: 2,
-              state: "DISMISSED",
-              user: { login: "reviewer-bob" },
-              body: "Please address the comments",
-              commit_id: "def456",
-              dismissal_message: "Approve without commentary unless something concrete to say",
-            },
-          ],
-        });
-      }
-      // Return mock issue comments
-      if (path.includes("/issues/{issue_number}/comments")) {
-        return Promise.resolve({
-          data: [
-            {
-              id: 20,
-              user: { login: "contributor-carol" },
-              body: "Addressed in latest push!",
-            },
-          ],
-        });
-      }
-      // Return mock PR diff
-      if (path.includes("pulls/{pull_number}") && !path.includes("comments")) {
-        return Promise.resolve({ data: "mock-diff-content" });
-      }
-      return Promise.resolve({ data: [] });
-    }),
+    request: githubMock.request,
   }),
 }));
 
 vi.mock("@/lib/config", () => ({
-  loadReviewConfig: vi.fn().mockResolvedValue({
+  loadReviewConfig: vi.fn().mockImplementation(async () => ({
     config: {
       enabled: true,
-      severityThreshold: "warn" as const,
+      severityThreshold: "info" as const,
       ignore: [],
       maxFindings: 20,
-      review: {
-        enabled: true,
-        on_clean: "approve" as const,
-        auto_merge: false,
-      },
+      review: { ...configMock.review },
     },
-  }),
+  })),
 }));
 
-// Spy on global fetch for OpenRouter
 const fetchSpy = vi.spyOn(globalThis, "fetch");
 
-// Import runReview after all mocks are set up
 const { runReview } = await import("./run-review");
 
 const PAYLOAD = {
@@ -104,17 +60,113 @@ const PAYLOAD = {
   reviewId: undefined as string | undefined,
 };
 
+function latestPostedReview() {
+  return githubMock.postedReviews.at(-1);
+}
+
 describe("runReview", () => {
   beforeEach(() => {
+    githubMock.reviews = [
+      {
+        id: 1,
+        state: "CHANGES_REQUESTED",
+        user: { login: "reviewer-alice" },
+        body: "Please keep the guard clause here.",
+        commit_id: "abc123",
+        submitted_at: "2026-05-18T01:00:00Z",
+      },
+      {
+        id: 2,
+        state: "DISMISSED",
+        user: { login: "reviewer-bob" },
+        body: "Please address the comments",
+        commit_id: "def456",
+        dismissal_message: "Approve without commentary unless something concrete to say",
+        submitted_at: "2026-05-18T02:00:00Z",
+      },
+      {
+        id: 3,
+        state: "APPROVED",
+        user: { login: "reviewer-alice" },
+        body: "LGTM, nice fix",
+        commit_id: "ghi789",
+        submitted_at: "2026-05-18T03:00:00Z",
+      },
+      {
+        id: 4,
+        state: "COMMENTED",
+        user: { login: "reviewer-dana" },
+        body: "This still needs a regression test.",
+        commit_id: "jkl012",
+        submitted_at: "2026-05-18T04:00:00Z",
+      },
+      {
+        id: 5,
+        state: "COMMENTED",
+        user: { login: "reviewer-empty" },
+        body: "",
+        commit_id: "mno345",
+        submitted_at: "2026-05-18T05:00:00Z",
+      },
+    ];
+    githubMock.reviewComments = [
+      {
+        id: 10,
+        user: { login: "reviewer-alice" },
+        path: "src/index.ts",
+        line: 42,
+        body: "Consider using a constant here.",
+        created_at: "2026-05-18T02:30:00Z",
+      },
+    ];
+    githubMock.issueComments = [
+      {
+        id: 20,
+        user: { login: "contributor-carol" },
+        body: "Addressed in latest push!",
+        created_at: "2026-05-18T03:30:00Z",
+      },
+    ];
+    githubMock.postedReviews = [];
+    configMock.review = {
+      enabled: true,
+      on_clean: "approve",
+      auto_merge: false,
+    };
+    githubMock.request.mockReset();
+    githubMock.request.mockImplementation((path: string, params?: Record<string, unknown>) => {
+      const page = Number(params?.page ?? 1);
+      const pageOf = (items: Record<string, unknown>[]) =>
+        items.slice((page - 1) * 100, page * 100);
+      if (path.includes("/comments") && path.includes("pulls")) {
+        return Promise.resolve({ data: pageOf(githubMock.reviewComments) });
+      }
+      if (path.includes("/reviews") && path.startsWith("GET")) {
+        return Promise.resolve({ data: pageOf(githubMock.reviews) });
+      }
+      if (path.includes("/reviews") && path.startsWith("POST")) {
+        githubMock.postedReviews.push(params ?? {});
+        return Promise.resolve({ data: { id: 99 } });
+      }
+      if (path.includes("/issues/{issue_number}/comments")) {
+        return Promise.resolve({ data: pageOf(githubMock.issueComments) });
+      }
+      if (path.includes("pulls/{pull_number}") && !path.includes("comments")) {
+        return Promise.resolve({ data: "mock-diff-content" });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    openRouterMock.body = null;
+    openRouterMock.content = '{"summary":"ok","findings":[]}';
     fetchSpy.mockReset();
-    capturedOpenRouterBody = null;
     fetchSpy.mockImplementation(async (url: unknown, init?: RequestInit) => {
       const urlStr = typeof url === "string" ? url : (url as Request).url;
       if (urlStr?.includes("openrouter")) {
-        capturedOpenRouterBody = init ? JSON.parse(init.body as string) : null;
+        openRouterMock.body = init ? JSON.parse(init.body as string) : null;
         return new Response(
           JSON.stringify({
-            choices: [{ message: { content: '{"summary":"ok","findings":[]}' } }],
+            choices: [{ message: { content: openRouterMock.content } }],
             usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 },
           }),
           { status: 200 },
@@ -124,35 +176,218 @@ describe("runReview", () => {
     });
   });
 
-  it("includes PR review thread context in the OpenRouter prompt", async () => {
+  it("includes newest substantive human review feedback in the OpenRouter prompt", async () => {
     await runReview(PAYLOAD);
 
-    expect(capturedOpenRouterBody).not.toBeNull();
-    const body = capturedOpenRouterBody as {
+    expect(openRouterMock.body).not.toBeNull();
+    const body = openRouterMock.body as {
       messages?: { role: string; content: string }[];
     };
-    const userMessage = body.messages?.find((m) => m.role === "user");
-    expect(userMessage).toBeDefined();
+    const content = body.messages?.find((m) => m.role === "user")?.content ?? "";
 
-    const content = userMessage!.content;
-    // Should include the prior review thread
-    expect(content).toContain("Existing reviews:");
-    // Should include the APPROVED review
-    expect(content).toContain("reviewer-alice");
-    expect(content).toContain("APPROVED");
-    // Should include the DISMISSED review
-    expect(content).toContain("reviewer-bob");
-    expect(content).toContain("DISMISSED");
-    // Should include the dismissal message
+    expect(content).toContain("Review events:");
+    expect(content).toContain("Human review feedback (newest first):");
+    expect(content).toContain("This still needs a regression test.");
+    expect(content).toContain("Please keep the guard clause here.");
     expect(content).toContain("Approve without commentary unless something concrete to say");
-    // Should include inline review comment
+    expect(content).not.toContain("reviewer-empty");
+    expect(content.indexOf("This still needs a regression test.")).toBeLessThan(
+      content.indexOf("Please keep the guard clause here."),
+    );
     expect(content).toContain("Inline comments (unresolved):");
     expect(content).toContain("src/index.ts");
-    expect(content).toContain("42");
-    // Should include issue comment
     expect(content).toContain("PR comments:");
     expect(content).toContain("contributor-carol");
-    // Should still include the diff
     expect(content).toContain("mock-diff-content");
+  });
+
+  it("ends clean posted reviews with a status line", async () => {
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toMatchObject({
+      event: "APPROVE",
+      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+    });
+  });
+
+  it("ends findings reviews with a status line", async () => {
+    openRouterMock.content = JSON.stringify({
+      summary: "Needs work.",
+      findings: [
+        {
+          path: "src/index.ts",
+          line: 42,
+          severity: "warn",
+          body: "This can throw.",
+        },
+        {
+          path: "src/index.ts",
+          line: 43,
+          severity: "info",
+          body: "Consider clarifying this.",
+        },
+      ],
+    });
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toMatchObject({
+      event: "COMMENT",
+      body:
+        "Needs work.\n\n" +
+        "Postil status: needs-attention | errors=0 warnings=1 info=1 inline_comments=2",
+    });
+  });
+
+  it("does not auto-approve clean results while human change requests are outstanding", async () => {
+    githubMock.reviewComments = [];
+    githubMock.reviews = [
+      {
+        id: 1,
+        state: "CHANGES_REQUESTED",
+        user: { login: "reviewer-alice" },
+        body: "Please keep the guard clause here.",
+        commit_id: "abc123",
+        submitted_at: "2026-05-18T01:00:00Z",
+      },
+      {
+        id: 2,
+        state: "COMMENTED",
+        user: { login: "reviewer-dana" },
+        body: "This still needs a regression test.",
+        commit_id: "jkl012",
+        submitted_at: "2026-05-18T04:00:00Z",
+      },
+    ];
+
+    await runReview(PAYLOAD);
+
+    const postedReview = latestPostedReview();
+    expect(postedReview).toMatchObject({
+      event: "COMMENT",
+      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+    });
+    const body = openRouterMock.body as {
+      messages?: { role: string; content: string }[];
+    };
+    const content = body.messages?.find((m) => m.role === "user")?.content ?? "";
+    expect(content).toContain("Outstanding change requests: @reviewer-alice");
+    expect(content).toContain("This still needs a regression test.");
+  });
+
+  it("does not auto-approve clean results while commented reviews remain", async () => {
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    githubMock.reviews = [
+      {
+        id: 1,
+        state: "COMMENTED",
+        user: { login: "reviewer-dana" },
+        body: "This still needs a regression test.",
+        commit_id: "jkl012",
+        submitted_at: "2026-05-18T04:00:00Z",
+      },
+    ];
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toMatchObject({
+      event: "COMMENT",
+      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+    });
+  });
+
+  it("does not auto-approve clean results while inline or PR comments remain", async () => {
+    githubMock.reviews = [];
+    githubMock.reviewComments = [
+      {
+        id: 10,
+        user: { login: "reviewer-alice" },
+        path: "src/index.ts",
+        line: 42,
+        body: "Consider using a constant here.",
+        created_at: "2026-05-18T02:30:00Z",
+      },
+    ];
+    githubMock.issueComments = [
+      {
+        id: 20,
+        user: { login: "contributor-carol" },
+        body: "Addressed in latest push!",
+        created_at: "2026-05-18T03:30:00Z",
+      },
+    ];
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toMatchObject({
+      event: "COMMENT",
+      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+    });
+  });
+
+  it("paginates review history before reducing substantive feedback", async () => {
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    githubMock.reviews = [
+      ...Array.from({ length: 100 }, (_, i) => ({
+        id: i + 1,
+        state: "COMMENTED",
+        user: { login: `reviewer-empty-${i}` },
+        body: "",
+        commit_id: `empty-${i}`,
+        submitted_at: `2026-05-18T05:${String(i % 60).padStart(2, "0")}:00Z`,
+      })),
+      {
+        id: 101,
+        state: "COMMENTED",
+        user: { login: "reviewer-page-two" },
+        body: "Second page feedback still matters.",
+        commit_id: "page-two",
+        submitted_at: "2026-05-18T04:00:00Z",
+      },
+    ];
+
+    await runReview(PAYLOAD);
+
+    const body = openRouterMock.body as {
+      messages?: { role: string; content: string }[];
+    };
+    const content = body.messages?.find((m) => m.role === "user")?.content ?? "";
+    expect(content).toContain("Second page feedback still matters.");
+    expect(content).toContain("reviewer-page-two");
+  });
+
+  it("respects on_clean skip only when no human feedback needs attention", async () => {
+    configMock.review.on_clean = "skip";
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toBeUndefined();
+
+    githubMock.reviews = [
+      {
+        id: 1,
+        state: "COMMENTED",
+        user: { login: "reviewer-dana" },
+        body: "This still needs a regression test.",
+        commit_id: "jkl012",
+        submitted_at: "2026-05-18T04:00:00Z",
+      },
+    ];
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toMatchObject({
+      event: "COMMENT",
+      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+    });
   });
 });

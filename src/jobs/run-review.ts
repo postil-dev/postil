@@ -45,8 +45,15 @@ type ReviewThreadEvent = {
   author: string;
   body: string;
   state?: string;
+  timestamp?: string;
   path?: string;
   line?: number | null;
+};
+
+type ReviewContext = {
+  prompt: string;
+  outstandingChangeRequestReviewers: string[];
+  hasUnresolvedHumanFeedback: boolean;
 };
 
 const SYSTEM_PROMPT = `
@@ -86,21 +93,90 @@ function parseEnvelope(text: string, usage: TokenUsage): ReviewEnvelope {
   return { summary: text.trim().slice(0, 4000), findings: [], usage };
 }
 
-function formatReviewContext(items: ReviewThreadEvent[]): string {
+function hasSubstantiveBody(item: ReviewThreadEvent): boolean {
+  return item.body.trim() !== "";
+}
+
+function sortNewestFirst(items: ReviewThreadEvent[]): ReviewThreadEvent[] {
+  return [...items].sort((a, b) => {
+    const aTime = a.timestamp ? Date.parse(a.timestamp) : 0;
+    const bTime = b.timestamp ? Date.parse(b.timestamp) : 0;
+    return bTime - aTime;
+  });
+}
+
+function outstandingChangeRequestReviewers(items: ReviewThreadEvent[]): string[] {
+  const latestStateByAuthor = new Map<string, string>();
+  const reviews = [...items]
+    .filter((item) => item.kind === "review" && item.state)
+    .sort((a, b) => {
+      const aTime = a.timestamp ? Date.parse(a.timestamp) : 0;
+      const bTime = b.timestamp ? Date.parse(b.timestamp) : 0;
+      return aTime - bTime;
+    });
+
+  for (const item of reviews) {
+    if (item.state === "CHANGES_REQUESTED" || item.state === "APPROVED") {
+      latestStateByAuthor.set(item.author, item.state);
+    }
+  }
+
+  return [...latestStateByAuthor.entries()]
+    .filter(([, state]) => state === "CHANGES_REQUESTED")
+    .map(([author]) => author)
+    .sort();
+}
+
+function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
   if (!items.length) {
-    return "";
+    return {
+      prompt: "",
+      outstandingChangeRequestReviewers: [],
+      hasUnresolvedHumanFeedback: false,
+    };
   }
 
   const quote = (body: string) => `"${body.slice(0, 300)}"`;
   const lines: string[] = [];
-  const reviews = items.filter((item) => item.kind === "review").slice(0, 5);
-  const inlineComments = items.filter((item) => item.kind === "review-comment").slice(0, 5);
-  const issueComments = items.filter((item) => item.kind === "issue-comment").slice(0, 3);
+  const reviewItems = sortNewestFirst(items.filter((item) => item.kind === "review"));
+  const substantiveReviews = reviewItems.filter(hasSubstantiveBody).slice(0, 10);
+  const inlineComments = sortNewestFirst(
+    items.filter((item) => item.kind === "review-comment" && hasSubstantiveBody(item)),
+  ).slice(0, 10);
+  const issueComments = sortNewestFirst(
+    items.filter((item) => item.kind === "issue-comment" && hasSubstantiveBody(item)),
+  ).slice(0, 5);
+  const outstandingReviewers = outstandingChangeRequestReviewers(items);
+  const hasUnresolvedHumanFeedback =
+    outstandingReviewers.length > 0 ||
+    substantiveReviews.some((item) => item.state === "COMMENTED") ||
+    inlineComments.length > 0 ||
+    issueComments.length > 0;
 
-  if (reviews.length) {
-    lines.push("Existing reviews:");
-    for (const item of reviews) {
-      lines.push(`- [${item.state}] @${item.author}: ${quote(item.body)}`);
+  if (reviewItems.length) {
+    const stateCounts = reviewItems.reduce<Record<string, number>>((counts, item) => {
+      const state = item.state ?? "UNKNOWN";
+      counts[state] = (counts[state] ?? 0) + 1;
+      return counts;
+    }, {});
+    const summary = Object.entries(stateCounts)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([state, count]) => `${state}=${count}`)
+      .join(" ");
+    lines.push(`Review events: ${summary}`);
+    if (outstandingReviewers.length) {
+      lines.push(
+        `Outstanding change requests: ${outstandingReviewers.map((a) => `@${a}`).join(", ")}`,
+      );
+    }
+    lines.push("");
+  }
+
+  if (substantiveReviews.length) {
+    lines.push("Human review feedback (newest first):");
+    for (const item of substantiveReviews) {
+      const timestamp = item.timestamp ? ` at ${item.timestamp}` : "";
+      lines.push(`- [${item.state}] @${item.author}${timestamp}: ${quote(item.body)}`);
     }
   }
 
@@ -122,7 +198,36 @@ function formatReviewContext(items: ReviewThreadEvent[]): string {
     }
   }
 
-  return lines.join("\n");
+  return {
+    prompt: lines.join("\n"),
+    outstandingChangeRequestReviewers: outstandingReviewers,
+    hasUnresolvedHumanFeedback,
+  };
+}
+
+async function fetchPaginated(
+  octokit: Octokit,
+  route: string,
+  params: Record<string, unknown>,
+): Promise<unknown[]> {
+  const perPage = 100;
+  const items: unknown[] = [];
+
+  for (let page = 1; ; page++) {
+    const res = await octokit.request(route, {
+      ...params,
+      per_page: perPage,
+      page,
+    });
+    if (!Array.isArray(res.data)) {
+      return items;
+    }
+
+    items.push(...res.data);
+    if (res.data.length < perPage) {
+      return items;
+    }
+  }
 }
 
 async function fetchReviewContext(
@@ -130,33 +235,30 @@ async function fetchReviewContext(
   owner: string,
   repo: string,
   pullNumber: number,
-): Promise<string> {
+): Promise<ReviewContext> {
   try {
     const [reviewsRes, reviewCommentRes, issueCommentRes] = await Promise.all([
-      octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+      fetchPaginated(octokit, "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
         owner,
         repo,
         pull_number: pullNumber,
-        per_page: 30,
       }),
-      octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/comments", {
+      fetchPaginated(octokit, "GET /repos/{owner}/{repo}/pulls/{pull_number}/comments", {
         owner,
         repo,
         pull_number: pullNumber,
-        per_page: 30,
       }),
-      octokit.request("GET /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+      fetchPaginated(octokit, "GET /repos/{owner}/{repo}/issues/{issue_number}/comments", {
         owner,
         repo,
         issue_number: pullNumber,
-        per_page: 10,
       }),
     ]);
 
     const items: ReviewThreadEvent[] = [];
 
-    if (Array.isArray(reviewsRes.data)) {
-      for (const rawReview of reviewsRes.data) {
+    if (Array.isArray(reviewsRes)) {
+      for (const rawReview of reviewsRes) {
         const state = String((rawReview as { state?: unknown }).state ?? "");
         if (!ALLOWED_REVIEW_STATES.has(state)) continue;
         const body = String((rawReview as { body?: unknown }).body ?? "").trim();
@@ -165,39 +267,53 @@ async function fetchReviewContext(
         ).trim();
         const authorObj = (rawReview as { user?: { login?: unknown } | null }).user ?? null;
         const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        const submittedAt = String((rawReview as { submitted_at?: unknown }).submitted_at ?? "");
         items.push({
           kind: "review",
           author,
-          body: [body, dismissalMessage].filter(Boolean).join(" ") || "(no body)",
+          body: [body, dismissalMessage].filter(Boolean).join(" "),
           state,
+          timestamp: submittedAt || undefined,
         });
       }
     }
 
-    if (Array.isArray(reviewCommentRes.data)) {
-      for (const rawComment of reviewCommentRes.data) {
+    if (Array.isArray(reviewCommentRes)) {
+      for (const rawComment of reviewCommentRes) {
         const body = String((rawComment as { body?: unknown }).body ?? "").trim();
         const authorObj = (rawComment as { user?: { login?: unknown } | null }).user ?? null;
         const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
         items.push({
           kind: "review-comment",
           author,
-          body: body || "(no body)",
+          body,
           path: String((rawComment as { path?: unknown }).path ?? ""),
           line: (rawComment as { line?: number | null }).line ?? null,
+          timestamp:
+            String(
+              (rawComment as { updated_at?: unknown; created_at?: unknown }).updated_at ??
+                (rawComment as { created_at?: unknown }).created_at ??
+                "",
+            ) || undefined,
         });
       }
     }
 
-    if (Array.isArray(issueCommentRes.data)) {
-      for (const rawComment of issueCommentRes.data) {
+    if (Array.isArray(issueCommentRes)) {
+      for (const rawComment of issueCommentRes) {
         const body = String((rawComment as { body?: unknown }).body ?? "").trim();
         const authorObj = (rawComment as { user?: { login?: unknown } | null }).user ?? null;
         const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
         items.push({
           kind: "issue-comment",
           author,
-          body: body || "(no body)",
+          body,
+          timestamp:
+            String(
+              (rawComment as { updated_at?: unknown; created_at?: unknown }).updated_at ??
+                (rawComment as { created_at?: unknown }).created_at ??
+                "",
+            ) || undefined,
         });
       }
     }
@@ -205,7 +321,11 @@ async function fetchReviewContext(
     return formatReviewContext(items);
   } catch (err) {
     console.error("[review-context] fetch failed:", err instanceof Error ? err.message : err);
-    return "";
+    return {
+      prompt: "",
+      outstandingChangeRequestReviewers: [],
+      hasUnresolvedHumanFeedback: false,
+    };
   }
 }
 
@@ -250,6 +370,21 @@ function isFinding(x: unknown): x is Finding {
 }
 
 type OpenRouterResult = { content: string; usage: TokenUsage };
+
+function formatReviewStatusLine(
+  envelope: ReviewEnvelope,
+  inlineComments: number,
+  label: string,
+): string {
+  const counts = { error: 0, warn: 0, info: 0 };
+  for (const finding of envelope.findings) counts[finding.severity]++;
+  return `Postil status: ${label} | errors=${counts.error} warnings=${counts.warn} info=${counts.info} inline_comments=${inlineComments}`;
+}
+
+function appendReviewStatusLine(body: string, statusLine: string): string {
+  const trimmed = body.trim();
+  return trimmed ? `${trimmed}\n\n${statusLine}` : statusLine;
+}
 
 async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRouterResult> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
@@ -347,7 +482,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
     const reviewContext = await fetchReviewContext(octokit, owner, repo, payload.pullNumber);
 
-    const { content: modelOutput, usage } = await callOpenRouter(truncated, reviewContext);
+    const { content: modelOutput, usage } = await callOpenRouter(truncated, reviewContext.prompt);
     let envelope = parseEnvelope(modelOutput, usage);
     envelope = applyConfig(envelope, config);
 
@@ -359,22 +494,26 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    // Always post a review — every PR gets both a check-run AND a PR review
-    // (unless review.enabled=false or review.on_clean=skip in .postil.yaml).
-    // Clean PRs with no findings receive an APPROVE. Avoid a body on clean
-    // approvals: the approval state itself is the signal, and filler is noise.
+    // Always post a review when there are findings or human feedback needing attention.
+    // Clean PRs can skip the PR review when review.on_clean=skip in .postil.yaml.
+    // Clean PRs receive an APPROVE only when no unresolved human feedback remains.
     {
       const hasFindings = comments.length > 0;
+      const needsAttention = hasFindings || reviewContext.hasUnresolvedHumanFeedback;
+      const statusLabel = needsAttention ? "needs-attention" : "clean";
+      const statusLine = formatReviewStatusLine(envelope, comments.length, statusLabel);
 
       let shouldPost = config.review.enabled;
-      if (shouldPost && !hasFindings && config.review.on_clean === "skip") {
+      if (shouldPost && !needsAttention && config.review.on_clean === "skip") {
         shouldPost = false;
       }
 
       if (shouldPost) {
-        const event: "APPROVE" | "COMMENT" = hasFindings ? "COMMENT" : "APPROVE";
-        const reviewBody =
-          event === "APPROVE" ? undefined : envelope.summary || "Postil reviewed this PR.";
+        const event: "APPROVE" | "COMMENT" = needsAttention ? "COMMENT" : "APPROVE";
+        const reviewBody = appendReviewStatusLine(
+          envelope.summary || "Postil reviewed this PR.",
+          statusLine,
+        );
         let approved = false;
 
         try {
