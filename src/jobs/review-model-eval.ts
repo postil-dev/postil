@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import type { Finding } from "./run-review";
+import { env } from "@/lib/env";
+import { parseEnvelope, SYSTEM_PROMPT, type Finding, type TokenUsage } from "./run-review";
 import { REVIEW_MODEL_RESEARCH_CANDIDATES } from "./review-models";
 
 type ExpectedFinding = {
@@ -9,15 +10,22 @@ type ExpectedFinding = {
   bodyIncludes?: string;
 };
 
-type ModelOutput = {
+type CaseModelOutput = {
   summary: string;
   findings: Finding[];
 };
 
+type CaseRunOutput = CaseModelOutput & {
+  rawContent: string;
+  modelUsed: string;
+  usage: TokenUsage;
+};
+
 export type ReviewModelEvalCase = {
   id: string;
+  prompt: string;
   expectedFindings: ExpectedFinding[];
-  modelOutputs: Record<string, ModelOutput>;
+  modelOutputs?: Record<string, CaseModelOutput>;
 };
 
 export type ReviewModelEvalResult = {
@@ -32,10 +40,18 @@ export type ReviewModelEvalResult = {
   actionableRate: number;
 };
 
+export type ReviewModelEvalCaseRun = {
+  id: string;
+  prompt: string;
+  expectedFindings: ExpectedFinding[];
+  outputs: Record<string, CaseRunOutput>;
+};
+
 export type ReviewModelEvalReport = {
   candidates: string[];
   recommendedFixturePrimary: string | null;
   results: ReviewModelEvalResult[];
+  caseRuns: ReviewModelEvalCaseRun[];
 };
 
 function matchesExpected(finding: Finding, expected: ExpectedFinding): boolean {
@@ -49,7 +65,10 @@ function roundRate(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
-export function evaluateReviewModelFixtures(cases: ReviewModelEvalCase[]): ReviewModelEvalReport {
+function scoreCaseRuns(caseRuns: ReviewModelEvalCaseRun[]): ReviewModelEvalReport {
+  const candidateOrder = new Map(
+    REVIEW_MODEL_RESEARCH_CANDIDATES.map((model, index) => [model, index]),
+  );
   const results = REVIEW_MODEL_RESEARCH_CANDIDATES.map((model) => {
     let expectedActionableFindings = 0;
     let actionableFindings = 0;
@@ -58,9 +77,9 @@ export function evaluateReviewModelFixtures(cases: ReviewModelEvalCase[]): Revie
     let cleanCaseNoiseFindings = 0;
     let severityMismatches = 0;
 
-    for (const evalCase of cases) {
+    for (const evalCase of caseRuns) {
       const expectedFindings = evalCase.expectedFindings;
-      const output = evalCase.modelOutputs[model];
+      const output = evalCase.outputs[model];
       if (!output) {
         missedActionableFindings += expectedFindings.length;
         expectedActionableFindings += expectedFindings.length;
@@ -95,7 +114,7 @@ export function evaluateReviewModelFixtures(cases: ReviewModelEvalCase[]): Revie
 
     return {
       model,
-      cases: cases.length,
+      cases: caseRuns.length,
       expectedActionableFindings,
       actionableFindings,
       missedActionableFindings,
@@ -106,9 +125,6 @@ export function evaluateReviewModelFixtures(cases: ReviewModelEvalCase[]): Revie
     };
   });
 
-  const candidateOrder = new Map(
-    REVIEW_MODEL_RESEARCH_CANDIDATES.map((model, index) => [model, index]),
-  );
   const recommendedFixturePrimary =
     [...results].sort((a, b) => {
       if (b.actionableRate !== a.actionableRate) return b.actionableRate - a.actionableRate;
@@ -125,6 +141,7 @@ export function evaluateReviewModelFixtures(cases: ReviewModelEvalCase[]): Revie
     candidates: [...REVIEW_MODEL_RESEARCH_CANDIDATES],
     recommendedFixturePrimary,
     results,
+    caseRuns,
   };
 }
 
@@ -132,8 +149,90 @@ function loadCases(path: string): ReviewModelEvalCase[] {
   return JSON.parse(readFileSync(path, "utf8")) as ReviewModelEvalCase[];
 }
 
+async function callOpenRouter(model: string, prompt: string): Promise<CaseRunOutput> {
+  if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      signal: controller.signal,
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "content-type": "application/json",
+        "http-referer": "https://postil.dev",
+        "x-title": "Postil",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+        max_tokens: 2500,
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 400)}`);
+    }
+
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+    const rawContent = data.choices?.[0]?.message?.content ?? "";
+    const orUsage = data.usage;
+    const usage: TokenUsage = {
+      promptTokens: orUsage?.prompt_tokens ?? 0,
+      completionTokens: orUsage?.completion_tokens ?? 0,
+      totalTokens: orUsage?.total_tokens ?? 0,
+    };
+    const parsed = parseEnvelope(rawContent, usage, model);
+
+    return {
+      rawContent,
+      summary: parsed.summary,
+      findings: parsed.findings,
+      modelUsed: parsed.modelUsed ?? model,
+      usage,
+    };
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
+}
+
+export async function runReviewModelEvaluation(
+  cases: ReviewModelEvalCase[],
+): Promise<ReviewModelEvalReport> {
+  const caseRuns: ReviewModelEvalCaseRun[] = [];
+
+  for (const evalCase of cases) {
+    const outputs: Record<string, CaseRunOutput> = {};
+    for (const model of REVIEW_MODEL_RESEARCH_CANDIDATES) {
+      outputs[model] = await callOpenRouter(model, evalCase.prompt);
+    }
+
+    caseRuns.push({
+      id: evalCase.id,
+      prompt: evalCase.prompt,
+      expectedFindings: evalCase.expectedFindings,
+      outputs,
+    });
+  }
+
+  return scoreCaseRuns(caseRuns);
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const fixturePath = process.argv[2] ?? "tests/fixtures/review-model-eval/cases.json";
-  const report = evaluateReviewModelFixtures(loadCases(fixturePath));
+  const report = await runReviewModelEvaluation(loadCases(fixturePath));
   console.log(JSON.stringify(report, null, 2));
 }
