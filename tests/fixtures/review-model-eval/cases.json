@@ -1,6 +1,7 @@
 [
   {
     "id": "clean-docs-copy-edit",
+    "prompt": "Review this documentation-only change for correctness bugs. Return no findings unless there is a real bug.",
     "expectedFindings": [],
     "modelOutputs": {
       "deepseek/deepseek-v4-flash": {
@@ -30,6 +31,7 @@
   },
   {
     "id": "missing-null-guard",
+    "prompt": "Review this change for missing null-guard regressions. Flag any path where a user lookup can be null before profile access.",
     "expectedFindings": [
       {
         "path": "src/user.ts",
@@ -86,6 +88,7 @@
   },
   {
     "id": "auth-bypass",
+    "prompt": "Review this change for authorization regressions. Look for any permission check that now runs after a privileged write.",
     "expectedFindings": [
       {
         "path": "src/auth.ts",

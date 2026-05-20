@@ -57,7 +57,7 @@ type ReviewContext = {
   outstandingChangeRequestReviewers: string[];
 };
 
-const SYSTEM_PROMPT = `
+export const SYSTEM_PROMPT = `
 You are Postil, a code reviewer. You receive a unified diff for a pull request
 and produce structured findings as JSON. Rules:
 - Focus on correctness, security, and obvious bugs.
@@ -73,7 +73,7 @@ Reply with ONLY a single JSON object, no prose, no markdown fence:
 }
 `.trim();
 
-function parseEnvelope(text: string, usage: TokenUsage, modelUsed?: string): ReviewEnvelope {
+export function parseEnvelope(text: string, usage: TokenUsage, modelUsed?: string): ReviewEnvelope {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   const raw = fenced ? fenced[1] : text;
   const start = raw.indexOf("{");
