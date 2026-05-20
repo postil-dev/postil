@@ -56,6 +56,9 @@ export async function POST(req: Request): Promise<Response> {
   if (event === "pull_request") {
     await handlePullRequest(payload);
   }
+  if (event === "workflow_run") {
+    await handleWorkflowRun(payload);
+  }
 
   return NextResponse.json({ ok: true });
 }
@@ -69,6 +72,38 @@ type PullRequestPayload = {
   };
   repository: { full_name: string };
   installation?: { id: number };
+};
+
+type WorkflowRunPayload = {
+  action: string;
+  workflow_run: {
+    id: number;
+    name?: string | null;
+    conclusion?: string | null;
+    html_url: string;
+    head_branch?: string | null;
+    head_sha?: string | null;
+    actor?: { login?: string | null } | null;
+    pull_requests?: Array<{ number: number }>;
+  };
+  repository: { full_name: string };
+  installation?: { id: number };
+};
+
+type MinimalOctokit = {
+  request: (route: string, params?: Record<string, unknown>) => Promise<{ data: unknown }>;
+};
+
+type WorkflowJob = {
+  id: number;
+  name: string;
+  conclusion?: string | null;
+  html_url?: string | null;
+  steps?: Array<{
+    name: string;
+    conclusion?: string | null;
+    status?: string | null;
+  }>;
 };
 
 async function handlePullRequest(p: PullRequestPayload): Promise<void> {
@@ -205,4 +240,206 @@ async function handlePullRequest(p: PullRequestPayload): Promise<void> {
     reviewId,
     checkRunId,
   });
+}
+
+async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
+  const { action, workflow_run, repository, installation } = p;
+  if (!installation) return;
+  if (action !== "completed" || workflow_run.conclusion !== "failure") return;
+
+  const pullNumber = workflow_run.pull_requests?.[0]?.number;
+  if (!pullNumber) return;
+
+  const repoFullName = repository.full_name;
+  const [owner, repo] = repoFullName.split("/");
+  const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
+
+  try {
+    if (await recoveryIssueExists(octokit, owner, repo, workflow_run.html_url)) {
+      return;
+    }
+
+    const failedJob = await findFailedWorkflowJob(octokit, owner, repo, workflow_run.id);
+    const excerpt = failedJob
+      ? await readFailureExcerpt(octokit, owner, repo, failedJob.id)
+      : "No failing job log was available.";
+    const branchName = workflow_run.head_branch ?? "unknown";
+    const rootCauseGuess = guessRootCause(excerpt, failedJob?.name ?? workflow_run.name);
+    const assignees = await resolveRecoveryAssignees(
+      octokit,
+      owner,
+      repo,
+      workflow_run.actor?.login ?? null,
+    );
+
+    await octokit.request("POST /repos/{owner}/{repo}/issues", {
+      owner,
+      repo,
+      title: `CI recovery: ${failedJob?.name ?? workflow_run.name ?? "workflow"} failed on #${pullNumber}`,
+      body: buildRecoveryIssueBody({
+        pullNumber,
+        branchName,
+        failingJobName: failedJob?.name ?? workflow_run.name ?? "unknown",
+        failingStepName: findFailingStepName(failedJob),
+        logExcerpt: excerpt,
+        rootCauseGuess,
+        runUrl: workflow_run.html_url,
+      }),
+      labels: ["ci", "recovery"],
+      ...(assignees.length ? { assignees } : {}),
+    });
+
+    track("system", "ci_recovery_issue_created", {
+      repoFullName,
+      pullNumber,
+      branchName,
+      runId: workflow_run.id,
+      jobName: failedJob?.name,
+    });
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "create_ci_recovery_issue",
+        repoFullName,
+        pullNumber,
+        runId: workflow_run.id,
+      },
+    });
+  }
+}
+
+async function recoveryIssueExists(
+  octokit: MinimalOctokit,
+  owner: string,
+  repo: string,
+  runUrl: string,
+): Promise<boolean> {
+  const res = await octokit.request("GET /search/issues", {
+    q: `repo:${owner}/${repo} is:issue "${runUrl}"`,
+    per_page: 1,
+  });
+  return Number((res.data as { total_count?: number }).total_count ?? 0) > 0;
+}
+
+async function findFailedWorkflowJob(
+  octokit: MinimalOctokit,
+  owner: string,
+  repo: string,
+  runId: number,
+): Promise<WorkflowJob | null> {
+  const res = await octokit.request("GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs", {
+    owner,
+    repo,
+    run_id: runId,
+    per_page: 100,
+  });
+  const jobs = (res.data as { jobs?: WorkflowJob[] }).jobs ?? [];
+  return jobs.find((job) => job.conclusion === "failure") ?? null;
+}
+
+async function readFailureExcerpt(
+  octokit: MinimalOctokit,
+  owner: string,
+  repo: string,
+  jobId: number,
+): Promise<string> {
+  const res = await octokit.request("GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs", {
+    owner,
+    repo,
+    job_id: jobId,
+  });
+  const log =
+    typeof res.data === "string" ? res.data : Buffer.from(res.data as ArrayBuffer).toString("utf8");
+  const lines = log
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const firstError = lines.findIndex((line) => /(^|\s)(error|failed|fatal):?/i.test(line));
+  const start = firstError >= 0 ? Math.max(0, firstError - 2) : Math.max(0, lines.length - 12);
+  return lines
+    .slice(start, start + 12)
+    .join("\n")
+    .slice(0, 3_000);
+}
+
+async function resolveRecoveryAssignees(
+  octokit: MinimalOctokit,
+  owner: string,
+  repo: string,
+  branchOwner: string | null,
+): Promise<string[]> {
+  if (branchOwner && (await isRepoCollaborator(octokit, owner, repo, branchOwner))) {
+    return [branchOwner];
+  }
+  return env.CI_RECOVERY_FALLBACK_ASSIGNEE ? [env.CI_RECOVERY_FALLBACK_ASSIGNEE] : [];
+}
+
+async function isRepoCollaborator(
+  octokit: MinimalOctokit,
+  owner: string,
+  repo: string,
+  username: string,
+): Promise<boolean> {
+  try {
+    const res = await octokit.request(
+      "GET /repos/{owner}/{repo}/collaborators/{username}/permission",
+      {
+        owner,
+        repo,
+        username,
+      },
+    );
+    const permission = (res.data as { permission?: string }).permission;
+    return ["admin", "maintain", "write"].includes(permission ?? "");
+  } catch {
+    return false;
+  }
+}
+
+function findFailingStepName(job: WorkflowJob | null): string | null {
+  return job?.steps?.find((step) => step.conclusion === "failure")?.name ?? null;
+}
+
+function guessRootCause(excerpt: string, jobName?: string | null): string {
+  if (/module not found/i.test(excerpt)) {
+    return "A required file or package is missing during the build.";
+  }
+  if (/frozen-lockfile|lockfile/i.test(excerpt)) {
+    return "The dependency lockfile does not match the install inputs.";
+  }
+  if (/docker/i.test(jobName ?? "")) {
+    return "The container build failed before the pull request could pass CI.";
+  }
+  return "The failing job log points to a CI setup or build failure.";
+}
+
+function buildRecoveryIssueBody(input: {
+  pullNumber: number;
+  branchName: string;
+  failingJobName: string;
+  failingStepName: string | null;
+  logExcerpt: string;
+  rootCauseGuess: string;
+  runUrl: string;
+}): string {
+  const failingCheck = input.failingStepName
+    ? `${input.failingJobName} / ${input.failingStepName}`
+    : input.failingJobName;
+
+  return [
+    `PR: #${input.pullNumber}`,
+    `Branch: ${input.branchName}`,
+    `Failing check: ${failingCheck}`,
+    `Run: ${input.runUrl}`,
+    "",
+    "Work on the pull request branch, not the default branch.",
+    "",
+    "Root-cause guess:",
+    input.rootCauseGuess,
+    "",
+    "Log excerpt:",
+    "```text",
+    input.logExcerpt || "No failing job log was available.",
+    "```",
+  ].join("\n");
 }
