@@ -133,15 +133,15 @@ jobs:
     # Only run on PRs — skip push-to-main (postil/review is a PR-only gate).
     if: github.event_name != 'push' && github.ref != 'refs/heads/main'
     # Give the webhook time to create and complete the check-run.
-    timeout-minutes: 8
+    timeout-minutes: 13
     steps:
       - name: Check review gate
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
-        timeout-minutes: 7
+        timeout-minutes: 12
         with:
           script: |
             const POLL_INTERVAL_MS = 15_000;
-            const MAX_POLLS = 20;          // 20 × 15s = 5 min
+            const MAX_POLLS = 44;          // 44 × 15s = 11 min
             const INITIAL_DELAY_MS = 30_000; // wait 30s for webhook to fire
 
             function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -182,7 +182,7 @@ jobs:
                 console.log(`Attempt ${attempt}/${MAX_POLLS}: check not found yet.`);
                 if (attempt === MAX_POLLS) {
                   core.setFailed(
-                    `postil/review check was never created on ${headSha} after ~5 minutes. ` +
+                    `postil/review check was never created on ${headSha} after ~11 minutes. ` +
                     'The Postil webhook may be misconfigured or down.'
                   );
                   return;
@@ -195,7 +195,7 @@ jobs:
                 console.log(`Attempt ${attempt}/${MAX_POLLS}: check ${check.status}...`);
                 if (attempt === MAX_POLLS) {
                   core.setFailed(
-                    `postil/review check did not complete after ~5 minutes (still ${check.status}). ` +
+                    `postil/review check did not complete after ~11 minutes (still ${check.status}). ` +
                     'The review may be stuck or taking too long.'
                   );
                   return;

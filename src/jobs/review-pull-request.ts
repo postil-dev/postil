@@ -69,7 +69,7 @@ export const reviewPullRequest = task({
         pullNumber: payload.pullNumber,
         findings: result.findings.length,
         durationMs: Date.now() - started,
-        modelUsed: env.REVIEW_MODEL,
+        modelUsed: result.modelUsed ?? env.REVIEW_MODEL,
         installationHash: hashInstallationId(payload.installationId),
       });
 
