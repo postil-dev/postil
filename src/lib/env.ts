@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * Zod-validated environment. Pulls from process.env, which in local dev is
- * populated from .env.local. Env var names match ~/.env / the registered
+ * populated from .env.local. Env var names match deployed service
  * services where possible (NEON_CONNECTION_STRING, FLY_ORG_TOKEN, etc).
  */
 const schema = z.object({
