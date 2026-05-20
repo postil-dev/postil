@@ -53,7 +53,6 @@ type ReviewThreadEvent = {
 type ReviewContext = {
   prompt: string;
   outstandingChangeRequestReviewers: string[];
-  hasUnresolvedHumanFeedback: boolean;
 };
 
 const SYSTEM_PROMPT = `
@@ -116,7 +115,11 @@ function outstandingChangeRequestReviewers(items: ReviewThreadEvent[]): string[]
     });
 
   for (const item of reviews) {
-    if (item.state === "CHANGES_REQUESTED" || item.state === "APPROVED") {
+    if (
+      item.state === "CHANGES_REQUESTED" ||
+      item.state === "APPROVED" ||
+      item.state === "DISMISSED"
+    ) {
       latestStateByAuthor.set(item.author, item.state);
     }
   }
@@ -132,7 +135,6 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
-      hasUnresolvedHumanFeedback: false,
     };
   }
 
@@ -147,12 +149,6 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
     items.filter((item) => item.kind === "issue-comment" && hasSubstantiveBody(item)),
   ).slice(0, 5);
   const outstandingReviewers = outstandingChangeRequestReviewers(items);
-  const hasUnresolvedHumanFeedback =
-    outstandingReviewers.length > 0 ||
-    substantiveReviews.some((item) => item.state === "COMMENTED") ||
-    inlineComments.length > 0 ||
-    issueComments.length > 0;
-
   if (reviewItems.length) {
     const stateCounts = reviewItems.reduce<Record<string, number>>((counts, item) => {
       const state = item.state ?? "UNKNOWN";
@@ -182,7 +178,7 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
 
   if (inlineComments.length) {
     if (lines.length) lines.push("");
-    lines.push("Inline comments (unresolved):");
+    lines.push("Inline comments:");
     for (const item of inlineComments) {
       lines.push(
         `- @${item.author} at ${item.path}:${item.line ?? "unknown"}: ${quote(item.body)}`,
@@ -201,7 +197,6 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
   return {
     prompt: lines.join("\n"),
     outstandingChangeRequestReviewers: outstandingReviewers,
-    hasUnresolvedHumanFeedback,
   };
 }
 
@@ -209,11 +204,14 @@ async function fetchPaginated(
   octokit: Octokit,
   route: string,
   params: Record<string, unknown>,
+  options: { maxPages?: number; maxItems?: number } = {},
 ): Promise<unknown[]> {
   const perPage = 100;
+  const maxPages = options.maxPages ?? 5;
+  const maxItems = options.maxItems ?? 300;
   const items: unknown[] = [];
 
-  for (let page = 1; ; page++) {
+  for (let page = 1; page <= maxPages && items.length < maxItems; page++) {
     const res = await octokit.request(route, {
       ...params,
       per_page: perPage,
@@ -223,11 +221,14 @@ async function fetchPaginated(
       return items;
     }
 
-    items.push(...res.data);
-    if (res.data.length < perPage) {
+    const remaining = maxItems - items.length;
+    items.push(...res.data.slice(0, remaining));
+    if (res.data.length < perPage || items.length >= maxItems) {
       return items;
     }
   }
+
+  return items;
 }
 
 async function fetchReviewContext(
@@ -324,7 +325,6 @@ async function fetchReviewContext(
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
-      hasUnresolvedHumanFeedback: false,
     };
   }
 }
@@ -494,12 +494,13 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    // Always post a review when there are findings or human feedback needing attention.
+    // Always post a review when there are findings or explicit change requests.
     // Clean PRs can skip the PR review when review.on_clean=skip in .postil.yaml.
-    // Clean PRs receive an APPROVE only when no unresolved human feedback remains.
     {
       const hasFindings = comments.length > 0;
-      const needsAttention = hasFindings || reviewContext.hasUnresolvedHumanFeedback;
+      const hasOutstandingChangeRequests =
+        reviewContext.outstandingChangeRequestReviewers.length > 0;
+      const needsAttention = hasFindings || hasOutstandingChangeRequests;
       const statusLabel = needsAttention ? "needs-attention" : "clean";
       const statusLine = formatReviewStatusLine(envelope, comments.length, statusLabel);
 
@@ -591,15 +592,32 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     if (payload.checkRunId) {
       const counts = { error: 0, warn: 0, info: 0 };
       for (const f of envelope.findings) counts[f.severity]++;
+      const hasOutstandingChangeRequests =
+        reviewContext.outstandingChangeRequestReviewers.length > 0;
+      const changeRequestSummary = hasOutstandingChangeRequests
+        ? `Outstanding change requests: ${reviewContext.outstandingChangeRequestReviewers
+            .map((a) => `@${a}`)
+            .join(", ")}`
+        : "";
       const title = counts.error
         ? `${counts.error} error${counts.error > 1 ? "s" : ""}`
         : counts.warn
           ? `${counts.warn} warning${counts.warn > 1 ? "s" : ""}`
-          : "No issues";
-      const outputText = envelope.findings.length
-        ? "See inline review comments."
-        : "No issues found.";
-      const conclusion = counts.error ? "failure" : counts.warn ? "neutral" : "success";
+          : hasOutstandingChangeRequests
+            ? `${reviewContext.outstandingChangeRequestReviewers.length} change request${reviewContext.outstandingChangeRequestReviewers.length > 1 ? "s" : ""}`
+            : "No issues";
+      const outputText = hasOutstandingChangeRequests
+        ? changeRequestSummary
+        : envelope.findings.length
+          ? "See inline review comments."
+          : "No issues found.";
+      const conclusion = hasOutstandingChangeRequests
+        ? "failure"
+        : counts.error
+          ? "failure"
+          : counts.warn
+            ? "neutral"
+            : "success";
       try {
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
           owner,
@@ -610,11 +628,12 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           completed_at: new Date().toISOString(),
           output: {
             title,
-            summary:
-              envelope.summary ||
-              (counts.error || counts.warn || counts.info
-                ? "See inline review comments."
-                : "No issues found."),
+            summary: hasOutstandingChangeRequests
+              ? [envelope.summary, changeRequestSummary].filter(Boolean).join("\n\n")
+              : envelope.summary ||
+                (counts.error || counts.warn || counts.info
+                  ? "See inline review comments."
+                  : "No issues found."),
             text: outputText,
           },
         });

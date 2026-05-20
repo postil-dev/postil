@@ -6,6 +6,7 @@ const githubMock = vi.hoisted(() => ({
   reviewComments: [] as Record<string, unknown>[],
   issueComments: [] as Record<string, unknown>[],
   postedReviews: [] as Record<string, unknown>[],
+  checkRunUpdates: [] as Record<string, unknown>[],
 }));
 
 const openRouterMock = vi.hoisted(() => ({
@@ -62,6 +63,10 @@ const PAYLOAD = {
 
 function latestPostedReview() {
   return githubMock.postedReviews.at(-1);
+}
+
+function latestCheckRunUpdate() {
+  return githubMock.checkRunUpdates.at(-1);
 }
 
 describe("runReview", () => {
@@ -128,6 +133,7 @@ describe("runReview", () => {
       },
     ];
     githubMock.postedReviews = [];
+    githubMock.checkRunUpdates = [];
     configMock.review = {
       enabled: true,
       on_clean: "approve",
@@ -147,6 +153,10 @@ describe("runReview", () => {
       if (path.includes("/reviews") && path.startsWith("POST")) {
         githubMock.postedReviews.push(params ?? {});
         return Promise.resolve({ data: { id: 99 } });
+      }
+      if (path.includes("/check-runs/") && path.startsWith("PATCH")) {
+        githubMock.checkRunUpdates.push(params ?? {});
+        return Promise.resolve({ data: { id: Number(params?.check_run_id ?? 0) } });
       }
       if (path.includes("/issues/{issue_number}/comments")) {
         return Promise.resolve({ data: pageOf(githubMock.issueComments) });
@@ -176,7 +186,7 @@ describe("runReview", () => {
     });
   });
 
-  it("includes newest substantive human review feedback in the OpenRouter prompt", async () => {
+  it("includes newest substantive review context in the OpenRouter prompt", async () => {
     await runReview(PAYLOAD);
 
     expect(openRouterMock.body).not.toBeNull();
@@ -194,7 +204,7 @@ describe("runReview", () => {
     expect(content.indexOf("This still needs a regression test.")).toBeLessThan(
       content.indexOf("Please keep the guard clause here."),
     );
-    expect(content).toContain("Inline comments (unresolved):");
+    expect(content).toContain("Inline comments:");
     expect(content).toContain("src/index.ts");
     expect(content).toContain("PR comments:");
     expect(content).toContain("contributor-carol");
@@ -264,24 +274,24 @@ describe("runReview", () => {
       },
     ];
 
-    await runReview(PAYLOAD);
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
 
     const postedReview = latestPostedReview();
     expect(postedReview).toMatchObject({
       event: "COMMENT",
       body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
     });
-    const body = openRouterMock.body as {
-      messages?: { role: string; content: string }[];
-    };
-    const content = body.messages?.find((m) => m.role === "user")?.content ?? "";
-    expect(content).toContain("Outstanding change requests: @reviewer-alice");
-    expect(content).toContain("This still needs a regression test.");
+    expect(latestCheckRunUpdate()).toMatchObject({
+      conclusion: "failure",
+      output: {
+        title: "1 change request",
+        summary: expect.stringContaining("Outstanding change requests: @reviewer-alice"),
+        text: "Outstanding change requests: @reviewer-alice",
+      },
+    });
   });
 
-  it("does not auto-approve clean results while commented reviews remain", async () => {
-    githubMock.reviewComments = [];
-    githubMock.issueComments = [];
+  it("still approves clean results while commented reviews remain", async () => {
     githubMock.reviews = [
       {
         id: 1,
@@ -296,12 +306,12 @@ describe("runReview", () => {
     await runReview(PAYLOAD);
 
     expect(latestPostedReview()).toMatchObject({
-      event: "COMMENT",
-      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+      event: "APPROVE",
+      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
     });
   });
 
-  it("does not auto-approve clean results while inline or PR comments remain", async () => {
+  it("still approves clean results while inline or PR comments remain", async () => {
     githubMock.reviews = [];
     githubMock.reviewComments = [
       {
@@ -325,8 +335,39 @@ describe("runReview", () => {
     await runReview(PAYLOAD);
 
     expect(latestPostedReview()).toMatchObject({
-      event: "COMMENT",
-      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+      event: "APPROVE",
+      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+    });
+  });
+
+  it("lets dismissed change requests stop blocking approval", async () => {
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    githubMock.reviews = [
+      {
+        id: 1,
+        state: "CHANGES_REQUESTED",
+        user: { login: "reviewer-alice" },
+        body: "Please keep the guard clause here.",
+        commit_id: "abc123",
+        submitted_at: "2026-05-18T01:00:00Z",
+      },
+      {
+        id: 2,
+        state: "DISMISSED",
+        user: { login: "reviewer-alice" },
+        body: "Dismissed after follow-up.",
+        commit_id: "def456",
+        dismissal_message: "No longer relevant",
+        submitted_at: "2026-05-18T02:00:00Z",
+      },
+    ];
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toMatchObject({
+      event: "APPROVE",
+      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
     });
   });
 
@@ -375,7 +416,7 @@ describe("runReview", () => {
     githubMock.reviews = [
       {
         id: 1,
-        state: "COMMENTED",
+        state: "CHANGES_REQUESTED",
         user: { login: "reviewer-dana" },
         body: "This still needs a regression test.",
         commit_id: "jkl012",
