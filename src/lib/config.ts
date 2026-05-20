@@ -29,7 +29,7 @@ const PostilConfig = z.object({
   review: z
     .object({
       enabled: z.boolean().default(true),
-      on_clean: z.enum(["approve", "comment", "skip"]).default("approve"),
+      on_clean: z.enum(["approve", "skip"]).default("approve"),
       auto_merge: z.boolean().default(false),
     })
     .default({ enabled: true, on_clean: "approve", auto_merge: false }),
