@@ -4,6 +4,7 @@ import { loadReviewConfig, type PostilConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
+import { parseReviewModelCascade } from "./review-models";
 
 export const reviewPayload = z.object({
   installationId: z.number().int(),
@@ -36,6 +37,7 @@ export type ReviewEnvelope = {
   summary: string;
   findings: Finding[];
   usage: TokenUsage;
+  modelUsed?: string;
 };
 
 const ALLOWED_REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]);
@@ -71,7 +73,7 @@ Reply with ONLY a single JSON object, no prose, no markdown fence:
 }
 `.trim();
 
-function parseEnvelope(text: string, usage: TokenUsage): ReviewEnvelope {
+function parseEnvelope(text: string, usage: TokenUsage, modelUsed?: string): ReviewEnvelope {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   const raw = fenced ? fenced[1] : text;
   const start = raw.indexOf("{");
@@ -83,13 +85,14 @@ function parseEnvelope(text: string, usage: TokenUsage): ReviewEnvelope {
         summary: String(json.summary ?? ""),
         findings: Array.isArray(json.findings) ? json.findings.filter(isFinding) : [],
         usage,
+        modelUsed,
       };
     } catch {
       // fall through to prose fallback
     }
   }
   // Prose fallback: post the model's reply verbatim as a summary, no inline findings.
-  return { summary: text.trim().slice(0, 4000), findings: [], usage };
+  return { summary: text.trim().slice(0, 4000), findings: [], usage, modelUsed };
 }
 
 function hasSubstantiveBody(item: ReviewThreadEvent): boolean {
@@ -355,7 +358,7 @@ function applyConfig(env: ReviewEnvelope, cfg: PostilConfig): ReviewEnvelope {
     .filter((f) => SEVERITY_RANK[f.severity] >= threshold)
     .filter((f) => !cfg.ignore.some((glob) => matchesGlob(f.path, glob)))
     .slice(0, cfg.maxFindings);
-  return { summary: env.summary, findings: filtered, usage: env.usage };
+  return { summary: env.summary, findings: filtered, usage: env.usage, modelUsed: env.modelUsed };
 }
 
 function isFinding(x: unknown): x is Finding {
@@ -369,7 +372,7 @@ function isFinding(x: unknown): x is Finding {
   );
 }
 
-type OpenRouterResult = { content: string; usage: TokenUsage };
+type OpenRouterResult = { content: string; usage: TokenUsage; modelUsed: string };
 
 function formatReviewStatusLine(
   envelope: ReviewEnvelope,
@@ -388,44 +391,58 @@ function appendReviewStatusLine(body: string, statusLine: string): string {
 
 async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRouterResult> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
   const userContent = reviewContext ? `${reviewContext}\n\nDiff:\n\n${diff}` : `Diff:\n\n${diff}`;
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    signal: controller.signal,
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-      "content-type": "application/json",
-      "http-referer": "https://postil.dev",
-      "x-title": "Postil",
-    },
-    body: JSON.stringify({
-      model: env.REVIEW_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userContent },
-      ],
-      temperature: 0.2,
-      max_tokens: 2500,
-      response_format: { type: "json_object" },
-    }),
-  });
-  clearTimeout(timeout);
-  if (!res.ok) {
-    throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 400)}`);
+  const failures: string[] = [];
+
+  for (const model of parseReviewModelCascade(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL)) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        signal: controller.signal,
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          "content-type": "application/json",
+          "http-referer": "https://postil.dev",
+          "x-title": "Postil",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userContent },
+          ],
+          temperature: 0.2,
+          max_tokens: 2500,
+          response_format: { type: "json_object" },
+        }),
+      });
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        failures.push(`${model}: openrouter ${res.status}: ${(await res.text()).slice(0, 400)}`);
+        continue;
+      }
+
+      const data = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+        usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      };
+      const orUsage = data.usage;
+      const usage: TokenUsage = {
+        promptTokens: orUsage?.prompt_tokens ?? 0,
+        completionTokens: orUsage?.completion_tokens ?? 0,
+        totalTokens: orUsage?.total_tokens ?? 0,
+      };
+      return { content: data.choices?.[0]?.message?.content ?? "", usage, modelUsed: model };
+    } catch (err) {
+      clearTimeout(timeout);
+      failures.push(`${model}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
-  const data = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
-  const orUsage = data.usage;
-  const usage: TokenUsage = {
-    promptTokens: orUsage?.prompt_tokens ?? 0,
-    completionTokens: orUsage?.completion_tokens ?? 0,
-    totalTokens: orUsage?.total_tokens ?? 0,
-  };
-  return { content: data.choices?.[0]?.message?.content ?? "", usage };
+
+  throw new Error(`openrouter model cascade failed: ${failures.join(" | ")}`);
 }
 
 export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope> {
@@ -482,8 +499,12 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
     const reviewContext = await fetchReviewContext(octokit, owner, repo, payload.pullNumber);
 
-    const { content: modelOutput, usage } = await callOpenRouter(truncated, reviewContext.prompt);
-    let envelope = parseEnvelope(modelOutput, usage);
+    const {
+      content: modelOutput,
+      usage,
+      modelUsed,
+    } = await callOpenRouter(truncated, reviewContext.prompt);
+    let envelope = parseEnvelope(modelOutput, usage, modelUsed);
     envelope = applyConfig(envelope, config);
 
     // Concise main review body — no filler or self-promotion
@@ -592,7 +613,8 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     if (payload.checkRunId) {
       const counts = { error: 0, warn: 0, info: 0 };
       for (const f of envelope.findings) counts[f.severity]++;
-      const hasOutstandingChangeRequests = reviewContext.outstandingChangeRequestReviewers.length > 0;
+      const hasOutstandingChangeRequests =
+        reviewContext.outstandingChangeRequestReviewers.length > 0;
       const changeRequestSummary = hasOutstandingChangeRequests
         ? `Outstanding change requests: ${reviewContext.outstandingChangeRequestReviewers
             .map((a) => `@${a}`)
@@ -627,13 +649,12 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           completed_at: new Date().toISOString(),
           output: {
             title,
-            summary:
-              hasOutstandingChangeRequests
-                ? [envelope.summary, changeRequestSummary].filter(Boolean).join("\n\n")
-                : envelope.summary ||
-                  (counts.error || counts.warn || counts.info
-                    ? "See inline review comments."
-                    : "No issues found."),
+            summary: hasOutstandingChangeRequests
+              ? [envelope.summary, changeRequestSummary].filter(Boolean).join("\n\n")
+              : envelope.summary ||
+                (counts.error || counts.warn || counts.info
+                  ? "See inline review comments."
+                  : "No issues found."),
             text: outputText,
           },
         });

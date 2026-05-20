@@ -64,6 +64,7 @@ const schema = z.object({
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_MANAGEMENT_KEY: z.string().optional(),
   REVIEW_MODEL: z.string().default("moonshotai/kimi-k2.6"),
+  REVIEW_MODEL_CASCADE: z.string().optional(),
 
   // Cloudflare
   CLOUDFLARE_API_TOKEN: z.string().optional(),

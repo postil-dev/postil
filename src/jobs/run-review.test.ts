@@ -11,6 +11,7 @@ const githubMock = vi.hoisted(() => ({
 
 const openRouterMock = vi.hoisted(() => ({
   body: null as unknown,
+  bodies: [] as unknown[],
   content: '{"summary":"ok","findings":[]}',
 }));
 
@@ -22,12 +23,15 @@ const configMock = vi.hoisted(() => ({
   },
 }));
 
+const envMock = vi.hoisted(() => ({
+  OPENROUTER_API_KEY: "test-openrouter-key",
+  REVIEW_MODEL: "test/model",
+  REVIEW_MODEL_CASCADE: undefined as string | undefined,
+  NODE_ENV: "test",
+}));
+
 vi.mock("@/lib/env", () => ({
-  env: {
-    OPENROUTER_API_KEY: "test-openrouter-key",
-    REVIEW_MODEL: "test/model",
-    NODE_ENV: "test",
-  },
+  env: envMock,
 }));
 
 vi.mock("@/lib/github", () => ({
@@ -168,12 +172,16 @@ describe("runReview", () => {
     });
 
     openRouterMock.body = null;
+    openRouterMock.bodies = [];
     openRouterMock.content = '{"summary":"ok","findings":[]}';
+    envMock.REVIEW_MODEL = "test/model";
+    envMock.REVIEW_MODEL_CASCADE = undefined;
     fetchSpy.mockReset();
     fetchSpy.mockImplementation(async (url: unknown, init?: RequestInit) => {
       const urlStr = typeof url === "string" ? url : (url as Request).url;
       if (urlStr?.includes("openrouter")) {
         openRouterMock.body = init ? JSON.parse(init.body as string) : null;
+        openRouterMock.bodies.push(openRouterMock.body);
         return new Response(
           JSON.stringify({
             choices: [{ message: { content: openRouterMock.content } }],
@@ -209,6 +217,44 @@ describe("runReview", () => {
     expect(content).toContain("PR comments:");
     expect(content).toContain("contributor-carol");
     expect(content).toContain("mock-diff-content");
+  });
+
+  it("uses the single review model when no cascade is configured", async () => {
+    const result = await runReview(PAYLOAD);
+
+    expect(result.modelUsed).toBe("test/model");
+    expect(openRouterMock.body).toMatchObject({ model: "test/model" });
+  });
+
+  it("uses the first configured review model in the cascade", async () => {
+    envMock.REVIEW_MODEL_CASCADE = "test/primary,test/backup";
+
+    const result = await runReview(PAYLOAD);
+
+    expect(result.modelUsed).toBe("test/primary");
+    expect(openRouterMock.body).toMatchObject({ model: "test/primary" });
+  });
+
+  it("falls back to the next configured review model after a provider error", async () => {
+    envMock.REVIEW_MODEL_CASCADE = "test/primary, test/backup";
+    fetchSpy.mockImplementationOnce(async (url: unknown, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : (url as Request).url;
+      if (urlStr?.includes("openrouter")) {
+        const body = init ? JSON.parse(init.body as string) : null;
+        openRouterMock.body = body;
+        openRouterMock.bodies.push(body);
+        return new Response("rate limited", { status: 429 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await runReview(PAYLOAD);
+
+    expect(result.modelUsed).toBe("test/backup");
+    expect(openRouterMock.bodies).toMatchObject([
+      { model: "test/primary" },
+      { model: "test/backup" },
+    ]);
   });
 
   it("ends clean posted reviews with a status line", async () => {
