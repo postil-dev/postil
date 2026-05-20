@@ -43,7 +43,6 @@ export async function GET(req: Request): Promise<Response> {
   for (const row of reviewStats) statusCounts[row.status] = Number(row.count);
   const total = Object.values(statusCounts).reduce((a, b) => a + b, 0);
   const completed = statusCounts.completed ?? 0;
-  const failed = statusCounts.failed ?? 0;
   const successRate = total > 0 ? Math.round((completed / total) * 10000) / 100 : null;
 
   // Average review duration for completed reviews.

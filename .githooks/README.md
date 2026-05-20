@@ -1,25 +1,22 @@
-# Git Hooks — External Management
+# Git Hooks
 
-Hooks are managed by the workspace bootstrap and live OUTSIDE the worktree at
-`$PAPERCLIP_HOOKS_DIR` (default: `~/.paperclip/hooks/`).
+Hooks are managed by the development bootstrap and live outside the worktree at
+`$POSTIL_HOOKS_DIR` (default: a user config directory).
 
-Agents cannot edit these hooks — they are owned by the system user,
-not the workspace. This directory contains only the bootstrap entry
-point (`install-hooks.ts`) that sets `core.hooksPath` to the external
-directory.
+This directory contains only the committed entry points. The bootstrap script
+sets `core.hooksPath` to the configured local directory when it exists.
 
 ## External hooks
 
 | Hook | Purpose |
 |------|---------|
 | `pre-push` | Blocks pushes with bad author, unsigned commits, secrets, or forbidden tokens |
-| `commit-msg` | Validates Conventional Commits format + blocks forbidden tokens |
-| `pre-commit` | Runs infisical secret scan on staged changes |
-| `publisher-push.sh` | Hard gate wrapper for the authorized publisher agent |
-| `forbidden-tokens.env` | Regex for forbidden tokens (sourced, never committed) |
+| `commit-msg` | Validates Conventional Commits format and blocks forbidden tokens |
+| `pre-commit` | Runs secret scanning on staged changes |
+| `forbidden-tokens.env` | Regex for forbidden tokens, sourced locally and never committed |
 
 ## Adding a new hook
 
-1. Write the hook at `$PAPERCLIP_HOOKS_DIR/<hook-name>` (executable)
-2. Source forbidden tokens from `forbidden-tokens.env` via `$PAPERCLIP_HOOKS_DIR`
+1. Write the hook at `$POSTIL_HOOKS_DIR/<hook-name>` (executable)
+2. Source forbidden tokens from `forbidden-tokens.env` via `$POSTIL_HOOKS_DIR`
 3. Never hardcode forbidden-token patterns in any committed file
