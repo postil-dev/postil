@@ -222,33 +222,93 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       body: `**${f.severity.toUpperCase()}** · ${f.body}`,
     }));
 
-    if (envelope.findings.length > 0 || envelope.summary) {
-      try {
-        await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
-          owner,
-          repo,
-          pull_number: payload.pullNumber,
-          commit_id: payload.headSha,
-          event: comments.length ? "COMMENT" : "APPROVE",
-          body: envelope.summary || undefined,
-          comments: comments.length ? comments : undefined,
-        });
-      } catch (err) {
-        captureException(err, {
-          properties: {
-            op: "post_review",
-            repoFullName: payload.repoFullName,
-            pullNumber: payload.pullNumber,
-          },
-        });
-        // Fall back to an issue comment if inline review API rejected the payload.
-        if (envelope.summary) {
-          await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+    // Always post a review — every PR gets both a check-run AND a PR review
+    // (unless review.enabled=false or review.on_clean=skip in .postil.yaml).
+    // Clean PRs with no findings receive an APPROVE. Avoid a body on clean
+    // approvals: the approval state itself is the signal, and filler is noise.
+    {
+      const hasFindings = comments.length > 0;
+
+      let shouldPost = config.review.enabled;
+      if (shouldPost && !hasFindings && config.review.on_clean === "skip") {
+        shouldPost = false;
+      }
+
+      if (shouldPost) {
+        const event: "APPROVE" | "COMMENT" =
+          hasFindings || config.review.on_clean === "comment" ? "COMMENT" : "APPROVE";
+        const reviewBody =
+          event === "APPROVE" ? undefined : envelope.summary || "Postil reviewed this PR.";
+        let approved = false;
+
+        try {
+          await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
             owner,
             repo,
-            issue_number: payload.pullNumber,
-            body: envelope.summary,
+            pull_number: payload.pullNumber,
+            commit_id: payload.headSha,
+            event,
+            body: reviewBody,
+            comments: hasFindings ? comments : undefined,
           });
+          approved = event === "APPROVE";
+        } catch (err) {
+          captureException(err, {
+            properties: {
+              op: "post_review",
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+            },
+          });
+          // Fall back to an issue comment if inline review API rejected the payload.
+          const fallbackBody = reviewBody ?? envelope.summary;
+          if (fallbackBody) {
+            await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+              owner,
+              repo,
+              issue_number: payload.pullNumber,
+              body: fallbackBody,
+            });
+          }
+        }
+
+        // If configured, squash-merge clean approved PRs only after GitHub
+        // reports that the PR is cleanly mergeable. This keeps the default safe
+        // while allowing fully-green PRs to land without another manual step.
+        if (approved && config.review.auto_merge) {
+          try {
+            const pull = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+              owner,
+              repo,
+              pull_number: payload.pullNumber,
+            });
+            if (pull.data.mergeable === true && pull.data.mergeable_state === "clean") {
+              await octokit.request("PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge", {
+                owner,
+                repo,
+                pull_number: payload.pullNumber,
+                merge_method: "squash",
+              });
+              track("system", "auto_merge_completed", {
+                repoFullName: payload.repoFullName,
+                pullNumber: payload.pullNumber,
+              });
+            }
+          } catch (err) {
+            // Non-fatal: GitHub may still be computing mergeability, required
+            // checks may be pending, or branch protection may reject the merge.
+            console.warn(
+              "[auto-merge] Could not merge clean PR:",
+              err instanceof Error ? err.message : err,
+            );
+            captureException(err, {
+              properties: {
+                op: "auto_merge_clean_pr",
+                repoFullName: payload.repoFullName,
+                pullNumber: payload.pullNumber,
+              },
+            });
+          }
         }
       }
     }

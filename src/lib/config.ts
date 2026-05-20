@@ -26,6 +26,13 @@ const PostilConfig = z.object({
       focus: z.array(z.string()).default([]),
     })
     .default({ tone: "neutral", focus: [] }),
+  review: z
+    .object({
+      enabled: z.boolean().default(true),
+      on_clean: z.enum(["approve", "comment", "skip"]).default("approve"),
+      auto_merge: z.boolean().default(false),
+    })
+    .default({ enabled: true, on_clean: "approve", auto_merge: false }),
 });
 
 export type PostilConfig = z.infer<typeof PostilConfig>;
