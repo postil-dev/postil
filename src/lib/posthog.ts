@@ -1,15 +1,24 @@
-import { createHash } from "node:crypto";
 import { PostHog } from "posthog-node";
 import { env } from "@/lib/env";
 
 let _client: PostHog | undefined;
 
+function stableHexHash(input: string): string {
+  let high = 0x811c9dc5;
+  let low = 0x1000193;
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i);
+    high = Math.imul(high ^ code, 0x01000193);
+    low = Math.imul(low ^ code, 0x85ebca6b);
+  }
+  return `${(high >>> 0).toString(16).padStart(8, "0")}${(low >>> 0)
+    .toString(16)
+    .padStart(8, "0")}`;
+}
+
 export function hashInstallationId(installationId: number): string {
   const salt = env.POSTHOG_PROJECT_TOKEN ?? "postil-default-salt";
-  return createHash("sha256")
-    .update(`${installationId}:${salt}`)
-    .digest("hex")
-    .slice(0, 16);
+  return stableHexHash(`${installationId}:${salt}`);
 }
 
 export function posthog(): PostHog | undefined {
