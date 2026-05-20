@@ -235,8 +235,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       }
 
       if (shouldPost) {
-        const event: "APPROVE" | "COMMENT" =
-          hasFindings || config.review.on_clean === "comment" ? "COMMENT" : "APPROVE";
+        const event: "APPROVE" | "COMMENT" = hasFindings ? "COMMENT" : "APPROVE";
         const reviewBody =
           event === "APPROVE" ? undefined : envelope.summary || "Postil reviewed this PR.";
         let approved = false;
