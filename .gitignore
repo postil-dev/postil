@@ -55,3 +55,6 @@ HANDOFF.md
 
 # infisical (per-developer workspace binding)
 .infisical.json
+
+# trigger.dev build artifacts
+.trigger/

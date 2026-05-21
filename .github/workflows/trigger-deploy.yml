@@ -1,0 +1,44 @@
+name: Trigger.dev Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/jobs/**"
+      - "trigger.config.ts"
+      - "package.json"
+      - "bun.lock"
+      - ".github/workflows/trigger-deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: trigger-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Allow depot CLI postinstall
+        run: bun pm trust @depot/cli
+
+      - name: Deploy trigger.dev tasks
+        run: bun trigger deploy --skip-update-check
+        env:
+          TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_PAT }}
