@@ -205,6 +205,50 @@ describe("github webhook", () => {
     ).toBe(true);
   });
 
+  it("fails dispatch and allows retry when the review check-run cannot be created", async () => {
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        throw new Error("checks permission missing");
+      }
+      return { data: [] };
+    });
+
+    await expect(
+      POST(
+        signedRequest("pull_request", "pr-check-run-failed", {
+          action: "opened",
+          installation: { id: 123 },
+          repository: { full_name: "acme/widget" },
+          pull_request: {
+            number: 68,
+            draft: false,
+            head: { sha: "abc123def456" },
+          },
+        }),
+      ),
+    ).rejects.toThrow("checks permission missing");
+
+    expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
+    expect(dbMock.deleteCalls).toEqual([dbMock.webhookDeliveries]);
+    expect(dbMock.updateCalls).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "checks permission missing",
+      }),
+    );
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          op: "create_check_run",
+          repoFullName: "acme/widget",
+          pullNumber: 68,
+          headSha: "abc123def456",
+        }),
+      }),
+    );
+  });
+
   it("does not fail dispatch when post-enqueue bookkeeping fails", async () => {
     dbMock.failTriggerRunIdUpdate = true;
     mockRequest.mockImplementation(async (route: string) => {
