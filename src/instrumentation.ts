@@ -1,7 +1,12 @@
 import { env } from "@/lib/env";
-import { runSmokeTest, shutdownPosthog } from "@/lib/posthog";
 
 export async function register() {
+  if (process.env.NEXT_RUNTIME !== "nodejs") {
+    return;
+  }
+
+  const { runSmokeTest, shutdownPosthog } = await import("@/lib/posthog");
+
   if (env.NODE_ENV !== "production") {
     try {
       await runSmokeTest();
@@ -10,13 +15,11 @@ export async function register() {
     }
   }
 
-  if (typeof process.once === "function" && typeof process.exit === "function") {
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.once(signal, async () => {
-        console.log(`[instrumentation] Received ${signal}, flushing PostHog...`);
-        await shutdownPosthog();
-        process.exit(0);
-      });
-    }
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, async () => {
+      console.log(`[instrumentation] Received ${signal}, flushing PostHog...`);
+      await shutdownPosthog();
+      process.exit(0);
+    });
   }
 }
