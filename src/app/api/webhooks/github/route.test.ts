@@ -94,6 +94,9 @@ vi.mock("@/lib/config", () => ({
 }));
 
 vi.mock("@/lib/github", () => ({
+  appOctokit: vi.fn().mockReturnValue({
+    request: mockRequest,
+  }),
   installationOctokit: vi.fn(async () => ({ request: mockRequest })),
 }));
 
@@ -520,14 +523,30 @@ describe("github webhook", () => {
     expect(issueCall?.[1].title).toContain("Docker build");
   });
 
-  it("retries auto-merge when the CI workflow finishes successfully", async () => {
+  it("retries auto-merge when the CI workflow finishes successfully after approval", async () => {
     mockRequest.mockImplementation(async (route: string, _params?: Record<string, unknown>) => {
+      if (route === "GET /app") {
+        return { data: { slug: "postil" } };
+      }
+      if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews") {
+        return {
+          data: [
+            {
+              state: "APPROVED",
+              commit_id: "abc123def456",
+              submitted_at: "2026-05-18T06:00:00Z",
+              user: { login: "postil[bot]" },
+            },
+          ],
+        };
+      }
       if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}") {
         return {
           data: {
             mergeable: true,
             mergeable_state: "clean",
             head: { sha: "abc123def456" },
+            labels: [],
           },
         };
       }
@@ -617,5 +636,112 @@ describe("github webhook", () => {
       sha: "abc123def456",
       merge_method: "squash",
     });
+  });
+
+  it("does not retry auto-merge when the bot review is only a comment", async () => {
+    mockRequest.mockImplementation(async (route: string, _params?: Record<string, unknown>) => {
+      if (route === "GET /app") {
+        return { data: { slug: "postil" } };
+      }
+      if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews") {
+        return {
+          data: [
+            {
+              state: "COMMENTED",
+              commit_id: "abc123def456",
+              submitted_at: "2026-05-18T06:00:00Z",
+              user: { login: "postil[bot]" },
+            },
+          ],
+        };
+      }
+      if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}") {
+        return {
+          data: {
+            mergeable: true,
+            mergeable_state: "clean",
+            head: { sha: "abc123def456" },
+            labels: [],
+          },
+        };
+      }
+      if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+        return {
+          data: {
+            check_runs: [
+              {
+                name: "postil/review",
+                head_sha: "abc123def456",
+                status: "completed",
+                conclusion: "success",
+              },
+              {
+                name: "Lint",
+                head_sha: "abc123def456",
+                status: "completed",
+                conclusion: "success",
+              },
+              {
+                name: "Typecheck",
+                head_sha: "abc123def456",
+                status: "completed",
+                conclusion: "success",
+              },
+              {
+                name: "Unit tests",
+                head_sha: "abc123def456",
+                status: "completed",
+                conclusion: "success",
+              },
+              {
+                name: "Build",
+                head_sha: "abc123def456",
+                status: "completed",
+                conclusion: "success",
+              },
+              {
+                name: "Docker build",
+                head_sha: "abc123def456",
+                status: "completed",
+                conclusion: "success",
+              },
+              {
+                name: "Verify postil/review passed",
+                head_sha: "abc123def456",
+                status: "completed",
+                conclusion: "success",
+              },
+            ],
+          },
+        };
+      }
+      if (route === "PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge") {
+        return { data: { merged: true } };
+      }
+      return { data: [] };
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-no-approval", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow_run: {
+          id: 989,
+          name: "CI",
+          conclusion: "success",
+          html_url: "https://github.com/acme/widget/actions/runs/989",
+          head_sha: "abc123def456",
+          pull_requests: [{ number: 68 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(
+      mockRequest.mock.calls.some(
+        ([route]) => route === "PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge",
+      ),
+    ).toBe(false);
   });
 });

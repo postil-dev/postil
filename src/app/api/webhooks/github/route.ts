@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
 import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
-import { attemptAutoMergeApprovedPull } from "@/jobs/run-review";
+import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/run-review";
 import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
@@ -368,6 +368,18 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
     if (workflow_run.name !== "CI" || !workflow_run.head_sha) return;
 
     try {
+      if (
+        !(await hasApprovedReview(
+          octokit as Parameters<typeof hasApprovedReview>[0],
+          owner,
+          repo,
+          pullNumber,
+          workflow_run.head_sha,
+        ))
+      ) {
+        return;
+      }
+
       const { config } = await loadReviewConfig(
         octokit as Parameters<typeof loadReviewConfig>[0],
         owner,

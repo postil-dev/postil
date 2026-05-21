@@ -7,6 +7,7 @@ const githubMock = vi.hoisted(() => ({
     mergeable: true,
     mergeable_state: "clean",
     head: { sha: "abc123def456" },
+    labels: [] as Record<string, unknown>[],
   } as Record<string, unknown>,
   reviews: [] as Record<string, unknown>[],
   reviewComments: [] as Record<string, unknown>[],
@@ -175,6 +176,7 @@ describe("runReview", () => {
       mergeable: true,
       mergeable_state: "clean",
       head: { sha: "abc123def456" },
+      labels: [],
     };
     githubMock.request.mockReset();
     githubMock.request.mockImplementation((path: string, params?: Record<string, unknown>) => {
@@ -988,6 +990,28 @@ describe("runReview", () => {
     githubMock.reviewComments = [];
     githubMock.issueComments = [];
     githubMock.checkRuns = mutateRuns(githubMock.checkRuns);
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    expect(githubMock.mergedPulls).toHaveLength(0);
+    expect(
+      githubMock.request.mock.calls.some(
+        ([path]) => typeof path === "string" && path.includes("pulls/{pull_number}/merge"),
+      ),
+    ).toBe(false);
+  });
+
+  it("waits for the E2E job when the PR is labeled for E2E", async () => {
+    configMock.review.auto_merge = true;
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    githubMock.pullMergeability = {
+      mergeable: true,
+      mergeable_state: "clean",
+      head: { sha: "abc123def456" },
+      labels: [{ name: "e2e" }],
+    };
 
     await runReview({ ...PAYLOAD, checkRunId: 77 });
 

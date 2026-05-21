@@ -167,6 +167,65 @@ async function fetchCurrentAppBotLogin(): Promise<string | null> {
   }
 }
 
+function pullLabelNames(pull: unknown): string[] {
+  const labels = (pull as { labels?: unknown }).labels;
+  if (!Array.isArray(labels)) return [];
+  return labels.flatMap((label) => {
+    if (typeof label === "string") return [label];
+    if (!label || typeof label !== "object") return [];
+    const name = String((label as { name?: unknown }).name ?? "").trim();
+    return name ? [name] : [];
+  });
+}
+
+export async function hasApprovedReview(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  headSha: string,
+): Promise<boolean> {
+  const appBotLogin = await fetchCurrentAppBotLogin();
+  if (!appBotLogin) return false;
+
+  const reviews = await fetchPaginated(
+    octokit,
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+    {
+      owner,
+      repo,
+      pull_number: pullNumber,
+    },
+  );
+
+  let latestApprovedReviewAt = 0;
+  let latestState: string | null = null;
+
+  for (const rawReview of reviews) {
+    if (!rawReview || typeof rawReview !== "object") continue;
+    const state = String((rawReview as { state?: unknown }).state ?? "");
+    if (!ALLOWED_REVIEW_STATES.has(state)) continue;
+    const reviewCommit = String((rawReview as { commit_id?: unknown }).commit_id ?? "");
+    if (reviewCommit !== headSha) continue;
+    const authorObj = (rawReview as { user?: GitHubUser | null }).user ?? null;
+    if (!isCurrentAppBotUser(authorObj, appBotLogin)) continue;
+    const submittedAt = String(
+      (rawReview as { submitted_at?: unknown; updated_at?: unknown; created_at?: unknown })
+        .submitted_at ??
+        (rawReview as { updated_at?: unknown; created_at?: unknown }).updated_at ??
+        (rawReview as { created_at?: unknown }).created_at ??
+        "",
+    );
+    const reviewTime = Number.isNaN(Date.parse(submittedAt)) ? 0 : Date.parse(submittedAt);
+    if (reviewTime >= latestApprovedReviewAt) {
+      latestApprovedReviewAt = reviewTime;
+      latestState = state;
+    }
+  }
+
+  return latestState === "APPROVED";
+}
+
 function outstandingChangeRequestReviewers(items: ReviewThreadEvent[]): string[] {
   const latestStateByAuthor = new Map<string, string>();
   const reviews = [...items]
@@ -518,6 +577,7 @@ async function hasSuccessfulRequiredChecks(
   owner: string,
   repo: string,
   headSha: string,
+  pullLabels: string[],
 ): Promise<boolean> {
   const checkRuns = await withTimeout(
     octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
@@ -531,6 +591,9 @@ async function hasSuccessfulRequiredChecks(
   );
   const runs = Array.isArray(checkRuns.data.check_runs) ? checkRuns.data.check_runs : [];
   const latestByName = new Map<string, unknown>();
+  const requiredChecks = pullLabels.some((label) => label.toLowerCase() === "e2e")
+    ? [...REQUIRED_AUTO_MERGE_CHECKS, "E2E tests"]
+    : REQUIRED_AUTO_MERGE_CHECKS;
 
   for (const run of runs) {
     if (!run || typeof run !== "object") continue;
@@ -542,7 +605,7 @@ async function hasSuccessfulRequiredChecks(
     }
   }
 
-  return REQUIRED_AUTO_MERGE_CHECKS.every((name) =>
+  return requiredChecks.every((name) =>
     checkCompletedSuccessfully(latestByName.get(name), headSha),
   );
 }
@@ -570,7 +633,13 @@ export async function attemptAutoMergeApprovedPull(
     }
     if ((pull.data as { merged?: unknown }).merged === true) return;
     if (pull.data.mergeable === true && pull.data.mergeable_state === "clean") {
-      const checksPassed = await hasSuccessfulRequiredChecks(octokit, owner, repo, payload.headSha);
+      const checksPassed = await hasSuccessfulRequiredChecks(
+        octokit,
+        owner,
+        repo,
+        payload.headSha,
+        pullLabelNames(pull.data),
+      );
       if (!checksPassed) return;
 
       await withTimeout(
