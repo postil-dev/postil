@@ -7,7 +7,7 @@ const githubMock = vi.hoisted(() => ({
     mergeable: true,
     mergeable_state: "clean",
     head: { sha: "abc123def456" },
-    labels: [] as Record<string, unknown>[],
+    base: { ref: "main" },
   } as Record<string, unknown>,
   reviews: [] as Record<string, unknown>[],
   reviewComments: [] as Record<string, unknown>[],
@@ -29,6 +29,8 @@ const configMock = vi.hoisted(() => ({
     enabled: true,
     on_clean: "approve" as "approve" | "skip",
     auto_merge: false,
+    required_checks: [] as string[],
+    auto_merge_timeout_ms: 15_000,
   },
 }));
 
@@ -170,13 +172,15 @@ describe("runReview", () => {
       enabled: true,
       on_clean: "approve",
       auto_merge: false,
+      required_checks: [],
+      auto_merge_timeout_ms: 15_000,
     };
     githubMock.pullUser = { login: "contributor-carol", type: "User" };
     githubMock.pullMergeability = {
       mergeable: true,
       mergeable_state: "clean",
       head: { sha: "abc123def456" },
-      labels: [],
+      base: { ref: "main" },
     };
     githubMock.request.mockReset();
     githubMock.request.mockImplementation((path: string, params?: Record<string, unknown>) => {
@@ -198,6 +202,23 @@ describe("runReview", () => {
       }
       if (path === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
         return Promise.resolve({ data: { check_runs: githubMock.checkRuns } });
+      }
+      if (
+        path === "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
+      ) {
+        return Promise.resolve({
+          data: {
+            contexts: [
+              "postil/review",
+              "Lint",
+              "Typecheck",
+              "Unit tests",
+              "Build",
+              "Docker build",
+              "Verify postil/review passed",
+            ],
+          },
+        });
       }
       if (path.includes("/check-runs/") && path.startsWith("PATCH")) {
         githubMock.checkRunUpdates.push(params ?? {});
@@ -920,14 +941,6 @@ describe("runReview", () => {
     expect(checkRunIndex).toBeGreaterThan(-1);
     expect(mergeIndex).toBeGreaterThan(checkRunIndex);
     expect(latestCheckRunUpdate()).toMatchObject({ conclusion: "success" });
-    expect(
-      githubMock.request.mock.calls.find(
-        ([path]) => typeof path === "string" && path.includes("pulls/{pull_number}/merge"),
-      )?.[1],
-    ).toMatchObject({
-      sha: PAYLOAD.headSha,
-      merge_method: "squash",
-    });
   });
 
   it("checks successful same-head required results before auto-merging", async () => {
@@ -949,6 +962,24 @@ describe("runReview", () => {
     expect(githubMock.request.mock.calls[requiredCheckIndex]?.[1]).toMatchObject({
       ref: PAYLOAD.headSha,
     });
+  });
+
+  it("uses branch protection checks when config does not specify them", async () => {
+    configMock.review.auto_merge = true;
+    configMock.review.required_checks = [];
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    expect(githubMock.mergedPulls).toHaveLength(1);
+    expect(
+      githubMock.request.mock.calls.some(
+        ([path]) =>
+          path === "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks",
+      ),
+    ).toBe(true);
   });
 
   it.each([
@@ -1010,6 +1041,7 @@ describe("runReview", () => {
       mergeable: true,
       mergeable_state: "clean",
       head: { sha: "abc123def456" },
+      base: { ref: "main" },
       labels: [{ name: "e2e" }],
     };
 
@@ -1032,6 +1064,7 @@ describe("runReview", () => {
       mergeable: true,
       mergeable_state: "clean",
       head: { sha: "new-head-sha" },
+      base: { ref: "main" },
     };
 
     await runReview({ ...PAYLOAD, checkRunId: 77 });

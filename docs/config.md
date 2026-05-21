@@ -38,6 +38,20 @@ reviewer:
   focus:
     - "security"
     - "concurrency"
+
+# Required check names for auto-merge. If omitted, Postil asks GitHub
+# branch protection for the required status checks on the PR base branch.
+required_checks:
+  - "postil/review"
+  - "Lint"
+  - "Typecheck"
+  - "Unit tests"
+  - "Build"
+  - "Docker build"
+  - "Verify postil/review passed"
+
+# Timeout in milliseconds for GitHub mergeability and check lookups.
+auto_merge_timeout_ms: 15000
 ```
 
 ## CodeRabbit translation
@@ -58,6 +72,18 @@ Postil honours the following fields from `.kodo.yaml`:
 | -------------- | ----------------------- |
 | `exclude`      | `ignore`                |
 | `severity`     | `severityThreshold`     |
+
+## Auto-merge
+
+When `review.auto_merge` is enabled, Postil waits for the PR review check to
+finish before trying to merge. It only merges when the required checks are
+green, and it keeps the `e2e` label gate active by waiting for `E2E tests`
+when that label is present.
+
+If `review.required_checks` is set, those check names are used directly.
+Otherwise Postil asks GitHub for the branch protection required status checks
+on the PR base branch. If neither source yields any required checks, Postil
+skips auto-merge.
 
 Other Kodo fields are ignored; defaults apply.
 
