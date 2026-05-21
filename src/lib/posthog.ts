@@ -1,15 +1,21 @@
-import { createHash } from "node:crypto";
 import { PostHog } from "posthog-node";
 import { env } from "@/lib/env";
 
 let _client: PostHog | undefined;
 
-export function hashInstallationId(installationId: number): string {
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+export async function hashInstallationId(installationId: number): Promise<string> {
   const salt = env.POSTHOG_PROJECT_TOKEN ?? "postil-default-salt";
-  return createHash("sha256")
-    .update(`${installationId}:${salt}`)
-    .digest("hex")
-    .slice(0, 16);
+  return (await sha256Hex(`${installationId}:${salt}`)).slice(0, 16);
 }
 
 export function posthog(): PostHog | undefined {

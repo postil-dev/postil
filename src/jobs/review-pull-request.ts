@@ -41,7 +41,7 @@ export const reviewPullRequest = task({
       pullNumber: payload.pullNumber,
       headSha: payload.headSha,
       modelUsed: reviewModelUsed,
-      installationHash: hashInstallationId(payload.installationId),
+      installationHash: await hashInstallationId(payload.installationId),
     });
 
     try {
@@ -75,7 +75,7 @@ export const reviewPullRequest = task({
         findings: result.findings.length,
         durationMs: Date.now() - started,
         modelUsed: resolveReviewModelUsed(result, reviewModelUsed),
-        installationHash: hashInstallationId(payload.installationId),
+        installationHash: await hashInstallationId(payload.installationId),
       });
 
       try {
@@ -135,7 +135,7 @@ export const reviewPullRequest = task({
         error: String(err instanceof Error ? err.message : err),
         errorClass: err instanceof Error ? err.name : "unknown",
         modelUsed: resolveReviewModelUsed(err, reviewModelUsed),
-        installationHash: hashInstallationId(payload.installationId),
+        installationHash: await hashInstallationId(payload.installationId),
       });
 
       // runReview already attempts to mark the check-run as failed before
