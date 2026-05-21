@@ -63,7 +63,7 @@
     "tailwindcss": "^4",
     "trigger.dev": "^4.4.6",
     "tsx": "^4.21.0",
-    "typescript": "^5",
+    "typescript": "^6",
     "vitest": "^4.1.4"
   },
   "browserslist": [
