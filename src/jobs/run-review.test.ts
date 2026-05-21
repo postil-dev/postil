@@ -1060,6 +1060,30 @@ describe("runReview", () => {
     });
   });
 
+  it("does not wait on the review verifier before auto-merging", async () => {
+    configMock.review.auto_merge = true;
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    githubMock.checkRuns = githubMock.checkRuns.map((run) =>
+      run.name === "Verify postil/review passed"
+        ? { ...run, status: "in_progress", conclusion: null }
+        : run,
+    );
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    expect(githubMock.mergedPulls).toHaveLength(1);
+    const checkedRef = githubMock.request.mock.calls.find(
+      ([path]) => path === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+    )?.[1] as { ref?: string } | undefined;
+    expect(checkedRef).toMatchObject({ ref: PAYLOAD.headSha });
+    expect(latestCheckRunUpdate()).toMatchObject({
+      status: "completed",
+      conclusion: "success",
+    });
+  });
+
   it("uses branch protection checks when config does not specify them", async () => {
     configMock.review.auto_merge = true;
     configMock.review.required_checks = [];
@@ -1084,15 +1108,6 @@ describe("runReview", () => {
       (runs: Record<string, unknown>[]) =>
         runs.map((run) =>
           run.name === "Build" ? { ...run, status: "in_progress", conclusion: null } : run,
-        ),
-    ],
-    [
-      "verifier pending",
-      (runs: Record<string, unknown>[]) =>
-        runs.map((run) =>
-          run.name === "Verify postil/review passed"
-            ? { ...run, status: "in_progress", conclusion: null }
-            : run,
         ),
     ],
     [
@@ -1121,6 +1136,10 @@ describe("runReview", () => {
     await runReview({ ...PAYLOAD, checkRunId: 77 });
 
     expect(githubMock.mergedPulls).toHaveLength(0);
+    expect(latestCheckRunUpdate()).toMatchObject({
+      status: "completed",
+      conclusion: "success",
+    });
     expect(
       githubMock.request.mock.calls.some(
         ([path]) => typeof path === "string" && path.includes("pulls/{pull_number}/merge"),
