@@ -10,11 +10,13 @@ export async function register() {
     }
   }
 
-  for (const signal of ["SIGTERM", "SIGINT"] as const) {
-    process.once(signal, async () => {
-      console.log(`[instrumentation] Received ${signal}, flushing PostHog...`);
-      await shutdownPosthog();
-      process.exit(0);
-    });
+  if (typeof process.once === "function" && typeof process.exit === "function") {
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      process.once(signal, async () => {
+        console.log(`[instrumentation] Received ${signal}, flushing PostHog...`);
+        await shutdownPosthog();
+        process.exit(0);
+      });
+    }
   }
 }
