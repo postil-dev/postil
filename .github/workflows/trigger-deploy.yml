@@ -51,6 +51,6 @@ jobs:
         run: bun pm trust @depot/cli
 
       - name: Deploy trigger.dev tasks
-        run: bun trigger deploy --skip-update-check
+        run: bun trigger deploy --skip-update-check --env dev
         env:
           TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT }}
