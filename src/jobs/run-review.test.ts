@@ -3,11 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const githubMock = vi.hoisted(() => ({
   request: vi.fn(),
   pullUser: { login: "contributor-carol", type: "User" } as Record<string, unknown>,
+  pullMergeability: {
+    mergeable: true,
+    mergeable_state: "clean",
+    head: { sha: "abc123def456" },
+  } as Record<string, unknown>,
   reviews: [] as Record<string, unknown>[],
   reviewComments: [] as Record<string, unknown>[],
   issueComments: [] as Record<string, unknown>[],
   postedReviews: [] as Record<string, unknown>[],
   checkRunUpdates: [] as Record<string, unknown>[],
+  checkRuns: [] as Record<string, unknown>[],
+  mergedPulls: [] as Record<string, unknown>[],
 }));
 
 const openRouterMock = vi.hoisted(() => ({
@@ -143,12 +150,32 @@ describe("runReview", () => {
     ];
     githubMock.postedReviews = [];
     githubMock.checkRunUpdates = [];
+    githubMock.checkRuns = [
+      "postil/review",
+      "Lint",
+      "Typecheck",
+      "Unit tests",
+      "Build",
+      "Docker build",
+      "Verify postil/review passed",
+    ].map((name) => ({
+      name,
+      head_sha: "abc123def456",
+      status: "completed",
+      conclusion: "success",
+    }));
+    githubMock.mergedPulls = [];
     configMock.review = {
       enabled: true,
       on_clean: "approve",
       auto_merge: false,
     };
     githubMock.pullUser = { login: "contributor-carol", type: "User" };
+    githubMock.pullMergeability = {
+      mergeable: true,
+      mergeable_state: "clean",
+      head: { sha: "abc123def456" },
+    };
     githubMock.request.mockReset();
     githubMock.request.mockImplementation((path: string, params?: Record<string, unknown>) => {
       const page = Number(params?.page ?? 1);
@@ -167,16 +194,28 @@ describe("runReview", () => {
         githubMock.postedReviews.push(params ?? {});
         return Promise.resolve({ data: { id: 99 } });
       }
+      if (path === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+        return Promise.resolve({ data: { check_runs: githubMock.checkRuns } });
+      }
       if (path.includes("/check-runs/") && path.startsWith("PATCH")) {
         githubMock.checkRunUpdates.push(params ?? {});
         return Promise.resolve({ data: { id: Number(params?.check_run_id ?? 0) } });
+      }
+      if (path.includes("pulls/{pull_number}/merge") && path.startsWith("PUT")) {
+        githubMock.mergedPulls.push(params ?? {});
+        return Promise.resolve({ data: { merged: true } });
       }
       if (path.includes("/issues/{issue_number}/comments")) {
         return Promise.resolve({ data: pageOf(githubMock.issueComments) });
       }
       if (path.includes("pulls/{pull_number}") && !path.includes("comments")) {
         if ((params?.mediaType as { format?: unknown } | undefined)?.format !== "diff") {
-          return Promise.resolve({ data: { user: githubMock.pullUser } });
+          return Promise.resolve({
+            data:
+              path === "GET /repos/{owner}/{repo}/pulls/{pull_number}"
+                ? { user: githubMock.pullUser, ...githubMock.pullMergeability }
+                : { user: githubMock.pullUser },
+          });
         }
         return Promise.resolve({ data: "mock-diff-content" });
       }
@@ -859,5 +898,140 @@ describe("runReview", () => {
       event: "COMMENT",
       body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
     });
+  });
+
+  it("completes the review check before auto-merging clean approvals", async () => {
+    configMock.review.auto_merge = true;
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    expect(githubMock.mergedPulls).toHaveLength(1);
+    const checkRunIndex = githubMock.request.mock.calls.findIndex(
+      ([path]) => typeof path === "string" && path.includes("/check-runs/"),
+    );
+    const mergeIndex = githubMock.request.mock.calls.findIndex(
+      ([path]) => typeof path === "string" && path.includes("pulls/{pull_number}/merge"),
+    );
+    expect(checkRunIndex).toBeGreaterThan(-1);
+    expect(mergeIndex).toBeGreaterThan(checkRunIndex);
+    expect(latestCheckRunUpdate()).toMatchObject({ conclusion: "success" });
+  });
+
+  it("checks successful same-head required results before auto-merging", async () => {
+    configMock.review.auto_merge = true;
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    const requiredCheckIndex = githubMock.request.mock.calls.findIndex(
+      ([path]) => path === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+    );
+    const mergeIndex = githubMock.request.mock.calls.findIndex(
+      ([path]) => typeof path === "string" && path.includes("pulls/{pull_number}/merge"),
+    );
+    expect(requiredCheckIndex).toBeGreaterThan(-1);
+    expect(mergeIndex).toBeGreaterThan(requiredCheckIndex);
+    expect(githubMock.request.mock.calls[requiredCheckIndex]?.[1]).toMatchObject({
+      ref: PAYLOAD.headSha,
+    });
+  });
+
+  it.each([
+    [
+      "pending",
+      (runs: Record<string, unknown>[]) =>
+        runs.map((run) =>
+          run.name === "Build" ? { ...run, status: "in_progress", conclusion: null } : run,
+        ),
+    ],
+    [
+      "verifier pending",
+      (runs: Record<string, unknown>[]) =>
+        runs.map((run) =>
+          run.name === "Verify postil/review passed"
+            ? { ...run, status: "in_progress", conclusion: null }
+            : run,
+        ),
+    ],
+    [
+      "missing",
+      (runs: Record<string, unknown>[]) => runs.filter((run) => run.name !== "Docker build"),
+    ],
+    [
+      "failing",
+      (runs: Record<string, unknown>[]) =>
+        runs.map((run) => (run.name === "Unit tests" ? { ...run, conclusion: "failure" } : run)),
+    ],
+    [
+      "wrong head",
+      (runs: Record<string, unknown>[]) =>
+        runs.map((run) =>
+          run.name === "postil/review" ? { ...run, head_sha: "different-sha" } : run,
+        ),
+    ],
+  ])("does not auto-merge when a required check is %s", async (_label, mutateRuns) => {
+    configMock.review.auto_merge = true;
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    githubMock.checkRuns = mutateRuns(githubMock.checkRuns);
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    expect(githubMock.mergedPulls).toHaveLength(0);
+    expect(
+      githubMock.request.mock.calls.some(
+        ([path]) => typeof path === "string" && path.includes("pulls/{pull_number}/merge"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not auto-merge when the pull head changed after review", async () => {
+    configMock.review.auto_merge = true;
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    githubMock.pullMergeability = {
+      mergeable: true,
+      mergeable_state: "clean",
+      head: { sha: "new-head-sha" },
+    };
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    expect(githubMock.mergedPulls).toHaveLength(0);
+    expect(
+      githubMock.request.mock.calls.some(
+        ([path]) => path === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not auto-merge when the review check cannot be completed", async () => {
+    configMock.review.auto_merge = true;
+    githubMock.reviews = [];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+    const baseImpl = githubMock.request.getMockImplementation();
+    githubMock.request.mockImplementation((path: string, params?: Record<string, unknown>) => {
+      if (typeof path === "string" && path.includes("/check-runs/") && path.startsWith("PATCH")) {
+        return Promise.reject(new Error("check update failed"));
+      }
+      return baseImpl?.(path, params) ?? Promise.resolve({ data: [] });
+    });
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    expect(githubMock.mergedPulls).toHaveLength(0);
+    expect(
+      githubMock.request.mock.calls.some(
+        ([path]) => typeof path === "string" && path.includes("pulls/{pull_number}/merge"),
+      ),
+    ).toBe(false);
   });
 });
