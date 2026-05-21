@@ -166,6 +166,16 @@ jobs:
               return data.check_runs.find(r => r.name === 'postil/review') || null;
             }
 
+            async function pullIsMerged() {
+              if (!payloadPr?.number) return false;
+              const { data } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: payloadPr.number,
+              });
+              return Boolean(data.merged_at);
+            }
+
             // For merged PRs, the review gate was already enforced on the PR.
             if (payloadPr?.merged_at) {
               console.log('PR is already merged; review gate was enforced before merge.');
@@ -177,6 +187,11 @@ jobs:
             await sleep(INITIAL_DELAY_MS);
 
             for (let attempt = 1; attempt <= MAX_POLLS; attempt++) {
+              if (await pullIsMerged()) {
+                console.log('PR merged while waiting; review gate was enforced before merge.');
+                return;
+              }
+
               const check = await findCheckRun(headSha);
 
               if (!check) {
