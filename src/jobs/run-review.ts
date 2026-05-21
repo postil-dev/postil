@@ -2,13 +2,10 @@ import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
 import { loadReviewConfig, type PostilConfig } from "@/lib/config";
 import { env } from "@/lib/env";
-import { installationOctokit } from "@/lib/github";
+import { appOctokit, installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
+import { callOpenRouterReview, type OpenRouterResult } from "./openrouter-review";
 import { parseReviewModelCascade } from "./review-models";
-import {
-  callOpenRouterReview,
-  type OpenRouterResult,
-} from "./openrouter-review";
 
 export const reviewPayload = z.object({
   installationId: z.number().int(),
@@ -46,6 +43,11 @@ export type ReviewEnvelope = {
 
 const ALLOWED_REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]);
 
+type GitHubUser = {
+  login?: unknown;
+  type?: unknown;
+};
+
 type ReviewThreadEvent = {
   kind: "review" | "review-comment" | "issue-comment";
   author: string;
@@ -59,6 +61,8 @@ type ReviewThreadEvent = {
 type ReviewContext = {
   prompt: string;
   outstandingChangeRequestReviewers: string[];
+  hasExternalActivity: boolean;
+  loaded: boolean;
 };
 
 export const SYSTEM_PROMPT = `
@@ -111,6 +115,48 @@ function sortNewestFirst(items: ReviewThreadEvent[]): ReviewThreadEvent[] {
   });
 }
 
+function userLogin(user: GitHubUser | null): string {
+  return typeof user?.login === "string" ? user.login : "";
+}
+
+function normalizeLogin(login: string): string {
+  return login.toLowerCase();
+}
+
+function isCurrentAppBotUser(user: GitHubUser | null, appBotLogin: string | null): boolean {
+  const login = userLogin(user);
+  return !!appBotLogin && normalizeLogin(login) === normalizeLogin(appBotLogin);
+}
+
+function isSubstantiveExternalActivity(
+  body: string,
+  user: GitHubUser | null,
+  appBotLogin: string | null,
+): boolean {
+  return body.trim() !== "" && !isCurrentAppBotUser(user, appBotLogin);
+}
+
+function dismissedBy(rawReview: unknown): GitHubUser | null {
+  return (rawReview as { dismissed_by?: GitHubUser | null }).dismissed_by ?? null;
+}
+
+async function fetchCurrentAppBotLogin(): Promise<string | null> {
+  const fallbackSlug = String(env.GITHUB_APP_SLUG ?? "").trim();
+  try {
+    const octokit = appOctokit();
+    const appRes = await octokit.request("GET /app");
+    const slug = String((appRes.data as { slug?: unknown }).slug ?? "").trim();
+    if (slug) return `${slug}[bot]`;
+    return fallbackSlug ? `${fallbackSlug}[bot]` : null;
+  } catch (err) {
+    console.warn(
+      "[review-context] app identity fetch failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return fallbackSlug ? `${fallbackSlug}[bot]` : null;
+  }
+}
+
 function outstandingChangeRequestReviewers(items: ReviewThreadEvent[]): string[] {
   const latestStateByAuthor = new Map<string, string>();
   const reviews = [...items]
@@ -142,6 +188,8 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
+      hasExternalActivity: false,
+      loaded: true,
     };
   }
 
@@ -204,6 +252,8 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
   return {
     prompt: lines.join("\n"),
     outstandingChangeRequestReviewers: outstandingReviewers,
+    hasExternalActivity: items.length > 0,
+    loaded: true,
   };
 }
 
@@ -243,6 +293,7 @@ async function fetchReviewContext(
   owner: string,
   repo: string,
   pullNumber: number,
+  appBotLogin: string | null,
 ): Promise<ReviewContext> {
   try {
     const [reviewsRes, reviewCommentRes, issueCommentRes] = await Promise.all([
@@ -273,9 +324,25 @@ async function fetchReviewContext(
         const dismissalMessage = String(
           (rawReview as { dismissal_message?: unknown }).dismissal_message ?? "",
         ).trim();
-        const authorObj = (rawReview as { user?: { login?: unknown } | null }).user ?? null;
-        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        const authorObj = (rawReview as { user?: GitHubUser | null }).user ?? null;
+        const author = userLogin(authorObj) || "unknown";
         const submittedAt = String((rawReview as { submitted_at?: unknown }).submitted_at ?? "");
+        if (isCurrentAppBotUser(authorObj, appBotLogin)) {
+          const dismissalAuthor = dismissedBy(rawReview);
+          if (
+            state === "DISMISSED" &&
+            dismissalMessage &&
+            isSubstantiveExternalActivity(dismissalMessage, dismissalAuthor, appBotLogin)
+          ) {
+            items.push({
+              kind: "issue-comment",
+              author: userLogin(dismissalAuthor) || "unknown",
+              body: dismissalMessage,
+              timestamp: submittedAt || undefined,
+            });
+          }
+          continue;
+        }
         items.push({
           kind: "review",
           author,
@@ -288,9 +355,10 @@ async function fetchReviewContext(
 
     if (Array.isArray(reviewCommentRes)) {
       for (const rawComment of reviewCommentRes) {
+        const authorObj = (rawComment as { user?: GitHubUser | null }).user ?? null;
+        if (isCurrentAppBotUser(authorObj, appBotLogin)) continue;
         const body = String((rawComment as { body?: unknown }).body ?? "").trim();
-        const authorObj = (rawComment as { user?: { login?: unknown } | null }).user ?? null;
-        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        const author = userLogin(authorObj) || "unknown";
         items.push({
           kind: "review-comment",
           author,
@@ -309,9 +377,10 @@ async function fetchReviewContext(
 
     if (Array.isArray(issueCommentRes)) {
       for (const rawComment of issueCommentRes) {
+        const authorObj = (rawComment as { user?: GitHubUser | null }).user ?? null;
+        if (isCurrentAppBotUser(authorObj, appBotLogin)) continue;
         const body = String((rawComment as { body?: unknown }).body ?? "").trim();
-        const authorObj = (rawComment as { user?: { login?: unknown } | null }).user ?? null;
-        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        const author = userLogin(authorObj) || "unknown";
         items.push({
           kind: "issue-comment",
           author,
@@ -332,6 +401,8 @@ async function fetchReviewContext(
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
+      hasExternalActivity: false,
+      loaded: false,
     };
   }
 }
@@ -434,7 +505,9 @@ async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRou
     }
   }
 
-  const error = new Error(`openrouter model cascade failed: ${failures.join(" | ")}`) as OpenRouterCascadeError;
+  const error = new Error(
+    `openrouter model cascade failed: ${failures.join(" | ")}`,
+  ) as OpenRouterCascadeError;
   error.modelUsed = attemptedModels.at(-1) ?? configuredModels[0];
   error.attemptedModels = attemptedModels;
   throw error;
@@ -483,6 +556,66 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
 
   let checkRunCompleted = false;
   try {
+    const [appBotLogin, pullRes] = await Promise.all([
+      fetchCurrentAppBotLogin(),
+      octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+        owner,
+        repo,
+        pull_number: payload.pullNumber,
+      }),
+    ]);
+    const pullAuthor = (pullRes.data as { user?: GitHubUser | null }).user ?? null;
+    const isSelfAuthoredPull = isCurrentAppBotUser(pullAuthor, appBotLogin);
+
+    const reviewContext = await fetchReviewContext(
+      octokit,
+      owner,
+      repo,
+      payload.pullNumber,
+      appBotLogin,
+    );
+
+    if (reviewContext.loaded && isSelfAuthoredPull && !reviewContext.hasExternalActivity) {
+      if (payload.checkRunId) {
+        try {
+          await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+            owner,
+            repo,
+            check_run_id: payload.checkRunId,
+            status: "completed",
+            conclusion: "success",
+            completed_at: new Date().toISOString(),
+            output: {
+              title: "No issues",
+              summary: "No issues found.",
+              text: "No issues found.",
+            },
+          });
+          checkRunCompleted = true;
+          track("system", "update_check_run", {
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+            conclusion: "success",
+          });
+        } catch (err) {
+          console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
+          captureException(err, {
+            properties: {
+              op: "update_check_run",
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+            },
+          });
+        }
+      }
+
+      return {
+        summary: "No issues found.",
+        findings: [],
+        usage: ZERO_USAGE,
+      };
+    }
+
     const diffRes = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
       owner,
       repo,
@@ -492,7 +625,6 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     const diff = String(diffRes.data);
     const MAX = 120_000;
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
-    const reviewContext = await fetchReviewContext(octokit, owner, repo, payload.pullNumber);
 
     const {
       content: modelOutput,
