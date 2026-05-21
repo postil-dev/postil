@@ -390,7 +390,7 @@ function Pricing() {
             Pick the one that fits.
           </h2>
         </div>
-        <div className="grid gap-5 lg:grid-cols-2">
+        <div className="grid gap-5 lg:grid-cols-3">
           <PlanCard
             name="Hobby"
             price="Free"
@@ -415,6 +415,22 @@ function Pricing() {
               "Email support within one business day",
             ]}
             cta={{ label: "Add the GitHub App", href: "/install" }}
+          />
+          <PlanCard
+            muted
+            name="Self-host"
+            price="Free"
+            sub="Apache-2.0, on your infrastructure."
+            bullets={[
+              "Full source available on GitHub",
+              "Fly, E2B, or Docker sandbox drivers",
+              "Bring your own model provider key",
+              "Same webhook and config surface as managed",
+            ]}
+            cta={{
+              label: "Self-host guide",
+              href: "https://github.com/postil-dev/postil#self-host",
+            }}
           />
         </div>
         <p className="mt-8 text-sm text-muted-foreground">
