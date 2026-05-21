@@ -373,6 +373,10 @@ function isFinding(x: unknown): x is Finding {
 }
 
 type OpenRouterResult = { content: string; usage: TokenUsage; modelUsed: string };
+type OpenRouterCascadeError = Error & {
+  modelUsed?: string;
+  attemptedModels?: string[];
+};
 
 const OPENROUTER_MODEL_TIMEOUT_MS = 120_000;
 const OPENROUTER_CASCADE_TIMEOUT_MS = 6 * 60_000;
@@ -392,18 +396,25 @@ function appendReviewStatusLine(body: string, statusLine: string): string {
   return trimmed ? `${trimmed}\n\n${statusLine}` : statusLine;
 }
 
+export function buildReviewUserContent(reviewContext: string, diff: string): string {
+  return reviewContext ? `${reviewContext}\n\nDiff:\n\n${diff}` : `Diff:\n\n${diff}`;
+}
+
 async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRouterResult> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
-  const userContent = reviewContext ? `${reviewContext}\n\nDiff:\n\n${diff}` : `Diff:\n\n${diff}`;
+  const userContent = buildReviewUserContent(reviewContext, diff);
   const failures: string[] = [];
+  const attemptedModels: string[] = [];
+  const configuredModels = parseReviewModelCascade(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
   const cascadeStartedAt = Date.now();
 
-  for (const model of parseReviewModelCascade(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL)) {
+  for (const model of configuredModels) {
     const remainingMs = OPENROUTER_CASCADE_TIMEOUT_MS - (Date.now() - cascadeStartedAt);
     if (remainingMs <= 0) {
       failures.push(`${model}: skipped after cascade timeout`);
       break;
     }
+    attemptedModels.push(model);
 
     const controller = new AbortController();
     const timeout = setTimeout(
@@ -455,7 +466,10 @@ async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRou
     }
   }
 
-  throw new Error(`openrouter model cascade failed: ${failures.join(" | ")}`);
+  const error = new Error(`openrouter model cascade failed: ${failures.join(" | ")}`) as OpenRouterCascadeError;
+  error.modelUsed = attemptedModels.at(-1) ?? configuredModels[0];
+  error.attemptedModels = attemptedModels;
+  throw error;
 }
 
 export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope> {

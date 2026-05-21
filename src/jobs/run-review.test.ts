@@ -276,9 +276,12 @@ describe("runReview", () => {
       return new Response("not found", { status: 404 });
     });
 
-    await expect(runReview(PAYLOAD)).rejects.toThrow(
-      "test/late: skipped after cascade timeout",
-    );
+    const error = await runReview(PAYLOAD).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("test/late: skipped after cascade timeout");
+    expect(error).toMatchObject({
+      modelUsed: "test/backup",
+    });
 
     expect(openRouterMock.bodies).toMatchObject([
       { model: "test/primary" },

@@ -4,9 +4,20 @@ import { getDb, schema } from "@/db";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { env } from "@/lib/env";
+import { parseReviewModelCascade } from "./review-models";
 import { reviewPayload, runReview } from "./run-review";
 
 let triggerConfigured = false;
+
+function currentReviewModel(): string {
+  return parseReviewModelCascade(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL)[0] ?? env.REVIEW_MODEL;
+}
+
+function errorModelUsed(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const modelUsed = (err as { modelUsed?: unknown }).modelUsed;
+  return typeof modelUsed === "string" && modelUsed.trim() ? modelUsed : undefined;
+}
 
 function ensureTriggerConfigured(): void {
   if (triggerConfigured) return;
@@ -35,7 +46,7 @@ export const reviewPullRequest = task({
       repoFullName: payload.repoFullName,
       pullNumber: payload.pullNumber,
       headSha: payload.headSha,
-      modelUsed: env.REVIEW_MODEL,
+      modelUsed: currentReviewModel(),
       installationHash: hashInstallationId(payload.installationId),
     });
 
@@ -129,7 +140,7 @@ export const reviewPullRequest = task({
         headSha: payload.headSha,
         error: String(err instanceof Error ? err.message : err),
         errorClass: err instanceof Error ? err.name : "unknown",
-        modelUsed: env.REVIEW_MODEL,
+        modelUsed: errorModelUsed(err) ?? currentReviewModel(),
         installationHash: hashInstallationId(payload.installationId),
       });
 
