@@ -1,0 +1,51 @@
+name: Postil Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+
+concurrency:
+  group: postil-review-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  review:
+    name: Postil Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false)
+    timeout-minutes: 15
+    steps:
+      - name: Skip review in merge queue (already ran on PR)
+        if: github.event_name == 'merge_group'
+        run: echo "Postil Review was enforced at PR time; merge-queue re-run is not required."
+
+      - name: Checkout base ref (never PR head)
+        if: github.event_name == 'pull_request_target'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Set up Bun
+        if: github.event_name == 'pull_request_target'
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        if: github.event_name == 'pull_request_target'
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Run postil review
+        if: github.event_name == 'pull_request_target'
+        run: bun run postil review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'moonshotai/kimi-k2.6' }}
+          REVIEW_MODEL_CASCADE: ${{ vars.REVIEW_MODEL_CASCADE }}

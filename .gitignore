@@ -52,3 +52,6 @@ next-env.d.ts
 .biome_cache/
 .playwright-mcp/
 HANDOFF.md
+
+# infisical (per-developer workspace binding)
+.infisical.json
