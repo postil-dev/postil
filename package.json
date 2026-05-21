@@ -39,7 +39,7 @@
     "drizzle-orm": "^0.45.2",
     "geist": "^1.7.0",
     "lucide-react": "^1.8.0",
-    "next": "15.5.15",
+    "next": "16.2.6",
     "pg": "^8.20.0",
     "posthog-js": "^1.373.5",
     "posthog-node": "^5.29.2",
