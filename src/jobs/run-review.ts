@@ -42,6 +42,16 @@ export type ReviewEnvelope = {
 };
 
 const ALLOWED_REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]);
+const AUTO_MERGE_TIMEOUT_MS = 15_000;
+const REQUIRED_AUTO_MERGE_CHECKS = [
+  "postil/review",
+  "Lint",
+  "Typecheck",
+  "Unit tests",
+  "Build",
+  "Docker build",
+  "Verify postil/review passed",
+] as const;
 
 type GitHubUser = {
   login?: unknown;
@@ -155,6 +165,65 @@ async function fetchCurrentAppBotLogin(): Promise<string | null> {
     );
     return fallbackSlug ? `${fallbackSlug}[bot]` : null;
   }
+}
+
+function pullLabelNames(pull: unknown): string[] {
+  const labels = (pull as { labels?: unknown }).labels;
+  if (!Array.isArray(labels)) return [];
+  return labels.flatMap((label) => {
+    if (typeof label === "string") return [label];
+    if (!label || typeof label !== "object") return [];
+    const name = String((label as { name?: unknown }).name ?? "").trim();
+    return name ? [name] : [];
+  });
+}
+
+export async function hasApprovedReview(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  headSha: string,
+): Promise<boolean> {
+  const appBotLogin = await fetchCurrentAppBotLogin();
+  if (!appBotLogin) return false;
+
+  const reviews = await fetchPaginated(
+    octokit,
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+    {
+      owner,
+      repo,
+      pull_number: pullNumber,
+    },
+  );
+
+  let latestApprovedReviewAt = 0;
+  let latestState: string | null = null;
+
+  for (const rawReview of reviews) {
+    if (!rawReview || typeof rawReview !== "object") continue;
+    const state = String((rawReview as { state?: unknown }).state ?? "");
+    if (!ALLOWED_REVIEW_STATES.has(state)) continue;
+    const reviewCommit = String((rawReview as { commit_id?: unknown }).commit_id ?? "");
+    if (reviewCommit !== headSha) continue;
+    const authorObj = (rawReview as { user?: GitHubUser | null }).user ?? null;
+    if (!isCurrentAppBotUser(authorObj, appBotLogin)) continue;
+    const submittedAt = String(
+      (rawReview as { submitted_at?: unknown; updated_at?: unknown; created_at?: unknown })
+        .submitted_at ??
+        (rawReview as { updated_at?: unknown; created_at?: unknown }).updated_at ??
+        (rawReview as { created_at?: unknown }).created_at ??
+        "",
+    );
+    const reviewTime = Number.isNaN(Date.parse(submittedAt)) ? 0 : Date.parse(submittedAt);
+    if (reviewTime >= latestApprovedReviewAt) {
+      latestApprovedReviewAt = reviewTime;
+      latestState = state;
+    }
+  }
+
+  return latestState === "APPROVED";
 }
 
 function outstandingChangeRequestReviewers(items: ReviewThreadEvent[]): string[] {
@@ -473,6 +542,140 @@ export function buildReviewUserContent(reviewContext: string, diff: string): str
   return reviewContext ? `${reviewContext}\n\nDiff:\n\n${diff}` : `Diff:\n\n${diff}`;
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function checkCompletedSuccessfully(check: unknown, headSha: string): boolean {
+  if (!check || typeof check !== "object") return false;
+  const record = check as Record<string, unknown>;
+  return (
+    record.head_sha === headSha && record.status === "completed" && record.conclusion === "success"
+  );
+}
+
+function checkRunTime(check: unknown): number {
+  if (!check || typeof check !== "object") return 0;
+  const record = check as Record<string, unknown>;
+  const timestamp = String(record.completed_at ?? record.started_at ?? "");
+  const parsed = Date.parse(timestamp);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+async function hasSuccessfulRequiredChecks(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  headSha: string,
+  pullLabels: string[],
+): Promise<boolean> {
+  const checkRuns = await withTimeout(
+    octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
+      owner,
+      repo,
+      ref: headSha,
+      per_page: 100,
+    }),
+    AUTO_MERGE_TIMEOUT_MS,
+    "auto-merge required check lookup",
+  );
+  const runs = Array.isArray(checkRuns.data.check_runs) ? checkRuns.data.check_runs : [];
+  const latestByName = new Map<string, unknown>();
+  const requiredChecks = pullLabels.some((label) => label.toLowerCase() === "e2e")
+    ? [...REQUIRED_AUTO_MERGE_CHECKS, "E2E tests"]
+    : REQUIRED_AUTO_MERGE_CHECKS;
+
+  for (const run of runs) {
+    if (!run || typeof run !== "object") continue;
+    const name = (run as Record<string, unknown>).name;
+    if (typeof name !== "string") continue;
+    const current = latestByName.get(name);
+    if (!current || checkRunTime(run) >= checkRunTime(current)) {
+      latestByName.set(name, run);
+    }
+  }
+
+  return requiredChecks.every((name) =>
+    checkCompletedSuccessfully(latestByName.get(name), headSha),
+  );
+}
+
+export async function attemptAutoMergeApprovedPull(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  payload: ReviewPayload,
+) {
+  try {
+    const pull = await withTimeout(
+      octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+        owner,
+        repo,
+        pull_number: payload.pullNumber,
+      }),
+      AUTO_MERGE_TIMEOUT_MS,
+      "auto-merge mergeability check",
+    );
+    const pullHeadSha = String((pull.data as { head?: { sha?: unknown } }).head?.sha ?? "");
+    if (pullHeadSha && pullHeadSha !== payload.headSha) {
+      console.warn("[auto-merge] Skipping merge: pull head SHA changed.");
+      return;
+    }
+    if ((pull.data as { merged?: unknown }).merged === true) return;
+    if (pull.data.mergeable === true && pull.data.mergeable_state === "clean") {
+      const checksPassed = await hasSuccessfulRequiredChecks(
+        octokit,
+        owner,
+        repo,
+        payload.headSha,
+        pullLabelNames(pull.data),
+      );
+      if (!checksPassed) return;
+
+      await withTimeout(
+        octokit.request("PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge", {
+          owner,
+          repo,
+          pull_number: payload.pullNumber,
+          merge_method: "squash",
+          sha: payload.headSha,
+        }),
+        AUTO_MERGE_TIMEOUT_MS,
+        "auto-merge request",
+      );
+      track("system", "auto_merge_completed", {
+        repoFullName: payload.repoFullName,
+        pullNumber: payload.pullNumber,
+      });
+    }
+  } catch (err) {
+    // Non-fatal: GitHub may still be computing mergeability, required checks
+    // may be pending, branch protection may reject the merge, or GitHub may
+    // take too long to answer.
+    console.warn(
+      "[auto-merge] Could not merge clean PR:",
+      err instanceof Error ? err.message : err,
+    );
+    captureException(err, {
+      properties: {
+        op: "auto_merge_clean_pr",
+        repoFullName: payload.repoFullName,
+        pullNumber: payload.pullNumber,
+      },
+    });
+  }
+}
+
 async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRouterResult> {
   const userContent = buildReviewUserContent(reviewContext, diff);
   const failures: string[] = [];
@@ -644,6 +847,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
 
     // Always post a review when there are findings or explicit change requests.
     // Clean PRs can skip the PR review when review.on_clean=skip in .postil.yaml.
+    let approved = false;
     {
       const hasFindings = comments.length > 0;
       const hasOutstandingChangeRequests =
@@ -663,7 +867,6 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           envelope.summary || "Postil reviewed this PR.",
           statusLine,
         );
-        let approved = false;
 
         try {
           await octokit.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
@@ -692,45 +895,6 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
               repo,
               issue_number: payload.pullNumber,
               body: fallbackBody,
-            });
-          }
-        }
-
-        // If configured, squash-merge clean approved PRs only after GitHub
-        // reports that the PR is cleanly mergeable. This keeps the default safe
-        // while allowing fully-green PRs to land without another manual step.
-        if (approved && config.review.auto_merge) {
-          try {
-            const pull = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
-              owner,
-              repo,
-              pull_number: payload.pullNumber,
-            });
-            if (pull.data.mergeable === true && pull.data.mergeable_state === "clean") {
-              await octokit.request("PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge", {
-                owner,
-                repo,
-                pull_number: payload.pullNumber,
-                merge_method: "squash",
-              });
-              track("system", "auto_merge_completed", {
-                repoFullName: payload.repoFullName,
-                pullNumber: payload.pullNumber,
-              });
-            }
-          } catch (err) {
-            // Non-fatal: GitHub may still be computing mergeability, required
-            // checks may be pending, or branch protection may reject the merge.
-            console.warn(
-              "[auto-merge] Could not merge clean PR:",
-              err instanceof Error ? err.message : err,
-            );
-            captureException(err, {
-              properties: {
-                op: "auto_merge_clean_pr",
-                repoFullName: payload.repoFullName,
-                pullNumber: payload.pullNumber,
-              },
             });
           }
         }
@@ -801,6 +965,13 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           },
         });
       }
+    }
+
+    // Auto-merge runs only after the review check has been completed. This
+    // keeps the required review gate from waiting on GitHub mergeability or
+    // merge endpoints, which can be slow or temporarily unavailable.
+    if (approved && config.review.auto_merge && (!payload.checkRunId || checkRunCompleted)) {
+      await attemptAutoMergeApprovedPull(octokit, owner, repo, payload);
     }
 
     return envelope;
