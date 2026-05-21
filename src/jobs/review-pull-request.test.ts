@@ -46,6 +46,8 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("./run-review", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./run-review")>();
   return {
+    isOpenRouterCascadeError: actual.isOpenRouterCascadeError,
+    publicReviewErrorMessage: actual.publicReviewErrorMessage,
     reviewPayload: actual.reviewPayload,
     runReview: runReviewMock.runReview,
   };
@@ -92,6 +94,11 @@ describe("reviewPullRequest", () => {
     runReviewMock.runReview.mockRejectedValueOnce(
       Object.assign(new Error("openrouter model cascade failed"), {
         modelUsed: "test/backup",
+        attemptedModels: ["test/primary", "test/backup"],
+        providerFailures: [
+          { model: "test/primary", reason: "provider returned an error", status: 429 },
+          { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
+        ],
       }),
     );
 
@@ -103,7 +110,26 @@ describe("reviewPullRequest", () => {
       "system",
       "review_failed",
       expect.objectContaining({
+        error: "Review failed after all configured model providers were unavailable.",
         modelUsed: "test/backup",
+        attemptedModels: ["test/primary", "test/backup"],
+        providerFailures: [
+          { model: "test/primary", reason: "provider returned an error", status: 429 },
+          { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
+        ],
+      }),
+    );
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          modelUsed: "test/backup",
+          attemptedModels: ["test/primary", "test/backup"],
+          providerFailures: [
+            { model: "test/primary", reason: "provider returned an error", status: 429 },
+            { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
+          ],
+        }),
       }),
     );
   });

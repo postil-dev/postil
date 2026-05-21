@@ -8,7 +8,12 @@ import {
   resolveReviewModelUsed,
   selectedReviewModel,
 } from "./review-models";
-import { reviewPayload, runReview } from "./run-review";
+import {
+  isOpenRouterCascadeError,
+  publicReviewErrorMessage,
+  reviewPayload,
+  runReview,
+} from "./run-review";
 
 let triggerConfigured = false;
 
@@ -101,6 +106,9 @@ export const reviewPullRequest = task({
           repoFullName: payload.repoFullName,
           pullNumber: payload.pullNumber,
           headSha: payload.headSha,
+          modelUsed: resolveReviewModelUsed(err, reviewModelUsed),
+          attemptedModels: isOpenRouterCascadeError(err) ? err.attemptedModels : undefined,
+          providerFailures: isOpenRouterCascadeError(err) ? err.providerFailures : undefined,
         },
       });
 
@@ -111,9 +119,7 @@ export const reviewPullRequest = task({
             .update(schema.reviews)
             .set({
               status: "failed",
-              errorMessage: String(
-                err instanceof Error ? err.message : err,
-              ),
+              errorMessage: publicReviewErrorMessage(err),
               completedAt: new Date(),
             })
             .where(eq(schema.reviews.id, payload.reviewId));
@@ -132,9 +138,11 @@ export const reviewPullRequest = task({
         repoFullName: payload.repoFullName,
         pullNumber: payload.pullNumber,
         headSha: payload.headSha,
-        error: String(err instanceof Error ? err.message : err),
+        error: publicReviewErrorMessage(err),
         errorClass: err instanceof Error ? err.name : "unknown",
         modelUsed: resolveReviewModelUsed(err, reviewModelUsed),
+        attemptedModels: isOpenRouterCascadeError(err) ? err.attemptedModels : undefined,
+        providerFailures: isOpenRouterCascadeError(err) ? err.providerFailures : undefined,
         installationHash: await hashInstallationId(payload.installationId),
       });
 

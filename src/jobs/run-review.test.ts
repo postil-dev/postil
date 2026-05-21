@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const githubMock = vi.hoisted(() => ({
   request: vi.fn(),
@@ -87,6 +87,10 @@ function latestPostedReview() {
 function latestCheckRunUpdate() {
   return githubMock.checkRunUpdates.at(-1);
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("runReview", () => {
   beforeEach(() => {
@@ -635,18 +639,15 @@ describe("runReview", () => {
 
   it("stops the review model cascade when the shared timeout budget is spent", async () => {
     envMock.REVIEW_MODEL_CASCADE = "test/primary, test/backup, test/late";
-    const nowSpy = vi
-      .spyOn(Date, "now")
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(359_999)
-      .mockReturnValueOnce(360_000);
+    let now = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     fetchSpy.mockImplementation(async (url: unknown, init?: RequestInit) => {
       const urlStr = typeof url === "string" ? url : (url as Request).url;
       if (urlStr?.includes("openrouter")) {
         const body = init ? JSON.parse(init.body as string) : null;
         openRouterMock.body = body;
         openRouterMock.bodies.push(body);
+        now = openRouterMock.bodies.length === 1 ? 359_999 : 360_000;
         return new Response("rate limited", { status: 429 });
       }
       return new Response("not found", { status: 404 });
@@ -654,16 +655,111 @@ describe("runReview", () => {
 
     const error = await runReview(PAYLOAD).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain("test/late: skipped after cascade timeout");
+    expect((error as Error).message).toBe(
+      "openrouter model cascade failed after all configured providers were unavailable",
+    );
     expect(error).toMatchObject({
       modelUsed: "test/backup",
+      attemptedModels: ["test/primary", "test/backup"],
     });
+    expect((error as { providerFailures?: unknown[] }).providerFailures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "test/late", reason: "skipped after cascade timeout" }),
+      ]),
+    );
 
     expect(openRouterMock.bodies).toMatchObject([
       { model: "test/primary" },
       { model: "test/backup" },
     ]);
     nowSpy.mockRestore();
+  });
+
+  it("aborts an in-flight provider request when the shared cascade budget expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    envMock.REVIEW_MODEL_CASCADE = "test/primary, test/backup, test/slow";
+    const providerSignals: AbortSignal[] = [];
+
+    fetchSpy.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : (url as Request).url;
+      if (!urlStr?.includes("openrouter")) {
+        return new Response("not found", { status: 404 });
+      }
+
+      const body = init ? JSON.parse(init.body as string) : null;
+      openRouterMock.body = body;
+      openRouterMock.bodies.push(body);
+      if (init?.signal) providerSignals.push(init.signal);
+
+      if (openRouterMock.bodies.length <= 2) {
+        return new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(new Response("rate limited", { status: 429 })), 121_000);
+        });
+      }
+
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    });
+
+    const errorPromise = runReview(PAYLOAD).catch((err: unknown) => err);
+    await vi.advanceTimersByTimeAsync(121_000);
+    await vi.advanceTimersByTimeAsync(121_000);
+    await vi.advanceTimersByTimeAsync(118_000);
+    const error = await errorPromise;
+
+    expect(providerSignals.at(-1)?.aborted).toBe(true);
+    expect(error).toMatchObject({
+      modelUsed: "test/slow",
+      attemptedModels: ["test/primary", "test/backup", "test/slow"],
+    });
+    expect((error as { providerFailures?: unknown[] }).providerFailures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "test/slow", reason: "cascade timeout" }),
+      ]),
+    );
+  });
+
+  it("keeps provider failure bodies out of check-run failure output", async () => {
+    envMock.REVIEW_MODEL_CASCADE = "test/primary";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fetchSpy.mockImplementationOnce(async (url: unknown, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : (url as Request).url;
+      if (urlStr?.includes("openrouter")) {
+        openRouterMock.body = init ? JSON.parse(init.body as string) : null;
+        openRouterMock.bodies.push(openRouterMock.body);
+        return new Response("provider said: account quota secret", { status: 429 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    await expect(runReview({ ...PAYLOAD, checkRunId: 77 })).rejects.toThrow(
+      "openrouter model cascade failed after all configured providers were unavailable",
+    );
+
+    expect(latestCheckRunUpdate()).toMatchObject({
+      conclusion: "failure",
+      output: {
+        summary: "Review failed after all configured model providers were unavailable.",
+        text: "Review failed after all configured model providers were unavailable.",
+      },
+    });
+    expect(JSON.stringify(latestCheckRunUpdate())).not.toContain("account quota secret");
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("account quota secret");
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[openrouter] model request failed",
+      expect.objectContaining({
+        model: "test/primary",
+        reason: "provider returned an error",
+        status: 429,
+      }),
+    );
+    warnSpy.mockRestore();
   });
 
   it("ends clean posted reviews with a status line", async () => {
