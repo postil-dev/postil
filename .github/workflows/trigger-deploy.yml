@@ -33,6 +33,7 @@ jobs:
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          domain: https://eu.infisical.com
           project-slug: postil
           env-slug: prod
           secret-path: /postil
