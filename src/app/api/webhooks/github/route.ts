@@ -196,7 +196,9 @@ async function handlePullRequest(
       captureException(err, {
         properties: { op: "create_check_run", repoFullName, pullNumber, headSha },
       });
-      // Continue without check-run; the review task still posts review feedback.
+      await recordReviewDispatchFailure(db, reviewId, err, repoFullName, pullNumber, headSha);
+      await deleteWebhookDelivery(db, deliveryId);
+      throw err;
     }
   }
 
@@ -257,26 +259,7 @@ async function handlePullRequest(
     }
     return;
   } catch (err) {
-    try {
-      await db
-        .update(schema.reviews)
-        .set({
-          status: "failed",
-          errorMessage: String(err instanceof Error ? err.message : err),
-          completedAt: new Date(),
-        })
-        .where(eq(schema.reviews.id, reviewId));
-    } catch (updateErr) {
-      captureException(updateErr, {
-        properties: {
-          op: "record_dispatch_failed",
-          repoFullName,
-          pullNumber,
-          headSha,
-          reviewId,
-        },
-      });
-    }
+    await recordReviewDispatchFailure(db, reviewId, err, repoFullName, pullNumber, headSha);
     captureException(err, {
       properties: {
         op: "trigger_review_pull_request",
@@ -312,21 +295,58 @@ async function handlePullRequest(
         });
       }
     }
-    try {
-      await db
-        .delete(schema.webhookDeliveries)
-        .where(
-          and(
-            eq(schema.webhookDeliveries.source, "github"),
-            eq(schema.webhookDeliveries.deliveryId, deliveryId),
-          ),
-        );
-    } catch (deleteErr) {
-      captureException(deleteErr, {
-        properties: { op: "delete_webhook_delivery_after_enqueue_error", deliveryId },
-      });
-    }
+    await deleteWebhookDelivery(db, deliveryId);
     throw err;
+  }
+}
+
+async function recordReviewDispatchFailure(
+  db: ReturnType<typeof getDb>,
+  reviewId: string,
+  err: unknown,
+  repoFullName: string,
+  pullNumber: number,
+  headSha: string,
+): Promise<void> {
+  try {
+    await db
+      .update(schema.reviews)
+      .set({
+        status: "failed",
+        errorMessage: String(err instanceof Error ? err.message : err),
+        completedAt: new Date(),
+      })
+      .where(eq(schema.reviews.id, reviewId));
+  } catch (updateErr) {
+    captureException(updateErr, {
+      properties: {
+        op: "record_dispatch_failed",
+        repoFullName,
+        pullNumber,
+        headSha,
+        reviewId,
+      },
+    });
+  }
+}
+
+async function deleteWebhookDelivery(
+  db: ReturnType<typeof getDb>,
+  deliveryId: string,
+): Promise<void> {
+  try {
+    await db
+      .delete(schema.webhookDeliveries)
+      .where(
+        and(
+          eq(schema.webhookDeliveries.source, "github"),
+          eq(schema.webhookDeliveries.deliveryId, deliveryId),
+        ),
+      );
+  } catch (deleteErr) {
+    captureException(deleteErr, {
+      properties: { op: "delete_webhook_delivery_after_enqueue_error", deliveryId },
+    });
   }
 }
 
