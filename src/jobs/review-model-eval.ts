@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
-import { env } from "@/lib/env";
 import {
   parseEnvelope,
   SYSTEM_PROMPT,
   type Finding,
   type TokenUsage,
 } from "./run-review";
+import { callOpenRouterReview } from "./openrouter-review";
 import { REVIEW_MODEL_RESEARCH_CANDIDATES } from "./review-models";
 
 type ExpectedFinding = {
@@ -154,66 +154,6 @@ function loadCases(path: string): ReviewModelEvalCase[] {
   return JSON.parse(readFileSync(path, "utf8")) as ReviewModelEvalCase[];
 }
 
-async function callOpenRouter(model: string, userContent: string): Promise<CaseRunOutput> {
-  if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
-
-  try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      signal: controller.signal,
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-        "content-type": "application/json",
-        "http-referer": "https://postil.dev",
-        "x-title": "Postil",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userContent },
-        ],
-        temperature: 0.2,
-        max_tokens: 2500,
-        response_format: { type: "json_object" },
-      }),
-    });
-
-    clearTimeout(timeout);
-
-    if (!res.ok) {
-      throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 400)}`);
-    }
-
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-    };
-    const rawContent = data.choices?.[0]?.message?.content ?? "";
-    const orUsage = data.usage;
-    const usage: TokenUsage = {
-      promptTokens: orUsage?.prompt_tokens ?? 0,
-      completionTokens: orUsage?.completion_tokens ?? 0,
-      totalTokens: orUsage?.total_tokens ?? 0,
-    };
-    const parsed = parseEnvelope(rawContent, usage, model);
-
-    return {
-      rawContent,
-      summary: parsed.summary,
-      findings: parsed.findings,
-      modelUsed: parsed.modelUsed ?? model,
-      usage,
-    };
-  } catch (err) {
-    clearTimeout(timeout);
-    throw err;
-  }
-}
-
 export async function runReviewModelEvaluation(
   cases: ReviewModelEvalCase[],
 ): Promise<ReviewModelEvalReport> {
@@ -222,7 +162,15 @@ export async function runReviewModelEvaluation(
   for (const evalCase of cases) {
     const outputs: Record<string, CaseRunOutput> = {};
     for (const model of REVIEW_MODEL_RESEARCH_CANDIDATES) {
-      outputs[model] = await callOpenRouter(model, evalCase.prompt);
+      const result = await callOpenRouterReview(model, SYSTEM_PROMPT, evalCase.prompt);
+      const parsed = parseEnvelope(result.content, result.usage, result.modelUsed);
+      outputs[model] = {
+        rawContent: result.content,
+        summary: parsed.summary,
+        findings: parsed.findings,
+        modelUsed: parsed.modelUsed ?? model,
+        usage: result.usage,
+      };
     }
 
     caseRuns.push({

@@ -100,7 +100,7 @@ jobs:
         with:
           context: .
           push: false
-          tags: postil:ci-${{ github.sha }}
+          tags: postil-web:ci-${{ github.sha }}
 
   e2e:
     name: E2E tests
