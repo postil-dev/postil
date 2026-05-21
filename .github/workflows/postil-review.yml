@@ -13,6 +13,7 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
+  id-token: write
 
 jobs:
   review:
@@ -31,6 +32,17 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
 
+      - name: Fetch secrets from Infisical
+        if: github.event_name == 'pull_request_target'
+        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          project-slug: postil
+          env-slug: prod
+          secret-path: /postil
+          export-type: env
+
       - name: Set up Bun
         if: github.event_name == 'pull_request_target'
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
@@ -46,6 +58,3 @@ jobs:
         run: bun run postil review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'moonshotai/kimi-k2.6' }}
-          REVIEW_MODEL_CASCADE: ${{ vars.REVIEW_MODEL_CASCADE }}
