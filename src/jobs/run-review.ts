@@ -168,6 +168,54 @@ async function fetchCurrentAppBotLogin(): Promise<string | null> {
   }
 }
 
+export async function hasApprovedReview(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  headSha: string,
+): Promise<boolean> {
+  const appBotLogin = await fetchCurrentAppBotLogin();
+  if (!appBotLogin) return false;
+
+  const reviews = await fetchPaginated(
+    octokit,
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+    {
+      owner,
+      repo,
+      pull_number: pullNumber,
+    },
+  );
+
+  let latestApprovedReviewAt = 0;
+  let latestState: string | null = null;
+
+  for (const rawReview of reviews) {
+    if (!rawReview || typeof rawReview !== "object") continue;
+    const state = String((rawReview as { state?: unknown }).state ?? "");
+    if (!ALLOWED_REVIEW_STATES.has(state)) continue;
+    const reviewCommit = String((rawReview as { commit_id?: unknown }).commit_id ?? "");
+    if (reviewCommit !== headSha) continue;
+    const authorObj = (rawReview as { user?: GitHubUser | null }).user ?? null;
+    if (!isCurrentAppBotUser(authorObj, appBotLogin)) continue;
+    const submittedAt = String(
+      (rawReview as { submitted_at?: unknown; updated_at?: unknown; created_at?: unknown })
+        .submitted_at ??
+        (rawReview as { updated_at?: unknown; created_at?: unknown }).updated_at ??
+        (rawReview as { created_at?: unknown }).created_at ??
+        "",
+    );
+    const reviewTime = Number.isNaN(Date.parse(submittedAt)) ? 0 : Date.parse(submittedAt);
+    if (reviewTime >= latestApprovedReviewAt) {
+      latestApprovedReviewAt = reviewTime;
+      latestState = state;
+    }
+  }
+
+  return latestState === "APPROVED";
+}
+
 function outstandingChangeRequestReviewers(items: ReviewThreadEvent[]): string[] {
   const latestStateByAuthor = new Map<string, string>();
   const reviews = [...items]
@@ -608,7 +656,7 @@ async function hasSuccessfulRequiredChecks(
   );
 }
 
-async function tryAutoMergeApprovedPull(
+export async function attemptAutoMergeApprovedPull(
   octokit: Octokit,
   owner: string,
   repo: string,
@@ -987,7 +1035,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     // keeps the required review gate from waiting on GitHub mergeability or
     // merge endpoints, which can be slow or temporarily unavailable.
     if (approved && config.review.auto_merge && (!payload.checkRunId || checkRunCompleted)) {
-      await tryAutoMergeApprovedPull(octokit, owner, repo, payload, config.review);
+      await attemptAutoMergeApprovedPull(octokit, owner, repo, payload, config.review);
     }
 
     return envelope;

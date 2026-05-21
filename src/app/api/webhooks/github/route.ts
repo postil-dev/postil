@@ -398,6 +398,7 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
           pullNumber,
           headSha: workflow_run.head_sha,
         },
+        config.review,
       );
     } catch (err) {
       captureException(err, {
