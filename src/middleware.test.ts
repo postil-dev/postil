@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import nextConfig from "../next.config";
-import { createCsp, middleware } from "./middleware";
+import { config, createCsp, middleware } from "./middleware";
 
 describe("security middleware", () => {
   it("builds a nonce-based CSP without permissive script fallbacks", () => {
@@ -46,5 +46,12 @@ describe("security middleware", () => {
 
     expect(staticHeaderKeys).toContain("strict-transport-security");
     expect(staticHeaderKeys).not.toContain("content-security-policy");
+  });
+
+  it("covers API routes with the middleware CSP instead of a second policy", () => {
+    const matcher = config.matcher[0]?.source;
+
+    expect(matcher).toContain("_next/static");
+    expect(matcher).not.toContain("api|");
   });
 });
