@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const githubMock = vi.hoisted(() => ({
   request: vi.fn(),
+  appSlug: "postil",
+  pullUser: { login: "contributor-carol", type: "User" } as Record<string, unknown>,
   reviews: [] as Record<string, unknown>[],
   reviewComments: [] as Record<string, unknown>[],
   issueComments: [] as Record<string, unknown>[],
@@ -143,11 +145,16 @@ describe("runReview", () => {
       on_clean: "approve",
       auto_merge: false,
     };
+    githubMock.appSlug = "postil";
+    githubMock.pullUser = { login: "contributor-carol", type: "User" };
     githubMock.request.mockReset();
     githubMock.request.mockImplementation((path: string, params?: Record<string, unknown>) => {
       const page = Number(params?.page ?? 1);
       const pageOf = (items: Record<string, unknown>[]) =>
         items.slice((page - 1) * 100, page * 100);
+      if (path === "GET /app") {
+        return Promise.resolve({ data: { slug: githubMock.appSlug } });
+      }
       if (path.includes("/comments") && path.includes("pulls")) {
         return Promise.resolve({ data: pageOf(githubMock.reviewComments) });
       }
@@ -166,6 +173,9 @@ describe("runReview", () => {
         return Promise.resolve({ data: pageOf(githubMock.issueComments) });
       }
       if (path.includes("pulls/{pull_number}") && !path.includes("comments")) {
+        if ((params?.mediaType as { format?: unknown } | undefined)?.format !== "diff") {
+          return Promise.resolve({ data: { user: githubMock.pullUser } });
+        }
         return Promise.resolve({ data: "mock-diff-content" });
       }
       return Promise.resolve({ data: [] });
@@ -217,6 +227,206 @@ describe("runReview", () => {
     expect(content).toContain("PR comments:");
     expect(content).toContain("contributor-carol");
     expect(content).toContain("mock-diff-content");
+  });
+
+  it("excludes self-authored review comments from the OpenRouter prompt", async () => {
+    githubMock.reviews.push({
+      id: 99,
+      state: "COMMENTED",
+      user: { login: "postil[bot]", type: "Bot" },
+      body: "ok\n\nPostil status: needs-attention | errors=1 warnings=0 info=0 inline_comments=1",
+      commit_id: "pqr678",
+      submitted_at: "2026-05-18T06:00:00Z",
+    });
+    githubMock.reviewComments.push({
+      id: 100,
+      pull_request_review_id: 99,
+      user: { login: "postil[bot]", type: "Bot" },
+      path: "src/self.ts",
+      line: 8,
+      body: "Previous generated finding should not be reviewed again.",
+      created_at: "2026-05-18T06:01:00Z",
+    });
+    githubMock.issueComments.push({
+      id: 101,
+      user: { login: "postil[bot]", type: "Bot" },
+      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+      created_at: "2026-05-18T06:02:00Z",
+    });
+
+    await runReview(PAYLOAD);
+
+    const body = openRouterMock.body as {
+      messages?: { role: string; content: string }[];
+    };
+    const content = body.messages?.find((m) => m.role === "user")?.content ?? "";
+
+    expect(content).toContain("Consider using a constant here.");
+    expect(content).toContain("Addressed in latest push!");
+    expect(content).not.toContain("Previous generated finding should not be reviewed again.");
+    expect(content).not.toContain("Postil status:");
+    expect(content).not.toContain("src/self.ts");
+  });
+
+  it("keeps external review context when it quotes the status marker", async () => {
+    githubMock.reviews.push({
+      id: 102,
+      state: "CHANGES_REQUESTED",
+      user: { login: "reviewer-eve", type: "User" },
+      body: "Copied output: Postil status: needs-attention, but the real blocker remains.",
+      commit_id: "stu901",
+      submitted_at: "2026-05-18T06:10:00Z",
+    });
+    githubMock.reviewComments.push({
+      id: 103,
+      pull_request_review_id: 102,
+      user: { login: "reviewer-eve", type: "User" },
+      path: "src/human.ts",
+      line: 12,
+      body: "Human follow-up inline note should stay visible.",
+      created_at: "2026-05-18T06:11:00Z",
+    });
+    githubMock.issueComments.push({
+      id: 104,
+      user: { login: "reviewer-eve", type: "User" },
+      body: "Postil status: copied into a human PR comment.",
+      created_at: "2026-05-18T06:12:00Z",
+    });
+    githubMock.reviews.push({
+      id: 105,
+      state: "COMMENTED",
+      user: { login: "third-party[bot]", type: "Bot" },
+      body: "Third-party bot quoting Postil status: clean should stay visible.",
+      commit_id: "vwx234",
+      submitted_at: "2026-05-18T06:13:00Z",
+    });
+
+    await runReview(PAYLOAD);
+
+    const body = openRouterMock.body as {
+      messages?: { role: string; content: string }[];
+    };
+    const content = body.messages?.find((m) => m.role === "user")?.content ?? "";
+
+    expect(content).toContain("Copied output: Postil status: needs-attention");
+    expect(content).toContain("Human follow-up inline note should stay visible.");
+    expect(content).toContain("Postil status: copied into a human PR comment.");
+    expect(content).toContain("Third-party bot quoting Postil status: clean");
+    expect(content).toContain("Outstanding change requests: @reviewer-eve");
+  });
+
+  it("keeps external dismissal messages attached to generated reviews", async () => {
+    githubMock.reviews = [
+      {
+        id: 106,
+        state: "DISMISSED",
+        user: { login: "postil[bot]", type: "Bot" },
+        body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+        dismissal_message: "Dismissed by a human because the generated review is stale.",
+        dismissed_by: { login: "reviewer-frank", type: "User" },
+        commit_id: "yz0123",
+        submitted_at: "2026-05-18T06:14:00Z",
+      },
+    ];
+    githubMock.reviewComments = [
+      {
+        id: 107,
+        pull_request_review_id: 106,
+        user: { login: "postil[bot]", type: "Bot" },
+        path: "src/generated.ts",
+        line: 3,
+        body: "Generated inline comment should still be hidden.",
+        created_at: "2026-05-18T06:15:00Z",
+      },
+    ];
+    githubMock.issueComments = [];
+
+    await runReview(PAYLOAD);
+
+    const body = openRouterMock.body as {
+      messages?: { role: string; content: string }[];
+    };
+    const content = body.messages?.find((m) => m.role === "user")?.content ?? "";
+
+    expect(content).toContain("Dismissed by a human because the generated review is stale.");
+    expect(content).toContain("reviewer-frank");
+    expect(content).not.toContain("Generated inline comment should still be hidden.");
+    expect(content).not.toContain("Postil status:");
+  });
+
+  it("does not post on a self-authored PR when only generated context remains", async () => {
+    githubMock.pullUser = { login: "postil[bot]", type: "Bot" };
+    githubMock.reviews = [
+      {
+        id: 108,
+        state: "COMMENTED",
+        user: { login: "postil[bot]", type: "Bot" },
+        body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+        commit_id: "abc999",
+        submitted_at: "2026-05-18T06:16:00Z",
+      },
+    ];
+    githubMock.reviewComments = [
+      {
+        id: 109,
+        pull_request_review_id: 108,
+        user: { login: "postil[bot]", type: "Bot" },
+        path: "src/generated.ts",
+        line: 4,
+        body: "Generated inline comment should not keep posting alive.",
+        created_at: "2026-05-18T06:17:00Z",
+      },
+    ];
+    githubMock.issueComments = [
+      {
+        id: 110,
+        user: { login: "postil[bot]", type: "Bot" },
+        body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+        created_at: "2026-05-18T06:18:00Z",
+      },
+    ];
+
+    await runReview({ ...PAYLOAD, checkRunId: 77 });
+
+    expect(latestPostedReview()).toBeUndefined();
+    expect(latestCheckRunUpdate()).toMatchObject({
+      conclusion: "success",
+      output: {
+        title: "No issues",
+        text: "No issues found.",
+      },
+    });
+    expect(
+      githubMock.request.mock.calls.some(
+        ([path]) =>
+          typeof path === "string" &&
+          path.startsWith("POST") &&
+          path.includes("/issues/{issue_number}/comments"),
+      ),
+    ).toBe(false);
+  });
+
+  it("can post on a self-authored PR after external review activity", async () => {
+    githubMock.pullUser = { login: "postil[bot]", type: "Bot" };
+    githubMock.reviews = [
+      {
+        id: 111,
+        state: "CHANGES_REQUESTED",
+        user: { login: "reviewer-grace", type: "User" },
+        body: "Please keep the regression coverage.",
+        commit_id: "def999",
+        submitted_at: "2026-05-18T06:19:00Z",
+      },
+    ];
+    githubMock.reviewComments = [];
+    githubMock.issueComments = [];
+
+    await runReview(PAYLOAD);
+
+    expect(latestPostedReview()).toMatchObject({
+      event: "COMMENT",
+      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+    });
   });
 
   it("uses the single review model when no cascade is configured", async () => {

@@ -4,11 +4,8 @@ import { loadReviewConfig, type PostilConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
+import { callOpenRouterReview, type OpenRouterResult } from "./openrouter-review";
 import { parseReviewModelCascade } from "./review-models";
-import {
-  callOpenRouterReview,
-  type OpenRouterResult,
-} from "./openrouter-review";
 
 export const reviewPayload = z.object({
   installationId: z.number().int(),
@@ -45,6 +42,12 @@ export type ReviewEnvelope = {
 };
 
 const ALLOWED_REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]);
+const SELF_REVIEW_STATUS_MARKER = "Postil status:";
+
+type GitHubUser = {
+  login?: unknown;
+  type?: unknown;
+};
 
 type ReviewThreadEvent = {
   kind: "review" | "review-comment" | "issue-comment";
@@ -59,6 +62,7 @@ type ReviewThreadEvent = {
 type ReviewContext = {
   prompt: string;
   outstandingChangeRequestReviewers: string[];
+  hasSubstantiveExternalActivity: boolean;
 };
 
 export const SYSTEM_PROMPT = `
@@ -111,6 +115,69 @@ function sortNewestFirst(items: ReviewThreadEvent[]): ReviewThreadEvent[] {
   });
 }
 
+function reviewId(rawReview: unknown): string | null {
+  const id = (rawReview as { id?: unknown }).id;
+  if (typeof id === "number" || typeof id === "string") {
+    return String(id);
+  }
+  return null;
+}
+
+function reviewCommentReviewId(rawComment: unknown): string | null {
+  const id = (rawComment as { pull_request_review_id?: unknown }).pull_request_review_id;
+  if (typeof id === "number" || typeof id === "string") {
+    return String(id);
+  }
+  return null;
+}
+
+function userLogin(user: GitHubUser | null): string {
+  return typeof user?.login === "string" ? user.login : "";
+}
+
+function normalizeLogin(login: string): string {
+  return login.toLowerCase();
+}
+
+function isCurrentAppBotUser(user: GitHubUser | null, appBotLogin: string | null): boolean {
+  const login = userLogin(user);
+  return !!appBotLogin && normalizeLogin(login) === normalizeLogin(appBotLogin);
+}
+
+function isSelfReviewBody(
+  body: string,
+  user: GitHubUser | null,
+  appBotLogin: string | null,
+): boolean {
+  return isCurrentAppBotUser(user, appBotLogin) && body.includes(SELF_REVIEW_STATUS_MARKER);
+}
+
+function isSubstantiveExternalActivity(
+  body: string,
+  user: GitHubUser | null,
+  appBotLogin: string | null,
+): boolean {
+  return body.trim() !== "" && !isCurrentAppBotUser(user, appBotLogin);
+}
+
+function dismissedBy(rawReview: unknown): GitHubUser | null {
+  return (rawReview as { dismissed_by?: GitHubUser | null }).dismissed_by ?? null;
+}
+
+async function fetchCurrentAppBotLogin(octokit: Octokit): Promise<string | null> {
+  try {
+    const appRes = await octokit.request("GET /app");
+    const slug = String((appRes.data as { slug?: unknown }).slug ?? "").trim();
+    return slug ? `${slug}[bot]` : null;
+  } catch (err) {
+    console.warn(
+      "[review-context] app identity fetch failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
 function outstandingChangeRequestReviewers(items: ReviewThreadEvent[]): string[] {
   const latestStateByAuthor = new Map<string, string>();
   const reviews = [...items]
@@ -142,6 +209,7 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
+      hasSubstantiveExternalActivity: false,
     };
   }
 
@@ -204,6 +272,7 @@ function formatReviewContext(items: ReviewThreadEvent[]): ReviewContext {
   return {
     prompt: lines.join("\n"),
     outstandingChangeRequestReviewers: outstandingReviewers,
+    hasSubstantiveExternalActivity: items.some(hasSubstantiveBody),
   };
 }
 
@@ -243,6 +312,7 @@ async function fetchReviewContext(
   owner: string,
   repo: string,
   pullNumber: number,
+  appBotLogin: string | null,
 ): Promise<ReviewContext> {
   try {
     const [reviewsRes, reviewCommentRes, issueCommentRes] = await Promise.all([
@@ -264,6 +334,7 @@ async function fetchReviewContext(
     ]);
 
     const items: ReviewThreadEvent[] = [];
+    const selfAuthoredReviewIds = new Set<string>();
 
     if (Array.isArray(reviewsRes)) {
       for (const rawReview of reviewsRes) {
@@ -273,9 +344,28 @@ async function fetchReviewContext(
         const dismissalMessage = String(
           (rawReview as { dismissal_message?: unknown }).dismissal_message ?? "",
         ).trim();
-        const authorObj = (rawReview as { user?: { login?: unknown } | null }).user ?? null;
-        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        const authorObj = (rawReview as { user?: GitHubUser | null }).user ?? null;
+        const author = userLogin(authorObj) || "unknown";
         const submittedAt = String((rawReview as { submitted_at?: unknown }).submitted_at ?? "");
+        if (isSelfReviewBody(body, authorObj, appBotLogin)) {
+          const id = reviewId(rawReview);
+          if (id) selfAuthoredReviewIds.add(id);
+          const dismissalAuthor = dismissedBy(rawReview);
+          if (
+            state === "DISMISSED" &&
+            dismissalMessage &&
+            isSubstantiveExternalActivity(dismissalMessage, dismissalAuthor, appBotLogin)
+          ) {
+            items.push({
+              kind: "review",
+              author: userLogin(dismissalAuthor) || "unknown",
+              body: dismissalMessage,
+              state,
+              timestamp: submittedAt || undefined,
+            });
+          }
+          continue;
+        }
         items.push({
           kind: "review",
           author,
@@ -288,9 +378,11 @@ async function fetchReviewContext(
 
     if (Array.isArray(reviewCommentRes)) {
       for (const rawComment of reviewCommentRes) {
+        const parentReviewId = reviewCommentReviewId(rawComment);
+        if (parentReviewId && selfAuthoredReviewIds.has(parentReviewId)) continue;
         const body = String((rawComment as { body?: unknown }).body ?? "").trim();
-        const authorObj = (rawComment as { user?: { login?: unknown } | null }).user ?? null;
-        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        const authorObj = (rawComment as { user?: GitHubUser | null }).user ?? null;
+        const author = userLogin(authorObj) || "unknown";
         items.push({
           kind: "review-comment",
           author,
@@ -310,8 +402,9 @@ async function fetchReviewContext(
     if (Array.isArray(issueCommentRes)) {
       for (const rawComment of issueCommentRes) {
         const body = String((rawComment as { body?: unknown }).body ?? "").trim();
-        const authorObj = (rawComment as { user?: { login?: unknown } | null }).user ?? null;
-        const author = typeof authorObj?.login === "string" ? authorObj.login : "unknown";
+        const authorObj = (rawComment as { user?: GitHubUser | null }).user ?? null;
+        if (isSelfReviewBody(body, authorObj, appBotLogin)) continue;
+        const author = userLogin(authorObj) || "unknown";
         items.push({
           kind: "issue-comment",
           author,
@@ -332,6 +425,7 @@ async function fetchReviewContext(
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
+      hasSubstantiveExternalActivity: false,
     };
   }
 }
@@ -434,7 +528,9 @@ async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRou
     }
   }
 
-  const error = new Error(`openrouter model cascade failed: ${failures.join(" | ")}`) as OpenRouterCascadeError;
+  const error = new Error(
+    `openrouter model cascade failed: ${failures.join(" | ")}`,
+  ) as OpenRouterCascadeError;
   error.modelUsed = attemptedModels.at(-1) ?? configuredModels[0];
   error.attemptedModels = attemptedModels;
   throw error;
@@ -483,6 +579,17 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
 
   let checkRunCompleted = false;
   try {
+    const [appBotLogin, pullRes] = await Promise.all([
+      fetchCurrentAppBotLogin(octokit),
+      octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+        owner,
+        repo,
+        pull_number: payload.pullNumber,
+      }),
+    ]);
+    const pullAuthor = (pullRes.data as { user?: GitHubUser | null }).user ?? null;
+    const isSelfAuthoredPull = isCurrentAppBotUser(pullAuthor, appBotLogin);
+
     const diffRes = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
       owner,
       repo,
@@ -492,7 +599,13 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     const diff = String(diffRes.data);
     const MAX = 120_000;
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
-    const reviewContext = await fetchReviewContext(octokit, owner, repo, payload.pullNumber);
+    const reviewContext = await fetchReviewContext(
+      octokit,
+      owner,
+      repo,
+      payload.pullNumber,
+      appBotLogin,
+    );
 
     const {
       content: modelOutput,
@@ -522,6 +635,9 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
 
       let shouldPost = config.review.enabled;
       if (shouldPost && !needsAttention && config.review.on_clean === "skip") {
+        shouldPost = false;
+      }
+      if (shouldPost && isSelfAuthoredPull && !reviewContext.hasSubstantiveExternalActivity) {
         shouldPost = false;
       }
 
