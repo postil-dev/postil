@@ -547,7 +547,7 @@ async function hasSuccessfulRequiredChecks(
   );
 }
 
-async function tryAutoMergeApprovedPull(
+export async function attemptAutoMergeApprovedPull(
   octokit: Octokit,
   owner: string,
   repo: string,
@@ -568,6 +568,7 @@ async function tryAutoMergeApprovedPull(
       console.warn("[auto-merge] Skipping merge: pull head SHA changed.");
       return;
     }
+    if ((pull.data as { merged?: unknown }).merged === true) return;
     if (pull.data.mergeable === true && pull.data.mergeable_state === "clean") {
       const checksPassed = await hasSuccessfulRequiredChecks(octokit, owner, repo, payload.headSha);
       if (!checksPassed) return;
@@ -578,6 +579,7 @@ async function tryAutoMergeApprovedPull(
           repo,
           pull_number: payload.pullNumber,
           merge_method: "squash",
+          sha: payload.headSha,
         }),
         AUTO_MERGE_TIMEOUT_MS,
         "auto-merge request",
@@ -900,7 +902,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     // keeps the required review gate from waiting on GitHub mergeability or
     // merge endpoints, which can be slow or temporarily unavailable.
     if (approved && config.review.auto_merge && (!payload.checkRunId || checkRunCompleted)) {
-      await tryAutoMergeApprovedPull(octokit, owner, repo, payload);
+      await attemptAutoMergeApprovedPull(octokit, owner, repo, payload);
     }
 
     return envelope;

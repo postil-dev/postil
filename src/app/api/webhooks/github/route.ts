@@ -2,10 +2,12 @@ import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
+import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
+import { attemptAutoMergeApprovedPull } from "@/jobs/run-review";
+import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
-import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -266,8 +268,8 @@ async function handlePullRequest(
         repoFullName,
         pullNumber,
         headSha,
-        },
-      });
+      },
+    });
     if (checkRunId) {
       try {
         const octokit = await installationOctokit(installation.id);
@@ -283,7 +285,7 @@ async function handlePullRequest(
             title: "Postil review dispatch failed",
             summary: "The review could not be enqueued.",
           },
-          });
+        });
       } catch (checkRunErr) {
         captureException(checkRunErr, {
           properties: {
@@ -353,7 +355,7 @@ async function deleteWebhookDelivery(
 async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const { action, workflow_run, repository, installation } = p;
   if (!installation) return;
-  if (action !== "completed" || workflow_run.conclusion !== "failure") return;
+  if (action !== "completed") return;
 
   const pullNumber = workflow_run.pull_requests?.[0]?.number;
   if (!pullNumber) return;
@@ -361,6 +363,44 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const repoFullName = repository.full_name;
   const [owner, repo] = repoFullName.split("/");
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
+
+  if (workflow_run.conclusion === "success") {
+    if (workflow_run.name !== "CI" || !workflow_run.head_sha) return;
+
+    try {
+      const { config } = await loadReviewConfig(
+        octokit as Parameters<typeof loadReviewConfig>[0],
+        owner,
+        repo,
+        workflow_run.head_sha,
+      );
+      if (!config.review.auto_merge) return;
+
+      await attemptAutoMergeApprovedPull(
+        octokit as Parameters<typeof attemptAutoMergeApprovedPull>[0],
+        owner,
+        repo,
+        {
+          installationId: installation.id,
+          repoFullName,
+          pullNumber,
+          headSha: workflow_run.head_sha,
+        },
+      );
+    } catch (err) {
+      captureException(err, {
+        properties: {
+          op: "auto_merge_after_workflow_run",
+          repoFullName,
+          pullNumber,
+          runId: workflow_run.id,
+        },
+      });
+    }
+    return;
+  }
+
+  if (workflow_run.conclusion !== "failure") return;
 
   try {
     if (await recoveryIssueExists(octokit, owner, repo, workflow_run.html_url)) {

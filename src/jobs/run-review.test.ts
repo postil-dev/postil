@@ -918,6 +918,14 @@ describe("runReview", () => {
     expect(checkRunIndex).toBeGreaterThan(-1);
     expect(mergeIndex).toBeGreaterThan(checkRunIndex);
     expect(latestCheckRunUpdate()).toMatchObject({ conclusion: "success" });
+    expect(
+      githubMock.request.mock.calls.find(
+        ([path]) => typeof path === "string" && path.includes("pulls/{pull_number}/merge"),
+      )?.[1],
+    ).toMatchObject({
+      sha: PAYLOAD.headSha,
+      merge_method: "squash",
+    });
   });
 
   it("checks successful same-head required results before auto-merging", async () => {
