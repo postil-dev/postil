@@ -25,7 +25,7 @@ const schema = z.object({
   GITHUB_APP_CLIENT_SECRET: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY_B64: z.string().optional(),
-  GITHUB_APP_SLUG: z.string(),
+  GITHUB_APP_SLUG: z.string().default("postil"),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   CI_RECOVERY_FALLBACK_ASSIGNEE: z.string().optional(),
   // Personal access token (bootstrap / CI), not for runtime request auth.
