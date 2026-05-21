@@ -574,6 +574,10 @@ function normalizeCheckNames(names: string[]): string[] {
   return [...new Set(names.map((name) => name.trim()).filter(Boolean))];
 }
 
+function isReviewVerifierCheck(name: string): boolean {
+  return name === "Verify postil/review passed";
+}
+
 async function fetchBranchProtectionRequiredChecks(
   octokit: Octokit,
   owner: string,
@@ -698,7 +702,7 @@ export async function attemptAutoMergeApprovedPull(
       const checks = normalizeCheckNames([
         ...requiredChecks,
         ...(labelNames.some((label) => label.toLowerCase() === "e2e") ? ["E2E tests"] : []),
-      ]);
+      ]).filter((name) => !isReviewVerifierCheck(name));
       if (!checks.length) {
         console.warn("[auto-merge] Skipping merge: no required checks available.");
         return;
