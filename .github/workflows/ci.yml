@@ -133,7 +133,7 @@ jobs:
     # Only run on PRs — skip push-to-main (postil/review is a PR-only gate).
     if: github.event_name != 'push' && github.ref != 'refs/heads/main'
     # Give the webhook time to create and complete the check-run.
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - name: Check review gate
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
@@ -141,7 +141,7 @@ jobs:
         with:
           script: |
             const POLL_INTERVAL_MS = 15_000;
-            const MAX_POLLS = 20;          // 20 × 15s = 5 min
+            const MAX_POLLS = 30;          // 30 × 15s = 7.5 min
             const INITIAL_DELAY_MS = 30_000; // wait 30s for webhook to fire
 
             function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

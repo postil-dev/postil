@@ -1,0 +1,153 @@
+[
+  {
+    "id": "clean-docs-copy-edit",
+    "prompt": "Review this documentation-only change for correctness bugs. Return no findings unless there is a real bug.\n\nDiff:\n\ndiff --git a/README.md b/README.md\nindex 4a1d9c2..a60c1a2 100644\n--- a/README.md\n+++ b/README.md\n@@ -10,7 +10,7 @@ Postil reviews pull requests and reports correctness issues.\n \n ## Usage\n \n-Run the action on every pull request.\n+Run the action on every pull request where you want automated review.\n \n ## Configuration\n \n",
+    "expectedFindings": [],
+    "modelOutputs": {
+      "deepseek/deepseek-v4-flash": {
+        "summary": "No issues found.",
+        "findings": []
+      },
+      "qwen/qwen3-coder-30b-a3b-instruct": {
+        "summary": "Looks safe, but one wording nit may be worth considering.",
+        "findings": [
+          {
+            "path": "README.md",
+            "line": 14,
+            "severity": "info",
+            "body": "Consider making this sentence shorter."
+          }
+        ]
+      },
+      "google/gemini-2.5-flash-lite": {
+        "summary": "No correctness issues found.",
+        "findings": []
+      },
+      "anthropic/claude-sonnet-4.5": {
+        "summary": "No issues found.",
+        "findings": []
+      }
+    }
+  },
+  {
+    "id": "missing-null-guard",
+    "prompt": "Review this change for missing null-guard regressions. Flag any path where a user lookup can be null before profile access.\n\nDiff:\n\ndiff --git a/src/user.ts b/src/user.ts\nindex 6a7d0f1..c1f3a88 100644\n--- a/src/user.ts\n+++ b/src/user.ts\n@@ -38,9 +38,8 @@ export async function loadUserProfile(userId: string) {\n   if (!userId) {\n     throw new Error(\"userId is required\");\n   }\n-  const user = await users.findById(userId);\n-  if (!user) return null;\n-  return user.profile;\n+  const user = await users.findById(userId);\n+  return user.profile;\n }\n \n export async function saveUserProfile(userId: string, profile: Profile) {\n",
+    "expectedFindings": [
+      {
+        "path": "src/user.ts",
+        "line": 42,
+        "severity": "warn",
+        "bodyIncludes": "null"
+      }
+    ],
+    "modelOutputs": {
+      "deepseek/deepseek-v4-flash": {
+        "summary": "The diff can throw when the user lookup is absent.",
+        "findings": [
+          {
+            "path": "src/user.ts",
+            "line": 42,
+            "severity": "warn",
+            "body": "Missing null guard before reading profile."
+          }
+        ]
+      },
+      "qwen/qwen3-coder-30b-a3b-instruct": {
+        "summary": "One real nullability bug and one minor naming concern.",
+        "findings": [
+          {
+            "path": "src/user.ts",
+            "line": 42,
+            "severity": "warn",
+            "body": "The lookup result can be null before profile is read."
+          },
+          {
+            "path": "src/user.ts",
+            "line": 8,
+            "severity": "info",
+            "body": "Consider renaming the helper for clarity."
+          }
+        ]
+      },
+      "google/gemini-2.5-flash-lite": {
+        "summary": "No issues found.",
+        "findings": []
+      },
+      "anthropic/claude-sonnet-4.5": {
+        "summary": "The new access path can throw for missing users.",
+        "findings": [
+          {
+            "path": "src/user.ts",
+            "line": 42,
+            "severity": "warn",
+            "body": "The user record may be null here."
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "auth-bypass",
+    "prompt": "Review this change for authorization regressions. Look for any permission check that now runs after a privileged write.\n\nDiff:\n\ndiff --git a/src/auth.ts b/src/auth.ts\nindex 2ce8d64..7bd0421 100644\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -84,10 +84,10 @@ export async function updateBillingPlan(actor: User, orgId: string, plan: Plan) {\n   const org = await organizations.get(orgId);\n   if (!org) throw new Error(\"organization not found\");\n \n+  await billing.updatePlan(org.id, plan);\n+\n   if (!canManageBilling(actor, org)) {\n     throw new Error(\"authorization failed\");\n   }\n-\n-  await billing.updatePlan(org.id, plan);\n   return org;\n }\n",
+    "expectedFindings": [
+      {
+        "path": "src/auth.ts",
+        "line": 87,
+        "severity": "error",
+        "bodyIncludes": "authorization"
+      }
+    ],
+    "modelOutputs": {
+      "deepseek/deepseek-v4-flash": {
+        "summary": "The guard moved after the privileged action.",
+        "findings": [
+          {
+            "path": "src/auth.ts",
+            "line": 87,
+            "severity": "error",
+            "body": "Authorization now happens after the write."
+          }
+        ]
+      },
+      "qwen/qwen3-coder-30b-a3b-instruct": {
+        "summary": "The authorization check is too late, with one extra cleanup suggestion.",
+        "findings": [
+          {
+            "path": "src/auth.ts",
+            "line": 87,
+            "severity": "error",
+            "body": "Authorization is checked after the privileged write."
+          },
+          {
+            "path": "src/auth.ts",
+            "line": 91,
+            "severity": "info",
+            "body": "Consider extracting the audit log call."
+          }
+        ]
+      },
+      "google/gemini-2.5-flash-lite": {
+        "summary": "Authorization runs after a state-changing call.",
+        "findings": [
+          {
+            "path": "src/auth.ts",
+            "line": 87,
+            "severity": "warn",
+            "body": "The permission check is after the write."
+          }
+        ]
+      },
+      "anthropic/claude-sonnet-4.5": {
+        "summary": "The diff introduces an authorization bypass.",
+        "findings": [
+          {
+            "path": "src/auth.ts",
+            "line": 87,
+            "severity": "error",
+            "body": "Authorization is checked after the privileged write."
+          }
+        ]
+      }
+    }
+  }
+]

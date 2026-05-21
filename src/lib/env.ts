@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * Zod-validated environment. Pulls from process.env, which in local dev is
- * populated from .env.local. Env var names match ~/.env / the registered
+ * populated from .env.local. Env var names match deployed service
  * services where possible (NEON_CONNECTION_STRING, FLY_ORG_TOKEN, etc).
  */
 const schema = z.object({
@@ -64,6 +64,7 @@ const schema = z.object({
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_MANAGEMENT_KEY: z.string().optional(),
   REVIEW_MODEL: z.string().default("moonshotai/kimi-k2.6"),
+  REVIEW_MODEL_CASCADE: z.string().optional(),
 
   // Cloudflare
   CLOUDFLARE_API_TOKEN: z.string().optional(),
