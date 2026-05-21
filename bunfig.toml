@@ -1,0 +1,9 @@
+# Postil package install policy.
+# ignoreScripts disables postinstall/preinstall/install scripts in dependencies
+# (shai-hulud-class supply-chain hardening). Any dep that genuinely needs a
+# build step ships pre-built artifacts; if a future dep does need scripts,
+# fork it or vendor the build.
+
+[install]
+ignoreScripts = true
+exact = false
