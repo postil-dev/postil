@@ -9,6 +9,8 @@ RUN bun install --frozen-lockfile --ignore-scripts
 # --- builder ---
 FROM oven/bun:1.3 AS builder
 WORKDIR /app
+ARG GITHUB_APP_SLUG=test-app
+ENV GITHUB_APP_SLUG=$GITHUB_APP_SLUG
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
