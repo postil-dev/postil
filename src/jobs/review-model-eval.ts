@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { env } from "@/lib/env";
-import { parseEnvelope, SYSTEM_PROMPT, type Finding, type TokenUsage } from "./run-review";
+import {
+  parseEnvelope,
+  SYSTEM_PROMPT,
+  type Finding,
+  type TokenUsage,
+} from "./run-review";
 import { REVIEW_MODEL_RESEARCH_CANDIDATES } from "./review-models";
 
 type ExpectedFinding = {
@@ -149,7 +154,7 @@ function loadCases(path: string): ReviewModelEvalCase[] {
   return JSON.parse(readFileSync(path, "utf8")) as ReviewModelEvalCase[];
 }
 
-async function callOpenRouter(model: string, prompt: string): Promise<CaseRunOutput> {
+async function callOpenRouter(model: string, userContent: string): Promise<CaseRunOutput> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
 
   const controller = new AbortController();
@@ -169,7 +174,7 @@ async function callOpenRouter(model: string, prompt: string): Promise<CaseRunOut
         model,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt },
+          { role: "user", content: userContent },
         ],
         temperature: 0.2,
         max_tokens: 2500,
@@ -231,8 +236,15 @@ export async function runReviewModelEvaluation(
   return scoreCaseRuns(caseRuns);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+async function main(): Promise<void> {
   const fixturePath = process.argv[2] ?? "tests/fixtures/review-model-eval/cases.json";
   const report = await runReviewModelEvaluation(loadCases(fixturePath));
   console.log(JSON.stringify(report, null, 2));
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  void main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
 }

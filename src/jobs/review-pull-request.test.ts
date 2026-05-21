@@ -22,6 +22,7 @@ const runReviewMock = vi.hoisted(() => ({
 
 const envMock = vi.hoisted(() => ({
   REVIEW_MODEL: "test/default",
+  REVIEW_MODEL_CASCADE: undefined as string | undefined,
   TRIGGER_API_KEY: "test-trigger-key",
   TRIGGER_API_URL: "https://trigger.example.test",
 }));
@@ -82,6 +83,27 @@ describe("reviewPullRequest", () => {
       "review_completed",
       expect.objectContaining({
         modelUsed: "test/failover",
+      }),
+    );
+  });
+
+  it("records the failing cascade model when review execution rejects", async () => {
+    envMock.REVIEW_MODEL_CASCADE = "test/primary, test/backup";
+    runReviewMock.runReview.mockRejectedValueOnce(
+      Object.assign(new Error("openrouter model cascade failed"), {
+        modelUsed: "test/backup",
+      }),
+    );
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow(
+      "openrouter model cascade failed",
+    );
+
+    expect(posthogMock.track).toHaveBeenCalledWith(
+      "system",
+      "review_failed",
+      expect.objectContaining({
+        modelUsed: "test/backup",
       }),
     );
   });
