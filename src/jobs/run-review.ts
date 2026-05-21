@@ -509,9 +509,17 @@ function isFinding(x: unknown): x is Finding {
 type OpenRouterCascadeError = Error & {
   modelUsed?: string;
   attemptedModels?: string[];
+  providerFailures?: ProviderFailure[];
 };
 
 const OPENROUTER_CASCADE_TIMEOUT_MS = 6 * 60_000;
+
+export type ProviderFailure = {
+  model: string;
+  reason: string;
+  status?: number;
+  errorClass?: string;
+};
 
 function formatReviewStatusLine(
   envelope: ReviewEnvelope,
@@ -740,43 +748,97 @@ export async function attemptAutoMergeApprovedPull(
   }
 }
 
+export function isOpenRouterCascadeError(err: unknown): err is OpenRouterCascadeError {
+  return (
+    err instanceof Error &&
+    Array.isArray((err as OpenRouterCascadeError).attemptedModels) &&
+    (err as OpenRouterCascadeError).attemptedModels?.every((model) => typeof model === "string") ===
+      true
+  );
+}
+
+export function publicReviewErrorMessage(err: unknown): string {
+  return isOpenRouterCascadeError(err)
+    ? "Review failed after all configured model providers were unavailable."
+    : "Review failed to complete.";
+}
+
+function linkAbortSignal(source: AbortSignal, target: AbortController): () => void {
+  if (source.aborted) {
+    target.abort(source.reason);
+    return () => {};
+  }
+
+  const abort = () => target.abort(source.reason);
+  source.addEventListener("abort", abort, { once: true });
+  return () => source.removeEventListener("abort", abort);
+}
+
+function providerFailureFromError(
+  model: string,
+  err: unknown,
+  cascadeTimedOut: boolean,
+): ProviderFailure {
+  if (cascadeTimedOut) return { model, reason: "cascade timeout", errorClass: "AbortError" };
+
+  const errorClass = err instanceof Error ? err.name : typeof err;
+  const status =
+    err instanceof Error ? Number(err.message.match(/^openrouter (\d+)/)?.[1]) : Number.NaN;
+
+  return {
+    model,
+    reason: Number.isInteger(status) ? "provider returned an error" : "request failed",
+    status: Number.isInteger(status) ? status : undefined,
+    errorClass,
+  };
+}
+
 async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRouterResult> {
   const userContent = buildReviewUserContent(reviewContext, diff);
-  const failures: string[] = [];
+  const failures: ProviderFailure[] = [];
   const attemptedModels: string[] = [];
   const configuredModels = parseReviewModelCascade(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
   const cascadeStartedAt = Date.now();
+  const cascadeController = new AbortController();
+  const cascadeTimeout = setTimeout(() => cascadeController.abort(), OPENROUTER_CASCADE_TIMEOUT_MS);
 
-  for (const model of configuredModels) {
-    const remainingMs = OPENROUTER_CASCADE_TIMEOUT_MS - (Date.now() - cascadeStartedAt);
-    if (remainingMs <= 0) {
-      failures.push(`${model}: skipped after cascade timeout`);
-      break;
-    }
-    attemptedModels.push(model);
+  try {
+    for (const model of configuredModels) {
+      const remainingMs = OPENROUTER_CASCADE_TIMEOUT_MS - (Date.now() - cascadeStartedAt);
+      if (remainingMs <= 0 || cascadeController.signal.aborted) {
+        failures.push({ model, reason: "skipped after cascade timeout" });
+        break;
+      }
+      attemptedModels.push(model);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), remainingMs);
-    try {
-      const result = await callOpenRouterReview(
-        model,
-        SYSTEM_PROMPT,
-        userContent,
-        controller.signal,
-      );
-      clearTimeout(timeout);
-      return result;
-    } catch (err) {
-      clearTimeout(timeout);
-      failures.push(`${model}: ${err instanceof Error ? err.message : String(err)}`);
+      const requestController = new AbortController();
+      const unlinkCascade = linkAbortSignal(cascadeController.signal, requestController);
+      try {
+        const result = await callOpenRouterReview(
+          model,
+          SYSTEM_PROMPT,
+          userContent,
+          requestController.signal,
+        );
+        unlinkCascade();
+        return result;
+      } catch (err) {
+        unlinkCascade();
+        const failure = providerFailureFromError(model, err, cascadeController.signal.aborted);
+        console.warn("[openrouter] model request failed", failure);
+        failures.push(failure);
+      }
     }
+  } finally {
+    clearTimeout(cascadeTimeout);
   }
 
   const error = new Error(
-    `openrouter model cascade failed: ${failures.join(" | ")}`,
+    "openrouter model cascade failed after all configured providers were unavailable",
   ) as OpenRouterCascadeError;
   error.modelUsed = attemptedModels.at(-1) ?? configuredModels[0];
   error.attemptedModels = attemptedModels;
+  error.providerFailures = failures;
   throw error;
 }
 
@@ -1053,8 +1115,8 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           completed_at: new Date().toISOString(),
           output: {
             title: "Postil Review",
-            summary: "Review failed to complete.",
-            text: `Error: ${message}`,
+            summary: publicReviewErrorMessage(err),
+            text: publicReviewErrorMessage(err),
           },
         });
       } catch (patchErr) {
