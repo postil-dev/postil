@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import nextConfig from "../next.config";
+import { POSTHOG_BROWSER_ORIGIN } from "./lib/posthog-config";
 import { config, createCsp, middleware } from "./middleware";
 
 describe("security middleware", () => {
@@ -9,6 +10,7 @@ describe("security middleware", () => {
 
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("script-src 'self' 'nonce-test-nonce' 'strict-dynamic'");
+    expect(csp).toContain(`connect-src 'self' ${POSTHOG_BROWSER_ORIGIN}`);
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("upgrade-insecure-requests");

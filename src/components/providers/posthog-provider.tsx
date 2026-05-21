@@ -5,6 +5,7 @@ import { Suspense, useEffect, type ReactNode } from "react";
 
 import posthog from "posthog-js";
 import { PostHogProvider as PHProvider } from "posthog-js/react";
+import { POSTHOG_BROWSER_HOST } from "@/lib/posthog-config";
 
 function PostHogPageView() {
   const pathname = usePathname();
@@ -23,7 +24,6 @@ function PostHogPageView() {
 export function PostHogProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const key = process.env.NEXT_PUBLIC_POSTHOG_KEY;
-    const host = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://eu.i.posthog.com";
     if (!key) {
       if (process.env.NODE_ENV === "development") {
         console.warn("[posthog] NEXT_PUBLIC_POSTHOG_KEY is not set; analytics disabled");
@@ -32,7 +32,7 @@ export function PostHogProvider({ children }: { children: ReactNode }) {
     }
 
     posthog.init(key, {
-      api_host: host,
+      api_host: POSTHOG_BROWSER_HOST,
       person_profiles: "always",
       capture_pageview: false,
       capture_pageleave: true,

@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { POSTHOG_BROWSER_ORIGIN } from "@/lib/posthog-config";
 
 export function createCsp(nonce: string) {
   return [
@@ -7,7 +8,7 @@ export function createCsp(nonce: string) {
     "style-src 'self' 'unsafe-inline'",
     "font-src 'self'",
     "img-src 'self' data:",
-    "connect-src 'self' https://*.posthog.com",
+    `connect-src 'self' ${POSTHOG_BROWSER_ORIGIN}`,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
