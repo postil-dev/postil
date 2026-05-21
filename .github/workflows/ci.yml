@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  merge_group:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -105,7 +106,7 @@ jobs:
   e2e:
     name: E2E tests
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'e2e')
+    if: github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'e2e')
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -130,8 +131,8 @@ jobs:
   verify-review:
     name: Verify postil/review passed
     runs-on: ubuntu-latest
-    # Only run on PRs — skip push-to-main (postil/review is a PR-only gate).
-    if: github.event_name != 'push' && github.ref != 'refs/heads/main'
+    # Only run on PRs — skip push-to-main and merge_group (postil/review is a PR-only gate).
+    if: github.event_name == 'pull_request'
     # Give the webhook time to create and complete the check-run.
     timeout-minutes: 65
     steps:
