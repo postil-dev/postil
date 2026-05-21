@@ -550,6 +550,23 @@ describe("github webhook", () => {
           },
         };
       }
+      if (
+        route === "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
+      ) {
+        return {
+          data: {
+            contexts: [
+              "postil/review",
+              "Lint",
+              "Typecheck",
+              "Unit tests",
+              "Build",
+              "Docker build",
+              "Verify postil/review passed",
+            ],
+          },
+        };
+      }
       if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
         return {
           data: {

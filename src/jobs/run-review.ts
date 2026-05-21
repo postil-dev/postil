@@ -42,16 +42,6 @@ export type ReviewEnvelope = {
 };
 
 const ALLOWED_REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]);
-const AUTO_MERGE_TIMEOUT_MS = 15_000;
-const REQUIRED_AUTO_MERGE_CHECKS = [
-  "postil/review",
-  "Lint",
-  "Typecheck",
-  "Unit tests",
-  "Build",
-  "Docker build",
-  "Verify postil/review passed",
-] as const;
 
 type GitHubUser = {
   login?: unknown;
@@ -146,6 +136,17 @@ function isSubstantiveExternalActivity(
   return body.trim() !== "" && !isCurrentAppBotUser(user, appBotLogin);
 }
 
+function pullLabelNames(pull: unknown): string[] {
+  const labels = (pull as { labels?: unknown }).labels;
+  if (!Array.isArray(labels)) return [];
+  return labels.flatMap((label) => {
+    if (typeof label === "string") return [label];
+    if (!label || typeof label !== "object") return [];
+    const name = String((label as { name?: unknown }).name ?? "").trim();
+    return name ? [name] : [];
+  });
+}
+
 function dismissedBy(rawReview: unknown): GitHubUser | null {
   return (rawReview as { dismissed_by?: GitHubUser | null }).dismissed_by ?? null;
 }
@@ -165,17 +166,6 @@ async function fetchCurrentAppBotLogin(): Promise<string | null> {
     );
     return fallbackSlug ? `${fallbackSlug}[bot]` : null;
   }
-}
-
-function pullLabelNames(pull: unknown): string[] {
-  const labels = (pull as { labels?: unknown }).labels;
-  if (!Array.isArray(labels)) return [];
-  return labels.flatMap((label) => {
-    if (typeof label === "string") return [label];
-    if (!label || typeof label !== "object") return [];
-    const name = String((label as { name?: unknown }).name ?? "").trim();
-    return name ? [name] : [];
-  });
 }
 
 export async function hasApprovedReview(
@@ -572,13 +562,72 @@ function checkRunTime(check: unknown): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function normalizeCheckNames(names: string[]): string[] {
+  return [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+}
+
+async function fetchBranchProtectionRequiredChecks(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  branch: string,
+  timeoutMs: number,
+): Promise<string[]> {
+  try {
+    const protection = await withTimeout(
+      octokit.request(
+        "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks",
+        {
+          owner,
+          repo,
+          branch,
+        },
+      ),
+      timeoutMs,
+      "auto-merge branch protection lookup",
+    );
+    const data = protection.data as {
+      contexts?: unknown;
+      checks?: unknown;
+    };
+    const names = new Set<string>();
+    if (Array.isArray(data.contexts)) {
+      for (const context of data.contexts) {
+        if (typeof context === "string" && context.trim()) names.add(context.trim());
+      }
+    }
+    if (Array.isArray(data.checks)) {
+      for (const check of data.checks) {
+        if (!check || typeof check !== "object") continue;
+        const name = String((check as { context?: unknown }).context ?? "").trim();
+        if (name) names.add(name);
+      }
+    }
+    return [...names];
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return [];
+    console.warn(
+      "[auto-merge] Could not load branch protection required checks:",
+      err instanceof Error ? err.message : err,
+    );
+    captureException(err, {
+      properties: {
+        op: "auto_merge_branch_protection_checks",
+      },
+    });
+    return [];
+  }
+}
+
 async function hasSuccessfulRequiredChecks(
   octokit: Octokit,
   owner: string,
   repo: string,
   headSha: string,
-  pullLabels: string[],
+  requiredChecks: string[],
+  timeoutMs: number,
 ): Promise<boolean> {
+  if (!requiredChecks.length) return false;
   const checkRuns = await withTimeout(
     octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
       owner,
@@ -586,14 +635,11 @@ async function hasSuccessfulRequiredChecks(
       ref: headSha,
       per_page: 100,
     }),
-    AUTO_MERGE_TIMEOUT_MS,
+    timeoutMs,
     "auto-merge required check lookup",
   );
   const runs = Array.isArray(checkRuns.data.check_runs) ? checkRuns.data.check_runs : [];
   const latestByName = new Map<string, unknown>();
-  const requiredChecks = pullLabels.some((label) => label.toLowerCase() === "e2e")
-    ? [...REQUIRED_AUTO_MERGE_CHECKS, "E2E tests"]
-    : REQUIRED_AUTO_MERGE_CHECKS;
 
   for (const run of runs) {
     if (!run || typeof run !== "object") continue;
@@ -615,15 +661,17 @@ export async function attemptAutoMergeApprovedPull(
   owner: string,
   repo: string,
   payload: ReviewPayload,
+  reviewConfig: PostilConfig["review"],
 ) {
   try {
+    const timeoutMs = reviewConfig.auto_merge_timeout_ms;
     const pull = await withTimeout(
       octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
         owner,
         repo,
         pull_number: payload.pullNumber,
       }),
-      AUTO_MERGE_TIMEOUT_MS,
+      timeoutMs,
       "auto-merge mergeability check",
     );
     const pullHeadSha = String((pull.data as { head?: { sha?: unknown } }).head?.sha ?? "");
@@ -633,12 +681,28 @@ export async function attemptAutoMergeApprovedPull(
     }
     if ((pull.data as { merged?: unknown }).merged === true) return;
     if (pull.data.mergeable === true && pull.data.mergeable_state === "clean") {
+      const labelNames = pullLabelNames(pull.data);
+      const branchName = String((pull.data as { base?: { ref?: unknown } }).base?.ref ?? "").trim();
+      const configuredChecks = normalizeCheckNames(reviewConfig.required_checks ?? []);
+      const requiredChecks = configuredChecks.length
+        ? configuredChecks
+        : await fetchBranchProtectionRequiredChecks(octokit, owner, repo, branchName, timeoutMs);
+      const checks = normalizeCheckNames([
+        ...requiredChecks,
+        ...(labelNames.some((label) => label.toLowerCase() === "e2e") ? ["E2E tests"] : []),
+      ]);
+      if (!checks.length) {
+        console.warn("[auto-merge] Skipping merge: no required checks available.");
+        return;
+      }
+
       const checksPassed = await hasSuccessfulRequiredChecks(
         octokit,
         owner,
         repo,
         payload.headSha,
-        pullLabelNames(pull.data),
+        checks,
+        timeoutMs,
       );
       if (!checksPassed) return;
 
@@ -650,7 +714,7 @@ export async function attemptAutoMergeApprovedPull(
           merge_method: "squash",
           sha: payload.headSha,
         }),
-        AUTO_MERGE_TIMEOUT_MS,
+        timeoutMs,
         "auto-merge request",
       );
       track("system", "auto_merge_completed", {
@@ -971,7 +1035,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     // keeps the required review gate from waiting on GitHub mergeability or
     // merge endpoints, which can be slow or temporarily unavailable.
     if (approved && config.review.auto_merge && (!payload.checkRunId || checkRunCompleted)) {
-      await attemptAutoMergeApprovedPull(octokit, owner, repo, payload);
+      await attemptAutoMergeApprovedPull(octokit, owner, repo, payload, config.review);
     }
 
     return envelope;
