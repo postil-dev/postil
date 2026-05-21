@@ -420,7 +420,12 @@ async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRou
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), remainingMs);
     try {
-      const result = await callOpenRouterReview(model, SYSTEM_PROMPT, userContent);
+      const result = await callOpenRouterReview(
+        model,
+        SYSTEM_PROMPT,
+        userContent,
+        controller.signal,
+      );
       clearTimeout(timeout);
       return result;
     } catch (err) {
