@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  GITHUB_APP_SLUG: test-app
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
