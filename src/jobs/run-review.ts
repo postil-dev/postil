@@ -5,6 +5,10 @@ import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
 import { parseReviewModelCascade } from "./review-models";
+import {
+  callOpenRouterReview,
+  type OpenRouterResult,
+} from "./openrouter-review";
 
 export const reviewPayload = z.object({
   installationId: z.number().int(),
@@ -372,13 +376,11 @@ function isFinding(x: unknown): x is Finding {
   );
 }
 
-type OpenRouterResult = { content: string; usage: TokenUsage; modelUsed: string };
 type OpenRouterCascadeError = Error & {
   modelUsed?: string;
   attemptedModels?: string[];
 };
 
-const OPENROUTER_MODEL_TIMEOUT_MS = 120_000;
 const OPENROUTER_CASCADE_TIMEOUT_MS = 6 * 60_000;
 
 function formatReviewStatusLine(
@@ -401,7 +403,6 @@ export function buildReviewUserContent(reviewContext: string, diff: string): str
 }
 
 async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRouterResult> {
-  if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
   const userContent = buildReviewUserContent(reviewContext, diff);
   const failures: string[] = [];
   const attemptedModels: string[] = [];
@@ -417,49 +418,11 @@ async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRou
     attemptedModels.push(model);
 
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      Math.min(OPENROUTER_MODEL_TIMEOUT_MS, remainingMs),
-    );
+    const timeout = setTimeout(() => controller.abort(), remainingMs);
     try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        signal: controller.signal,
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-          "content-type": "application/json",
-          "http-referer": "https://postil.dev",
-          "x-title": "Postil",
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userContent },
-          ],
-          temperature: 0.2,
-          max_tokens: 2500,
-          response_format: { type: "json_object" },
-        }),
-      });
+      const result = await callOpenRouterReview(model, SYSTEM_PROMPT, userContent);
       clearTimeout(timeout);
-
-      if (!res.ok) {
-        failures.push(`${model}: openrouter ${res.status}: ${(await res.text()).slice(0, 400)}`);
-        continue;
-      }
-
-      const data = (await res.json()) as {
-        choices?: { message?: { content?: string } }[];
-        usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-      };
-      const orUsage = data.usage;
-      const usage: TokenUsage = {
-        promptTokens: orUsage?.prompt_tokens ?? 0,
-        completionTokens: orUsage?.completion_tokens ?? 0,
-        totalTokens: orUsage?.total_tokens ?? 0,
-      };
-      return { content: data.choices?.[0]?.message?.content ?? "", usage, modelUsed: model };
+      return result;
     } catch (err) {
       clearTimeout(timeout);
       failures.push(`${model}: ${err instanceof Error ? err.message : String(err)}`);
