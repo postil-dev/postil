@@ -13,15 +13,19 @@ export async function callOpenRouterReview(
   model: string,
   systemPrompt: string,
   userContent: string,
+  signal?: AbortSignal,
 ): Promise<OpenRouterResult> {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not set");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENROUTER_MODEL_TIMEOUT_MS);
+  const requestSignal = signal
+    ? AbortSignal.any([signal, controller.signal])
+    : controller.signal;
 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      signal: controller.signal,
+      signal: requestSignal,
       method: "POST",
       headers: {
         authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
