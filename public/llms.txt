@@ -6,6 +6,10 @@ Postil is a local-first, low-noise review gate for agent-speed development. It f
 
 - Home: https://postil.dev/
 - Install: https://postil.dev/install
+- About: https://postil.dev/about
+- Install: https://postil.dev/install
+- Privacy: https://postil.dev/privacy
+- Pricing: https://postil.dev/#pricing
 
 ## Source
 
