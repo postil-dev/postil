@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 const triggerMock = vi.hoisted(() => ({
   authConfigure: vi.fn(),
@@ -17,9 +19,8 @@ const usageMock = vi.hoisted(() => ({
 }));
 
 const githubMock = vi.hoisted(() => ({
-  installationOctokit: vi.fn(async () => ({ request: githubMock.request })),
   mintInstallationToken: vi.fn(async () => "installation-token"),
-  request: vi.fn(async () => ({ data: {} })),
+  repositoryRequest: vi.fn(async () => ({ data: {} })),
 }));
 
 const childProcessMock = vi.hoisted(() => ({
@@ -41,6 +42,7 @@ const dbMock = vi.hoisted(() => ({
 }));
 
 const envMock = vi.hoisted(() => ({
+  GITHUB_PAT: "test-repository-token" as string | undefined,
   OPENROUTER_API_KEY: "test-openrouter-key",
   POSTIL_CLI_PATH: "postil-test",
   REVIEW_MODEL: "test/default",
@@ -57,9 +59,13 @@ vi.mock("@trigger.dev/sdk/v3", () => ({
 
 vi.mock("node:fs/promises", () => fsMock);
 vi.mock("node:child_process", () => childProcessMock);
+vi.mock("@octokit/rest", () => ({
+  Octokit: vi.fn(function Octokit() {
+    return { request: githubMock.repositoryRequest };
+  }),
+}));
 vi.mock("@/lib/env", () => ({ env: envMock }));
 vi.mock("@/lib/github", () => ({
-  installationOctokit: githubMock.installationOctokit,
   mintInstallationToken: githubMock.mintInstallationToken,
 }));
 vi.mock("@/lib/posthog", () => posthogMock);
@@ -94,11 +100,20 @@ const runReviewTask = reviewPullRequest as unknown as {
   run: (payload: typeof PAYLOAD) => Promise<{ ok: boolean; findings: number }>;
 };
 
+function workflowExpression(value: string): string {
+  return ["${{", value, "}}"].join(" ");
+}
+
+function jsTemplateExpression(value: string): string {
+  return ["${", value, "}"].join("");
+}
+
 describe("reviewPullRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fsMock.files.clear();
     dbMock.updates = [];
+    envMock.GITHUB_PAT = "test-repository-token";
     envMock.REVIEW_MODEL_CASCADE = undefined;
     childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
       const outputPath = args[args.indexOf("--output-json") + 1];
@@ -159,7 +174,7 @@ describe("reviewPullRequest", () => {
 
     await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
 
-    expect(githubMock.request).toHaveBeenCalledWith(
+    expect(githubMock.repositoryRequest).toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({
         check_run_id: 77,
@@ -177,6 +192,37 @@ describe("reviewPullRequest", () => {
       "review_failed",
       expect.objectContaining({
         error: "Review failed to complete.",
+      }),
+    );
+  });
+
+  it("marks the review failed even when emergency check-run completion fails", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+      cb(new Error("cli failed"), "", "");
+    });
+    githubMock.repositoryRequest.mockRejectedValueOnce(new Error("check-run patch failed"));
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "Review failed to complete.",
+      }),
+    );
+    expect(dbMock.updates[0]).toEqual(
+      expect.objectContaining({
+        status: "failed",
+      }),
+    );
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "postil review check-run failure patch failed",
+      }),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          op: "emergency_complete_check_run",
+        }),
       }),
     );
   });
@@ -262,7 +308,7 @@ describe("reviewPullRequest", () => {
 
     await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 1 });
 
-    expect(githubMock.request).not.toHaveBeenCalledWith(
+    expect(githubMock.repositoryRequest).not.toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({ conclusion: "failure" }),
     );
@@ -284,15 +330,101 @@ describe("reviewPullRequest", () => {
     );
   });
 
-  it("sanitizes CLI setup failures before telemetry", async () => {
+  it("completes the review check with repository credentials when CLI setup fails", async () => {
     githubMock.mintInstallationToken.mockRejectedValueOnce(
       new Error("installation auth failed: super-secret-token"),
     );
 
     await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
 
+    expect(githubMock.repositoryRequest).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        owner: "owner",
+        repo: "repo",
+        check_run_id: 77,
+        status: "completed",
+        conclusion: "failure",
+        output: {
+          title: "Postil Review",
+          summary: "Review failed to complete.",
+          text: "Review failed to complete.",
+        },
+      }),
+    );
     expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
       "super-secret-token",
+    );
+    expect(JSON.stringify(posthogMock.track.mock.calls)).not.toContain("super-secret-token");
+  });
+
+  it("sanitizes CLI setup failures when no repository check client is available", async () => {
+    envMock.GITHUB_PAT = undefined;
+    githubMock.mintInstallationToken.mockRejectedValueOnce(
+      new Error("installation auth failed: super-secret-token"),
+    );
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
+    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
+      "super-secret-token",
+    );
+  });
+
+  it("keeps workflow-level secret fetch failures terminal for the review check", () => {
+    const workflow = parseYaml(
+      readFileSync(new URL("../../.github/workflows/postil-review.yml", import.meta.url), "utf8"),
+    ) as {
+      jobs: {
+        review: {
+          steps: Array<{
+            id?: string;
+            if?: string;
+            name?: string;
+            env?: Record<string, string>;
+            run?: string;
+          }>;
+        };
+      };
+    };
+    const steps = workflow.jobs.review.steps;
+    const fetchSecretsIndex = steps.findIndex(
+      (step) => step.name === "Fetch secrets from Infisical",
+    );
+    const completeCheckIndex = steps.findIndex(
+      (step) => step.name === "Complete review check after secret fetch failure",
+    );
+    const setupBunIndex = steps.findIndex((step) => step.name === "Set up Bun");
+
+    expect(fetchSecretsIndex).toBeGreaterThan(-1);
+    expect(completeCheckIndex).toBe(fetchSecretsIndex + 1);
+    expect(setupBunIndex).toBeGreaterThan(completeCheckIndex);
+    expect(steps[fetchSecretsIndex]).toMatchObject({ id: "fetch-secrets" });
+    expect(steps[completeCheckIndex]).toMatchObject({
+      if: "github.event_name == 'pull_request_target' && failure() && steps.fetch-secrets.outcome == 'failure'",
+      env: expect.objectContaining({
+        GITHUB_PAT: workflowExpression("secrets.GITHUB_PAT"),
+        GITHUB_REPOSITORY: workflowExpression("github.repository"),
+        GITHUB_EVENT_PATH: workflowExpression("github.event_path"),
+      }),
+    });
+    expect(steps[completeCheckIndex].run).toContain("https://api.github.com/repos/");
+    expect(steps[completeCheckIndex].run).toContain(
+      "const headSha = pull && pull.head && pull.head.sha;",
+    );
+    expect(steps[completeCheckIndex].run).not.toContain("workflow_run");
+    expect(steps[completeCheckIndex].run).toContain(
+      `/commits/${jsTemplateExpression("headSha")}/check-runs`,
+    );
+    expect(steps[completeCheckIndex].run).toContain('run.name === "postil/review"');
+    expect(steps[completeCheckIndex].run).toContain("for (const checkRun of checkRuns)");
+    expect(steps[completeCheckIndex].run).toContain(
+      `check-runs/${jsTemplateExpression("checkRun.id")}`,
+    );
+    expect(steps[completeCheckIndex].run).toContain('conclusion: "failure"');
+    expect(steps[completeCheckIndex].run).toContain(
+      "Review setup failed before execution could start.",
     );
   });
 });
