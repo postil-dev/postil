@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const githubMock = vi.hoisted(() => ({
+  appRequest: vi.fn(),
   request: vi.fn(),
   pullUser: { login: "contributor-carol", type: "User" } as Record<string, unknown>,
   pullMergeability: {
@@ -48,7 +49,7 @@ vi.mock("@/lib/env", () => ({
 
 vi.mock("@/lib/github", () => ({
   appOctokit: vi.fn().mockReturnValue({
-    request: githubMock.request,
+    request: githubMock.appRequest,
   }),
   installationOctokit: vi.fn().mockResolvedValue({
     request: githubMock.request,
@@ -188,14 +189,18 @@ describe("runReview", () => {
       head: { sha: "abc123def456" },
       base: { ref: "main" },
     };
+    githubMock.appRequest.mockReset();
+    githubMock.appRequest.mockImplementation((path: string) => {
+      if (path === "GET /app") {
+        return Promise.resolve({ data: { slug: "postil" } });
+      }
+      return Promise.reject(new Error(`unexpected app request: ${path}`));
+    });
     githubMock.request.mockReset();
     githubMock.request.mockImplementation((path: string, params?: Record<string, unknown>) => {
       const page = Number(params?.page ?? 1);
       const pageOf = (items: Record<string, unknown>[]) =>
         items.slice((page - 1) * 100, page * 100);
-      if (path === "GET /app") {
-        return Promise.resolve({ data: { slug: "postil" } });
-      }
       if (path.includes("/comments") && path.includes("pulls")) {
         return Promise.resolve({ data: pageOf(githubMock.reviewComments) });
       }
@@ -523,7 +528,7 @@ describe("runReview", () => {
   });
 
   it("falls back when app identity lookup fails", async () => {
-    githubMock.request.mockImplementationOnce((path: string) => {
+    githubMock.appRequest.mockImplementationOnce((path: string) => {
       if (path === "GET /app") {
         return Promise.reject(new Error("app identity unavailable"));
       }
@@ -782,6 +787,11 @@ describe("runReview", () => {
         text: "Review failed to complete.",
       },
     });
+    expect(
+      githubMock.appRequest.mock.calls.some(
+        ([path]) => typeof path === "string" && path.includes("/check-runs/"),
+      ),
+    ).toBe(false);
     expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("secret-token");
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret-token");
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("secret-token");
