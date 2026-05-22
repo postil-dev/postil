@@ -134,6 +134,29 @@ describe("reviewPullRequest", () => {
     );
   });
 
+  it("does not refetch the installation hash while reporting setup failure telemetry", async () => {
+    const rawSetupMessage = "secret fetch failed: raw-token";
+    posthogMock.hashInstallationId.mockRejectedValue(new Error(rawSetupMessage));
+
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toMatchObject({
+      message: "Review setup failed before execution could start.",
+      name: "ReviewSetupError",
+    });
+
+    expect(posthogMock.hashInstallationId).toHaveBeenCalledTimes(1);
+    expect(posthogMock.track).toHaveBeenCalledWith(
+      "system",
+      "review_failed",
+      expect.objectContaining({
+        error: "Review failed to complete.",
+        errorClass: "Error",
+        installationHash: undefined,
+      }),
+    );
+    expect(JSON.stringify(posthogMock.track.mock.calls)).not.toContain(rawSetupMessage);
+    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(rawSetupMessage);
+  });
+
   it("surfaces an explicit unavailable completion path when client setup fails", async () => {
     const rawSetupMessage = "private key unavailable from secret-store diagnostic";
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);

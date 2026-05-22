@@ -63,15 +63,17 @@ export const reviewPullRequest = task({
     const reviewModelUsed = selectedReviewModel(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
     let runReviewStarted = false;
     let setupFailureInstallationClient: InstallationClient | null = null;
+    let installationHash: string | undefined;
 
     try {
       setupFailureInstallationClient = await createInstallationClient(payload);
+      installationHash = await hashInstallationId(payload.installationId);
       track("system", "review_started", {
         repoFullName: payload.repoFullName,
         pullNumber: payload.pullNumber,
         headSha: payload.headSha,
         modelUsed: reviewModelUsed,
-        installationHash: await hashInstallationId(payload.installationId),
+        installationHash,
       });
 
       runReviewStarted = true;
@@ -157,7 +159,7 @@ export const reviewPullRequest = task({
             .update(schema.reviews)
             .set({
               status: "failed",
-              errorMessage: publicReviewErrorMessage(err),
+              errorMessage: publicReviewErrorMessage(reportedError),
               completedAt: new Date(),
             })
             .where(eq(schema.reviews.id, payload.reviewId));
@@ -181,7 +183,7 @@ export const reviewPullRequest = task({
         modelUsed: resolveReviewModelUsed(err, reviewModelUsed),
         attemptedModels: isOpenRouterCascadeError(err) ? err.attemptedModels : undefined,
         providerFailures: isOpenRouterCascadeError(err) ? err.providerFailures : undefined,
-        installationHash: await hashInstallationId(payload.installationId),
+        installationHash,
       });
 
       // runReview owns check-run completion once it starts. The fallback above
