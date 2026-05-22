@@ -384,6 +384,7 @@ describe("reviewPullRequest", () => {
     expect(steps[completeCheckIndex].run).toContain("https://api.github.com/repos/");
     expect(steps[completeCheckIndex].run).toContain("/commits/${headSha}/check-runs");
     expect(steps[completeCheckIndex].run).toContain('run.name === "postil/review"');
+    expect(steps[completeCheckIndex].run).toContain("for (const checkRun of checkRuns)");
     expect(steps[completeCheckIndex].run).toContain("check-runs/${checkRun.id}");
     expect(steps[completeCheckIndex].run).toContain('conclusion: "failure"');
     expect(steps[completeCheckIndex].run).toContain(

@@ -82,38 +82,36 @@ jobs:
             }
 
             const runsPayload = await runsResponse.json();
-            const checkRun = (runsPayload.check_runs || [])
-              .filter((run) => run && run.name === "postil/review" && run.status !== "completed")
-              .sort((left, right) => {
-                const leftTime = Date.parse(left.started_at || left.created_at || "1970-01-01T00:00:00Z");
-                const rightTime = Date.parse(right.started_at || right.created_at || "1970-01-01T00:00:00Z");
-                return rightTime - leftTime;
-              })[0];
+            const checkRuns = (runsPayload.check_runs || []).filter(
+              (run) => run && run.name === "postil/review" && run.status !== "completed",
+            );
 
-            if (!checkRun) {
+            if (checkRuns.length === 0) {
               throw new Error("open postil/review check run not found");
             }
 
-            const response = await fetch(
-              `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRun.id}`,
-              {
-                method: "PATCH",
-                headers,
-                body: JSON.stringify({
-                  status: "completed",
-                  conclusion: "failure",
-                  completed_at: new Date().toISOString(),
-                  output: {
-                    title: "Postil Review",
-                    summary: "Review setup failed before execution could start.",
-                    text: "Review setup failed before execution could start.",
-                  },
-                }),
-              },
-            );
+            for (const checkRun of checkRuns) {
+              const response = await fetch(
+                `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRun.id}`,
+                {
+                  method: "PATCH",
+                  headers,
+                  body: JSON.stringify({
+                    status: "completed",
+                    conclusion: "failure",
+                    completed_at: new Date().toISOString(),
+                    output: {
+                      title: "Postil Review",
+                      summary: "Review setup failed before execution could start.",
+                      text: "Review setup failed before execution could start.",
+                    },
+                  }),
+                },
+              );
 
-            if (!response.ok) {
-              throw new Error(`check-run completion failed: ${response.status}`);
+              if (!response.ok) {
+                throw new Error(`check-run completion failed: ${response.status}`);
+              }
             }
           }
 
