@@ -54,6 +54,25 @@ jobs:
         if: github.event_name == 'pull_request_target'
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Verify reviewer commit
+        if: github.event_name == 'pull_request_target'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          verification="$(
+            curl -fsSL \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/postil-dev/postil-reviewer/commits/f25e97bbe473d2df957453bf5439904839a2959c
+          )"
+          if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
+            echo "::error::reviewer commit is not verified"
+            exit 1
+          fi
+
+      - name: Install Postil reviewer
+        if: github.event_name == 'pull_request_target'
+        run: cargo install --git https://github.com/postil-dev/postil-reviewer --rev f25e97bbe473d2df957453bf5439904839a2959c --locked --force
       - name: Run postil review
         if: github.event_name == 'pull_request_target'
         run: bun run postil review
