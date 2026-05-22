@@ -20,6 +20,11 @@ const runReviewMock = vi.hoisted(() => ({
   runReview: vi.fn(),
 }));
 
+const githubMock = vi.hoisted(() => ({
+  mintInstallationToken: vi.fn(),
+  request: vi.fn(),
+}));
+
 const envMock = vi.hoisted(() => ({
   REVIEW_MODEL: "test/default",
   REVIEW_MODEL_CASCADE: undefined as string | undefined,
@@ -27,25 +32,20 @@ const envMock = vi.hoisted(() => ({
   TRIGGER_API_URL: "https://trigger.example.test",
 }));
 
-const githubMock = vi.hoisted(() => {
-  const request = vi.fn();
-  return {
-    request,
-    appOctokit: vi.fn(() => ({ request })),
-    installationOctokit: vi.fn(async () => ({ request })),
-  };
-});
-
 vi.mock("@trigger.dev/sdk/v3", () => ({
   auth: { configure: triggerMock.authConfigure },
   logger: { info: vi.fn() },
   task: triggerMock.task,
 }));
 
+vi.mock("@octokit/rest", () => ({
+  Octokit: vi.fn(function Octokit() {
+    return { request: githubMock.request };
+  }),
+}));
 vi.mock("@/lib/env", () => ({ env: envMock }));
 vi.mock("@/lib/github", () => ({
-  appOctokit: githubMock.appOctokit,
-  installationOctokit: githubMock.installationOctokit,
+  mintInstallationToken: githubMock.mintInstallationToken,
 }));
 vi.mock("@/lib/posthog", () => posthogMock);
 vi.mock("@/lib/usage", () => usageMock);
@@ -75,17 +75,23 @@ const PAYLOAD = {
 
 const { reviewPullRequest } = await import("./review-pull-request");
 const runReviewTask = reviewPullRequest as unknown as {
-  run: (payload: typeof PAYLOAD) => Promise<{ ok: boolean; findings: number }>;
+  run: (payload: typeof PAYLOAD & { checkRunId?: number }) => Promise<{
+    ok: boolean;
+    findings: number;
+  }>;
 };
 
 describe("reviewPullRequest", () => {
   beforeEach(() => {
     posthogMock.track.mockReset();
+    posthogMock.captureException.mockReset();
+    posthogMock.hashInstallationId.mockReset();
+    posthogMock.hashInstallationId.mockResolvedValue("hashed-installation");
     runReviewMock.runReview.mockReset();
-    githubMock.appOctokit.mockReset();
-    githubMock.appOctokit.mockReturnValue({ request: githubMock.request });
-    githubMock.installationOctokit.mockReset();
-    githubMock.installationOctokit.mockResolvedValue({ request: githubMock.request });
+    githubMock.mintInstallationToken.mockReset();
+    githubMock.mintInstallationToken.mockResolvedValue("installation-token");
+    githubMock.request.mockReset();
+    envMock.REVIEW_MODEL_CASCADE = undefined;
     runReviewMock.runReview.mockResolvedValue({
       summary: "ok",
       findings: [],
@@ -104,6 +110,68 @@ describe("reviewPullRequest", () => {
         modelUsed: "test/failover",
       }),
     );
+  });
+
+  it("completes the review check with the precreated client when setup fails before runReview starts", async () => {
+    posthogMock.hashInstallationId.mockRejectedValueOnce(new Error("secret fetch failed"));
+
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toThrow(
+      "secret fetch failed",
+    );
+
+    expect(runReviewMock.runReview).not.toHaveBeenCalled();
+    expect(githubMock.mintInstallationToken).toHaveBeenCalledWith(1);
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        owner: "owner",
+        repo: "repo",
+        check_run_id: 321,
+        status: "completed",
+        conclusion: "failure",
+        output: {
+          title: "Postil Review",
+          summary: "Review failed to complete.",
+          text: "Review failed to complete.",
+        },
+      }),
+    );
+  });
+
+  it("surfaces an explicit unavailable completion path when client setup fails", async () => {
+    githubMock.mintInstallationToken.mockRejectedValueOnce(new Error("private key unavailable"));
+
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toThrow(
+      "private key unavailable",
+    );
+
+    expect(runReviewMock.runReview).not.toHaveBeenCalled();
+    expect(githubMock.request).not.toHaveBeenCalled();
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          op: "review_check_completion_unavailable",
+          repoFullName: "owner/repo",
+          pullNumber: 5,
+          headSha: "abc123def456",
+          checkRunId: 321,
+          requiredAction: "Restore GitHub App authentication and rerun the review.",
+        }),
+      }),
+    );
+  });
+
+  it("does not complete the review check in the wrapper after runReview starts", async () => {
+    runReviewMock.runReview.mockRejectedValueOnce(new Error("review execution failed"));
+
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toThrow(
+      "review execution failed",
+    );
+
+    expect(runReviewMock.runReview).toHaveBeenCalledWith({ ...PAYLOAD, checkRunId: 321 });
+    expect(githubMock.mintInstallationToken).toHaveBeenCalledWith(1);
+    expect(githubMock.request).not.toHaveBeenCalled();
   });
 
   it("records the failing cascade model when review execution rejects", async () => {
@@ -146,34 +214,6 @@ describe("reviewPullRequest", () => {
           ],
         }),
       }),
-    );
-  });
-
-  it("sanitizes installation client setup failures before telemetry", async () => {
-    githubMock.installationOctokit.mockRejectedValueOnce(
-      new Error("installation auth failed: super-secret-token"),
-    );
-
-    await expect(
-      runReviewTask.run({ ...PAYLOAD, checkRunId: 77 } as typeof PAYLOAD & {
-        checkRunId: number;
-      }),
-    ).rejects.toThrow("Review failed to complete.");
-
-    expect(githubMock.appOctokit).toHaveBeenCalled();
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        conclusion: "failure",
-        output: {
-          title: "Postil Review",
-          summary: "Review failed to complete.",
-          text: "Review failed to complete.",
-        },
-      }),
-    );
-    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
-      "super-secret-token",
     );
   });
 });
