@@ -9,6 +9,7 @@ import { resolveReviewModelUsed, selectedReviewModel } from "./review-models";
 import {
   isOpenRouterCascadeError,
   publicReviewErrorMessage,
+  type ReviewClients,
   type ReviewPayload,
   reviewPayload,
   runReview,
@@ -29,11 +30,23 @@ function ensureTriggerConfigured(): void {
   triggerConfigured = true;
 }
 
-type CheckRunClient = {
-  request: (route: string, params?: Record<string, unknown>) => Promise<unknown>;
-};
+type InstallationClient = NonNullable<ReviewClients["installation"]>;
 
-async function createCheckRunClient(payload: ReviewPayload): Promise<CheckRunClient | null> {
+const CHECK_RUN_REMEDIATION = "Restore GitHub App authentication and rerun the review.";
+const CHECK_RUN_UNAVAILABLE_MESSAGE = `Review setup failed before a GitHub check client was available; the existing review check cannot be completed automatically. ${CHECK_RUN_REMEDIATION}`;
+const SANITIZED_SETUP_FAILURE_MESSAGE = "Review setup failed before execution could start.";
+
+function classifySetupFailure(err: unknown): { error: Error; errorClass: string } {
+  const errorClass = err instanceof Error ? err.name : typeof err;
+  const error = new Error(SANITIZED_SETUP_FAILURE_MESSAGE);
+  error.name = "ReviewSetupError";
+  error.stack = undefined;
+  return { error, errorClass };
+}
+
+async function createInstallationClient(
+  payload: ReviewPayload,
+): Promise<InstallationClient | null> {
   if (!payload.checkRunId) return null;
   return installationOctokit(payload.installationId);
 }
@@ -47,13 +60,12 @@ export const reviewPullRequest = task({
     const payload = reviewPayload.parse(raw);
     logger.info("starting review", { payload });
     const started = Date.now();
-    let reviewModelUsed = selectedReviewModel(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
+    const reviewModelUsed = selectedReviewModel(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
     let runReviewStarted = false;
-    let setupFailureCheckRunClient: CheckRunClient | null = null;
+    let setupFailureInstallationClient: InstallationClient | null = null;
 
     try {
-      setupFailureCheckRunClient = await createCheckRunClient(payload);
-      reviewModelUsed = selectedReviewModel(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
+      setupFailureInstallationClient = await createInstallationClient(payload);
       track("system", "review_started", {
         repoFullName: payload.repoFullName,
         pullNumber: payload.pullNumber,
@@ -63,7 +75,9 @@ export const reviewPullRequest = task({
       });
 
       runReviewStarted = true;
-      const result = await runReview(payload);
+      const result = await runReview(payload, {
+        installation: setupFailureInstallationClient ?? undefined,
+      });
 
       if (payload.reviewId) {
         try {
@@ -114,19 +128,22 @@ export const reviewPullRequest = task({
       return { ok: true, findings: result.findings.length };
     } catch (err) {
       if (!runReviewStarted) {
-        if (setupFailureCheckRunClient) {
-          await completeCheckRunAfterTaskSetupFailure(payload, err, setupFailureCheckRunClient);
+        if (setupFailureInstallationClient) {
+          await completeCheckRunAfterTaskSetupFailure(payload, err, setupFailureInstallationClient);
         } else {
           reportUnavailableCheckRunCompletion(payload, err);
         }
       }
 
-      captureException(err, {
+      const setupFailure = runReviewStarted ? null : classifySetupFailure(err);
+      const reportedError = setupFailure ? setupFailure.error : err;
+      captureException(reportedError, {
         properties: {
           op: "review",
           repoFullName: payload.repoFullName,
           pullNumber: payload.pullNumber,
           headSha: payload.headSha,
+          errorClass: setupFailure?.errorClass,
           modelUsed: resolveReviewModelUsed(err, reviewModelUsed),
           attemptedModels: isOpenRouterCascadeError(err) ? err.attemptedModels : undefined,
           providerFailures: isOpenRouterCascadeError(err) ? err.providerFailures : undefined,
@@ -177,17 +194,19 @@ export const reviewPullRequest = task({
 function reportUnavailableCheckRunCompletion(payload: ReviewPayload, err: unknown): void {
   if (!payload.checkRunId) return;
 
-  const message =
-    "Review setup failed before a GitHub check client was available; the existing review check cannot be completed automatically. Restore GitHub App authentication and rerun the review.";
-  console.error("[check-run]", message, err instanceof Error ? err.message : err);
-  captureException(err, {
+  const setupFailure = classifySetupFailure(err);
+  console.error("[check-run]", CHECK_RUN_UNAVAILABLE_MESSAGE, {
+    errorClass: setupFailure.errorClass,
+  });
+  captureException(setupFailure.error, {
     properties: {
       op: "review_check_completion_unavailable",
       repoFullName: payload.repoFullName,
       pullNumber: payload.pullNumber,
       headSha: payload.headSha,
       checkRunId: payload.checkRunId,
-      requiredAction: "Restore GitHub App authentication and rerun the review.",
+      errorClass: setupFailure.errorClass,
+      requiredAction: CHECK_RUN_REMEDIATION,
     },
   });
 }
@@ -195,7 +214,7 @@ function reportUnavailableCheckRunCompletion(payload: ReviewPayload, err: unknow
 async function completeCheckRunAfterTaskSetupFailure(
   payload: ReviewPayload,
   err: unknown,
-  checkRunClient: CheckRunClient | null,
+  checkRunClient: InstallationClient | null,
 ): Promise<void> {
   if (!payload.checkRunId || !checkRunClient) return;
 
