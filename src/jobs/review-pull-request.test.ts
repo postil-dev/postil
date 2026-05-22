@@ -193,6 +193,23 @@ describe("reviewPullRequest", () => {
     }
   });
 
+  it("sanitizes installation setup failures before runReview starts without a check run", async () => {
+    const rawSetupMessage = "installation setup placeholder";
+    githubMock.installationOctokit.mockRejectedValueOnce(new Error(rawSetupMessage));
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toMatchObject({
+      message: "Review setup failed before execution could start.",
+      name: "ReviewSetupError",
+    });
+
+    expect(runReviewMock.runReview).not.toHaveBeenCalled();
+    expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
+    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
+      rawSetupMessage,
+    );
+    expect(JSON.stringify(posthogMock.track.mock.calls)).not.toContain(rawSetupMessage);
+  });
+
   it("completes the review check with a repository client when installation client setup fails", async () => {
     const rawSetupMessage = "installation setup placeholder";
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);

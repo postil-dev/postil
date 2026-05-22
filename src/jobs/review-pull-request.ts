@@ -48,7 +48,6 @@ function classifySetupFailure(err: unknown): { error: Error; errorClass: string 
 async function createInstallationClient(
   payload: ReviewPayload,
 ): Promise<InstallationClient | null> {
-  if (!payload.checkRunId) return null;
   return installationOctokit(payload.installationId);
 }
 
