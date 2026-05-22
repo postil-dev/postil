@@ -59,12 +59,13 @@ const schema = z.object({
   NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
   NEXT_PUBLIC_POSTHOG_HOST: z.string().url().default("https://eu.i.posthog.com"),
 
-  // OpenRouter (AI provider for the review bot, invoked via opencode CLI
-  // inside the sandbox). Management key is used to vend per-workspace keys.
+  // OpenRouter (AI provider for the review bot). Management key is used to
+  // vend per-workspace keys.
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_MANAGEMENT_KEY: z.string().optional(),
   REVIEW_MODEL: z.string().default("moonshotai/kimi-k2.6"),
   REVIEW_MODEL_CASCADE: z.string().optional(),
+  POSTIL_CLI_PATH: z.string().optional(),
 
   // Cloudflare
   CLOUDFLARE_API_TOKEN: z.string().optional(),

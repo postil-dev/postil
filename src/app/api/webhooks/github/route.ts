@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
 import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
-import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/run-review";
+import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/auto-merge";
 import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
