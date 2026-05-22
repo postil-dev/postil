@@ -784,6 +784,7 @@ describe("runReview", () => {
   it("sanitizes setup failures before stderr or telemetry can see raw diagnostics", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    githubMock.appRequest.mockRejectedValue(new Error("app credential path must not be used"));
     vi.mocked(configModule.loadReviewConfig).mockRejectedValueOnce(
       new Error("setup auth failed: secret-token"),
     );
@@ -799,11 +800,8 @@ describe("runReview", () => {
         text: "Review failed to complete.",
       },
     });
-    expect(
-      githubMock.appRequest.mock.calls.some(
-        ([path]) => typeof path === "string" && path.includes("/check-runs/"),
-      ),
-    ).toBe(false);
+    expect(githubMock.appRequest).not.toHaveBeenCalled();
+    expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
     expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("secret-token");
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret-token");
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("secret-token");

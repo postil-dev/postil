@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 const triggerMock = vi.hoisted(() => ({
   authConfigure: vi.fn(),
@@ -83,6 +85,10 @@ const runReviewTask = reviewPullRequest as unknown as {
   }>;
 };
 
+function workflowExpression(value: string): string {
+  return ["${{", value, "}}"].join(" ");
+}
+
 describe("reviewPullRequest", () => {
   beforeEach(() => {
     posthogMock.track.mockReset();
@@ -118,6 +124,9 @@ describe("reviewPullRequest", () => {
 
   it("completes the review check with the precreated client when setup fails before runReview starts", async () => {
     posthogMock.hashInstallationId.mockRejectedValueOnce(new Error("setup diagnostic placeholder"));
+    githubMock.repositoryRequest.mockRejectedValue(
+      new Error("repository credential path must not be used"),
+    );
 
     await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toMatchObject({
       message: "Review setup failed before execution could start.",
@@ -204,9 +213,7 @@ describe("reviewPullRequest", () => {
 
     expect(runReviewMock.runReview).not.toHaveBeenCalled();
     expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
-    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
-      rawSetupMessage,
-    );
+    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(rawSetupMessage);
     expect(JSON.stringify(posthogMock.track.mock.calls)).not.toContain(rawSetupMessage);
   });
 
@@ -334,6 +341,51 @@ describe("reviewPullRequest", () => {
           ],
         }),
       }),
+    );
+  });
+
+  it("keeps workflow-level secret fetch failures terminal for the review check", () => {
+    const workflow = parseYaml(
+      readFileSync(new URL("../../.github/workflows/postil-review.yml", import.meta.url), "utf8"),
+    ) as {
+      jobs: {
+        review: {
+          steps: Array<{
+            id?: string;
+            if?: string;
+            name?: string;
+            env?: Record<string, string>;
+            run?: string;
+          }>;
+        };
+      };
+    };
+    const steps = workflow.jobs.review.steps;
+    const fetchSecretsIndex = steps.findIndex(
+      (step) => step.name === "Fetch secrets from Infisical",
+    );
+    const completeCheckIndex = steps.findIndex(
+      (step) => step.name === "Complete review check after secret fetch failure",
+    );
+    const setupBunIndex = steps.findIndex((step) => step.name === "Set up Bun");
+
+    expect(fetchSecretsIndex).toBeGreaterThan(-1);
+    expect(completeCheckIndex).toBe(fetchSecretsIndex + 1);
+    expect(setupBunIndex).toBeGreaterThan(completeCheckIndex);
+    expect(steps[fetchSecretsIndex]).toMatchObject({ id: "fetch-secrets" });
+    expect(steps[completeCheckIndex]).toMatchObject({
+      if: "github.event_name == 'pull_request_target' && failure() && steps.fetch-secrets.outcome == 'failure'",
+      env: expect.objectContaining({
+        GITHUB_TOKEN: workflowExpression("secrets.GITHUB_TOKEN"),
+        GITHUB_REPOSITORY: workflowExpression("github.repository"),
+        GITHUB_EVENT_PATH: workflowExpression("github.event_path"),
+      }),
+    });
+    expect(steps[completeCheckIndex].run).toContain("https://api.github.com/repos/");
+    expect(steps[completeCheckIndex].run).toContain('name: "postil/review"');
+    expect(steps[completeCheckIndex].run).toContain('conclusion: "failure"');
+    expect(steps[completeCheckIndex].run).toContain(
+      "Review setup failed before execution could start.",
     );
   });
 });
