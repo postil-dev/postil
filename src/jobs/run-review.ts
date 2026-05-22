@@ -1,4 +1,4 @@
-import type { Octokit } from "@octokit/rest";
+import { Octokit } from "@octokit/rest";
 import { z } from "zod";
 import { loadReviewConfig, type PostilConfig } from "@/lib/config";
 import { env } from "@/lib/env";
@@ -44,6 +44,8 @@ export type ReviewEnvelope = {
 export type ReviewClients = {
   installation?: Octokit;
 };
+
+type CheckRunClient = Pick<Octokit, "request">;
 
 const ALLOWED_REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]);
 
@@ -769,6 +771,11 @@ function sanitizedReviewSetupError(): Error {
   return error;
 }
 
+function createRepositoryCheckRunClient(): CheckRunClient | null {
+  if (!env.GITHUB_PAT) return null;
+  return new Octokit({ auth: env.GITHUB_PAT });
+}
+
 function linkAbortSignal(source: AbortSignal, target: AbortController): () => void {
   if (source.aborted) {
     target.abort(source.reason);
@@ -1111,10 +1118,11 @@ export async function runReview(
     return envelope;
   } catch (err) {
     const reportedError = setupComplete ? err : sanitizedReviewSetupError();
-    if (payload.checkRunId && !checkRunCompleted && octokit) {
+    const checkRunClient = octokit ?? createRepositoryCheckRunClient();
+    if (payload.checkRunId && !checkRunCompleted && checkRunClient) {
       console.error("[check-run] Review threw; completing check-run with failure");
       try {
-        await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+        await checkRunClient.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
           owner,
           repo,
           check_run_id: payload.checkRunId,

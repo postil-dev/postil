@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const githubMock = vi.hoisted(() => ({
   appRequest: vi.fn(),
   request: vi.fn(),
+  repositoryRequest: vi.fn(),
+  Octokit: vi.fn(function Octokit() {
+    return { request: githubMock.repositoryRequest };
+  }),
   pullUser: { login: "contributor-carol", type: "User" } as Record<string, unknown>,
   pullMergeability: {
     mergeable: true,
@@ -36,6 +40,7 @@ const configMock = vi.hoisted(() => ({
 }));
 
 const envMock = vi.hoisted(() => ({
+  GITHUB_PAT: "test-repository-token" as string | undefined,
   OPENROUTER_API_KEY: "test-openrouter-key",
   REVIEW_MODEL: "test/model",
   REVIEW_MODEL_CASCADE: undefined as string | undefined,
@@ -47,6 +52,9 @@ vi.mock("@/lib/env", () => ({
   env: envMock,
 }));
 
+vi.mock("@octokit/rest", () => ({
+  Octokit: githubMock.Octokit,
+}));
 vi.mock("@/lib/github", () => ({
   appOctokit: vi.fn().mockReturnValue({
     request: githubMock.appRequest,
@@ -160,6 +168,9 @@ describe("runReview", () => {
     ];
     githubMock.postedReviews = [];
     githubMock.checkRunUpdates = [];
+    githubMock.repositoryRequest.mockReset();
+    githubMock.repositoryRequest.mockResolvedValue({ data: { id: 77 } });
+    githubMock.Octokit.mockClear();
     githubMock.checkRuns = [
       "postil/review",
       "Lint",
@@ -182,6 +193,7 @@ describe("runReview", () => {
       required_checks: [],
       auto_merge_timeout_ms: 15_000,
     };
+    envMock.GITHUB_PAT = "test-repository-token";
     githubMock.pullUser = { login: "contributor-carol", type: "User" };
     githubMock.pullMergeability = {
       mergeable: true,
@@ -811,6 +823,56 @@ describe("runReview", () => {
     });
 
     expect(githubMock.checkRunUpdates).toHaveLength(0);
+    expect(githubMock.repositoryRequest).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        owner: "owner",
+        repo: "repo",
+        check_run_id: 77,
+        status: "completed",
+        conclusion: "failure",
+        output: {
+          title: "Postil Review",
+          summary: "Review failed to complete.",
+          text: "Review failed to complete.",
+        },
+      }),
+    );
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(rawSetupMessage);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(rawSetupMessage);
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("does not rely on app setup to complete check runs after installation setup fails", async () => {
+    const rawSetupMessage = "shared setup failed: secret-token";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(githubModule.installationOctokit).mockRejectedValueOnce(new Error(rawSetupMessage));
+    githubMock.appRequest.mockRejectedValue(new Error(rawSetupMessage));
+
+    await expect(runReview({ ...PAYLOAD, checkRunId: 77 })).rejects.toMatchObject({
+      message: "Review failed to complete.",
+      name: "ReviewSetupError",
+    });
+
+    expect(githubMock.appRequest).not.toHaveBeenCalled();
+    expect(githubMock.repositoryRequest).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        owner: "owner",
+        repo: "repo",
+        check_run_id: 77,
+        status: "completed",
+        conclusion: "failure",
+        output: {
+          title: "Postil Review",
+          summary: "Review failed to complete.",
+          text: "Review failed to complete.",
+        },
+      }),
+    );
+    expect(JSON.stringify(githubMock.repositoryRequest.mock.calls)).not.toContain(rawSetupMessage);
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(rawSetupMessage);
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(rawSetupMessage);
     errorSpy.mockRestore();
