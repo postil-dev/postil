@@ -852,12 +852,13 @@ export async function runReview(
   payload: ReviewPayload,
   clients: ReviewClients = {},
 ): Promise<ReviewEnvelope> {
-  const octokit = clients.installation ?? (await installationOctokit(payload.installationId));
   const [owner, repo] = payload.repoFullName.split("/");
 
+  let octokit: Octokit | null = null;
   let checkRunCompleted = false;
   let setupComplete = false;
   try {
+    octokit = clients.installation ?? (await installationOctokit(payload.installationId));
     const { config } = await loadReviewConfig(octokit, owner, repo, payload.headSha);
     if (!config.enabled) {
       if (payload.checkRunId) {
@@ -1110,7 +1111,7 @@ export async function runReview(
     return envelope;
   } catch (err) {
     const reportedError = setupComplete ? err : sanitizedReviewSetupError();
-    if (payload.checkRunId && !checkRunCompleted) {
+    if (payload.checkRunId && !checkRunCompleted && octokit) {
       console.error("[check-run] Review threw; completing check-run with failure");
       try {
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {

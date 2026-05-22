@@ -71,6 +71,7 @@ const fetchSpy = vi.spyOn(globalThis, "fetch");
 
 const { runReview } = await import("./run-review");
 const configModule = await import("@/lib/config");
+const githubModule = await import("@/lib/github");
 
 const PAYLOAD = {
   installationId: 1,
@@ -784,6 +785,24 @@ describe("runReview", () => {
     expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("secret-token");
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret-token");
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("secret-token");
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("sanitizes installation client setup failures before rethrowing", async () => {
+    const rawSetupMessage = "installation auth failed: secret-token";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(githubModule.installationOctokit).mockRejectedValueOnce(new Error(rawSetupMessage));
+
+    await expect(runReview({ ...PAYLOAD, checkRunId: 77 })).rejects.toMatchObject({
+      message: "Review failed to complete.",
+      name: "ReviewSetupError",
+    });
+
+    expect(githubMock.checkRunUpdates).toHaveLength(0);
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(rawSetupMessage);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(rawSetupMessage);
     errorSpy.mockRestore();
     warnSpy.mockRestore();
   });
