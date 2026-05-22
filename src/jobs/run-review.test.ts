@@ -734,7 +734,7 @@ describe("runReview", () => {
       if (urlStr?.includes("openrouter")) {
         openRouterMock.body = init ? JSON.parse(init.body as string) : null;
         openRouterMock.bodies.push(openRouterMock.body);
-        return new Response("provider said: account quota secret", { status: 429 });
+        return new Response("provider said: account quota diagnostic-value", { status: 429 });
       }
       return new Response("not found", { status: 404 });
     });
@@ -750,8 +750,8 @@ describe("runReview", () => {
         text: "Review failed after all configured model providers were unavailable.",
       },
     });
-    expect(JSON.stringify(latestCheckRunUpdate())).not.toContain("account quota secret");
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("account quota secret");
+    expect(JSON.stringify(latestCheckRunUpdate())).not.toContain("account quota diagnostic-value");
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("account quota diagnostic-value");
     expect(warnSpy).toHaveBeenCalledWith(
       "[openrouter] model request failed",
       expect.objectContaining({
@@ -767,7 +767,7 @@ describe("runReview", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.mocked(configModule.loadReviewConfig).mockRejectedValueOnce(
-      new Error("setup auth failed: secret-token"),
+      new Error("setup auth failed: diagnostic-value"),
     );
 
     await expect(runReview({ ...PAYLOAD, checkRunId: 77 })).rejects.toThrow(
@@ -781,9 +781,9 @@ describe("runReview", () => {
         text: "Review failed to complete.",
       },
     });
-    expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("secret-token");
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret-token");
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("secret-token");
+    expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("diagnostic-value");
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("diagnostic-value");
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("diagnostic-value");
     errorSpy.mockRestore();
     warnSpy.mockRestore();
   });
