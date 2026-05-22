@@ -2,7 +2,7 @@ import type { MetadataRoute } from "next";
 
 const crawlableBots = ["GPTBot", "ClaudeBot", "Google-Extended", "PerplexityBot", "CCBot"];
 
-const protectedPaths = ["/login"];
+const protectedPaths = ["/install", "/login"];
 
 const rules = [
   {
