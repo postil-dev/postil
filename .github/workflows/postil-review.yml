@@ -30,7 +30,12 @@ jobs:
         if: github.event_name == 'pull_request_target'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
+
+      - name: Install Postil reviewer
+        if: github.event_name == 'pull_request_target'
+        run: cargo install --git https://github.com/postil-dev/postil-reviewer --rev f25e97bbe473d2df957453bf5439904839a2959c --locked --force
 
       - name: Fetch secrets from Infisical
         if: github.event_name == 'pull_request_target'
@@ -53,10 +58,6 @@ jobs:
       - name: Install dependencies
         if: github.event_name == 'pull_request_target'
         run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: Install Postil reviewer
-        if: github.event_name == 'pull_request_target'
-        run: cargo install --git https://github.com/postil-dev/postil-reviewer --rev f25e97bbe473d2df957453bf5439904839a2959c --locked --force
 
       - name: Run postil review
         if: github.event_name == 'pull_request_target'
