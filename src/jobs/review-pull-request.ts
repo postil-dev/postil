@@ -1,6 +1,7 @@
 import { execFile as execFileCb } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { auth, logger, task } from "@trigger.dev/sdk/v3";
@@ -68,7 +69,7 @@ async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
 }
 
 async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
-  const runDir = join(process.cwd(), ".cache", "postil-runs", randomUUID());
+  const runDir = join(tmpdir(), "postil-runs", randomUUID());
   await mkdir(runDir, { recursive: true, mode: 0o700 });
   const configPath = join(runDir, "config.json");
   const outputPath = join(runDir, "review.json");

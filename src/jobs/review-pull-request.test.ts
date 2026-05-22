@@ -118,6 +118,10 @@ describe("reviewPullRequest", () => {
   it("runs the Rust CLI and records completed review telemetry", async () => {
     await runReviewTask.run(PAYLOAD);
 
+    expect(fsMock.mkdir).toHaveBeenCalledWith(
+      expect.stringMatching(/\/postil-runs\/.+/),
+      expect.objectContaining({ recursive: true, mode: 0o700 }),
+    );
     expect(githubMock.mintInstallationToken).toHaveBeenCalledWith(1);
     expect(childProcessMock.execFile).toHaveBeenCalledWith(
       "postil-test",
