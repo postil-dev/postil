@@ -1,4 +1,3 @@
-import { Octokit } from "@octokit/rest";
 import { auth, logger, task } from "@trigger.dev/sdk/v3";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/db";
@@ -32,8 +31,6 @@ function ensureTriggerConfigured(): void {
 }
 
 type InstallationClient = NonNullable<ReviewClients["installation"]>;
-type CheckRunClient = Pick<InstallationClient, "request">;
-
 const CHECK_RUN_REMEDIATION = "Restore GitHub App authentication and rerun the review.";
 const CHECK_RUN_UNAVAILABLE_MESSAGE = `Review setup failed before a GitHub check client was available; the existing review check cannot be completed automatically. ${CHECK_RUN_REMEDIATION}`;
 const SANITIZED_SETUP_FAILURE_MESSAGE = "Review setup failed before execution could start.";
@@ -51,11 +48,6 @@ async function createInstallationClient(
 ): Promise<InstallationClient | null> {
   if (!payload.checkRunId) return null;
   return installationOctokit(payload.installationId);
-}
-
-function createRepositoryCheckRunClient(): CheckRunClient | null {
-  if (!env.GITHUB_PAT) return null;
-  return new Octokit({ auth: env.GITHUB_PAT });
 }
 
 // Trigger.dev-flavoured wrapper around runReview. The webhook enqueues this
@@ -140,11 +132,7 @@ export const reviewPullRequest = task({
         if (setupFailureInstallationClient) {
           await completeCheckRunAfterTaskSetupFailure(payload, err, setupFailureInstallationClient);
         } else {
-          await completeCheckRunAfterTaskSetupFailure(
-            payload,
-            err,
-            createRepositoryCheckRunClient(),
-          );
+          reportUnavailableCheckRunCompletion(payload, err);
         }
       }
 
@@ -227,13 +215,9 @@ function reportUnavailableCheckRunCompletion(payload: ReviewPayload, err: unknow
 async function completeCheckRunAfterTaskSetupFailure(
   payload: ReviewPayload,
   err: unknown,
-  checkRunClient: CheckRunClient | null,
+  checkRunClient: InstallationClient,
 ): Promise<void> {
   if (!payload.checkRunId) return;
-  if (!checkRunClient) {
-    reportUnavailableCheckRunCompletion(payload, err);
-    return;
-  }
 
   try {
     const [owner, repo] = payload.repoFullName.split("/");

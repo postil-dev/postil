@@ -163,11 +163,8 @@ async function fetchCurrentAppBotLogin(): Promise<string | null> {
     const slug = String((appRes.data as { slug?: unknown }).slug ?? "").trim();
     if (slug) return `${slug}[bot]`;
     return fallbackSlug ? `${fallbackSlug}[bot]` : null;
-  } catch (err) {
-    console.warn(
-      "[review-context] app identity fetch failed:",
-      err instanceof Error ? err.message : err,
-    );
+  } catch {
+    console.warn("[review-context] app identity fetch failed");
     return fallbackSlug ? `${fallbackSlug}[bot]` : null;
   }
 }
@@ -459,8 +456,8 @@ async function fetchReviewContext(
     }
 
     return formatReviewContext(items);
-  } catch (err) {
-    console.error("[review-context] fetch failed:", err instanceof Error ? err.message : err);
+  } catch {
+    console.error("[review-context] fetch failed");
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
@@ -622,10 +619,7 @@ async function fetchBranchProtectionRequiredChecks(
     return [...names];
   } catch (err) {
     if ((err as { status?: number }).status === 404) return [];
-    console.warn(
-      "[auto-merge] Could not load branch protection required checks:",
-      err instanceof Error ? err.message : err,
-    );
+    console.warn("[auto-merge] Could not load branch protection required checks");
     captureException(err, {
       properties: {
         op: "auto_merge_branch_protection_checks",
@@ -742,10 +736,7 @@ export async function attemptAutoMergeApprovedPull(
     // Non-fatal: GitHub may still be computing mergeability, required checks
     // may be pending, branch protection may reject the merge, or GitHub may
     // take too long to answer.
-    console.warn(
-      "[auto-merge] Could not merge clean PR:",
-      err instanceof Error ? err.message : err,
-    );
+    console.warn("[auto-merge] Could not merge clean PR");
     captureException(err, {
       properties: {
         op: "auto_merge_clean_pr",
@@ -884,10 +875,7 @@ export async function runReview(
             },
           });
         } catch (err) {
-          console.error(
-            "[check-run] PATCH failed (disabled):",
-            err instanceof Error ? err.message : err,
-          );
+          console.error("[check-run] PATCH failed (disabled)");
           captureException(err, {
             properties: {
               op: "update_check_run_disabled",
@@ -903,8 +891,6 @@ export async function runReview(
         usage: ZERO_USAGE,
       };
     }
-    setupComplete = true;
-
     const [appBotLogin, pullRes] = await Promise.all([
       fetchCurrentAppBotLogin(),
       octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
@@ -947,7 +933,7 @@ export async function runReview(
             conclusion: "success",
           });
         } catch (err) {
-          console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
+          console.error("[check-run] PATCH failed");
           captureException(err, {
             properties: {
               op: "update_check_run",
@@ -975,6 +961,7 @@ export async function runReview(
     const MAX = 120_000;
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
 
+    setupComplete = true;
     const {
       content: modelOutput,
       usage,
@@ -1102,7 +1089,7 @@ export async function runReview(
           conclusion,
         });
       } catch (err) {
-        console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
+        console.error("[check-run] PATCH failed");
         captureException(err, {
           properties: {
             op: "update_check_run",
@@ -1124,8 +1111,7 @@ export async function runReview(
   } catch (err) {
     const reportedError = setupComplete ? err : sanitizedReviewSetupError();
     if (payload.checkRunId && !checkRunCompleted) {
-      const message = publicReviewErrorMessage(reportedError);
-      console.error("[check-run] Review threw; completing check-run with failure:", message);
+      console.error("[check-run] Review threw; completing check-run with failure");
       try {
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
           owner,
@@ -1141,10 +1127,7 @@ export async function runReview(
           },
         });
       } catch (patchErr) {
-        console.error(
-          "[check-run] Emergency PATCH failed:",
-          patchErr instanceof Error ? patchErr.message : patchErr,
-        );
+        console.error("[check-run] Emergency PATCH failed");
         captureException(patchErr, {
           properties: {
             op: "emergency_complete_check_run",

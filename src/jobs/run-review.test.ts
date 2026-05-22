@@ -734,7 +734,7 @@ describe("runReview", () => {
       if (urlStr?.includes("openrouter")) {
         openRouterMock.body = init ? JSON.parse(init.body as string) : null;
         openRouterMock.bodies.push(openRouterMock.body);
-        return new Response("provider said: account quota diagnostic-value", { status: 429 });
+        return new Response("provider said: account quota secret-token", { status: 429 });
       }
       return new Response("not found", { status: 404 });
     });
@@ -750,8 +750,8 @@ describe("runReview", () => {
         text: "Review failed after all configured model providers were unavailable.",
       },
     });
-    expect(JSON.stringify(latestCheckRunUpdate())).not.toContain("account quota diagnostic-value");
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("account quota diagnostic-value");
+    expect(JSON.stringify(latestCheckRunUpdate())).not.toContain("account quota secret-token");
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("account quota secret-token");
     expect(warnSpy).toHaveBeenCalledWith(
       "[openrouter] model request failed",
       expect.objectContaining({
@@ -767,7 +767,7 @@ describe("runReview", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.mocked(configModule.loadReviewConfig).mockRejectedValueOnce(
-      new Error("setup auth failed: diagnostic-value"),
+      new Error("setup auth failed: secret-token"),
     );
 
     await expect(runReview({ ...PAYLOAD, checkRunId: 77 })).rejects.toThrow(
@@ -781,9 +781,42 @@ describe("runReview", () => {
         text: "Review failed to complete.",
       },
     });
-    expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("diagnostic-value");
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("diagnostic-value");
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("diagnostic-value");
+    expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("secret-token");
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret-token");
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("secret-token");
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("sanitizes later setup fetch failures before rethrowing", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const defaultRequest = githubMock.request.getMockImplementation();
+    githubMock.request.mockImplementation((path: string, params?: Record<string, unknown>) => {
+      if (
+        path === "GET /repos/{owner}/{repo}/pulls/{pull_number}" &&
+        (params?.mediaType as { format?: unknown } | undefined)?.format === "diff"
+      ) {
+        return Promise.reject(new Error("diff fetch failed: secret-token"));
+      }
+      return defaultRequest?.(path, params) ?? Promise.resolve({ data: [] });
+    });
+
+    await expect(runReview({ ...PAYLOAD, checkRunId: 77 })).rejects.toMatchObject({
+      message: "Review failed to complete.",
+      name: "ReviewSetupError",
+    });
+
+    expect(latestCheckRunUpdate()).toMatchObject({
+      conclusion: "failure",
+      output: {
+        summary: "Review failed to complete.",
+        text: "Review failed to complete.",
+      },
+    });
+    expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("secret-token");
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret-token");
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("secret-token");
     errorSpy.mockRestore();
     warnSpy.mockRestore();
   });
