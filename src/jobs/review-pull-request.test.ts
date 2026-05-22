@@ -21,7 +21,7 @@ const runReviewMock = vi.hoisted(() => ({
 }));
 
 const githubMock = vi.hoisted(() => ({
-  mintInstallationToken: vi.fn(),
+  installationOctokit: vi.fn(),
   request: vi.fn(),
 }));
 
@@ -38,14 +38,9 @@ vi.mock("@trigger.dev/sdk/v3", () => ({
   task: triggerMock.task,
 }));
 
-vi.mock("@octokit/rest", () => ({
-  Octokit: vi.fn(function Octokit() {
-    return { request: githubMock.request };
-  }),
-}));
 vi.mock("@/lib/env", () => ({ env: envMock }));
 vi.mock("@/lib/github", () => ({
-  mintInstallationToken: githubMock.mintInstallationToken,
+  installationOctokit: githubMock.installationOctokit,
 }));
 vi.mock("@/lib/posthog", () => posthogMock);
 vi.mock("@/lib/usage", () => usageMock);
@@ -88,8 +83,8 @@ describe("reviewPullRequest", () => {
     posthogMock.hashInstallationId.mockReset();
     posthogMock.hashInstallationId.mockResolvedValue("hashed-installation");
     runReviewMock.runReview.mockReset();
-    githubMock.mintInstallationToken.mockReset();
-    githubMock.mintInstallationToken.mockResolvedValue("installation-token");
+    githubMock.installationOctokit.mockReset();
+    githubMock.installationOctokit.mockResolvedValue({ request: githubMock.request });
     githubMock.request.mockReset();
     envMock.REVIEW_MODEL_CASCADE = undefined;
     runReviewMock.runReview.mockResolvedValue({
@@ -120,7 +115,7 @@ describe("reviewPullRequest", () => {
     );
 
     expect(runReviewMock.runReview).not.toHaveBeenCalled();
-    expect(githubMock.mintInstallationToken).toHaveBeenCalledWith(1);
+    expect(githubMock.installationOctokit).toHaveBeenCalledWith(1);
     expect(githubMock.request).toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({
@@ -139,7 +134,7 @@ describe("reviewPullRequest", () => {
   });
 
   it("surfaces an explicit unavailable completion path when client setup fails", async () => {
-    githubMock.mintInstallationToken.mockRejectedValueOnce(new Error("private key unavailable"));
+    githubMock.installationOctokit.mockRejectedValueOnce(new Error("private key unavailable"));
 
     await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toThrow(
       "private key unavailable",
@@ -170,7 +165,7 @@ describe("reviewPullRequest", () => {
     );
 
     expect(runReviewMock.runReview).toHaveBeenCalledWith({ ...PAYLOAD, checkRunId: 321 });
-    expect(githubMock.mintInstallationToken).toHaveBeenCalledWith(1);
+    expect(githubMock.installationOctokit).toHaveBeenCalledWith(1);
     expect(githubMock.request).not.toHaveBeenCalled();
   });
 

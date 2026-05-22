@@ -1,9 +1,8 @@
-import { Octokit } from "@octokit/rest";
 import { auth, logger, task } from "@trigger.dev/sdk/v3";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/db";
 import { env } from "@/lib/env";
-import { mintInstallationToken } from "@/lib/github";
+import { installationOctokit } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import { resolveReviewModelUsed, selectedReviewModel } from "./review-models";
@@ -36,8 +35,7 @@ type CheckRunClient = {
 
 async function createCheckRunClient(payload: ReviewPayload): Promise<CheckRunClient | null> {
   if (!payload.checkRunId) return null;
-  const token = await mintInstallationToken(payload.installationId);
-  return new Octokit({ auth: token });
+  return installationOctokit(payload.installationId);
 }
 
 // Trigger.dev-flavoured wrapper around runReview. The webhook enqueues this
