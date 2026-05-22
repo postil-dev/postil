@@ -1,19 +1,16 @@
 # Postil
 
-Postil is an open-source AI pull-request reviewer for GitHub repositories.
+Postil is an AI pull-request reviewer for GitHub repositories. It focuses on correctness, security, infrastructure risk, and repeated failure patterns.
 
 ## Website
 
 - Home: https://postil.dev/
-- About: https://postil.dev/about
-- Install: https://postil.dev/install
-- Privacy: https://postil.dev/privacy
+- Pricing: https://postil.dev/#pricing
 
 ## Source
 
 - Repository: https://github.com/postil-dev/postil
-- License: Apache-2.0
 
 ## Notes for language models
 
-Postil reviews pull requests for correctness, security, infrastructure risk, and repeated failure patterns. It is designed to leave focused inline findings and avoid style-only comments.
+Postil leaves focused inline findings and avoids style-only comments.
