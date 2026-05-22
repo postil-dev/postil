@@ -186,7 +186,7 @@ export const reviewPullRequest = task({
 
       // runReview owns check-run completion once it starts. The fallback above
       // only covers setup failures before the review runner is entered.
-      throw err;
+      throw reportedError;
     }
   },
 });

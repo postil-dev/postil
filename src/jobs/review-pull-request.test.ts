@@ -110,9 +110,10 @@ describe("reviewPullRequest", () => {
   it("completes the review check with the precreated client when setup fails before runReview starts", async () => {
     posthogMock.hashInstallationId.mockRejectedValueOnce(new Error("secret fetch failed"));
 
-    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toThrow(
-      "secret fetch failed",
-    );
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toMatchObject({
+      message: "Review setup failed before execution could start.",
+      name: "ReviewSetupError",
+    });
 
     expect(runReviewMock.runReview).not.toHaveBeenCalled();
     expect(githubMock.installationOctokit).toHaveBeenCalledWith(1);
@@ -139,9 +140,10 @@ describe("reviewPullRequest", () => {
     githubMock.installationOctokit.mockRejectedValueOnce(new Error(rawSetupMessage));
 
     try {
-      await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toThrow(
-        rawSetupMessage,
-      );
+      await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toMatchObject({
+        message: "Review setup failed before execution could start.",
+        name: "ReviewSetupError",
+      });
 
       expect(runReviewMock.runReview).not.toHaveBeenCalled();
       expect(githubMock.request).not.toHaveBeenCalled();
