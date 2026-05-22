@@ -8,16 +8,18 @@ const crawlableBots = [
   "CCBot",
 ];
 
+const protectedPaths = ["/install", "/login"];
+
 const rules = [
   {
     userAgent: "*",
     allow: "/",
-    disallow: ["/install", "/login"],
+    disallow: protectedPaths,
   },
   ...crawlableBots.map((userAgent) => ({
     userAgent,
     allow: "/",
-    disallow: ["/install", "/login"],
+    disallow: protectedPaths,
   })),
 ];
 
