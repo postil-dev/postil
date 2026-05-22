@@ -70,6 +70,7 @@ vi.mock("@/lib/config", () => ({
 const fetchSpy = vi.spyOn(globalThis, "fetch");
 
 const { runReview } = await import("./run-review");
+const configModule = await import("@/lib/config");
 
 const PAYLOAD = {
   installationId: 1,
@@ -759,6 +760,31 @@ describe("runReview", () => {
         status: 429,
       }),
     );
+    warnSpy.mockRestore();
+  });
+
+  it("sanitizes setup failures before stderr or telemetry can see raw diagnostics", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(configModule.loadReviewConfig).mockRejectedValueOnce(
+      new Error("setup auth failed: secret-token"),
+    );
+
+    await expect(runReview({ ...PAYLOAD, checkRunId: 77 })).rejects.toThrow(
+      "Review failed to complete.",
+    );
+
+    expect(latestCheckRunUpdate()).toMatchObject({
+      conclusion: "failure",
+      output: {
+        summary: "Review failed to complete.",
+        text: "Review failed to complete.",
+      },
+    });
+    expect(JSON.stringify(githubMock.checkRunUpdates)).not.toContain("secret-token");
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret-token");
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("secret-token");
+    errorSpy.mockRestore();
     warnSpy.mockRestore();
   });
 

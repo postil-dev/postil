@@ -1,13 +1,11 @@
-import { eq } from "drizzle-orm";
 import { auth, logger, task } from "@trigger.dev/sdk/v3";
+import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/db";
-import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
-import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { env } from "@/lib/env";
-import {
-  resolveReviewModelUsed,
-  selectedReviewModel,
-} from "./review-models";
+import { appOctokit, installationOctokit } from "@/lib/github";
+import { captureException, hashInstallationId, track } from "@/lib/posthog";
+import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
+import { resolveReviewModelUsed, selectedReviewModel } from "./review-models";
 import {
   isOpenRouterCascadeError,
   publicReviewErrorMessage,
@@ -50,7 +48,42 @@ export const reviewPullRequest = task({
     });
 
     try {
-      const result = await runReview(payload);
+      let setupOctokit: Awaited<ReturnType<typeof installationOctokit>>;
+      try {
+        setupOctokit = await installationOctokit(payload.installationId);
+      } catch (err) {
+        const message = publicReviewErrorMessage(err);
+        if (payload.checkRunId) {
+          try {
+            const octokit = appOctokit();
+            const [owner, repo] = payload.repoFullName.split("/");
+            await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+              owner,
+              repo,
+              check_run_id: payload.checkRunId,
+              status: "completed",
+              conclusion: "failure",
+              completed_at: new Date().toISOString(),
+              output: {
+                title: "Postil Review",
+                summary: message,
+                text: message,
+              },
+            });
+          } catch {
+            captureException(new Error("postil review setup check-run patch failed"), {
+              properties: {
+                op: "update_check_run_setup_failed",
+                repoFullName: payload.repoFullName,
+                pullNumber: payload.pullNumber,
+              },
+            });
+          }
+        }
+        throw new Error(message);
+      }
+
+      const result = await runReview(payload, setupOctokit);
 
       if (payload.reviewId) {
         try {
