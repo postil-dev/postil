@@ -48,7 +48,7 @@ jobs:
       - name: Complete review check after secret fetch failure
         if: github.event_name == 'pull_request_target' && failure() && steps.fetch-secrets.outcome == 'failure'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: |
@@ -65,9 +65,13 @@ jobs:
               return;
             }
 
+            if (!process.env.GITHUB_PAT) {
+              throw new Error("GITHUB_PAT is required to complete the review check");
+            }
+
             const headers = {
               Accept: "application/vnd.github+json",
-              Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+              Authorization: `Bearer ${process.env.GITHUB_PAT}`,
               "Content-Type": "application/json",
               "X-GitHub-Api-Version": "2022-11-28",
             };

@@ -376,7 +376,7 @@ describe("reviewPullRequest", () => {
     expect(steps[completeCheckIndex]).toMatchObject({
       if: "github.event_name == 'pull_request_target' && failure() && steps.fetch-secrets.outcome == 'failure'",
       env: expect.objectContaining({
-        GITHUB_TOKEN: workflowExpression("secrets.GITHUB_TOKEN"),
+        GITHUB_PAT: workflowExpression("secrets.GITHUB_PAT"),
         GITHUB_REPOSITORY: workflowExpression("github.repository"),
         GITHUB_EVENT_PATH: workflowExpression("github.event_path"),
       }),
