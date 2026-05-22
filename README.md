@@ -49,15 +49,16 @@ jobs:
           model: moonshotai/kimi-k2.6
 ```
 
-Required secrets: add `OPENROUTER_API_KEY` (or the key for your model provider) in your repo's **Settings → Secrets and variables → Actions**.
+Required secrets: add `OPENROUTER_API_KEY` in your repo's **Settings → Secrets and variables → Actions**.
 
 ## Configuration
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `api-key` | yes | — | API key for your model provider |
-| `model` | no | — | Model name (e.g. `moonshotai/kimi-k2.6`) |
-| `provider` | no | `openai` | Provider slug (`openai` or `anthropic`) |
+| `api-key` | yes | — | OpenRouter API key |
+| `model` | no | `moonshotai/kimi-k2.6` | OpenRouter model name |
+| `fail-on` | no | `error` | Exit 1 when a finding meets this severity (`info`, `warn`, `error`) |
+| `no-inline` | no | `false` | Skip inline PR review comments |
 | `config-path` | no | — | Path to optional configuration file |
 | `github-token` | no | `github.token` | Token for posting review comments |
 

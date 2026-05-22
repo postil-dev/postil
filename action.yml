@@ -7,15 +7,20 @@ branding:
 
 inputs:
   api-key:
-    description: 'API key for the LLM provider (OpenAI or Anthropic)'
+    description: 'OpenRouter API key'
     required: true
-  provider:
-    description: 'LLM provider: openai or anthropic'
-    required: false
-    default: 'openai'
   model:
-    description: 'Model name to use (e.g. gpt-4o-mini, claude-3-5-haiku-20241022)'
+    description: 'OpenRouter model name'
     required: false
+    default: 'moonshotai/kimi-k2.6'
+  fail-on:
+    description: 'Exit 1 when a finding meets this severity: info, warn, or error'
+    required: false
+    default: 'error'
+  no-inline:
+    description: 'Skip posting inline PR review comments'
+    required: false
+    default: 'false'
   config-path:
     description: 'Optional path to a configuration file'
     required: false
@@ -25,5 +30,24 @@ inputs:
     default: '${{ github.token }}'
 
 runs:
-  using: 'node20'
-  main: 'dist/action.js'
+  using: 'composite'
+  steps:
+    - name: Install Postil reviewer
+      shell: bash
+      run: cargo install --git https://github.com/postil-dev/postil-reviewer --locked --force
+    - name: Run Postil review
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        OPENROUTER_API_KEY: ${{ inputs.api-key }}
+        REVIEW_MODEL: ${{ inputs.model }}
+        POSTIL_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        args=(review)
+        if [[ -n "${{ inputs.config-path }}" ]]; then
+          args+=(--config "${{ inputs.config-path }}")
+        fi
+        if [[ "${{ inputs.no-inline }}" == "true" ]]; then
+          args+=(--no-inline)
+        fi
+        postil "${args[@]}"

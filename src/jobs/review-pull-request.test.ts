@@ -16,25 +16,38 @@ const usageMock = vi.hoisted(() => ({
   recordTokenUsage: vi.fn(),
 }));
 
-const runReviewMock = vi.hoisted(() => ({
-  runReview: vi.fn(),
+const githubMock = vi.hoisted(() => ({
+  installationOctokit: vi.fn(async () => ({ request: githubMock.request })),
+  mintInstallationToken: vi.fn(async () => "installation-token"),
+  request: vi.fn(async () => ({ data: {} })),
+}));
+
+const childProcessMock = vi.hoisted(() => ({
+  execFile: vi.fn(),
+}));
+
+const fsMock = vi.hoisted(() => ({
+  files: new Map<string, string>(),
+  mkdir: vi.fn(async () => undefined),
+  rm: vi.fn(async () => undefined),
+  readFile: vi.fn(async (path: string) => fsMock.files.get(path) ?? "{}"),
+  writeFile: vi.fn(async (path: string, content: string) => {
+    fsMock.files.set(path, content);
+  }),
+}));
+
+const dbMock = vi.hoisted(() => ({
+  updates: [] as Record<string, unknown>[],
 }));
 
 const envMock = vi.hoisted(() => ({
+  OPENROUTER_API_KEY: "test-openrouter-key",
+  POSTIL_CLI_PATH: "postil-test",
   REVIEW_MODEL: "test/default",
   REVIEW_MODEL_CASCADE: undefined as string | undefined,
   TRIGGER_API_KEY: "test-trigger-key",
   TRIGGER_API_URL: "https://trigger.example.test",
 }));
-
-const githubMock = vi.hoisted(() => {
-  const request = vi.fn();
-  return {
-    request,
-    appOctokit: vi.fn(() => ({ request })),
-    installationOctokit: vi.fn(async () => ({ request })),
-  };
-});
 
 vi.mock("@trigger.dev/sdk/v3", () => ({
   auth: { configure: triggerMock.authConfigure },
@@ -42,35 +55,38 @@ vi.mock("@trigger.dev/sdk/v3", () => ({
   task: triggerMock.task,
 }));
 
+vi.mock("node:fs/promises", () => fsMock);
+vi.mock("node:child_process", () => childProcessMock);
 vi.mock("@/lib/env", () => ({ env: envMock }));
 vi.mock("@/lib/github", () => ({
-  appOctokit: githubMock.appOctokit,
   installationOctokit: githubMock.installationOctokit,
+  mintInstallationToken: githubMock.mintInstallationToken,
 }));
 vi.mock("@/lib/posthog", () => posthogMock);
 vi.mock("@/lib/usage", () => usageMock);
 vi.mock("@/db", () => ({
-  getDb: vi.fn(),
+  getDb: vi.fn(() => ({
+    update: () => ({
+      set: (values: Record<string, unknown>) => ({
+        where: async () => {
+          dbMock.updates.push(values);
+        },
+      }),
+    }),
+  })),
   schema: { reviews: { id: "id" } },
 }));
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn(() => true),
 }));
-vi.mock("./run-review", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./run-review")>();
-  return {
-    isOpenRouterCascadeError: actual.isOpenRouterCascadeError,
-    publicReviewErrorMessage: actual.publicReviewErrorMessage,
-    reviewPayload: actual.reviewPayload,
-    runReview: runReviewMock.runReview,
-  };
-});
 
 const PAYLOAD = {
   installationId: 1,
   repoFullName: "owner/repo",
   pullNumber: 5,
   headSha: "abc123def456",
+  checkRunId: 77,
+  reviewId: "00000000-0000-4000-8000-000000000001",
 };
 
 const { reviewPullRequest } = await import("./review-pull-request");
@@ -80,23 +96,35 @@ const runReviewTask = reviewPullRequest as unknown as {
 
 describe("reviewPullRequest", () => {
   beforeEach(() => {
-    posthogMock.track.mockReset();
-    runReviewMock.runReview.mockReset();
-    githubMock.appOctokit.mockReset();
-    githubMock.appOctokit.mockReturnValue({ request: githubMock.request });
-    githubMock.installationOctokit.mockReset();
-    githubMock.installationOctokit.mockResolvedValue({ request: githubMock.request });
-    runReviewMock.runReview.mockResolvedValue({
-      summary: "ok",
-      findings: [],
-      usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
-      modelUsed: "test/failover",
+    vi.clearAllMocks();
+    fsMock.files.clear();
+    dbMock.updates = [];
+    envMock.REVIEW_MODEL_CASCADE = undefined;
+    childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
+      const outputPath = args[args.indexOf("--output-json") + 1];
+      fsMock.files.set(
+        outputPath,
+        JSON.stringify({
+          summary: "ok",
+          findings: [],
+          usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+          modelUsed: "test/failover",
+        }),
+      );
+      cb(null, "", "");
     });
   });
 
-  it("records the selected cascade model on completed review telemetry", async () => {
+  it("runs the Rust CLI and records completed review telemetry", async () => {
     await runReviewTask.run(PAYLOAD);
 
+    expect(githubMock.mintInstallationToken).toHaveBeenCalledWith(1);
+    expect(childProcessMock.execFile).toHaveBeenCalledWith(
+      "postil-test",
+      expect.arrayContaining(["review", "--config", expect.any(String), "--output-json"]),
+      expect.any(Object),
+      expect.any(Function),
+    );
     expect(posthogMock.track).toHaveBeenCalledWith(
       "system",
       "review_completed",
@@ -104,74 +132,55 @@ describe("reviewPullRequest", () => {
         modelUsed: "test/failover",
       }),
     );
-  });
-
-  it("records the failing cascade model when review execution rejects", async () => {
-    envMock.REVIEW_MODEL_CASCADE = "test/primary, test/backup";
-    runReviewMock.runReview.mockRejectedValueOnce(
-      Object.assign(new Error("openrouter model cascade failed"), {
-        modelUsed: "test/backup",
-        attemptedModels: ["test/primary", "test/backup"],
-        providerFailures: [
-          { model: "test/primary", reason: "provider returned an error", status: 429 },
-          { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
-        ],
+    expect(usageMock.recordTokenUsage).toHaveBeenCalledWith(1, PAYLOAD.reviewId, {
+      promptTokens: 10,
+      completionTokens: 2,
+      totalTokens: 12,
+    });
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "completed",
+        result: expect.objectContaining({ summary: "ok" }),
       }),
     );
+  });
 
-    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("openrouter model cascade failed");
+  it("marks the review and check-run failed when CLI execution rejects", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+      cb(new Error("cli failed"), "", "");
+    });
 
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+      }),
+    );
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "Review failed to complete.",
+      }),
+    );
     expect(posthogMock.track).toHaveBeenCalledWith(
       "system",
       "review_failed",
       expect.objectContaining({
-        error: "Review failed after all configured model providers were unavailable.",
-        modelUsed: "test/backup",
-        attemptedModels: ["test/primary", "test/backup"],
-        providerFailures: [
-          { model: "test/primary", reason: "provider returned an error", status: 429 },
-          { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
-        ],
-      }),
-    );
-    expect(posthogMock.captureException).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({
-        properties: expect.objectContaining({
-          modelUsed: "test/backup",
-          attemptedModels: ["test/primary", "test/backup"],
-          providerFailures: [
-            { model: "test/primary", reason: "provider returned an error", status: 429 },
-            { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
-          ],
-        }),
+        error: "Review failed to complete.",
       }),
     );
   });
 
-  it("sanitizes installation client setup failures before telemetry", async () => {
-    githubMock.installationOctokit.mockRejectedValueOnce(
+  it("sanitizes CLI setup failures before telemetry", async () => {
+    githubMock.mintInstallationToken.mockRejectedValueOnce(
       new Error("installation auth failed: super-secret-token"),
     );
 
-    await expect(
-      runReviewTask.run({ ...PAYLOAD, checkRunId: 77 } as typeof PAYLOAD & {
-        checkRunId: number;
-      }),
-    ).rejects.toThrow("Review failed to complete.");
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
 
-    expect(githubMock.appOctokit).toHaveBeenCalled();
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        conclusion: "failure",
-        output: {
-          title: "Postil Review",
-          summary: "Review failed to complete.",
-          text: "Review failed to complete.",
-        },
-      }),
-    );
     expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
       "super-secret-token",
     );
