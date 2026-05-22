@@ -27,6 +27,15 @@ const envMock = vi.hoisted(() => ({
   TRIGGER_API_URL: "https://trigger.example.test",
 }));
 
+const githubMock = vi.hoisted(() => {
+  const request = vi.fn();
+  return {
+    request,
+    appOctokit: vi.fn(() => ({ request })),
+    installationOctokit: vi.fn(async () => ({ request })),
+  };
+});
+
 vi.mock("@trigger.dev/sdk/v3", () => ({
   auth: { configure: triggerMock.authConfigure },
   logger: { info: vi.fn() },
@@ -34,6 +43,10 @@ vi.mock("@trigger.dev/sdk/v3", () => ({
 }));
 
 vi.mock("@/lib/env", () => ({ env: envMock }));
+vi.mock("@/lib/github", () => ({
+  appOctokit: githubMock.appOctokit,
+  installationOctokit: githubMock.installationOctokit,
+}));
 vi.mock("@/lib/posthog", () => posthogMock);
 vi.mock("@/lib/usage", () => usageMock);
 vi.mock("@/db", () => ({
@@ -69,6 +82,10 @@ describe("reviewPullRequest", () => {
   beforeEach(() => {
     posthogMock.track.mockReset();
     runReviewMock.runReview.mockReset();
+    githubMock.appOctokit.mockReset();
+    githubMock.appOctokit.mockReturnValue({ request: githubMock.request });
+    githubMock.installationOctokit.mockReset();
+    githubMock.installationOctokit.mockResolvedValue({ request: githubMock.request });
     runReviewMock.runReview.mockResolvedValue({
       summary: "ok",
       findings: [],
@@ -102,9 +119,7 @@ describe("reviewPullRequest", () => {
       }),
     );
 
-    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow(
-      "openrouter model cascade failed",
-    );
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("openrouter model cascade failed");
 
     expect(posthogMock.track).toHaveBeenCalledWith(
       "system",
@@ -131,6 +146,34 @@ describe("reviewPullRequest", () => {
           ],
         }),
       }),
+    );
+  });
+
+  it("sanitizes installation client setup failures before telemetry", async () => {
+    githubMock.installationOctokit.mockRejectedValueOnce(
+      new Error("installation auth failed: super-secret-token"),
+    );
+
+    await expect(
+      runReviewTask.run({ ...PAYLOAD, checkRunId: 77 } as typeof PAYLOAD & {
+        checkRunId: number;
+      }),
+    ).rejects.toThrow("Review failed to complete.");
+
+    expect(githubMock.appOctokit).toHaveBeenCalled();
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        conclusion: "failure",
+        output: {
+          title: "Postil Review",
+          summary: "Review failed to complete.",
+          text: "Review failed to complete.",
+        },
+      }),
+    );
+    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
+      "super-secret-token",
     );
   });
 });

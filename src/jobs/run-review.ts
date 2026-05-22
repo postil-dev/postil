@@ -159,11 +159,8 @@ async function fetchCurrentAppBotLogin(): Promise<string | null> {
     const slug = String((appRes.data as { slug?: unknown }).slug ?? "").trim();
     if (slug) return `${slug}[bot]`;
     return fallbackSlug ? `${fallbackSlug}[bot]` : null;
-  } catch (err) {
-    console.warn(
-      "[review-context] app identity fetch failed:",
-      err instanceof Error ? err.message : err,
-    );
+  } catch (_err) {
+    console.warn("[review-context] app identity fetch failed");
     return fallbackSlug ? `${fallbackSlug}[bot]` : null;
   }
 }
@@ -455,8 +452,8 @@ async function fetchReviewContext(
     }
 
     return formatReviewContext(items);
-  } catch (err) {
-    console.error("[review-context] fetch failed:", err instanceof Error ? err.message : err);
+  } catch (_err) {
+    console.error("[review-context] fetch failed");
     return {
       prompt: "",
       outstandingChangeRequestReviewers: [],
@@ -618,10 +615,7 @@ async function fetchBranchProtectionRequiredChecks(
     return [...names];
   } catch (err) {
     if ((err as { status?: number }).status === 404) return [];
-    console.warn(
-      "[auto-merge] Could not load branch protection required checks:",
-      err instanceof Error ? err.message : err,
-    );
+    console.warn("[auto-merge] Could not load branch protection required checks");
     captureException(err, {
       properties: {
         op: "auto_merge_branch_protection_checks",
@@ -738,10 +732,7 @@ export async function attemptAutoMergeApprovedPull(
     // Non-fatal: GitHub may still be computing mergeability, required checks
     // may be pending, branch protection may reject the merge, or GitHub may
     // take too long to answer.
-    console.warn(
-      "[auto-merge] Could not merge clean PR:",
-      err instanceof Error ? err.message : err,
-    );
+    console.warn("[auto-merge] Could not merge clean PR");
     captureException(err, {
       properties: {
         op: "auto_merge_clean_pr",
@@ -765,6 +756,29 @@ export function publicReviewErrorMessage(err: unknown): string {
   return isOpenRouterCascadeError(err)
     ? "Review failed after all configured model providers were unavailable."
     : "Review failed to complete.";
+}
+
+async function completeReviewSetupFailureCheckRun(
+  octokit: Octokit,
+  payload: ReviewPayload,
+  message: string,
+): Promise<void> {
+  if (!payload.checkRunId) return;
+
+  const [owner, repo] = payload.repoFullName.split("/");
+  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+    owner,
+    repo,
+    check_run_id: payload.checkRunId,
+    status: "completed",
+    conclusion: "failure",
+    completed_at: new Date().toISOString(),
+    output: {
+      title: "Postil Review",
+      summary: message,
+      text: message,
+    },
+  });
 }
 
 function linkAbortSignal(source: AbortSignal, target: AbortController): () => void {
@@ -846,49 +860,53 @@ async function callOpenRouter(diff: string, reviewContext = ""): Promise<OpenRou
   throw error;
 }
 
-export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope> {
-  const octokit = await installationOctokit(payload.installationId);
+export async function runReview(
+  payload: ReviewPayload,
+  setupOctokit?: Octokit,
+): Promise<ReviewEnvelope> {
+  const octokit = setupOctokit ?? (await installationOctokit(payload.installationId));
   const [owner, repo] = payload.repoFullName.split("/");
 
-  const { config } = await loadReviewConfig(octokit, owner, repo, payload.headSha);
-  if (!config.enabled) {
-    if (payload.checkRunId) {
-      try {
-        await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
-          owner,
-          repo,
-          check_run_id: payload.checkRunId,
-          status: "completed",
-          conclusion: "neutral",
-          completed_at: new Date().toISOString(),
-          output: {
-            title: "Postil Review",
-            summary: "Postil is disabled for this repo via config.",
-          },
-        });
-      } catch (err) {
-        console.error(
-          "[check-run] PATCH failed (disabled):",
-          err instanceof Error ? err.message : err,
-        );
-        captureException(err, {
-          properties: {
-            op: "update_check_run_disabled",
-            repoFullName: payload.repoFullName,
-            pullNumber: payload.pullNumber,
-          },
-        });
-      }
-    }
-    return {
-      summary: "Postil is disabled for this repo via config.",
-      findings: [],
-      usage: ZERO_USAGE,
-    };
-  }
-
+  let config!: PostilConfig;
+  let reviewContext!: ReviewContext;
+  let diff = "";
   let checkRunCompleted = false;
   try {
+    const loaded = await loadReviewConfig(octokit, owner, repo, payload.headSha);
+    config = loaded.config;
+    if (!config.enabled) {
+      if (payload.checkRunId) {
+        try {
+          await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+            owner,
+            repo,
+            check_run_id: payload.checkRunId,
+            status: "completed",
+            conclusion: "neutral",
+            completed_at: new Date().toISOString(),
+            output: {
+              title: "Postil Review",
+              summary: "Postil is disabled for this repo via config.",
+            },
+          });
+        } catch {
+          console.error("[check-run] PATCH failed (disabled)");
+          captureException(new Error("postil review disabled check-run patch failed"), {
+            properties: {
+              op: "update_check_run_disabled",
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+            },
+          });
+        }
+      }
+      return {
+        summary: "Postil is disabled for this repo via config.",
+        findings: [],
+        usage: ZERO_USAGE,
+      };
+    }
+
     const [appBotLogin, pullRes] = await Promise.all([
       fetchCurrentAppBotLogin(),
       octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
@@ -900,13 +918,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     const pullAuthor = (pullRes.data as { user?: GitHubUser | null }).user ?? null;
     const isSelfAuthoredPull = isCurrentAppBotUser(pullAuthor, appBotLogin);
 
-    const reviewContext = await fetchReviewContext(
-      octokit,
-      owner,
-      repo,
-      payload.pullNumber,
-      appBotLogin,
-    );
+    reviewContext = await fetchReviewContext(octokit, owner, repo, payload.pullNumber, appBotLogin);
 
     if (reviewContext.loaded && isSelfAuthoredPull && !reviewContext.hasExternalActivity) {
       if (payload.checkRunId) {
@@ -930,9 +942,9 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
             pullNumber: payload.pullNumber,
             conclusion: "success",
           });
-        } catch (err) {
-          console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
-          captureException(err, {
+        } catch {
+          console.error("[check-run] PATCH failed");
+          captureException(new Error("postil review success check-run patch failed"), {
             properties: {
               op: "update_check_run",
               repoFullName: payload.repoFullName,
@@ -955,7 +967,25 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       pull_number: payload.pullNumber,
       mediaType: { format: "diff" },
     });
-    const diff = String(diffRes.data);
+    diff = String(diffRes.data);
+  } catch (err) {
+    const message = publicReviewErrorMessage(err);
+    try {
+      await completeReviewSetupFailureCheckRun(octokit, payload, message);
+    } catch {
+      console.error("[check-run] PATCH failed while completing review setup failure");
+      captureException(new Error("postil review setup check-run patch failed"), {
+        properties: {
+          op: "update_check_run_setup_failed",
+          repoFullName: payload.repoFullName,
+          pullNumber: payload.pullNumber,
+        },
+      });
+    }
+    throw new Error(message);
+  }
+
+  try {
     const MAX = 120_000;
     const truncated = diff.length > MAX ? `${diff.slice(0, MAX)}\n\n[diff truncated]` : diff;
 
@@ -1086,7 +1116,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           conclusion,
         });
       } catch (err) {
-        console.error("[check-run] PATCH failed:", err instanceof Error ? err.message : err);
+        console.error("[check-run] PATCH failed");
         captureException(err, {
           properties: {
             op: "update_check_run",
@@ -1107,8 +1137,8 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
     return envelope;
   } catch (err) {
     if (payload.checkRunId && !checkRunCompleted) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error("[check-run] Review threw; completing check-run with failure:", message);
+      const message = publicReviewErrorMessage(err);
+      console.error("[check-run] Review threw; completing check-run with failure");
       try {
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
           owner,
@@ -1119,16 +1149,13 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
           completed_at: new Date().toISOString(),
           output: {
             title: "Postil Review",
-            summary: publicReviewErrorMessage(err),
-            text: publicReviewErrorMessage(err),
+            summary: message,
+            text: message,
           },
         });
-      } catch (patchErr) {
-        console.error(
-          "[check-run] Emergency PATCH failed:",
-          patchErr instanceof Error ? patchErr.message : patchErr,
-        );
-        captureException(patchErr, {
+      } catch {
+        console.error("[check-run] Emergency PATCH failed");
+        captureException(new Error("postil review emergency check-run patch failed"), {
           properties: {
             op: "emergency_complete_check_run",
             repoFullName: payload.repoFullName,
