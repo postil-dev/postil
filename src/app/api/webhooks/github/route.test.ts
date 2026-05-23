@@ -615,9 +615,16 @@ describe("github webhook", () => {
     });
   });
 
-  it("completes the review check when the review workflow payload has no pull requests", async () => {
-    dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 326 } as never);
+  it("completes the review check when a pull_request_target review workflow has no pull requests", async () => {
+    dbMock.findFirst
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ id: "review-1", checkRunId: 326 } as never);
     mockRequest.mockImplementation(async (route: string) => {
+      if (route === "GET /repos/{owner}/{repo}/pulls") {
+        return {
+          data: [{ number: 68, head: { sha: "abc123def456" } }],
+        };
+      }
       if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
         return { data: { id: 326 } };
       }
@@ -637,14 +644,23 @@ describe("github webhook", () => {
           name: "Postil Review",
           conclusion: "failure",
           html_url: "https://github.com/acme/widget/actions/runs/660",
-          head_sha: "abc123def456",
+          head_branch: "feat/review-workflow",
+          head_repository: { full_name: "contributor/widget" },
+          head_sha: "base123",
           pull_requests: [],
         },
       }),
     );
 
     expect(res.status).toBe(200);
-    expect(dbMock.findFirst).toHaveBeenCalledTimes(1);
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(2);
+    expect(
+      mockRequest.mock.calls.find(([route]) => route === "GET /repos/{owner}/{repo}/pulls")?.[1],
+    ).toMatchObject({
+      head: "contributor:feat/review-workflow",
+      state: "open",
+      per_page: 1,
+    });
     expect(
       mockRequest.mock.calls.find(
         ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",

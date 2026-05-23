@@ -91,6 +91,7 @@ type WorkflowRunPayload = {
     head_sha?: string | null;
     path?: string | null;
     actor?: { login?: string | null } | null;
+    head_repository?: { full_name?: string | null; owner?: { login?: string | null } | null } | null;
     pull_requests?: Array<{ number: number; head?: { sha?: string | null } | null }>;
   };
   repository: { full_name: string };
@@ -114,6 +115,7 @@ type WorkflowJob = {
 };
 
 type ReviewCheckRun = { id: string; checkRunId: number | null } | null | undefined;
+type ReviewWorkflowRunContext = { pullNumber: number | null; headSha: string | null };
 
 async function handlePullRequest(
   db: ReturnType<typeof getDb>,
@@ -453,6 +455,55 @@ async function findReviewCheckRunForWorkflowFailure(
   return null;
 }
 
+async function resolveReviewWorkflowRunContext(
+  octokit: MinimalOctokit,
+  owner: string,
+  repo: string,
+  workflowRun: WorkflowRunPayload["workflow_run"],
+): Promise<ReviewWorkflowRunContext> {
+  const payloadPull = workflowRun.pull_requests?.[0];
+  if (payloadPull) {
+    return { pullNumber: payloadPull.number, headSha: payloadPull.head?.sha ?? null };
+  }
+
+  if (!workflowRun.head_branch) {
+    return { pullNumber: null, headSha: null };
+  }
+
+  const headOwner =
+    workflowRun.head_repository?.owner?.login ?? workflowRun.head_repository?.full_name?.split("/")[0] ?? owner;
+  const head = workflowRun.head_branch.includes(":")
+    ? workflowRun.head_branch
+    : `${headOwner}:${workflowRun.head_branch}`;
+
+  try {
+    const res = await octokit.request("GET /repos/{owner}/{repo}/pulls", {
+      owner,
+      repo,
+      state: "open",
+      head,
+      sort: "updated",
+      direction: "desc",
+      per_page: 1,
+    });
+    const pull = Array.isArray(res.data) ? (res.data[0] as { number?: number; head?: { sha?: string } }) : null;
+    if (typeof pull?.number === "number") {
+      return { pullNumber: pull.number, headSha: pull.head?.sha ?? null };
+    }
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "resolve_review_workflow_run_pull_request",
+        owner,
+        repo,
+        runId: workflowRun.id,
+      },
+    });
+  }
+
+  return { pullNumber: null, headSha: null };
+}
+
 async function deleteWebhookDelivery(
   db: ReturnType<typeof getDb>,
   deliveryId: string,
@@ -485,15 +536,15 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
 
   if (workflow?.path === REVIEW_WORKFLOW_PATH || workflow_run.path === REVIEW_WORKFLOW_PATH) {
     if (workflow_run.conclusion !== "success") {
+      const reviewContext = await resolveReviewWorkflowRunContext(octokit, owner, repo, workflow_run);
       await completeReviewWorkflowFailureCheckRun(
         getDb(),
         octokit,
         repoFullName,
-        pullNumber ?? null,
+        pullNumber ?? reviewContext.pullNumber,
         [
           workflow_run.head_sha ?? null,
-          workflow_run.pull_requests?.find((pullRequest) => pullRequest.number === pullNumber)?.head?.sha ??
-            null,
+          reviewContext.headSha,
         ],
         workflow_run.conclusion,
       );
