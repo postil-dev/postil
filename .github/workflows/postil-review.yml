@@ -20,8 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'merge_group' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false)
     timeout-minutes: 15
-    env:
-      POSTIL_REVIEWER_REV: 3df78f88531aadb76942f4c69bc5a22e4421be34
     steps:
       - name: Skip review in merge queue (already ran on PR)
         if: github.event_name == 'merge_group'
@@ -31,45 +29,85 @@ jobs:
         if: github.event_name == 'pull_request_target'
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git init .
-          git remote add origin "https://github.com/${{ github.repository }}.git"
-          git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+          if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git init .
+          fi
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://github.com/${{ github.repository }}.git"
+          else
+            git remote add origin "https://github.com/${{ github.repository }}.git"
+          fi
+          git fetch --depth=1 origin "${{ github.event.pull_request.base.sha }}"
           git checkout --force FETCH_HEAD
 
-      - name: Set up Rust
+      - name: Load reviewer revision
         if: github.event_name == 'pull_request_target'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        run: |
+          if [[ -f reviewer-rev ]]; then
+            echo "REVIEWER_REV=$(< reviewer-rev)" >> "$GITHUB_ENV"
+          else
+            echo "REVIEWER_REV=f25e97bbe473d2df957453bf5439904839a2959c" >> "$GITHUB_ENV"
+          fi
 
       - name: Verify reviewer commit
         if: github.event_name == 'pull_request_target'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRUSTED_SIGNER: morgaesis
         run: |
-          reviewer_rev="$POSTIL_REVIEWER_REV"
-          test -n "$reviewer_rev"
+          auth_args=()
+          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            auth_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+          fi
           verification="$(
             curl -fsSL \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "${auth_args[@]}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/postil-dev/postil-reviewer/commits/$reviewer_rev"
+              "https://api.github.com/repos/postil-dev/postil-reviewer/commits/$REVIEWER_REV"
           )"
+          if [[ "$(jq -r '.sha' <<<"$verification")" != "$REVIEWER_REV" ]]; then
+            echo "::error::reviewer commit SHA does not match REVIEWER_REV"
+            exit 1
+          fi
           if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
             echo "::error::reviewer commit is not verified"
             exit 1
           fi
+          if [[ "$(jq -r '.commit.verification.reason' <<<"$verification")" != "valid" ]]; then
+            echo "::error::reviewer commit verification reason is not valid"
+            exit 1
+          fi
+          if [[ "$(jq -r '.author.login' <<<"$verification")" != "$TRUSTED_SIGNER" ]]; then
+            echo "::error::reviewer author login does not match trusted signer"
+            exit 1
+          fi
+          if [[ "$(jq -r '.committer.login' <<<"$verification")" != "$TRUSTED_SIGNER" ]]; then
+            echo "::error::reviewer committer login does not match trusted signer"
+            exit 1
+          fi
 
-      - name: Install Rust for act
-        if: env.ACT == 'true'
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Set up Rust toolchain
+        if: github.event_name == 'pull_request_target'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
 
-      - name: Install Postil reviewer
+      - name: Install Postil reviewer from source
         if: github.event_name == 'pull_request_target'
         run: |
-          reviewer_rev="$POSTIL_REVIEWER_REV"
-          test -n "$reviewer_rev"
-          cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
+          reviewer_dir="$RUNNER_TEMP/postil-reviewer"
+          rm -rf "$reviewer_dir"
+          mkdir -p "$reviewer_dir"
+          git -C "$reviewer_dir" init
+          git -C "$reviewer_dir" remote add origin https://github.com/postil-dev/postil-reviewer
+          git -C "$reviewer_dir" fetch --depth=1 origin "$REVIEWER_REV"
+          git -C "$reviewer_dir" checkout --force FETCH_HEAD
+          if [[ "$(git -C "$reviewer_dir" rev-parse HEAD)" != "$REVIEWER_REV" ]]; then
+            echo "::error::checked-out reviewer revision does not match REVIEWER_REV"
+            exit 1
+          fi
+          cargo install --path "$reviewer_dir" --locked --force
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Set up Bun
         if: github.event_name == 'pull_request_target'
@@ -83,7 +121,7 @@ jobs:
 
       - name: Run postil review
         if: github.event_name == 'pull_request_target'
-        run: bun run postil review
+        run: postil review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
