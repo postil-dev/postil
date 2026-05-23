@@ -106,7 +106,7 @@ type WorkflowJob = {
   }>;
 };
 
-type ReviewCheckRun = { checkRunId: number | null } | null | undefined;
+type ReviewCheckRun = { id: string; checkRunId: number | null } | null | undefined;
 
 async function handlePullRequest(
   db: ReturnType<typeof getDb>,
@@ -340,6 +340,7 @@ async function completeReviewWorkflowFailureCheckRun(
   repoFullName: string,
   pullNumber: number,
   candidateHeadShas: Array<string | null | undefined>,
+  conclusion: string | null | undefined,
 ): Promise<void> {
   const review = await findReviewCheckRunForWorkflowFailure(
     db,
@@ -363,6 +364,15 @@ async function completeReviewWorkflowFailureCheckRun(
       text: "Review failed to complete.",
     },
   });
+
+  await db
+    .update(schema.reviews)
+    .set({
+      status: "failed",
+      errorMessage: `Review workflow ${conclusion === "cancelled" ? "cancelled" : "failed"} before review completion.`,
+      completedAt: new Date(),
+    })
+    .where(eq(schema.reviews.id, review.id));
 }
 
 async function findReviewCheckRunForWorkflowFailure(
@@ -381,7 +391,7 @@ async function findReviewCheckRunForWorkflowFailure(
         eq(schema.reviews.headSha, headSha),
       ),
       orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
-      columns: { checkRunId: true },
+      columns: { id: true, checkRunId: true },
     });
     if (review?.checkRunId) return review;
   }
@@ -434,6 +444,7 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
             workflow_run.pull_requests?.find((pullRequest) => pullRequest.number === pullNumber)?.head?.sha ??
               null,
           ],
+          workflow_run.conclusion,
         );
       } catch (err) {
         captureException(err, {

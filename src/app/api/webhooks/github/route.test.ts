@@ -524,7 +524,7 @@ describe("github webhook", () => {
   });
 
   it("completes the review check when the review workflow fails before setup finishes", async () => {
-    dbMock.findFirst.mockResolvedValueOnce({ checkRunId: 321 } as never);
+    dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 321 } as never);
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
         return { data: { id: 321 } };
@@ -568,12 +568,17 @@ describe("github webhook", () => {
         text: "Review failed to complete.",
       },
     });
+    expect(dbMock.updateCalls).toContainEqual({
+      status: "failed",
+      errorMessage: "Review workflow failed before review completion.",
+      completedAt: expect.any(Date),
+    });
   });
 
   it("completes the review check when the workflow-run SHA is the base SHA", async () => {
     dbMock.findFirst
       .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce({ checkRunId: 323 } as never);
+      .mockResolvedValueOnce({ id: "review-1", checkRunId: 323 } as never);
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
         return { data: { id: 323 } };
@@ -607,6 +612,11 @@ describe("github webhook", () => {
       check_run_id: 323,
       conclusion: "failure",
     });
+    expect(dbMock.updateCalls).toContainEqual({
+      status: "failed",
+      errorMessage: "Review workflow failed before review completion.",
+      completedAt: expect.any(Date),
+    });
   });
 
   it("does not complete a newer review check for a stale review workflow failure", async () => {
@@ -638,10 +648,11 @@ describe("github webhook", () => {
         ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       ),
     ).toBe(false);
+    expect(dbMock.updateCalls).toEqual([]);
   });
 
   it("completes the review check when the review workflow is cancelled before setup finishes", async () => {
-    dbMock.findFirst.mockResolvedValueOnce({ checkRunId: 322 } as never);
+    dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 322 } as never);
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
         return { data: { id: 322 } };
@@ -684,6 +695,11 @@ describe("github webhook", () => {
         summary: "Review failed to complete.",
         text: "Review failed to complete.",
       },
+    });
+    expect(dbMock.updateCalls).toContainEqual({
+      status: "failed",
+      errorMessage: "Review workflow cancelled before review completion.",
+      completedAt: expect.any(Date),
     });
   });
 
