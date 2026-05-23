@@ -29,7 +29,7 @@ jobs:
         run: echo "Postil Review was enforced at PR time; merge-queue re-run is not required."
 
       - name: Checkout base ref (never PR head)
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -42,6 +42,10 @@ jobs:
           fi
           git fetch --depth=1 origin "${{ github.event.pull_request.base.sha }}"
           git checkout --force FETCH_HEAD
+
+      - name: Skip checkout in act
+        if: env.ACT == 'true'
+        run: echo "Checkout is skipped in act; bootstrap checks completed."
 
       - name: Verify reviewer commit
         if: github.event_name == 'pull_request_target' && env.ACT != 'true'
@@ -59,23 +63,11 @@ jobs:
             exit 1
           fi
 
-      - name: Skip reviewer verification in act
-        if: env.ACT == 'true'
-        run: echo "Reviewer commit verification is skipped in act; bootstrap checks completed."
-
-      - name: Skip Rust install in act
-        if: env.ACT == 'true'
-        run: echo "Rust install is skipped in act; bootstrap checks completed."
-
       - name: Install Postil reviewer
         if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         run: |
           cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$REVIEWER_REV" --locked --force
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Skip reviewer install in act
-        if: env.ACT == 'true'
-        run: echo "Reviewer install is skipped in act; bootstrap checks completed."
 
       - name: Fetch secrets from Infisical
         if: github.event_name == 'pull_request_target' && env.ACT != 'true'
@@ -99,20 +91,8 @@ jobs:
         if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         run: bun install --frozen-lockfile --ignore-scripts
 
-      - name: Skip Bun setup in act
-        if: env.ACT == 'true'
-        run: echo "Bun setup is skipped in act; bootstrap checks completed."
-
-      - name: Skip dependency install in act
-        if: env.ACT == 'true'
-        run: echo "Dependency install is skipped in act; bootstrap checks completed."
-
       - name: Run postil review
         if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         run: bun run postil
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Skip postil review in act
-        if: env.ACT == 'true'
-        run: echo "Postil review is skipped in act; bootstrap checks completed."
