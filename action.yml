@@ -34,7 +34,7 @@ runs:
   steps:
     - name: Install Postil reviewer
       shell: bash
-      run: cargo install --git https://github.com/postil-dev/postil-reviewer --locked --force
+      run: cargo install --git https://github.com/postil-dev/postil-reviewer --rev f25e97bbe473d2df957453bf5439904839a2959c --locked --force
     - name: Run Postil review
       shell: bash
       env:
