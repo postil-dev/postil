@@ -525,12 +525,10 @@ describe("github webhook", () => {
   });
 
   it("completes the review check when the review workflow only knows the pull number", async () => {
-    dbMock.findFirst.mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "review-1", checkRunId: 321 } as never);
+    dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 321 } as never);
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "GET /repos/{owner}/{repo}/pulls") {
-        return {
-          data: [{ number: 68, head: { sha: "abc123def456" } }],
-        };
+        throw new Error("must not resolve current PR head");
       }
       if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
         return { data: { id: 321 } };
@@ -552,22 +550,16 @@ describe("github webhook", () => {
           conclusion: "failure",
           html_url: "https://github.com/acme/widget/actions/runs/654",
           pull_requests: [{ number: 68 }],
-          head_branch: "feat/review-workflow",
-          head_repository: { full_name: "contributor/widget" },
-          head_sha: "base123",
+          head_sha: "abc123def456",
         },
       }),
     );
 
     expect(res.status).toBe(200);
-    expect(dbMock.findFirst).toHaveBeenCalledTimes(2);
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(1);
     expect(
-      mockRequest.mock.calls.find(([route]) => route === "GET /repos/{owner}/{repo}/pulls")?.[1],
-    ).toMatchObject({
-      head: "contributor:feat/review-workflow",
-      state: "open",
-      per_page: 1,
-    });
+      mockRequest.mock.calls.some(([route]) => route === "GET /repos/{owner}/{repo}/pulls"),
+    ).toBe(false);
     expect(
       mockRequest.mock.calls.some(
         ([route]) => route === "POST /repos/{owner}/{repo}/issues",
@@ -629,18 +621,14 @@ describe("github webhook", () => {
     });
   });
 
-  it("completes the review check when a pull_request_target review workflow has no pull requests", async () => {
-    dbMock.findFirst
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce({ id: "review-1", checkRunId: 326 } as never);
+  it("does not complete a newer review check when a historical review workflow has no pull requests", async () => {
+    dbMock.findFirst.mockResolvedValueOnce(undefined);
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "GET /repos/{owner}/{repo}/pulls") {
-        return {
-          data: [{ number: 68, head: { sha: "abc123def456" } }],
-        };
+        throw new Error("must not resolve current PR head");
       }
       if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
-        return { data: { id: 326 } };
+        throw new Error("must not patch newer review check");
       }
       throw new Error(`unexpected route ${route}`);
     });
@@ -659,7 +647,6 @@ describe("github webhook", () => {
           conclusion: "failure",
           html_url: "https://github.com/acme/widget/actions/runs/660",
           head_branch: "feat/review-workflow",
-          head_repository: { full_name: "contributor/widget" },
           head_sha: "base123",
           pull_requests: [],
         },
@@ -667,27 +654,27 @@ describe("github webhook", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(dbMock.findFirst).toHaveBeenCalledTimes(2);
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(1);
     expect(
-      mockRequest.mock.calls.find(([route]) => route === "GET /repos/{owner}/{repo}/pulls")?.[1],
-    ).toMatchObject({
-      head: "contributor:feat/review-workflow",
-      state: "open",
-      per_page: 1,
-    });
+      mockRequest.mock.calls.some(([route]) => route === "GET /repos/{owner}/{repo}/pulls"),
+    ).toBe(false);
     expect(
-      mockRequest.mock.calls.find(
+      mockRequest.mock.calls.some(
         ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      )?.[1],
-    ).toMatchObject({
-      check_run_id: 326,
-      conclusion: "failure",
-    });
-    expect(dbMock.updateCalls).toContainEqual({
-      status: "failed",
-      errorMessage: "Review workflow failed before review completion.",
-      completedAt: expect.any(Date),
-    });
+      ),
+    ).toBe(false);
+    expect(dbMock.updateCalls).toEqual([]);
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "Review workflow failure did not match a review check-run",
+      }),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          op: "review_workflow_failure_check_run_unmatched",
+          pullNumber: null,
+        }),
+      }),
+    );
   });
 
   it("completes the review check when the workflow-run SHA is the base SHA", async () => {
