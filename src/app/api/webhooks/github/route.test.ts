@@ -523,6 +523,100 @@ describe("github webhook", () => {
     expect(issueCall?.[1].title).toContain("Docker build");
   });
 
+  it("completes the review check when the review workflow fails before setup finishes", async () => {
+    dbMock.findFirst.mockResolvedValueOnce({ checkRunId: 321 } as never);
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 321 } };
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-failure", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow_run: {
+          id: 654,
+          name: "Postil Review",
+          conclusion: "failure",
+          html_url: "https://github.com/acme/widget/actions/runs/654",
+          head_sha: "abc123def456",
+          pull_requests: [{ number: 68 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).toHaveBeenCalled();
+    expect(
+      mockRequest.mock.calls.some(
+        ([route]) => route === "POST /repos/{owner}/{repo}/issues",
+      ),
+    ).toBe(false);
+    expect(
+      mockRequest.mock.calls.find(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      )?.[1],
+    ).toMatchObject({
+      check_run_id: 321,
+      conclusion: "failure",
+      output: {
+        title: "Postil Review",
+        summary: "Review failed to complete.",
+        text: "Review failed to complete.",
+      },
+    });
+  });
+
+  it("completes the review check when the review workflow is cancelled before setup finishes", async () => {
+    dbMock.findFirst.mockResolvedValueOnce({ checkRunId: 322 } as never);
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 322 } };
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-cancelled", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow_run: {
+          id: 655,
+          name: "Postil Review",
+          conclusion: "cancelled",
+          html_url: "https://github.com/acme/widget/actions/runs/655",
+          head_sha: "abc123def456",
+          pull_requests: [{ number: 68 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).toHaveBeenCalled();
+    expect(
+      mockRequest.mock.calls.some(
+        ([route]) => route === "POST /repos/{owner}/{repo}/issues",
+      ),
+    ).toBe(false);
+    expect(
+      mockRequest.mock.calls.find(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      )?.[1],
+    ).toMatchObject({
+      check_run_id: 322,
+      conclusion: "failure",
+      output: {
+        title: "Postil Review",
+        summary: "Review failed to complete.",
+        text: "Review failed to complete.",
+      },
+    });
+  });
+
   it("retries auto-merge when the CI workflow finishes successfully after approval", async () => {
     mockRequest.mockImplementation(async (route: string, _params?: Record<string, unknown>) => {
       if (route === "GET /app") {
