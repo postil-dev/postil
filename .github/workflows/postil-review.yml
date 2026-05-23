@@ -120,7 +120,7 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Run postil review
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         run: postil review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
