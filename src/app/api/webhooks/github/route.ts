@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
+const REVIEW_WORKFLOW_PATH = ".github/workflows/postil-review.yml";
 
 function verifySignature(payload: string, signature: string | null): boolean {
   if (!signature || !env.GITHUB_WEBHOOK_SECRET) return false;
@@ -76,6 +77,11 @@ type PullRequestPayload = {
 
 type WorkflowRunPayload = {
   action: string;
+  workflow?: {
+    id?: number | null;
+    name?: string | null;
+    path?: string | null;
+  } | null;
   workflow_run: {
     id: number;
     name?: string | null;
@@ -83,6 +89,7 @@ type WorkflowRunPayload = {
     html_url: string;
     head_branch?: string | null;
     head_sha?: string | null;
+    path?: string | null;
     actor?: { login?: string | null } | null;
     pull_requests?: Array<{ number: number; head?: { sha?: string | null } | null }>;
   };
@@ -342,37 +349,74 @@ async function completeReviewWorkflowFailureCheckRun(
   candidateHeadShas: Array<string | null | undefined>,
   conclusion: string | null | undefined,
 ): Promise<void> {
-  const review = await findReviewCheckRunForWorkflowFailure(
-    db,
-    repoFullName,
-    pullNumber,
-    candidateHeadShas,
-  );
+  let review: ReviewCheckRun;
+  try {
+    review = await findReviewCheckRunForWorkflowFailure(
+      db,
+      repoFullName,
+      pullNumber,
+      candidateHeadShas,
+    );
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "lookup_review_for_workflow_failure",
+        repoFullName,
+        pullNumber,
+      },
+    });
+    return;
+  }
+
   if (!review?.checkRunId) return;
 
-  const [owner, repo] = repoFullName.split("/");
-  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
-    owner,
-    repo,
-    check_run_id: review.checkRunId,
-    status: "completed",
-    conclusion: "failure",
-    completed_at: new Date().toISOString(),
-    output: {
-      title: "Postil Review",
-      summary: "Review failed to complete.",
-      text: "Review failed to complete.",
-    },
-  });
+  const completedAt = new Date();
+  try {
+    await db
+      .update(schema.reviews)
+      .set({
+        status: "failed",
+        errorMessage: `Review workflow ${conclusion === "cancelled" ? "cancelled" : "failed"} before review completion.`,
+        completedAt,
+      })
+      .where(eq(schema.reviews.id, review.id));
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "record_review_workflow_failure",
+        repoFullName,
+        pullNumber,
+        reviewId: review.id,
+      },
+    });
+  }
 
-  await db
-    .update(schema.reviews)
-    .set({
-      status: "failed",
-      errorMessage: `Review workflow ${conclusion === "cancelled" ? "cancelled" : "failed"} before review completion.`,
-      completedAt: new Date(),
-    })
-    .where(eq(schema.reviews.id, review.id));
+  const [owner, repo] = repoFullName.split("/");
+  try {
+    await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+      owner,
+      repo,
+      check_run_id: review.checkRunId,
+      status: "completed",
+      conclusion: "failure",
+      completed_at: completedAt.toISOString(),
+      output: {
+        title: "Postil Review",
+        summary: "Review failed to complete.",
+        text: "Review failed to complete.",
+      },
+    });
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "complete_review_workflow_failure_check_run",
+        repoFullName,
+        pullNumber,
+        reviewId: review.id,
+        checkRunId: review.checkRunId,
+      },
+    });
+  }
 }
 
 async function findReviewCheckRunForWorkflowFailure(
@@ -420,7 +464,7 @@ async function deleteWebhookDelivery(
 }
 
 async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
-  const { action, workflow_run, repository, installation } = p;
+  const { action, workflow, workflow_run, repository, installation } = p;
   if (!installation) return;
   if (action !== "completed") return;
 
@@ -431,31 +475,20 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const [owner, repo] = repoFullName.split("/");
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
 
-  if (workflow_run.name === "Postil Review") {
+  if (workflow?.path === REVIEW_WORKFLOW_PATH || workflow_run.path === REVIEW_WORKFLOW_PATH) {
     if (workflow_run.conclusion !== "success") {
-      try {
-        await completeReviewWorkflowFailureCheckRun(
-          getDb(),
-          octokit,
-          repoFullName,
-          pullNumber,
-          [
-            workflow_run.head_sha ?? null,
-            workflow_run.pull_requests?.find((pullRequest) => pullRequest.number === pullNumber)?.head?.sha ??
-              null,
-          ],
-          workflow_run.conclusion,
-        );
-      } catch (err) {
-        captureException(err, {
-          properties: {
-            op: "complete_review_workflow_failure_check_run",
-            repoFullName,
-            pullNumber,
-            runId: workflow_run.id,
-          },
-        });
-      }
+      await completeReviewWorkflowFailureCheckRun(
+        getDb(),
+        octokit,
+        repoFullName,
+        pullNumber,
+        [
+          workflow_run.head_sha ?? null,
+          workflow_run.pull_requests?.find((pullRequest) => pullRequest.number === pullNumber)?.head?.sha ??
+            null,
+        ],
+        workflow_run.conclusion,
+      );
     }
     return;
   }

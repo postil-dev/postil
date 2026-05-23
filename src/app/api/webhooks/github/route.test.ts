@@ -22,6 +22,7 @@ const configMock = vi.hoisted(() => ({
     auto_merge: true,
   },
 }));
+const POSTIL_REVIEW_WORKFLOW_PATH = ".github/workflows/postil-review.yml";
 const posthogMock = vi.hoisted(() => ({
   captureException: vi.fn(),
   track: vi.fn(),
@@ -537,6 +538,9 @@ describe("github webhook", () => {
         action: "completed",
         installation: { id: 123 },
         repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
         workflow_run: {
           id: 654,
           name: "Postil Review",
@@ -575,6 +579,42 @@ describe("github webhook", () => {
     });
   });
 
+  it("marks the review row failed even when the check-run patch fails", async () => {
+    dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 325 } as never);
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        throw new Error("patch failed");
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-patch-failure", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
+        workflow_run: {
+          id: 659,
+          name: "Postil Review",
+          conclusion: "failure",
+          html_url: "https://github.com/acme/widget/actions/runs/659",
+          head_sha: "abc123def456",
+          pull_requests: [{ number: 68 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.updateCalls).toContainEqual({
+      status: "failed",
+      errorMessage: "Review workflow failed before review completion.",
+      completedAt: expect.any(Date),
+    });
+  });
+
   it("completes the review check when the workflow-run SHA is the base SHA", async () => {
     dbMock.findFirst
       .mockResolvedValueOnce(undefined)
@@ -591,6 +631,9 @@ describe("github webhook", () => {
         action: "completed",
         installation: { id: 123 },
         repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
         workflow_run: {
           id: 656,
           name: "Postil Review",
@@ -630,6 +673,9 @@ describe("github webhook", () => {
         action: "completed",
         installation: { id: 123 },
         repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
         workflow_run: {
           id: 657,
           name: "Postil Review",
@@ -665,6 +711,9 @@ describe("github webhook", () => {
         action: "completed",
         installation: { id: 123 },
         repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
         workflow_run: {
           id: 655,
           name: "Postil Review",
@@ -701,6 +750,44 @@ describe("github webhook", () => {
       errorMessage: "Review workflow cancelled before review completion.",
       completedAt: expect.any(Date),
     });
+  });
+
+  it("ignores a workflow-run failure with the same display name when the workflow path is different", async () => {
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        throw new Error("unexpected review check-run patch");
+      }
+      return { data: [] };
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-spoof", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow: {
+          path: ".github/workflows/unrelated.yml",
+          name: "Postil Review",
+        },
+        workflow_run: {
+          id: 658,
+          name: "Postil Review",
+          conclusion: "failure",
+          html_url: "https://github.com/acme/widget/actions/runs/658",
+          head_sha: "abc123def456",
+          pull_requests: [{ number: 68 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).not.toHaveBeenCalled();
+    expect(dbMock.updateCalls).toEqual([]);
+    expect(
+      mockRequest.mock.calls.some(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      ),
+    ).toBe(false);
   });
 
   it("retries auto-merge when the CI workflow finishes successfully after approval", async () => {
