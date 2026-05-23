@@ -345,7 +345,7 @@ async function completeReviewWorkflowFailureCheckRun(
   db: ReturnType<typeof getDb>,
   octokit: MinimalOctokit,
   repoFullName: string,
-  pullNumber: number,
+  pullNumber: number | null,
   candidateHeadShas: Array<string | null | undefined>,
   conclusion: string | null | undefined,
 ): Promise<void> {
@@ -368,7 +368,16 @@ async function completeReviewWorkflowFailureCheckRun(
     return;
   }
 
-  if (!review?.checkRunId) return;
+  if (!review?.checkRunId) {
+    captureException(new Error("Review workflow failure did not match a review check-run"), {
+      properties: {
+        op: "review_workflow_failure_check_run_unmatched",
+        repoFullName,
+        pullNumber,
+      },
+    });
+    return;
+  }
 
   const completedAt = new Date();
   try {
@@ -422,18 +431,19 @@ async function completeReviewWorkflowFailureCheckRun(
 async function findReviewCheckRunForWorkflowFailure(
   db: ReturnType<typeof getDb>,
   repoFullName: string,
-  pullNumber: number,
+  pullNumber: number | null,
   candidateHeadShas: Array<string | null | undefined>,
 ): Promise<ReviewCheckRun> {
   const uniqueHeadShas = [...new Set(candidateHeadShas.filter((sha): sha is string => Boolean(sha)))];
 
   for (const headSha of uniqueHeadShas) {
+    const where = [eq(schema.reviews.repoFullName, repoFullName), eq(schema.reviews.headSha, headSha)];
+    if (pullNumber !== null) {
+      where.push(eq(schema.reviews.pullNumber, pullNumber));
+    }
+
     const review = await db.query.reviews.findFirst({
-      where: and(
-        eq(schema.reviews.repoFullName, repoFullName),
-        eq(schema.reviews.pullNumber, pullNumber),
-        eq(schema.reviews.headSha, headSha),
-      ),
+      where: and(...where),
       orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
       columns: { id: true, checkRunId: true },
     });
@@ -469,8 +479,6 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   if (action !== "completed") return;
 
   const pullNumber = workflow_run.pull_requests?.[0]?.number;
-  if (!pullNumber) return;
-
   const repoFullName = repository.full_name;
   const [owner, repo] = repoFullName.split("/");
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
@@ -481,7 +489,7 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
         getDb(),
         octokit,
         repoFullName,
-        pullNumber,
+        pullNumber ?? null,
         [
           workflow_run.head_sha ?? null,
           workflow_run.pull_requests?.find((pullRequest) => pullRequest.number === pullNumber)?.head?.sha ??
@@ -492,6 +500,8 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
     }
     return;
   }
+
+  if (!pullNumber) return;
 
   if (workflow_run.conclusion === "success") {
     if (workflow_run.name !== "CI" || !workflow_run.head_sha) return;
