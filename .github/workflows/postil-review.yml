@@ -90,14 +90,22 @@ jobs:
           export-type: env
 
       - name: Set up Bun
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
         with:
           bun-version: latest
 
       - name: Install dependencies
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Skip Bun setup in act
+        if: env.ACT == 'true'
+        run: echo "Bun setup is skipped in act; bootstrap checks completed."
+
+      - name: Skip dependency install in act
+        if: env.ACT == 'true'
+        run: echo "Dependency install is skipped in act; bootstrap checks completed."
 
       - name: Run postil review
         if: github.event_name == 'pull_request_target' && env.ACT != 'true'
