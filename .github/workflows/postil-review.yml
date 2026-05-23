@@ -70,10 +70,14 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install Postil reviewer
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         run: |
           cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$REVIEWER_REV" --locked --force
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Skip reviewer install in act
+        if: env.ACT == 'true'
+        run: echo "Reviewer install is skipped in act; bootstrap checks completed."
 
       - name: Fetch secrets from Infisical
         if: github.event_name == 'pull_request_target' && env.ACT != 'true'
