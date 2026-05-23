@@ -615,6 +615,51 @@ describe("github webhook", () => {
     });
   });
 
+  it("completes the review check when the review workflow payload has no pull requests", async () => {
+    dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 326 } as never);
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 326 } };
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-no-pulls", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
+        workflow_run: {
+          id: 660,
+          name: "Postil Review",
+          conclusion: "failure",
+          html_url: "https://github.com/acme/widget/actions/runs/660",
+          head_sha: "abc123def456",
+          pull_requests: [],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(1);
+    expect(
+      mockRequest.mock.calls.find(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      )?.[1],
+    ).toMatchObject({
+      check_run_id: 326,
+      conclusion: "failure",
+    });
+    expect(dbMock.updateCalls).toContainEqual({
+      status: "failed",
+      errorMessage: "Review workflow failed before review completion.",
+      completedAt: expect.any(Date),
+    });
+  });
+
   it("completes the review check when the workflow-run SHA is the base SHA", async () => {
     dbMock.findFirst
       .mockResolvedValueOnce(undefined)
