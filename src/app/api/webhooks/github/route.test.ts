@@ -570,6 +570,76 @@ describe("github webhook", () => {
     });
   });
 
+  it("completes the review check when the workflow-run SHA is the base SHA", async () => {
+    dbMock.findFirst
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ checkRunId: 323 } as never);
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 323 } };
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-base-sha", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow_run: {
+          id: 656,
+          name: "Postil Review",
+          conclusion: "failure",
+          html_url: "https://github.com/acme/widget/actions/runs/656",
+          head_sha: "base123",
+          pull_requests: [{ number: 68, head: { sha: "abc123def456" } }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(2);
+    expect(
+      mockRequest.mock.calls.find(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      )?.[1],
+    ).toMatchObject({
+      check_run_id: 323,
+      conclusion: "failure",
+    });
+  });
+
+  it("does not complete a newer review check for a stale review workflow failure", async () => {
+    dbMock.findFirst.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+    mockRequest.mockImplementation(async (route: string) => {
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-stale", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow_run: {
+          id: 657,
+          name: "Postil Review",
+          conclusion: "failure",
+          html_url: "https://github.com/acme/widget/actions/runs/657",
+          head_sha: "base123",
+          pull_requests: [{ number: 68, head: { sha: "oldabc123" } }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(2);
+    expect(
+      mockRequest.mock.calls.some(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      ),
+    ).toBe(false);
+  });
+
   it("completes the review check when the review workflow is cancelled before setup finishes", async () => {
     dbMock.findFirst.mockResolvedValueOnce({ checkRunId: 322 } as never);
     mockRequest.mockImplementation(async (route: string) => {
