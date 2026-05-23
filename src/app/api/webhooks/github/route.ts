@@ -332,6 +332,44 @@ async function recordReviewDispatchFailure(
   }
 }
 
+async function completeReviewWorkflowFailureCheckRun(
+  db: ReturnType<typeof getDb>,
+  octokit: MinimalOctokit,
+  repoFullName: string,
+  pullNumber: number,
+  headSha: string | null | undefined,
+): Promise<void> {
+  const where = [
+    eq(schema.reviews.repoFullName, repoFullName),
+    eq(schema.reviews.pullNumber, pullNumber),
+  ];
+  if (headSha) {
+    where.push(eq(schema.reviews.headSha, headSha));
+  }
+
+  const review = await db.query.reviews.findFirst({
+    where: and(...where),
+    orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
+    columns: { checkRunId: true },
+  });
+  if (!review?.checkRunId) return;
+
+  const [owner, repo] = repoFullName.split("/");
+  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+    owner,
+    repo,
+    check_run_id: review.checkRunId,
+    status: "completed",
+    conclusion: "failure",
+    completed_at: new Date().toISOString(),
+    output: {
+      title: "Postil Review",
+      summary: "Review failed to complete.",
+      text: "Review failed to complete.",
+    },
+  });
+}
+
 async function deleteWebhookDelivery(
   db: ReturnType<typeof getDb>,
   deliveryId: string,
@@ -363,6 +401,30 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const repoFullName = repository.full_name;
   const [owner, repo] = repoFullName.split("/");
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
+
+  if (workflow_run.name === "Postil Review") {
+    if (workflow_run.conclusion === "failure") {
+      try {
+        await completeReviewWorkflowFailureCheckRun(
+          getDb(),
+          octokit,
+          repoFullName,
+          pullNumber,
+          workflow_run.head_sha ?? null,
+        );
+      } catch (err) {
+        captureException(err, {
+          properties: {
+            op: "complete_review_workflow_failure_check_run",
+            repoFullName,
+            pullNumber,
+            runId: workflow_run.id,
+          },
+        });
+      }
+    }
+    return;
+  }
 
   if (workflow_run.conclusion === "success") {
     if (workflow_run.name !== "CI" || !workflow_run.head_sha) return;
