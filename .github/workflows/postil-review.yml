@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'merge_group' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false)
     timeout-minutes: 15
+    env:
+      REVIEWER_REV: f25e97bbe473d2df957453bf5439904839a2959c
     steps:
       - name: Skip review in merge queue (already ran on PR)
         if: github.event_name == 'merge_group'
@@ -30,13 +32,19 @@ jobs:
         if: github.event_name == 'pull_request_target'
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git init .
-          git remote add origin "https://github.com/${{ github.repository }}.git"
-          git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+          if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git init .
+          fi
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://github.com/${{ github.repository }}.git"
+          else
+            git remote add origin "https://github.com/${{ github.repository }}.git"
+          fi
+          git fetch --depth=1 origin "${{ github.event.pull_request.base.sha }}"
           git checkout --force FETCH_HEAD
 
       - name: Verify reviewer commit
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -44,12 +52,16 @@ jobs:
             curl -fsSL \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/postil-dev/postil-reviewer/commits/f25e97bbe473d2df957453bf5439904839a2959c
+              https://api.github.com/repos/postil-dev/postil-reviewer/commits/$REVIEWER_REV
           )"
           if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
             echo "::error::reviewer commit is not verified"
             exit 1
           fi
+
+      - name: Skip reviewer verification in act
+        if: env.ACT == 'true'
+        run: echo "Reviewer commit verification is skipped in act; bootstrap checks completed."
 
       - name: Install Rust for act
         if: env.ACT == 'true'
@@ -60,11 +72,11 @@ jobs:
       - name: Install Postil reviewer
         if: github.event_name == 'pull_request_target'
         run: |
-          cargo install --git https://github.com/postil-dev/postil-reviewer --rev f25e97bbe473d2df957453bf5439904839a2959c --locked --force
+          cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$REVIEWER_REV" --locked --force
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Fetch secrets from Infisical
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
         with:
           method: oidc
@@ -86,7 +98,11 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Run postil review
-        if: github.event_name == 'pull_request_target'
-        run: bun run postil review
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
+        run: bun run postil
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip postil review in act
+        if: env.ACT == 'true'
+        run: echo "Postil review is skipped in act; bootstrap checks completed."
