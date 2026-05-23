@@ -403,7 +403,7 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
 
   if (workflow_run.name === "Postil Review") {
-    if (workflow_run.conclusion === "failure") {
+    if (workflow_run.conclusion !== "success") {
       try {
         await completeReviewWorkflowFailureCheckRun(
           getDb(),
