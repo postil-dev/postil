@@ -84,7 +84,7 @@ type WorkflowRunPayload = {
     head_branch?: string | null;
     head_sha?: string | null;
     actor?: { login?: string | null } | null;
-    pull_requests?: Array<{ number: number }>;
+    pull_requests?: Array<{ number: number; head?: { sha?: string | null } | null }>;
   };
   repository: { full_name: string };
   installation?: { id: number };
@@ -105,6 +105,8 @@ type WorkflowJob = {
     status?: string | null;
   }>;
 };
+
+type ReviewCheckRun = { checkRunId: number | null } | null | undefined;
 
 async function handlePullRequest(
   db: ReturnType<typeof getDb>,
@@ -332,6 +334,61 @@ async function recordReviewDispatchFailure(
   }
 }
 
+async function completeReviewWorkflowFailureCheckRun(
+  db: ReturnType<typeof getDb>,
+  octokit: MinimalOctokit,
+  repoFullName: string,
+  pullNumber: number,
+  candidateHeadShas: Array<string | null | undefined>,
+): Promise<void> {
+  const review = await findReviewCheckRunForWorkflowFailure(
+    db,
+    repoFullName,
+    pullNumber,
+    candidateHeadShas,
+  );
+  if (!review?.checkRunId) return;
+
+  const [owner, repo] = repoFullName.split("/");
+  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+    owner,
+    repo,
+    check_run_id: review.checkRunId,
+    status: "completed",
+    conclusion: "failure",
+    completed_at: new Date().toISOString(),
+    output: {
+      title: "Postil Review",
+      summary: "Review failed to complete.",
+      text: "Review failed to complete.",
+    },
+  });
+}
+
+async function findReviewCheckRunForWorkflowFailure(
+  db: ReturnType<typeof getDb>,
+  repoFullName: string,
+  pullNumber: number,
+  candidateHeadShas: Array<string | null | undefined>,
+): Promise<ReviewCheckRun> {
+  const uniqueHeadShas = [...new Set(candidateHeadShas.filter((sha): sha is string => Boolean(sha)))];
+
+  for (const headSha of uniqueHeadShas) {
+    const review = await db.query.reviews.findFirst({
+      where: and(
+        eq(schema.reviews.repoFullName, repoFullName),
+        eq(schema.reviews.pullNumber, pullNumber),
+        eq(schema.reviews.headSha, headSha),
+      ),
+      orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
+      columns: { checkRunId: true },
+    });
+    if (review?.checkRunId) return review;
+  }
+
+  return null;
+}
+
 async function deleteWebhookDelivery(
   db: ReturnType<typeof getDb>,
   deliveryId: string,
@@ -372,7 +429,11 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
           octokit,
           repoFullName,
           pullNumber,
-          workflow_run.head_sha ?? null,
+          [
+            workflow_run.head_sha ?? null,
+            workflow_run.pull_requests?.find((pullRequest) => pullRequest.number === pullNumber)?.head?.sha ??
+              null,
+          ],
         );
       } catch (err) {
         captureException(err, {
