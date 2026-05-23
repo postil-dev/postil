@@ -93,6 +93,6 @@ jobs:
 
       - name: Run postil review
         if: github.event_name == 'pull_request_target' && env.ACT != 'true'
-        run: bun run postil
+        run: postil review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
