@@ -524,8 +524,17 @@ describe("github webhook", () => {
   });
 
   it("completes the review check when the review workflow fails before setup finishes", async () => {
-    dbMock.findFirst.mockResolvedValueOnce({ checkRunId: 321 } as never);
+    dbMock.findFirst
+      .mockResolvedValueOnce(undefined as never)
+      .mockResolvedValueOnce({ checkRunId: 321 } as never);
     mockRequest.mockImplementation(async (route: string) => {
+      if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}") {
+        return {
+          data: {
+            head: { sha: "abc123def456" },
+          },
+        };
+      }
       if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
         return { data: { id: 321 } };
       }
@@ -542,14 +551,19 @@ describe("github webhook", () => {
           name: "Postil Review",
           conclusion: "failure",
           html_url: "https://github.com/acme/widget/actions/runs/654",
-          head_sha: "abc123def456",
+          head_sha: "base-default-branch-sha",
           pull_requests: [{ number: 68 }],
         },
       }),
     );
 
     expect(res.status).toBe(200);
-    expect(dbMock.findFirst).toHaveBeenCalled();
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(2);
+    expect(
+      mockRequest.mock.calls.some(
+        ([route]) => route === "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      ),
+    ).toBe(true);
     expect(
       mockRequest.mock.calls.some(
         ([route]) => route === "POST /repos/{owner}/{repo}/issues",

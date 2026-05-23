@@ -339,34 +339,79 @@ async function completeReviewWorkflowFailureCheckRun(
   pullNumber: number,
   headSha: string | null | undefined,
 ): Promise<void> {
-  const where = [
-    eq(schema.reviews.repoFullName, repoFullName),
-    eq(schema.reviews.pullNumber, pullNumber),
-  ];
-  if (headSha) {
-    where.push(eq(schema.reviews.headSha, headSha));
+  const [owner, repo] = repoFullName.split("/");
+  const review = await findReviewForFailure(
+    db,
+    octokit,
+    repoFullName,
+    pullNumber,
+    headSha,
+  );
+  if (review?.checkRunId) {
+    await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+      owner,
+      repo,
+      check_run_id: review.checkRunId,
+      status: "completed",
+      conclusion: "failure",
+      completed_at: new Date().toISOString(),
+      output: {
+        title: "Postil Review",
+        summary: "Review failed to complete.",
+        text: "Review failed to complete.",
+      },
+    });
   }
+}
 
-  const review = await db.query.reviews.findFirst({
-    where: and(...where),
-    orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
-    columns: { checkRunId: true },
-  });
-  if (!review?.checkRunId) return;
+async function findReviewForFailure(
+  db: ReturnType<typeof getDb>,
+  octokit: MinimalOctokit,
+  repoFullName: string,
+  pullNumber: number,
+  headSha: string | null | undefined,
+): Promise<{ checkRunId?: number | null } | null> {
+  const exact = await findReviewByHeadSha(db, repoFullName, pullNumber, headSha);
+  if (exact?.checkRunId) return exact;
 
   const [owner, repo] = repoFullName.split("/");
-  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+  const pullHeadSha = await resolvePullRequestHeadSha(octokit, owner, repo, pullNumber);
+  if (!pullHeadSha || pullHeadSha === headSha) return exact;
+
+  const fallback = await findReviewByHeadSha(db, repoFullName, pullNumber, pullHeadSha);
+  return fallback?.checkRunId ? fallback : exact;
+}
+
+async function resolvePullRequestHeadSha(
+  octokit: MinimalOctokit,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<string | null> {
+  const pull = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
     owner,
     repo,
-    check_run_id: review.checkRunId,
-    status: "completed",
-    conclusion: "failure",
-    completed_at: new Date().toISOString(),
-    output: {
-      title: "Postil Review",
-      summary: "Review failed to complete.",
-      text: "Review failed to complete.",
-    },
+    pull_number: pullNumber,
+  });
+  const headSha = (pull.data as { head?: { sha?: unknown } }).head?.sha;
+  return typeof headSha === "string" && headSha.length > 0 ? headSha : null;
+}
+
+async function findReviewByHeadSha(
+  db: ReturnType<typeof getDb>,
+  repoFullName: string,
+  pullNumber: number,
+  headSha: string | null | undefined,
+): Promise<{ checkRunId?: number | null } | null> {
+  if (!headSha) return null;
+  return db.query.reviews.findFirst({
+    where: and(
+      eq(schema.reviews.repoFullName, repoFullName),
+      eq(schema.reviews.pullNumber, pullNumber),
+      eq(schema.reviews.headSha, headSha),
+    ),
+    orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
+    columns: { checkRunId: true },
   });
 }
 
