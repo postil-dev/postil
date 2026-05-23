@@ -29,7 +29,7 @@ jobs:
         run: echo "Postil Review was enforced at PR time; merge-queue re-run is not required."
 
       - name: Checkout base ref (never PR head)
-        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
+        if: github.event_name == 'pull_request_target'
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -43,30 +43,64 @@ jobs:
           git fetch --depth=1 origin "${{ github.event.pull_request.base.sha }}"
           git checkout --force FETCH_HEAD
 
-      - name: Skip checkout in act
-        if: env.ACT == 'true'
-        run: echo "Checkout is skipped in act; bootstrap checks completed."
-
       - name: Verify reviewer commit
-        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
+        if: github.event_name == 'pull_request_target'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRUSTED_SIGNER: morgaesis
         run: |
+          auth_args=()
+          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            auth_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+          fi
           verification="$(
             curl -fsSL \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "${auth_args[@]}" \
               -H "Accept: application/vnd.github+json" \
               https://api.github.com/repos/postil-dev/postil-reviewer/commits/$REVIEWER_REV
           )"
+          if [[ "$(jq -r '.sha' <<<"$verification")" != "$REVIEWER_REV" ]]; then
+            echo "::error::reviewer commit SHA does not match REVIEWER_REV"
+            exit 1
+          fi
           if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
             echo "::error::reviewer commit is not verified"
             exit 1
           fi
+          if [[ "$(jq -r '.commit.verification.reason' <<<"$verification")" != "valid" ]]; then
+            echo "::error::reviewer commit verification reason is not valid"
+            exit 1
+          fi
+          if [[ "$(jq -r '.author.login' <<<"$verification")" != "$TRUSTED_SIGNER" ]]; then
+            echo "::error::reviewer author login does not match trusted signer"
+            exit 1
+          fi
+          if [[ "$(jq -r '.committer.login' <<<"$verification")" != "$TRUSTED_SIGNER" ]]; then
+            echo "::error::reviewer committer login does not match trusted signer"
+            exit 1
+          fi
 
-      - name: Install Postil reviewer
-        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
+      - name: Set up Rust toolchain
+        if: github.event_name == 'pull_request_target'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install Postil reviewer from source
+        if: github.event_name == 'pull_request_target'
         run: |
-          cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$REVIEWER_REV" --locked --force
+          reviewer_dir="$RUNNER_TEMP/postil-reviewer"
+          rm -rf "$reviewer_dir"
+          mkdir -p "$reviewer_dir"
+          git -C "$reviewer_dir" init
+          git -C "$reviewer_dir" remote add origin https://github.com/postil-dev/postil-reviewer
+          git -C "$reviewer_dir" fetch --depth=1 origin "$REVIEWER_REV"
+          git -C "$reviewer_dir" checkout --force FETCH_HEAD
+          if [[ "$(git -C "$reviewer_dir" rev-parse HEAD)" != "$REVIEWER_REV" ]]; then
+            echo "::error::checked-out reviewer revision does not match REVIEWER_REV"
+            exit 1
+          fi
+          cargo install --path "$reviewer_dir" --locked --force
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Fetch secrets from Infisical
@@ -82,17 +116,17 @@ jobs:
           export-type: env
 
       - name: Set up Bun
-        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
+        if: github.event_name == 'pull_request_target'
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
         with:
           bun-version: latest
 
       - name: Install dependencies
-        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
+        if: github.event_name == 'pull_request_target'
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Run postil review
-        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
+        if: github.event_name == 'pull_request_target'
         run: postil review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
