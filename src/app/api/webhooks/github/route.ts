@@ -404,15 +404,17 @@ async function findReviewByHeadSha(
   headSha: string | null | undefined,
 ): Promise<{ checkRunId?: number | null } | null> {
   if (!headSha) return null;
-  return db.query.reviews.findFirst({
-    where: and(
-      eq(schema.reviews.repoFullName, repoFullName),
-      eq(schema.reviews.pullNumber, pullNumber),
-      eq(schema.reviews.headSha, headSha),
-    ),
-    orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
-    columns: { checkRunId: true },
-  });
+  return (
+    (await db.query.reviews.findFirst({
+      where: and(
+        eq(schema.reviews.repoFullName, repoFullName),
+        eq(schema.reviews.pullNumber, pullNumber),
+        eq(schema.reviews.headSha, headSha),
+      ),
+      orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
+      columns: { checkRunId: true },
+    })) ?? null
+  );
 }
 
 async function deleteWebhookDelivery(
