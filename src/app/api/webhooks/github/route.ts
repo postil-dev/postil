@@ -364,6 +364,30 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const [owner, repo] = repoFullName.split("/");
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
 
+  if (workflow_run.name === "Postil Review") {
+    if (workflow_run.conclusion !== "success") {
+      try {
+        await completeReviewWorkflowFailureCheckRun(
+          getDb(),
+          octokit,
+          repoFullName,
+          pullNumber,
+          workflow_run.head_sha ?? null,
+        );
+      } catch (err) {
+        captureException(err, {
+          properties: {
+            op: "complete_review_workflow_failure_check_run",
+            repoFullName,
+            pullNumber,
+            runId: workflow_run.id,
+          },
+        });
+      }
+    }
+    return;
+  }
+
   if (workflow_run.conclusion === "success") {
     if (workflow_run.name !== "CI" || !workflow_run.head_sha) return;
 
