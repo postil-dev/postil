@@ -10,8 +10,7 @@ sets `core.hooksPath` to the configured local directory when it exists.
 
 | Hook | Purpose |
 |------|---------|
-| `pre-push` | Blocks pushes with bad author, unsigned commits, secrets, or forbidden tokens |
-| `pre-push-leakage` | Blocks publish-time leakage checks before pushing reviewer changes |
+| `pre-push` | Blocks pushes with bad author, unsigned commits, secrets, forbidden tokens, and publish-time leakage checks |
 | `commit-msg` | Validates Conventional Commits format and blocks forbidden tokens |
 | `pre-commit` | Runs secret scanning on staged changes |
 | `forbidden-tokens.env` | Regex for forbidden tokens, sourced locally and never committed |

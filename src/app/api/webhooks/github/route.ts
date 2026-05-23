@@ -340,61 +340,31 @@ async function completeReviewWorkflowFailureCheckRun(
   headSha: string | null | undefined,
 ): Promise<void> {
   const [owner, repo] = repoFullName.split("/");
-  const review = await findReviewForFailure(
-    db,
-    octokit,
-    repoFullName,
-    pullNumber,
-    headSha,
-  );
-  if (review?.checkRunId) {
-    await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
-      owner,
-      repo,
-      check_run_id: review.checkRunId,
-      status: "completed",
-      conclusion: "failure",
-      completed_at: new Date().toISOString(),
-      output: {
-        title: "Postil Review",
-        summary: "Review failed to complete.",
-        text: "Review failed to complete.",
-      },
-    });
-  }
-}
+  const review = await findReviewByHeadSha(db, repoFullName, pullNumber, headSha);
+  if (!review?.checkRunId || !review.id) return;
 
-async function findReviewForFailure(
-  db: ReturnType<typeof getDb>,
-  octokit: MinimalOctokit,
-  repoFullName: string,
-  pullNumber: number,
-  headSha: string | null | undefined,
-): Promise<{ checkRunId?: number | null } | null> {
-  const exact = await findReviewByHeadSha(db, repoFullName, pullNumber, headSha);
-  if (exact?.checkRunId) return exact;
-
-  const [owner, repo] = repoFullName.split("/");
-  const pullHeadSha = await resolvePullRequestHeadSha(octokit, owner, repo, pullNumber);
-  if (!pullHeadSha || pullHeadSha === headSha) return exact;
-
-  const fallback = await findReviewByHeadSha(db, repoFullName, pullNumber, pullHeadSha);
-  return fallback?.checkRunId ? fallback : exact;
-}
-
-async function resolvePullRequestHeadSha(
-  octokit: MinimalOctokit,
-  owner: string,
-  repo: string,
-  pullNumber: number,
-): Promise<string | null> {
-  const pull = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
     repo,
-    pull_number: pullNumber,
+    check_run_id: review.checkRunId,
+    status: "completed",
+    conclusion: "failure",
+    completed_at: new Date().toISOString(),
+    output: {
+      title: "Postil Review",
+      summary: "Review failed to complete.",
+      text: "Review failed to complete.",
+    },
   });
-  const headSha = (pull.data as { head?: { sha?: unknown } }).head?.sha;
-  return typeof headSha === "string" && headSha.length > 0 ? headSha : null;
+
+  await recordReviewDispatchFailure(
+    db,
+    review.id,
+    new Error("Review failed to complete."),
+    repoFullName,
+    pullNumber,
+    headSha ?? "",
+  );
 }
 
 async function findReviewByHeadSha(
@@ -402,7 +372,7 @@ async function findReviewByHeadSha(
   repoFullName: string,
   pullNumber: number,
   headSha: string | null | undefined,
-): Promise<{ checkRunId?: number | null } | null> {
+): Promise<{ id: string; checkRunId?: number | null } | null> {
   if (!headSha) return null;
   return (
     (await db.query.reviews.findFirst({
@@ -412,7 +382,7 @@ async function findReviewByHeadSha(
         eq(schema.reviews.headSha, headSha),
       ),
       orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
-      columns: { checkRunId: true },
+      columns: { id: true, checkRunId: true },
     })) ?? null
   );
 }
@@ -450,7 +420,7 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
 
   if (workflow_run.name === "Postil Review") {
-    if (workflow_run.conclusion !== "success") {
+    if (workflow_run.conclusion === "failure") {
       try {
         await completeReviewWorkflowFailureCheckRun(
           getDb(),
