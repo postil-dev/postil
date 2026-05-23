@@ -524,9 +524,14 @@ describe("github webhook", () => {
     expect(issueCall?.[1].title).toContain("Docker build");
   });
 
-  it("completes the review check when the review workflow fails before setup finishes", async () => {
-    dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 321 } as never);
+  it("completes the review check when the review workflow only knows the pull number", async () => {
+    dbMock.findFirst.mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "review-1", checkRunId: 321 } as never);
     mockRequest.mockImplementation(async (route: string) => {
+      if (route === "GET /repos/{owner}/{repo}/pulls") {
+        return {
+          data: [{ number: 68, head: { sha: "abc123def456" } }],
+        };
+      }
       if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
         return { data: { id: 321 } };
       }
@@ -546,14 +551,23 @@ describe("github webhook", () => {
           name: "Postil Review",
           conclusion: "failure",
           html_url: "https://github.com/acme/widget/actions/runs/654",
-          head_sha: "abc123def456",
           pull_requests: [{ number: 68 }],
+          head_branch: "feat/review-workflow",
+          head_repository: { full_name: "contributor/widget" },
+          head_sha: "base123",
         },
       }),
     );
 
     expect(res.status).toBe(200);
-    expect(dbMock.findFirst).toHaveBeenCalled();
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(2);
+    expect(
+      mockRequest.mock.calls.find(([route]) => route === "GET /repos/{owner}/{repo}/pulls")?.[1],
+    ).toMatchObject({
+      head: "contributor:feat/review-workflow",
+      state: "open",
+      per_page: 1,
+    });
     expect(
       mockRequest.mock.calls.some(
         ([route]) => route === "POST /repos/{owner}/{repo}/issues",

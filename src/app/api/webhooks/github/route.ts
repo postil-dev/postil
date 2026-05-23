@@ -462,12 +462,13 @@ async function resolveReviewWorkflowRunContext(
   workflowRun: WorkflowRunPayload["workflow_run"],
 ): Promise<ReviewWorkflowRunContext> {
   const payloadPull = workflowRun.pull_requests?.[0];
-  if (payloadPull) {
-    return { pullNumber: payloadPull.number, headSha: payloadPull.head?.sha ?? null };
+  if (payloadPull?.head?.sha) {
+    return { pullNumber: payloadPull.number, headSha: payloadPull.head.sha };
   }
 
+  const payloadPullNumber = payloadPull?.number ?? null;
   if (!workflowRun.head_branch) {
-    return { pullNumber: null, headSha: null };
+    return { pullNumber: payloadPullNumber, headSha: null };
   }
 
   const headOwner =
@@ -488,7 +489,7 @@ async function resolveReviewWorkflowRunContext(
     });
     const pull = Array.isArray(res.data) ? (res.data[0] as { number?: number; head?: { sha?: string } }) : null;
     if (typeof pull?.number === "number") {
-      return { pullNumber: pull.number, headSha: pull.head?.sha ?? null };
+      return { pullNumber: payloadPullNumber ?? pull.number, headSha: pull.head?.sha ?? null };
     }
   } catch (err) {
     captureException(err, {
@@ -501,7 +502,7 @@ async function resolveReviewWorkflowRunContext(
     });
   }
 
-  return { pullNumber: null, headSha: null };
+  return { pullNumber: payloadPullNumber, headSha: null };
 }
 
 async function deleteWebhookDelivery(
