@@ -1,34 +1,44 @@
-# 📝 Postil — AI pull request reviews
+# Postil
 
-Reviews that ship with the PR. Managed at [postil.dev](https://postil.dev), or self-host under Apache-2.0.
+Postil is a low-noise review gate for agent-speed development.
+
+Let agents write code. Do not let unchecked changes merge.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![GitHub release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/postil-dev/postil/releases)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-ready-blue?logo=githubactions)](https://github.com/postil-dev/postil/blob/main/action.yml)
 
-Postil reviews every pull request in place — one severity-ranked summary with inline suggestions, right inside GitHub. No dashboards, no context switching, no noise. Install the GitHub App and get a review on every PR within seconds. Or self-host the action under Apache-2.0 and wire your own model provider.
+This repository contains the Postil backend, website, GitHub App plumbing, and GitHub Action wrapper. The review engine itself lives in the Rust CLI at [postil-dev/postil-reviewer](https://github.com/postil-dev/postil-reviewer).
 
-[Install on GitHub →](https://postil.dev)
+Postil reviews GitHub pull request diffs, emits merge-relevant findings, and stays out of the way when it has nothing useful to add. It is designed for teams using humans, AI coding tools, and autonomous agents together, where code can be produced faster than traditional review can safely absorb.
 
-## 30-second demo
+## Product doctrine
 
-Open any pull request in a repo that has Postil installed. You will see a single review comment with a severity-ranked summary and inline suggestions — no extra tabs, no login walls.
+- Review by default, trust by evidence.
+- Silence is a feature.
+- Comment only when the comment can affect merge.
+- Escalate consequential decisions to accountable humans.
+- Turn repeated review feedback into durable guardrails.
 
-## How it works
+## Run the CLI
 
-- Install the GitHub App or wire the action into your repo.
-- Every PR gets one summary review with severity-ranked findings.
-- Open the PR and the review is inline — no separate dashboard.
+Install the Rust reviewer:
 
-## Get started
+```bash
+cargo install --git https://github.com/postil-dev/postil-reviewer --locked --force
+```
 
-### Managed (recommended)
+Review a pull request:
 
-Go to [postil.dev](https://postil.dev) and click **Install** on the GitHub App page. Choose the repositories you want reviewed and you are done. Pricing is at [postil.dev/#pricing](https://postil.dev/#pricing).
+```bash
+postil review --repo owner/repo --pr 123 --sha HEAD_SHA
+```
 
-### Self-host
+The CLI reads `GITHUB_TOKEN` and `OPENROUTER_API_KEY` by default. Set `REVIEW_MODEL` or `REVIEW_MODEL_CASCADE` to choose the OpenRouter model path. Repository policy can live in `.postil.yaml`, `.coderabbit.yaml`, or `.kodo.yaml`.
 
-Add this workflow to `.github/workflows/postil.yml`:
+## GitHub Action
+
+Use the action when you want Postil to run as a merge gate in CI:
 
 ```yaml
 name: Postil Review
@@ -40,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
+      issues: write
       checks: write
       contents: read
     steps:
@@ -49,29 +60,23 @@ jobs:
           model: moonshotai/kimi-k2.6
 ```
 
-Required secrets: add `OPENROUTER_API_KEY` in your repo's **Settings → Secrets and variables → Actions**.
-
 ## Configuration
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `api-key` | yes | — | OpenRouter API key |
+| `api-key` | yes |  | OpenRouter API key |
 | `model` | no | `moonshotai/kimi-k2.6` | OpenRouter model name |
 | `fail-on` | no | `error` | Exit 1 when a finding meets this severity (`info`, `warn`, `error`) |
 | `no-inline` | no | `false` | Skip inline PR review comments |
-| `config-path` | no | — | Path to optional configuration file |
-| `github-token` | no | `github.token` | Token for posting review comments |
+| `config-path` | no |  | Path to optional runtime configuration file |
+| `github-token` | no | `github.token` | Token for posting review comments and check runs |
 
-For a full list of options, see [`action.yml`](./action.yml).
+For per-repo review policy, see [docs/config.md](./docs/config.md).
 
 ## Privacy
 
-Postil reads the diff and changed file contents from each PR. It sends that context to the model provider you configure and returns the review. It does not store your code, use it for training, or retain it after the review completes.
+Postil reads the pull request diff and the repository configuration files needed for review. It sends that context to the model provider you configure and returns the review result. The website and hosted worker do not contain review logic.
 
 ## License
 
-Apache-2.0. Self-host all you want; you do not owe us anything.
-
-## Links
-
-→ [postil.dev](https://postil.dev) · → [Releases](https://github.com/postil-dev/postil/releases) · → [Changelog](https://github.com/postil-dev/postil/releases)
+Apache-2.0.

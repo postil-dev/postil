@@ -174,6 +174,52 @@ describe("reviewPullRequest", () => {
     );
   });
 
+  it("records a completed review when the CLI exits after writing blocking findings", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
+      const outputPath = args[args.indexOf("--output-json") + 1];
+      fsMock.files.set(
+        outputPath,
+        JSON.stringify({
+          summary: "blocking findings",
+          findings: [
+            {
+              path: "src/billing/checkout.ts",
+              line: 42,
+              severity: "error",
+              body: "Credit is applied twice.",
+            },
+          ],
+          usage: { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
+          modelUsed: "test/default",
+        }),
+      );
+      cb(Object.assign(new Error("exit code 1"), { code: 1 }), "", "");
+    });
+
+    await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 1 });
+
+    expect(githubMock.request).not.toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({ conclusion: "failure" }),
+    );
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "completed",
+        result: expect.objectContaining({
+          summary: "blocking findings",
+          findings: expect.arrayContaining([expect.objectContaining({ severity: "error" })]),
+        }),
+      }),
+    );
+    expect(posthogMock.track).toHaveBeenCalledWith(
+      "system",
+      "review_completed",
+      expect.objectContaining({
+        findings: 1,
+      }),
+    );
+  });
+
   it("sanitizes CLI setup failures before telemetry", async () => {
     githubMock.mintInstallationToken.mockRejectedValueOnce(
       new Error("installation auth failed: super-secret-token"),

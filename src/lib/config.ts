@@ -7,13 +7,42 @@
  *   3. .kodo.yaml / .kodo.yml
  *   4. Built-in defaults
  *
- * Only the fields Postil understands are honoured — unknown fields from other
+ * Only the fields Postil understands are honoured. Unknown fields from other
  * tools' schemas are ignored, not errored. This lets a repo keep a single
  * config that serves multiple reviewers.
  */
 
 import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
+
+const ReviewConfig = z
+  .preprocess(
+    (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const raw = value as Record<string, unknown>;
+      return {
+        enabled: raw.enabled,
+        on_clean: raw.onClean ?? raw.on_clean,
+        auto_merge: raw.autoMerge ?? raw.auto_merge,
+        required_checks: raw.requiredChecks ?? raw.required_checks,
+        auto_merge_timeout_ms: raw.autoMergeTimeoutMs ?? raw.auto_merge_timeout_ms,
+      };
+    },
+    z.object({
+      enabled: z.boolean().default(true),
+      on_clean: z.enum(["approve", "skip"]).default("approve"),
+      auto_merge: z.boolean().default(false),
+      required_checks: z.array(z.string()).default([]),
+      auto_merge_timeout_ms: z.number().int().positive().default(15_000),
+    }),
+  )
+  .default({
+    enabled: true,
+    on_clean: "approve",
+    auto_merge: false,
+    required_checks: [],
+    auto_merge_timeout_ms: 15_000,
+  });
 
 const PostilConfig = z.object({
   enabled: z.boolean().default(true),
@@ -26,21 +55,7 @@ const PostilConfig = z.object({
       focus: z.array(z.string()).default([]),
     })
     .default({ tone: "neutral", focus: [] }),
-  review: z
-    .object({
-      enabled: z.boolean().default(true),
-      on_clean: z.enum(["approve", "skip"]).default("approve"),
-      auto_merge: z.boolean().default(false),
-      required_checks: z.array(z.string()).default([]),
-      auto_merge_timeout_ms: z.number().int().positive().default(15_000),
-    })
-    .default({
-      enabled: true,
-      on_clean: "approve",
-      auto_merge: false,
-      required_checks: [],
-      auto_merge_timeout_ms: 15_000,
-    }),
+  review: ReviewConfig,
 });
 
 export type PostilConfig = z.infer<typeof PostilConfig>;

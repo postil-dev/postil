@@ -21,7 +21,7 @@ export function TrackedLink({
       className={className}
       onClick={() => {
         posthog.capture("cta_click", { cta, href });
-        if (cta === "Install on GitHub") {
+        if (cta === "Install CLI") {
           posthog.capture("install_redirect_started");
         }
       }}

@@ -10,7 +10,12 @@ import { env } from "@/lib/env";
 import { installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
-import { reviewPayload, type ReviewEnvelope, type ReviewPayload } from "./review-types";
+import {
+  reviewEnvelope,
+  reviewPayload,
+  type ReviewEnvelope,
+  type ReviewPayload,
+} from "./review-types";
 
 const execFile = promisify(execFileCb);
 
@@ -85,11 +90,19 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
     );
 
     const cli = env.POSTIL_CLI_PATH ?? "postil";
-    await execFile(cli, ["review", "--config", configPath, "--output-json", outputPath], {
-      cwd: process.cwd(),
-      maxBuffer: 1024 * 1024,
-    });
-    return JSON.parse(await readFile(outputPath, "utf8")) as ReviewEnvelope;
+    try {
+      await execFile(cli, ["review", "--config", configPath, "--output-json", outputPath], {
+        cwd: process.cwd(),
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (err) {
+      try {
+        return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
+      } catch {
+        throw err;
+      }
+    }
+    return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
   } finally {
     await rm(runDir, { recursive: true, force: true });
   }

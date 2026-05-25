@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "About",
-  description: "What Postil is, who builds it, and how to get in touch.",
+  description: "Postil's product doctrine and project contact details.",
   alternates: { canonical: "/about" },
 };
 
@@ -15,17 +15,20 @@ export default function AboutPage() {
 
       <section className="space-y-4 text-muted-foreground">
         <p>
-          Postil is an open-source AI pull-request reviewer. It spins up on every
-          new PR, reads the diff in context, and leaves inline comments on the
-          things that matter — correctness, security, and scope — while staying
-          out of the way on style nits. You can run it as a managed service at
-          postil.dev or self-host it under Apache-2.0.
+          Postil is a local-first, low-noise review gate for agent-speed development. It reviews
+          GitHub pull request diffs, looks for merge-relevant risk, and stays silent when it has
+          nothing useful to add.
         </p>
         <p>
-          The project was built to give serious teams a reviewer that ships with
-          the code: fast, opinionated where it counts, and quiet where it
-          doesn&apos;t. No training on your code, no retention, and no drive-by
-          style gripes.
+          The project exists for teams that want humans, AI coding tools, and autonomous agents to
+          move quickly without letting unchecked changes merge. Postil should catch
+          context-dependent regressions, security issues, intent mismatches, and risky changes
+          before they become production decisions.
+        </p>
+        <p>
+          Humans still own consequential decisions. When a change touches architecture, security
+          posture, data, billing, migrations, infrastructure, or major behavior, Postil should
+          request accountable human review instead of pretending to make that judgment itself.
         </p>
       </section>
 

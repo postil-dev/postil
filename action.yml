@@ -1,5 +1,5 @@
-name: 'Postil AI Review'
-description: 'AI pull-request reviewer for serious teams — open-source, zero-infra, fully auditable.'
+name: 'Postil Review Gate'
+description: 'Low-noise review gate for agent-speed development, merge-relevant risk, and unchecked changes.'
 author: 'Postil'
 branding:
   icon: 'git-pull-request'
