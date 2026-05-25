@@ -33,7 +33,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Fetch secrets from Infisical
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
         with:
           method: oidc
@@ -54,12 +54,42 @@ jobs:
         if: github.event_name == 'pull_request_target'
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Set up Rust toolchain
+        if: github.event_name == 'pull_request_target'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
       - name: Install Postil reviewer
         if: github.event_name == 'pull_request_target'
-        run: cargo install --git https://github.com/postil-dev/postil-reviewer --locked --force
+        run: |
+          if [[ -f reviewer-rev ]]; then
+            reviewer_rev="$(< reviewer-rev)"
+          else
+            reviewer_rev="f25e97bbe473d2df957453bf5439904839a2959c"
+          fi
+          auth_args=()
+          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            auth_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+          fi
+          verification="$(
+            curl -fsSL \
+              "${auth_args[@]}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/postil-dev/postil-reviewer/commits/$reviewer_rev
+          )"
+          if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
+            echo "::error::reviewer commit is not verified"
+            exit 1
+          fi
+          if [[ "$(jq -r '.commit.verification.reason' <<<"$verification")" != "valid" ]]; then
+            echo "::error::reviewer commit verification reason is not valid"
+            exit 1
+          fi
+          cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
 
       - name: Run postil review
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' && env.ACT != 'true'
         run: postil review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

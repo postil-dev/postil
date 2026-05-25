@@ -32,9 +32,19 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Set up Rust toolchain
+      uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      with:
+        toolchain: stable
     - name: Install Postil reviewer
       shell: bash
-      run: cargo install --git https://github.com/postil-dev/postil-reviewer --locked --force
+      run: |
+        if [[ -f "$GITHUB_ACTION_PATH/reviewer-rev" ]]; then
+          reviewer_rev="$(< "$GITHUB_ACTION_PATH/reviewer-rev")"
+        else
+          reviewer_rev="f25e97bbe473d2df957453bf5439904839a2959c"
+        fi
+        cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
     - name: Run Postil review
       shell: bash
       env:

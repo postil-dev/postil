@@ -2,7 +2,10 @@
 
 # --- postil review bot ---
 FROM docker.io/library/rust:1 AS postil-reviewer
-RUN cargo install --git https://github.com/postil-dev/postil-reviewer --locked
+WORKDIR /src
+COPY reviewer-rev ./
+RUN if [ -f reviewer-rev ]; then reviewer_rev="$(cat reviewer-rev)"; else reviewer_rev="f25e97bbe473d2df957453bf5439904839a2959c"; fi \
+ && cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked
 
 # --- deps ---
 FROM docker.io/oven/bun:1.3 AS deps
