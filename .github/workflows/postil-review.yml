@@ -54,6 +54,13 @@ jobs:
         if: github.event_name == 'pull_request_target'
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Install Postil reviewer
+        if: github.event_name == 'pull_request_target'
+        run: |
+          reviewer_rev="$(tr -d '[:space:]' < reviewer-rev)"
+          test -n "$reviewer_rev"
+          cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
+
       - name: Run postil review
         if: github.event_name == 'pull_request_target'
         run: bun run postil review

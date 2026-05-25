@@ -34,7 +34,10 @@ runs:
   steps:
     - name: Install Postil reviewer
       shell: bash
-      run: cargo install --git https://github.com/postil-dev/postil-reviewer --locked --force
+      run: |
+        reviewer_rev="$(tr -d '[:space:]' < "$GITHUB_ACTION_PATH/reviewer-rev")"
+        test -n "$reviewer_rev"
+        cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
     - name: Run Postil review
       shell: bash
       env:
