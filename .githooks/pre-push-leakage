@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Delegates to the local leakage hook installed by the development bootstrap.
+HOOKS_DIR="${POSTIL_HOOKS_DIR:-$HOME/.config/postil/hooks}"
+if [ -x "$HOOKS_DIR/pre-push-leakage" ]; then
+  exec "$HOOKS_DIR/pre-push-leakage" "$@"
+fi
+exit 0
