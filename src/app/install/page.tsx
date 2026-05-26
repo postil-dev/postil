@@ -3,6 +3,8 @@ import { env } from "@/lib/env";
 import { buttonVariants } from "@/components/ui/button";
 import type { Metadata } from "next";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Install",
   description: "Run the Postil CLI with your own model key.",

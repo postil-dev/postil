@@ -23,13 +23,13 @@ let triggerConfigured = false;
 
 function ensureTriggerConfigured(): void {
   if (triggerConfigured) return;
-  if (!env.TRIGGER_API_KEY) {
-    throw new Error("TRIGGER_API_KEY must be set to dispatch review tasks");
+  if (!env.triggerApiKey) {
+    throw new Error("Trigger API token must be set to dispatch review tasks");
   }
 
   auth.configure({
     baseURL: env.TRIGGER_API_URL,
-    accessToken: env.TRIGGER_API_KEY,
+    accessToken: env.triggerApiKey,
   });
   triggerConfigured = true;
 }
@@ -97,15 +97,24 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
       });
     } catch (err) {
       try {
-        return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
+        const result = reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
+        if (isExpectedFindingsExit(err) && result.findings.length > 0) {
+          // The CLI owns check-run completion through checkRunId before exiting for findings.
+          return result;
+        }
       } catch {
-        throw err;
+        // Preserve the original CLI failure when no valid review envelope exists.
       }
+      throw err;
     }
     return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
   } finally {
     await rm(runDir, { recursive: true, force: true });
   }
+}
+
+function isExpectedFindingsExit(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === 1;
 }
 
 export const reviewPullRequest = task({

@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'merge_group' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false)
     timeout-minutes: 15
+    env:
+      POSTIL_REVIEWER_REV: 51ad6adba09768c373e31eaafe66ba2dde8caf7f
     steps:
       - name: Skip review in merge queue (already ran on PR)
         if: github.event_name == 'merge_group'
@@ -54,10 +56,14 @@ jobs:
         if: github.event_name == 'pull_request_target'
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Set up Rust
+        if: github.event_name == 'pull_request_target'
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Postil reviewer
         if: github.event_name == 'pull_request_target'
         run: |
-          reviewer_rev="$(tr -d '[:space:]' < reviewer-rev)"
+          reviewer_rev="$POSTIL_REVIEWER_REV"
           test -n "$reviewer_rev"
           cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
 

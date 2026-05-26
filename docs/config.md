@@ -117,3 +117,17 @@ review:
   requiredChecks: []
   autoMergeTimeoutMs: 15000
 ```
+
+## Migration note: clean reviews are silent by default
+
+Postil now defaults `review.onClean` to `skip`. Clean reviews still complete the
+`postil/review` check, but they do not post an approving pull request review.
+This matches the product rule that silence is a feature.
+
+Repositories whose branch protection or auto-merge policy requires a Postil
+approval review should opt back in explicitly:
+
+```yaml
+review:
+  onClean: approve
+```

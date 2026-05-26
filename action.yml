@@ -12,7 +12,7 @@ inputs:
   model:
     description: 'OpenRouter model name'
     required: false
-    default: 'moonshotai/kimi-k2.6'
+    default: 'deepseek/deepseek-v4-pro'
   fail-on:
     description: 'Exit 1 when a finding meets this severity: info, warn, or error'
     required: false
@@ -32,12 +32,15 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
     - name: Install Postil reviewer
       shell: bash
       run: |
         reviewer_rev="$(tr -d '[:space:]' < "$GITHUB_ACTION_PATH/reviewer-rev")"
         test -n "$reviewer_rev"
         cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
     - name: Run Postil review
       shell: bash
       env:

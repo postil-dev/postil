@@ -40,6 +40,8 @@ const schema = z.object({
 
   // Trigger.dev
   TRIGGER_API_KEY: z.string().optional(),
+  TRIGGER_SECRET_KEY: z.string().optional(),
+  TRIGGER_API_TOKEN: z.string().optional(),
   TRIGGER_PROJECT_ID: z.string().optional(),
   TRIGGER_API_URL: z.string().url().default("https://api.trigger.dev"),
 
@@ -85,7 +87,10 @@ const parsed = schema.parse(process.env);
 export const env: Env & {
   /** Unified database URL: `NEON_CONNECTION_STRING` takes precedence. */
   databaseUrl: string | undefined;
+  /** Unified Trigger auth token: supports old and current deployed names. */
+  triggerApiKey: string | undefined;
 } = {
   ...parsed,
   databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
+  triggerApiKey: parsed.TRIGGER_API_KEY ?? parsed.TRIGGER_SECRET_KEY ?? parsed.TRIGGER_API_TOKEN,
 };
