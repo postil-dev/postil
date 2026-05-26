@@ -13,6 +13,26 @@ function octokitWithFile(path: string, body: string) {
 }
 
 describe("loadReviewConfig", () => {
+  it("defaults clean reviews to skip", async () => {
+    const octokit = {
+      request: vi.fn(async () => {
+        const err = new Error("not found") as Error & { status: number };
+        err.status = 404;
+        throw err;
+      }),
+    };
+
+    const { config, source } = await loadReviewConfig(
+      octokit as never,
+      "owner",
+      "repo",
+      "head-sha",
+    );
+
+    expect(source).toBe("built-in-defaults");
+    expect(config.review.on_clean).toBe("skip");
+  });
+
   it("normalizes CLI camelCase review settings for backend auto-merge", async () => {
     const octokit = octokitWithFile(
       ".postil.yaml",

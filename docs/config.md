@@ -112,7 +112,7 @@ reviewer:
   focus: []
 review:
   enabled: true
-  onClean: approve
+  onClean: skip
   autoMerge: false
   requiredChecks: []
   autoMergeTimeoutMs: 15000
