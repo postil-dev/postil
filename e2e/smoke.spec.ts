@@ -28,7 +28,6 @@ test("robots endpoint includes crawler exclusions", async ({ request }) => {
   expect(body).toContain("User-Agent: Google-Extended");
   expect(body).toContain("User-Agent: PerplexityBot");
   expect(body).toContain("User-Agent: CCBot");
-  expect(body).toContain("Disallow: /install");
   expect(body).toContain("Disallow: /login");
   expect(body).toContain("Sitemap: https://postil.dev/sitemap.xml");
 });
@@ -39,8 +38,8 @@ test("llms endpoint serves concise guidance", async ({ request }) => {
 
   const body = await response.text();
   expect(body).toContain("# Postil");
-  expect(body).toContain("AI pull-request reviewer for GitHub repositories");
+  expect(body).toContain("review gate for agent-speed development");
   expect(body).toContain("Home: https://postil.dev/");
-  expect(body).toContain("Pricing: https://postil.dev/#pricing");
-  expect(body).toContain("Repository: https://github.com/postil-dev/postil");
+  expect(body).toContain("Install: https://postil.dev/install");
+  expect(body).toContain("CLI: https://github.com/postil-dev/postil-reviewer");
 });

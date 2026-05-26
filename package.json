@@ -2,7 +2,7 @@
   "name": "postil",
   "version": "0.1.0",
   "private": true,
-  "description": "Open-source AI PR reviewer",
+  "description": "Local-first review gate for agent-speed development",
   "license": "Apache-2.0",
   "scripts": {
     "setup": "bun scripts/install-hooks.ts",
@@ -16,7 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "postil": "postil review",
+    "postil": "postil",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",

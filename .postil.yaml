@@ -1,0 +1,3 @@
+severityThreshold: error
+review:
+  onClean: approve

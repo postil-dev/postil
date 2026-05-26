@@ -10,7 +10,12 @@ import { env } from "@/lib/env";
 import { installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
-import { reviewPayload, type ReviewEnvelope, type ReviewPayload } from "./review-types";
+import {
+  reviewEnvelope,
+  reviewPayload,
+  type ReviewEnvelope,
+  type ReviewPayload,
+} from "./review-types";
 
 const execFile = promisify(execFileCb);
 
@@ -18,13 +23,13 @@ let triggerConfigured = false;
 
 function ensureTriggerConfigured(): void {
   if (triggerConfigured) return;
-  if (!env.TRIGGER_API_KEY) {
-    throw new Error("TRIGGER_API_KEY must be set to dispatch review tasks");
+  if (!env.triggerApiKey) {
+    throw new Error("Trigger API token must be set to dispatch review tasks");
   }
 
   auth.configure({
     baseURL: env.TRIGGER_API_URL,
-    accessToken: env.TRIGGER_API_KEY,
+    accessToken: env.triggerApiKey,
   });
   triggerConfigured = true;
 }
@@ -85,14 +90,31 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
     );
 
     const cli = env.POSTIL_CLI_PATH ?? "postil";
-    await execFile(cli, ["review", "--config", configPath, "--output-json", outputPath], {
-      cwd: process.cwd(),
-      maxBuffer: 1024 * 1024,
-    });
-    return JSON.parse(await readFile(outputPath, "utf8")) as ReviewEnvelope;
+    try {
+      await execFile(cli, ["review", "--config", configPath, "--output-json", outputPath], {
+        cwd: process.cwd(),
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (err) {
+      try {
+        const result = reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
+        if (isExpectedFindingsExit(err) && result.findings.length > 0) {
+          // The CLI owns check-run completion through checkRunId before exiting for findings.
+          return result;
+        }
+      } catch {
+        // Preserve the original CLI failure when no valid review envelope exists.
+      }
+      throw err;
+    }
+    return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
   } finally {
     await rm(runDir, { recursive: true, force: true });
   }
+}
+
+function isExpectedFindingsExit(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === 1;
 }
 
 export const reviewPullRequest = task({

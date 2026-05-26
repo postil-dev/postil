@@ -27,31 +27,29 @@ export const metadata: Metadata = {
     canonical: "/",
   },
   title: {
-    default: "Postil — AI pull request reviews",
+    default: "Postil - review gate for agent-speed development",
     template: "%s · Postil",
   },
   description:
-    "Postil reads every pull request, flags the things that matter, stays out of the way on the rest. Managed at postil.dev, or self-host under Apache-2.0.",
+    "Postil is a local-first, low-noise review gate that catches merge-relevant risk before unchecked code moves forward.",
   applicationName: "Postil",
   openGraph: {
     type: "website",
     siteName: "Postil",
-    title: "Postil — AI pull request reviews",
+    title: "Postil - review gate for agent-speed development",
     description:
-      "Reviews that ship with the PR. Managed SaaS or self-host under Apache-2.0.",
+      "Low-noise review for agent-speed development. Local-first, BYOK, and focused on merge-relevant risk.",
     url: "https://postil.dev",
   },
   twitter: {
     card: "summary",
     title: "Postil",
-    description: "AI pull request reviews that ship with the PR.",
+    description: "A low-noise review gate for unchecked code.",
   },
   robots: { index: true, follow: true },
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${body.variable} ${display.variable} ${mono.variable}`}>
       <body>

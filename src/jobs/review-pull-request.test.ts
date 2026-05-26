@@ -125,6 +125,9 @@ describe("reviewPullRequest", () => {
       expect.any(Object),
       expect.any(Function),
     );
+    const configPath = childProcessMock.execFile.mock.calls[0][1][2];
+    const cliConfig = JSON.parse(fsMock.files.get(configPath) ?? "{}");
+    expect(cliConfig.checkRunId).toBe(77);
     expect(posthogMock.track).toHaveBeenCalledWith(
       "system",
       "review_completed",
@@ -170,6 +173,109 @@ describe("reviewPullRequest", () => {
       "review_failed",
       expect.objectContaining({
         error: "Review failed to complete.",
+      }),
+    );
+  });
+
+  it("marks the review failed when the CLI exits 1 without findings", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
+      const outputPath = args[args.indexOf("--output-json") + 1];
+      fsMock.files.set(
+        outputPath,
+        JSON.stringify({
+          summary: "",
+          findings: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          modelUsed: "test/default",
+        }),
+      );
+      cb(Object.assign(new Error("exit code 1"), { code: 1 }), "", "");
+    });
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "Review failed to complete.",
+      }),
+    );
+  });
+
+  it("marks the review failed when the CLI exits with an unexpected code", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
+      const outputPath = args[args.indexOf("--output-json") + 1];
+      fsMock.files.set(
+        outputPath,
+        JSON.stringify({
+          summary: "blocking findings",
+          findings: [
+            {
+              path: "src/billing/checkout.ts",
+              line: 42,
+              severity: "error",
+              body: "Credit is applied twice.",
+            },
+          ],
+          usage: { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
+          modelUsed: "test/default",
+        }),
+      );
+      cb(Object.assign(new Error("exit code 2"), { code: 2 }), "", "");
+    });
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "Review failed to complete.",
+      }),
+    );
+  });
+
+  it("records a completed review when the CLI exits after writing blocking findings", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
+      const outputPath = args[args.indexOf("--output-json") + 1];
+      fsMock.files.set(
+        outputPath,
+        JSON.stringify({
+          summary: "blocking findings",
+          findings: [
+            {
+              path: "src/billing/checkout.ts",
+              line: 42,
+              severity: "error",
+              body: "Credit is applied twice.",
+            },
+          ],
+          usage: { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
+          modelUsed: "test/default",
+        }),
+      );
+      cb(Object.assign(new Error("exit code 1"), { code: 1 }), "", "");
+    });
+
+    await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 1 });
+
+    expect(githubMock.request).not.toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({ conclusion: "failure" }),
+    );
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "completed",
+        result: expect.objectContaining({
+          summary: "blocking findings",
+          findings: expect.arrayContaining([expect.objectContaining({ severity: "error" })]),
+        }),
+      }),
+    );
+    expect(posthogMock.track).toHaveBeenCalledWith(
+      "system",
+      "review_completed",
+      expect.objectContaining({
+        findings: 1,
       }),
     );
   });

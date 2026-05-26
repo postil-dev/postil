@@ -15,70 +15,70 @@ type ReviewFinding = {
 const reviewFindings: ReviewFinding[] = [
   {
     severity: "blocker",
-    file: "examples/demo-shop/cart-total.ts:42",
-    title: "Demo cart doubles coupon savings",
-    body: "In this fictional shop example, the new branch subtracts the same toy coupon before and after tax. The sample checkout total can go negative.",
-    patch: "- total -= coupon.value\n+ total = applyCouponOnce(total, coupon)",
+    file: "src/billing/checkout.ts:42",
+    title: "Checkout can double-apply account credits",
+    body: "The diff applies credits before tax and again during finalization. This can undercharge paid invoices, so the branch should not merge until one path owns the credit calculation.",
+    patch: "- total -= credit.amount\n+ total = applyAccountCreditOnce(total, credit)",
   },
   {
     severity: "watch",
-    file: "examples/widget-lab/preview-flags.yaml:18",
-    title: "Fictional preview flag ships with the demo build",
-    body: "The sample config turns on a pretend beta banner for every example workspace. Keep the fixture scoped to the tutorial route.",
-    patch: "- demoBanner: always\n+ demoBanner: tutorial-only",
+    file: "infra/queue-policy.yaml:18",
+    title: "Retry window widens without an idempotency guard",
+    body: "The worker now retries for longer than the payment provider's request cache. Ask an accountable human to approve the operational risk or add a durable idempotency key.",
+    patch: "+ idempotencyKey: checkout.intentId",
   },
   {
     severity: "note",
-    file: "examples/pixel-pets/retry-toy.ts:27",
-    title: "Toy retry example never stops polling",
-    body: "The demo loop keeps asking for a pretend sprite after the sample scene closes. Add a simple guard so the tutorial stays readable.",
-    patch: "+ if (scene.closed) return",
+    file: ".postil.yaml:12",
+    title: "Repeated migration rule is enforceable",
+    body: "The same migration-review feedback has appeared three times. Move it into a repo policy so future reviews can stay silent unless the check fails.",
+    patch: '+ requireHumanReview:\n+   - "drizzle/**/*.sql"',
   },
 ];
 
 const pipelineRows = [
   ["diff parsed", "38 files", "1.8s"],
   ["context loaded", "12 call sites", "4.1s"],
-  ["policy pass", "4 repo rules", "0.7s"],
-  ["review posted", "3 threads", "18.4s"],
+  ["guardrails checked", "4 repo rules", "0.7s"],
+  ["merge signal", "3 findings", "18.4s"],
 ];
 
 const capabilities = [
   {
     label: "Correctness",
-    title: "Reads surrounding code before commenting.",
-    body: "Postil follows imports, call sites, and test fixtures so it can flag behavior changes, not just suspicious lines.",
+    title: "Finds context-dependent regressions.",
+    body: "Postil follows imports, call sites, tests, and configuration before it decides a change is merge-relevant.",
   },
   {
     label: "Security",
-    title: "Treats auth, secrets, and data exposure as review-blocking.",
-    body: "Inline comments include the exploit path, affected file, and the smallest patch when the fix is obvious.",
+    title: "Escalates security and data exposure.",
+    body: "Findings explain the concrete risk, the affected path, and the review decision needed before merge.",
   },
   {
-    label: "Infrastructure",
-    title: "Reviews config drift beside application code.",
-    body: "Terraform, Docker, workflow, and runtime config changes are reviewed with the same severity ladder as code.",
+    label: "Human escalation",
+    title: "Marks consequential decisions for owners.",
+    body: "Architecture, permissions, billing, migrations, storage, and infrastructure changes get routed to accountable humans.",
   },
   {
     label: "Repository memory",
-    title: "Turns repeated findings into enforceable rules.",
-    body: "When a pattern repeats, Postil proposes a lint, QA, or policy rule instead of posting the same comment forever.",
+    title: "Turns repeated findings into guardrails.",
+    body: "When feedback becomes objective and recurring, Postil suggests a lint, test, CI check, hook, or repo policy.",
   },
 ];
 
 const ruleSuggestions = [
   {
-    source: "illustrative example",
-    rule: "Prefer one coupon application path in demo checkout code.",
+    source: "accepted feedback",
+    rule: "Require one owner for account-credit math.",
     target: ".postil.yaml",
   },
   {
-    source: "sample rule idea",
-    rule: "Ask for review when tutorial flags move from examples into app routes.",
+    source: "human escalation",
+    rule: "Ask for owner review when payment retry policy changes.",
     target: ".github/workflows/review.yml",
   },
   {
-    source: "noise-control example",
+    source: "noise control",
     rule: "Ignore generated SQL snapshots unless a migration file changes with them.",
     target: ".postil.yaml",
   },
@@ -124,13 +124,17 @@ function SiteHeader() {
             Pricing
           </TrackedLink>
           <Link
-            href="https://github.com/postil-dev/postil"
+            href="https://github.com/postil-dev/postil-reviewer"
             className="hidden px-3 py-1.5 text-muted-foreground transition hover:text-foreground lg:block"
           >
-            Source
+            CLI
           </Link>
-          <TrackedLink href="/install" cta="Install on GitHub" className={`${buttonVariants({ size: "sm" })} ml-2`}>
-            Install
+          <TrackedLink
+            href="/install"
+            cta="Install CLI"
+            className={`${buttonVariants({ size: "sm" })} ml-2`}
+          >
+            Install CLI
           </TrackedLink>
         </nav>
       </div>
@@ -141,9 +145,25 @@ function SiteHeader() {
 function Wordmark() {
   return (
     <span className="flex items-center gap-2">
-      <span aria-hidden className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" role="img" aria-label="Postil logo">
-          <path d="M4 4L8 8L4 12" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+      <span
+        aria-hidden
+        className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground"
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 16 16"
+          fill="none"
+          role="img"
+          aria-label="Postil logo"
+        >
+          <path
+            d="M4 4L8 8L4 12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+          />
           <path d="M9 12H12" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
         </svg>
       </span>
@@ -159,32 +179,38 @@ function Hero() {
         <div className="flex flex-col justify-center gap-6">
           <span className="inline-flex w-fit items-center gap-2 border border-border bg-card/60 px-3 py-1 font-mono text-[11px] tracking-widest text-muted-foreground uppercase">
             <span className="h-1.5 w-1.5 bg-chart-2" />
-            Installable PR reviewer
+            Local-first review gate
           </span>
           <div className="space-y-5">
             <h1 className="font-display text-5xl leading-[1.02] tracking-tight sm:text-6xl lg:text-7xl">
-              Postil reviews pull requests like a senior maintainer.
+              Postil is the review gate for agent-speed development.
             </h1>
             <p className="max-w-2xl text-base leading-7 text-muted-foreground sm:text-lg">
-              Add it to a repository and every PR gets a focused review for correctness, security, infrastructure, and repeated failure patterns. Inline findings include files, severity, reasoning, and suggested patches.
+              Let agents write code. Do not let unchecked changes merge. Postil runs before push or
+              merge, catches context-dependent risk, escalates consequential changes, and stays
+              silent when it has nothing useful to say.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <TrackedLink href="/install" cta="Install on GitHub" className={`${buttonVariants({ size: "lg" })} min-w-44 justify-center`}>
-              Add the GitHub App
+            <TrackedLink
+              href="/install"
+              cta="Install CLI"
+              className={`${buttonVariants({ size: "lg" })} min-w-44 justify-center`}
+            >
+              Install the CLI
             </TrackedLink>
             <TrackedLink
               href="#console"
-              cta="See review console"
+              cta="See merge signal"
               className={`${buttonVariants({ variant: "outline", size: "lg" })} min-w-44 justify-center text-foreground`}
             >
-              See the console
+              See merge signal
             </TrackedLink>
           </div>
           <div className="mt-2 grid max-w-xl grid-cols-3 border border-border/70 bg-card/35">
-            <Metric value="18s" label="median review" />
-            <Metric value="3" label="findings" />
-            <Metric value="0" label="style nits" />
+            <Metric value="BYOK" label="local first" />
+            <Metric value="0" label="clean comments" />
+            <Metric value="merge" label="signal only" />
           </div>
         </div>
         <ReviewConsole />
@@ -197,17 +223,22 @@ function Metric({ value, label }: { value: string; label: string }) {
   return (
     <div className="border-r border-border/70 p-4 last:border-r-0">
       <div className="font-mono text-2xl text-foreground">{value}</div>
-      <div className="mt-1 font-mono text-[10px] tracking-widest text-muted-foreground uppercase">{label}</div>
+      <div className="mt-1 font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+        {label}
+      </div>
     </div>
   );
 }
 
 function ReviewConsole() {
   return (
-    <div id="console" className="border border-border bg-card/80 shadow-[0_24px_80px_-36px_rgba(0,0,0,0.9)]">
+    <div
+      id="console"
+      className="border border-border bg-card/80 shadow-[0_24px_80px_-36px_rgba(0,0,0,0.9)]"
+    >
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-background/50 px-4 py-3 font-mono text-xs text-muted-foreground">
-        <span>review / demo-repo #418</span>
-        <span className="text-chart-2">ready for changes</span>
+        <span>postil review / checkout-risk #418</span>
+        <span className="text-chart-2">needs accountable review</span>
       </div>
       <div className="grid gap-px bg-border/70 lg:grid-cols-[1fr_0.75fr]">
         <div className="bg-card">
@@ -226,19 +257,21 @@ function ReviewConsole() {
           ))}
         </div>
         <aside className="bg-background/70 p-4">
-          <div className="font-mono text-[11px] tracking-widest text-muted-foreground uppercase">Decision evidence</div>
+          <div className="font-mono text-[11px] tracking-widest text-muted-foreground uppercase">
+            Decision evidence
+          </div>
           <div className="mt-4 space-y-4">
             <Decision
               label="Why comment"
-              value="Touches a toy checkout calculation, a tutorial flag, and a sample retry loop in the same demo PR."
+              value="Touches billing math and retry policy in the same branch. Both can change customer-visible outcomes."
             />
             <Decision
               label="Action"
-              value="Request changes until the fictional examples match the tutorial behavior they describe."
+              value="Block merge until credit calculation has one owner and payment retry risk is explicitly accepted."
             />
             <Decision
               label="Suppressed"
-              value="12 formatting and import-order notes left to existing CI checks."
+              value="12 formatting, import-order, and generic summary notes left to existing guardrails or omitted."
             />
           </div>
           <div className="mt-6 border border-border/70 bg-card/60 p-3">
@@ -272,7 +305,9 @@ function severityClass(severity: ReviewSeverity) {
 function Decision({ label, value }: { label: string; value: string }) {
   return (
     <div className="border-l border-primary pl-3">
-      <div className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">{label}</div>
+      <div className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+        {label}
+      </div>
       <p className="mt-1 text-sm leading-6 text-foreground/90">{value}</p>
     </div>
   );
@@ -284,12 +319,16 @@ function PipelineMetrics() {
       <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-[0.78fr_1.22fr]">
         <div>
           <span className="font-mono text-xs tracking-widest text-primary uppercase">Pipeline</span>
-          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">A review run you can audit.</h2>
+          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
+            Review by default, trust by evidence.
+          </h2>
         </div>
         <div className="grid gap-px border border-border bg-border/70 sm:grid-cols-4">
           {pipelineRows.map(([name, result, time]) => (
             <div key={name} className="bg-card p-5">
-              <div className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">{name}</div>
+              <div className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+                {name}
+              </div>
               <div className="mt-4 text-2xl font-semibold">{result}</div>
               <div className="mt-1 font-mono text-xs text-muted-foreground">{time}</div>
             </div>
@@ -305,15 +344,19 @@ function Capabilities() {
     <section id="capabilities" className="border-b border-border/70 py-20">
       <div className="mx-auto max-w-7xl px-4 sm:px-6">
         <div className="mb-10 max-w-3xl">
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">What it reviews</span>
+          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+            What it reviews
+          </span>
           <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
-            Built for the parts of PR review that teams cannot delegate to formatters.
+            Built for the parts of review that fail when code moves at agent speed.
           </h2>
         </div>
         <div className="grid gap-px border border-border bg-border/70 md:grid-cols-2">
           {capabilities.map((item) => (
             <article key={item.label} className="bg-background p-6">
-              <div className="font-mono text-[11px] tracking-widest text-primary uppercase">{item.label}</div>
+              <div className="font-mono text-[11px] tracking-widest text-primary uppercase">
+                {item.label}
+              </div>
               <h3 className="mt-4 text-2xl font-semibold">{item.title}</h3>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">{item.body}</p>
             </article>
@@ -329,23 +372,33 @@ function InfrastructureScan() {
     <section className="border-b border-border/70 py-20">
       <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:items-start">
         <div>
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">Infra scan</span>
-          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">Infrastructure changes get reviewed with product risk attached.</h2>
+          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+            Human escalation
+          </span>
+          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
+            Consequential changes should have accountable owners.
+          </h2>
           <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
-            Postil connects configuration edits to the application behavior they describe: sample flags, cache policy, queue leases, and deployment workflows.
+            Postil can identify routine findings, but it does not pretend to own business, security,
+            architecture, cost, data, or infrastructure judgment.
           </p>
         </div>
         <div className="border border-border bg-card">
-          <div className="border-b border-border px-4 py-3 font-mono text-xs text-muted-foreground">examples/widget-lab/preview-flags.yaml</div>
+          <div className="border-b border-border px-4 py-3 font-mono text-xs text-muted-foreground">
+            infra/queue-policy.yaml
+          </div>
           <div className="space-y-3 p-4 font-mono text-xs">
-            <Line tone="del" text="- demoBanner: tutorial-only" />
-            <Line tone="add" text="+ demoBanner: always" />
-            <Line tone="add" text="+ exampleMode: playful-fixture" />
+            <Line tone="del" text="- retryWindow: 90s" />
+            <Line tone="add" text="+ retryWindow: 20m" />
+            <Line tone="add" text="+ deadLetterQueue: disabled" />
           </div>
           <div className="border-t border-border p-4">
-            <div className="font-mono text-[11px] tracking-widest text-destructive uppercase">Blocker</div>
+            <div className="font-mono text-[11px] tracking-widest text-destructive uppercase">
+              Escalate
+            </div>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              The fictional tutorial flag moves from a single sample page to every demo workspace. Keep it scoped so the example stays clear.
+              The branch changes retry cost and failure behavior. Merge needs an owner who can
+              accept the operational tradeoff.
             </p>
           </div>
         </div>
@@ -355,7 +408,17 @@ function InfrastructureScan() {
 }
 
 function Line({ tone, text }: { tone: "add" | "del"; text: string }) {
-  return <div className={tone === "add" ? "bg-diff-add px-3 py-1.5 text-chart-2" : "bg-diff-del px-3 py-1.5 text-destructive"}>{text}</div>;
+  return (
+    <div
+      className={
+        tone === "add"
+          ? "bg-diff-add px-3 py-1.5 text-chart-2"
+          : "bg-diff-del px-3 py-1.5 text-destructive"
+      }
+    >
+      {text}
+    </div>
+  );
 }
 
 function Rules() {
@@ -363,16 +426,24 @@ function Rules() {
     <section className="border-b border-border/70 py-20">
       <div className="mx-auto max-w-7xl px-4 sm:px-6">
         <div className="mb-10 max-w-3xl">
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">Proposed rules</span>
-          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">Repeated findings become repository policy.</h2>
+          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+            Proposed rules
+          </span>
+          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
+            Repeated findings become repository policy.
+          </h2>
           <p className="mt-4 text-sm leading-6 text-muted-foreground">
-            Postil respects repository configuration, including .postil.yaml, .coderabbit.yaml, and .kodo.yaml, then proposes rules when review evidence says the team should automate the pattern.
+            Postil respects repository configuration, including .postil.yaml, .coderabbit.yaml, and
+            .kodo.yaml. When the team repeatedly accepts the same objective finding, review feedback
+            should become infrastructure.
           </p>
         </div>
         <div className="grid gap-4 lg:grid-cols-3">
           {ruleSuggestions.map((item) => (
             <article key={item.rule} className="border border-border bg-card/60 p-5">
-              <div className="font-mono text-[11px] tracking-widest text-muted-foreground uppercase">{item.source}</div>
+              <div className="font-mono text-[11px] tracking-widest text-muted-foreground uppercase">
+                {item.source}
+              </div>
               <h3 className="mt-4 text-xl font-semibold leading-snug">{item.rule}</h3>
               <div className="mt-5 font-mono text-xs text-chart-2">{item.target}</div>
             </article>
@@ -388,21 +459,35 @@ function Pricing() {
     <section id="pricing" className="border-b border-border/70 py-20">
       <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-[0.8fr_1.2fr]">
         <div>
-          <span className="font-mono text-xs tracking-widest text-primary uppercase">Pricing</span>
-          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">Install now, scale when the team depends on it.</h2>
+          <span className="font-mono text-xs tracking-widest text-primary uppercase">
+            Local first
+          </span>
+          <h2 className="mt-3 font-display text-3xl leading-tight sm:text-4xl">
+            Start with the BYOK CLI. Hosted review can come later.
+          </h2>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <PlanCard
-            name="Hobby"
+            name="CLI"
             price="Free"
-            sub="No charge during public beta."
-            bullets={["Public repositories", "Up to 3 private repos", "Managed review runtime", "Community support"]}
+            sub="Apache-2.0, bring your own model key."
+            bullets={[
+              "Runs locally or in CI",
+              "No dashboard required",
+              "OpenRouter-compatible runtime",
+              "Repo config via .postil.yaml",
+            ]}
           />
           <PlanCard
-            name="Team"
-            price="$19"
-            sub="per contributor / month"
-            bullets={["Org-wide installation", "All private repositories", "Priority review queue", "Email support"]}
+            name="Hosted"
+            price="Later"
+            sub="Managed PR review after the local gate is right."
+            bullets={[
+              "GitHub App workflow",
+              "Team policy memory",
+              "Queue and usage controls",
+              "Human escalation paths",
+            ]}
             featured
           />
         </div>
@@ -425,8 +510,15 @@ function PlanCard({
   featured?: boolean;
 }) {
   return (
-    <article className={["border p-6", featured ? "border-primary bg-card" : "border-border bg-card/50"].join(" ")}>
-      <div className="font-mono text-[11px] tracking-widest text-muted-foreground uppercase">{name}</div>
+    <article
+      className={[
+        "border p-6",
+        featured ? "border-primary bg-card" : "border-border bg-card/50",
+      ].join(" ")}
+    >
+      <div className="font-mono text-[11px] tracking-widest text-muted-foreground uppercase">
+        {name}
+      </div>
       <div className="mt-4 text-4xl font-semibold tracking-tight">{price}</div>
       <div className="mt-1 text-sm text-muted-foreground">{sub}</div>
       <ul className="mt-6 space-y-2 text-sm">
@@ -437,8 +529,12 @@ function PlanCard({
           </li>
         ))}
       </ul>
-      <TrackedLink href="/install" cta="Install on GitHub" className={`${buttonVariants({ variant: featured ? "default" : "outline" })} mt-6 w-full`}>
-        Add the GitHub App
+      <TrackedLink
+        href="/install"
+        cta="Install CLI"
+        className={`${buttonVariants({ variant: featured ? "default" : "outline" })} mt-6 w-full`}
+      >
+        Install CLI
       </TrackedLink>
     </article>
   );
@@ -449,14 +545,19 @@ function SelfHostStrip() {
     <section className="border-b border-border/70 py-14">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
         <p className="max-w-3xl text-2xl font-semibold leading-snug">
-          Apache-2.0 and runnable in CI. Use the managed install, or self-host the same reviewer with your own model provider.
+          Apache-2.0 and runnable in CI. Use the local CLI today with your own model provider;
+          hosted PR review stays subordinate to the review gate.
         </p>
         <div className="flex flex-wrap gap-3">
-          <TrackedLink href="https://github.com/postil-dev/postil" cta="View source" className={buttonVariants({ variant: "outline" })}>
-            View source
+          <TrackedLink
+            href="https://github.com/postil-dev/postil-reviewer"
+            cta="View CLI source"
+            className={buttonVariants({ variant: "outline" })}
+          >
+            View CLI source
           </TrackedLink>
-          <TrackedLink href="https://github.com/postil-dev/postil#self-host" cta="Self-host" className={buttonVariants()}>
-            Self-host
+          <TrackedLink href="/install" cta="Run locally" className={buttonVariants()}>
+            Run locally
           </TrackedLink>
         </div>
       </div>
@@ -470,19 +571,28 @@ function SiteFooter() {
       <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 px-4 sm:px-6 md:flex-row md:items-end">
         <div className="flex flex-col gap-4">
           <Wordmark />
-          <p className="max-w-sm text-xs leading-relaxed">Postil is an open-source AI pull request reviewer. Managed at postil.dev. Source at postil-dev/postil, Apache-2.0.</p>
+          <p className="max-w-sm text-xs leading-relaxed">
+            Postil is a local-first review gate for agent-speed development. Source at
+            postil-dev/postil-reviewer and postil-dev/postil, Apache-2.0.
+          </p>
         </div>
         <nav className="grid grid-cols-2 gap-x-10 gap-y-2 text-xs sm:grid-cols-3">
-          <TrackedLink href="/install" cta="Install on GitHub" className="hover:text-foreground">
+          <TrackedLink href="/install" cta="Install CLI" className="hover:text-foreground">
             Set up
           </TrackedLink>
           <TrackedLink href="#pricing" cta="Pricing" className="hover:text-foreground">
             Pricing
           </TrackedLink>
-          <Link href="https://github.com/postil-dev/postil" className="hover:text-foreground">
-            Source
+          <Link
+            href="https://github.com/postil-dev/postil-reviewer"
+            className="hover:text-foreground"
+          >
+            CLI source
           </Link>
-          <Link href="https://github.com/postil-dev/postil/security/advisories/new" className="hover:text-foreground">
+          <Link
+            href="https://github.com/postil-dev/postil/security/advisories/new"
+            className="hover:text-foreground"
+          >
             Report a vulnerability
           </Link>
           <Link href="/.well-known/security.txt" className="hover:text-foreground">
