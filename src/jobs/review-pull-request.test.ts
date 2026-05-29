@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const triggerMock = vi.hoisted(() => ({
-  authConfigure: vi.fn(),
   task: vi.fn((definition: unknown) => definition),
+  tasksTrigger: vi.fn(async () => ({ id: "trigger-run-123" })),
 }));
 
 const posthogMock = vi.hoisted(() => ({
@@ -47,12 +47,14 @@ const envMock = vi.hoisted(() => ({
   REVIEW_MODEL_CASCADE: undefined as string | undefined,
   TRIGGER_API_KEY: "test-trigger-key",
   TRIGGER_API_URL: "https://trigger.example.test",
+  TRIGGER_SECRET_KEY: "test-trigger-secret",
+  triggerApiKey: "test-trigger-secret",
 }));
 
 vi.mock("@trigger.dev/sdk/v3", () => ({
-  auth: { configure: triggerMock.authConfigure },
   logger: { info: vi.fn() },
   task: triggerMock.task,
+  tasks: { trigger: triggerMock.tasksTrigger },
 }));
 
 vi.mock("node:fs/promises", () => fsMock);
@@ -89,7 +91,7 @@ const PAYLOAD = {
   reviewId: "00000000-0000-4000-8000-000000000001",
 };
 
-const { reviewPullRequest } = await import("./review-pull-request");
+const { enqueueReviewPullRequest, reviewPullRequest } = await import("./review-pull-request");
 const runReviewTask = reviewPullRequest as unknown as {
   run: (payload: typeof PAYLOAD) => Promise<{ ok: boolean; findings: number }>;
 };
@@ -149,6 +151,22 @@ describe("reviewPullRequest", () => {
         status: "completed",
         result: expect.objectContaining({ summary: "ok" }),
       }),
+    );
+  });
+
+  it("dispatches review work with explicit backend credentials", async () => {
+    await enqueueReviewPullRequest(PAYLOAD, "delivery-123");
+
+    expect(triggerMock.tasksTrigger).toHaveBeenCalledWith(
+      "review-pull-request",
+      PAYLOAD,
+      { idempotencyKey: "delivery-123" },
+      {
+        clientConfig: {
+          baseURL: "https://trigger.example.test",
+          accessToken: "test-trigger-secret",
+        },
+      },
     );
   });
 

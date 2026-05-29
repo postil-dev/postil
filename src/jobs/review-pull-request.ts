@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { auth, logger, task } from "@trigger.dev/sdk/v3";
+import { logger, task, tasks } from "@trigger.dev/sdk/v3";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/db";
 import { env } from "@/lib/env";
@@ -12,27 +12,23 @@ import { installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import {
-  reviewEnvelope,
-  reviewPayload,
   type ReviewEnvelope,
   type ReviewPayload,
+  reviewEnvelope,
+  reviewPayload,
 } from "./review-types";
 
 const execFile = promisify(execFileCb);
 
-let triggerConfigured = false;
-
-function ensureTriggerConfigured(): void {
-  if (triggerConfigured) return;
+function triggerClientConfig() {
   if (!env.triggerApiKey) {
     throw new Error("Trigger API token must be set to dispatch review tasks");
   }
 
-  auth.configure({
+  return {
     baseURL: env.TRIGGER_API_URL,
     accessToken: env.triggerApiKey,
-  });
-  triggerConfigured = true;
+  };
 }
 
 function selectedReviewModel(): string {
@@ -249,6 +245,10 @@ export const reviewPullRequest = task({
 });
 
 export async function enqueueReviewPullRequest(payload: ReviewPayload, idempotencyKey: string) {
-  ensureTriggerConfigured();
-  return reviewPullRequest.trigger(payload, { idempotencyKey });
+  return tasks.trigger<typeof reviewPullRequest>(
+    "review-pull-request",
+    payload,
+    { idempotencyKey },
+    { clientConfig: triggerClientConfig() },
+  );
 }

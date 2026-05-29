@@ -1,7 +1,12 @@
 import { defineConfig } from "@trigger.dev/sdk";
 
+const project = process.env.TRIGGER_PROJECT_ID;
+if (!project) {
+  throw new Error("TRIGGER_PROJECT_ID is required");
+}
+
 export default defineConfig({
-  project: process.env.TRIGGER_PROJECT_ID ?? "proj_zcyhktbnqmrudynkkicc",
+  project,
   runtime: "bun",
   dirs: ["./src/jobs"],
   logLevel: "info",

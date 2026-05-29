@@ -92,5 +92,5 @@ export const env: Env & {
 } = {
   ...parsed,
   databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
-  triggerApiKey: parsed.TRIGGER_API_KEY ?? parsed.TRIGGER_API_TOKEN ?? parsed.TRIGGER_SECRET_KEY,
+  triggerApiKey: parsed.TRIGGER_SECRET_KEY ?? parsed.TRIGGER_API_KEY ?? parsed.TRIGGER_API_TOKEN,
 };
