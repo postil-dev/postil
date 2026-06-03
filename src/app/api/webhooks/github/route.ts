@@ -15,6 +15,7 @@ export const maxDuration = 300;
 
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
 const REVIEW_WORKFLOW_PATH = ".github/workflows/postil-review.yml";
+const REVIEW_WORKFLOW_FAILURE_CONCLUSIONS = new Set(["cancelled", "failure"]);
 
 function verifySignature(payload: string, signature: string | null): boolean {
   if (!signature || !env.GITHUB_WEBHOOK_SECRET) return false;
@@ -435,10 +436,15 @@ async function findReviewCheckRunForWorkflowFailure(
   pullNumber: number | null,
   candidateHeadShas: Array<string | null | undefined>,
 ): Promise<ReviewCheckRun> {
-  const uniqueHeadShas = [...new Set(candidateHeadShas.filter((sha): sha is string => Boolean(sha)))];
+  const uniqueHeadShas = [
+    ...new Set(candidateHeadShas.filter((sha): sha is string => Boolean(sha))),
+  ];
 
   for (const headSha of uniqueHeadShas) {
-    const where = [eq(schema.reviews.repoFullName, repoFullName), eq(schema.reviews.headSha, headSha)];
+    const where = [
+      eq(schema.reviews.repoFullName, repoFullName),
+      eq(schema.reviews.headSha, headSha),
+    ];
     if (pullNumber !== null) {
       where.push(eq(schema.reviews.pullNumber, pullNumber));
     }
@@ -454,9 +460,19 @@ async function findReviewCheckRunForWorkflowFailure(
   return null;
 }
 
-function resolveReviewWorkflowRunContext(workflowRun: WorkflowRunPayload["workflow_run"]): ReviewWorkflowRunContext {
+function resolveReviewWorkflowRunContext(
+  workflowRun: WorkflowRunPayload["workflow_run"],
+): ReviewWorkflowRunContext {
   const payloadPull = workflowRun.pull_requests?.[0];
   return { pullNumber: payloadPull?.number ?? null, headSha: payloadPull?.head?.sha ?? null };
+}
+
+function isReviewWorkflowFailureConclusion(conclusion: string | null | undefined): boolean {
+  return (
+    conclusion !== null &&
+    conclusion !== undefined &&
+    REVIEW_WORKFLOW_FAILURE_CONCLUSIONS.has(conclusion)
+  );
 }
 
 async function deleteWebhookDelivery(
@@ -490,17 +506,14 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
 
   if (workflow?.path === REVIEW_WORKFLOW_PATH || workflow_run.path === REVIEW_WORKFLOW_PATH) {
-    if (workflow_run.conclusion !== "success") {
+    if (isReviewWorkflowFailureConclusion(workflow_run.conclusion)) {
       const reviewContext = resolveReviewWorkflowRunContext(workflow_run);
       await completeReviewWorkflowFailureCheckRun(
         getDb(),
         octokit,
         repoFullName,
         pullNumber ?? reviewContext.pullNumber,
-        [
-          workflow_run.head_sha ?? null,
-          reviewContext.headSha,
-        ],
+        [workflow_run.head_sha ?? null, reviewContext.headSha],
         workflow_run.conclusion,
       );
     }

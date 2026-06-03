@@ -561,9 +561,7 @@ describe("github webhook", () => {
       mockRequest.mock.calls.some(([route]) => route === "GET /repos/{owner}/{repo}/pulls"),
     ).toBe(false);
     expect(
-      mockRequest.mock.calls.some(
-        ([route]) => route === "POST /repos/{owner}/{repo}/issues",
-      ),
+      mockRequest.mock.calls.some(([route]) => route === "POST /repos/{owner}/{repo}/issues"),
     ).toBe(false);
     expect(
       mockRequest.mock.calls.find(
@@ -790,9 +788,7 @@ describe("github webhook", () => {
     expect(res.status).toBe(200);
     expect(dbMock.findFirst).toHaveBeenCalled();
     expect(
-      mockRequest.mock.calls.some(
-        ([route]) => route === "POST /repos/{owner}/{repo}/issues",
-      ),
+      mockRequest.mock.calls.some(([route]) => route === "POST /repos/{owner}/{repo}/issues"),
     ).toBe(false);
     expect(
       mockRequest.mock.calls.find(
@@ -812,6 +808,53 @@ describe("github webhook", () => {
       errorMessage: "Review workflow cancelled before review completion.",
       completedAt: expect.any(Date),
     });
+  });
+
+  it.each([
+    "action_required",
+    "neutral",
+    "skipped",
+    "startup_failure",
+    "stale",
+    "timed_out",
+    "unexpected_conclusion",
+    null,
+    undefined,
+  ])("ignores review workflow conclusion %s", async (conclusion) => {
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        throw new Error("unexpected review check-run patch");
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", `workflow-review-${conclusion ?? "missing"}`, {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
+        workflow_run: {
+          id: 661,
+          name: "Postil Review",
+          conclusion,
+          html_url: "https://github.com/acme/widget/actions/runs/661",
+          head_sha: "abc123def456",
+          pull_requests: [{ number: 68 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).not.toHaveBeenCalled();
+    expect(dbMock.updateCalls).toEqual([]);
+    expect(
+      mockRequest.mock.calls.some(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      ),
+    ).toBe(false);
   });
 
   it("ignores a workflow-run failure with the same display name when the workflow path is different", async () => {
