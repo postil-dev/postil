@@ -136,6 +136,7 @@ describe("github webhook", () => {
     dbMock.insertCalls = [];
     dbMock.deleteCalls = [];
     dbMock.updateCalls = [];
+    dbMock.reviewInsertResult = [{ id: "review-1" }];
     dbMock.failTriggerRunIdUpdate = false;
     dbMock.failFailedStatusUpdate = false;
     dbMock.failDeliveryDelete = false;
@@ -195,6 +196,49 @@ describe("github webhook", () => {
     );
     expect(dbMock.insertCalls).toEqual([dbMock.webhookDeliveries, dbMock.reviews]);
     expect(dbMock.updateCalls).toContainEqual({ triggerRunId: "trigger-run-123" });
+  });
+
+  it("creates a fresh check run when retrying a failed review dispatch", async () => {
+    dbMock.reviewInsertResult = [];
+    dbMock.findFirst.mockImplementationOnce(async () => ({
+      id: "review-1",
+      checkRunId: 320,
+      status: "failed",
+    }));
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    const res = await POST(
+      signedRequest("pull_request", "pr-retry-failed-dispatch", {
+        action: "opened",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        pull_request: {
+          number: 68,
+          draft: false,
+          head: { sha: "abc123def456" },
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(reviewJobMock.enqueueReviewPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checkRunId: 321,
+        reviewId: "review-1",
+      }),
+      "pr-retry-failed-dispatch",
+    );
+    expect(dbMock.updateCalls).toContainEqual({
+      checkRunId: 321,
+      status: "pending",
+      errorMessage: null,
+      completedAt: null,
+    });
   });
 
   it("keeps the delivery log open when enqueue fails", async () => {

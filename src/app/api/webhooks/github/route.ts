@@ -162,6 +162,7 @@ async function handlePullRequest(
 
   let reviewId: string | undefined = reviewRow[0]?.id;
   let checkRunId: number | undefined;
+  let existingReviewStatus: string | undefined;
 
   if (!reviewId) {
     const existing = await db.query.reviews.findFirst({
@@ -171,14 +172,19 @@ async function handlePullRequest(
         eq(schema.reviews.headSha, headSha),
       ),
       orderBy: (r, { desc }) => [desc(r.createdAt)],
-      columns: { id: true, checkRunId: true },
+      columns: { id: true, checkRunId: true, status: true },
     });
     reviewId = existing?.id;
     checkRunId = existing?.checkRunId ?? undefined;
+    existingReviewStatus = existing?.status;
   }
 
   if (!reviewId) {
     throw new Error("failed to initialize review row");
+  }
+
+  if (existingReviewStatus === "failed") {
+    checkRunId = undefined;
   }
 
   if (!checkRunId) {
@@ -203,6 +209,9 @@ async function handlePullRequest(
         .update(schema.reviews)
         .set({
           checkRunId,
+          status: "pending",
+          errorMessage: null,
+          completedAt: null,
         })
         .where(eq(schema.reviews.id, reviewId));
     } catch (err) {
