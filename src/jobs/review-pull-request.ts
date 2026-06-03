@@ -24,6 +24,9 @@ function triggerClientConfig() {
   if (!env.triggerApiKey) {
     throw new Error("Trigger API token must be set to dispatch review tasks");
   }
+  if (!env.TRIGGER_PROJECT_ID?.trim()) {
+    throw new Error("TRIGGER_PROJECT_ID must be set to dispatch review tasks");
+  }
 
   return {
     baseURL: env.TRIGGER_API_URL,

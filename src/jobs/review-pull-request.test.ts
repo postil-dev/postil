@@ -47,6 +47,7 @@ const envMock = vi.hoisted(() => ({
   REVIEW_MODEL_CASCADE: undefined as string | undefined,
   TRIGGER_API_KEY: "test-trigger-key",
   TRIGGER_API_URL: "https://trigger.example.test",
+  TRIGGER_PROJECT_ID: "project_test_123",
   TRIGGER_SECRET_KEY: "test-trigger-secret",
   triggerApiKey: "test-trigger-secret",
 }));
@@ -102,6 +103,7 @@ describe("reviewPullRequest", () => {
     fsMock.files.clear();
     dbMock.updates = [];
     envMock.REVIEW_MODEL_CASCADE = undefined;
+    envMock.TRIGGER_PROJECT_ID = "project_test_123";
     childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
       const outputPath = args[args.indexOf("--output-json") + 1];
       fsMock.files.set(
@@ -168,6 +170,16 @@ describe("reviewPullRequest", () => {
         },
       },
     );
+  });
+
+  it("requires a Trigger project id before hosted dispatch", async () => {
+    envMock.TRIGGER_PROJECT_ID = "";
+
+    await expect(enqueueReviewPullRequest(PAYLOAD, "delivery-123")).rejects.toThrow(
+      "TRIGGER_PROJECT_ID must be set to dispatch review tasks",
+    );
+
+    expect(triggerMock.tasksTrigger).not.toHaveBeenCalled();
   });
 
   it("marks the review and check-run failed when CLI execution rejects", async () => {
