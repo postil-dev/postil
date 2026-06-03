@@ -80,6 +80,11 @@ const PAYLOAD = {
   reviewId: undefined as string | undefined,
 };
 
+const STATUS_PASS = "![pass](https://postil.dev/status/pass.svg)";
+const STATUS_ERROR = "![error](https://postil.dev/status/error.svg)";
+const STATUS_WARN = "![warn](https://postil.dev/status/warn.svg)";
+const STATUS_INFO = "![info](https://postil.dev/status/info.svg)";
+
 function latestPostedReview() {
   return githubMock.postedReviews.at(-1);
 }
@@ -533,7 +538,7 @@ describe("runReview", () => {
     expect(openRouterMock.body).not.toBeNull();
     expect(latestPostedReview()).toMatchObject({
       event: "APPROVE",
-      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+      body: `ok\n\nstatus: ${STATUS_PASS}`,
     });
   });
 
@@ -588,7 +593,7 @@ describe("runReview", () => {
 
     expect(latestPostedReview()).toMatchObject({
       event: "COMMENT",
-      body: "Needs work.\n\nPostil status: needs-attention | errors=1 warnings=0 info=0 inline_comments=1",
+      body: `Needs work.\n\nstatus: ${STATUS_ERROR}`,
     });
     expect(latestCheckRunUpdate()).toMatchObject({
       conclusion: "failure",
@@ -771,7 +776,7 @@ describe("runReview", () => {
 
     expect(latestPostedReview()).toMatchObject({
       event: "APPROVE",
-      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+      body: `ok\n\nstatus: ${STATUS_PASS}`,
     });
   });
 
@@ -798,9 +803,7 @@ describe("runReview", () => {
 
     expect(latestPostedReview()).toMatchObject({
       event: "COMMENT",
-      body:
-        "Needs work.\n\n" +
-        "Postil status: needs-attention | errors=0 warnings=1 info=1 inline_comments=2",
+      body: `Needs work.\n\nstatus: ${STATUS_WARN}${STATUS_INFO}`,
     });
   });
 
@@ -831,7 +834,7 @@ describe("runReview", () => {
     const postedReview = latestPostedReview();
     expect(postedReview).toMatchObject({
       event: "COMMENT",
-      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+      body: `ok\n\nstatus: ${STATUS_WARN}`,
     });
     expect(latestCheckRunUpdate()).toMatchObject({
       conclusion: "failure",
@@ -859,7 +862,7 @@ describe("runReview", () => {
 
     expect(latestPostedReview()).toMatchObject({
       event: "APPROVE",
-      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+      body: `ok\n\nstatus: ${STATUS_PASS}`,
     });
   });
 
@@ -888,7 +891,7 @@ describe("runReview", () => {
 
     expect(latestPostedReview()).toMatchObject({
       event: "APPROVE",
-      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+      body: `ok\n\nstatus: ${STATUS_PASS}`,
     });
   });
 
@@ -919,7 +922,7 @@ describe("runReview", () => {
 
     expect(latestPostedReview()).toMatchObject({
       event: "APPROVE",
-      body: "ok\n\nPostil status: clean | errors=0 warnings=0 info=0 inline_comments=0",
+      body: `ok\n\nstatus: ${STATUS_PASS}`,
     });
   });
 
@@ -1015,7 +1018,7 @@ describe("runReview", () => {
 
     expect(latestPostedReview()).toMatchObject({
       event: "COMMENT",
-      body: "ok\n\nPostil status: needs-attention | errors=0 warnings=0 info=0 inline_comments=0",
+      body: `ok\n\nstatus: ${STATUS_WARN}`,
     });
   });
 

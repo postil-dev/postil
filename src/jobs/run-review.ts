@@ -66,17 +66,20 @@ type ReviewContext = {
 };
 
 export const SYSTEM_PROMPT = `
-You are Postil, a code reviewer. You receive a unified diff for a pull request
+You are Postil, a low-noise review gate. You receive a unified diff for a pull request
 and produce structured findings as JSON. Rules:
-- Focus on correctness, security, and obvious bugs.
-- Do not flag style, formatting, imports, or naming unless they cause a bug.
+- Silence is a feature. Do not comment to prove that you reviewed the diff.
+- Focus on correctness, security, reliability, intent mismatch, and merge-relevant risk.
+- Do not flag style, formatting, imports, naming, summaries, praise, or preferences unless they create merge-relevant risk.
+- A finding must explain the concrete risk, intended behavior mismatch, accountable human decision, or durable guardrail it is asking for.
+- Do not include self-dismissing findings. If there is no concrete merge-relevant issue, omit the finding.
 - Every finding cites a specific path and line number that exists in the diff.
 - Severity is one of: info, warn, error.
-- If the diff looks fine, return an empty findings array and a short summary.
+- If the diff looks fine, return an empty summary string and an empty findings array.
 
 Reply with ONLY a single JSON object, no prose, no markdown fence:
 {
-  "summary": "<2-4 sentences max summarizing overall risk posture. Do NOT restate individual findings.>",
+  "summary": "<empty string when clean; otherwise 1-2 sentences about merge risk only>",
   "findings": [ { "path": "...", "line": <int>, "severity": "info|warn|error", "body": "..." } ]
 }
 `.trim();
@@ -99,8 +102,19 @@ export function parseEnvelope(text: string, usage: TokenUsage, modelUsed?: strin
       // fall through to prose fallback
     }
   }
-  // Prose fallback: post the model's reply verbatim as a summary, no inline findings.
-  return { summary: text.trim().slice(0, 4000), findings: [], usage, modelUsed };
+  return {
+    summary: "Postil could not validate the model output.",
+    findings: [
+      {
+        path: ".postil/model-output",
+        line: 1,
+        severity: "error",
+        body: "Model output was not valid Postil JSON; review must be retried before merge.",
+      },
+    ],
+    usage,
+    modelUsed,
+  };
 }
 
 function hasSubstantiveBody(item: ReviewThreadEvent): boolean {
@@ -490,9 +504,11 @@ function applyConfig(env: ReviewEnvelope, cfg: PostilConfig): ReviewEnvelope {
   const threshold = SEVERITY_RANK[cfg.severityThreshold];
   const filtered = env.findings
     .filter((f) => SEVERITY_RANK[f.severity] >= threshold)
-    .filter((f) => !cfg.ignore.some((glob) => matchesGlob(f.path, glob)))
-    .slice(0, cfg.maxFindings);
-  return { summary: env.summary, findings: filtered, usage: env.usage, modelUsed: env.modelUsed };
+    .filter((f) => f.path === ".postil/model-output" || !cfg.ignore.some((glob) => matchesGlob(f.path, glob)));
+  const findings = filtered.some((f) => f.path === ".postil/model-output")
+    ? filtered
+    : filtered.slice(0, cfg.maxFindings);
+  return { summary: env.summary, findings, usage: env.usage, modelUsed: env.modelUsed };
 }
 
 function isFinding(x: unknown): x is Finding {
@@ -512,6 +528,8 @@ type OpenRouterCascadeError = Error & {
   providerFailures?: ProviderFailure[];
 };
 
+const STATUS_ICON_BASE_URL = "https://postil.dev/status";
+
 const OPENROUTER_CASCADE_TIMEOUT_MS = 6 * 60_000;
 
 export type ProviderFailure = {
@@ -523,12 +541,20 @@ export type ProviderFailure = {
 
 function formatReviewStatusLine(
   envelope: ReviewEnvelope,
-  inlineComments: number,
   label: string,
 ): string {
   const counts = { error: 0, warn: 0, info: 0 };
   for (const finding of envelope.findings) counts[finding.severity]++;
-  return `Postil status: ${label} | errors=${counts.error} warnings=${counts.warn} info=${counts.info} inline_comments=${inlineComments}`;
+  const status = [
+    Array.from({ length: counts.error }, () => statusIcon("error")).join(""),
+    Array.from({ length: counts.warn }, () => statusIcon("warn")).join(""),
+    Array.from({ length: counts.info }, () => statusIcon("info")).join(""),
+  ].join("");
+  return `status: ${status || statusIcon(label === "clean" ? "pass" : "warn")}`;
+}
+
+function statusIcon(kind: "error" | "warn" | "info" | "pass"): string {
+  return `![${kind}](${STATUS_ICON_BASE_URL}/${kind}.svg)`;
 }
 
 function appendReviewStatusLine(body: string, statusLine: string): string {
@@ -984,7 +1010,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
         reviewContext.outstandingChangeRequestReviewers.length > 0;
       const needsAttention = hasFindings || hasOutstandingChangeRequests;
       const statusLabel = needsAttention ? "needs-attention" : "clean";
-      const statusLine = formatReviewStatusLine(envelope, comments.length, statusLabel);
+      const statusLine = formatReviewStatusLine(envelope, statusLabel);
 
       let shouldPost = config.review.enabled;
       if (shouldPost && !needsAttention && config.review.on_clean === "skip") {
@@ -994,7 +1020,7 @@ export async function runReview(payload: ReviewPayload): Promise<ReviewEnvelope>
       if (shouldPost) {
         const event: "APPROVE" | "COMMENT" = needsAttention ? "COMMENT" : "APPROVE";
         const reviewBody = appendReviewStatusLine(
-          envelope.summary || "Postil reviewed this PR.",
+          envelope.summary,
           statusLine,
         );
 

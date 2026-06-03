@@ -56,6 +56,13 @@ export async function POST(req: Request): Promise<Response> {
   if (event === "pull_request") {
     await handlePullRequest(db, payload, deliveryId);
   }
+  if (
+    event === "issue_comment" ||
+    event === "pull_request_review" ||
+    event === "pull_request_review_comment"
+  ) {
+    await handleMention(db, event, payload, deliveryId);
+  }
   if (event === "workflow_run") {
     await handleWorkflowRun(payload);
   }
@@ -72,6 +79,16 @@ type PullRequestPayload = {
   };
   repository: { full_name: string };
   installation?: { id: number };
+};
+
+type MentionPayload = {
+  action: string;
+  repository: { full_name: string };
+  installation?: { id: number };
+  issue?: { number?: number; pull_request?: unknown };
+  pull_request?: { number?: number };
+  comment?: { body?: string | null };
+  review?: { body?: string | null };
 };
 
 type WorkflowRunPayload = {
@@ -136,10 +153,81 @@ async function handlePullRequest(
     }
   }
 
+  await dispatchReview(db, {
+    deliveryId,
+    installationId: installation.id,
+    repoFullName,
+    pullNumber,
+    headSha,
+  });
+}
+
+async function handleMention(
+  db: ReturnType<typeof getDb>,
+  event: string,
+  p: MentionPayload,
+  deliveryId: string,
+): Promise<void> {
+  if (!p.installation) return;
+  if (!["created", "submitted"].includes(p.action)) return;
+  const body = p.comment?.body ?? p.review?.body ?? "";
+  if (!mentionsPostil(body)) return;
+
+  const pullNumber =
+    event === "issue_comment" ? p.issue?.number : (p.pull_request?.number ?? p.issue?.number);
+  if (!pullNumber) return;
+  if (event === "issue_comment" && !p.issue?.pull_request) return;
+
+  const repoFullName = p.repository.full_name;
+  const [owner, repo] = repoFullName.split("/");
+  const octokit = await installationOctokit(p.installation.id);
+  const pull = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+    owner,
+    repo,
+    pull_number: pullNumber,
+  });
+  const data = pull.data as { draft?: unknown; head?: { sha?: unknown } };
+  if (data.draft === true) return;
+  const headSha = String(data.head?.sha ?? "");
+  if (!headSha) return;
+
+  await dispatchReview(db, {
+    deliveryId,
+    installationId: p.installation.id,
+    repoFullName,
+    pullNumber,
+    headSha,
+    forceCheckRun: true,
+  });
+
+  track("system", "review_mentioned", {
+    repoFullName,
+    pullNumber,
+    headSha,
+    event,
+  });
+}
+
+function mentionsPostil(body: string | null | undefined): boolean {
+  return /(^|[^\w-])@postil\b/i.test(body ?? "");
+}
+
+async function dispatchReview(
+  db: ReturnType<typeof getDb>,
+  input: {
+    deliveryId: string;
+    installationId: number;
+    repoFullName: string;
+    pullNumber: number;
+    headSha: string;
+    forceCheckRun?: boolean;
+  },
+): Promise<void> {
+  const { deliveryId, installationId, repoFullName, pullNumber, headSha, forceCheckRun } = input;
   const reviewRow = await db
     .insert(schema.reviews)
     .values({
-      installationId: installation.id,
+      installationId,
       repoFullName,
       pullNumber,
       headSha,
@@ -163,7 +251,17 @@ async function handlePullRequest(
       columns: { id: true, checkRunId: true },
     });
     reviewId = existing?.id;
-    checkRunId = existing?.checkRunId ?? undefined;
+    checkRunId = forceCheckRun ? undefined : (existing?.checkRunId ?? undefined);
+    if (reviewId) {
+      await db
+        .update(schema.reviews)
+        .set({
+          status: "running",
+          errorMessage: null,
+          completedAt: null,
+        })
+        .where(eq(schema.reviews.id, reviewId));
+    }
   }
 
   if (!reviewId) {
@@ -173,7 +271,7 @@ async function handlePullRequest(
   if (!checkRunId) {
     // Create an in-progress check-run so the PR shows "postil/review" immediately.
     try {
-      const octokit = await installationOctokit(installation.id);
+      const octokit = await installationOctokit(installationId);
       const [owner, repo] = repoFullName.split("/");
       const checkRun = await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
         owner,
@@ -207,7 +305,7 @@ async function handlePullRequest(
   try {
     const triggerRun = await enqueueReviewPullRequest(
       {
-        installationId: installation.id,
+        installationId,
         repoFullName,
         pullNumber,
         headSha,
@@ -242,7 +340,7 @@ async function handlePullRequest(
         repoFullName,
         pullNumber,
         headSha,
-        installationId: installation.id,
+        installationId,
         reviewId,
         checkRunId,
         triggerRunId: triggerRun.id,
@@ -272,7 +370,7 @@ async function handlePullRequest(
     });
     if (checkRunId) {
       try {
-        const octokit = await installationOctokit(installation.id);
+        const octokit = await installationOctokit(installationId);
         const [owner, repo] = repoFullName.split("/");
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
           owner,

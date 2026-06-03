@@ -1,21 +1,22 @@
 import type { Metadata } from "next";
-import { DM_Sans, DM_Serif_Display, JetBrains_Mono } from "next/font/google";
+import { IBM_Plex_Mono, Inter, Source_Serif_4 } from "next/font/google";
 import { PostHogProvider } from "@/components/providers/posthog-provider";
+import { ReactGrabDev } from "@/components/react-grab-dev";
 import "./globals.css";
 
-const body = DM_Sans({
+const body = Inter({
   subsets: ["latin"],
   variable: "--font-body",
   weight: ["400", "500", "600"],
 });
 
-const display = DM_Serif_Display({
+const display = Source_Serif_4({
   subsets: ["latin"],
   variable: "--font-display",
-  weight: ["400"],
+  weight: ["400", "600", "700"],
 });
 
-const mono = JetBrains_Mono({
+const mono = IBM_Plex_Mono({
   weight: ["400", "500"],
   subsets: ["latin"],
   variable: "--font-mono",
@@ -31,14 +32,14 @@ export const metadata: Metadata = {
     template: "%s · Postil",
   },
   description:
-    "Postil reads every pull request, flags the things that matter, stays out of the way on the rest. Managed at postil.dev, or self-host under Apache-2.0.",
+    "Postil is a low-noise review gate for agent-speed development. It catches merge-relevant bugs, security issues, and intent mismatches without review theater.",
   applicationName: "Postil",
   openGraph: {
     type: "website",
     siteName: "Postil",
     title: "Postil — AI pull request reviews",
     description:
-      "Reviews that ship with the PR. Managed SaaS or self-host under Apache-2.0.",
+      "A calm review gate for agent-speed development. Managed beta or self-host under Apache-2.0.",
     url: "https://postil.dev",
   },
   twitter: {
@@ -55,7 +56,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${body.variable} ${display.variable} ${mono.variable}`}>
       <body>
-        <PostHogProvider>{children}</PostHogProvider>
+        <PostHogProvider>
+          {children}
+          <ReactGrabDev />
+        </PostHogProvider>
       </body>
     </html>
   );
