@@ -119,7 +119,7 @@ describe("reviewPullRequest", () => {
     await runReviewTask.run(PAYLOAD);
 
     expect(fsMock.mkdir).toHaveBeenCalledWith(
-      expect.stringMatching(/\/postil-runs\/.+/),
+      expect.stringMatching(/(?:^|[\\/])postil-runs[\\/].+/),
       expect.objectContaining({ recursive: true, mode: 0o700 }),
     );
     expect(githubMock.mintInstallationToken).toHaveBeenCalledWith(1);
