@@ -4,12 +4,11 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { Octokit } from "@octokit/rest";
 import { auth, logger, task } from "@trigger.dev/sdk/v3";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/db";
 import { env } from "@/lib/env";
-import { mintInstallationToken } from "@/lib/github";
+import { installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import {
@@ -20,7 +19,6 @@ import {
 } from "./review-types";
 
 const execFile = promisify(execFileCb);
-type CheckRunClient = Pick<Octokit, "request">;
 
 let triggerConfigured = false;
 
@@ -51,15 +49,9 @@ function publicReviewErrorMessage(): string {
   return "Review failed to complete.";
 }
 
-function createRepositoryCheckRunClient(): CheckRunClient | null {
-  if (!env.GITHUB_PAT) return null;
-  return new Octokit({ auth: env.GITHUB_PAT });
-}
-
 async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
   if (!payload.checkRunId) return;
-  const octokit = createRepositoryCheckRunClient();
-  if (!octokit) throw new Error("review check client unavailable");
+  const octokit = await installationOctokit(payload.installationId);
   const [owner, repo] = payload.repoFullName.split("/");
   await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
