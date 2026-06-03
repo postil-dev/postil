@@ -84,6 +84,10 @@ export type Env = z.infer<typeof schema>;
 
 const parsed = schema.parse(process.env);
 
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value?.trim());
+}
+
 export const env: Env & {
   /** Unified database URL: `NEON_CONNECTION_STRING` takes precedence. */
   databaseUrl: string | undefined;
@@ -92,5 +96,9 @@ export const env: Env & {
 } = {
   ...parsed,
   databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
-  triggerApiKey: parsed.TRIGGER_API_KEY ?? parsed.TRIGGER_API_TOKEN ?? parsed.TRIGGER_SECRET_KEY,
+  triggerApiKey: firstNonEmpty(
+    parsed.TRIGGER_SECRET_KEY,
+    parsed.TRIGGER_API_KEY,
+    parsed.TRIGGER_API_TOKEN,
+  ),
 };

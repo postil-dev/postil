@@ -1,7 +1,13 @@
 import { defineConfig } from "@trigger.dev/sdk";
 
+const project = process.env.TRIGGER_PROJECT_ID?.trim();
+
+if (!project) {
+  throw new Error("TRIGGER_PROJECT_ID must be set before deploying review tasks");
+}
+
 export default defineConfig({
-  project: process.env.TRIGGER_PROJECT_ID ?? "proj_zcyhktbnqmrudynkkicc",
+  project,
   runtime: "bun",
   dirs: ["./src/jobs"],
   logLevel: "info",
