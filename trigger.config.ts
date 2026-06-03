@@ -1,9 +1,6 @@
 import { defineConfig } from "@trigger.dev/sdk";
 
-const project = process.env.TRIGGER_PROJECT_ID;
-if (!project) {
-  throw new Error("TRIGGER_PROJECT_ID is required");
-}
+const project = process.env.TRIGGER_PROJECT_ID?.trim() || "local-development";
 
 export default defineConfig({
   project,

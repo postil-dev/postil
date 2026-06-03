@@ -246,7 +246,7 @@ export const reviewPullRequest = task({
 
 export async function enqueueReviewPullRequest(payload: ReviewPayload, idempotencyKey: string) {
   return tasks.trigger<typeof reviewPullRequest>(
-    "review-pull-request",
+    reviewPullRequest.id,
     payload,
     { idempotencyKey },
     { clientConfig: triggerClientConfig() },
