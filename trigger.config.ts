@@ -1,6 +1,10 @@
 import { defineConfig } from "@trigger.dev/sdk";
 
-const project = process.env.TRIGGER_PROJECT_ID?.trim() || "local-development";
+const project = process.env.TRIGGER_PROJECT_ID?.trim();
+
+if (!project) {
+  throw new Error("TRIGGER_PROJECT_ID must be set before deploying review tasks");
+}
 
 export default defineConfig({
   project,
