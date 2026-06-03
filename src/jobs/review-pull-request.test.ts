@@ -159,6 +159,7 @@ describe("reviewPullRequest", () => {
 
     await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
 
+    expect(githubMock.installationOctokit).toHaveBeenCalledWith(PAYLOAD.installationId);
     expect(githubMock.request).toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({

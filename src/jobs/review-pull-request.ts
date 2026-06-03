@@ -12,10 +12,10 @@ import { installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import {
-  reviewEnvelope,
-  reviewPayload,
   type ReviewEnvelope,
   type ReviewPayload,
+  reviewEnvelope,
+  reviewPayload,
 } from "./review-types";
 
 const execFile = promisify(execFileCb);
@@ -51,8 +51,8 @@ function publicReviewErrorMessage(): string {
 
 async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
   if (!payload.checkRunId) return;
-  const [owner, repo] = payload.repoFullName.split("/");
   const octokit = await installationOctokit(payload.installationId);
+  const [owner, repo] = payload.repoFullName.split("/");
   await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
     repo,
@@ -66,6 +66,19 @@ async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
       text: publicReviewErrorMessage(),
     },
   });
+}
+
+async function markReviewFailed(payload: ReviewPayload): Promise<void> {
+  if (!payload.reviewId) return;
+  const db = getDb();
+  await db
+    .update(schema.reviews)
+    .set({
+      status: "failed",
+      errorMessage: publicReviewErrorMessage(),
+      completedAt: new Date(),
+    })
+    .where(eq(schema.reviews.id, payload.reviewId));
 }
 
 async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
@@ -126,16 +139,18 @@ export const reviewPullRequest = task({
     logger.info("starting review", { payload });
     const started = Date.now();
     const reviewModelUsed = selectedReviewModel();
-
-    track("system", "review_started", {
-      repoFullName: payload.repoFullName,
-      pullNumber: payload.pullNumber,
-      headSha: payload.headSha,
-      modelUsed: reviewModelUsed,
-      installationHash: await hashInstallationId(payload.installationId),
-    });
+    let installationHash: string | undefined;
 
     try {
+      installationHash = await hashInstallationId(payload.installationId);
+      track("system", "review_started", {
+        repoFullName: payload.repoFullName,
+        pullNumber: payload.pullNumber,
+        headSha: payload.headSha,
+        modelUsed: reviewModelUsed,
+        installationHash,
+      });
+
       const result = await runReviewCli(payload);
 
       if (payload.reviewId) {
@@ -166,7 +181,7 @@ export const reviewPullRequest = task({
         findings: result.findings.length,
         durationMs: Date.now() - started,
         modelUsed: result.modelUsed ?? reviewModelUsed,
-        installationHash: await hashInstallationId(payload.installationId),
+        installationHash,
       });
 
       try {
@@ -199,6 +214,18 @@ export const reviewPullRequest = task({
       });
 
       try {
+        await markReviewFailed(payload);
+      } catch (dbErr) {
+        captureException(dbErr, {
+          properties: {
+            op: "update_review_failed",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
+        });
+      }
+
+      try {
         await completeCheckRunFailed(payload);
       } catch (checkRunErr) {
         captureException(new Error("postil review check-run failure patch failed"), {
@@ -211,28 +238,6 @@ export const reviewPullRequest = task({
         });
       }
 
-      if (payload.reviewId) {
-        try {
-          const db = getDb();
-          await db
-            .update(schema.reviews)
-            .set({
-              status: "failed",
-              errorMessage: publicReviewErrorMessage(),
-              completedAt: new Date(),
-            })
-            .where(eq(schema.reviews.id, payload.reviewId));
-        } catch (dbErr) {
-          captureException(dbErr, {
-            properties: {
-              op: "update_review_failed",
-              repoFullName: payload.repoFullName,
-              pullNumber: payload.pullNumber,
-            },
-          });
-        }
-      }
-
       track("system", "review_failed", {
         repoFullName: payload.repoFullName,
         pullNumber: payload.pullNumber,
@@ -240,7 +245,7 @@ export const reviewPullRequest = task({
         error: publicReviewErrorMessage(),
         errorClass: err instanceof Error ? err.name : "unknown",
         modelUsed: reviewModelUsed,
-        installationHash: await hashInstallationId(payload.installationId),
+        installationHash,
       });
 
       throw publicError;
