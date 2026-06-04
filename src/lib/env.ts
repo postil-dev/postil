@@ -41,6 +41,8 @@ const schema = z.object({
 
   // Trigger.dev
   TRIGGER_API_KEY: z.string().optional(),
+  TRIGGER_SECRET_KEY: z.string().optional(),
+  TRIGGER_API_TOKEN: z.string().optional(),
   TRIGGER_PROJECT_ID: z.string().optional(),
   TRIGGER_API_URL: z.string().url().default("https://api.trigger.dev"),
 
@@ -60,12 +62,13 @@ const schema = z.object({
   NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
   NEXT_PUBLIC_POSTHOG_HOST: z.string().url().default("https://eu.i.posthog.com"),
 
-  // OpenRouter (AI provider for the review bot, invoked via opencode CLI
-  // inside the sandbox). Management key is used to vend per-workspace keys.
+  // OpenRouter (AI provider for the review bot). Management key is used to
+  // vend per-workspace keys.
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_MANAGEMENT_KEY: z.string().optional(),
   REVIEW_MODEL: z.string().default("moonshotai/kimi-k2.6"),
   REVIEW_MODEL_CASCADE: z.string().optional(),
+  POSTIL_CLI_PATH: z.string().optional(),
 
   // Cloudflare
   CLOUDFLARE_API_TOKEN: z.string().optional(),
@@ -82,10 +85,21 @@ export type Env = z.infer<typeof schema>;
 
 const parsed = schema.parse(process.env);
 
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value?.trim());
+}
+
 export const env: Env & {
   /** Unified database URL: `NEON_CONNECTION_STRING` takes precedence. */
   databaseUrl: string | undefined;
+  /** Unified Trigger auth token: supports old and current deployed names. */
+  triggerApiKey: string | undefined;
 } = {
   ...parsed,
   databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
+  triggerApiKey: firstNonEmpty(
+    parsed.TRIGGER_SECRET_KEY,
+    parsed.TRIGGER_API_KEY,
+    parsed.TRIGGER_API_TOKEN,
+  ),
 };

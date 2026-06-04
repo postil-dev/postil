@@ -1,37 +1,135 @@
+import { execFile as execFileCb } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { logger, task, tasks } from "@trigger.dev/sdk/v3";
 import { eq } from "drizzle-orm";
-import { auth, logger, task } from "@trigger.dev/sdk/v3";
 import { getDb, schema } from "@/db";
-import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
-import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { env } from "@/lib/env";
+import { installationOctokit, mintInstallationToken } from "@/lib/github";
+import { captureException, hashInstallationId, track } from "@/lib/posthog";
+import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import {
-  resolveReviewModelUsed,
-  selectedReviewModel,
-} from "./review-models";
-import {
-  isOpenRouterCascadeError,
-  publicReviewErrorMessage,
+  type ReviewEnvelope,
+  type ReviewPayload,
+  reviewEnvelope,
   reviewPayload,
-  runReview,
-} from "./run-review";
+} from "./review-types";
 
-let triggerConfigured = false;
+const execFile = promisify(execFileCb);
 
-function ensureTriggerConfigured(): void {
-  if (triggerConfigured) return;
-  if (!env.TRIGGER_API_KEY) {
-    throw new Error("TRIGGER_API_KEY must be set to dispatch review tasks");
+function triggerClientConfig() {
+  if (!env.triggerApiKey) {
+    throw new Error("Trigger API token must be set to dispatch review tasks");
+  }
+  if (!env.TRIGGER_PROJECT_ID?.trim()) {
+    throw new Error("TRIGGER_PROJECT_ID must be set to dispatch review tasks");
   }
 
-  auth.configure({
+  return {
     baseURL: env.TRIGGER_API_URL,
-    accessToken: env.TRIGGER_API_KEY,
-  });
-  triggerConfigured = true;
+    accessToken: env.triggerApiKey,
+  };
 }
 
-// Trigger.dev-flavoured wrapper around runReview. The webhook enqueues this
-// task so the review work runs through the CLI runner.
+function selectedReviewModel(): string {
+  const raw = env.REVIEW_MODEL_CASCADE?.trim() ? env.REVIEW_MODEL_CASCADE : env.REVIEW_MODEL;
+  return (
+    raw
+      .split(",")
+      .map((model) => model.trim())
+      .filter(Boolean)[0] ?? env.REVIEW_MODEL
+  );
+}
+
+function publicReviewErrorMessage(): string {
+  return "Review failed to complete.";
+}
+
+async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
+  if (!payload.checkRunId) return;
+  const octokit = await installationOctokit(payload.installationId);
+  const [owner, repo] = payload.repoFullName.split("/");
+  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+    owner,
+    repo,
+    check_run_id: payload.checkRunId,
+    status: "completed",
+    conclusion: "failure",
+    completed_at: new Date().toISOString(),
+    output: {
+      title: "Postil Review",
+      summary: publicReviewErrorMessage(),
+      text: publicReviewErrorMessage(),
+    },
+  });
+}
+
+async function markReviewFailed(payload: ReviewPayload): Promise<void> {
+  if (!payload.reviewId) return;
+  const db = getDb();
+  await db
+    .update(schema.reviews)
+    .set({
+      status: "failed",
+      errorMessage: publicReviewErrorMessage(),
+      completedAt: new Date(),
+    })
+    .where(eq(schema.reviews.id, payload.reviewId));
+}
+
+async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
+  const runDir = join(tmpdir(), "postil-runs", randomUUID());
+  await mkdir(runDir, { recursive: true, mode: 0o700 });
+  const configPath = join(runDir, "config.json");
+  const outputPath = join(runDir, "review.json");
+  try {
+    const installationToken = await mintInstallationToken(payload.installationId);
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        githubToken: installationToken,
+        openrouterApiKey: env.OPENROUTER_API_KEY,
+        repo: payload.repoFullName,
+        pr: payload.pullNumber,
+        sha: payload.headSha,
+        checkRunId: payload.checkRunId,
+        reviewModel: env.REVIEW_MODEL,
+        reviewModelCascade: env.REVIEW_MODEL_CASCADE,
+      }),
+      { mode: 0o600 },
+    );
+
+    const cli = env.POSTIL_CLI_PATH ?? "postil";
+    try {
+      await execFile(cli, ["review", "--config", configPath, "--output-json", outputPath], {
+        cwd: process.cwd(),
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (err) {
+      try {
+        const result = reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
+        if (isExpectedFindingsExit(err) && result.findings.length > 0) {
+          // The CLI owns check-run completion through checkRunId before exiting for findings.
+          return result;
+        }
+      } catch {
+        // Preserve the original CLI failure when no valid review envelope exists.
+      }
+      throw err;
+    }
+    return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
+  } finally {
+    await rm(runDir, { recursive: true, force: true });
+  }
+}
+
+function isExpectedFindingsExit(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === 1;
+}
+
 export const reviewPullRequest = task({
   id: "review-pull-request",
   maxDuration: 10 * 60,
@@ -39,18 +137,20 @@ export const reviewPullRequest = task({
     const payload = reviewPayload.parse(raw);
     logger.info("starting review", { payload });
     const started = Date.now();
-    const reviewModelUsed = selectedReviewModel(env.REVIEW_MODEL_CASCADE, env.REVIEW_MODEL);
-
-    track("system", "review_started", {
-      repoFullName: payload.repoFullName,
-      pullNumber: payload.pullNumber,
-      headSha: payload.headSha,
-      modelUsed: reviewModelUsed,
-      installationHash: await hashInstallationId(payload.installationId),
-    });
+    const reviewModelUsed = selectedReviewModel();
+    let installationHash: string | undefined;
 
     try {
-      const result = await runReview(payload);
+      installationHash = await hashInstallationId(payload.installationId);
+      track("system", "review_started", {
+        repoFullName: payload.repoFullName,
+        pullNumber: payload.pullNumber,
+        headSha: payload.headSha,
+        modelUsed: reviewModelUsed,
+        installationHash,
+      });
+
+      const result = await runReviewCli(payload);
 
       if (payload.reviewId) {
         try {
@@ -79,8 +179,8 @@ export const reviewPullRequest = task({
         pullNumber: payload.pullNumber,
         findings: result.findings.length,
         durationMs: Date.now() - started,
-        modelUsed: resolveReviewModelUsed(result, reviewModelUsed),
-        installationHash: await hashInstallationId(payload.installationId),
+        modelUsed: result.modelUsed ?? reviewModelUsed,
+        installationHash,
       });
 
       try {
@@ -100,63 +200,63 @@ export const reviewPullRequest = task({
 
       return { ok: true, findings: result.findings.length };
     } catch (err) {
-      captureException(err, {
+      const publicError = new Error(publicReviewErrorMessage());
+      captureException(publicError, {
         properties: {
-          op: "review",
+          op: "review_cli",
           repoFullName: payload.repoFullName,
           pullNumber: payload.pullNumber,
           headSha: payload.headSha,
-          modelUsed: resolveReviewModelUsed(err, reviewModelUsed),
-          attemptedModels: isOpenRouterCascadeError(err) ? err.attemptedModels : undefined,
-          providerFailures: isOpenRouterCascadeError(err) ? err.providerFailures : undefined,
+          modelUsed: reviewModelUsed,
+          errorClass: err instanceof Error ? err.name : typeof err,
         },
       });
 
-      if (payload.reviewId) {
-        try {
-          const db = getDb();
-          await db
-            .update(schema.reviews)
-            .set({
-              status: "failed",
-              errorMessage: publicReviewErrorMessage(err),
-              completedAt: new Date(),
-            })
-            .where(eq(schema.reviews.id, payload.reviewId));
-        } catch (dbErr) {
-          captureException(dbErr, {
-            properties: {
-              op: "update_review_failed",
-              repoFullName: payload.repoFullName,
-              pullNumber: payload.pullNumber,
-            },
-          });
-        }
+      try {
+        await markReviewFailed(payload);
+      } catch (dbErr) {
+        captureException(dbErr, {
+          properties: {
+            op: "update_review_failed",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
+        });
+      }
+
+      try {
+        await completeCheckRunFailed(payload);
+      } catch (checkRunErr) {
+        captureException(new Error("postil review check-run failure patch failed"), {
+          properties: {
+            op: "emergency_complete_check_run",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+            errorClass: checkRunErr instanceof Error ? checkRunErr.name : typeof checkRunErr,
+          },
+        });
       }
 
       track("system", "review_failed", {
         repoFullName: payload.repoFullName,
         pullNumber: payload.pullNumber,
         headSha: payload.headSha,
-        error: publicReviewErrorMessage(err),
+        error: publicReviewErrorMessage(),
         errorClass: err instanceof Error ? err.name : "unknown",
-        modelUsed: resolveReviewModelUsed(err, reviewModelUsed),
-        attemptedModels: isOpenRouterCascadeError(err) ? err.attemptedModels : undefined,
-        providerFailures: isOpenRouterCascadeError(err) ? err.providerFailures : undefined,
-        installationHash: await hashInstallationId(payload.installationId),
+        modelUsed: reviewModelUsed,
+        installationHash,
       });
 
-      // runReview already attempts to mark the check-run as failed before
-      // re-throwing; rethrow here so Trigger.dev retries fire if configured.
-      throw err;
+      throw publicError;
     }
   },
 });
 
-export async function enqueueReviewPullRequest(
-  payload: import("./run-review").ReviewPayload,
-  idempotencyKey: string,
-) {
-  ensureTriggerConfigured();
-  return reviewPullRequest.trigger(payload, { idempotencyKey });
+export async function enqueueReviewPullRequest(payload: ReviewPayload, idempotencyKey: string) {
+  return tasks.trigger<typeof reviewPullRequest>(
+    reviewPullRequest.id,
+    payload,
+    { idempotencyKey },
+    { clientConfig: triggerClientConfig() },
+  );
 }

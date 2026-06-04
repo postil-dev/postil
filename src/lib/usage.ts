@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/db";
-import type { TokenUsage } from "@/jobs/run-review";
+import type { TokenUsage } from "@/jobs/review-types";
 
 /**
  * Record a tokens_consumed usage event for a completed review.

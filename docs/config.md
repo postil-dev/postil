@@ -4,6 +4,10 @@ Postil looks for a review configuration file at the root of the repository
 being reviewed. The first file found (by this precedence) wins; others are
 ignored.
 
+Config exists to tune merge-relevant review, suppress noise, and turn repeated
+feedback into durable guardrails. It should not be used to make Postil a style
+nitpicker or a generic comment bot.
+
 | Order | File                                       | Schema owner   |
 | ----- | ------------------------------------------ | -------------- |
 | 1     | `.postil.yaml`, `.postil.yml`, `.postil.json` | Postil         |
@@ -39,19 +43,26 @@ reviewer:
     - "security"
     - "concurrency"
 
+# Clean reviews should normally stay silent unless your branch protection
+# depends on approval reviews.
+review:
+  enabled: true
+  onClean: skip
+  autoMerge: false
+
 # Required check names for auto-merge. If omitted, Postil asks GitHub
 # branch protection for the required status checks on the PR base branch.
-required_checks:
-  - "postil/review"
-  - "Lint"
-  - "Typecheck"
-  - "Unit tests"
-  - "Build"
-  - "Docker build"
-  - "Verify postil/review passed"
+  requiredChecks:
+    - "postil/review"
+    - "Lint"
+    - "Typecheck"
+    - "Unit tests"
+    - "Build"
+    - "Docker build"
+    - "Verify postil/review passed"
 
-# Timeout in milliseconds for GitHub mergeability and check lookups.
-auto_merge_timeout_ms: 15000
+  # Timeout in milliseconds for GitHub mergeability and check lookups.
+  autoMergeTimeoutMs: 15000
 ```
 
 ## CodeRabbit translation
@@ -75,12 +86,12 @@ Postil honours the following fields from `.kodo.yaml`:
 
 ## Auto-merge
 
-When `review.auto_merge` is enabled, Postil waits for the PR review check to
+When `review.autoMerge` is enabled, Postil waits for the PR review check to
 finish before trying to merge. It only merges when the required checks are
 green, and it keeps the `e2e` label gate active by waiting for `E2E tests`
 when that label is present.
 
-If `review.required_checks` is set, those check names are used directly.
+If `review.requiredChecks` is set, those check names are used directly.
 Otherwise Postil asks GitHub for the branch protection required status checks
 on the PR base branch. If neither source yields any required checks, Postil
 skips auto-merge.
@@ -99,4 +110,24 @@ maxFindings: 25
 reviewer:
   tone: neutral
   focus: []
+review:
+  enabled: true
+  onClean: skip
+  autoMerge: false
+  requiredChecks: []
+  autoMergeTimeoutMs: 15000
+```
+
+## Migration note: clean reviews are silent by default
+
+Postil now defaults `review.onClean` to `skip`. Clean reviews still complete the
+`postil/review` check, but they do not post an approving pull request review.
+This matches the product rule that silence is a feature.
+
+Repositories whose branch protection or auto-merge policy requires a Postil
+approval review should opt back in explicitly:
+
+```yaml
+review:
+  onClean: approve
 ```

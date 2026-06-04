@@ -2,8 +2,8 @@ import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
+import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/auto-merge";
 import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
-import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/run-review";
 import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
@@ -14,6 +14,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
+const REVIEW_WORKFLOW_PATH = ".github/workflows/postil-review.yml";
+const REVIEW_WORKFLOW_FAILURE_CONCLUSIONS = new Set(["cancelled", "failure"]);
 
 function verifySignature(payload: string, signature: string | null): boolean {
   if (!signature || !env.GITHUB_WEBHOOK_SECRET) return false;
@@ -93,6 +95,11 @@ type MentionPayload = {
 
 type WorkflowRunPayload = {
   action: string;
+  workflow?: {
+    id?: number | null;
+    name?: string | null;
+    path?: string | null;
+  } | null;
   workflow_run: {
     id: number;
     name?: string | null;
@@ -100,8 +107,9 @@ type WorkflowRunPayload = {
     html_url: string;
     head_branch?: string | null;
     head_sha?: string | null;
+    path?: string | null;
     actor?: { login?: string | null } | null;
-    pull_requests?: Array<{ number: number }>;
+    pull_requests?: Array<{ number: number; head?: { sha?: string | null } | null }>;
   };
   repository: { full_name: string };
   installation?: { id: number };
@@ -122,6 +130,9 @@ type WorkflowJob = {
     status?: string | null;
   }>;
 };
+
+type ReviewCheckRun = { id: string; checkRunId: number | null } | null | undefined;
+type ReviewWorkflowRunContext = { pullNumber: number | null; headSha: string | null };
 
 async function handlePullRequest(
   db: ReturnType<typeof getDb>,
@@ -430,6 +441,138 @@ async function recordReviewDispatchFailure(
   }
 }
 
+async function completeReviewWorkflowFailureCheckRun(
+  db: ReturnType<typeof getDb>,
+  octokit: MinimalOctokit,
+  repoFullName: string,
+  pullNumber: number | null,
+  candidateHeadShas: Array<string | null | undefined>,
+  conclusion: string | null | undefined,
+): Promise<void> {
+  let review: ReviewCheckRun;
+  try {
+    review = await findReviewCheckRunForWorkflowFailure(
+      db,
+      repoFullName,
+      pullNumber,
+      candidateHeadShas,
+    );
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "lookup_review_for_workflow_failure",
+        repoFullName,
+        pullNumber,
+      },
+    });
+    return;
+  }
+
+  if (!review?.checkRunId) {
+    captureException(new Error("Review workflow failure did not match a review check-run"), {
+      properties: {
+        op: "review_workflow_failure_check_run_unmatched",
+        repoFullName,
+        pullNumber,
+      },
+    });
+    return;
+  }
+
+  const completedAt = new Date();
+  try {
+    await db
+      .update(schema.reviews)
+      .set({
+        status: "failed",
+        errorMessage: `Review workflow ${conclusion === "cancelled" ? "cancelled" : "failed"} before review completion.`,
+        completedAt,
+      })
+      .where(eq(schema.reviews.id, review.id));
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "record_review_workflow_failure",
+        repoFullName,
+        pullNumber,
+        reviewId: review.id,
+      },
+    });
+  }
+
+  const [owner, repo] = repoFullName.split("/");
+  try {
+    await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+      owner,
+      repo,
+      check_run_id: review.checkRunId,
+      status: "completed",
+      conclusion: "failure",
+      completed_at: completedAt.toISOString(),
+      output: {
+        title: "Postil Review",
+        summary: "Review failed to complete.",
+        text: "Review failed to complete.",
+      },
+    });
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "complete_review_workflow_failure_check_run",
+        repoFullName,
+        pullNumber,
+        reviewId: review.id,
+        checkRunId: review.checkRunId,
+      },
+    });
+  }
+}
+
+async function findReviewCheckRunForWorkflowFailure(
+  db: ReturnType<typeof getDb>,
+  repoFullName: string,
+  pullNumber: number | null,
+  candidateHeadShas: Array<string | null | undefined>,
+): Promise<ReviewCheckRun> {
+  const uniqueHeadShas = [
+    ...new Set(candidateHeadShas.filter((sha): sha is string => Boolean(sha))),
+  ];
+
+  for (const headSha of uniqueHeadShas) {
+    const where = [
+      eq(schema.reviews.repoFullName, repoFullName),
+      eq(schema.reviews.headSha, headSha),
+    ];
+    if (pullNumber !== null) {
+      where.push(eq(schema.reviews.pullNumber, pullNumber));
+    }
+
+    const review = await db.query.reviews.findFirst({
+      where: and(...where),
+      orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
+      columns: { id: true, checkRunId: true },
+    });
+    if (review?.checkRunId) return review;
+  }
+
+  return null;
+}
+
+function resolveReviewWorkflowRunContext(
+  workflowRun: WorkflowRunPayload["workflow_run"],
+): ReviewWorkflowRunContext {
+  const payloadPull = workflowRun.pull_requests?.[0];
+  return { pullNumber: payloadPull?.number ?? null, headSha: payloadPull?.head?.sha ?? null };
+}
+
+function isReviewWorkflowFailureConclusion(conclusion: string | null | undefined): boolean {
+  return (
+    conclusion !== null &&
+    conclusion !== undefined &&
+    REVIEW_WORKFLOW_FAILURE_CONCLUSIONS.has(conclusion)
+  );
+}
+
 async function deleteWebhookDelivery(
   db: ReturnType<typeof getDb>,
   deliveryId: string,
@@ -451,16 +594,31 @@ async function deleteWebhookDelivery(
 }
 
 async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
-  const { action, workflow_run, repository, installation } = p;
+  const { action, workflow, workflow_run, repository, installation } = p;
   if (!installation) return;
   if (action !== "completed") return;
 
   const pullNumber = workflow_run.pull_requests?.[0]?.number;
-  if (!pullNumber) return;
-
   const repoFullName = repository.full_name;
   const [owner, repo] = repoFullName.split("/");
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
+
+  if (workflow?.path === REVIEW_WORKFLOW_PATH || workflow_run.path === REVIEW_WORKFLOW_PATH) {
+    if (isReviewWorkflowFailureConclusion(workflow_run.conclusion)) {
+      const reviewContext = resolveReviewWorkflowRunContext(workflow_run);
+      await completeReviewWorkflowFailureCheckRun(
+        getDb(),
+        octokit,
+        repoFullName,
+        pullNumber ?? reviewContext.pullNumber,
+        [workflow_run.head_sha ?? null, reviewContext.headSha],
+        workflow_run.conclusion,
+      );
+    }
+    return;
+  }
+
+  if (!pullNumber) return;
 
   if (workflow_run.conclusion === "success") {
     if (workflow_run.name !== "CI" || !workflow_run.head_sha) return;
