@@ -197,6 +197,90 @@ describe("github webhook", () => {
     expect(dbMock.updateCalls).toContainEqual({ triggerRunId: "trigger-run-123" });
   });
 
+  it("enqueues review work when @postil is mentioned on a PR conversation", async () => {
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}") {
+        return { data: { draft: false, head: { sha: "mention-sha" } } };
+      }
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 654 } };
+      }
+      return { data: [] };
+    });
+
+    const res = await POST(
+      signedRequest("issue_comment", "mention-comment", {
+        action: "created",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        issue: {
+          number: 68,
+          pull_request: { url: "https://api.github.com/repos/acme/widget/pulls/68" },
+        },
+        comment: { body: "@postil take another look at this auth path" },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(reviewJobMock.enqueueReviewPullRequest).toHaveBeenCalledWith(
+      {
+        installationId: 123,
+        repoFullName: "acme/widget",
+        pullNumber: 68,
+        headSha: "mention-sha",
+        checkRunId: 654,
+        reviewId: "review-1",
+      },
+      "mention-comment",
+    );
+    expect(posthogMock.track).toHaveBeenCalledWith(
+      "system",
+      "review_mentioned",
+      expect.objectContaining({
+        repoFullName: "acme/widget",
+        pullNumber: 68,
+        event: "issue_comment",
+      }),
+    );
+  });
+
+  it("ignores @postil issue comments that are not attached to a PR", async () => {
+    const res = await POST(
+      signedRequest("issue_comment", "mention-issue", {
+        action: "created",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        issue: { number: 12 },
+        comment: { body: "@postil please help" },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalledWith(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      expect.anything(),
+    );
+  });
+
+  it("ignores PR comments that do not mention @postil", async () => {
+    const res = await POST(
+      signedRequest("issue_comment", "ordinary-comment", {
+        action: "created",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        issue: {
+          number: 68,
+          pull_request: { url: "https://api.github.com/repos/acme/widget/pulls/68" },
+        },
+        comment: { body: "This is ready for another human pass." },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
+  });
+
   it("keeps the delivery log open when enqueue fails", async () => {
     reviewJobMock.enqueueReviewPullRequest.mockRejectedValueOnce(new Error("trigger failed"));
     mockRequest.mockImplementation(async (route: string) => {

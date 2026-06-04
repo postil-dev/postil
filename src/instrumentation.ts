@@ -5,7 +5,8 @@ export async function register() {
     return;
   }
 
-  const { runSmokeTest, shutdownPosthog } = await import("@/lib/posthog");
+  const { installNodeInstrumentation } = await import("@/instrumentation-node");
+  const { runSmokeTest } = await import("@/lib/posthog");
 
   if (env.NODE_ENV !== "production") {
     try {
@@ -15,11 +16,5 @@ export async function register() {
     }
   }
 
-  for (const signal of ["SIGTERM", "SIGINT"] as const) {
-    process.once(signal, async () => {
-      console.log(`[instrumentation] Received ${signal}, flushing PostHog...`);
-      await shutdownPosthog();
-      process.exit(0);
-    });
-  }
+  installNodeInstrumentation();
 }

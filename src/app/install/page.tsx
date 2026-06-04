@@ -1,76 +1,54 @@
 import { redirect } from "next/navigation";
+import { ArrowRight } from "lucide-react";
 import { env } from "@/lib/env";
-import { buttonVariants } from "@/components/ui/button";
 import type { Metadata } from "next";
+import { TrackedLink } from "@/components/tracked-link";
+import { buttonVariants } from "@/components/ui/button";
+import { CtaStrip, PageFrame, SectionIntro } from "../site";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Install",
-  description: "Run the Postil CLI with your own model key.",
-  alternates: { canonical: "/install" },
+  robots: { index: false, follow: false },
 };
 
-async function installGitHubApp() {
-  "use server";
-  redirect(`https://github.com/apps/${env.GITHUB_APP_SLUG}/installations/new`);
-}
-
 export default function InstallPage() {
-  const slug = env.GITHUB_APP_SLUG;
+  if (env.GITHUB_APP_INSTALL_URL) redirect(env.GITHUB_APP_INSTALL_URL);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center gap-8 p-8">
-      <div className="space-y-4">
-        <p className="font-mono text-xs tracking-widest text-primary uppercase">
-          Local-first setup
-        </p>
-        <h1 className="font-display text-4xl tracking-tight">
-          Run Postil with your own model key.
-        </h1>
-        <p className="max-w-2xl text-muted-foreground">
-          The current CLI reviews GitHub pull requests from local shells, CI, or hosted workers. It
-          uses your GitHub token and OpenRouter key, then emits merge-relevant findings and a
-          check-run result.
-        </p>
-      </div>
-
-      <section className="space-y-3">
-        <h2 className="font-display text-xl">Install the CLI</h2>
-        <pre className="overflow-x-auto border border-border bg-card p-4 font-mono text-sm">
-          cargo install --git https://github.com/postil-dev/postil-reviewer --locked --force
-        </pre>
+    <PageFrame>
+      <section className="border-b py-16">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6">
+          <SectionIntro
+            eyebrow="Managed beta"
+            title="Hosted installs are opening soon."
+            body="The GitHub App install link will appear here after final review. Until then, run the reviewer CLI in CI."
+          />
+          <div className="mt-8 flex flex-wrap gap-3">
+            <TrackedLink href="https://github.com/postil-dev/postil-reviewer" cta="Try CLI" className={buttonVariants({ size: "lg" })}>
+              Try the CLI <ArrowRight className="ml-2 h-4 w-4" />
+            </TrackedLink>
+            <TrackedLink href="/docs" cta="Read docs" className={buttonVariants({ variant: "outline", size: "lg" })}>
+              Read docs
+            </TrackedLink>
+          </div>
+        </div>
       </section>
-
-      <section className="space-y-3">
-        <h2 className="font-display text-xl">Review a pull request</h2>
-        <pre className="overflow-x-auto border border-border bg-card p-4 font-mono text-sm">
-          postil review --repo owner/repo --pr 123 --sha HEAD_SHA
-        </pre>
-        <p className="text-sm text-muted-foreground">
-          Required runtime credentials are read from{" "}
-          <span className="font-mono text-foreground">GITHUB_TOKEN</span> and{" "}
-          <span className="font-mono text-foreground">OPENROUTER_API_KEY</span>. Configure models
-          with <span className="font-mono text-foreground">REVIEW_MODEL</span> or{" "}
-          <span className="font-mono text-foreground">REVIEW_MODEL_CASCADE</span>.
-        </p>
+      <section className="py-16">
+        <div className="mx-auto grid max-w-7xl gap-4 px-4 sm:px-6 md:grid-cols-3">
+          {[
+            ["Hosted", "Install link appears here after review."],
+            ["CI", "Run the reviewer from GitHub Actions now."],
+            ["Quiet", "No issue found means no recap comment."],
+          ].map(([title, body]) => (
+            <article key={title} className="border bg-card p-6">
+              <h2 className="text-2xl">{title}</h2>
+              <p className="mt-3 text-sm leading-6 text-muted-foreground">{body}</p>
+            </article>
+          ))}
+        </div>
       </section>
-
-      <div className="flex flex-wrap gap-3">
-        <a
-          href="https://github.com/postil-dev/postil-reviewer"
-          className={buttonVariants({ variant: "outline" })}
-        >
-          CLI source
-        </a>
-        {slug ? (
-          <form action={installGitHubApp}>
-            <button type="submit" className={buttonVariants()}>
-              GitHub App preview
-            </button>
-          </form>
-        ) : null}
-      </div>
-    </main>
+      <CtaStrip />
+    </PageFrame>
   );
 }
