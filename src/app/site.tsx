@@ -2,7 +2,7 @@ import { ArrowRight, CheckCircle2, GitPullRequest, Info, Mail, ShieldCheck, Tria
 import Image from "next/image";
 import Link from "next/link";
 import { DiffPreview } from "@/components/diff-preview";
-import { StatusMark, type StatusKind } from "@/components/status-mark";
+import { StatusLine, type StatusKind } from "@/components/status-line";
 import { TrackedLink } from "@/components/tracked-link";
 import { buttonVariants } from "@/components/ui/button";
 
@@ -167,10 +167,7 @@ export function ReviewCard() {
             added={'if (!canManageBilling(actor, org)) throw new Error("authorization failed")\nawait billing.updatePlan(org.id, plan)'}
           />
         </div>
-        <div className="mt-5 flex items-center gap-1 font-mono text-sm text-primary">
-          <span className="mr-1">status:</span>
-          <StatusMark kind="error" />
-        </div>
+        <StatusLine label="status:" marks={["error"]} className="mt-5 text-sm text-primary" />
       </div>
     </div>
   );

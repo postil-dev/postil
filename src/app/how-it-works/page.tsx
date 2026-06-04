@@ -1,5 +1,4 @@
 import { CtaStrip, PageFrame, ReviewCard, SectionIntro, statusExamples } from "../site";
-import { ReviewExamples } from "@/components/review-examples";
 import { StatusLine } from "@/components/status-line";
 
 export const metadata = {
@@ -54,7 +53,7 @@ export default function HowItWorksPage() {
               The examples rotate, but each one is the kind of issue a reviewer would actually block on.
             </p>
           </div>
-          <ReviewExamples />
+          <ReviewCard />
         </div>
       </section>
       <section className="border-b py-16">

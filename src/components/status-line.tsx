@@ -1,5 +1,7 @@
 import { StatusMark, type StatusKind } from "@/components/status-mark";
 
+export type { StatusKind };
+
 export function StatusLine({
   label,
   marks,
