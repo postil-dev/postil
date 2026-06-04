@@ -2,13 +2,24 @@ import { type NextRequest, NextResponse } from "next/server";
 import { POSTHOG_BROWSER_ORIGIN } from "@/lib/posthog-config";
 
 export function createCsp(nonce: string) {
+  const isDevelopment = process.env.NODE_ENV === "development";
+  const styleSrc = ["style-src 'self' 'unsafe-inline'"];
+  const fontSrc = ["font-src 'self'"];
+  const connectSrc = ["connect-src 'self'", POSTHOG_BROWSER_ORIGIN];
+
+  if (isDevelopment) {
+    styleSrc.push("https://fonts.googleapis.com");
+    fontSrc.push("https://fonts.gstatic.com");
+    connectSrc.push("https://www.react-grab.com");
+  }
+
   return [
     "default-src 'none'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
-    "style-src 'self' 'unsafe-inline'",
-    "font-src 'self'",
+    styleSrc.join(" "),
+    fontSrc.join(" "),
     "img-src 'self' data:",
-    `connect-src 'self' ${POSTHOG_BROWSER_ORIGIN}`,
+    connectSrc.join(" "),
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

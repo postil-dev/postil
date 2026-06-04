@@ -174,19 +174,26 @@ export function ReviewExamples() {
           ))}
         </div>
       </div>
-      <article className="grid min-w-0 gap-px bg-border lg:grid-cols-[0.9fr_1.1fr]">
-        <div className="min-w-0 bg-card p-5">
+      <article className="grid h-[760px] min-w-0 grid-rows-[320px_1fr] gap-px overflow-hidden bg-border sm:h-[700px] sm:grid-rows-[300px_1fr] lg:h-[540px] lg:grid-cols-[0.9fr_1.1fr] lg:grid-rows-none">
+        <div className="flex min-h-0 min-w-0 flex-col bg-card p-5">
           <div className="flex items-center justify-between gap-4">
             <div className="font-mono text-xs text-muted-foreground">{example.file}</div>
             <StatusMark kind={example.severity} />
           </div>
           <h3 className="mt-4 text-3xl leading-tight">{example.title}</h3>
-          <p className="mt-3 text-sm leading-6 text-muted-foreground">{example.body}</p>
-          <StatusLine label="status:" marks={example.status} className="mt-5 text-sm text-muted-foreground" />
+          <p className="mt-3 max-h-40 overflow-auto text-sm leading-6 text-muted-foreground sm:max-h-36">{example.body}</p>
+          <div className="mt-auto pt-5">
+            <StatusLine label="status:" marks={example.status} className="text-sm text-muted-foreground" />
+          </div>
         </div>
-        <div className="min-w-0 bg-[#1b2329] p-5 font-mono text-xs leading-6 text-[#f7f5f1]">
+        <div className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#1b2329] p-5 font-mono text-xs leading-6 text-[#f7f5f1]">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-6 right-6 h-28 w-24 bg-contain bg-center bg-no-repeat opacity-[0.06] sm:h-36 sm:w-32"
+            style={{ backgroundImage: "url('/brand/postil-mark.svg')" }}
+          />
           <div className="mb-3 text-[#c8cdd2]">Patch shape</div>
-          <DiffPreview removed={example.before} added={example.after} />
+          <DiffPreview removed={example.before} added={example.after} className="min-h-0 flex-1" />
         </div>
       </article>
       <style>{`

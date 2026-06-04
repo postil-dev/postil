@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2 } from "lucide-react";
+import { ArrowRight, CheckCircle2, GitBranch, Server, TestTubeDiagonal } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { ReviewExamples } from "@/components/review-examples";
@@ -62,25 +62,25 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="border-b py-16">
+      <section className="border-b py-12 sm:py-16">
         <div className="mx-auto max-w-7xl px-4 sm:px-6">
-          <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="mb-6 flex flex-col gap-3 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <Eyebrow>Status line</Eyebrow>
-              <h2 className="mt-4 text-4xl leading-tight">Compact signal, no counters.</h2>
+              <h2 className="mt-4 text-3xl leading-tight sm:text-4xl">Compact signal, no counters.</h2>
             </div>
             <Link href="/how-it-works" className="font-mono text-sm text-primary hover:underline">
               How reviews run
             </Link>
           </div>
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid divide-y border-y sm:divide-y-0 md:grid-cols-4 md:gap-3 md:border-y-0">
             {statusExamples.map((item) => {
               const Icon = item.icon;
               return (
-                <article key={item.label} className="border bg-card p-5">
-                  <Icon className="h-5 w-5 text-accent" />
-                  <div className="mt-5 font-mono text-xs uppercase text-muted-foreground">{item.label}</div>
-                  <StatusLine label="status:" marks={item.status} className="mt-2 text-lg" />
+                <article key={item.label} className="flex items-center gap-4 py-4 sm:border sm:bg-card sm:p-5 md:block">
+                  <Icon className="h-5 w-5 shrink-0 text-accent" />
+                  <div className="min-w-24 font-mono text-xs uppercase text-muted-foreground sm:mt-5">{item.label}</div>
+                  <StatusLine label="status:" marks={item.status} className="ml-auto text-base sm:ml-0 sm:mt-2 sm:text-lg" />
                 </article>
               );
             })}
@@ -99,28 +99,40 @@ export default function Home() {
       </section>
 
       <section className="border-t py-16">
-        <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-3">
-          <article className="border bg-card p-6">
+        <div className="mx-auto grid max-w-7xl gap-px border-y bg-border sm:grid-cols-[1.08fr_0.92fr]">
+          <article className="bg-card p-6 sm:p-8">
+            <Server className="h-6 w-6 text-accent" />
             <Eyebrow>Hosted</Eyebrow>
-            <h2 className="mt-4 text-3xl">Managed beta is free.</h2>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              Hosted reviews are free while public access opens and billing stays off.
+            <h2 className="mt-4 max-w-lg text-4xl leading-tight">Managed beta stays free while installs open.</h2>
+            <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
+              The public app link lands on a wait page until review is done. No surprise billing while that door is closed.
             </p>
+            <TrackedLink href="/install" cta="Join hosted beta" className={`${buttonVariants()} mt-7`}>
+              Join beta
+            </TrackedLink>
           </article>
-          <article className="border bg-card p-6">
-            <Eyebrow>CI</Eyebrow>
-            <h2 className="mt-4 text-3xl">Runs where teams already work.</h2>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              Add the reviewer CLI to GitHub Actions and keep the model/provider choice in your repo.
-            </p>
-          </article>
-          <article className="border bg-card p-6">
-            <Eyebrow>Benchmarks</Eyebrow>
-            <h2 className="mt-4 text-3xl">Independent evals are coming.</h2>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              We are preparing isolated PR fixtures with real bugs and no upstream answers before publishing numbers.
-            </p>
-          </article>
+          <div className="grid gap-px bg-border">
+            <article className="grid gap-4 bg-background p-6 sm:grid-cols-[2rem_1fr] sm:p-8">
+              <GitBranch className="h-6 w-6 text-accent" />
+              <div>
+                <Eyebrow>CI</Eyebrow>
+                <h2 className="mt-3 text-2xl">Run it from your workflow.</h2>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Add the CLI to GitHub Actions and keep model choice in repo config.
+                </p>
+              </div>
+            </article>
+            <article className="grid gap-4 bg-background p-6 sm:grid-cols-[2rem_1fr] sm:p-8">
+              <TestTubeDiagonal className="h-6 w-6 text-accent" />
+              <div>
+                <Eyebrow>Benchmarks</Eyebrow>
+                <h2 className="mt-3 text-2xl">Numbers after the harness.</h2>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Isolated PR fixtures first: real bugs, no upstream answers, human review before claims.
+                </p>
+              </div>
+            </article>
+          </div>
         </div>
       </section>
       <CtaStrip />

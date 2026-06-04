@@ -7,9 +7,11 @@ type DiffLine = {
 export function DiffPreview({
   removed,
   added,
+  className,
 }: {
   removed: string;
   added: string;
+  className?: string;
 }) {
   const lines: DiffLine[] = [];
   let sequence = 0;
@@ -23,7 +25,7 @@ export function DiffPreview({
   }
 
   return (
-    <pre className="max-w-full overflow-x-auto bg-[#1b2329] p-4 font-mono text-xs leading-6 text-[#f7f5f1]">
+    <pre className={["max-w-full overflow-auto bg-[#1b2329] p-4 font-mono text-xs leading-6 text-[#f7f5f1]", className].filter(Boolean).join(" ")}>
       <code className="block min-w-full w-max">
         {lines.map((line) => (
           <span

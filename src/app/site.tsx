@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, GitPullRequest, Info, ShieldCheck, TriangleAlert } from "lucide-react";
+import { ArrowRight, CheckCircle2, GitPullRequest, Info, Mail, ShieldCheck, TriangleAlert } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { DiffPreview } from "@/components/diff-preview";
@@ -11,6 +11,12 @@ export const navItems = [
   { href: "/how-it-works", label: "How it works" },
   { href: "/docs", label: "Docs" },
   { href: "/pricing", label: "Pricing" },
+];
+
+const contactLinks = [
+  { href: "https://github.com/postil-dev", label: "GitHub", icon: GitPullRequest },
+  { href: "mailto:hello@postil.dev", label: "Email", icon: Mail },
+  { href: "/.well-known/security.txt", label: "Security", icon: ShieldCheck },
 ];
 
 export const proofPoints = [
@@ -63,23 +69,34 @@ export function SiteFooter() {
             Postil reviews pull requests for bugs that need code context. Hosted beta at postil.dev, CLI under Apache-2.0.
           </p>
         </div>
-        <nav className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs sm:grid-cols-4">
-          {navItems.map((item) => (
-            <Link key={item.href} href={item.href} className="hover:text-foreground">
-              {item.label}
+        <div className="grid gap-5 text-xs sm:min-w-[25rem]">
+          <nav className="flex flex-wrap gap-x-5 gap-y-2">
+            {navItems.map((item) => (
+              <Link key={item.href} href={item.href} className="hover:text-foreground">
+                {item.label}
+              </Link>
+            ))}
+            <Link href="/privacy" className="hover:text-foreground">
+              Privacy
             </Link>
-          ))}
-          <Link href="/privacy" className="hover:text-foreground">
-            Privacy
-          </Link>
-          <Link href="https://github.com/postil-dev/postil" className="hover:text-foreground">
-            Source
-          </Link>
-          <Link href="/.well-known/security.txt" className="hover:text-foreground">
-            Security
-          </Link>
+          </nav>
+          <nav className="flex flex-wrap gap-2">
+            {contactLinks.map((item) => {
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="inline-flex items-center gap-2 border px-3 py-2 transition hover:border-accent hover:text-foreground"
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
           <span>© {new Date().getFullYear()} Postil</span>
-        </nav>
+        </div>
       </div>
     </footer>
   );
