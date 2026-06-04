@@ -26,6 +26,7 @@
 .DS_Store
 *.pem
 .cache/
+.codex/
 tmp/
 TODO.md
 

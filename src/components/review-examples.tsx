@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { DiffPreview } from "@/components/diff-preview";
 import { StatusLine } from "@/components/status-line";
 import { StatusMark, type StatusKind } from "@/components/status-mark";
 
@@ -132,8 +133,7 @@ const examples: Example[] = [
 ];
 
 export function ReviewExamples() {
-  const initial = useMemo(() => Math.floor(Math.random() * examples.length), []);
-  const [active, setActive] = useState(initial);
+  const [active, setActive] = useState(0);
   const [isAutoPlaying, setIsAutoPlaying] = useState(true);
 
   useEffect(() => {
@@ -186,10 +186,7 @@ export function ReviewExamples() {
         </div>
         <div className="min-w-0 bg-[#1b2329] p-5 font-mono text-xs leading-6 text-[#f7f5f1]">
           <div className="mb-3 text-[#c8cdd2]">Suggested shape</div>
-          <pre className="max-w-full overflow-x-auto whitespace-pre-wrap">
-            <span className="block bg-[rgba(212,106,106,0.35)]">{example.before}</span>
-            <span className="mt-3 block bg-[rgba(100,116,92,0.35)]">{example.after}</span>
-          </pre>
+          <DiffPreview removed={example.before} added={example.after} />
         </div>
       </article>
       <style>{`

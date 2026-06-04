@@ -114,9 +114,9 @@ export default function Home() {
           </article>
           <article className="border bg-card p-6">
             <Eyebrow>Benchmarks</Eyebrow>
-            <h2 className="mt-4 text-3xl">Needs a public eval harness.</h2>
+            <h2 className="mt-4 text-3xl">Independent evals are coming.</h2>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              The current eval fixtures are useful but too small. The next benchmark should use isolated vulnerable PR fixtures with no access to upstream resolutions.
+              We are building a review benchmark with isolated PR fixtures, real bugs, and no access to upstream resolutions before publishing performance claims.
             </p>
           </article>
         </div>

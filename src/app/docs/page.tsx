@@ -112,7 +112,7 @@ export default function DocsPage() {
           <div>
             <h2 className="text-3xl text-foreground">Benchmark direction</h2>
             <p className="mt-4">
-              A serious benchmark should use isolated mock PR fixtures with real bugs and vulnerabilities, no access to upstream fixes, and scoring that separates true positives, false positives, missed blockers, and useful silence.
+              Public evals are coming after human review. The harness will use isolated mock PR fixtures with real bugs and vulnerabilities, no access to upstream fixes, and scoring that separates true positives, false positives, missed blockers, and useful silence.
             </p>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import { ArrowRight, CheckCircle2, GitPullRequest, Info, ShieldCheck, TriangleAlert } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import { DiffPreview } from "@/components/diff-preview";
 import { StatusMark, type StatusKind } from "@/components/status-mark";
 import { TrackedLink } from "@/components/tracked-link";
 import { buttonVariants } from "@/components/ui/button";
@@ -143,11 +144,12 @@ export function ReviewCard() {
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
           The write moved ahead of `canManageBilling`, so a caller can change a plan before the permission failure is raised. Move the authorization check before the billing mutation.
         </p>
-        <pre className="mt-5 max-w-full overflow-x-auto bg-[#1b2329] p-4 font-mono text-xs leading-6 text-[#f7f5f1]">
-          <span className="block bg-[rgba(212,106,106,0.35)]">- await billing.updatePlan(org.id, plan)</span>
-          <span className="block bg-[rgba(100,116,92,0.35)]">+ if (!canManageBilling(actor, org)) throw new Error("authorization failed")</span>
-          <span className="block bg-[rgba(100,116,92,0.35)]">+ await billing.updatePlan(org.id, plan)</span>
-        </pre>
+        <div className="mt-5">
+          <DiffPreview
+            removed="await billing.updatePlan(org.id, plan)"
+            added={'if (!canManageBilling(actor, org)) throw new Error("authorization failed")\nawait billing.updatePlan(org.id, plan)'}
+          />
+        </div>
         <div className="mt-5 flex items-center gap-1 font-mono text-sm text-primary">
           <span className="mr-1">status:</span>
           <StatusMark kind="error" />
