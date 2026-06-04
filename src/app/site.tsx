@@ -14,10 +14,10 @@ export const navItems = [
 ];
 
 export const proofPoints = [
-  ["low-noise", "Silence is a feature. Clean PRs can complete without a review comment."],
-  ["local-first", "Postil reads PR context, existing review threads, and repository config before deciding."],
-  ["proof-driven", "Findings cite concrete changed lines and explain the merge risk or human decision needed."],
-  ["sturdy", "Runs as managed hosted review or as an auditable Apache-2.0 GitHub Action."],
+  ["Skips clean PRs", "No summary paragraph just to prove the bot ran."],
+  ["Reads the thread", "Existing review comments and change requests stay in view."],
+  ["Names the risk", "A finding should point at the changed line and the thing that can break."],
+  ["Runs in CI", "Use the hosted app when it opens, or run the reviewer from your workflow today."],
 ];
 
 export const statusExamples = [
@@ -60,7 +60,7 @@ export function SiteFooter() {
         <div className="max-w-sm">
           <BrandLockup />
           <p className="mt-4 text-xs leading-6">
-            Postil is a low-noise review gate for agent-speed development. Managed beta at postil.dev or self-hosted under Apache-2.0.
+            Postil reviews pull requests for bugs that need code context. Hosted beta at postil.dev, CLI under Apache-2.0.
           </p>
         </div>
         <nav className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs sm:grid-cols-4">
@@ -166,7 +166,7 @@ export function CtaStrip() {
         <div>
           <h2 className="text-3xl leading-tight">Trust the merge, not the speed.</h2>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Install the managed beta for free, or run the reviewer CLI in your own CI.
+            Join the hosted beta queue, or run the reviewer CLI in your own CI.
           </p>
         </div>
         <div className="flex flex-wrap gap-3">

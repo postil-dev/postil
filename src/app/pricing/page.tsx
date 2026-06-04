@@ -11,14 +11,14 @@ const plans = [
   {
     name: "Managed beta",
     price: "Free",
-    body: "Hosted Postil reviews will be free during the managed beta while public install access opens.",
-    bullets: ["Managed app access opening soon", "Managed review worker", "Inline PR findings", "Clean reviews can stay silent"],
+    body: "Hosted reviews are free while public install access opens.",
+    bullets: ["GitHub App pending final review", "Hosted review worker", "Inline PR findings", "No recap on clean PRs"],
   },
   {
     name: "Self-hosted",
     price: "Apache-2.0",
-    body: "Run the reviewer in your own CI with your own model provider and repository policy.",
-    bullets: ["Open-source reviewer CLI", "GitHub Action support", "Local diff review", "Auditable configuration"],
+    body: "Run the reviewer in CI with your own provider and repo config.",
+    bullets: ["Reviewer CLI", "GitHub Actions", "Local diff review", ".postil.yaml config"],
   },
 ];
 
@@ -30,7 +30,7 @@ export default function PricingPage() {
           <SectionIntro
             eyebrow="Pricing"
             title="Free until billing is real."
-            body="Hosted access is opening as a free managed beta after final review. Self-hosting remains available under Apache-2.0."
+            body="Hosted access opens as a free beta after final review. The CLI stays Apache-2.0."
           />
         </div>
       </section>

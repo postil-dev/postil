@@ -11,8 +11,8 @@ export default function WhyPostilPage() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6">
           <SectionIntro
             eyebrow="Why Postil"
-            title="Agent-speed development needs a review gate, not more review theater."
-            body="Postil is built for teams that already have formatters, linters, tests, and CI. It focuses on the review work that still needs context: correctness, security, intent, and accountable human decisions."
+            title="The risky part is rarely the typo."
+            body="Most teams already have formatters, tests, and CI. Postil is for the cases those tools miss: the authorization check moved below the write, the delete lost its tenant filter, the migration works only on an empty database."
           />
         </div>
       </section>
@@ -21,7 +21,7 @@ export default function WhyPostilPage() {
           {proofPoints.map(([title, body]) => (
             <article key={title} className="border bg-card p-6">
               <div className="font-mono text-xs uppercase tracking-[0.16em] text-primary">{title}</div>
-              <h2 className="mt-4 text-3xl capitalize">{title}</h2>
+              <h2 className="mt-4 text-3xl">{title}</h2>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">{body}</p>
             </article>
           ))}

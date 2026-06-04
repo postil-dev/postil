@@ -22,7 +22,7 @@ export default function InstallPage() {
           <SectionIntro
             eyebrow="Managed beta"
             title="Hosted installs are opening soon."
-            body="The managed GitHub App is pending final review before public installation links are enabled. You can still run Postil in CI with the reviewer CLI today."
+            body="The GitHub App install link will appear here after final review. Until then, run the reviewer CLI in CI."
           />
           <div className="mt-8 flex flex-wrap gap-3">
             <TrackedLink href="https://github.com/postil-dev/postil-reviewer" cta="Try CLI" className={buttonVariants({ size: "lg" })}>
@@ -37,9 +37,9 @@ export default function InstallPage() {
       <section className="py-16">
         <div className="mx-auto grid max-w-7xl gap-4 px-4 sm:px-6 md:grid-cols-3">
           {[
-            ["Hosted", "Public install links will appear here after the managed app is ready for external teams."],
-            ["CI", "Run the open reviewer from GitHub Actions while hosted onboarding is pending."],
-            ["Quiet by default", "Clean reviews can stay silent; findings focus on concrete merge risk."],
+            ["Hosted", "Install link appears here after review."],
+            ["CI", "Run the reviewer from GitHub Actions now."],
+            ["Quiet", "No issue found means no recap comment."],
           ].map(([title, body]) => (
             <article key={title} className="border bg-card p-6">
               <h2 className="text-2xl">{title}</h2>

@@ -7,19 +7,19 @@ export const metadata = {
 };
 
 const steps = [
-  ["1", "Trigger", "A PR event or @postil mention starts a review run for the current PR head SHA."],
-  ["2", "Context", "Postil loads the diff, repository config, and existing human review context."],
-  ["3", "Review", "The reviewer returns structured findings. Invalid output fails closed instead of posting vague prose."],
-  ["4", "Filter", "Repository config drops ignored paths, caps finding count, and controls clean-review behavior."],
-  ["5", "Report", "Findings become inline comments with a compact SVG status line. Clean reviews can stay silent."],
-  ["6", "Gate", "The check run records pass, warning, or failure so branch protection can use the result."],
+  ["1", "Triggered", "A PR update or @postil mention starts a run on the current head SHA."],
+  ["2", "Loaded", "Postil reads the diff, config, and open review threads."],
+  ["3", "Checked", "The reviewer returns structured findings, not a prose blob."],
+  ["4", "Filtered", "Ignored paths, severity thresholds, and max findings apply before posting."],
+  ["5", "Posted", "Real findings become inline comments. Clean reviews can stay quiet."],
+  ["6", "Recorded", "The check run records the result for branch protection."],
 ];
 
 const details = [
-  ["Mention-aware", "Comment @postil on a PR conversation, review, or inline thread to request a fresh pass."],
-  ["Human-context aware", "Existing review comments and outstanding change requests are included as review context."],
-  ["Quiet by default", "When no merge-relevant issue exists, the review can complete without adding a PR comment."],
-  ["Auditable", "Every finding is tied to a changed file and line, with the intent or risk stated directly."],
+  ["Ask again", "Comment @postil in a PR, review, or inline thread for another pass."],
+  ["Keeps context", "Open review threads and change requests go into the prompt."],
+  ["Can stay quiet", "No finding means no synthetic recap."],
+  ["Line-backed", "Each finding points to the changed file and line it depends on."],
 ];
 
 export default function HowItWorksPage() {
@@ -30,7 +30,7 @@ export default function HowItWorksPage() {
           <SectionIntro
             eyebrow="How it works"
             title="A review run you can audit."
-            body="Postil keeps the control surface small: GitHub event in, diff and context reviewed, inline findings out. The status line is intentionally compact."
+            body="One event in, one diff reviewed, one check run out. If there is nothing worth saying, the PR does not get a bot recap."
           />
           <ReviewCard />
         </div>
@@ -51,7 +51,7 @@ export default function HowItWorksPage() {
           <div>
             <h2 className="text-4xl leading-tight">What the reviewer notices</h2>
             <p className="mt-4 text-sm leading-6 text-muted-foreground">
-              These examples auto-rotate and can be selected manually. They show the intended style: short, concrete, and focused on merge risk.
+              The examples rotate, but each one is the kind of issue a reviewer would actually block on.
             </p>
           </div>
           <ReviewExamples />

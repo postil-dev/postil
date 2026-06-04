@@ -185,7 +185,7 @@ export function ReviewExamples() {
           <StatusLine label="status:" marks={example.status} className="mt-5 text-sm text-muted-foreground" />
         </div>
         <div className="min-w-0 bg-[#1b2329] p-5 font-mono text-xs leading-6 text-[#f7f5f1]">
-          <div className="mb-3 text-[#c8cdd2]">Suggested shape</div>
+          <div className="mb-3 text-[#c8cdd2]">Patch shape</div>
           <DiffPreview removed={example.before} added={example.after} />
         </div>
       </article>

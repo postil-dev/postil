@@ -28,7 +28,7 @@ export default function Home() {
               Trust the merge, not the speed.
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
-              Postil catches context-dependent bugs, security regressions, and intent mismatches before they merge. It stays quiet when there is nothing useful to say.
+              Postil looks for the pull-request bugs reviewers usually have to reconstruct by hand: moved auth checks, unsafe deletes, race windows, bad migrations. Clean change? No filler comment.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <TrackedLink href="/install" cta="Install on GitHub" className={buttonVariants({ size: "lg" })}>
@@ -46,14 +46,16 @@ export default function Home() {
         <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-[0.75fr_1.25fr]">
           <div>
             <Eyebrow>What changes</Eyebrow>
-            <h2 className="mt-4 text-4xl leading-tight">Review output that respects attention.</h2>
+            <h2 className="mt-4 text-4xl leading-tight">Fewer comments. Better reasons.</h2>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="divide-y border-y">
             {proofPoints.map(([title, body]) => (
-              <article key={title} className="border bg-card p-5">
-                <CheckCircle2 className="h-5 w-5 text-accent" />
-                <h3 className="mt-4 text-xl capitalize">{title}</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">{body}</p>
+              <article key={title} className="grid gap-3 py-5 sm:grid-cols-[13rem_1fr]">
+                <h3 className="flex items-center gap-3 text-xl">
+                  <CheckCircle2 className="h-5 w-5 text-accent" />
+                  {title}
+                </h3>
+                <p className="text-sm leading-6 text-muted-foreground">{body}</p>
               </article>
             ))}
           </div>
@@ -102,21 +104,21 @@ export default function Home() {
             <Eyebrow>Hosted</Eyebrow>
             <h2 className="mt-4 text-3xl">Managed beta is free.</h2>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              Start with the hosted beta at no charge while plan limits and team billing are being finalized.
+              Hosted reviews are free while public access opens and billing stays off.
             </p>
           </article>
           <article className="border bg-card p-6">
             <Eyebrow>CI</Eyebrow>
             <h2 className="mt-4 text-3xl">Runs where teams already work.</h2>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              Use the hosted GitHub App or the open-source reviewer CLI from `postil-dev/postil-reviewer` in GitHub Actions.
+              Add the reviewer CLI to GitHub Actions and keep the model/provider choice in your repo.
             </p>
           </article>
           <article className="border bg-card p-6">
             <Eyebrow>Benchmarks</Eyebrow>
             <h2 className="mt-4 text-3xl">Independent evals are coming.</h2>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              We are building a review benchmark with isolated PR fixtures, real bugs, and no access to upstream resolutions before publishing performance claims.
+              We are preparing isolated PR fixtures with real bugs and no upstream answers before publishing numbers.
             </p>
           </article>
         </div>

@@ -44,10 +44,10 @@ $ postil review --staged
 $ postil review --base origin/main`;
 
 const sections = [
-  ["Install", "Use the managed GitHub App for hosted reviews, or add the open-source GitHub Action when you want to bring your own model provider."],
-  ["Ask for another pass", "Mention @postil on a pull request conversation, review, or inline thread to request a fresh review on the current head SHA."],
-  ["Tune noise", "Set `onClean: skip`, raise `severityThreshold`, cap `maxFindings`, and add ignored globs for generated files."],
-  ["Review style", "Findings should say why the change is risky, what intent appears mismatched, or which human decision is needed. No review comment is better than filler."],
+  ["Install", "Use the reviewer CLI today. The managed GitHub App opens after final review."],
+  ["Ask again", "Mention @postil on a PR conversation, review, or inline thread."],
+  ["Cut noise", "Use `onClean: skip`, severity thresholds, max findings, and ignored globs."],
+  ["Write less", "A finding needs a risk and a line. Otherwise, leave the PR alone."],
 ];
 
 export default function DocsPage() {
@@ -58,7 +58,7 @@ export default function DocsPage() {
           <SectionIntro
             eyebrow="Docs"
             title="Install the reviewer where pull requests already happen."
-            body="Postil can run as a managed GitHub App, a GitHub Action, or a local CLI review. The default posture is low-noise: report concrete merge risk and stay quiet on clean changes."
+            body="Run Postil from GitHub Actions or locally while the hosted app finishes review. The default is simple: report the risky line, or say nothing."
           />
         </div>
       </section>
@@ -112,7 +112,7 @@ export default function DocsPage() {
           <div>
             <h2 className="text-3xl text-foreground">Benchmark direction</h2>
             <p className="mt-4">
-              Public evals are coming after human review. The harness will use isolated mock PR fixtures with real bugs and vulnerabilities, no access to upstream fixes, and scoring that separates true positives, false positives, missed blockers, and useful silence.
+              Public evals are coming after human review. The harness uses isolated PR fixtures, real bugs, no upstream fixes, and separate scores for hits, misses, noise, and clean silence.
             </p>
           </div>
         </div>

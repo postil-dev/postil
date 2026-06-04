@@ -32,7 +32,7 @@ export const metadata: Metadata = {
     template: "%s · Postil",
   },
   description:
-    "Postil is a low-noise review gate for agent-speed development. It catches merge-relevant bugs, security issues, and intent mismatches without review theater.",
+    "Postil reviews pull requests for bugs that need code context: auth checks, unsafe deletes, migrations, race windows, and clean PRs that need no bot recap.",
   applicationName: "Postil",
   openGraph: {
     type: "website",
