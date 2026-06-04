@@ -1,7 +1,5 @@
 import Link from "next/link";
-import { StatusLine } from "@/components/status-line";
-import type { StatusKind } from "@/components/status-mark";
-import { CtaStrip, PageFrame, SectionIntro } from "../site";
+import { CtaStrip, PageFrame, SectionIntro, StatusLine, type StatusKind } from "../site";
 
 export const metadata = {
   title: "Docs",

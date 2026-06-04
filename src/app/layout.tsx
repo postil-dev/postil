@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Inter, Source_Serif_4 } from "next/font/google";
 import { PostHogProvider } from "@/components/providers/posthog-provider";
-import { ReactGrabDev } from "@/components/react-grab-dev";
 import "./globals.css";
 
 const body = Inter({
@@ -56,10 +55,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${body.variable} ${display.variable} ${mono.variable}`}>
       <body>
-        <PostHogProvider>
-          {children}
-          <ReactGrabDev />
-        </PostHogProvider>
+        <PostHogProvider>{children}</PostHogProvider>
       </body>
     </html>
   );

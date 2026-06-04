@@ -1,5 +1,4 @@
-import { CtaStrip, PageFrame, ReviewCard, SectionIntro, statusExamples } from "../site";
-import { StatusLine } from "@/components/status-line";
+import { CtaStrip, PageFrame, ReviewCard, SectionIntro, StatusLine, statusExamples } from "../site";
 
 export const metadata = {
   title: "How It Works",

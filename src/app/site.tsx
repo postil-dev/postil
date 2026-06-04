@@ -1,10 +1,79 @@
 import { ArrowRight, CheckCircle2, GitPullRequest, Info, Mail, ShieldCheck, TriangleAlert } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { DiffPreview } from "@/components/diff-preview";
-import { StatusLine, type StatusKind } from "@/components/status-line";
 import { TrackedLink } from "@/components/tracked-link";
 import { buttonVariants } from "@/components/ui/button";
+
+export type StatusKind = "error" | "warn" | "info" | "pass";
+
+const statusLabel: Record<StatusKind, string> = {
+  error: "Error status",
+  warn: "Warning status",
+  info: "Info status",
+  pass: "Passing status",
+};
+
+export function StatusMark({ kind, size = 18 }: { kind: StatusKind; size?: number }) {
+  return (
+    <Image
+      src={`/status/${kind}.svg`}
+      alt={statusLabel[kind]}
+      width={size}
+      height={size}
+      className="inline-block align-[-3px]"
+    />
+  );
+}
+
+export function StatusLine({
+  label,
+  marks,
+  className,
+}: {
+  label?: string;
+  marks: StatusKind[];
+  className?: string;
+}) {
+  const seen: Partial<Record<StatusKind, number>> = {};
+
+  return (
+    <div className={["flex items-center gap-1 font-mono", className].filter(Boolean).join(" ")}>
+      {label ? <span className="mr-1">{label}</span> : null}
+      {marks.map((mark) => {
+        seen[mark] = (seen[mark] ?? 0) + 1;
+        return <StatusMark key={`${mark}-${seen[mark]}`} kind={mark} />;
+      })}
+    </div>
+  );
+}
+
+export function DiffPreview({
+  removed,
+  added,
+  context,
+  className,
+}: {
+  removed: string;
+  added: string;
+  context?: string;
+  className?: string;
+}) {
+  const removedLines = removed.split("\n");
+  const addedLines = added.split("\n");
+  return (
+    <pre className={["overflow-auto bg-[#1f252b] p-4 font-mono text-xs leading-6 text-[#f7f5f1]", className].filter(Boolean).join(" ")}>
+      {context ? <code className="block text-[#c8cdd2]">{context}</code> : null}
+      {removedLines.map((line, index) => {
+        // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
+        return <code key={`removed-${index}-${line}`} className="block whitespace-pre bg-diff-del/60 px-2 text-[#f7f5f1]">- {line}</code>;
+      })}
+      {addedLines.map((line, index) => {
+        // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
+        return <code key={`added-${index}-${line}`} className="block whitespace-pre bg-diff-add/60 px-2 text-[#f7f5f1]">+ {line}</code>;
+      })}
+    </pre>
+  );
+}
 
 export const navItems = [
   { href: "/why-postil", label: "Why Postil" },
