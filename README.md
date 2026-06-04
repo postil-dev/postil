@@ -54,7 +54,7 @@ jobs:
       checks: write
       contents: read
     steps:
-      - uses: postil-dev/postil-reviewer@v1
+      - uses: postil-dev/postil@v1
         with:
           api-key: ${{ secrets.OPENROUTER_API_KEY }}
           model: moonshotai/kimi-k2.6

@@ -2,10 +2,25 @@
 
 # --- postil review bot ---
 FROM docker.io/library/rust:1 AS postil-reviewer
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl git jq \
+ && rm -rf /var/lib/apt/lists/*
 COPY reviewer-rev /tmp/reviewer-rev
 RUN set -eu; \
   REVIEWER_REV="$(cat /tmp/reviewer-rev)"; \
-  cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$REVIEWER_REV" --locked
+  REVIEWER_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/postil-dev/postil-reviewer/commits/$REVIEWER_REV")"; \
+  test "$(jq -r '.sha' <<<"$REVIEWER_JSON")" = "$REVIEWER_REV"; \
+  test "$(jq -r '.commit.verification.verified' <<<"$REVIEWER_JSON")" = "true"; \
+  test "$(jq -r '.commit.verification.reason' <<<"$REVIEWER_JSON")" = "valid"; \
+  test "$(jq -r '.author.login' <<<"$REVIEWER_JSON")" = "morgaesis"; \
+  test "$(jq -r '.committer.login' <<<"$REVIEWER_JSON")" = "morgaesis"; \
+  reviewer_dir="$(mktemp -d)"; \
+  git -C "$reviewer_dir" init -q; \
+  git -C "$reviewer_dir" remote add origin https://github.com/postil-dev/postil-reviewer; \
+  git -C "$reviewer_dir" fetch --depth=1 origin "$REVIEWER_REV"; \
+  git -C "$reviewer_dir" checkout --force FETCH_HEAD; \
+  test "$(git -C "$reviewer_dir" rev-parse HEAD)" = "$REVIEWER_REV"; \
+  cargo install --path "$reviewer_dir" --locked
 
 # --- deps ---
 FROM docker.io/oven/bun:1.3 AS deps

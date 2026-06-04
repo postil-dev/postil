@@ -43,11 +43,7 @@ jobs:
       - name: Load reviewer revision
         if: github.event_name == 'pull_request_target'
         run: |
-          if [[ -f reviewer-rev ]]; then
-            echo "REVIEWER_REV=$(< reviewer-rev)" >> "$GITHUB_ENV"
-          else
-            echo "REVIEWER_REV=f25e97bbe473d2df957453bf5439904839a2959c" >> "$GITHUB_ENV"
-          fi
+          echo "REVIEWER_REV=$(< reviewer-rev)" >> "$GITHUB_ENV"
 
       - name: Verify reviewer commit
         if: github.event_name == 'pull_request_target'
