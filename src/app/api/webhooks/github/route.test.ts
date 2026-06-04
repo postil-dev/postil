@@ -1,7 +1,13 @@
 import crypto from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockRequest = vi.fn();
+type MockRequest = (route: string, params?: Record<string, unknown>) => Promise<{ data: unknown }>;
+const mockRequest = vi.fn<MockRequest>();
+type ReviewRecord = {
+  id: string;
+  checkRunId: number;
+  status: string;
+};
 const dbMock = vi.hoisted(() => ({
   webhookDeliveries: {},
   reviews: {},
@@ -9,7 +15,7 @@ const dbMock = vi.hoisted(() => ({
   deleteCalls: [] as unknown[],
   updateCalls: [] as Array<Record<string, unknown>>,
   reviewInsertResult: [{ id: "review-1" }],
-  findFirst: vi.fn(async () => undefined),
+  findFirst: vi.fn<() => Promise<ReviewRecord | undefined>>(async () => undefined),
   failTriggerRunIdUpdate: false,
   failFailedStatusUpdate: false,
   failDeliveryDelete: false,
@@ -499,19 +505,21 @@ describe("github webhook", () => {
       ([route]) => route === "POST /repos/{owner}/{repo}/issues",
     );
     expect(issueCall).toBeTruthy();
-    expect(issueCall?.[1]).toMatchObject({
+    const issueArgs = issueCall?.[1];
+    if (!issueArgs) throw new Error("missing issue arguments");
+    expect(issueArgs).toMatchObject({
       owner: "acme",
       repo: "widget",
       assignees: ["branch-owner"],
       labels: ["ci", "recovery"],
     });
-    expect(issueCall?.[1].title).toContain("Docker build");
-    expect(issueCall?.[1].body).toContain("PR: #68");
-    expect(issueCall?.[1].body).toContain("Branch: feat/review-always-post-review");
-    expect(issueCall?.[1].body).toContain("Failing check: Docker build / Install dependencies");
-    expect(issueCall?.[1].body).toContain("Module not found");
-    expect(issueCall?.[1].body).toContain("Work on the pull request branch");
-    expect(issueCall?.[1].body).toContain("Root-cause guess:");
+    expect(issueArgs.title).toContain("Docker build");
+    expect(issueArgs.body).toContain("PR: #68");
+    expect(issueArgs.body).toContain("Branch: feat/review-always-post-review");
+    expect(issueArgs.body).toContain("Failing check: Docker build / Install dependencies");
+    expect(issueArgs.body).toContain("Module not found");
+    expect(issueArgs.body).toContain("Work on the pull request branch");
+    expect(issueArgs.body).toContain("Root-cause guess:");
   });
 
   it("falls back when the branch owner is not writable", async () => {
@@ -562,10 +570,12 @@ describe("github webhook", () => {
     const issueCall = mockRequest.mock.calls.find(
       ([route]) => route === "POST /repos/{owner}/{repo}/issues",
     );
-    expect(issueCall?.[1]).toMatchObject({
+    const issueArgs = issueCall?.[1];
+    if (!issueArgs) throw new Error("missing issue arguments");
+    expect(issueArgs).toMatchObject({
       assignees: ["engineer"],
     });
-    expect(issueCall?.[1].title).toContain("Docker build");
+    expect(issueArgs.title).toContain("Docker build");
   });
 
   it("completes the review check when the review workflow only knows the pull number", async () => {

@@ -9,11 +9,11 @@ COPY reviewer-rev /tmp/reviewer-rev
 RUN set -eu; \
   REVIEWER_REV="$(cat /tmp/reviewer-rev)"; \
   REVIEWER_JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/postil-dev/postil-reviewer/commits/$REVIEWER_REV")"; \
-  test "$(jq -r '.sha' <<<"$REVIEWER_JSON")" = "$REVIEWER_REV"; \
-  test "$(jq -r '.commit.verification.verified' <<<"$REVIEWER_JSON")" = "true"; \
-  test "$(jq -r '.commit.verification.reason' <<<"$REVIEWER_JSON")" = "valid"; \
-  test "$(jq -r '.author.login' <<<"$REVIEWER_JSON")" = "morgaesis"; \
-  test "$(jq -r '.committer.login' <<<"$REVIEWER_JSON")" = "morgaesis"; \
+  test "$(printf '%s' "$REVIEWER_JSON" | jq -r '.sha')" = "$REVIEWER_REV"; \
+  test "$(printf '%s' "$REVIEWER_JSON" | jq -r '.commit.verification.verified')" = "true"; \
+  test "$(printf '%s' "$REVIEWER_JSON" | jq -r '.commit.verification.reason')" = "valid"; \
+  test "$(printf '%s' "$REVIEWER_JSON" | jq -r '.author.login')" = "morgaesis"; \
+  test "$(printf '%s' "$REVIEWER_JSON" | jq -r '.committer.login')" = "morgaesis"; \
   reviewer_dir="$(mktemp -d)"; \
   git -C "$reviewer_dir" init -q; \
   git -C "$reviewer_dir" remote add origin https://github.com/postil-dev/postil-reviewer; \
