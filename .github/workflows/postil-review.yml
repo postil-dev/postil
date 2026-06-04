@@ -13,7 +13,6 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
-  id-token: write
 
 jobs:
   review:
@@ -64,18 +63,6 @@ jobs:
           test -n "$reviewer_rev"
           cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
 
-      - name: Fetch secrets from Infisical
-        if: github.event_name == 'pull_request_target'
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
-        with:
-          method: oidc
-          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
-          domain: https://eu.infisical.com
-          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
-          env-slug: prod
-          secret-path: /postil
-          export-type: env
-
       - name: Set up Bun
         if: github.event_name == 'pull_request_target'
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
@@ -91,3 +78,4 @@ jobs:
         run: bun run postil review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
