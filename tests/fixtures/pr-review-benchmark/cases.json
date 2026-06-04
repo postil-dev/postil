@@ -1,0 +1,54 @@
+{
+  "cases": [
+    {
+      "id": "example-blocker",
+      "name": "Example blocking review finding",
+      "payload": {
+        "installationId": 1,
+        "repoFullName": "benchmark/example-fixtures",
+        "pullNumber": 1,
+        "headSha": "0000000000000000000000000000000000000000"
+      },
+      "diff": "diff --git a/src/example.ts b/src/example.ts\nindex 1111111..2222222 100644\n--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1,3 +1,3 @@\n export function transfer(amount: number) {\n-  return amount;\n+  return amount * 2;\n }\n",
+      "allowedContext": {
+        "files": [
+          {
+            "path": "src/example.ts",
+            "content": "export function transfer(amount: number) { return amount * 2; }"
+          }
+        ],
+        "docs": [
+          {
+            "path": "review-policy.md",
+            "content": "Flag duplicated money movement as a blocking correctness issue."
+          }
+        ]
+      },
+      "disallowedSources": ["expected answer: transfer returns amount once"],
+      "scoringLabels": ["correctness", "money-movement", "blocker"],
+      "groundTruth": {
+        "findings": [
+          {
+            "path": "src/example.ts",
+            "line": 1,
+            "severity": "error",
+            "bodyIncludes": "duplicated"
+          }
+        ]
+      },
+      "guardrails": {
+        "forbiddenPromptSubstrings": ["expected answer:"]
+      },
+      "expectations": {
+        "minFindings": 1,
+        "requiredFindings": [
+          {
+            "path": "src/example.ts",
+            "line": 1,
+            "severity": "error"
+          }
+        ]
+      }
+    }
+  ]
+}
