@@ -8,13 +8,23 @@ export const metadata: Metadata = {
   alternates: { canonical: "/login" },
 };
 
+export function safeReportsCallbackPath(next: string | undefined): string {
+  if (!next?.startsWith("/") || next.startsWith("//")) return "/reports";
+
+  const url = new URL(next, "https://postil.local");
+  if (url.origin !== "https://postil.local") return "/reports";
+  if (url.pathname !== "/reports" && !url.pathname.startsWith("/reports/")) return "/reports";
+
+  return `${url.pathname}${url.search}`;
+}
+
 export default async function LoginPage({
   searchParams,
 }: {
   searchParams: Promise<{ next?: string }>;
 }) {
   const { next } = await searchParams;
-  const callbackUrl = next?.startsWith("/") ? next : "/reports";
+  const callbackUrl = safeReportsCallbackPath(next);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center gap-6 p-8 text-center">

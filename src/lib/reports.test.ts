@@ -22,15 +22,17 @@ const dbMock = vi.hoisted(() => {
     const ordered = {
       limit: async () => rows,
     };
+    const joined = {
+      innerJoin: () => joined,
+      orderBy: () => ordered,
+      where: () => ({
+        limit: async () => rows,
+        orderBy: () => ordered,
+      }),
+    };
 
     return {
-      leftJoin: () => ({
-        orderBy: () => ordered,
-        where: () => ({
-          limit: async () => rows,
-          orderBy: () => ordered,
-        }),
-      }),
+      innerJoin: () => joined,
     };
   }
 
@@ -46,6 +48,10 @@ vi.mock("@/db", () => ({
   getDb: () => dbMock,
   schema: {
     organizations: { id: "organization_id", slug: "organization_slug" },
+    users: {
+      email: "user_email",
+      githubLogin: "user_github_login",
+    },
     reviews: {
       id: "id",
       organizationId: "review_organization_id",
@@ -63,7 +69,8 @@ vi.mock("@/db", () => ({
   },
 }));
 
-const { getReviewReport, listReviewReports, reviewFindingCount } = await import("./reports");
+const { getReviewReport, listReviewReports, reportViewerFromSession, reviewFindingCount } =
+  await import("./reports");
 
 describe("report helpers", () => {
   beforeEach(() => {
@@ -76,8 +83,22 @@ describe("report helpers", () => {
     expect(reviewFindingCount(null)).toBe(0);
   });
 
+  it("extracts report viewers from signed-in sessions", () => {
+    expect(reportViewerFromSession({ user: { email: " user@example.test " } })).toEqual({
+      email: "user@example.test",
+    });
+    expect(reportViewerFromSession({ user: {} })).toBeNull();
+    expect(reportViewerFromSession(null)).toBeNull();
+  });
+
+  it("does not query reports without an authorized viewer", async () => {
+    await expect(listReviewReports({ viewer: null })).resolves.toEqual([]);
+    await expect(getReviewReport("review-1", null)).resolves.toBeNull();
+    expect(dbMock.select).not.toHaveBeenCalled();
+  });
+
   it("maps persisted reviews into report summaries", async () => {
-    const reports = await listReviewReports();
+    const reports = await listReviewReports({ viewer: { email: "user@example.test" } });
 
     expect(reports).toEqual([
       expect.objectContaining({
@@ -89,7 +110,7 @@ describe("report helpers", () => {
   });
 
   it("returns detail with the raw result payload", async () => {
-    const report = await getReviewReport("review-1");
+    const report = await getReviewReport("review-1", { email: "user@example.test" });
 
     expect(report).toEqual(
       expect.objectContaining({

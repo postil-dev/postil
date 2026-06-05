@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { requireReportSession } from "@/lib/report-auth";
-import { getReviewReport } from "@/lib/reports";
+import { getReviewReport, reportViewerFromSession } from "@/lib/reports";
 
 export const metadata: Metadata = {
   title: "Report detail",
@@ -24,8 +24,8 @@ function resultJson(result: unknown): string {
 
 export default async function ReportDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  await requireReportSession(`/reports/${id}`);
-  const report = await getReviewReport(id);
+  const session = await requireReportSession(`/reports/${id}`);
+  const report = await getReviewReport(id, reportViewerFromSession(session));
 
   if (!report) notFound();
 

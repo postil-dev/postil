@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql, type SQL } from "drizzle-orm";
 import { getDb, schema } from "@/db";
 
 const MAX_REPORT_LIMIT = 100;
@@ -23,9 +23,14 @@ export interface ReviewReportDetail extends ReviewReportSummary {
 }
 
 export interface ReviewReportListOptions {
+  viewer: ReportViewer | null;
   limit?: number;
   orgSlug?: string;
   q?: string;
+}
+
+export interface ReportViewer {
+  email: string;
 }
 
 type ReviewReportRow = {
@@ -42,6 +47,14 @@ type ReviewReportRow = {
   createdAt: Date;
   completedAt: Date | null;
 };
+
+export function reportViewerFromSession(session: unknown): ReportViewer | null {
+  if (!session || typeof session !== "object") return null;
+  const user = (session as { user?: unknown }).user;
+  if (!user || typeof user !== "object") return null;
+  const email = (user as { email?: unknown }).email;
+  return typeof email === "string" && email.trim() ? { email: email.trim() } : null;
+}
 
 export function reviewFindingCount(result: unknown): number {
   if (!result || typeof result !== "object" || !("findings" in result)) {
@@ -91,8 +104,19 @@ function reportProjection() {
   };
 }
 
+function viewerAuthorizationFilter(viewer: ReportViewer | null): SQL | null {
+  if (!viewer?.email) return null;
+  return and(
+    sql`lower(${schema.users.email}) = lower(${viewer.email})`,
+    eq(schema.users.githubLogin, schema.organizations.githubLogin),
+  ) as SQL;
+}
+
 function reportFilters(options: ReviewReportListOptions): SQL | undefined {
-  const filters: SQL[] = [];
+  const authorizationFilter = viewerAuthorizationFilter(options.viewer);
+  if (!authorizationFilter) return undefined;
+
+  const filters: SQL[] = [authorizationFilter];
   const orgSlug = options.orgSlug?.trim();
   const q = options.q?.trim();
 
@@ -115,14 +139,17 @@ function reportFilters(options: ReviewReportListOptions): SQL | undefined {
 }
 
 export async function listReviewReports(
-  options: ReviewReportListOptions = {},
+  options: ReviewReportListOptions,
 ): Promise<ReviewReportSummary[]> {
+  if (!options.viewer) return [];
+
   const db = getDb();
   const filters = reportFilters(options);
   const query = db
     .select(reportProjection())
     .from(schema.reviews)
-    .leftJoin(schema.organizations, eq(schema.reviews.organizationId, schema.organizations.id));
+    .innerJoin(schema.organizations, eq(schema.reviews.organizationId, schema.organizations.id))
+    .innerJoin(schema.users, eq(schema.users.githubLogin, schema.organizations.githubLogin));
   const rows = filters
     ? await query
         .where(filters)
@@ -133,13 +160,20 @@ export async function listReviewReports(
   return rows.map(toSummary);
 }
 
-export async function getReviewReport(id: string): Promise<ReviewReportDetail | null> {
+export async function getReviewReport(
+  id: string,
+  viewer: ReportViewer | null,
+): Promise<ReviewReportDetail | null> {
+  const authorizationFilter = viewerAuthorizationFilter(viewer);
+  if (!authorizationFilter) return null;
+
   const db = getDb();
   const rows = await db
     .select(reportProjection())
     .from(schema.reviews)
-    .leftJoin(schema.organizations, eq(schema.reviews.organizationId, schema.organizations.id))
-    .where(eq(schema.reviews.id, id))
+    .innerJoin(schema.organizations, eq(schema.reviews.organizationId, schema.organizations.id))
+    .innerJoin(schema.users, eq(schema.users.githubLogin, schema.organizations.githubLogin))
+    .where(and(eq(schema.reviews.id, id), authorizationFilter))
     .limit(1);
 
   const row = rows[0];

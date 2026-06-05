@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { requireReportSession } from "@/lib/report-auth";
-import { listReviewReports } from "@/lib/reports";
+import { listReviewReports, reportViewerFromSession } from "@/lib/reports";
 
 export const metadata: Metadata = {
   title: "Reports",
@@ -29,9 +29,10 @@ export default async function ReportsPage({
 }: {
   searchParams: Promise<{ q?: string }>;
 }) {
-  await requireReportSession("/reports");
+  const session = await requireReportSession("/reports");
+  const viewer = reportViewerFromSession(session);
   const { q } = await searchParams;
-  const reports = await listReviewReports({ q, limit: 100 });
+  const reports = await listReviewReports({ viewer, q, limit: 100 });
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-4 py-6 sm:px-8 lg:px-12">

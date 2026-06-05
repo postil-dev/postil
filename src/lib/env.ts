@@ -85,6 +85,10 @@ export type Env = z.infer<typeof schema>;
 
 const parsed = schema.parse(process.env);
 
+if (parsed.NODE_ENV === "production" && !parsed.BETTER_AUTH_SECRET) {
+  throw new Error("BETTER_AUTH_SECRET must be set in production.");
+}
+
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   return values.find((value) => value?.trim());
 }
