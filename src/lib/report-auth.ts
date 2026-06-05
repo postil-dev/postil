@@ -1,8 +1,9 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { auth } from "@/auth";
+import { assertAuthSecretConfigured, auth } from "@/auth";
 
 export async function requireReportSession(nextPath: string) {
+  assertAuthSecretConfigured();
   const session = await auth.api.getSession({
     headers: await headers(),
   });

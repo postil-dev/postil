@@ -16,10 +16,13 @@ const polarClient = env.POLAR_API_KEY
 
 function authSecret(): string {
   if (env.BETTER_AUTH_SECRET) return env.BETTER_AUTH_SECRET;
-  if (env.NODE_ENV === "production") {
+  return "dev-secret-change-me-dev-secret-change-me";
+}
+
+export function assertAuthSecretConfigured(): void {
+  if (env.NODE_ENV === "production" && !env.BETTER_AUTH_SECRET) {
     throw new Error("BETTER_AUTH_SECRET must be set in production.");
   }
-  return "dev-secret-change-me-dev-secret-change-me";
 }
 
 export const auth = betterAuth({

@@ -3,6 +3,8 @@ import type { Metadata } from "next";
 import { requireReportSession } from "@/lib/report-auth";
 import { listReviewReports, reportViewerFromSession } from "@/lib/reports";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Reports",
   description: "Browse completed Postil review reports.",
