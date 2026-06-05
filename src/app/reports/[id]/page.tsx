@@ -1,6 +1,6 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Metadata } from "next";
 import { requireReportSession } from "@/lib/report-auth";
 import { getReviewReport, reportViewerFromSession } from "@/lib/reports";
 

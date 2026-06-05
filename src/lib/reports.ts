@@ -55,9 +55,10 @@ export function reportViewerFromSession(session: unknown): ReportViewer | null {
   const authSession = (session as { session?: unknown }).session;
   if (!user || typeof user !== "object") return null;
   const email = (user as { email?: unknown }).email;
-  const activeOrganizationId = authSession && typeof authSession === "object"
-    ? (authSession as { activeOrganizationId?: unknown }).activeOrganizationId
-    : null;
+  const activeOrganizationId =
+    authSession && typeof authSession === "object"
+      ? (authSession as { activeOrganizationId?: unknown }).activeOrganizationId
+      : null;
 
   if (
     typeof email !== "string" ||

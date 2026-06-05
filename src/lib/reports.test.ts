@@ -89,8 +89,12 @@ describe("report helpers", () => {
       email: "user@example.test",
       organizationId: "org-123",
     });
-    expect(reportViewerFromSession({ user: {}, session: { activeOrganizationId: "org-123" } })).toBeNull();
-    expect(reportViewerFromSession({ user: { email: "user@example.test" }, session: {} })).toBeNull();
+    expect(
+      reportViewerFromSession({ user: {}, session: { activeOrganizationId: "org-123" } }),
+    ).toBeNull();
+    expect(
+      reportViewerFromSession({ user: { email: "user@example.test" }, session: {} }),
+    ).toBeNull();
     expect(reportViewerFromSession(null)).toBeNull();
   });
 
