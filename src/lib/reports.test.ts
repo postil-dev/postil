@@ -80,10 +80,17 @@ describe("report helpers", () => {
   });
 
   it("extracts report viewers from signed-in sessions", () => {
-    expect(reportViewerFromSession({ user: { email: " user@example.test " } })).toEqual({
+    expect(
+      reportViewerFromSession({
+        user: { email: " user@example.test " },
+        session: { activeOrganizationId: " org-123 " },
+      }),
+    ).toEqual({
       email: "user@example.test",
+      organizationId: "org-123",
     });
-    expect(reportViewerFromSession({ user: {} })).toBeNull();
+    expect(reportViewerFromSession({ user: {}, session: { activeOrganizationId: "org-123" } })).toBeNull();
+    expect(reportViewerFromSession({ user: { email: "user@example.test" }, session: {} })).toBeNull();
     expect(reportViewerFromSession(null)).toBeNull();
   });
 
@@ -94,7 +101,9 @@ describe("report helpers", () => {
   });
 
   it("maps persisted reviews into report summaries", async () => {
-    const reports = await listReviewReports({ viewer: { email: "user@example.test" } });
+    const reports = await listReviewReports({
+      viewer: { email: "user@example.test", organizationId: "review_organization_id" },
+    });
 
     expect(reports).toEqual([
       expect.objectContaining({
@@ -106,7 +115,10 @@ describe("report helpers", () => {
   });
 
   it("returns detail with the raw result payload", async () => {
-    const report = await getReviewReport("review-1", { email: "user@example.test" });
+    const report = await getReviewReport("review-1", {
+      email: "user@example.test",
+      organizationId: "review_organization_id",
+    });
 
     expect(report).toEqual(
       expect.objectContaining({
