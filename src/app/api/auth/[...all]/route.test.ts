@@ -1,33 +1,42 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
-const ORIGINAL_BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
+const mocks = vi.hoisted(() => ({
+  authAssert: vi.fn(() => {
+    throw new Error("BETTER_AUTH_SECRET must be set in production.");
+  }),
+  get: vi.fn(),
+  post: vi.fn(),
+}));
 
-function restoreEnv() {
-  if (ORIGINAL_NODE_ENV === undefined) delete process.env.NODE_ENV;
-  else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+vi.mock("@/auth", () => ({
+  assertAuthSecretConfigured: mocks.authAssert,
+  auth: {
+    handler: {},
+  },
+}));
 
-  if (ORIGINAL_BETTER_AUTH_SECRET === undefined) delete process.env.BETTER_AUTH_SECRET;
-  else process.env.BETTER_AUTH_SECRET = ORIGINAL_BETTER_AUTH_SECRET;
-}
+vi.mock("better-auth/next-js", () => ({
+  toNextJsHandler: () => ({
+    GET: mocks.get,
+    POST: mocks.post,
+  }),
+}));
+
+const { GET } = await import("./route");
 
 describe("auth route secret checks", () => {
-  afterEach(() => {
-    restoreEnv();
-    vi.resetModules();
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
   it("defers the production secret assertion until the route handler runs", async () => {
-    vi.resetModules();
-    process.env.NODE_ENV = "production";
-    delete process.env.BETTER_AUTH_SECRET;
-
-    const route = await import("./route");
-
     await expect(
-      route.GET(new Request("https://postil.dev/api/auth/get-session"), {
+      GET(new Request("https://postil.dev/api/auth/get-session"), {
         params: Promise.resolve({ all: ["get-session"] }),
       }),
     ).rejects.toThrow("BETTER_AUTH_SECRET must be set in production.");
+
+    expect(mocks.authAssert).toHaveBeenCalledTimes(1);
+    expect(mocks.get).not.toHaveBeenCalled();
   });
 });
