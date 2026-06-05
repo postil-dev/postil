@@ -20,8 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'merge_group' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false)
     timeout-minutes: 15
-    env:
-      POSTIL_REVIEWER_REV: 3df78f88531aadb76942f4c69bc5a22e4421be34
     steps:
       - name: Skip review in merge queue (already ran on PR)
         if: github.event_name == 'merge_group'
@@ -34,58 +32,9 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
-      - name: Set up Rust
-        if: github.event_name == 'pull_request_target'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-
-      - name: Verify reviewer commit
-        if: github.event_name == 'pull_request_target'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          reviewer_rev="$POSTIL_REVIEWER_REV"
-          test -n "$reviewer_rev"
-          verification="$(
-            curl -fsSL \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/postil-dev/postil-reviewer/commits/$reviewer_rev"
-          )"
-          if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
-            echo "::error::reviewer commit is not verified"
-            exit 1
-          fi
-
-      - name: Install Postil reviewer
-        if: github.event_name == 'pull_request_target'
-        run: |
-          reviewer_rev="$POSTIL_REVIEWER_REV"
-          test -n "$reviewer_rev"
-          cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
-
-      - name: Set up Bun
-        if: github.event_name == 'pull_request_target'
-        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        if: github.event_name == 'pull_request_target'
-        run: bun install --frozen-lockfile --ignore-scripts
-
-      - name: Verify review credentials
-        if: github.event_name == 'pull_request_target'
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: |
-          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-            echo "::error title=Missing review model credentials::Set OPENROUTER_API_KEY as a repository or organization secret for this workflow."
-            exit 1
-          fi
-
       - name: Run postil review
         if: github.event_name == 'pull_request_target'
-        run: bun run postil review
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        uses: postil-dev/postil-action@main
+        with:
+          api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}

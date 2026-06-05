@@ -117,4 +117,27 @@
   kbd {
     font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
   }
+
+  .diff-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(247, 245, 241, 0.42) rgba(247, 245, 241, 0.08);
+  }
+
+  .diff-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .diff-scroll::-webkit-scrollbar-track {
+    background: rgba(247, 245, 241, 0.08);
+  }
+
+  .diff-scroll::-webkit-scrollbar-thumb {
+    background: rgba(247, 245, 241, 0.38);
+    border-radius: 999px;
+  }
+
+  .diff-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(247, 245, 241, 0.52);
+  }
 }

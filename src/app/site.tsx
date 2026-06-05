@@ -61,15 +61,15 @@ export function DiffPreview({
   const removedLines = removed.split("\n");
   const addedLines = added.split("\n");
   return (
-    <pre className={["overflow-auto bg-[#1f252b] p-4 font-mono text-xs leading-6 text-[#f7f5f1]", className].filter(Boolean).join(" ")}>
-      {context ? <code className="block text-[#c8cdd2]">{context}</code> : null}
+    <pre className={["diff-scroll overflow-auto bg-[#1f252b] p-4 font-mono text-xs leading-6 text-[#f7f5f1]", className].filter(Boolean).join(" ")}>
+      {context ? <code className="block w-max min-w-full whitespace-pre text-[#c8cdd2]">{context}</code> : null}
       {removedLines.map((line, index) => {
         // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
-        return <code key={`removed-${index}-${line}`} className="block whitespace-pre bg-diff-del/60 px-2 text-[#f7f5f1]">- {line}</code>;
+        return <code key={`removed-${index}-${line}`} className="block w-max min-w-full whitespace-pre bg-diff-del/60 px-2 text-[#f7f5f1]">- {line}</code>;
       })}
       {addedLines.map((line, index) => {
         // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
-        return <code key={`added-${index}-${line}`} className="block whitespace-pre bg-diff-add/60 px-2 text-[#f7f5f1]">+ {line}</code>;
+        return <code key={`added-${index}-${line}`} className="block w-max min-w-full whitespace-pre bg-diff-add/60 px-2 text-[#f7f5f1]">+ {line}</code>;
       })}
     </pre>
   );

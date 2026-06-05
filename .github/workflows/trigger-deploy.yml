@@ -50,7 +50,25 @@ jobs:
       - name: Allow depot CLI postinstall
         run: bun pm trust @depot/cli
 
+      - name: Verify Trigger deploy credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "${TRIGGER_PAT:-}" ]; then
+            echo "::error title=Missing Trigger deploy token::TRIGGER_PAT must be available from Infisical for Trigger.dev deploys."
+            missing=1
+          fi
+          if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
+            echo "::error title=Missing Trigger project::TRIGGER_PROJECT_ID must be available from Infisical for Trigger.dev deploys."
+            missing=1
+          fi
+          exit "$missing"
+
       - name: Deploy trigger.dev tasks
-        run: bun trigger deploy --skip-update-check --env prod
-        env:
-          TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRIGGER_ACCESS_TOKEN="$TRIGGER_PAT" \
+          TRIGGER_PROJECT_ID="$TRIGGER_PROJECT_ID" \
+            bun trigger deploy --skip-update-check --env prod
