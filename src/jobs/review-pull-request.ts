@@ -48,6 +48,25 @@ function publicReviewErrorMessage(): string {
   return "Review failed to complete.";
 }
 
+async function completeCheckRunSuccess(payload: ReviewPayload): Promise<void> {
+  if (!payload.checkRunId) return;
+  const octokit = await installationOctokit(payload.installationId);
+  const [owner, repo] = payload.repoFullName.split("/");
+  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+    owner,
+    repo,
+    check_run_id: payload.checkRunId,
+    status: "completed",
+    conclusion: "success",
+    completed_at: new Date().toISOString(),
+    output: {
+      title: "Postil Review",
+      summary: "Review completed with no blocking findings.",
+      text: "Review completed with no blocking findings.",
+    },
+  });
+}
+
 async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
   if (!payload.checkRunId) return;
   const octokit = await installationOctokit(payload.installationId);
@@ -151,6 +170,21 @@ export const reviewPullRequest = task({
       });
 
       const result = await runReviewCli(payload);
+
+      if (result.findings.length === 0) {
+        try {
+          await completeCheckRunSuccess(payload);
+        } catch (checkRunErr) {
+          captureException(new Error("postil review check-run success patch failed"), {
+            properties: {
+              op: "complete_clean_check_run",
+              repoFullName: payload.repoFullName,
+              pullNumber: payload.pullNumber,
+              errorClass: checkRunErr instanceof Error ? checkRunErr.name : typeof checkRunErr,
+            },
+          });
+        }
+      }
 
       if (payload.reviewId) {
         try {

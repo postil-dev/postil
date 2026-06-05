@@ -154,6 +154,16 @@ describe("reviewPullRequest", () => {
         result: expect.objectContaining({ summary: "ok" }),
       }),
     );
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "success",
+        output: expect.objectContaining({
+          summary: "Review completed with no blocking findings.",
+        }),
+      }),
+    );
   });
 
   it("dispatches review work with explicit backend credentials", async () => {

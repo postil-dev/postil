@@ -73,6 +73,16 @@ jobs:
         if: github.event_name == 'pull_request_target'
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Verify review credentials
+        if: github.event_name == 'pull_request_target'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "::error title=Missing review model credentials::Set OPENROUTER_API_KEY as a repository or organization secret for this workflow."
+            exit 1
+          fi
+
       - name: Run postil review
         if: github.event_name == 'pull_request_target'
         run: bun run postil review
