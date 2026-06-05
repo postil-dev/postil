@@ -657,6 +657,58 @@ describe("github webhook", () => {
     });
   });
 
+  it("completes the app review check when the review workflow exits neutral", async () => {
+    dbMock.findFirst.mockResolvedValueOnce({
+      id: "review-proof-157",
+      checkRunId: 79772162275,
+    } as never);
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 79772162275 } };
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-neutral", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
+        workflow_run: {
+          id: 79772464919,
+          name: "Postil Review",
+          conclusion: "neutral",
+          html_url: "https://github.com/acme/widget/actions/runs/79772464919",
+          head_sha: "6aa798915ca494dd39f0f1396fd27a1594bd2eb2",
+          pull_requests: [{ number: 157 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(1);
+    expect(
+      mockRequest.mock.calls.find(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      )?.[1],
+    ).toMatchObject({
+      check_run_id: 79772162275,
+      conclusion: "neutral",
+      output: {
+        title: "Postil Review",
+        summary: "Review completed.",
+        text: "Review completed.",
+      },
+    });
+    expect(dbMock.updateCalls).toContainEqual({
+      status: "completed",
+      completedAt: expect.any(Date),
+    });
+  });
+
   it("completes the review check when the review workflow only knows the pull number", async () => {
     dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 321 } as never);
     mockRequest.mockImplementation(async (route: string) => {
@@ -945,7 +997,6 @@ describe("github webhook", () => {
 
   it.each([
     "action_required",
-    "neutral",
     "skipped",
     "startup_failure",
     "stale",
