@@ -16,6 +16,7 @@ const dbMock = vi.hoisted(() => ({
 }));
 const reviewJobMock = vi.hoisted(() => ({
   enqueueReviewPullRequest: vi.fn(async () => ({ id: "trigger-run-123" })),
+  scheduleReviewTimeoutFallback: vi.fn(),
 }));
 const configMock = vi.hoisted(() => ({
   review: {
@@ -139,6 +140,7 @@ describe("github webhook", () => {
     dbMock.failTriggerRunIdUpdate = false;
     dbMock.failFailedStatusUpdate = false;
     dbMock.failDeliveryDelete = false;
+    reviewJobMock.scheduleReviewTimeoutFallback.mockClear();
     configMock.review = { auto_merge: true };
   });
 
@@ -197,7 +199,7 @@ describe("github webhook", () => {
     expect(dbMock.updateCalls).toContainEqual({ triggerRunId: "trigger-run-123" });
   });
 
-  it("enqueues review work when @postil is mentioned on a PR conversation", async () => {
+  it("enqueues review work when @postil-dev is mentioned on a PR conversation", async () => {
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}") {
         return { data: { draft: false, head: { sha: "mention-sha" } } };
@@ -217,7 +219,7 @@ describe("github webhook", () => {
           number: 68,
           pull_request: { url: "https://api.github.com/repos/acme/widget/pulls/68" },
         },
-        comment: { body: "@postil take another look at this auth path" },
+        comment: { body: "@postil-dev take another look at this auth path" },
       }),
     );
 
@@ -244,14 +246,67 @@ describe("github webhook", () => {
     );
   });
 
-  it("ignores @postil issue comments that are not attached to a PR", async () => {
+  it("also accepts the short @postil mention on a PR conversation", async () => {
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}") {
+        return { data: { draft: false, head: { sha: "short-mention-sha" } } };
+      }
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 655 } };
+      }
+      return { data: [] };
+    });
+
+    const res = await POST(
+      signedRequest("issue_comment", "short-mention-comment", {
+        action: "created",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        issue: {
+          number: 68,
+          pull_request: { url: "https://api.github.com/repos/acme/widget/pulls/68" },
+        },
+        comment: { body: "@postil take another look at this auth path" },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(reviewJobMock.enqueueReviewPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pullNumber: 68,
+        headSha: "short-mention-sha",
+        checkRunId: 655,
+      }),
+      "short-mention-comment",
+    );
+  });
+
+  it("does not treat longer dashed usernames as Postil mentions", async () => {
+    const res = await POST(
+      signedRequest("issue_comment", "wrong-mention-comment", {
+        action: "created",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        issue: {
+          number: 68,
+          pull_request: { url: "https://api.github.com/repos/acme/widget/pulls/68" },
+        },
+        comment: { body: "@postil-devops should look at this" },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("ignores @postil-dev issue comments that are not attached to a PR", async () => {
     const res = await POST(
       signedRequest("issue_comment", "mention-issue", {
         action: "created",
         installation: { id: 123 },
         repository: { full_name: "acme/widget" },
         issue: { number: 12 },
-        comment: { body: "@postil please help" },
+        comment: { body: "@postil-dev please help" },
       }),
     );
 
@@ -394,6 +449,14 @@ describe("github webhook", () => {
       },
       "pr-bookkeeping",
     );
+    expect(reviewJobMock.scheduleReviewTimeoutFallback).toHaveBeenCalledWith({
+      installationId: 123,
+      repoFullName: "acme/widget",
+      pullNumber: 68,
+      headSha: "abc123def456",
+      checkRunId: 321,
+      reviewId: "review-1",
+    });
     expect(dbMock.deleteCalls).toEqual([]);
     expect(posthogMock.captureException).toHaveBeenCalledWith(
       expect.any(Error),

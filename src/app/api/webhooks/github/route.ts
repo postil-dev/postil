@@ -3,7 +3,10 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
 import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/auto-merge";
-import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
+import {
+  enqueueReviewPullRequest,
+  scheduleReviewTimeoutFallback,
+} from "@/jobs/review-pull-request";
 import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { installationOctokit } from "@/lib/github";
@@ -16,6 +19,7 @@ export const maxDuration = 300;
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
 const REVIEW_WORKFLOW_PATH = ".github/workflows/postil-review.yml";
 const REVIEW_WORKFLOW_FAILURE_CONCLUSIONS = new Set(["cancelled", "failure"]);
+const POSTIL_MENTION_PATTERN = /(^|[^\w-])@(postil-dev|postil)(?![\w-])/i;
 
 function verifySignature(payload: string, signature: string | null): boolean {
   if (!signature || !env.GITHUB_WEBHOOK_SECRET) return false;
@@ -220,7 +224,7 @@ async function handleMention(
 }
 
 function mentionsPostil(body: string | null | undefined): boolean {
-  return /(^|[^\w-])@postil\b/i.test(body ?? "");
+  return POSTIL_MENTION_PATTERN.test(body ?? "");
 }
 
 async function dispatchReview(
@@ -314,17 +318,16 @@ async function dispatchReview(
   }
 
   try {
-    const triggerRun = await enqueueReviewPullRequest(
-      {
-        installationId,
-        repoFullName,
-        pullNumber,
-        headSha,
-        checkRunId,
-        reviewId,
-      },
-      deliveryId,
-    );
+    const reviewPayload = {
+      installationId,
+      repoFullName,
+      pullNumber,
+      headSha,
+      checkRunId,
+      reviewId,
+    };
+    const triggerRun = await enqueueReviewPullRequest(reviewPayload, deliveryId);
+    await scheduleReviewTimeoutFallback(reviewPayload);
 
     try {
       await db

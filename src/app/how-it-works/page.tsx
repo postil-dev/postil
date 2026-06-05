@@ -5,7 +5,7 @@ export const metadata = {
 };
 
 const steps = [
-  ["1", "Triggered", "A PR update or @postil mention starts a run on the current head SHA."],
+  ["1", "Triggered", "A PR update or @postil-dev mention starts a run on the current head SHA."],
   ["2", "Loaded", "Postil reads the diff, config, and open review threads."],
   ["3", "Checked", "The reviewer returns structured findings, not a prose blob."],
   ["4", "Filtered", "Ignored paths, severity thresholds, and max findings apply before posting."],
@@ -14,7 +14,7 @@ const steps = [
 ];
 
 const details = [
-  ["Ask again", "Comment @postil in a PR, review, or inline thread for another pass."],
+  ["Ask again", "Comment @postil-dev in a PR, review, or inline thread for another pass."],
   ["Keeps context", "Open review threads and change requests go into the prompt."],
   ["Can stay quiet", "No finding means no synthetic recap."],
   ["Line-backed", "Each finding points to the changed file and line it depends on."],

@@ -2,7 +2,8 @@
 
 # --- postil review bot ---
 FROM docker.io/library/rust:1 AS postil-reviewer
-RUN cargo install --git https://github.com/postil-dev/postil-reviewer --locked
+ARG POSTIL_REVIEWER_REV=4ad6c2ff17a07d91253063ba63119af785a06cda
+RUN cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$POSTIL_REVIEWER_REV" --locked
 
 # --- deps ---
 FROM docker.io/oven/bun:1.3 AS deps

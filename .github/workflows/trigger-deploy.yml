@@ -17,7 +17,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   deploy:
@@ -27,17 +26,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Fetch secrets from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
-        with:
-          method: oidc
-          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
-          domain: https://eu.infisical.com
-          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
-          env-slug: prod
-          secret-path: /postil
-          export-type: env
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
@@ -50,7 +38,65 @@ jobs:
       - name: Allow depot CLI postinstall
         run: bun pm trust @depot/cli
 
-      - name: Deploy trigger.dev tasks
-        run: bun trigger deploy --skip-update-check --env prod
+      - name: Prepare Trigger deploy environment
+        run: |
+          if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
+            echo "TRIGGER_PROJECT_ID must be set in GitHub Actions secrets" >&2
+            exit 1
+          fi
+          if [ -z "${TRIGGER_SECRET_KEY:-}" ]; then
+            echo "TRIGGER_SECRET_KEY must be set in GitHub Actions secrets" >&2
+            exit 1
+          fi
         env:
-          TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT }}
+          TRIGGER_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
+          TRIGGER_SECRET_KEY: ${{ secrets.TRIGGER_SECRET_KEY }}
+
+      - name: Deploy trigger.dev tasks
+        run: |
+          bun trigger deploy --skip-update-check --env prod --project-ref "$TRIGGER_PROJECT_ID"
+        env:
+          TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_PAT }}
+          TRIGGER_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
+          TRIGGER_SECRET_KEY: ${{ secrets.TRIGGER_SECRET_KEY }}
+
+      - name: Check Fly deploy environment
+        if: github.event_name == 'workflow_dispatch'
+        id: fly_env
+        run: |
+          if [ -n "${FLY_TOKEN:-}" ] && [ -n "${FLY_APP_NAME:-}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Fly deploy skipped because FLY_TOKEN or FLY_APP_NAME is not set in GitHub Actions secrets"
+          fi
+        env:
+          FLY_TOKEN: ${{ secrets.FLY_TOKEN }}
+          FLY_APP_NAME: ${{ secrets.FLY_APP_NAME }}
+
+      - name: Sync Trigger secrets to Fly
+        if: github.event_name == 'workflow_dispatch' && steps.fly_env.outputs.ready == 'true'
+        run: |
+          curl -L https://fly.io/install.sh | sh
+          export PATH="$HOME/.fly/bin:$PATH"
+          flyctl secrets set \
+            --app "$FLY_APP_NAME" \
+            TRIGGER_PROJECT_ID="$TRIGGER_PROJECT_ID_FOR_FLY" \
+            TRIGGER_SECRET_KEY="$TRIGGER_SECRET_KEY_FOR_FLY"
+        env:
+          FLY_TOKEN: ${{ secrets.FLY_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_TOKEN }}
+          FLY_APP_NAME: ${{ secrets.FLY_APP_NAME }}
+          TRIGGER_PROJECT_ID_FOR_FLY: ${{ secrets.TRIGGER_PROJECT_ID }}
+          TRIGGER_SECRET_KEY_FOR_FLY: ${{ secrets.TRIGGER_SECRET_KEY }}
+
+      - name: Deploy Fly web app
+        if: github.event_name == 'workflow_dispatch' && steps.fly_env.outputs.ready == 'true'
+        run: |
+          curl -L https://fly.io/install.sh | sh
+          export PATH="$HOME/.fly/bin:$PATH"
+          flyctl deploy --remote-only --config fly.toml --app "$FLY_APP_NAME"
+        env:
+          FLY_TOKEN: ${{ secrets.FLY_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_TOKEN }}
+          FLY_APP_NAME: ${{ secrets.FLY_APP_NAME }}

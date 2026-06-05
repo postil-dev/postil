@@ -5,36 +5,48 @@ describe("trigger config", () => {
     vi.resetModules();
   });
 
-  it("requires TRIGGER_PROJECT_ID before loading the deploy config", async () => {
+  it("loads when the deploy command supplies the project ref override", async () => {
     const originalProjectId = process.env.TRIGGER_PROJECT_ID;
+    const originalProjectRef = process.env.TRIGGER_PROJECT_REF;
     delete process.env.TRIGGER_PROJECT_ID;
+    delete process.env.TRIGGER_PROJECT_REF;
 
     try {
-      await expect(import("../trigger.config")).rejects.toThrow(
-        "TRIGGER_PROJECT_ID must be set before deploying review tasks",
-      );
+      const { default: config } = await import("../trigger.config");
+      expect(config.project).toBe("configured-by-trigger-deploy");
     } finally {
       if (originalProjectId === undefined) {
         delete process.env.TRIGGER_PROJECT_ID;
       } else {
         process.env.TRIGGER_PROJECT_ID = originalProjectId;
       }
+      if (originalProjectRef === undefined) {
+        delete process.env.TRIGGER_PROJECT_REF;
+      } else {
+        process.env.TRIGGER_PROJECT_REF = originalProjectRef;
+      }
     }
   });
 
-  it("rejects a blank Trigger project id before loading the deploy config", async () => {
+  it("uses TRIGGER_PROJECT_REF when TRIGGER_PROJECT_ID is blank", async () => {
     const originalProjectId = process.env.TRIGGER_PROJECT_ID;
+    const originalProjectRef = process.env.TRIGGER_PROJECT_REF;
     process.env.TRIGGER_PROJECT_ID = "   ";
+    process.env.TRIGGER_PROJECT_REF = " project_ref_123 ";
 
     try {
-      await expect(import("../trigger.config")).rejects.toThrow(
-        "TRIGGER_PROJECT_ID must be set before deploying review tasks",
-      );
+      const { default: config } = await import("../trigger.config");
+      expect(config.project).toBe("project_ref_123");
     } finally {
       if (originalProjectId === undefined) {
         delete process.env.TRIGGER_PROJECT_ID;
       } else {
         process.env.TRIGGER_PROJECT_ID = originalProjectId;
+      }
+      if (originalProjectRef === undefined) {
+        delete process.env.TRIGGER_PROJECT_REF;
+      } else {
+        process.env.TRIGGER_PROJECT_REF = originalProjectRef;
       }
     }
   });

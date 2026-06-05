@@ -43,7 +43,7 @@ $ postil review --base origin/main`;
 
 const sections = [
   ["Install", "Use the reviewer CLI today. The managed GitHub App opens after final review."],
-  ["Ask again", "Mention @postil on a PR conversation, review, or inline thread."],
+  ["Ask again", "Mention @postil-dev on a PR conversation, review, or inline thread."],
   ["Cut noise", "Use `onClean: skip`, severity thresholds, max findings, and ignored globs."],
   ["Write less", "A finding needs a risk and a line. Otherwise, leave the PR alone."],
 ];

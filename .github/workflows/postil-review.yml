@@ -21,7 +21,7 @@ jobs:
     if: github.event_name == 'merge_group' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false)
     timeout-minutes: 15
     env:
-      POSTIL_REVIEWER_REV: 3df78f88531aadb76942f4c69bc5a22e4421be34
+      POSTIL_REVIEWER_REV: 4ad6c2ff17a07d91253063ba63119af785a06cda
     steps:
       - name: Skip review in merge queue (already ran on PR)
         if: github.event_name == 'merge_group'

@@ -19,7 +19,7 @@ const usageMock = vi.hoisted(() => ({
 const githubMock = vi.hoisted(() => ({
   installationOctokit: vi.fn(async () => ({ request: githubMock.request })),
   mintInstallationToken: vi.fn(async () => "installation-token"),
-  request: vi.fn(async () => ({ data: {} })),
+  request: vi.fn(async (..._args: unknown[]) => ({ data: {} })),
 }));
 
 const childProcessMock = vi.hoisted(() => ({
@@ -38,6 +38,11 @@ const fsMock = vi.hoisted(() => ({
 
 const dbMock = vi.hoisted(() => ({
   updates: [] as Record<string, unknown>[],
+  review: {
+    status: "running",
+    completedAt: null,
+    checkRunId: 77,
+  } as { status: string; completedAt: Date | null; checkRunId: number } | undefined,
 }));
 
 const envMock = vi.hoisted(() => ({
@@ -76,6 +81,11 @@ vi.mock("@/db", () => ({
         },
       }),
     }),
+    query: {
+      reviews: {
+        findFirst: async () => dbMock.review,
+      },
+    },
   })),
   schema: { reviews: { id: "id" } },
 }));
@@ -92,9 +102,13 @@ const PAYLOAD = {
   reviewId: "00000000-0000-4000-8000-000000000001",
 };
 
-const { enqueueReviewPullRequest, reviewPullRequest } = await import("./review-pull-request");
+const { enqueueReviewPullRequest, reviewPullRequest, reviewTimeoutFallback, scheduleReviewTimeoutFallback } =
+  await import("./review-pull-request");
 const runReviewTask = reviewPullRequest as unknown as {
   run: (payload: typeof PAYLOAD) => Promise<{ ok: boolean; findings: number }>;
+};
+const runTimeoutFallbackTask = reviewTimeoutFallback as unknown as {
+  run: (payload: typeof PAYLOAD) => Promise<{ ok: boolean }>;
 };
 
 describe("reviewPullRequest", () => {
@@ -102,6 +116,11 @@ describe("reviewPullRequest", () => {
     vi.clearAllMocks();
     fsMock.files.clear();
     dbMock.updates = [];
+    dbMock.review = {
+      status: "running",
+      completedAt: null,
+      checkRunId: 77,
+    };
     envMock.REVIEW_MODEL_CASCADE = undefined;
     envMock.TRIGGER_PROJECT_ID = "project_test_123";
     childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
@@ -130,7 +149,7 @@ describe("reviewPullRequest", () => {
     expect(childProcessMock.execFile).toHaveBeenCalledWith(
       "postil-test",
       expect.arrayContaining(["review", "--config", expect.any(String), "--output-json"]),
-      expect.any(Object),
+      expect.objectContaining({ timeout: 8 * 60 * 1000 }),
       expect.any(Function),
     );
     const configPath = childProcessMock.execFile.mock.calls[0][1][2];
@@ -324,6 +343,113 @@ describe("reviewPullRequest", () => {
 
     expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
       "super-secret-token",
+    );
+  });
+
+  it("schedules the watchdog as a delayed trigger task", async () => {
+    await scheduleReviewTimeoutFallback(PAYLOAD, 1);
+
+    expect(triggerMock.tasksTrigger).toHaveBeenCalledWith(
+      "review-timeout-fallback",
+      PAYLOAD,
+      expect.objectContaining({
+        delay: "1s",
+        idempotencyKey: `review-timeout-fallback:${PAYLOAD.checkRunId}`,
+        maxAttempts: 1,
+      }),
+      expect.objectContaining({
+        clientConfig: expect.objectContaining({
+          accessToken: "test-trigger-secret",
+          baseURL: "https://trigger.example.test",
+        }),
+      }),
+    );
+  });
+
+  it("fails a still-running review when the watchdog task runs", async () => {
+    await runTimeoutFallbackTask.run(PAYLOAD);
+
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "Review failed to complete.",
+      }),
+    );
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+      }),
+    );
+  });
+
+  it("leaves completed reviews alone when the watchdog task runs", async () => {
+    dbMock.review = {
+      status: "completed",
+      completedAt: new Date(),
+      checkRunId: 77,
+    };
+
+    await runTimeoutFallbackTask.run(PAYLOAD);
+
+    expect(dbMock.updates).toEqual([]);
+    expect(githubMock.request).not.toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.anything(),
+    );
+  });
+
+  it("fails a superseded check-run when it is still in progress", async () => {
+    dbMock.review = {
+      status: "running",
+      completedAt: null,
+      checkRunId: 88,
+    };
+    githubMock.request.mockImplementation(async (route: unknown) => {
+      if (route === "GET /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { status: "in_progress" } };
+      }
+      return { data: {} };
+    });
+
+    await runTimeoutFallbackTask.run(PAYLOAD);
+
+    expect(dbMock.updates).toEqual([]);
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "GET /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+      }),
+    );
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+      }),
+    );
+  });
+
+  it("leaves a superseded check-run alone when it already completed", async () => {
+    dbMock.review = {
+      status: "running",
+      completedAt: null,
+      checkRunId: 88,
+    };
+    githubMock.request.mockImplementation(async (route: unknown) => {
+      if (route === "GET /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { status: "completed" } };
+      }
+      return { data: {} };
+    });
+
+    await runTimeoutFallbackTask.run(PAYLOAD);
+
+    expect(dbMock.updates).toEqual([]);
+    expect(githubMock.request).not.toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.anything(),
     );
   });
 });

@@ -19,6 +19,8 @@ import {
 } from "./review-types";
 
 const execFile = promisify(execFileCb);
+const REVIEW_CLI_TIMEOUT_MS = 8 * 60 * 1000;
+const REVIEW_WATCHDOG_TIMEOUT_MS = 10 * 60 * 1000;
 
 function triggerClientConfig() {
   if (!env.triggerApiKey) {
@@ -67,6 +69,19 @@ async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
   });
 }
 
+async function checkRunIsInProgress(payload: ReviewPayload): Promise<boolean> {
+  if (!payload.checkRunId) return false;
+  const octokit = await installationOctokit(payload.installationId);
+  const [owner, repo] = payload.repoFullName.split("/");
+  const checkRun = await octokit.request("GET /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+    owner,
+    repo,
+    check_run_id: payload.checkRunId,
+  });
+  const data = checkRun.data as { status?: unknown };
+  return data.status === "in_progress";
+}
+
 async function markReviewFailed(payload: ReviewPayload): Promise<void> {
   if (!payload.reviewId) return;
   const db = getDb();
@@ -79,6 +94,72 @@ async function markReviewFailed(payload: ReviewPayload): Promise<void> {
     })
     .where(eq(schema.reviews.id, payload.reviewId));
 }
+
+async function failReviewIfStillRunning(payload: ReviewPayload): Promise<void> {
+  if (!payload.reviewId || !payload.checkRunId) return;
+  const db = getDb();
+  const review = await db.query.reviews.findFirst({
+    where: eq(schema.reviews.id, payload.reviewId),
+    columns: { status: true, completedAt: true, checkRunId: true },
+  });
+
+  if (!review || review.status !== "running" || review.completedAt) {
+    return;
+  }
+
+  if (review.checkRunId !== payload.checkRunId) {
+    if (await checkRunIsInProgress(payload)) {
+      await completeCheckRunFailed(payload);
+    }
+    return;
+  }
+
+  await markReviewFailed(payload);
+  await completeCheckRunFailed(payload);
+}
+
+export function scheduleReviewTimeoutFallback(
+  payload: ReviewPayload,
+  timeoutMs = REVIEW_WATCHDOG_TIMEOUT_MS,
+): Promise<unknown> {
+  const identity = payload.checkRunId?.toString() ?? payload.reviewId;
+  if (!identity) {
+    throw new Error("review timeout fallback requires a review or check-run id");
+  }
+  const delaySeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  return tasks.trigger<typeof reviewTimeoutFallback>(
+    reviewTimeoutFallback.id,
+    payload,
+    {
+      delay: `${delaySeconds}s`,
+      idempotencyKey: `review-timeout-fallback:${identity}`,
+      maxAttempts: 1,
+    },
+    { clientConfig: triggerClientConfig() },
+  );
+}
+
+export const reviewTimeoutFallback = task({
+  id: "review-timeout-fallback",
+  maxDuration: 60,
+  run: async (raw: unknown) => {
+    const payload = reviewPayload.parse(raw);
+    try {
+      await failReviewIfStillRunning(payload);
+      return { ok: true };
+    } catch (err) {
+      captureException(new Error("postil review timeout fallback failed"), {
+        properties: {
+          op: "review_timeout_fallback",
+          repoFullName: payload.repoFullName,
+          pullNumber: payload.pullNumber,
+          errorClass: err instanceof Error ? err.name : typeof err,
+        },
+      });
+      throw err;
+    }
+  },
+});
 
 async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
   const runDir = join(tmpdir(), "postil-runs", randomUUID());
@@ -107,6 +188,7 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
       await execFile(cli, ["review", "--config", configPath, "--output-json", outputPath], {
         cwd: process.cwd(),
         maxBuffer: 1024 * 1024,
+        timeout: REVIEW_CLI_TIMEOUT_MS,
       });
     } catch (err) {
       try {

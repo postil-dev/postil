@@ -1,0 +1,57 @@
+name: Fly Web Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "fly.toml"
+      - "package.json"
+      - "bun.lock"
+      - "public/**"
+      - "src/**"
+      - ".github/workflows/fly-deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: fly-web-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy web app
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install flyctl
+        run: |
+          curl -L https://fly.io/install.sh | sh
+          echo "$HOME/.fly/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Fly deploy environment
+        run: |
+          app_name="${FLY_APP_NAME:-}"
+          if [ -z "${FLY_TOKEN:-}" ]; then
+            echo "FLY_TOKEN must be set in GitHub Actions secrets to deploy Fly web app" >&2
+            exit 1
+          fi
+          if [ -z "$app_name" ]; then
+            echo "FLY_APP_NAME must be set in GitHub Actions secrets to deploy Fly web app" >&2
+            exit 1
+          fi
+        env:
+          FLY_TOKEN: ${{ secrets.FLY_TOKEN }}
+          FLY_APP_NAME: ${{ secrets.FLY_APP_NAME }}
+
+      - name: Deploy to Fly
+        run: |
+          flyctl deploy --remote-only --config fly.toml --app "$FLY_APP_NAME"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_TOKEN }}
+          FLY_APP_NAME: ${{ secrets.FLY_APP_NAME }}
