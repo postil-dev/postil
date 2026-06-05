@@ -16,6 +16,7 @@ export const maxDuration = 300;
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
 const REVIEW_WORKFLOW_PATH = ".github/workflows/postil-review.yml";
 const REVIEW_WORKFLOW_FAILURE_CONCLUSIONS = new Set(["cancelled", "failure"]);
+const REVIEW_WORKFLOW_NON_BLOCKING_CONCLUSIONS = new Set(["neutral", "success"]);
 
 function verifySignature(payload: string, signature: string | null): boolean {
   if (!signature || !env.GITHUB_WEBHOOK_SECRET) return false;
@@ -534,6 +535,7 @@ async function completeReviewWorkflowSuccessCheckRun(
   repoFullName: string,
   pullNumber: number | null,
   candidateHeadShas: Array<string | null | undefined>,
+  conclusion: "neutral" | "success",
 ): Promise<void> {
   let review: ReviewCheckRun;
   try {
@@ -583,7 +585,7 @@ async function completeReviewWorkflowSuccessCheckRun(
       repo,
       check_run_id: review.checkRunId,
       status: "completed",
-      conclusion: "success",
+      conclusion,
       completed_at: completedAt.toISOString(),
       output: {
         title: "Postil Review",
@@ -649,6 +651,16 @@ function isReviewWorkflowFailureConclusion(conclusion: string | null | undefined
   );
 }
 
+function isReviewWorkflowNonBlockingConclusion(
+  conclusion: string | null | undefined,
+): conclusion is "neutral" | "success" {
+  return (
+    conclusion !== null &&
+    conclusion !== undefined &&
+    REVIEW_WORKFLOW_NON_BLOCKING_CONCLUSIONS.has(conclusion)
+  );
+}
+
 async function deleteWebhookDelivery(
   db: ReturnType<typeof getDb>,
   deliveryId: string,
@@ -682,13 +694,14 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   if (workflow?.path === REVIEW_WORKFLOW_PATH || workflow_run.path === REVIEW_WORKFLOW_PATH) {
     const reviewContext = resolveReviewWorkflowRunContext(workflow_run);
     const candidateHeadShas = [workflow_run.head_sha ?? null, reviewContext.headSha];
-    if (workflow_run.conclusion === "success") {
+    if (isReviewWorkflowNonBlockingConclusion(workflow_run.conclusion)) {
       await completeReviewWorkflowSuccessCheckRun(
         getDb(),
         octokit,
         repoFullName,
         pullNumber ?? reviewContext.pullNumber,
         candidateHeadShas,
+        workflow_run.conclusion,
       );
     } else if (isReviewWorkflowFailureConclusion(workflow_run.conclusion)) {
       await completeReviewWorkflowFailureCheckRun(
