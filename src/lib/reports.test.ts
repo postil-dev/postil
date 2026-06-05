@@ -1,48 +1,44 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const dbMock = vi.hoisted(() => {
-  const rows = [
-    {
-      id: "review-1",
-      organizationSlug: "acme",
-      repoFullName: "acme/widget",
-      pullNumber: 42,
-      headSha: "abc123",
-      status: "completed",
-      checkRunId: 7,
-      triggerRunId: "run-1",
-      result: { summary: "done", findings: [{ path: "src/a.ts" }] },
-      errorMessage: null,
-      createdAt: new Date("2026-06-01T10:00:00Z"),
-      completedAt: new Date("2026-06-01T10:02:00Z"),
-    },
-  ];
+const rows = [
+  {
+    id: "review-1",
+    organizationSlug: "acme",
+    repoFullName: "acme/widget",
+    pullNumber: 42,
+    headSha: "abc123",
+    status: "completed",
+    checkRunId: 7,
+    triggerRunId: "run-1",
+    result: { summary: "done", findings: [{ path: "src/a.ts" }] },
+    errorMessage: null,
+    createdAt: new Date("2026-06-01T10:00:00Z"),
+    completedAt: new Date("2026-06-01T10:02:00Z"),
+  },
+];
 
-  function query() {
-    const ordered = {
-      limit: async () => rows,
-    };
-    const joined = {
-      innerJoin: () => joined,
-      orderBy: () => ordered,
-      where: () => ({
+const dbMock = {
+  rows,
+  select: vi.fn(() => ({
+    from: () => {
+      const ordered = {
         limit: async () => rows,
+      };
+      const joined = {
+        innerJoin: () => joined,
         orderBy: () => ordered,
-      }),
-    };
+        where: () => ({
+          limit: async () => rows,
+          orderBy: () => ordered,
+        }),
+      };
 
-    return {
-      innerJoin: () => joined,
-    };
-  }
-
-  return {
-    rows,
-    select: vi.fn(() => ({
-      from: () => query(),
-    })),
-  };
-});
+      return {
+        innerJoin: () => joined,
+      };
+    },
+  })),
+};
 
 vi.mock("@/db", () => ({
   getDb: () => dbMock,
