@@ -608,6 +608,55 @@ describe("github webhook", () => {
     expect(issueCall?.[1].title).toContain("Docker build");
   });
 
+  it("completes the app review check when the review workflow succeeds", async () => {
+    dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 321 } as never);
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 321 } };
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-success", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
+        workflow_run: {
+          id: 653,
+          name: "Postil Review",
+          conclusion: "success",
+          html_url: "https://github.com/acme/widget/actions/runs/653",
+          head_sha: "abc123def456",
+          pull_requests: [{ number: 68 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMock.findFirst).toHaveBeenCalledTimes(1);
+    expect(
+      mockRequest.mock.calls.find(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      )?.[1],
+    ).toMatchObject({
+      check_run_id: 321,
+      conclusion: "success",
+      output: {
+        title: "Postil Review",
+        summary: "Review completed.",
+        text: "Review completed.",
+      },
+    });
+    expect(dbMock.updateCalls).toContainEqual({
+      status: "completed",
+      completedAt: expect.any(Date),
+    });
+  });
+
   it("completes the review check when the review workflow only knows the pull number", async () => {
     dbMock.findFirst.mockResolvedValueOnce({ id: "review-1", checkRunId: 321 } as never);
     mockRequest.mockImplementation(async (route: string) => {

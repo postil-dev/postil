@@ -451,7 +451,7 @@ async function completeReviewWorkflowFailureCheckRun(
 ): Promise<void> {
   let review: ReviewCheckRun;
   try {
-    review = await findReviewCheckRunForWorkflowFailure(
+    review = await findReviewCheckRunForWorkflowCompletion(
       db,
       repoFullName,
       pullNumber,
@@ -528,7 +528,83 @@ async function completeReviewWorkflowFailureCheckRun(
   }
 }
 
-async function findReviewCheckRunForWorkflowFailure(
+async function completeReviewWorkflowSuccessCheckRun(
+  db: ReturnType<typeof getDb>,
+  octokit: MinimalOctokit,
+  repoFullName: string,
+  pullNumber: number | null,
+  candidateHeadShas: Array<string | null | undefined>,
+): Promise<void> {
+  let review: ReviewCheckRun;
+  try {
+    review = await findReviewCheckRunForWorkflowCompletion(
+      db,
+      repoFullName,
+      pullNumber,
+      candidateHeadShas,
+    );
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "lookup_review_for_workflow_success",
+        repoFullName,
+        pullNumber,
+      },
+    });
+    return;
+  }
+
+  if (!review?.checkRunId) return;
+
+  const completedAt = new Date();
+  try {
+    await db
+      .update(schema.reviews)
+      .set({
+        status: "completed",
+        completedAt,
+      })
+      .where(eq(schema.reviews.id, review.id));
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "record_review_workflow_success",
+        repoFullName,
+        pullNumber,
+        reviewId: review.id,
+      },
+    });
+  }
+
+  const [owner, repo] = repoFullName.split("/");
+  try {
+    await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+      owner,
+      repo,
+      check_run_id: review.checkRunId,
+      status: "completed",
+      conclusion: "success",
+      completed_at: completedAt.toISOString(),
+      output: {
+        title: "Postil Review",
+        summary: "Review completed.",
+        text: "Review completed.",
+      },
+    });
+  } catch (err) {
+    captureException(err, {
+      properties: {
+        op: "complete_review_workflow_success_check_run",
+        repoFullName,
+        pullNumber,
+        reviewId: review.id,
+        checkRunId: review.checkRunId,
+      },
+    });
+  }
+}
+
+async function findReviewCheckRunForWorkflowCompletion(
   db: ReturnType<typeof getDb>,
   repoFullName: string,
   pullNumber: number | null,
@@ -604,14 +680,23 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
   const octokit = (await installationOctokit(installation.id)) as MinimalOctokit;
 
   if (workflow?.path === REVIEW_WORKFLOW_PATH || workflow_run.path === REVIEW_WORKFLOW_PATH) {
-    if (isReviewWorkflowFailureConclusion(workflow_run.conclusion)) {
-      const reviewContext = resolveReviewWorkflowRunContext(workflow_run);
+    const reviewContext = resolveReviewWorkflowRunContext(workflow_run);
+    const candidateHeadShas = [workflow_run.head_sha ?? null, reviewContext.headSha];
+    if (workflow_run.conclusion === "success") {
+      await completeReviewWorkflowSuccessCheckRun(
+        getDb(),
+        octokit,
+        repoFullName,
+        pullNumber ?? reviewContext.pullNumber,
+        candidateHeadShas,
+      );
+    } else if (isReviewWorkflowFailureConclusion(workflow_run.conclusion)) {
       await completeReviewWorkflowFailureCheckRun(
         getDb(),
         octokit,
         repoFullName,
         pullNumber ?? reviewContext.pullNumber,
-        [workflow_run.head_sha ?? null, reviewContext.headSha],
+        candidateHeadShas,
         workflow_run.conclusion,
       );
     }
