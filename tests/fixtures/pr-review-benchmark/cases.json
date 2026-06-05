@@ -26,6 +26,17 @@
       },
       "disallowedSources": ["expected answer: transfer returns amount once"],
       "scoringLabels": ["correctness", "money-movement", "blocker"],
+      "modelOutput": {
+        "summary": "Recorded model response.",
+        "findings": [
+          {
+            "path": "src/example.ts",
+            "line": 1,
+            "severity": "error",
+            "body": "Recorded review: duplicated money movement is a blocking correctness issue."
+          }
+        ]
+      },
       "groundTruth": {
         "findings": [
           {

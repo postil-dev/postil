@@ -11,6 +11,7 @@ import {
   type ReviewEnvelope,
   type ReviewFinding,
   reviewEnvelope,
+  reviewFinding,
   reviewPayload,
 } from "@/jobs/review-types";
 
@@ -47,6 +48,11 @@ const benchmarkExpectations = z.object({
   requiredFindings: z.array(expectedFinding).default([]),
 });
 
+const reviewModelResponse = z.object({
+  summary: z.string(),
+  findings: z.array(reviewFinding),
+});
+
 export const prReviewBenchmarkCase = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -57,7 +63,7 @@ export const prReviewBenchmarkCase = z.object({
   scoringLabels: z.array(z.string().min(1)).default([]),
   groundTruth: groundTruth.default({ findings: [] }),
   guardrails: guardrails.default({ forbiddenPromptSubstrings: [] }),
-  modelOutput: reviewEnvelope.optional(),
+  modelOutput: reviewModelResponse,
   expectations: benchmarkExpectations.default({ minFindings: 0, requiredFindings: [] }),
 });
 
@@ -126,16 +132,15 @@ export async function runPrReviewBenchmark(
   const rootDir =
     options.rootDir ?? (await mkdtemp(join(tmpdir(), `postil-pr-benchmark-${randomUUID()}-`)));
   const results: PrReviewBenchmarkCaseResult[] = [];
-  let removeRoot = !options.rootDir && !options.keepRuns;
+  const shouldCleanupRoot = !options.rootDir && !options.keepRuns;
 
   try {
     for (const [index, benchmarkCase] of cases.entries()) {
       const result = await runPrReviewBenchmarkCase(benchmarkCase, index, rootDir, options);
       results.push(result);
     }
-    removeRoot = removeRoot && results.every((result) => result.ok);
   } finally {
-    if (removeRoot) {
+    if (shouldCleanupRoot) {
       await rm(rootDir, { recursive: true, force: true });
     }
   }
@@ -289,7 +294,6 @@ function failedCaseResult(
       ? scoreFindings(benchmarkCase.groundTruth.findings, result.findings)
       : emptyMetrics(),
     failures,
-    result,
     error: failures.join("; "),
   };
 }
@@ -400,25 +404,7 @@ async function startMockOpenRouterServer(benchmarkCase: PrReviewBenchmarkCase, r
 }
 
 function modelResponse(benchmarkCase: PrReviewBenchmarkCase) {
-  if (benchmarkCase.modelOutput) {
-    return {
-      summary: benchmarkCase.modelOutput.summary,
-      findings: benchmarkCase.modelOutput.findings,
-    };
-  }
-
-  return {
-    summary:
-      benchmarkCase.groundTruth.findings.length > 0
-        ? "Synthetic benchmark finding."
-        : "Synthetic benchmark clean result.",
-    findings: benchmarkCase.groundTruth.findings.map((finding) => ({
-      path: finding.path,
-      line: finding.line ?? 1,
-      severity: finding.severity ?? "warn",
-      body: finding.bodyIncludes ?? "Synthetic benchmark finding.",
-    })),
-  };
+  return benchmarkCase.modelOutput;
 }
 
 function listen(server: ReturnType<typeof createServer>): Promise<void> {

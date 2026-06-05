@@ -160,6 +160,77 @@ await writeFile(outputPath, JSON.stringify({
     expect(requestText).toContain("export function charge()");
   });
 
+  it("uses recorded model output instead of deriving it from ground truth", async () => {
+    await writeFile(
+      fakeCliPath,
+      `#!/usr/bin/env node
+import { readFile, writeFile } from "node:fs/promises";
+
+const configPath = process.argv[process.argv.indexOf("--config") + 1];
+const outputPath = process.argv[process.argv.indexOf("--output-json") + 1];
+const config = JSON.parse(await readFile(configPath, "utf8"));
+const diff = await fetch(
+  config.githubApiUrl + "/repos/" + config.repo + "/pulls/" + config.pr,
+  { headers: { accept: "application/vnd.github.v3.diff" } }
+).then((response) => response.text());
+const allowedFile = await fetch(
+  config.githubApiUrl + "/repos/" + config.repo + "/contents/src/payments.ts?ref=" + config.sha,
+  { headers: { accept: "application/vnd.github.v3.raw" } }
+).then((response) => response.text());
+const completion = await fetch(config.openrouterApiUrl + "/chat/completions", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    model: "benchmark/test",
+    messages: [{ role: "user", content: diff + "\\n\\nAllowed file:\\n" + allowedFile }]
+  })
+}).then((response) => response.json());
+const modelContent = JSON.parse(completion.choices[0].message.content);
+await writeFile(outputPath, JSON.stringify({
+  summary: modelContent.summary,
+  findings: modelContent.findings,
+  usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+  modelUsed: "benchmark/test"
+}));
+`,
+      { mode: 0o700 },
+    );
+
+    const report = await runPrReviewBenchmark(
+      [
+        {
+          ...caseWithFinding(),
+          modelOutput: {
+            summary: "Recorded model response.",
+            findings: [
+              {
+                path: "src/payments.ts",
+                line: 42,
+                severity: "error",
+                body: "Recorded model response.",
+              },
+            ],
+          },
+          expectations: {
+            minFindings: 1,
+            maxFindings: 1,
+            requiredFindings: [{ path: "src/payments.ts", line: 42, severity: "error" }],
+          },
+        },
+      ],
+      {
+        command: process.execPath,
+        commandArgs: [fakeCliPath],
+        rootDir,
+        keepRuns: true,
+      },
+    );
+
+    expect(report.ok).toBe(true);
+    expect(report.results[0].result?.findings[0].body).toBe("Recorded model response.");
+    expect(report.results[0].metrics.commentUsefulness).toBe(0);
+  });
+
   it("fails the report when expected findings are missing", async () => {
     const report = await runPrReviewBenchmark(
       [
@@ -351,6 +422,17 @@ function caseWithFinding(): PrReviewBenchmarkCase {
     scoringLabels: ["billing", "blocker", "duplicate-side-effect"],
     guardrails: {
       forbiddenPromptSubstrings: [],
+    },
+    modelOutput: {
+      summary: "Recorded model response.",
+      findings: [
+        {
+          path: "src/payments.ts",
+          line: 42,
+          severity: "error",
+          body: "Recorded review: the charge is applied twice.",
+        },
+      ],
     },
     groundTruth: {
       findings: [
