@@ -1,27 +1,210 @@
 name: Postil Review
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
   merge_group:
 
 concurrency:
-  group: postil-review-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  group: postil-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  pull-requests: write
-  checks: write
 
 jobs:
+  validate-output-contract:
+    name: Validate Postil output contract
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 15
+    env:
+      POSTIL_CLI_REF: d0c81b91b6082c7788b2dec78eaf5f5bacc348c2
+    steps:
+      - name: Validate pinned CLI ref
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$POSTIL_CLI_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::postil-cli ref must be a full 40-character commit SHA."
+            exit 1
+          fi
+
+          headers=(-H "Accept: application/vnd.github+json")
+          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+          fi
+
+          verification="$(curl -fsSL "${headers[@]}" "https://api.github.com/repos/postil-dev/postil-cli/commits/$POSTIL_CLI_REF")"
+          if [[ "$(jq -r '.sha' <<<"$verification")" != "$POSTIL_CLI_REF" ]]; then
+            echo "::error::postil-cli ref did not resolve to the expected commit."
+            exit 1
+          fi
+          if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
+            reason="$(jq -r '.commit.verification.reason' <<<"$verification")"
+            echo "::error::postil-cli commit is not verified ($reason)."
+            exit 1
+          fi
+
+      - name: Set up Rust
+        run: |
+          set -euo pipefail
+          if command -v cargo >/dev/null 2>&1; then
+            exit 0
+          fi
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs |
+            sh -s -- --profile minimal --default-toolchain stable -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Postil CLI
+        run: |
+          set -euo pipefail
+          cargo install \
+            --git https://github.com/postil-dev/postil-cli \
+            --rev "$POSTIL_CLI_REF" \
+            --locked \
+            --force
+
+      - name: Assert output contract
+        run: |
+          set -euo pipefail
+
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+
+          cat > "$workdir/mock_openrouter.py" <<'PY'
+          import json
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.end_headers()
+
+              def do_POST(self):
+                  length = int(self.headers.get("content-length", "0"))
+                  payload = json.loads(self.rfile.read(length) or b"{}")
+                  messages = payload.get("messages", [])
+                  user_content = messages[-1].get("content", "") if messages else ""
+                  if "finding-risk" in user_content:
+                      content = {
+                          "summary": "Unsafe deletion can remove unrelated rows.",
+                          "findings": [
+                              {
+                                  "path": "src/db.ts",
+                                  "line": 1,
+                                  "severity": "warn",
+                                  "kind": "risk",
+                                  "body": "Deleting records without tenant scoping can remove unrelated rows. Add a tenant filter before merge."
+                              }
+                          ]
+                      }
+                  else:
+                      content = {"summary": "", "findings": []}
+                  response = {
+                      "choices": [
+                          {
+                              "message": {"content": json.dumps(content)},
+                              "finish_reason": "stop"
+                          }
+                      ],
+                      "usage": {
+                          "prompt_tokens": 1,
+                          "completion_tokens": 1,
+                          "total_tokens": 2
+                      }
+                  }
+                  body = json.dumps(response).encode("utf-8")
+                  self.send_response(200)
+                  self.send_header("content-type", "application/json")
+                  self.send_header("content-length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def log_message(self, *_args):
+                  return
+
+          HTTPServer(("127.0.0.1", 18765), Handler).serve_forever()
+          PY
+
+          python3 "$workdir/mock_openrouter.py" &
+          server_pid="$!"
+          trap 'kill "$server_pid" 2>/dev/null || true; rm -rf "$workdir"' EXIT
+          for _ in {1..30}; do
+            if curl -fsS "http://127.0.0.1:18765" >/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          cat > "$workdir/clean.diff" <<'DIFF'
+          diff --git a/src/math.ts b/src/math.ts
+          index 1111111..2222222 100644
+          --- a/src/math.ts
+          +++ b/src/math.ts
+          @@ -1 +1 @@
+          -export const value = 1;
+          +export const value = 2;
+          DIFF
+
+          postil review \
+            --diff-file "$workdir/clean.diff" \
+            --output-json "$workdir/clean.json" \
+            --openrouter-api-key test \
+            --openrouter-api-url "http://127.0.0.1:18765" \
+            --review-model mock-model \
+            --fail-on error
+
+          jq -e '.summary == "" and (.findings | length) == 0' "$workdir/clean.json"
+
+          cat > "$workdir/finding.diff" <<'DIFF'
+          diff --git a/src/db.ts b/src/db.ts
+          index 1111111..2222222 100644
+          --- a/src/db.ts
+          +++ b/src/db.ts
+          @@ -1 +1 @@
+          -await db.delete("sessions").where({ tenantId });
+          +await db.delete("sessions"); // finding-risk
+          DIFF
+
+          postil review \
+            --diff-file "$workdir/finding.diff" \
+            --output-json "$workdir/finding.json" \
+            --openrouter-api-key test \
+            --openrouter-api-url "http://127.0.0.1:18765" \
+            --review-model mock-model \
+            --fail-on error
+
+          jq -e '
+            .summary != ""
+            and (.findings | length) == 1
+            and .findings[0].path == "src/db.ts"
+            and .findings[0].line == 1
+            and .findings[0].severity == "warn"
+            and (.findings[0].body | test("clean|no findings|looks good|safe"; "i") | not)
+          ' "$workdir/finding.json"
+
+          status="$(
+            jq -r '[.findings[].severity] | map(if . == "error" then "❌" elif . == "warn" then "⚠️" else "ℹ️" end) | join("")' "$workdir/finding.json"
+          )"
+          test "$status" = "⚠️"
+
   review:
     name: Postil Review
     runs-on: ubuntu-latest
     if: github.event_name == 'merge_group' || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false)
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
     env:
-      POSTIL_REVIEWER_REV: 3df78f88531aadb76942f4c69bc5a22e4421be34
+      POSTIL_CLI_REF: d0c81b91b6082c7788b2dec78eaf5f5bacc348c2
     steps:
       - name: Skip review in merge queue (already ran on PR)
         if: github.event_name == 'merge_group'
@@ -34,45 +217,6 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
-      - name: Set up Rust
-        if: github.event_name == 'pull_request_target'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-
-      - name: Verify reviewer commit
-        if: github.event_name == 'pull_request_target'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          reviewer_rev="$POSTIL_REVIEWER_REV"
-          test -n "$reviewer_rev"
-          verification="$(
-            curl -fsSL \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/postil-dev/postil-reviewer/commits/$reviewer_rev"
-          )"
-          if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
-            echo "::error::reviewer commit is not verified"
-            exit 1
-          fi
-
-      - name: Install Postil reviewer
-        if: github.event_name == 'pull_request_target'
-        run: |
-          reviewer_rev="$POSTIL_REVIEWER_REV"
-          test -n "$reviewer_rev"
-          cargo install --git https://github.com/postil-dev/postil-reviewer --rev "$reviewer_rev" --locked --force
-
-      - name: Set up Bun
-        if: github.event_name == 'pull_request_target'
-        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        if: github.event_name == 'pull_request_target'
-        run: bun install --frozen-lockfile --ignore-scripts
-
       - name: Verify review credentials
         if: github.event_name == 'pull_request_target'
         env:
@@ -83,9 +227,66 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Postil CLI ref
+        if: github.event_name == 'pull_request_target'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$POSTIL_CLI_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::postil-cli ref must be a full 40-character commit SHA."
+            exit 1
+          fi
+
+          headers=(-H "Accept: application/vnd.github+json")
+          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+          fi
+
+          verification="$(curl -fsSL "${headers[@]}" "https://api.github.com/repos/postil-dev/postil-cli/commits/$POSTIL_CLI_REF")"
+          if [[ "$(jq -r '.sha' <<<"$verification")" != "$POSTIL_CLI_REF" ]]; then
+            echo "::error::postil-cli ref did not resolve to the expected commit."
+            exit 1
+          fi
+          if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
+            reason="$(jq -r '.commit.verification.reason' <<<"$verification")"
+            echo "::error::postil-cli commit is not verified ($reason)."
+            exit 1
+          fi
+
+      - name: Set up Rust
+        if: github.event_name == 'pull_request_target'
+        run: |
+          set -euo pipefail
+          if command -v cargo >/dev/null 2>&1; then
+            exit 0
+          fi
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs |
+            sh -s -- --profile minimal --default-toolchain stable -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Postil CLI
+        if: github.event_name == 'pull_request_target'
+        run: |
+          set -euo pipefail
+          cargo install \
+            --git https://github.com/postil-dev/postil-cli \
+            --rev "$POSTIL_CLI_REF" \
+            --locked \
+            --force
+
       - name: Run postil review
         if: github.event_name == 'pull_request_target'
-        run: bun run postil review
+        run: |
+          set -euo pipefail
+          postil review \
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.pull_request.number }}" \
+            --sha "${{ github.event.pull_request.head.sha }}" \
+            --github-token "$GITHUB_TOKEN" \
+            --openrouter-api-key "$OPENROUTER_API_KEY" \
+            --fail-on error
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
