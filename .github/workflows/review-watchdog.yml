@@ -1,0 +1,44 @@
+name: Review Watchdog
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: review-watchdog
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  complete-stale-reviews:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch watchdog token
+        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          domain: https://eu.infisical.com
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          secret-path: /postil
+          export-type: env
+
+      - name: Complete stale hosted review checks
+        env:
+          WATCHDOG_TOKEN: ${{ env.METRICS_API_KEY }}
+        run: |
+          if [ -z "${WATCHDOG_TOKEN:-}" ]; then
+            echo "::error title=Missing watchdog token::Set METRICS_API_KEY as a repository or organization secret."
+            exit 1
+          fi
+
+          curl --fail-with-body --show-error --silent \
+            --request POST \
+            --header "Authorization: Bearer ${WATCHDOG_TOKEN}" \
+            https://postil.dev/api/reviews/watchdog
