@@ -63,7 +63,8 @@ jobs:
           DEPLOY_APP_NAME: ${{ env.DEPLOY_APP_NAME }}
           REPOSITORY_WATCHDOG_TOKEN: ${{ secrets.METRICS_API_KEY }}
         run: |
-          if [ -z "${FLY_TOKEN:-}" ]; then
+          DEPLOY_TOKEN="$(printenv FLY_TOKEN || true)"
+          if [ -z "${DEPLOY_TOKEN:-}" ]; then
             echo "::error title=Missing deploy token::Configure the production deployment token."
             exit 1
           fi
@@ -77,7 +78,7 @@ jobs:
             exit 1
           fi
 
-          export FLY_API_TOKEN="${FLY_TOKEN}"
+          export FLY_API_TOKEN="${DEPLOY_TOKEN}"
           flyctl secrets set --app "${DEPLOY_APP_NAME}" METRICS_API_KEY="${WATCHDOG_TOKEN}"
 
       - name: Deploy trigger.dev tasks
