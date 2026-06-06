@@ -59,11 +59,10 @@ jobs:
 
       - name: Sync watchdog token
         env:
-          FLY_API_TOKEN: ${{ env.FLY_TOKEN }}
           DEPLOY_APP_NAME: ${{ env.DEPLOY_APP_NAME }}
-          METRICS_API_KEY: ${{ env.METRICS_API_KEY || secrets.METRICS_API_KEY }}
+          REPOSITORY_WATCHDOG_TOKEN: ${{ secrets.METRICS_API_KEY }}
         run: |
-          if [ -z "${FLY_API_TOKEN:-}" ]; then
+          if [ -z "${FLY_TOKEN:-}" ]; then
             echo "::error title=Missing deploy token::Configure the production deployment token."
             exit 1
           fi
@@ -71,18 +70,23 @@ jobs:
             echo "::error title=Missing deploy target::Set DEPLOY_APP_NAME for the production environment."
             exit 1
           fi
-          if [ -z "${METRICS_API_KEY:-}" ]; then
+          WATCHDOG_TOKEN="${METRICS_API_KEY:-${REPOSITORY_WATCHDOG_TOKEN:-}}"
+          if [ -z "${WATCHDOG_TOKEN:-}" ]; then
             echo "::error title=Missing watchdog token::Configure the production watchdog token."
             exit 1
           fi
 
-          flyctl secrets set --stage --app "${DEPLOY_APP_NAME}" METRICS_API_KEY="${METRICS_API_KEY}"
+          export FLY_API_TOKEN="${FLY_TOKEN}"
+          flyctl secrets set --stage --app "${DEPLOY_APP_NAME}" METRICS_API_KEY="${WATCHDOG_TOKEN}"
 
       - name: Deploy trigger.dev tasks
         env:
-          TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT || secrets.TRIGGER_PAT }}
-          TRIGGER_PROJECT_ID: ${{ env.TRIGGER_PROJECT_ID || secrets.TRIGGER_PROJECT_ID }}
+          REPOSITORY_TASK_ACCESS_TOKEN: ${{ secrets.TRIGGER_PAT }}
+          REPOSITORY_TASK_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
         run: |
+          export TRIGGER_ACCESS_TOKEN="${TRIGGER_PAT:-${REPOSITORY_TASK_ACCESS_TOKEN:-}}"
+          export TRIGGER_PROJECT_ID="${TRIGGER_PROJECT_ID:-${REPOSITORY_TASK_PROJECT_ID:-}}"
+
           if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
             echo "::error title=Missing task project::Configure the production task project."
             exit 1
