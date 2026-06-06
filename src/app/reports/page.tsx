@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { requireReportSession } from "@/lib/report-auth";
-import { listReviewReports, reportViewerFromSession } from "@/lib/reports";
+import { listReviewReports } from "@/lib/reports";
 
 export const dynamic = "force-dynamic";
 
@@ -31,8 +31,7 @@ export default async function ReportsPage({
 }: {
   searchParams: Promise<{ q?: string }>;
 }) {
-  const session = await requireReportSession("/reports");
-  const viewer = reportViewerFromSession(session);
+  const viewer = await requireReportSession("/reports");
   const { q } = await searchParams;
   const reports = await listReviewReports({ viewer, q, limit: 100 });
 

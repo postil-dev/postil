@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireReportSession } from "@/lib/report-auth";
-import { getReviewReport, reportViewerFromSession } from "@/lib/reports";
+import { getReviewReport } from "@/lib/reports";
 
 export const dynamic = "force-dynamic";
 
@@ -26,8 +26,8 @@ function resultJson(result: unknown): string {
 
 export default async function ReportDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await requireReportSession(`/reports/${id}`);
-  const report = await getReviewReport(id, reportViewerFromSession(session));
+  const viewer = await requireReportSession(`/reports/${id}`);
+  const report = await getReviewReport(id, viewer);
 
   if (!report) notFound();
 

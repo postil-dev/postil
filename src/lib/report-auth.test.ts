@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
+  listOrganizations: vi.fn(),
   headers: vi.fn(),
   redirect: vi.fn(),
 }));
@@ -19,6 +20,7 @@ vi.mock("@/auth", () => ({
   auth: {
     api: {
       getSession: mocks.getSession,
+      listOrganizations: mocks.listOrganizations,
     },
   },
 }));
@@ -29,6 +31,7 @@ describe("requireReportSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.headers.mockResolvedValue(new Headers({ "x-test": "1" }));
+    mocks.listOrganizations.mockResolvedValue([{ id: "org-123" }]);
     mocks.redirect.mockImplementation((path: string) => {
       throw new Error(`redirect:${path}`);
     });
@@ -54,8 +57,21 @@ describe("requireReportSession", () => {
     };
     mocks.getSession.mockResolvedValueOnce(session);
 
-    await expect(requireReportSession("/reports")).resolves.toBe(session);
+    await expect(requireReportSession("/reports")).resolves.toEqual({
+      email: "user@example.test",
+      organizationId: "org-123",
+    });
 
     expect(mocks.redirect).not.toHaveBeenCalled();
+  });
+
+  it("redirects when the active organization is not a verified membership", async () => {
+    mocks.getSession.mockResolvedValueOnce({
+      user: { email: "user@example.test" },
+      session: { activeOrganizationId: "org-123" },
+    });
+    mocks.listOrganizations.mockResolvedValueOnce([{ id: "org-other" }]);
+
+    await expect(requireReportSession("/reports")).rejects.toThrow("redirect:/reports");
   });
 });

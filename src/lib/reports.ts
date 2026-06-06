@@ -31,7 +31,6 @@ export interface ReviewReportListOptions {
 
 export interface ReportViewer {
   email: string;
-  githubLogin: string;
   organizationId: string;
 }
 
@@ -56,7 +55,6 @@ export function reportViewerFromSession(session: unknown): ReportViewer | null {
   const authSession = (session as { session?: unknown }).session;
   if (!user || typeof user !== "object") return null;
   const email = (user as { email?: unknown }).email;
-  const githubLogin = (user as { githubLogin?: unknown }).githubLogin;
   const activeOrganizationId =
     authSession && typeof authSession === "object"
       ? (authSession as { activeOrganizationId?: unknown }).activeOrganizationId
@@ -65,8 +63,6 @@ export function reportViewerFromSession(session: unknown): ReportViewer | null {
   if (
     typeof email !== "string" ||
     !email.trim() ||
-    typeof githubLogin !== "string" ||
-    !githubLogin.trim() ||
     typeof activeOrganizationId !== "string" ||
     !activeOrganizationId.trim()
   ) {
@@ -75,7 +71,6 @@ export function reportViewerFromSession(session: unknown): ReportViewer | null {
 
   return {
     email: email.trim(),
-    githubLogin: githubLogin.trim(),
     organizationId: activeOrganizationId.trim(),
   };
 }
@@ -129,11 +124,8 @@ function reportProjection() {
 }
 
 function viewerAuthorizationFilter(viewer: ReportViewer | null): SQL | null {
-  if (!viewer?.organizationId || !viewer.githubLogin) return null;
-  return and(
-    eq(schema.reviews.organizationId, viewer.organizationId),
-    eq(schema.organizations.githubLogin, viewer.githubLogin),
-  ) as SQL;
+  if (!viewer?.organizationId) return null;
+  return eq(schema.reviews.organizationId, viewer.organizationId);
 }
 
 function reportFilters(options: ReviewReportListOptions): SQL | undefined {
