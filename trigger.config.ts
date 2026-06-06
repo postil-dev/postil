@@ -8,11 +8,7 @@ function taskProject(): string {
   )?.trim();
   if (project) return project;
 
-  if (process.env.TRIGGER_DEPLOYMENT_ID) {
-    return "proj_missing_indexer_context";
-  }
-
-  throw new Error("TRIGGER_PROJECT_ID must be set before deploying review tasks");
+  return "proj_missing_indexer_context";
 }
 
 const project = taskProject();

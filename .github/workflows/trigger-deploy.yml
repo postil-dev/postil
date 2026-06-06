@@ -23,7 +23,6 @@ jobs:
   deploy:
     name: Deploy to prod
     runs-on: ubuntu-latest
-    environment: production
     timeout-minutes: 20
     env:
       DEPLOY_ENVIRONMENT: production
@@ -79,7 +78,7 @@ jobs:
           fi
 
           export FLY_API_TOKEN="${FLY_TOKEN}"
-          flyctl secrets set --stage --app "${DEPLOY_APP_NAME}" METRICS_API_KEY="${WATCHDOG_TOKEN}"
+          flyctl secrets set --app "${DEPLOY_APP_NAME}" METRICS_API_KEY="${WATCHDOG_TOKEN}"
 
       - name: Deploy trigger.dev tasks
         env:

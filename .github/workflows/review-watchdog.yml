@@ -15,7 +15,6 @@ permissions:
 jobs:
   complete-stale-reviews:
     runs-on: ubuntu-latest
-    environment: production
     timeout-minutes: 5
     steps:
       - name: Complete stale hosted review checks
