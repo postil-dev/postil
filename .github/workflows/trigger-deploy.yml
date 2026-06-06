@@ -56,7 +56,8 @@ jobs:
       - name: Sync watchdog token to Fly
         env:
           FLY_API_TOKEN: ${{ env.FLY_TOKEN }}
-          METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
+          FLY_APP_NAME: ${{ vars.POSTIL_FLY_APP_NAME || 'postil-web' }}
+          METRICS_API_KEY: ${{ env.METRICS_API_KEY || secrets.METRICS_API_KEY }}
         run: |
           if [ -z "${FLY_API_TOKEN:-}" ]; then
             echo "::error title=Missing Fly token::FLY_TOKEN was not exported by Infisical."
@@ -68,7 +69,7 @@ jobs:
             exit 1
           fi
 
-          flyctl secrets set METRICS_API_KEY="${METRICS_API_KEY}" --app postil-web
+          flyctl secrets set METRICS_API_KEY="${METRICS_API_KEY}" --app "${FLY_APP_NAME}"
 
       - name: Deploy trigger.dev tasks
         run: bun trigger deploy --skip-update-check --env prod
