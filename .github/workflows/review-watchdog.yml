@@ -42,7 +42,6 @@ jobs:
           fi
 
           flyctl secrets set --stage --app "${FLY_APP}" METRICS_API_KEY="${METRICS_API_KEY}"
-          flyctl deploy --remote-only --app "${FLY_APP}"
 
       - name: Complete stale hosted review checks
         env:
