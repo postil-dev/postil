@@ -648,7 +648,6 @@ async function findReviewCheckRunForWorkflowCompletion(
     }
     if (!appSlug) return null;
     const expectedAppSlug = appSlug;
-
     const res = await octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
       owner,
       repo,
