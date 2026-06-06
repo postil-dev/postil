@@ -17,6 +17,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Set up Flyctl
+        if: github.event_name == 'workflow_dispatch'
+        uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+
+      - name: Sync watchdog token
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_TOKEN }}
+          FLY_APP: ${{ secrets.FLY_APP }}
+          METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
+        run: |
+          if [ -z "${METRICS_API_KEY:-}" ]; then
+            echo "::error title=Missing watchdog token::Set METRICS_API_KEY as a repository or organization secret."
+            exit 1
+          fi
+          if [ -z "${FLY_API_TOKEN:-}" ]; then
+            echo "::error title=Missing Fly token::Set FLY_TOKEN as a repository or organization secret."
+            exit 1
+          fi
+          if [ -z "${FLY_APP:-}" ]; then
+            echo "::error title=Missing Fly app::Set FLY_APP as a repository or organization secret."
+            exit 1
+          fi
+
+          flyctl secrets set --stage --app "${FLY_APP}" METRICS_API_KEY="${METRICS_API_KEY}"
+
       - name: Complete stale hosted review checks
         env:
           WATCHDOG_TOKEN: ${{ secrets.METRICS_API_KEY }}
