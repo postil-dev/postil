@@ -641,30 +641,35 @@ async function findReviewCheckRunForWorkflowCompletion(
       orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
       columns: { id: true, checkRunId: true },
     });
-    if (review?.checkRunId) return { id: review.id, checkRunId: review.checkRunId };
     if (!review?.id) continue;
-    if (appSlug === undefined) {
-      appSlug = await authenticatedAppSlug();
-    }
-    if (!appSlug) return null;
-    const expectedAppSlug = appSlug;
+    try {
+      if (appSlug === undefined) {
+        appSlug = await authenticatedAppSlug();
+      }
+      if (!appSlug)
+        return review?.checkRunId ? { id: review.id, checkRunId: review.checkRunId } : null;
+      const expectedAppSlug = appSlug;
 
-    const res = await octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
-      owner,
-      repo,
-      ref: headSha,
-      check_name: "postil/review",
-      per_page: 100,
-    });
-    const checkRuns = (res.data as { check_runs?: Array<Record<string, unknown>> }).check_runs;
-    const appOwnedReviewCheck = (Array.isArray(checkRuns) ? checkRuns : []).find((checkRun) => {
-      if (checkRun.name !== "postil/review") return false;
-      if (!isCheckRunOwnedByApp(checkRun, expectedAppSlug)) return false;
-      return typeof checkRun.id === "number";
-    });
-    if (typeof appOwnedReviewCheck?.id === "number") {
-      return { id: review.id, checkRunId: appOwnedReviewCheck.id };
+      const res = await octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
+        owner,
+        repo,
+        ref: headSha,
+        check_name: "postil/review",
+        per_page: 100,
+      });
+      const checkRuns = (res.data as { check_runs?: Array<Record<string, unknown>> }).check_runs;
+      const appOwnedReviewCheck = (Array.isArray(checkRuns) ? checkRuns : []).find((checkRun) => {
+        if (checkRun.name !== "postil/review") return false;
+        if (!isCheckRunOwnedByApp(checkRun, expectedAppSlug)) return false;
+        return typeof checkRun.id === "number";
+      });
+      if (typeof appOwnedReviewCheck?.id === "number") {
+        return { id: review.id, checkRunId: appOwnedReviewCheck.id };
+      }
+    } catch (err) {
+      if (!review?.checkRunId) throw err;
     }
+    if (review?.checkRunId) return { id: review.id, checkRunId: review.checkRunId };
   }
 
   return null;
