@@ -58,6 +58,12 @@ export function appOctokit(): Octokit {
   });
 }
 
+export async function authenticatedAppSlug(): Promise<string | null> {
+  const app = await appOctokit().request("GET /app");
+  const slug = (app.data as { slug?: unknown }).slug;
+  return typeof slug === "string" && slug.length > 0 ? slug : null;
+}
+
 export async function installationOctokit(installationId: number): Promise<Octokit> {
   return new PostilOctokit({
     authStrategy: createAppAuth,

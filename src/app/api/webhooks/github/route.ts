@@ -6,7 +6,7 @@ import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/auto-mer
 import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
 import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
-import { installationOctokit } from "@/lib/github";
+import { authenticatedAppSlug, installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
 
 export const runtime = "nodejs";
@@ -132,7 +132,7 @@ type WorkflowJob = {
   }>;
 };
 
-type ReviewCheckRun = { id: string; checkRunId: number | null } | null | undefined;
+type ReviewCheckRun = { id: string; checkRunId: number } | null | undefined;
 type ReviewWorkflowRunContext = { pullNumber: number | null; headSha: string | null };
 
 async function handlePullRequest(
@@ -454,6 +454,7 @@ async function completeReviewWorkflowFailureCheckRun(
   try {
     review = await findReviewCheckRunForWorkflowCompletion(
       db,
+      octokit,
       repoFullName,
       pullNumber,
       candidateHeadShas,
@@ -482,14 +483,17 @@ async function completeReviewWorkflowFailureCheckRun(
 
   const completedAt = new Date();
   try {
-    await db
-      .update(schema.reviews)
-      .set({
-        status: "failed",
-        errorMessage: `Review workflow ${conclusion === "cancelled" ? "cancelled" : "failed"} before review completion.`,
-        completedAt,
-      })
-      .where(eq(schema.reviews.id, review.id));
+    if (review.id) {
+      await db
+        .update(schema.reviews)
+        .set({
+          status: "failed",
+          checkRunId: review.checkRunId,
+          errorMessage: `Review workflow ${conclusion === "cancelled" ? "cancelled" : "failed"} before review completion.`,
+          completedAt,
+        })
+        .where(eq(schema.reviews.id, review.id));
+    }
   } catch (err) {
     captureException(err, {
       properties: {
@@ -541,6 +545,7 @@ async function completeReviewWorkflowSuccessCheckRun(
   try {
     review = await findReviewCheckRunForWorkflowCompletion(
       db,
+      octokit,
       repoFullName,
       pullNumber,
       candidateHeadShas,
@@ -560,13 +565,16 @@ async function completeReviewWorkflowSuccessCheckRun(
 
   const completedAt = new Date();
   try {
-    await db
-      .update(schema.reviews)
-      .set({
-        status: "completed",
-        completedAt,
-      })
-      .where(eq(schema.reviews.id, review.id));
+    if (review.id) {
+      await db
+        .update(schema.reviews)
+        .set({
+          status: "completed",
+          checkRunId: review.checkRunId,
+          completedAt,
+        })
+        .where(eq(schema.reviews.id, review.id));
+    }
   } catch (err) {
     captureException(err, {
       properties: {
@@ -608,6 +616,7 @@ async function completeReviewWorkflowSuccessCheckRun(
 
 async function findReviewCheckRunForWorkflowCompletion(
   db: ReturnType<typeof getDb>,
+  octokit: MinimalOctokit,
   repoFullName: string,
   pullNumber: number | null,
   candidateHeadShas: Array<string | null | undefined>,
@@ -615,6 +624,8 @@ async function findReviewCheckRunForWorkflowCompletion(
   const uniqueHeadShas = [
     ...new Set(candidateHeadShas.filter((sha): sha is string => Boolean(sha))),
   ];
+  const [owner, repo] = repoFullName.split("/");
+  let appSlug: string | null | undefined;
 
   for (const headSha of uniqueHeadShas) {
     const where = [
@@ -630,10 +641,39 @@ async function findReviewCheckRunForWorkflowCompletion(
       orderBy: (reviews, { desc: orderDesc }) => [orderDesc(reviews.createdAt)],
       columns: { id: true, checkRunId: true },
     });
-    if (review?.checkRunId) return review;
+    if (review?.checkRunId) return { id: review.id, checkRunId: review.checkRunId };
+    if (!review?.id) continue;
+    if (appSlug === undefined) {
+      appSlug = await authenticatedAppSlug();
+    }
+    if (!appSlug) return null;
+    const expectedAppSlug = appSlug;
+
+    const res = await octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
+      owner,
+      repo,
+      ref: headSha,
+      check_name: "postil/review",
+      per_page: 100,
+    });
+    const checkRuns = (res.data as { check_runs?: Array<Record<string, unknown>> }).check_runs;
+    const appOwnedReviewCheck = (Array.isArray(checkRuns) ? checkRuns : []).find((checkRun) => {
+      if (checkRun.name !== "postil/review") return false;
+      if (checkRun.status === "completed") return false;
+      if (!isCheckRunOwnedByApp(checkRun, expectedAppSlug)) return false;
+      return typeof checkRun.id === "number";
+    });
+    if (typeof appOwnedReviewCheck?.id === "number") {
+      return { id: review.id, checkRunId: appOwnedReviewCheck.id };
+    }
   }
 
   return null;
+}
+
+function isCheckRunOwnedByApp(checkRun: Record<string, unknown>, appSlug: string): boolean {
+  const app = checkRun.app as { slug?: unknown } | null | undefined;
+  return app?.slug === appSlug;
 }
 
 function resolveReviewWorkflowRunContext(
