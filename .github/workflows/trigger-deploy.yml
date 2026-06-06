@@ -55,7 +55,7 @@ jobs:
       - name: Allow depot CLI postinstall
         run: bun pm trust @depot/cli
 
-      - name: Set up Flyctl
+      - name: Install flyctl CLI
         uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
 
       - name: Sync watchdog token
@@ -67,6 +67,7 @@ jobs:
             echo "::error title=Missing deploy CLI::Install flyctl before syncing the watchdog token."
             exit 1
           }
+          flyctl version
 
           DEPLOY_TOKEN="$(printenv FLY_TOKEN || true)"
           if [ -z "${DEPLOY_TOKEN:-}" ]; then
@@ -94,6 +95,10 @@ jobs:
           export TRIGGER_ACCESS_TOKEN="${TRIGGER_PAT:-${REPOSITORY_TASK_ACCESS_TOKEN:-}}"
           export TRIGGER_PROJECT_ID="${TRIGGER_PROJECT_ID:-${REPOSITORY_TASK_PROJECT_ID:-}}"
 
+          if [ -z "${TRIGGER_ACCESS_TOKEN:-}" ]; then
+            echo "::error title=Missing task access token::Configure the production task deploy token."
+            exit 1
+          fi
           if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
             echo "::error title=Missing task project::Configure the production task project."
             exit 1

@@ -8,6 +8,8 @@ function taskProject(): string {
   )?.trim();
   if (project) return project;
 
+  // The deploy workflow validates the real project before invoking Trigger.
+  // This placeholder only lets Trigger's managed Docker indexer import the config.
   return "proj_missing_indexer_context";
 }
 
