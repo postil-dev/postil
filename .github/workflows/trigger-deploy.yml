@@ -50,7 +50,28 @@ jobs:
       - name: Allow depot CLI postinstall
         run: bun pm trust @depot/cli
 
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+
+      - name: Sync watchdog token to Fly
+        env:
+          FLY_API_TOKEN: ${{ env.FLY_TOKEN }}
+          METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
+        run: |
+          if [ -z "${FLY_API_TOKEN:-}" ]; then
+            echo "::error title=Missing Fly token::FLY_TOKEN was not exported by Infisical."
+            exit 1
+          fi
+
+          if [ -z "${METRICS_API_KEY:-}" ]; then
+            echo "::error title=Missing watchdog token::Set METRICS_API_KEY as a repository or organization secret."
+            exit 1
+          fi
+
+          flyctl secrets set METRICS_API_KEY="${METRICS_API_KEY}" --app postil-web
+
       - name: Deploy trigger.dev tasks
         run: bun trigger deploy --skip-update-check --env prod
         env:
           TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT }}
+          TRIGGER_PROJECT_ID: ${{ env.TRIGGER_PROJECT_ID || secrets.TRIGGER_PROJECT_ID }}
