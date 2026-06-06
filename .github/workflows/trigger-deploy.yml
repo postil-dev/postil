@@ -68,10 +68,16 @@ jobs:
             exit 1
           fi
 
-          flyctl secrets set METRICS_API_KEY="${METRICS_API_KEY}" --app postil-web
+          flyctl secrets set --stage METRICS_API_KEY="${METRICS_API_KEY}" --app postil-web
 
       - name: Deploy trigger.dev tasks
-        run: bun trigger deploy --skip-update-check --env prod
+        run: |
+          if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
+            echo "::error title=Missing Trigger project::TRIGGER_PROJECT_ID was not exported by Infisical or set as a repository secret."
+            exit 1
+          fi
+
+          bun trigger deploy --skip-update-check --env prod
         env:
-          TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT }}
+          TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT || secrets.TRIGGER_PAT }}
           TRIGGER_PROJECT_ID: ${{ env.TRIGGER_PROJECT_ID || secrets.TRIGGER_PROJECT_ID }}
