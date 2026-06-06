@@ -64,7 +64,7 @@ describe("review watchdog", () => {
     dbMock.updateWheres = [];
   });
 
-  it("completes stale running app check-runs as failed", async () => {
+  it("completes stale running app check-runs as neutral", async () => {
     dbMock.staleReviews = [
       {
         id: "review-1",
@@ -88,7 +88,7 @@ describe("review watchdog", () => {
         repo: "postil",
         check_run_id: 456,
         status: "completed",
-        conclusion: "failure",
+        conclusion: "neutral",
         output: expect.objectContaining({
           summary: "Review timed out before completion.",
         }),

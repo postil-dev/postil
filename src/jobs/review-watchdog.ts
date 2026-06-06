@@ -47,7 +47,7 @@ async function failStaleReview(review: StaleReview): Promise<boolean> {
     repo,
     check_run_id: review.checkRunId,
     status: "completed",
-    conclusion: "failure",
+    conclusion: "neutral",
     completed_at: completedAt.toISOString(),
     output: {
       title: "Postil Review",
