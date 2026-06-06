@@ -8,7 +8,14 @@ const dbMock = vi.hoisted(() => ({
 
 const githubMock = vi.hoisted(() => ({
   installationOctokit: vi.fn(async () => ({ request: githubMock.request })),
-  request: vi.fn(async () => ({ data: {} })),
+  peerChecks: [] as Array<Record<string, unknown>>,
+  request: vi.fn(async (route: string) => {
+    if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+      return { data: { check_runs: githubMock.peerChecks } };
+    }
+
+    return { data: {} };
+  }),
 }));
 
 const posthogMock = vi.hoisted(() => ({
@@ -62,6 +69,7 @@ describe("review watchdog", () => {
     dbMock.staleReviews = [];
     dbMock.updates = [];
     dbMock.updateWheres = [];
+    githubMock.peerChecks = [];
   });
 
   it("completes stale running app check-runs as failed", async () => {
@@ -82,6 +90,16 @@ describe("review watchdog", () => {
     expect(result).toMatchObject({ scanned: 1, completed: 1, failed: 0 });
     expect(githubMock.installationOctokit).toHaveBeenCalledWith(123);
     expect(githubMock.request).toHaveBeenCalledWith(
+      "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+      expect.objectContaining({
+        owner: "postil-dev",
+        repo: "postil",
+        ref: "abc123",
+        check_name: "postil/review",
+        filter: "latest",
+      }),
+    );
+    expect(githubMock.request).toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({
         owner: "postil-dev",
@@ -101,6 +119,45 @@ describe("review watchdog", () => {
       }),
     );
     expect(JSON.stringify(dbMock.updateWheres)).toContain("running");
+  });
+
+  it("neutralizes stale duplicate app check-runs when a peer review check passed", async () => {
+    dbMock.staleReviews = [
+      {
+        id: "review-1",
+        installationId: 123,
+        repoFullName: "postil-dev/postil",
+        pullNumber: 169,
+        headSha: "abc123",
+        checkRunId: 456,
+        createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      },
+    ];
+    githubMock.peerChecks = [
+      { id: 456, status: "in_progress", conclusion: null },
+      { id: 789, status: "completed", conclusion: "success" },
+    ];
+
+    const result = await completeStaleReviewCheckRuns({ staleAfterMs: 1, limit: 10 });
+
+    expect(result).toMatchObject({ scanned: 1, completed: 1, failed: 0 });
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 456,
+        status: "completed",
+        conclusion: "neutral",
+        output: expect.objectContaining({
+          summary: "Review completed by another Postil check.",
+        }),
+      }),
+    );
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "completed",
+        errorMessage: null,
+      }),
+    );
   });
 
   it("does not patch GitHub when the repo full name is invalid", async () => {

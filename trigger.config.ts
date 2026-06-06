@@ -1,10 +1,19 @@
 import { defineConfig } from "@trigger.dev/sdk";
 
-const project = process.env.TRIGGER_PROJECT_ID?.trim();
+function taskProject(): string {
+  const project = (
+    process.env.TRIGGER_PROJECT_ID ??
+    process.env.TRIGGER_PROJECT_REF ??
+    process.env.JOBS_PROJECT_ID
+  )?.trim();
+  if (project) return project;
 
-if (!project) {
-  throw new Error("TRIGGER_PROJECT_ID must be set before deploying review tasks");
+  // The deploy workflow validates the real project before invoking Trigger.
+  // This placeholder only lets Trigger's managed Docker indexer import the config.
+  return "proj_missing_indexer_context";
 }
+
+const project = taskProject();
 
 const triggerProjectBuildEnv = {
   name: "trigger-project-build-env",

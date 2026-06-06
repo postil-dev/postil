@@ -27,6 +27,10 @@ function publicWatchdogMessage(): string {
   return "Review timed out before completion.";
 }
 
+function publicDuplicateMessage(): string {
+  return "Review completed by another Postil check.";
+}
+
 function parseRepoFullName(repoFullName: string): { owner: string; repo: string } {
   const [owner, repo, extra] = repoFullName.split("/");
   if (!owner || !repo || extra) {
@@ -41,26 +45,29 @@ async function failStaleReview(review: StaleReview): Promise<boolean> {
   const { owner, repo } = parseRepoFullName(review.repoFullName);
   const completedAt = new Date();
   const octokit = await installationOctokit(review.installationId);
+  const duplicateCompleted = await hasCompletedPeerReviewCheck(octokit, owner, repo, review);
+  const conclusion = duplicateCompleted ? "neutral" : "failure";
+  const message = duplicateCompleted ? publicDuplicateMessage() : publicWatchdogMessage();
 
   await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
     repo,
     check_run_id: review.checkRunId,
     status: "completed",
-    conclusion: "failure",
+    conclusion,
     completed_at: completedAt.toISOString(),
     output: {
       title: "Postil Review",
-      summary: publicWatchdogMessage(),
-      text: publicWatchdogMessage(),
+      summary: message,
+      text: message,
     },
   });
 
   await getDb()
     .update(schema.reviews)
     .set({
-      status: "failed",
-      errorMessage: publicWatchdogMessage(),
+      status: duplicateCompleted ? "completed" : "failed",
+      errorMessage: duplicateCompleted ? null : message,
       completedAt,
     })
     .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")));
@@ -74,6 +81,28 @@ async function failStaleReview(review: StaleReview): Promise<boolean> {
   });
 
   return true;
+}
+
+async function hasCompletedPeerReviewCheck(
+  octokit: Awaited<ReturnType<typeof installationOctokit>>,
+  owner: string,
+  repo: string,
+  review: StaleReview,
+): Promise<boolean> {
+  const response = await octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
+    owner,
+    repo,
+    ref: review.headSha,
+    check_name: "postil/review",
+    filter: "latest",
+  });
+
+  return response.data.check_runs.some(
+    (checkRun: { id: number; status: string; conclusion: string | null }) =>
+      checkRun.id !== review.checkRunId &&
+      checkRun.status === "completed" &&
+      checkRun.conclusion === "success",
+  );
 }
 
 export async function completeStaleReviewCheckRuns(options?: {

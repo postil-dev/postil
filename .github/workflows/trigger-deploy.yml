@@ -17,15 +17,32 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   deploy:
     name: Deploy to prod
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      DEPLOY_ENVIRONMENT: production
+      DEPLOY_APP_NAME: ${{ secrets.DEPLOY_APP_NAME }}
+      SECRET_PROVIDER_IDENTITY: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+      SECRET_PROVIDER_PROJECT: ${{ secrets.INFISICAL_PROJECT_SLUG }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Fetch deployment environment
+        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        with:
+          method: oidc
+          identity-id: ${{ env.SECRET_PROVIDER_IDENTITY }}
+          domain: https://eu.infisical.com
+          project-slug: ${{ env.SECRET_PROVIDER_PROJECT }}
+          env-slug: prod
+          secret-path: /postil
+          export-type: env
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
@@ -38,32 +55,53 @@ jobs:
       - name: Allow depot CLI postinstall
         run: bun pm trust @depot/cli
 
-      - name: Set up Flyctl
+      - name: Install flyctl CLI
         uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
 
       - name: Sync watchdog token
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_TOKEN }}
-          FLY_APP: ${{ secrets.FLY_APP }}
-          METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
+          DEPLOY_APP_NAME: ${{ env.DEPLOY_APP_NAME }}
+          REPOSITORY_WATCHDOG_TOKEN: ${{ secrets.METRICS_API_KEY }}
         run: |
-          if [ -z "${FLY_API_TOKEN:-}" ]; then
-            echo "::error title=Missing Fly token::Set FLY_TOKEN as a repository or organization secret."
+          command -v flyctl >/dev/null || {
+            echo "::error title=Missing deploy CLI::Install flyctl before syncing the watchdog token."
+            exit 1
+          }
+          flyctl version
+
+          DEPLOY_TOKEN="$(printenv FLY_TOKEN || true)"
+          if [ -z "${DEPLOY_TOKEN:-}" ]; then
+            echo "::error title=Missing deploy token::Configure the production deployment token."
             exit 1
           fi
-          if [ -z "${FLY_APP:-}" ]; then
-            echo "::error title=Missing Fly app::Set FLY_APP as a repository or organization secret."
+          if [ -z "${DEPLOY_APP_NAME:-}" ]; then
+            echo "::error title=Missing deploy target::Set DEPLOY_APP_NAME for the production environment."
             exit 1
           fi
-          if [ -z "${METRICS_API_KEY:-}" ]; then
-            echo "::error title=Missing watchdog token::Set METRICS_API_KEY as a repository or organization secret."
+          WATCHDOG_TOKEN="${METRICS_API_KEY:-${REPOSITORY_WATCHDOG_TOKEN:-}}"
+          if [ -z "${WATCHDOG_TOKEN:-}" ]; then
+            echo "::error title=Missing watchdog token::Configure the production watchdog token."
             exit 1
           fi
 
-          flyctl secrets set --stage --app "${FLY_APP}" METRICS_API_KEY="${METRICS_API_KEY}"
+          export FLY_API_TOKEN="${DEPLOY_TOKEN}"
+          flyctl secrets set --app "${DEPLOY_APP_NAME}" METRICS_API_KEY="${WATCHDOG_TOKEN}"
 
       - name: Deploy trigger.dev tasks
-        run: bun trigger deploy --skip-update-check --env prod
         env:
-          TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_PAT }}
-          TRIGGER_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
+          REPOSITORY_TASK_ACCESS_TOKEN: ${{ secrets.TRIGGER_PAT }}
+          REPOSITORY_TASK_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
+        run: |
+          export TRIGGER_ACCESS_TOKEN="${TRIGGER_PAT:-${REPOSITORY_TASK_ACCESS_TOKEN:-}}"
+          export TRIGGER_PROJECT_ID="${TRIGGER_PROJECT_ID:-${REPOSITORY_TASK_PROJECT_ID:-}}"
+
+          if [ -z "${TRIGGER_ACCESS_TOKEN:-}" ]; then
+            echo "::error title=Missing task access token::Configure the production task deploy token."
+            exit 1
+          fi
+          if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
+            echo "::error title=Missing task project::Configure the production task project."
+            exit 1
+          fi
+
+          bun trigger deploy --skip-update-check --env prod
