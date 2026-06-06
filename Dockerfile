@@ -2,7 +2,7 @@
 
 # --- postil review bot ---
 FROM docker.io/library/rust:1 AS postil-reviewer
-RUN cargo install --git https://github.com/postil-dev/postil-reviewer --locked
+RUN cargo install --git https://github.com/postil-dev/postil-cli --locked
 
 # --- deps ---
 FROM docker.io/oven/bun:1.3 AS deps
@@ -15,8 +15,9 @@ FROM docker.io/oven/bun:1.3 AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+ARG BETTER_AUTH_SECRET=build-only-auth-secret-000000000000
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN bun run build
+RUN BETTER_AUTH_SECRET="$BETTER_AUTH_SECRET" bun run build
 
 # --- runner ---
 FROM docker.io/oven/bun:1.3-slim AS runner

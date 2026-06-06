@@ -14,9 +14,23 @@ const polarClient = env.POLAR_API_KEY
     })
   : undefined;
 
+function authSecret(): string {
+  if (env.BETTER_AUTH_SECRET) return env.BETTER_AUTH_SECRET;
+  if (env.NODE_ENV === "production") {
+    throw new Error("BETTER_AUTH_SECRET must be set in production.");
+  }
+  return "dev-secret-change-me-dev-secret-change-me";
+}
+
+export function assertAuthSecretConfigured(): void {
+  if (env.NODE_ENV === "production" && !env.BETTER_AUTH_SECRET) {
+    throw new Error("BETTER_AUTH_SECRET must be set in production.");
+  }
+}
+
 export const auth = betterAuth({
   baseURL: env.BETTER_AUTH_URL,
-  secret: env.BETTER_AUTH_SECRET ?? "dev-secret-change-me-dev-secret-change-me",
+  secret: authSecret(),
   socialProviders: env.GITHUB_APP_CLIENT_ID && env.GITHUB_APP_CLIENT_SECRET
     ? {
         github: {
