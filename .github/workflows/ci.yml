@@ -88,6 +88,8 @@ jobs:
 
       - name: Build application
         run: bun run build
+        env:
+          BETTER_AUTH_SECRET: ci-build-only-auth-secret-00000000
 
   docker-build:
     name: Docker build
@@ -100,6 +102,8 @@ jobs:
         uses: docker/build-push-action@789f68658055d3ca993799b232b5c46dfe3f114d # v6
         with:
           context: .
+          build-args: |
+            BETTER_AUTH_SECRET=ci-build-only-auth-secret-00000000
           push: false
           tags: postil-web:ci-${{ github.sha }}
 
@@ -124,7 +128,8 @@ jobs:
 
       - name: Build application
         run: bun run build
+        env:
+          BETTER_AUTH_SECRET: ci-build-only-auth-secret-00000000
 
       - name: Run E2E tests
         run: bun run test:e2e
-
