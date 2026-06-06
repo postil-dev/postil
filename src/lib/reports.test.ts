@@ -82,18 +82,25 @@ describe("report helpers", () => {
   it("extracts report viewers from signed-in sessions", () => {
     expect(
       reportViewerFromSession({
-        user: { email: " user@example.test " },
+        user: { email: " user@example.test ", githubLogin: " octo " },
         session: { activeOrganizationId: " org-123 " },
       }),
     ).toEqual({
       email: "user@example.test",
+      githubLogin: "octo",
       organizationId: "org-123",
     });
     expect(
-      reportViewerFromSession({ user: {}, session: { activeOrganizationId: "org-123" } }),
+      reportViewerFromSession({
+        user: { email: "user@example.test" },
+        session: { activeOrganizationId: "org-123" },
+      }),
     ).toBeNull();
     expect(
-      reportViewerFromSession({ user: { email: "user@example.test" }, session: {} }),
+      reportViewerFromSession({
+        user: { email: "user@example.test", githubLogin: "octo" },
+        session: {},
+      }),
     ).toBeNull();
     expect(reportViewerFromSession(null)).toBeNull();
   });
@@ -106,7 +113,11 @@ describe("report helpers", () => {
 
   it("maps persisted reviews into report summaries", async () => {
     const reports = await listReviewReports({
-      viewer: { email: "user@example.test", organizationId: "review_organization_id" },
+      viewer: {
+        email: "user@example.test",
+        githubLogin: "acme",
+        organizationId: "review_organization_id",
+      },
     });
 
     expect(reports).toEqual([
@@ -121,6 +132,7 @@ describe("report helpers", () => {
   it("returns detail with the raw result payload", async () => {
     const report = await getReviewReport("review-1", {
       email: "user@example.test",
+      githubLogin: "acme",
       organizationId: "review_organization_id",
     });
 

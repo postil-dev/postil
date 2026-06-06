@@ -26,7 +26,14 @@ export function SignInButton({ callbackUrl }: { callbackUrl: string }) {
         throw new Error("GitHub sign-in is not available.");
       }
 
-      window.location.href = body.url;
+      const redirectUrl = new URL(body.url, window.location.origin);
+      const isAllowedRedirect =
+        redirectUrl.origin === window.location.origin || redirectUrl.origin === "https://github.com";
+      if (!isAllowedRedirect) {
+        throw new Error("GitHub sign-in is not available.");
+      }
+
+      window.location.href = redirectUrl.toString();
     } catch (err) {
       setError(err instanceof Error ? err.message : "GitHub sign-in is not available.");
       setIsLoading(false);

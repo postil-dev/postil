@@ -11,5 +11,7 @@ describe("safeReportsCallbackPath", () => {
     expect(safeReportsCallbackPath("https://example.com/reports")).toBe("/reports");
     expect(safeReportsCallbackPath("/settings")).toBe("/reports");
     expect(safeReportsCallbackPath("//example.com")).toBe("/reports");
+    expect(safeReportsCallbackPath("/reports/%2f%2fevil.test")).toBe("/reports");
+    expect(safeReportsCallbackPath("/reports\\evil")).toBe("/reports");
   });
 });
