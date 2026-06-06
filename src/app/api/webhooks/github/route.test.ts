@@ -817,6 +817,89 @@ describe("github webhook", () => {
     });
   });
 
+  it("patches a completed stale app-created review check after the workflow-backed check succeeds", async () => {
+    dbMock.findFirst.mockResolvedValueOnce({
+      id: "review-pr-161",
+      checkRunId: null,
+    } as never);
+    mockAppRequest.mockImplementation(async (route: string) => {
+      if (route === "GET /app") {
+        return { data: { slug: "postil" } };
+      }
+      throw new Error(`unexpected app route ${route}`);
+    });
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "GET /repos/{owner}/{repo}/commits/{ref}/check-runs") {
+        return {
+          data: {
+            check_runs: [
+              {
+                id: 90016100022,
+                name: "postil/review",
+                status: "completed",
+                conclusion: "failure",
+                app: { slug: "postil" },
+                details_url: "https://postil.dev",
+              },
+              {
+                id: 79826212795,
+                name: "postil/review",
+                status: "completed",
+                conclusion: "success",
+                app: { slug: "github-actions" },
+                details_url: "https://github.com/acme/widget/actions/runs/79826212795",
+              },
+            ],
+          },
+        };
+      }
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 90016100022 } };
+      }
+      throw new Error(`unexpected route ${route}`);
+    });
+
+    const res = await POST(
+      signedRequest("workflow_run", "workflow-review-pr-161", {
+        action: "completed",
+        installation: { id: 123 },
+        repository: { full_name: "acme/widget" },
+        workflow: {
+          path: POSTIL_REVIEW_WORKFLOW_PATH,
+        },
+        workflow_run: {
+          id: 79826212795,
+          name: "Postil Review",
+          conclusion: "success",
+          html_url: "https://github.com/acme/widget/actions/runs/79826212795",
+          head_sha: "56f068d2016af10e02c9af6b7d4f8a9ca1356c71",
+          pull_requests: [{ number: 161 }],
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(
+      mockRequest.mock.calls.find(
+        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      )?.[1],
+    ).toMatchObject({
+      check_run_id: 90016100022,
+      status: "completed",
+      conclusion: "success",
+      output: {
+        title: "Postil Review",
+        summary: "Review completed.",
+        text: "Review completed.",
+      },
+    });
+    expect(dbMock.updateCalls).toContainEqual({
+      status: "completed",
+      checkRunId: 90016100022,
+      completedAt: expect.any(Date),
+    });
+  });
+
   it("does not patch a fallback check when no stored review row matches", async () => {
     dbMock.findFirst.mockResolvedValueOnce(undefined);
     mockAppRequest.mockImplementation(async (route: string) => {

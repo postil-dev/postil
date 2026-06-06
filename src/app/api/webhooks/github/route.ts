@@ -659,7 +659,6 @@ async function findReviewCheckRunForWorkflowCompletion(
     const checkRuns = (res.data as { check_runs?: Array<Record<string, unknown>> }).check_runs;
     const appOwnedReviewCheck = (Array.isArray(checkRuns) ? checkRuns : []).find((checkRun) => {
       if (checkRun.name !== "postil/review") return false;
-      if (checkRun.status === "completed") return false;
       if (!isCheckRunOwnedByApp(checkRun, expectedAppSlug)) return false;
       return typeof checkRun.id === "number";
     });
