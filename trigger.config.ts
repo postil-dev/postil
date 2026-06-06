@@ -1,6 +1,17 @@
 import { defineConfig } from "@trigger.dev/sdk";
 
-const project = (process.env.TRIGGER_PROJECT_ID ?? process.env.TRIGGER_PROJECT_REF ?? "proj_missing").trim();
+function triggerProject(): string {
+  const project = (process.env.TRIGGER_PROJECT_ID ?? process.env.TRIGGER_PROJECT_REF)?.trim();
+  if (project) return project;
+
+  if (process.env.TRIGGER_DEPLOYMENT_ID) {
+    return "proj_missing_indexer_context";
+  }
+
+  throw new Error("TRIGGER_PROJECT_ID must be set before deploying review tasks");
+}
+
+const project = triggerProject();
 
 export default defineConfig({
   project,
