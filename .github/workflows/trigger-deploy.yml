@@ -63,6 +63,11 @@ jobs:
           DEPLOY_APP_NAME: ${{ env.DEPLOY_APP_NAME }}
           REPOSITORY_WATCHDOG_TOKEN: ${{ secrets.METRICS_API_KEY }}
         run: |
+          command -v flyctl >/dev/null || {
+            echo "::error title=Missing deploy CLI::Install flyctl before syncing the watchdog token."
+            exit 1
+          }
+
           DEPLOY_TOKEN="$(printenv FLY_TOKEN || true)"
           if [ -z "${DEPLOY_TOKEN:-}" ]; then
             echo "::error title=Missing deploy token::Configure the production deployment token."
