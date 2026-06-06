@@ -717,9 +717,9 @@ describe("github webhook", () => {
     });
   });
 
-  it("patches a stale app-created review check after the workflow-backed check succeeds", async () => {
+  it("patches a stale app-created review check after the workflow-backed check exits neutral", async () => {
     dbMock.findFirst.mockResolvedValueOnce({
-      id: "review-pr-160",
+      id: "review-pr-162",
       checkRunId: null,
     } as never);
     mockAppRequest.mockImplementation(async (route: string) => {
@@ -753,7 +753,7 @@ describe("github webhook", () => {
                 id: 79826212795,
                 name: "postil/review",
                 status: "completed",
-                conclusion: "success",
+                conclusion: "neutral",
                 app: { slug: "github-actions" },
                 details_url: "https://github.com/acme/widget/actions/runs/79826212795",
               },
@@ -768,7 +768,7 @@ describe("github webhook", () => {
     });
 
     const res = await POST(
-      signedRequest("workflow_run", "workflow-review-pr-160", {
+      signedRequest("workflow_run", "workflow-review-pr-162", {
         action: "completed",
         installation: { id: 123 },
         repository: { full_name: "acme/widget" },
@@ -778,10 +778,10 @@ describe("github webhook", () => {
         workflow_run: {
           id: 79826212795,
           name: "Postil Review",
-          conclusion: "success",
+          conclusion: "neutral",
           html_url: "https://github.com/acme/widget/actions/runs/79826212795",
           head_sha: "56f068d2016af10e02c9af6b7d4f8a9ca1356c71",
-          pull_requests: [{ number: 160 }],
+          pull_requests: [{ number: 162 }],
         },
       }),
     );
@@ -803,7 +803,7 @@ describe("github webhook", () => {
     ).toMatchObject({
       check_run_id: 90016000123,
       status: "completed",
-      conclusion: "success",
+      conclusion: "neutral",
       output: {
         title: "Postil Review",
         summary: "Review completed.",
