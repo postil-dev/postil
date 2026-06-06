@@ -17,15 +17,31 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   deploy:
     name: Deploy to prod
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 20
+    env:
+      DEPLOY_ENVIRONMENT: production
+      DEPLOY_APP_NAME: ${{ secrets.DEPLOY_APP_NAME }}
+      SECRET_PROVIDER_IDENTITY: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+      SECRET_PROVIDER_PROJECT: ${{ secrets.INFISICAL_PROJECT_SLUG }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Fetch deployment environment
+        uses: Infisical/secrets-action@e1dd75c9b46a6324a7f3ab2a1b52d12a4a1f4a70 # v1.0.9
+        with:
+          method: "universal-auth"
+          identity-id: ${{ env.SECRET_PROVIDER_IDENTITY }}
+          project-slug: ${{ env.SECRET_PROVIDER_PROJECT }}
+          env-slug: ${{ env.DEPLOY_ENVIRONMENT }}
+          path: "/postil"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
@@ -43,27 +59,33 @@ jobs:
 
       - name: Sync watchdog token
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_TOKEN }}
-          FLY_APP: ${{ secrets.FLY_APP }}
-          METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
+          FLY_API_TOKEN: ${{ env.FLY_TOKEN }}
+          DEPLOY_APP_NAME: ${{ env.DEPLOY_APP_NAME }}
+          METRICS_API_KEY: ${{ env.METRICS_API_KEY || secrets.METRICS_API_KEY }}
         run: |
           if [ -z "${FLY_API_TOKEN:-}" ]; then
-            echo "::error title=Missing Fly token::Set FLY_TOKEN as a repository or organization secret."
+            echo "::error title=Missing deploy token::Configure the production deployment token."
             exit 1
           fi
-          if [ -z "${FLY_APP:-}" ]; then
-            echo "::error title=Missing Fly app::Set FLY_APP as a repository or organization secret."
+          if [ -z "${DEPLOY_APP_NAME:-}" ]; then
+            echo "::error title=Missing deploy target::Set DEPLOY_APP_NAME for the production environment."
             exit 1
           fi
           if [ -z "${METRICS_API_KEY:-}" ]; then
-            echo "::error title=Missing watchdog token::Set METRICS_API_KEY as a repository or organization secret."
+            echo "::error title=Missing watchdog token::Configure the production watchdog token."
             exit 1
           fi
 
-          flyctl secrets set --stage --app "${FLY_APP}" METRICS_API_KEY="${METRICS_API_KEY}"
+          flyctl secrets set --stage --app "${DEPLOY_APP_NAME}" METRICS_API_KEY="${METRICS_API_KEY}"
 
       - name: Deploy trigger.dev tasks
-        run: bun trigger deploy --skip-update-check --env prod
         env:
-          TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_PAT }}
-          TRIGGER_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
+          TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT || secrets.TRIGGER_PAT }}
+          TRIGGER_PROJECT_ID: ${{ env.TRIGGER_PROJECT_ID || secrets.TRIGGER_PROJECT_ID }}
+        run: |
+          if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
+            echo "::error title=Missing task project::Configure the production task project."
+            exit 1
+          fi
+
+          bun trigger deploy --skip-update-check --env prod
