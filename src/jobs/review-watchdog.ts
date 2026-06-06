@@ -27,10 +27,18 @@ function publicWatchdogMessage(): string {
   return "Review timed out before completion.";
 }
 
+function parseRepoFullName(repoFullName: string): { owner: string; repo: string } {
+  const [owner, repo, extra] = repoFullName.split("/");
+  if (!owner || !repo || extra) {
+    throw new Error(`Invalid repo full name: ${repoFullName}`);
+  }
+  return { owner, repo };
+}
+
 async function failStaleReview(review: StaleReview): Promise<boolean> {
   if (!review.checkRunId) return false;
 
-  const [owner, repo] = review.repoFullName.split("/");
+  const { owner, repo } = parseRepoFullName(review.repoFullName);
   const completedAt = new Date();
   const octokit = await installationOctokit(review.installationId);
 
@@ -55,7 +63,7 @@ async function failStaleReview(review: StaleReview): Promise<boolean> {
       errorMessage: publicWatchdogMessage(),
       completedAt,
     })
-    .where(eq(schema.reviews.id, review.id));
+    .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")));
 
   track("system", "review_watchdog_completed_stale_check", {
     repoFullName: review.repoFullName,

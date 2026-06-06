@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dbMock = vi.hoisted(() => ({
   staleReviews: [] as Array<Record<string, unknown>>,
   updates: [] as Array<Record<string, unknown>>,
+  updateWheres: [] as Array<unknown>,
 }));
 
 const githubMock = vi.hoisted(() => ({
@@ -26,8 +27,9 @@ vi.mock("@/db", () => ({
     }),
     update: () => ({
       set: (values: Record<string, unknown>) => ({
-        where: async () => {
+        where: async (condition: unknown) => {
           dbMock.updates.push(values);
+          dbMock.updateWheres.push(condition);
         },
       }),
     }),
@@ -59,6 +61,7 @@ describe("review watchdog", () => {
     vi.clearAllMocks();
     dbMock.staleReviews = [];
     dbMock.updates = [];
+    dbMock.updateWheres = [];
   });
 
   it("completes stale running app check-runs as failed", async () => {
@@ -95,6 +98,38 @@ describe("review watchdog", () => {
       expect.objectContaining({
         status: "failed",
         errorMessage: "Review timed out before completion.",
+      }),
+    );
+    expect(JSON.stringify(dbMock.updateWheres)).toContain("running");
+  });
+
+  it("does not patch GitHub when the repo full name is invalid", async () => {
+    dbMock.staleReviews = [
+      {
+        id: "review-1",
+        installationId: 123,
+        repoFullName: "postil-dev",
+        pullNumber: 162,
+        headSha: "abc123",
+        checkRunId: 456,
+        createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      },
+    ];
+
+    const result = await completeStaleReviewCheckRuns({ staleAfterMs: 1, limit: 10 });
+
+    expect(result).toMatchObject({ scanned: 1, completed: 0, failed: 1 });
+    expect(githubMock.installationOctokit).not.toHaveBeenCalled();
+    expect(githubMock.request).not.toHaveBeenCalled();
+    expect(dbMock.updates).toHaveLength(0);
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          op: "review_watchdog_complete_stale_check",
+          repoFullName: "postil-dev",
+          checkRunId: 456,
+        }),
       }),
     );
   });
