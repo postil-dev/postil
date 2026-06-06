@@ -54,3 +54,4 @@ jobs:
         run: bun trigger deploy --skip-update-check --env prod
         env:
           TRIGGER_ACCESS_TOKEN: ${{ env.TRIGGER_PAT }}
+          TRIGGER_PROJECT_ID: ${{ env.TRIGGER_PROJECT_ID || secrets.TRIGGER_PROJECT_ID }}

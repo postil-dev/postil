@@ -31,7 +31,7 @@ jobs:
 
       - name: Complete stale hosted review checks
         env:
-          WATCHDOG_TOKEN: ${{ env.METRICS_API_KEY }}
+          WATCHDOG_TOKEN: ${{ env.METRICS_API_KEY || secrets.METRICS_API_KEY }}
         run: |
           if [ -z "${WATCHDOG_TOKEN:-}" ]; then
             echo "::error title=Missing watchdog token::Set METRICS_API_KEY as a repository or organization secret."
