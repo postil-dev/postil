@@ -221,7 +221,28 @@ async function handleMention(
 }
 
 function mentionsPostil(body: string | null | undefined): boolean {
-  return /(^|[^\w-])@postil\b/i.test(body ?? "");
+  return /(^|[^\w-])@postil(?:-dev)?\b/i.test(body ?? "");
+}
+
+async function markCheckRunQueued(input: {
+  installationId: number;
+  repoFullName: string;
+  checkRunId: number;
+  triggerRunId: string;
+}): Promise<void> {
+  const octokit = await installationOctokit(input.installationId);
+  const [owner, repo] = input.repoFullName.split("/");
+  await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+    owner,
+    repo,
+    check_run_id: input.checkRunId,
+    status: "in_progress",
+    output: {
+      title: "Postil review queued",
+      summary: "Postil queued the hosted review worker.",
+      text: `Trigger run: ${input.triggerRunId}`,
+    },
+  });
 }
 
 async function dispatchReview(
@@ -369,6 +390,29 @@ async function dispatchReview(
         },
       });
     }
+
+    if (checkRunId) {
+      try {
+        await markCheckRunQueued({
+          installationId,
+          repoFullName,
+          checkRunId,
+          triggerRunId: triggerRun.id,
+        });
+      } catch (checkRunErr) {
+        captureException(checkRunErr, {
+          properties: {
+            op: "mark_check_run_queued",
+            repoFullName,
+            pullNumber,
+            headSha,
+            reviewId,
+            triggerRunId: triggerRun.id,
+          },
+        });
+      }
+    }
+
     return;
   } catch (err) {
     await recordReviewDispatchFailure(db, reviewId, err, repoFullName, pullNumber, headSha);

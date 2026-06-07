@@ -201,9 +201,22 @@ describe("github webhook", () => {
     );
     expect(dbMock.insertCalls).toEqual([dbMock.webhookDeliveries, dbMock.reviews]);
     expect(dbMock.updateCalls).toContainEqual({ triggerRunId: "trigger-run-123" });
+    expect(mockRequest).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        owner: "acme",
+        repo: "widget",
+        check_run_id: 321,
+        status: "in_progress",
+        output: expect.objectContaining({
+          title: "Postil review queued",
+          text: "Trigger run: trigger-run-123",
+        }),
+      }),
+    );
   });
 
-  it("enqueues review work when @postil is mentioned on a PR conversation", async () => {
+  it("enqueues review work when @postil-dev is mentioned on a PR conversation", async () => {
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "GET /repos/{owner}/{repo}/pulls/{pull_number}") {
         return { data: { draft: false, head: { sha: "mention-sha" } } };
@@ -223,7 +236,7 @@ describe("github webhook", () => {
           number: 68,
           pull_request: { url: "https://api.github.com/repos/acme/widget/pulls/68" },
         },
-        comment: { body: "@postil take another look at this auth path" },
+        comment: { body: "@postil-dev take another look at this auth path" },
       }),
     );
 
