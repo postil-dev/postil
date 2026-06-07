@@ -182,10 +182,11 @@ describe("trigger config", () => {
       expect.objectContaining({
         id: "postil-cli",
         image: expect.objectContaining({
-          pkgs: expect.arrayContaining(["cargo", "git"]),
+          pkgs: expect.arrayContaining(["curl", "git"]),
         }),
         commands: expect.arrayContaining([
-          "cargo install --git https://github.com/postil-dev/postil-cli --locked --force",
+          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
+          "$HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --locked --force",
         ]),
       }),
     );

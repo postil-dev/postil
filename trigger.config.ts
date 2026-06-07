@@ -96,9 +96,12 @@ const postilCli = {
     context.addLayer({
       id: "postil-cli",
       image: {
-        pkgs: ["cargo", "git", "pkg-config", "libssl-dev"],
+        pkgs: ["curl", "git", "pkg-config", "libssl-dev"],
       },
-      commands: ["cargo install --git https://github.com/postil-dev/postil-cli --locked --force"],
+      commands: [
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
+        "$HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --locked --force",
+      ],
     });
   },
 };
