@@ -57,6 +57,9 @@ jobs:
 
       - name: Deploy web app
         env:
+          REPOSITORY_TRIGGER_API_TOKEN: ${{ secrets.TRIGGER_API_TOKEN }}
+          REPOSITORY_TRIGGER_API_KEY: ${{ secrets.TRIGGER_API_KEY }}
+          REPOSITORY_TRIGGER_SECRET_KEY: ${{ secrets.TRIGGER_SECRET_KEY }}
           REPOSITORY_TRIGGER_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
           REPOSITORY_REVIEW_TOKEN_SECRET: ${{ secrets.REVIEW_TOKEN_SECRET }}
         run: |
@@ -81,22 +84,47 @@ jobs:
             echo "::error title=Missing auth secret::Configure BETTER_AUTH_SECRET on the Fly app before deploying."
             exit 1
           fi
-          if [ -z "${TRIGGER_SECRET_KEY:-}" ]; then
-            echo "::error title=Missing Trigger dispatch secret::Configure the Trigger project/environment secret key (tr_prod_...) as TRIGGER_SECRET_KEY in the production secret provider."
+
+          trigger_dispatch_secret=""
+          trigger_dispatch_secret_source=""
+          if [ -n "${TRIGGER_API_TOKEN:-}" ]; then
+            trigger_dispatch_secret="$TRIGGER_API_TOKEN"
+            trigger_dispatch_secret_source="TRIGGER_API_TOKEN"
+          elif [ -n "${TRIGGER_API_KEY:-}" ]; then
+            trigger_dispatch_secret="$TRIGGER_API_KEY"
+            trigger_dispatch_secret_source="TRIGGER_API_KEY"
+          elif [ -n "${TRIGGER_SECRET_KEY:-}" ]; then
+            trigger_dispatch_secret="$TRIGGER_SECRET_KEY"
+            trigger_dispatch_secret_source="TRIGGER_SECRET_KEY"
+          elif [ -n "${REPOSITORY_TRIGGER_API_TOKEN:-}" ]; then
+            trigger_dispatch_secret="$REPOSITORY_TRIGGER_API_TOKEN"
+            trigger_dispatch_secret_source="repository TRIGGER_API_TOKEN"
+          elif [ -n "${REPOSITORY_TRIGGER_API_KEY:-}" ]; then
+            trigger_dispatch_secret="$REPOSITORY_TRIGGER_API_KEY"
+            trigger_dispatch_secret_source="repository TRIGGER_API_KEY"
+          elif [ -n "${REPOSITORY_TRIGGER_SECRET_KEY:-}" ]; then
+            trigger_dispatch_secret="$REPOSITORY_TRIGGER_SECRET_KEY"
+            trigger_dispatch_secret_source="repository TRIGGER_SECRET_KEY"
+          fi
+
+          if [ -z "${trigger_dispatch_secret:-}" ]; then
+            echo "::error title=Missing Trigger dispatch secret::Configure TRIGGER_API_TOKEN or TRIGGER_SECRET_KEY for hosted dispatch."
             exit 1
           fi
-          case "$TRIGGER_SECRET_KEY" in
+          case "$trigger_dispatch_secret" in
             tr_pat_*)
-              echo "::error title=Wrong Trigger secret::TRIGGER_SECRET_KEY must be a Trigger project/environment secret key, not a CLI deploy PAT."
+              echo "::error title=Wrong Trigger secret::${trigger_dispatch_secret_source} is a Trigger CLI deploy PAT, not a runtime dispatch key."
               exit 1
               ;;
             tr_*)
               ;;
             *)
-              echo "::error title=Wrong Trigger secret::TRIGGER_SECRET_KEY must look like a Trigger project/environment secret key."
+              echo "::error title=Wrong Trigger secret::${trigger_dispatch_secret_source} must look like a Trigger runtime dispatch key."
               exit 1
               ;;
           esac
+          echo "Using Trigger dispatch credential from ${trigger_dispatch_secret_source}."
+
           trigger_project_id="${TRIGGER_PROJECT_ID:-${REPOSITORY_TRIGGER_PROJECT_ID:-}}"
           if [ -z "${trigger_project_id:-}" ]; then
             echo "::error title=Missing Trigger project::Configure TRIGGER_PROJECT_ID in the production secret provider or repository secrets."
@@ -109,7 +137,7 @@ jobs:
           fi
 
           flyctl secrets set --app "$DEPLOY_APP_NAME" --detach \
-            TRIGGER_SECRET_KEY="$TRIGGER_SECRET_KEY" \
+            TRIGGER_SECRET_KEY="$trigger_dispatch_secret" \
             TRIGGER_PROJECT_ID="$trigger_project_id" \
             REVIEW_TOKEN_SECRET="$review_token_secret" \
             1>/dev/null
