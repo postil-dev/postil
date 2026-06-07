@@ -16,11 +16,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ARG BETTER_AUTH_SECRET=build-only-auth-secret-000000000000
-ARG POSTIL_COMMIT_SHA=unknown
-ARG POSTIL_BUILD_TIME=unknown
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV POSTIL_COMMIT_SHA=$POSTIL_COMMIT_SHA
-ENV POSTIL_BUILD_TIME=$POSTIL_BUILD_TIME
 RUN BETTER_AUTH_SECRET="$BETTER_AUTH_SECRET" bun run build
 
 # --- runner ---
@@ -28,10 +24,6 @@ FROM docker.io/oven/bun:1.3-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-ARG POSTIL_COMMIT_SHA=unknown
-ARG POSTIL_BUILD_TIME=unknown
-ENV POSTIL_COMMIT_SHA=$POSTIL_COMMIT_SHA
-ENV POSTIL_BUILD_TIME=$POSTIL_BUILD_TIME
 
 RUN groupadd --system --gid 1001 nodejs \
  && useradd --system --uid 1001 --gid nodejs nextjs

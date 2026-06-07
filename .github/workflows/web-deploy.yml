@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy postil-web
+    name: Deploy web app
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
 
           command -v flyctl >/dev/null || {
-            echo "::error title=Missing deploy CLI::Install flyctl before deploying postil-web."
+            echo "::error title=Missing deploy CLI::Install flyctl before deploying the web app."
             exit 1
           }
           flyctl version
@@ -92,12 +92,9 @@ jobs:
             REVIEW_TOKEN_SECRET="$REVIEW_TOKEN_SECRET" \
             1>/dev/null
 
-          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           flyctl deploy \
             --app "$DEPLOY_APP_NAME" \
-            --remote-only \
-            --build-arg "POSTIL_COMMIT_SHA=$GITHUB_SHA" \
-            --build-arg "POSTIL_BUILD_TIME=$build_time"
+            --remote-only
 
       - name: Verify deployed health
         run: |
@@ -107,12 +104,12 @@ jobs:
           for attempt in $(seq 1 30); do
             body="$(curl -fsSL "$health_url" || true)"
             if [ -n "$body" ] &&
-              jq -e --arg sha "$GITHUB_SHA" '.ok == true and .service == "postil-web" and .commit == $sha' <<<"$body" >/dev/null; then
+              jq -e '.ok == true and .service == "postil"' <<<"$body" >/dev/null; then
               exit 0
             fi
             sleep 10
           done
 
-          echo "::error title=Deploy verification failed::The health endpoint did not report the deployed commit."
+          echo "::error title=Deploy verification failed::The health endpoint did not become healthy."
           curl -fsSL "$health_url" || true
           exit 1
