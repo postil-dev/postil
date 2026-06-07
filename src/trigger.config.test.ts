@@ -95,10 +95,12 @@ describe("trigger config", () => {
     const originalDatabaseUrl = process.env.NEON_CONNECTION_STRING;
     const originalTriggerSecret = process.env.TRIGGER_SECRET_KEY;
     const originalReviewTokenSecret = process.env.REVIEW_TOKEN_SECRET;
+    const originalPostilCliPath = process.env.POSTIL_CLI_PATH;
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
     process.env.NEON_CONNECTION_STRING = "postgres://example.test/db";
     process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
     process.env.REVIEW_TOKEN_SECRET = "test-review-token-secret";
+    process.env.POSTIL_CLI_PATH = "/home/bun/.cargo/bin/postil";
 
     try {
       const { default: config } = await import("../trigger.config");
@@ -124,6 +126,7 @@ describe("trigger config", () => {
         OPENROUTER_API_KEY: "test-openrouter-key",
         NEON_CONNECTION_STRING: "postgres://example.test/db",
         REVIEW_TOKEN_SECRET: "test-review-token-secret",
+        POSTIL_CLI_PATH: "/home/bun/.cargo/bin/postil",
       });
       expect(syncedEnv).not.toHaveProperty("TRIGGER_SECRET_KEY");
     } finally {
@@ -146,6 +149,11 @@ describe("trigger config", () => {
         delete process.env.REVIEW_TOKEN_SECRET;
       } else {
         process.env.REVIEW_TOKEN_SECRET = originalReviewTokenSecret;
+      }
+      if (originalPostilCliPath === undefined) {
+        delete process.env.POSTIL_CLI_PATH;
+      } else {
+        process.env.POSTIL_CLI_PATH = originalPostilCliPath;
       }
     }
   });

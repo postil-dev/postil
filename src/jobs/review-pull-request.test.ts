@@ -148,7 +148,9 @@ describe("reviewPullRequest", () => {
     expect(childProcessMock.execFile).toHaveBeenCalledWith(
       "postil-test",
       expect.arrayContaining(["review", "--config", expect.any(String), "--output-json"]),
-      expect.any(Object),
+      expect.objectContaining({
+        timeout: 8 * 60 * 1000,
+      }),
       expect.any(Function),
     );
     const configPath = childProcessMock.execFile.mock.calls[0][1][2];

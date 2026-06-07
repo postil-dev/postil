@@ -21,6 +21,7 @@ import {
 } from "./review-types";
 
 const execFile = promisify(execFileCb);
+const REVIEW_CLI_TIMEOUT_MS = 8 * 60 * 1000;
 
 function safePayload(payload: ReviewPayload): Omit<ReviewPayload, "encryptedInstallationToken"> {
   const { encryptedInstallationToken: _encryptedInstallationToken, ...safe } = payload;
@@ -200,6 +201,7 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
       await execFile(cli, ["review", "--config", configPath, "--output-json", outputPath], {
         cwd: process.cwd(),
         maxBuffer: 1024 * 1024,
+        timeout: REVIEW_CLI_TIMEOUT_MS,
       });
     } catch (err) {
       try {
