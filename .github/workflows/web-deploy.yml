@@ -84,6 +84,10 @@ jobs:
             echo "::error title=Missing Trigger dispatch secret::Configure the Trigger project/environment secret key (tr_prod_...) as TRIGGER_SECRET_KEY in the production secret provider."
             exit 1
           fi
+          if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
+            echo "::error title=Missing Trigger project::Configure TRIGGER_PROJECT_ID in the production secret provider."
+            exit 1
+          fi
           review_token_secret="${REVIEW_TOKEN_SECRET:-${REPOSITORY_REVIEW_TOKEN_SECRET:-}}"
           if [ -z "${review_token_secret:-}" ]; then
             echo "::error title=Missing review token secret::Configure REVIEW_TOKEN_SECRET in the production secret provider or repository secrets."
@@ -92,6 +96,7 @@ jobs:
 
           flyctl secrets set --app "$DEPLOY_APP_NAME" --detach \
             TRIGGER_SECRET_KEY="$TRIGGER_SECRET_KEY" \
+            TRIGGER_PROJECT_ID="$TRIGGER_PROJECT_ID" \
             REVIEW_TOKEN_SECRET="$review_token_secret" \
             1>/dev/null
 

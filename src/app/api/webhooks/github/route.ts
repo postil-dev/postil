@@ -20,6 +20,23 @@ function requireTriggerSecretKey(): string {
   }
   return secret;
 }
+
+function publicDispatchFailureSummary(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return "Hosted review could not be queued.";
+  }
+
+  switch (err.message) {
+    case "TRIGGER_PROJECT_ID must be set to dispatch review tasks":
+      return "Missing Trigger project configuration.";
+    case "Trigger API token must be set to dispatch review tasks":
+      return "Missing Trigger dispatch credential.";
+    case "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens":
+      return "Missing review token encryption secret.";
+    default:
+      return "Hosted review could not be queued.";
+  }
+}
 export const maxDuration = 300;
 
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
@@ -448,6 +465,7 @@ async function dispatchReview(
     });
     if (checkRunId) {
       try {
+        const failureSummary = publicDispatchFailureSummary(err);
         const octokit = await installationOctokit(installationId);
         const [owner, repo] = repoFullName.split("/");
         await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
@@ -459,7 +477,8 @@ async function dispatchReview(
           completed_at: new Date().toISOString(),
           output: {
             title: "Postil review dispatch failed",
-            summary: "The review could not be enqueued.",
+            summary: failureSummary,
+            text: failureSummary,
           },
         });
       } catch (checkRunErr) {
