@@ -94,18 +94,17 @@ describe("trigger config", () => {
     const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
     const originalDatabaseUrl = process.env.NEON_CONNECTION_STRING;
     const originalTriggerSecret = process.env.TRIGGER_SECRET_KEY;
+    const originalReviewTokenSecret = process.env.REVIEW_TOKEN_SECRET;
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
     process.env.NEON_CONNECTION_STRING = "postgres://example.test/db";
     process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
+    process.env.REVIEW_TOKEN_SECRET = "test-review-token-secret";
 
     try {
       const { default: config } = await import("../trigger.config");
       const layers: Array<{ id: string; deploy?: { env?: Record<string, string> } }> = [];
       const extension = config.build?.extensions?.find(
         (candidate: { name?: string }) => candidate.name === "SyncEnvVarsExtension",
-      );
-      const triggerSecretExtension = config.build?.extensions?.find(
-        (candidate: { name?: string }) => candidate.name === "trigger-secret-runtime-env",
       );
 
       await extension?.onBuildComplete?.(
@@ -124,24 +123,9 @@ describe("trigger config", () => {
       expect(syncedEnv).toMatchObject({
         OPENROUTER_API_KEY: "test-openrouter-key",
         NEON_CONNECTION_STRING: "postgres://example.test/db",
+        REVIEW_TOKEN_SECRET: "test-review-token-secret",
       });
       expect(syncedEnv).not.toHaveProperty("TRIGGER_SECRET_KEY");
-
-      await triggerSecretExtension?.onBuildComplete?.(
-        {
-          addLayer: (layer: { id: string; deploy?: { env?: Record<string, string> } }) => {
-            layers.push(layer);
-          },
-        } as never,
-        { deploy: { env: {} }, environment: "prod" } as never,
-      );
-
-      const triggerSecretEnv = layers.find(
-        (layer) => layer.id === "trigger-secret-runtime-env",
-      )?.deploy?.env;
-      expect(triggerSecretEnv).toMatchObject({
-        TRIGGER_SECRET_KEY: "test-trigger-secret",
-      });
     } finally {
       if (originalOpenRouterKey === undefined) {
         delete process.env.OPENROUTER_API_KEY;
@@ -152,6 +136,55 @@ describe("trigger config", () => {
         delete process.env.NEON_CONNECTION_STRING;
       } else {
         process.env.NEON_CONNECTION_STRING = originalDatabaseUrl;
+      }
+      if (originalTriggerSecret === undefined) {
+        delete process.env.TRIGGER_SECRET_KEY;
+      } else {
+        process.env.TRIGGER_SECRET_KEY = originalTriggerSecret;
+      }
+      if (originalReviewTokenSecret === undefined) {
+        delete process.env.REVIEW_TOKEN_SECRET;
+      } else {
+        process.env.REVIEW_TOKEN_SECRET = originalReviewTokenSecret;
+      }
+    }
+  });
+
+  it("syncs the review token secret alias from the deployed Trigger secret fallback", async () => {
+    const originalReviewTokenSecret = process.env.REVIEW_TOKEN_SECRET;
+    const originalTriggerSecret = process.env.TRIGGER_SECRET_KEY;
+    delete process.env.REVIEW_TOKEN_SECRET;
+    process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
+
+    try {
+      const { default: config } = await import("../trigger.config");
+      const layers: Array<{ id: string; deploy?: { env?: Record<string, string> } }> = [];
+      const extension = config.build?.extensions?.find(
+        (candidate: { name?: string }) => candidate.name === "SyncEnvVarsExtension",
+      );
+
+      await extension?.onBuildComplete?.(
+        {
+          target: "deploy",
+          config,
+          logger: { spinner: () => ({ message: vi.fn(), stop: vi.fn() }) },
+          addLayer: (layer: { id: string; deploy?: { env?: Record<string, string> } }) => {
+            layers.push(layer);
+          },
+        } as never,
+        { deploy: { env: {} }, environment: "prod" } as never,
+      );
+
+      const syncedEnv = layers.find((layer) => layer.id === "sync-env-vars")?.deploy?.env;
+      expect(syncedEnv).toMatchObject({
+        REVIEW_TOKEN_SECRET: "test-trigger-secret",
+      });
+      expect(syncedEnv).not.toHaveProperty("TRIGGER_SECRET_KEY");
+    } finally {
+      if (originalReviewTokenSecret === undefined) {
+        delete process.env.REVIEW_TOKEN_SECRET;
+      } else {
+        process.env.REVIEW_TOKEN_SECRET = originalReviewTokenSecret;
       }
       if (originalTriggerSecret === undefined) {
         delete process.env.TRIGGER_SECRET_KEY;

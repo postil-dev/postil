@@ -92,6 +92,7 @@ jobs:
           REPOSITORY_TASK_ACCESS_TOKEN: ${{ secrets.TRIGGER_PAT }}
           REPOSITORY_TASK_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
           REPOSITORY_TRIGGER_SECRET_KEY: ${{ secrets.TRIGGER_SECRET_KEY }}
+          REPOSITORY_REVIEW_TOKEN_SECRET: ${{ secrets.REVIEW_TOKEN_SECRET }}
           REPOSITORY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REPOSITORY_NEON_CONNECTION_STRING: ${{ secrets.NEON_CONNECTION_STRING }}
           REPOSITORY_GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
@@ -102,6 +103,7 @@ jobs:
           export TRIGGER_ACCESS_TOKEN="${TRIGGER_PAT:-${REPOSITORY_TASK_ACCESS_TOKEN:-}}"
           export TRIGGER_PROJECT_ID="${TRIGGER_PROJECT_ID:-${REPOSITORY_TASK_PROJECT_ID:-}}"
           export TRIGGER_SECRET_KEY="${TRIGGER_SECRET_KEY:-${REPOSITORY_TRIGGER_SECRET_KEY:-}}"
+          export REVIEW_TOKEN_SECRET="${REVIEW_TOKEN_SECRET:-${REPOSITORY_REVIEW_TOKEN_SECRET:-${TRIGGER_SECRET_KEY:-}}}"
           export DATABASE_URL="${DATABASE_URL:-${REPOSITORY_DATABASE_URL:-}}"
           export NEON_CONNECTION_STRING="${NEON_CONNECTION_STRING:-${REPOSITORY_NEON_CONNECTION_STRING:-}}"
           export GITHUB_APP_ID="${GITHUB_APP_ID:-${REPOSITORY_GITHUB_APP_ID:-}}"
@@ -117,8 +119,8 @@ jobs:
             echo "::error title=Missing task project::Configure the production task project."
             exit 1
           fi
-          if [ -z "${TRIGGER_SECRET_KEY:-}" ]; then
-            echo "::error title=Missing review token decrypt secret::Configure TRIGGER_SECRET_KEY in the production task environment."
+          if [ -z "${REVIEW_TOKEN_SECRET:-}" ]; then
+            echo "::error title=Missing review token runtime secret::Configure REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY in the production task environment."
             exit 1
           fi
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then

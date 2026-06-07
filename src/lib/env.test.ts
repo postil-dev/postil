@@ -38,6 +38,52 @@ describe("env", () => {
     }
   });
 
+  it("uses REVIEW_TOKEN_SECRET for review token encryption when present", async () => {
+    vi.resetModules();
+    const originalReviewTokenSecret = process.env.REVIEW_TOKEN_SECRET;
+    const originalSecretKey = process.env.TRIGGER_SECRET_KEY;
+    process.env.REVIEW_TOKEN_SECRET = "test-review-token-secret";
+    process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
+    try {
+      const { env } = await import("./env");
+      expect(env.reviewTokenSecret).toBe("test-review-token-secret");
+    } finally {
+      if (originalReviewTokenSecret === undefined) {
+        delete process.env.REVIEW_TOKEN_SECRET;
+      } else {
+        process.env.REVIEW_TOKEN_SECRET = originalReviewTokenSecret;
+      }
+      if (originalSecretKey === undefined) {
+        delete process.env.TRIGGER_SECRET_KEY;
+      } else {
+        process.env.TRIGGER_SECRET_KEY = originalSecretKey;
+      }
+    }
+  });
+
+  it("falls back to TRIGGER_SECRET_KEY for review token encryption", async () => {
+    vi.resetModules();
+    const originalReviewTokenSecret = process.env.REVIEW_TOKEN_SECRET;
+    const originalSecretKey = process.env.TRIGGER_SECRET_KEY;
+    delete process.env.REVIEW_TOKEN_SECRET;
+    process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
+    try {
+      const { env } = await import("./env");
+      expect(env.reviewTokenSecret).toBe("test-trigger-secret");
+    } finally {
+      if (originalReviewTokenSecret === undefined) {
+        delete process.env.REVIEW_TOKEN_SECRET;
+      } else {
+        process.env.REVIEW_TOKEN_SECRET = originalReviewTokenSecret;
+      }
+      if (originalSecretKey === undefined) {
+        delete process.env.TRIGGER_SECRET_KEY;
+      } else {
+        process.env.TRIGGER_SECRET_KEY = originalSecretKey;
+      }
+    }
+  });
+
   it("ignores an empty Trigger secret key when a legacy key is present", async () => {
     vi.resetModules();
     const originalApiToken = process.env.TRIGGER_API_TOKEN;
