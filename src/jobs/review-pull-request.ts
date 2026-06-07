@@ -190,7 +190,6 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
         repo: payload.repoFullName,
         pr: payload.pullNumber,
         sha: payload.headSha,
-        checkRunId: payload.checkRunId,
         reviewModel: env.REVIEW_MODEL,
         reviewModelCascade: env.REVIEW_MODEL_CASCADE,
       }),
