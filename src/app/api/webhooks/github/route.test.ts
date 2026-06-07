@@ -346,11 +346,55 @@ describe("github webhook", () => {
     ).rejects.toThrow("trigger failed");
     expect(dbMock.insertCalls).toEqual([dbMock.webhookDeliveries, dbMock.reviews]);
     expect(dbMock.deleteCalls).toEqual([dbMock.webhookDeliveries]);
-    expect(
-      mockRequest.mock.calls.some(
-        ([route]) => route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+    expect(mockRequest).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        output: expect.objectContaining({
+          summary: "Hosted review could not be queued.",
+          text: "Hosted review could not be queued.",
+        }),
+      }),
+    );
+  });
+
+  it("reports safe dispatch config failures on the review check-run", async () => {
+    reviewJobMock.enqueueReviewPullRequest.mockRejectedValueOnce(
+      new Error("TRIGGER_PROJECT_ID must be set to dispatch review tasks"),
+    );
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    await expect(
+      POST(
+        signedRequest("pull_request", "pr-missing-trigger-project", {
+          action: "opened",
+          installation: { id: 123 },
+          repository: { full_name: "acme/widget" },
+          pull_request: {
+            number: 68,
+            draft: false,
+            head: { sha: "abc123def456" },
+          },
+        }),
       ),
-    ).toBe(true);
+    ).rejects.toThrow("TRIGGER_PROJECT_ID must be set to dispatch review tasks");
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        output: expect.objectContaining({
+          summary: "Missing Trigger project configuration.",
+          text: "Missing Trigger project configuration.",
+        }),
+      }),
+    );
   });
 
   it("requires a review token secret before encrypting the installation token", async () => {
@@ -379,16 +423,13 @@ describe("github webhook", () => {
           },
         }),
       ),
-    ).rejects.toThrow(
-      "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens",
-    );
+    ).rejects.toThrow("REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens");
 
     expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
     expect(dbMock.updateCalls).toContainEqual(
       expect.objectContaining({
         status: "failed",
-        errorMessage:
-          "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens",
+        errorMessage: "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens",
       }),
     );
   });
