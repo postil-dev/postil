@@ -1,4 +1,4 @@
-app = "postil-web"
+app = "postil"
 primary_region = "lhr"
 
 [build]
