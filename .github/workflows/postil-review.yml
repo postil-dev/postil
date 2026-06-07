@@ -217,8 +217,8 @@ jobs:
 
       - name: Review pull request
         if: github.event_name == 'pull_request_target'
-        # Same-org @main is intentional here so postil can dogfood action fixes quickly.
-        uses: postil-dev/postil-action@main
+        # Same-org action tracks main for fast iteration; repository policy requires pinning the current main SHA.
+        uses: postil-dev/postil-action@1bb169edc7f513d673267c4a0554eba98a7c8304
         with:
           api-key: ${{ secrets.OPENROUTER_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
