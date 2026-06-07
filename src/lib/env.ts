@@ -43,6 +43,8 @@ const schema = z.object({
   TRIGGER_API_KEY: z.string().optional(),
   TRIGGER_SECRET_KEY: z.string().optional(),
   TRIGGER_API_TOKEN: z.string().optional(),
+  TRIGGER_ACCESS_TOKEN: z.string().optional(),
+  TRIGGER_PAT: z.string().optional(),
   TRIGGER_PROJECT_ID: z.string().optional(),
   TRIGGER_API_URL: z.string().url().default("https://api.trigger.dev"),
   REVIEW_TOKEN_SECRET: z.string().optional(),
@@ -101,9 +103,10 @@ export const env: Env & {
   ...parsed,
   databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
   triggerApiKey: firstNonEmpty(
-    parsed.TRIGGER_SECRET_KEY,
     parsed.TRIGGER_API_KEY,
     parsed.TRIGGER_API_TOKEN,
+    parsed.TRIGGER_ACCESS_TOKEN,
+    parsed.TRIGGER_PAT,
   ),
   reviewTokenSecret: firstNonEmpty(
     parsed.REVIEW_TOKEN_SECRET,

@@ -8,17 +8,21 @@ describe("env", () => {
     expect(env.SANDBOX_DRIVER).toBe("fly");
   });
 
-  it("prefers the deployed Trigger secret key for dispatch auth", async () => {
+  it("uses Trigger API credentials for dispatch auth", async () => {
     vi.resetModules();
     const originalApiToken = process.env.TRIGGER_API_TOKEN;
     const originalApiKey = process.env.TRIGGER_API_KEY;
+    const originalAccessToken = process.env.TRIGGER_ACCESS_TOKEN;
+    const originalPat = process.env.TRIGGER_PAT;
     const originalSecretKey = process.env.TRIGGER_SECRET_KEY;
     process.env.TRIGGER_API_TOKEN = "test-trigger-api-token";
-    delete process.env.TRIGGER_API_KEY;
+    process.env.TRIGGER_API_KEY = "test-trigger-api-key";
+    process.env.TRIGGER_ACCESS_TOKEN = "test-trigger-access-token";
+    process.env.TRIGGER_PAT = "test-trigger-pat";
     process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
     try {
       const { env } = await import("./env");
-      expect(env.triggerApiKey).toBe("test-trigger-secret");
+      expect(env.triggerApiKey).toBe("test-trigger-api-key");
     } finally {
       if (originalApiToken === undefined) {
         delete process.env.TRIGGER_API_TOKEN;
@@ -29,6 +33,61 @@ describe("env", () => {
         delete process.env.TRIGGER_API_KEY;
       } else {
         process.env.TRIGGER_API_KEY = originalApiKey;
+      }
+      if (originalAccessToken === undefined) {
+        delete process.env.TRIGGER_ACCESS_TOKEN;
+      } else {
+        process.env.TRIGGER_ACCESS_TOKEN = originalAccessToken;
+      }
+      if (originalPat === undefined) {
+        delete process.env.TRIGGER_PAT;
+      } else {
+        process.env.TRIGGER_PAT = originalPat;
+      }
+      if (originalSecretKey === undefined) {
+        delete process.env.TRIGGER_SECRET_KEY;
+      } else {
+        process.env.TRIGGER_SECRET_KEY = originalSecretKey;
+      }
+    }
+  });
+
+  it("does not use the review token secret for dispatch auth", async () => {
+    vi.resetModules();
+    const originalApiToken = process.env.TRIGGER_API_TOKEN;
+    const originalApiKey = process.env.TRIGGER_API_KEY;
+    const originalAccessToken = process.env.TRIGGER_ACCESS_TOKEN;
+    const originalPat = process.env.TRIGGER_PAT;
+    const originalSecretKey = process.env.TRIGGER_SECRET_KEY;
+    delete process.env.TRIGGER_API_TOKEN;
+    delete process.env.TRIGGER_API_KEY;
+    delete process.env.TRIGGER_ACCESS_TOKEN;
+    delete process.env.TRIGGER_PAT;
+    process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
+    try {
+      const { env } = await import("./env");
+      expect(env.triggerApiKey).toBeUndefined();
+      expect(env.reviewTokenSecret).toBe("test-trigger-secret");
+    } finally {
+      if (originalApiToken === undefined) {
+        delete process.env.TRIGGER_API_TOKEN;
+      } else {
+        process.env.TRIGGER_API_TOKEN = originalApiToken;
+      }
+      if (originalApiKey === undefined) {
+        delete process.env.TRIGGER_API_KEY;
+      } else {
+        process.env.TRIGGER_API_KEY = originalApiKey;
+      }
+      if (originalAccessToken === undefined) {
+        delete process.env.TRIGGER_ACCESS_TOKEN;
+      } else {
+        process.env.TRIGGER_ACCESS_TOKEN = originalAccessToken;
+      }
+      if (originalPat === undefined) {
+        delete process.env.TRIGGER_PAT;
+      } else {
+        process.env.TRIGGER_PAT = originalPat;
       }
       if (originalSecretKey === undefined) {
         delete process.env.TRIGGER_SECRET_KEY;
