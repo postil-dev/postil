@@ -102,14 +102,15 @@ export const env: Env & {
 } = {
   ...parsed,
   databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
+  // Trigger backend dispatch uses the project/environment secret key (`tr_prod_...`).
+  // `TRIGGER_ACCESS_TOKEN` / `TRIGGER_PAT` is only for CLI deployment.
   triggerApiKey: firstNonEmpty(
+    parsed.TRIGGER_SECRET_KEY,
     parsed.TRIGGER_API_KEY,
     parsed.TRIGGER_API_TOKEN,
     parsed.TRIGGER_ACCESS_TOKEN,
     parsed.TRIGGER_PAT,
   ),
-  reviewTokenSecret: firstNonEmpty(
-    parsed.REVIEW_TOKEN_SECRET,
-    parsed.TRIGGER_SECRET_KEY,
-  ),
+  // Keep installation-token encryption separate from Trigger dispatch auth.
+  reviewTokenSecret: firstNonEmpty(parsed.REVIEW_TOKEN_SECRET),
 };

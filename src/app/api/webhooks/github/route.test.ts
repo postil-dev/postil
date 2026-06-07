@@ -32,7 +32,7 @@ const envMock = vi.hoisted(() => ({
   CI_RECOVERY_FALLBACK_ASSIGNEE: "engineer",
   GITHUB_WEBHOOK_SECRET: "test-secret",
   TRIGGER_SECRET_KEY: "test-trigger-secret" as string | undefined,
-  reviewTokenSecret: "test-trigger-secret" as string | undefined,
+  reviewTokenSecret: "test-review-token-secret" as string | undefined,
 }));
 
 vi.mock("@/lib/env", () => ({
@@ -158,7 +158,7 @@ describe("github webhook", () => {
     dbMock.failDeliveryDelete = false;
     configMock.review = { auto_merge: true };
     envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
-    envMock.reviewTokenSecret = "test-trigger-secret";
+    envMock.reviewTokenSecret = "test-review-token-secret";
   });
 
   it("rejects missing signature", async () => {
@@ -209,7 +209,7 @@ describe("github webhook", () => {
         headSha: "abc123def456",
         checkRunId: 321,
         reviewId: "review-1",
-        encryptedInstallationToken: "encrypted:test-trigger-secret:true",
+        encryptedInstallationToken: "encrypted:test-review-token-secret:true",
       },
       "pr-opened",
     );
@@ -266,7 +266,7 @@ describe("github webhook", () => {
         headSha: "mention-sha",
         checkRunId: 654,
         reviewId: "review-1",
-        encryptedInstallationToken: "encrypted:test-trigger-secret:true",
+        encryptedInstallationToken: "encrypted:test-review-token-secret:true",
       },
       "mention-comment",
     );
@@ -380,7 +380,7 @@ describe("github webhook", () => {
         }),
       ),
     ).rejects.toThrow(
-      "REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY must be set to encrypt review installation tokens",
+      "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens",
     );
 
     expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
@@ -388,7 +388,7 @@ describe("github webhook", () => {
       expect.objectContaining({
         status: "failed",
         errorMessage:
-          "REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY must be set to encrypt review installation tokens",
+          "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens",
       }),
     );
   });
@@ -468,7 +468,7 @@ describe("github webhook", () => {
         headSha: "abc123def456",
         checkRunId: 321,
         reviewId: "review-1",
-        encryptedInstallationToken: "encrypted:test-trigger-secret:true",
+        encryptedInstallationToken: "encrypted:test-review-token-secret:true",
       },
       "pr-bookkeeping",
     );

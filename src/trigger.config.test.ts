@@ -158,50 +158,6 @@ describe("trigger config", () => {
     }
   });
 
-  it("syncs the review token secret alias from the deployed Trigger secret fallback", async () => {
-    const originalReviewTokenSecret = process.env.REVIEW_TOKEN_SECRET;
-    const originalTriggerSecret = process.env.TRIGGER_SECRET_KEY;
-    delete process.env.REVIEW_TOKEN_SECRET;
-    process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
-
-    try {
-      const { default: config } = await import("../trigger.config");
-      const layers: Array<{ id: string; deploy?: { env?: Record<string, string> } }> = [];
-      const extension = config.build?.extensions?.find(
-        (candidate: { name?: string }) => candidate.name === "SyncEnvVarsExtension",
-      );
-
-      await extension?.onBuildComplete?.(
-        {
-          target: "deploy",
-          config,
-          logger: { spinner: () => ({ message: vi.fn(), stop: vi.fn() }) },
-          addLayer: (layer: { id: string; deploy?: { env?: Record<string, string> } }) => {
-            layers.push(layer);
-          },
-        } as never,
-        { deploy: { env: {} }, environment: "prod" } as never,
-      );
-
-      const syncedEnv = layers.find((layer) => layer.id === "sync-env-vars")?.deploy?.env;
-      expect(syncedEnv).toMatchObject({
-        REVIEW_TOKEN_SECRET: "test-trigger-secret",
-      });
-      expect(syncedEnv).not.toHaveProperty("TRIGGER_SECRET_KEY");
-    } finally {
-      if (originalReviewTokenSecret === undefined) {
-        delete process.env.REVIEW_TOKEN_SECRET;
-      } else {
-        process.env.REVIEW_TOKEN_SECRET = originalReviewTokenSecret;
-      }
-      if (originalTriggerSecret === undefined) {
-        delete process.env.TRIGGER_SECRET_KEY;
-      } else {
-        process.env.TRIGGER_SECRET_KEY = originalTriggerSecret;
-      }
-    }
-  });
-
   it("installs the Postil CLI in the Trigger worker image", async () => {
     const { default: config } = await import("../trigger.config");
     const extension = config.build?.extensions?.find(

@@ -11,7 +11,7 @@ const IV_BYTES = 12;
 const TOKEN_PREFIX = "v1";
 
 function keyFromSecret(secret: string): Buffer {
-  if (!secret.trim()) throw new Error("TRIGGER_SECRET_KEY must be set for review token encryption");
+  if (!secret.trim()) throw new Error("REVIEW_TOKEN_SECRET must be set for review token encryption");
   return createHash("sha256").update(secret, "utf8").digest();
 }
 

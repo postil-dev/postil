@@ -78,20 +78,18 @@ jobs:
             echo "::error title=Missing auth secret::Configure BETTER_AUTH_SECRET on the Fly app before deploying."
             exit 1
           fi
-          trigger_api_key="${TRIGGER_API_KEY:-${TRIGGER_API_TOKEN:-${TRIGGER_ACCESS_TOKEN:-${TRIGGER_PAT:-}}}}"
-          if [ -z "${trigger_api_key:-}" ]; then
-            echo "::error title=Missing Trigger dispatch credential::Configure TRIGGER_API_KEY, TRIGGER_API_TOKEN, TRIGGER_ACCESS_TOKEN, or TRIGGER_PAT in the production secret provider."
+          if [ -z "${TRIGGER_SECRET_KEY:-}" ]; then
+            echo "::error title=Missing Trigger dispatch secret::Configure the Trigger project/environment secret key (tr_prod_...) as TRIGGER_SECRET_KEY in the production secret provider."
             exit 1
           fi
-          review_token_secret="${REVIEW_TOKEN_SECRET:-${TRIGGER_SECRET_KEY:-}}"
-          if [ -z "${review_token_secret:-}" ]; then
-            echo "::error title=Missing review token secret::Configure REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY in the production secret provider."
+          if [ -z "${REVIEW_TOKEN_SECRET:-}" ]; then
+            echo "::error title=Missing review token secret::Configure REVIEW_TOKEN_SECRET in the production secret provider."
             exit 1
           fi
 
           flyctl secrets set --app "$DEPLOY_APP_NAME" --detach \
-            TRIGGER_API_KEY="$trigger_api_key" \
-            REVIEW_TOKEN_SECRET="$review_token_secret" \
+            TRIGGER_SECRET_KEY="$TRIGGER_SECRET_KEY" \
+            REVIEW_TOKEN_SECRET="$REVIEW_TOKEN_SECRET" \
             1>/dev/null
 
           build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
