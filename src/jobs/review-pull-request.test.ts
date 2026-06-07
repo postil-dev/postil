@@ -334,7 +334,7 @@ describe("reviewPullRequest", () => {
     );
   });
 
-  it("marks the review failed when the CLI exits 1 without findings", async () => {
+  it("records a completed review when the CLI exits 1 after writing a clean result", async () => {
     childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
       const outputPath = args[args.indexOf("--output-json") + 1];
       fsMock.files.set(
@@ -349,12 +349,26 @@ describe("reviewPullRequest", () => {
       cb(Object.assign(new Error("exit code 1"), { code: 1 }), "", "");
     });
 
-    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+    await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 0 });
 
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "success",
+      }),
+    );
     expect(dbMock.updates).toContainEqual(
       expect.objectContaining({
-        status: "failed",
-        errorMessage: "Review failed to complete.",
+        status: "completed",
+        result: expect.objectContaining({ findings: [] }),
+      }),
+    );
+    expect(loggerMock.info).toHaveBeenCalledWith(
+      "accepted review CLI output after nonzero exit",
+      expect.objectContaining({
+        exitCode: 1,
+        findings: 0,
       }),
     );
   });
@@ -378,7 +392,16 @@ describe("reviewPullRequest", () => {
           modelUsed: "test/default",
         }),
       );
-      cb(Object.assign(new Error("exit code 2"), { code: 2 }), "", "");
+      cb(
+        Object.assign(new Error("exit code 2"), {
+          code: 2,
+          signal: null,
+          stderr: "failed with ghs_secretToken and Bearer raw-token-value",
+          stdout: "openrouter sk-or-secretToken",
+        }),
+        "",
+        "",
+      );
     });
 
     await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
@@ -389,6 +412,17 @@ describe("reviewPullRequest", () => {
         errorMessage: "Review failed to complete.",
       }),
     );
+    expect(loggerMock.info).toHaveBeenCalledWith(
+      "review CLI failed",
+      expect.objectContaining({
+        exitCode: 2,
+        stderr: expect.stringContaining("[redacted-github-token]"),
+        stdout: expect.stringContaining("[redacted-openrouter-token]"),
+      }),
+    );
+    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("ghs_secretToken");
+    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("raw-token-value");
+    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("sk-or-secretToken");
   });
 
   it("records a completed review when the CLI exits after writing blocking findings", async () => {
