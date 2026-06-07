@@ -45,6 +45,7 @@ const schema = z.object({
   TRIGGER_API_TOKEN: z.string().optional(),
   TRIGGER_PROJECT_ID: z.string().optional(),
   TRIGGER_API_URL: z.string().url().default("https://api.trigger.dev"),
+  REVIEW_TOKEN_SECRET: z.string().optional(),
 
   // Fly
   FLY_ORG_TOKEN: z.string().optional(),
@@ -94,6 +95,8 @@ export const env: Env & {
   databaseUrl: string | undefined;
   /** Unified Trigger auth token: supports old and current deployed names. */
   triggerApiKey: string | undefined;
+  /** Shared secret for encrypted review installation tokens. */
+  reviewTokenSecret: string | undefined;
 } = {
   ...parsed,
   databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
@@ -101,5 +104,9 @@ export const env: Env & {
     parsed.TRIGGER_SECRET_KEY,
     parsed.TRIGGER_API_KEY,
     parsed.TRIGGER_API_TOKEN,
+  ),
+  reviewTokenSecret: firstNonEmpty(
+    parsed.REVIEW_TOKEN_SECRET,
+    parsed.TRIGGER_SECRET_KEY,
   ),
 };

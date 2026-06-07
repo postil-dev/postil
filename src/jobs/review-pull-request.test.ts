@@ -55,6 +55,7 @@ const envMock = vi.hoisted(() => ({
   TRIGGER_PROJECT_ID: "project_test_123",
   TRIGGER_SECRET_KEY: "test-trigger-secret",
   triggerApiKey: "test-trigger-secret",
+  reviewTokenSecret: "test-trigger-secret" as string | undefined,
 }));
 
 vi.mock("@trigger.dev/sdk/v3", () => ({
@@ -119,6 +120,7 @@ describe("reviewPullRequest", () => {
     envMock.REVIEW_MODEL_CASCADE = undefined;
     envMock.TRIGGER_PROJECT_ID = "project_test_123";
     envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
+    envMock.reviewTokenSecret = "test-trigger-secret";
     envMock.databaseUrl = "postgres://test-db";
     childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
       const outputPath = args[args.indexOf("--output-json") + 1];
@@ -232,13 +234,14 @@ describe("reviewPullRequest", () => {
     );
   });
 
-  it("requires a Trigger secret before decrypting the payload installation token", async () => {
+  it("requires a review token secret before decrypting the payload installation token", async () => {
     const encryptedInstallationToken = encryptReviewInstallationToken({
       token: "payload-installation-token",
       secret: "test-trigger-secret",
       context: PAYLOAD,
     });
     envMock.TRIGGER_SECRET_KEY = " ";
+    envMock.reviewTokenSecret = " ";
 
     await expect(runReviewTask.run({ ...PAYLOAD, encryptedInstallationToken })).rejects.toThrow(
       "Review failed to complete.",

@@ -32,6 +32,7 @@ const envMock = vi.hoisted(() => ({
   CI_RECOVERY_FALLBACK_ASSIGNEE: "engineer",
   GITHUB_WEBHOOK_SECRET: "test-secret",
   TRIGGER_SECRET_KEY: "test-trigger-secret" as string | undefined,
+  reviewTokenSecret: "test-trigger-secret" as string | undefined,
 }));
 
 vi.mock("@/lib/env", () => ({
@@ -157,6 +158,7 @@ describe("github webhook", () => {
     dbMock.failDeliveryDelete = false;
     configMock.review = { auto_merge: true };
     envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
+    envMock.reviewTokenSecret = "test-trigger-secret";
   });
 
   it("rejects missing signature", async () => {
@@ -351,8 +353,9 @@ describe("github webhook", () => {
     ).toBe(true);
   });
 
-  it("requires a Trigger secret before encrypting the installation token", async () => {
+  it("requires a review token secret before encrypting the installation token", async () => {
     envMock.TRIGGER_SECRET_KEY = " ";
+    envMock.reviewTokenSecret = " ";
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "POST /repos/{owner}/{repo}/check-runs") {
         return { data: { id: 321 } };
@@ -376,13 +379,16 @@ describe("github webhook", () => {
           },
         }),
       ),
-    ).rejects.toThrow("TRIGGER_SECRET_KEY must be set to encrypt review installation tokens");
+    ).rejects.toThrow(
+      "REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY must be set to encrypt review installation tokens",
+    );
 
     expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
     expect(dbMock.updateCalls).toContainEqual(
       expect.objectContaining({
         status: "failed",
-        errorMessage: "TRIGGER_SECRET_KEY must be set to encrypt review installation tokens",
+        errorMessage:
+          "REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY must be set to encrypt review installation tokens",
       }),
     );
   });

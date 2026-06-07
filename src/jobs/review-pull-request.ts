@@ -28,9 +28,9 @@ function safePayload(payload: ReviewPayload): Omit<ReviewPayload, "encryptedInst
 }
 
 function requireTriggerSecretKey(): string {
-  const secret = env.TRIGGER_SECRET_KEY?.trim();
+  const secret = env.reviewTokenSecret?.trim();
   if (!secret) {
-    throw new Error("TRIGGER_SECRET_KEY must be set to decrypt review installation tokens");
+    throw new Error("REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY must be set to decrypt review installation tokens");
   }
   return secret;
 }

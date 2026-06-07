@@ -14,9 +14,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function requireTriggerSecretKey(): string {
-  const secret = env.TRIGGER_SECRET_KEY?.trim();
+  const secret = env.reviewTokenSecret?.trim();
   if (!secret) {
-    throw new Error("TRIGGER_SECRET_KEY must be set to encrypt review installation tokens");
+    throw new Error("REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY must be set to encrypt review installation tokens");
   }
   return secret;
 }
