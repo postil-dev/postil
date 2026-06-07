@@ -73,12 +73,12 @@ jobs:
             echo "::error title=Missing deploy token::Configure FLY_TOKEN in the production secret provider."
             exit 1
           fi
-          if [ -z "${BETTER_AUTH_SECRET:-}" ]; then
-            echo "::error title=Missing auth secret::Configure BETTER_AUTH_SECRET in the production secret provider."
+          export FLY_API_TOKEN="$FLY_TOKEN"
+          if ! flyctl secrets list --app "$DEPLOY_APP_NAME" | awk '{print $1}' | grep -qx "BETTER_AUTH_SECRET"; then
+            echo "::error title=Missing auth secret::Configure BETTER_AUTH_SECRET on the Fly app before deploying."
             exit 1
           fi
 
-          export FLY_API_TOKEN="$FLY_TOKEN"
           build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           flyctl deploy \
             --app "$DEPLOY_APP_NAME" \
