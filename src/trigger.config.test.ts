@@ -183,7 +183,7 @@ describe("trigger config", () => {
         }),
         commands: expect.arrayContaining([
           "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
-          "$HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --locked --force",
+          "$HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --rev 3df78f88531aadb76942f4c69bc5a22e4421be34 --locked --force",
         ]),
       }),
     );

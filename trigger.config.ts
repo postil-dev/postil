@@ -1,5 +1,19 @@
 import { defineConfig } from "@trigger.dev/sdk";
 import { syncEnvVars } from "@trigger.dev/build/extensions/core";
+import { readFileSync } from "node:fs";
+
+const DEFAULT_POSTIL_CLI_REV = "3df78f88531aadb76942f4c69bc5a22e4421be34";
+const POSTIL_CLI_REV = resolvePostilCliRev();
+
+function resolvePostilCliRev(): string {
+  const envRev = process.env.POSTIL_CLI_REV?.trim();
+  if (envRev) return envRev;
+  try {
+    return readFileSync(new URL("./reviewer-rev", import.meta.url), "utf8").trim();
+  } catch {
+    return DEFAULT_POSTIL_CLI_REV;
+  }
+}
 
 const TASK_RUNTIME_ENV_VARS = [
   "APP_URL",
@@ -80,7 +94,7 @@ const postilCli = {
       },
       commands: [
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
-        "$HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --locked --force",
+        `$HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --rev ${POSTIL_CLI_REV} --locked --force`,
       ],
     });
   },
