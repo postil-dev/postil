@@ -1,23 +1,6 @@
 name: Web Deploy
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "src/app/**"
-      - "src/auth/**"
-      - "src/components/**"
-      - "src/db/**"
-      - "src/lib/**"
-      - "src/middleware.ts"
-      - "src/instrumentation*.ts"
-      - "public/**"
-      - "Dockerfile"
-      - "fly.toml"
-      - "next.config.*"
-      - "package.json"
-      - "bun.lock"
-      - ".github/workflows/web-deploy.yml"
   workflow_dispatch:
 
 concurrency:
