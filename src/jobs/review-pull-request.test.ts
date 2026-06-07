@@ -54,7 +54,7 @@ const envMock = vi.hoisted(() => ({
   TRIGGER_API_URL: "https://trigger.example.test",
   TRIGGER_PROJECT_ID: "project_test_123",
   TRIGGER_SECRET_KEY: "test-trigger-secret",
-  triggerApiKey: "test-trigger-secret",
+  triggerApiKey: "test-trigger-key" as string | undefined,
   reviewTokenSecret: "test-trigger-secret" as string | undefined,
 }));
 
@@ -196,7 +196,7 @@ describe("reviewPullRequest", () => {
       {
         clientConfig: {
           baseURL: "https://trigger.example.test",
-          accessToken: "test-trigger-secret",
+          accessToken: "test-trigger-key",
         },
       },
     );
@@ -286,6 +286,18 @@ describe("reviewPullRequest", () => {
 
     await expect(enqueueReviewPullRequest(PAYLOAD, "delivery-123")).rejects.toThrow(
       "TRIGGER_PROJECT_ID must be set to dispatch review tasks",
+    );
+
+    expect(triggerMock.tasksTrigger).not.toHaveBeenCalled();
+  });
+
+  it("requires a Trigger API credential before hosted dispatch", async () => {
+    envMock.triggerApiKey = undefined;
+    envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
+    envMock.reviewTokenSecret = "test-trigger-secret";
+
+    await expect(enqueueReviewPullRequest(PAYLOAD, "delivery-123")).rejects.toThrow(
+      "Trigger API token must be set to dispatch review tasks",
     );
 
     expect(triggerMock.tasksTrigger).not.toHaveBeenCalled();
