@@ -87,42 +87,44 @@ jobs:
 
           trigger_dispatch_secret=""
           trigger_dispatch_secret_source=""
-          if [ -n "${TRIGGER_API_TOKEN:-}" ]; then
-            trigger_dispatch_secret="$TRIGGER_API_TOKEN"
-            trigger_dispatch_secret_source="TRIGGER_API_TOKEN"
-          elif [ -n "${TRIGGER_API_KEY:-}" ]; then
-            trigger_dispatch_secret="$TRIGGER_API_KEY"
-            trigger_dispatch_secret_source="TRIGGER_API_KEY"
-          elif [ -n "${TRIGGER_SECRET_KEY:-}" ]; then
-            trigger_dispatch_secret="$TRIGGER_SECRET_KEY"
-            trigger_dispatch_secret_source="TRIGGER_SECRET_KEY"
-          elif [ -n "${REPOSITORY_TRIGGER_API_TOKEN:-}" ]; then
-            trigger_dispatch_secret="$REPOSITORY_TRIGGER_API_TOKEN"
-            trigger_dispatch_secret_source="repository TRIGGER_API_TOKEN"
-          elif [ -n "${REPOSITORY_TRIGGER_API_KEY:-}" ]; then
-            trigger_dispatch_secret="$REPOSITORY_TRIGGER_API_KEY"
-            trigger_dispatch_secret_source="repository TRIGGER_API_KEY"
-          elif [ -n "${REPOSITORY_TRIGGER_SECRET_KEY:-}" ]; then
-            trigger_dispatch_secret="$REPOSITORY_TRIGGER_SECRET_KEY"
-            trigger_dispatch_secret_source="repository TRIGGER_SECRET_KEY"
-          fi
+          trigger_dispatch_invalid_sources=""
+          choose_trigger_dispatch_secret() {
+            candidate_source="$1"
+            candidate_value="${2:-}"
+            if [ -z "${candidate_value:-}" ]; then
+              return 0
+            fi
+            case "$candidate_value" in
+              tr_prod_*|tr_stg_*|tr_dev_*)
+                if [ -z "${trigger_dispatch_secret:-}" ]; then
+                  trigger_dispatch_secret="$candidate_value"
+                  trigger_dispatch_secret_source="$candidate_source"
+                fi
+                ;;
+              tr_pat_*)
+                trigger_dispatch_invalid_sources="${trigger_dispatch_invalid_sources}${candidate_source}:PAT "
+                ;;
+              *)
+                trigger_dispatch_invalid_sources="${trigger_dispatch_invalid_sources}${candidate_source}:shape "
+                ;;
+            esac
+          }
+
+          choose_trigger_dispatch_secret "TRIGGER_API_TOKEN" "${TRIGGER_API_TOKEN:-}"
+          choose_trigger_dispatch_secret "TRIGGER_API_KEY" "${TRIGGER_API_KEY:-}"
+          choose_trigger_dispatch_secret "TRIGGER_SECRET_KEY" "${TRIGGER_SECRET_KEY:-}"
+          choose_trigger_dispatch_secret "repository TRIGGER_API_TOKEN" "${REPOSITORY_TRIGGER_API_TOKEN:-}"
+          choose_trigger_dispatch_secret "repository TRIGGER_API_KEY" "${REPOSITORY_TRIGGER_API_KEY:-}"
+          choose_trigger_dispatch_secret "repository TRIGGER_SECRET_KEY" "${REPOSITORY_TRIGGER_SECRET_KEY:-}"
 
           if [ -z "${trigger_dispatch_secret:-}" ]; then
-            echo "::error title=Missing Trigger dispatch secret::Configure TRIGGER_API_TOKEN or TRIGGER_SECRET_KEY for hosted dispatch."
+            if [ -n "${trigger_dispatch_invalid_sources:-}" ]; then
+              echo "::error title=Wrong Trigger secret::No configured Trigger dispatch credential matched tr_prod_, tr_stg_, or tr_dev_. Invalid sources: ${trigger_dispatch_invalid_sources}"
+            else
+              echo "::error title=Missing Trigger dispatch secret::Configure TRIGGER_API_TOKEN or TRIGGER_SECRET_KEY for hosted dispatch."
+            fi
             exit 1
           fi
-          case "$trigger_dispatch_secret" in
-            tr_pat_*)
-              echo "::error title=Wrong Trigger secret::${trigger_dispatch_secret_source} is a Trigger CLI deploy PAT, not a runtime dispatch key."
-              exit 1
-              ;;
-            tr_*)
-              ;;
-            *)
-              echo "::error title=Wrong Trigger secret::${trigger_dispatch_secret_source} must look like a Trigger runtime dispatch key."
-              exit 1
-              ;;
-          esac
           echo "Using Trigger dispatch credential from ${trigger_dispatch_secret_source}."
 
           trigger_project_id="${TRIGGER_PROJECT_ID:-${REPOSITORY_TRIGGER_PROJECT_ID:-}}"
