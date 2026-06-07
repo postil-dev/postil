@@ -95,21 +95,19 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 export const env: Env & {
   /** Unified database URL: `NEON_CONNECTION_STRING` takes precedence. */
   databaseUrl: string | undefined;
-  /** Unified Trigger auth token: supports old and current deployed names. */
+  /** Unified Trigger dispatch token. */
   triggerApiKey: string | undefined;
   /** Shared secret for encrypted review installation tokens. */
   reviewTokenSecret: string | undefined;
 } = {
   ...parsed,
   databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
-  // Trigger backend dispatch uses the project/environment secret key (`tr_prod_...`).
+  // Trigger backend dispatch uses the project/environment API secret.
   // `TRIGGER_ACCESS_TOKEN` / `TRIGGER_PAT` is only for CLI deployment.
   triggerApiKey: firstNonEmpty(
-    parsed.TRIGGER_SECRET_KEY,
-    parsed.TRIGGER_API_KEY,
     parsed.TRIGGER_API_TOKEN,
-    parsed.TRIGGER_ACCESS_TOKEN,
-    parsed.TRIGGER_PAT,
+    parsed.TRIGGER_API_KEY,
+    parsed.TRIGGER_SECRET_KEY,
   ),
   // Keep installation-token encryption separate from Trigger dispatch auth.
   reviewTokenSecret: firstNonEmpty(parsed.REVIEW_TOKEN_SECRET),

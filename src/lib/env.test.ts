@@ -8,7 +8,7 @@ describe("env", () => {
     expect(env.SANDBOX_DRIVER).toBe("fly");
   });
 
-  it("uses the Trigger environment secret key for dispatch auth", async () => {
+  it("prefers the Trigger runtime API token for dispatch auth", async () => {
     vi.resetModules();
     const originalApiToken = process.env.TRIGGER_API_TOKEN;
     const originalApiKey = process.env.TRIGGER_API_KEY;
@@ -22,7 +22,7 @@ describe("env", () => {
     process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
     try {
       const { env } = await import("./env");
-      expect(env.triggerApiKey).toBe("test-trigger-secret");
+      expect(env.triggerApiKey).toBe("test-trigger-api-token");
     } finally {
       restore("TRIGGER_API_TOKEN", originalApiToken);
       restore("TRIGGER_API_KEY", originalApiKey);
@@ -32,7 +32,7 @@ describe("env", () => {
     }
   });
 
-  it("falls back to Trigger credential aliases for dispatch auth", async () => {
+  it("falls back through Trigger runtime credential aliases for dispatch auth", async () => {
     vi.resetModules();
     const originalApiToken = process.env.TRIGGER_API_TOKEN;
     const originalApiKey = process.env.TRIGGER_API_KEY;
@@ -47,6 +47,30 @@ describe("env", () => {
     try {
       const { env } = await import("./env");
       expect(env.triggerApiKey).toBe("test-trigger-api-token");
+    } finally {
+      restore("TRIGGER_API_TOKEN", originalApiToken);
+      restore("TRIGGER_API_KEY", originalApiKey);
+      restore("TRIGGER_ACCESS_TOKEN", originalAccessToken);
+      restore("TRIGGER_PAT", originalPat);
+      restore("TRIGGER_SECRET_KEY", originalSecretKey);
+    }
+  });
+
+  it("does not use Trigger CLI deploy credentials for dispatch auth", async () => {
+    vi.resetModules();
+    const originalApiToken = process.env.TRIGGER_API_TOKEN;
+    const originalApiKey = process.env.TRIGGER_API_KEY;
+    const originalAccessToken = process.env.TRIGGER_ACCESS_TOKEN;
+    const originalPat = process.env.TRIGGER_PAT;
+    const originalSecretKey = process.env.TRIGGER_SECRET_KEY;
+    delete process.env.TRIGGER_API_TOKEN;
+    delete process.env.TRIGGER_API_KEY;
+    delete process.env.TRIGGER_SECRET_KEY;
+    process.env.TRIGGER_ACCESS_TOKEN = "test-trigger-access-token";
+    process.env.TRIGGER_PAT = "test-trigger-pat";
+    try {
+      const { env } = await import("./env");
+      expect(env.triggerApiKey).toBeUndefined();
     } finally {
       restore("TRIGGER_API_TOKEN", originalApiToken);
       restore("TRIGGER_API_KEY", originalApiKey);
