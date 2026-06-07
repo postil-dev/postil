@@ -48,21 +48,30 @@ function publicReviewErrorMessage(): string {
   return "Review failed to complete.";
 }
 
-async function completeCheckRunSuccess(payload: ReviewPayload): Promise<void> {
+async function completeCheckRunForResult(
+  payload: ReviewPayload,
+  result: ReviewEnvelope,
+): Promise<void> {
   if (!payload.checkRunId) return;
+
   const octokit = await installationOctokit(payload.installationId);
   const [owner, repo] = payload.repoFullName.split("/");
+  const hasBlockingFindings = result.findings.some((finding) => finding.severity === "error");
+  const summary = hasBlockingFindings
+    ? result.summary || "Review completed with blocking findings."
+    : "Review completed with no blocking findings.";
+
   await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
     repo,
     check_run_id: payload.checkRunId,
     status: "completed",
-    conclusion: "success",
+    conclusion: hasBlockingFindings ? "failure" : "success",
     completed_at: new Date().toISOString(),
     output: {
       title: "Postil Review",
-      summary: "Review completed with no blocking findings.",
-      text: "Review completed with no blocking findings.",
+      summary,
+      text: summary,
     },
   });
 }
@@ -131,7 +140,6 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
       try {
         const result = reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
         if (isExpectedFindingsExit(err) && result.findings.length > 0) {
-          // The CLI owns check-run completion through checkRunId before exiting for findings.
           return result;
         }
       } catch {
@@ -171,19 +179,17 @@ export const reviewPullRequest = task({
 
       const result = await runReviewCli(payload);
 
-      if (result.findings.length === 0) {
-        try {
-          await completeCheckRunSuccess(payload);
-        } catch (checkRunErr) {
-          captureException(new Error("postil review check-run success patch failed"), {
-            properties: {
-              op: "complete_clean_check_run",
-              repoFullName: payload.repoFullName,
-              pullNumber: payload.pullNumber,
-              errorClass: checkRunErr instanceof Error ? checkRunErr.name : typeof checkRunErr,
-            },
-          });
-        }
+      try {
+        await completeCheckRunForResult(payload, result);
+      } catch (checkRunErr) {
+        captureException(new Error("postil review check-run completion patch failed"), {
+          properties: {
+            op: "complete_review_check_run",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+            errorClass: checkRunErr instanceof Error ? checkRunErr.name : typeof checkRunErr,
+          },
+        });
       }
 
       if (payload.reviewId) {
