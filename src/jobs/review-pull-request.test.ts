@@ -317,12 +317,16 @@ describe("reviewPullRequest", () => {
       expect.objectContaining({
         check_run_id: 77,
         conclusion: "failure",
+        output: expect.objectContaining({
+          summary: "Review failed to complete. Error.",
+          text: "Review failed to complete. Error.",
+        }),
       }),
     );
     expect(dbMock.updates).toContainEqual(
       expect.objectContaining({
         status: "failed",
-        errorMessage: "Review failed to complete.",
+        errorMessage: "Review failed to complete. Error.",
       }),
     );
     expect(posthogMock.track).toHaveBeenCalledWith(
@@ -409,7 +413,21 @@ describe("reviewPullRequest", () => {
     expect(dbMock.updates).toContainEqual(
       expect.objectContaining({
         status: "failed",
-        errorMessage: "Review failed to complete.",
+        errorMessage: expect.stringContaining("exit=2"),
+      }),
+    );
+    expect(JSON.stringify(dbMock.updates)).not.toContain("ghs_secretToken");
+    expect(JSON.stringify(dbMock.updates)).not.toContain("raw-token-value");
+    expect(JSON.stringify(dbMock.updates)).not.toContain("sk-or-secretToken");
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+        output: expect.objectContaining({
+          summary: expect.stringContaining("exit=2"),
+          text: expect.not.stringContaining("stderr="),
+        }),
       }),
     );
     expect(loggerMock.info).toHaveBeenCalledWith(

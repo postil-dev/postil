@@ -88,6 +88,37 @@ function publicReviewErrorMessage(): string {
   return "Review failed to complete.";
 }
 
+function publicReviewErrorDetail(err: unknown): string {
+  if (typeof err !== "object" || err === null) return publicReviewErrorMessage();
+  const record = err as Record<string, unknown>;
+  const parts = [
+    typeof record.code !== "undefined" ? `exit=${String(record.code)}` : undefined,
+    typeof record.signal !== "undefined" && record.signal !== null
+      ? `signal=${String(record.signal)}`
+      : undefined,
+    typeof record.timedOut !== "undefined" ? `timedOut=${String(record.timedOut)}` : undefined,
+  ].filter(Boolean);
+
+  if (parts.length > 0) {
+    return `${publicReviewErrorMessage()} ${parts.join(" ")}`;
+  }
+
+  if (err instanceof Error) {
+    if (err.message.includes("REVIEW_TOKEN_SECRET")) {
+      return `${publicReviewErrorMessage()} Missing review token secret.`;
+    }
+    if (err.message.includes("Invalid encrypted installation token")) {
+      return `${publicReviewErrorMessage()} Invalid encrypted installation token.`;
+    }
+    if (err.message.includes("authenticate data")) {
+      return `${publicReviewErrorMessage()} Review token could not be decrypted.`;
+    }
+    return `${publicReviewErrorMessage()} ${err.name}.`;
+  }
+
+  return publicReviewErrorMessage();
+}
+
 function hasDatabaseUrl(): boolean {
   return Boolean(env.databaseUrl);
 }
@@ -138,10 +169,11 @@ async function completeCheckRunForResult(
   });
 }
 
-async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
+async function completeCheckRunFailed(payload: ReviewPayload, err: unknown): Promise<void> {
   if (!payload.checkRunId) return;
   const octokit = await reviewOctokit(payload);
   const [owner, repo] = payload.repoFullName.split("/");
+  const summary = publicReviewErrorDetail(err);
   await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
     repo,
@@ -151,13 +183,13 @@ async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
     completed_at: new Date().toISOString(),
     output: {
       title: "Postil Review",
-      summary: publicReviewErrorMessage(),
-      text: publicReviewErrorMessage(),
+      summary,
+      text: summary,
     },
   });
 }
 
-async function markReviewFailed(payload: ReviewPayload): Promise<void> {
+async function markReviewFailed(payload: ReviewPayload, err: unknown): Promise<void> {
   if (!payload.reviewId) return;
   if (!hasDatabaseUrl()) {
     logDatabaseSkip("mark_review_failed", payload);
@@ -168,7 +200,7 @@ async function markReviewFailed(payload: ReviewPayload): Promise<void> {
     .update(schema.reviews)
     .set({
       status: "failed",
-      errorMessage: publicReviewErrorMessage(),
+      errorMessage: publicReviewErrorDetail(err),
       completedAt: new Date(),
     })
     .where(eq(schema.reviews.id, payload.reviewId));
@@ -376,7 +408,7 @@ export const reviewPullRequest = task({
       });
 
       try {
-        await markReviewFailed(payload);
+        await markReviewFailed(payload, err);
       } catch (dbErr) {
         captureException(dbErr, {
           properties: {
@@ -388,7 +420,7 @@ export const reviewPullRequest = task({
       }
 
       try {
-        await completeCheckRunFailed(payload);
+        await completeCheckRunFailed(payload, err);
       } catch (checkRunErr) {
         captureException(new Error("postil review check-run failure patch failed"), {
           properties: {
