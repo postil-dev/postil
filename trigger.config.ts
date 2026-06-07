@@ -55,13 +55,9 @@ const triggerProjectBuildEnv = {
 const taskRuntimeEnv = syncEnvVars(() =>
   Object.fromEntries(
     TASK_RUNTIME_ENV_VARS.flatMap((name) => {
-      if (name === "REVIEW_TOKEN_SECRET") {
-        const value = (
-          process.env.REVIEW_TOKEN_SECRET ??
-          process.env.TRIGGER_SECRET_KEY
-        )?.trim();
-        return value ? [[name, value]] : [];
-      }
+      // Do not synthesize REVIEW_TOKEN_SECRET from TRIGGER_SECRET_KEY here.
+      // Trigger strips TRIGGER_* envs from runtime sync, and the two secrets
+      // have different purposes: dispatch auth vs installation-token crypto.
       const value = process.env[name]?.trim();
       return value ? [[name, value]] : [];
     }),

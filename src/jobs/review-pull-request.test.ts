@@ -54,8 +54,8 @@ const envMock = vi.hoisted(() => ({
   TRIGGER_API_URL: "https://trigger.example.test",
   TRIGGER_PROJECT_ID: "project_test_123",
   TRIGGER_SECRET_KEY: "test-trigger-secret",
-  triggerApiKey: "test-trigger-key" as string | undefined,
-  reviewTokenSecret: "test-trigger-secret" as string | undefined,
+  triggerApiKey: "test-trigger-secret" as string | undefined,
+  reviewTokenSecret: "test-review-token-secret" as string | undefined,
 }));
 
 vi.mock("@trigger.dev/sdk/v3", () => ({
@@ -120,7 +120,8 @@ describe("reviewPullRequest", () => {
     envMock.REVIEW_MODEL_CASCADE = undefined;
     envMock.TRIGGER_PROJECT_ID = "project_test_123";
     envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
-    envMock.reviewTokenSecret = "test-trigger-secret";
+    envMock.triggerApiKey = "test-trigger-secret";
+    envMock.reviewTokenSecret = "test-review-token-secret";
     envMock.databaseUrl = "postgres://test-db";
     childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
       const outputPath = args[args.indexOf("--output-json") + 1];
@@ -196,7 +197,7 @@ describe("reviewPullRequest", () => {
       {
         clientConfig: {
           baseURL: "https://trigger.example.test",
-          accessToken: "test-trigger-key",
+          accessToken: "test-trigger-secret",
         },
       },
     );
@@ -205,7 +206,7 @@ describe("reviewPullRequest", () => {
   it("decrypts the payload installation token for GitHub and redacts token material from logs", async () => {
     const encryptedInstallationToken = encryptReviewInstallationToken({
       token: "payload-installation-token",
-      secret: "test-trigger-secret",
+      secret: "test-review-token-secret",
       context: PAYLOAD,
     });
     const payload = {
@@ -239,7 +240,7 @@ describe("reviewPullRequest", () => {
   it("requires a review token secret before decrypting the payload installation token", async () => {
     const encryptedInstallationToken = encryptReviewInstallationToken({
       token: "payload-installation-token",
-      secret: "test-trigger-secret",
+      secret: "test-review-token-secret",
       context: PAYLOAD,
     });
     envMock.TRIGGER_SECRET_KEY = " ";
@@ -294,7 +295,7 @@ describe("reviewPullRequest", () => {
   it("requires a Trigger API credential before hosted dispatch", async () => {
     envMock.triggerApiKey = undefined;
     envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
-    envMock.reviewTokenSecret = "test-trigger-secret";
+    envMock.reviewTokenSecret = "test-review-token-secret";
 
     await expect(enqueueReviewPullRequest(PAYLOAD, "delivery-123")).rejects.toThrow(
       "Trigger API token must be set to dispatch review tasks",

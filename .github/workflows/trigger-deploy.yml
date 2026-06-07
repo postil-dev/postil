@@ -90,7 +90,6 @@ jobs:
       - name: Deploy trigger.dev tasks
         env:
           REPOSITORY_TASK_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
-          REPOSITORY_TASK_API_TOKEN: ${{ secrets.TRIGGER_API_TOKEN }}
           REPOSITORY_TASK_PAT: ${{ secrets.TRIGGER_PAT }}
           REPOSITORY_TASK_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
           REPOSITORY_TRIGGER_SECRET_KEY: ${{ secrets.TRIGGER_SECRET_KEY }}
@@ -102,10 +101,13 @@ jobs:
           REPOSITORY_GITHUB_APP_PRIVATE_KEY_B64: ${{ secrets.GITHUB_APP_PRIVATE_KEY_B64 }}
           REPOSITORY_OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          export TRIGGER_ACCESS_TOKEN="${TRIGGER_ACCESS_TOKEN:-${TRIGGER_API_TOKEN:-${TRIGGER_PAT:-${REPOSITORY_TASK_ACCESS_TOKEN:-${REPOSITORY_TASK_API_TOKEN:-${REPOSITORY_TASK_PAT:-}}}}}}"
+          export TRIGGER_ACCESS_TOKEN="${TRIGGER_ACCESS_TOKEN:-${TRIGGER_PAT:-${REPOSITORY_TASK_ACCESS_TOKEN:-${REPOSITORY_TASK_PAT:-}}}}"
           export TRIGGER_PROJECT_ID="${TRIGGER_PROJECT_ID:-${REPOSITORY_TASK_PROJECT_ID:-}}"
           export TRIGGER_SECRET_KEY="${TRIGGER_SECRET_KEY:-${REPOSITORY_TRIGGER_SECRET_KEY:-}}"
-          export REVIEW_TOKEN_SECRET="${REVIEW_TOKEN_SECRET:-${REPOSITORY_REVIEW_TOKEN_SECRET:-${TRIGGER_SECRET_KEY:-}}}"
+          # REVIEW_TOKEN_SECRET is intentionally separate from TRIGGER_SECRET_KEY:
+          # TRIGGER_SECRET_KEY is the Trigger runtime dispatch key (tr_prod_...),
+          # while REVIEW_TOKEN_SECRET encrypts GitHub installation tokens.
+          export REVIEW_TOKEN_SECRET="${REVIEW_TOKEN_SECRET:-${REPOSITORY_REVIEW_TOKEN_SECRET:-}}"
           export POSTIL_CLI_PATH="${POSTIL_CLI_PATH:-/home/bun/.cargo/bin/postil}"
           export DATABASE_URL="${DATABASE_URL:-${REPOSITORY_DATABASE_URL:-}}"
           export NEON_CONNECTION_STRING="${NEON_CONNECTION_STRING:-${REPOSITORY_NEON_CONNECTION_STRING:-}}"
@@ -115,7 +117,7 @@ jobs:
           export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${REPOSITORY_OPENROUTER_API_KEY:-}}"
 
           if [ -z "${TRIGGER_ACCESS_TOKEN:-}" ]; then
-            echo "::error title=Missing task access token::Configure the production task deploy token."
+            echo "::error title=Missing task access token::Configure the Trigger CLI deploy PAT (tr_pat_...) as TRIGGER_ACCESS_TOKEN or TRIGGER_PAT."
             exit 1
           fi
           if [ -z "${TRIGGER_PROJECT_ID:-}" ]; then
@@ -123,7 +125,7 @@ jobs:
             exit 1
           fi
           if [ -z "${REVIEW_TOKEN_SECRET:-}" ]; then
-            echo "::error title=Missing review token runtime secret::Configure REVIEW_TOKEN_SECRET or TRIGGER_SECRET_KEY in the production task environment."
+            echo "::error title=Missing review token runtime secret::Configure REVIEW_TOKEN_SECRET in the production task environment."
             exit 1
           fi
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then
