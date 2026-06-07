@@ -141,4 +141,34 @@ describe("trigger config", () => {
       }
     }
   });
+
+  it("installs the Postil CLI in the Trigger worker image", async () => {
+    const { default: config } = await import("../trigger.config");
+    const extension = config.build?.extensions?.find(
+      (candidate: { name?: string }) => candidate.name === "postil-cli",
+    );
+
+    const layers: Array<{ id: string; image?: { pkgs?: string[] }; commands?: string[] }> = [];
+    extension?.onBuildStart?.({
+      addLayer: (layer: {
+        id: string;
+        image?: { pkgs?: string[] };
+        commands?: string[];
+      }) => {
+        layers.push(layer);
+      },
+    } as never);
+
+    expect(layers).toContainEqual(
+      expect.objectContaining({
+        id: "postil-cli",
+        image: expect.objectContaining({
+          pkgs: expect.arrayContaining(["cargo", "git"]),
+        }),
+        commands: expect.arrayContaining([
+          "cargo install --git https://github.com/postil-dev/postil-cli --locked --force",
+        ]),
+      }),
+    );
+  });
 });
