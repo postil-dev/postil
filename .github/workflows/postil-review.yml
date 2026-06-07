@@ -225,6 +225,7 @@ jobs:
           repo: ${{ github.repository }}
           pr: ${{ github.event.pull_request.number }}
           sha: ${{ github.event.pull_request.head.sha }}
-          # Keep explicit for pull_request_target so the CLI never receives an empty API base.
+          # Keep explicit for pull_request_target so the CLI never receives empty API bases.
           github-api-url: https://api.github.com
+          openrouter-api-url: https://openrouter.ai/api/v1
           fail-on: error
