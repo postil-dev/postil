@@ -156,7 +156,7 @@ describe("reviewPullRequest", () => {
     );
     const configPath = childProcessMock.execFile.mock.calls[0][1][2];
     const cliConfig = JSON.parse(fsMock.files.get(configPath) ?? "{}");
-    expect(cliConfig.checkRunId).toBe(77);
+    expect(cliConfig.checkRunId).toBeUndefined();
     expect(posthogMock.track).toHaveBeenCalledWith(
       "system",
       "review_completed",
