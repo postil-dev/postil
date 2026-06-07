@@ -16,7 +16,7 @@ describe("health route", () => {
 
     await expect(GET().json()).resolves.toEqual({
       ok: true,
-      service: "postil-web",
+      service: "postil",
       commit: "test-sha",
       buildTime: "2026-06-07T00:00:00Z",
     });

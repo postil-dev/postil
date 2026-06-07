@@ -6,7 +6,7 @@ test("health endpoint responds", async ({ request }) => {
   const body = await response.json();
   expect(body).toEqual({
     ok: true,
-    service: "postil-web",
+    service: "postil",
     commit: expect.any(String),
     buildTime: expect.any(String),
   });
