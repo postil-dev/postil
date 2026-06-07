@@ -105,9 +105,9 @@ export const env: Env & {
   // Trigger backend dispatch uses the project/environment API secret.
   // `TRIGGER_ACCESS_TOKEN` / `TRIGGER_PAT` is only for CLI deployment.
   triggerApiKey: firstNonEmpty(
+    parsed.TRIGGER_SECRET_KEY,
     parsed.TRIGGER_API_TOKEN,
     parsed.TRIGGER_API_KEY,
-    parsed.TRIGGER_SECRET_KEY,
   ),
   // Keep installation-token encryption separate from Trigger dispatch auth.
   reviewTokenSecret: firstNonEmpty(parsed.REVIEW_TOKEN_SECRET),
