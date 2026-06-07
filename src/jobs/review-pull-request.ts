@@ -22,6 +22,7 @@ import {
 
 const execFile = promisify(execFileCb);
 const REVIEW_CLI_TIMEOUT_MS = 8 * 60 * 1000;
+const CLI_LOG_SNIPPET_LIMIT = 2_000;
 
 function safePayload(payload: ReviewPayload): Omit<ReviewPayload, "encryptedInstallationToken"> {
   const { encryptedInstallationToken: _encryptedInstallationToken, ...safe } = payload;
@@ -204,14 +205,28 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
         timeout: REVIEW_CLI_TIMEOUT_MS,
       });
     } catch (err) {
+      const diagnostics = cliFailureDiagnostics(err);
       try {
         const result = reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
-        if (isExpectedFindingsExit(err) && result.findings.length > 0) {
+        if (isExpectedReviewResultExit(err)) {
+          logger.info("accepted review CLI output after nonzero exit", {
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+            headSha: payload.headSha,
+            findings: result.findings.length,
+            ...diagnostics,
+          });
           return result;
         }
       } catch {
         // Preserve the original CLI failure when no valid review envelope exists.
       }
+      logger.info("review CLI failed", {
+        repoFullName: payload.repoFullName,
+        pullNumber: payload.pullNumber,
+        headSha: payload.headSha,
+        ...diagnostics,
+      });
       throw err;
     }
     return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
@@ -220,8 +235,42 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
   }
 }
 
-function isExpectedFindingsExit(err: unknown): boolean {
+function isExpectedReviewResultExit(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === 1;
+}
+
+function cliFailureDiagnostics(err: unknown): {
+  exitCode?: unknown;
+  signal?: unknown;
+  killed?: unknown;
+  timedOut?: unknown;
+  stdout?: string;
+  stderr?: string;
+} {
+  if (typeof err !== "object" || err === null) return {};
+  const record = err as Record<string, unknown>;
+  return {
+    exitCode: record.code,
+    signal: record.signal,
+    killed: record.killed,
+    timedOut: record.timedOut,
+    stdout: logSnippet(record.stdout),
+    stderr: logSnippet(record.stderr),
+  };
+}
+
+function logSnippet(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  return redactCliOutput(value).slice(0, CLI_LOG_SNIPPET_LIMIT);
+}
+
+function redactCliOutput(value: string): string {
+  return value
+    .replace(/ghs_[A-Za-z0-9_]+/g, "[redacted-github-token]")
+    .replace(/github_pat_[A-Za-z0-9_]+/g, "[redacted-github-token]")
+    .replace(/tr_(?:pat|prod|dev|stg)_[A-Za-z0-9_]+/g, "[redacted-trigger-token]")
+    .replace(/sk-or-[A-Za-z0-9_-]+/g, "[redacted-openrouter-token]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted-token]");
 }
 
 export const reviewPullRequest = task({
