@@ -331,13 +331,13 @@ describe("reviewPullRequest", () => {
     );
   });
 
-  it("keeps the hosted check successful for non-blocking findings", async () => {
+  it("marks warning-only findings as a neutral check-run", async () => {
     childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
       const outputPath = args[args.indexOf("--output-json") + 1];
       fsMock.files.set(
         outputPath,
         JSON.stringify({
-          summary: "non-blocking findings",
+          summary: "review has warnings",
           findings: [
             {
               path: "src/components/SaveButton.tsx",
@@ -347,6 +347,42 @@ describe("reviewPullRequest", () => {
             },
           ],
           usage: { promptTokens: 18, completionTokens: 6, totalTokens: 24 },
+          modelUsed: "test/default",
+        }),
+      );
+      cb(null, "", "");
+    });
+
+    await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 1 });
+
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "neutral",
+        output: expect.objectContaining({
+          summary: "Review completed with no blocking findings.",
+        }),
+      }),
+    );
+  });
+
+  it("marks info-only findings as a successful check-run", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
+      const outputPath = args[args.indexOf("--output-json") + 1];
+      fsMock.files.set(
+        outputPath,
+        JSON.stringify({
+          summary: "review has context",
+          findings: [
+            {
+              path: "src/billing/checkout.ts",
+              line: 42,
+              severity: "info",
+              body: "This path is covered by the existing retry guard.",
+            },
+          ],
+          usage: { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
           modelUsed: "test/default",
         }),
       );

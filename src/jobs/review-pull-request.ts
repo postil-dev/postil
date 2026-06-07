@@ -48,6 +48,12 @@ function publicReviewErrorMessage(): string {
   return "Review failed to complete.";
 }
 
+function checkRunConclusionForResult(result: ReviewEnvelope): "success" | "neutral" | "failure" {
+  if (result.findings.some((finding) => finding.severity === "error")) return "failure";
+  if (result.findings.some((finding) => finding.severity === "warn")) return "neutral";
+  return "success";
+}
+
 async function completeCheckRunForResult(
   payload: ReviewPayload,
   result: ReviewEnvelope,
@@ -56,17 +62,18 @@ async function completeCheckRunForResult(
 
   const octokit = await installationOctokit(payload.installationId);
   const [owner, repo] = payload.repoFullName.split("/");
-  const hasBlockingFindings = result.findings.some((finding) => finding.severity === "error");
-  const summary = hasBlockingFindings
-    ? result.summary || "Review completed with blocking findings."
-    : "Review completed with no blocking findings.";
+  const conclusion = checkRunConclusionForResult(result);
+  const summary =
+    conclusion === "failure"
+      ? result.summary || "Review completed with blocking findings."
+      : "Review completed with no blocking findings.";
 
   await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
     repo,
     check_run_id: payload.checkRunId,
     status: "completed",
-    conclusion: hasBlockingFindings ? "failure" : "success",
+    conclusion,
     completed_at: new Date().toISOString(),
     output: {
       title: "Postil Review",
