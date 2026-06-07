@@ -350,11 +350,61 @@ describe("github webhook", () => {
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({
         output: expect.objectContaining({
-          summary: "Hosted review could not be queued.",
-          text: "Hosted review could not be queued.",
+          summary: "Trigger dispatch failed.",
+          text: "Trigger dispatch failed.",
         }),
       }),
     );
+  });
+
+  it("reports sanitized Trigger API error metadata on the review check-run", async () => {
+    const err = Object.assign(new Error("Unauthorized with tr_pat_secret_leak"), {
+      name: "TriggerApiError",
+      status: 401,
+      code: "unauthorized",
+      response: {
+        data: {
+          message: "raw response includes tr_prod_secret_leak",
+        },
+      },
+    });
+    reviewJobMock.enqueueReviewPullRequest.mockRejectedValueOnce(err);
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    await expect(
+      POST(
+        signedRequest("pull_request", "pr-trigger-api-failed", {
+          action: "opened",
+          installation: { id: 123 },
+          repository: { full_name: "acme/widget" },
+          pull_request: {
+            number: 68,
+            draft: false,
+            head: { sha: "abc123def456" },
+          },
+        }),
+      ),
+    ).rejects.toThrow("Unauthorized with tr_pat_secret_leak");
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        output: expect.objectContaining({
+          summary: "Trigger API error: type=TriggerApiError status=401 code=unauthorized.",
+          text: "Trigger API error: type=TriggerApiError status=401 code=unauthorized.",
+        }),
+      }),
+    );
+    expect(JSON.stringify(mockRequest.mock.calls)).not.toContain("tr_pat_secret_leak");
+    expect(JSON.stringify(mockRequest.mock.calls)).not.toContain("tr_prod_secret_leak");
   });
 
   it("reports safe dispatch config failures on the review check-run", async () => {

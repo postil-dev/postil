@@ -85,6 +85,18 @@ jobs:
             echo "::error title=Missing Trigger dispatch secret::Configure the Trigger project/environment secret key (tr_prod_...) as TRIGGER_SECRET_KEY in the production secret provider."
             exit 1
           fi
+          case "$TRIGGER_SECRET_KEY" in
+            tr_pat_*)
+              echo "::error title=Wrong Trigger secret::TRIGGER_SECRET_KEY must be a Trigger project/environment secret key, not a CLI deploy PAT."
+              exit 1
+              ;;
+            tr_*)
+              ;;
+            *)
+              echo "::error title=Wrong Trigger secret::TRIGGER_SECRET_KEY must look like a Trigger project/environment secret key."
+              exit 1
+              ;;
+          esac
           trigger_project_id="${TRIGGER_PROJECT_ID:-${REPOSITORY_TRIGGER_PROJECT_ID:-}}"
           if [ -z "${trigger_project_id:-}" ]; then
             echo "::error title=Missing Trigger project::Configure TRIGGER_PROJECT_ID in the production secret provider or repository secrets."
