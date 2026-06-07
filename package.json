@@ -17,7 +17,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "benchmark:pr-review": "tsx scripts/run-pr-review-benchmark.ts",
-    "postil": "POSTIL_REVIEWER_GIT=https://github.com/postil-dev/postil-reviewer POSTIL_REVIEWER_REV=f25e97bbe473d2df957453bf5439904839a2959c scripts/run-postil.sh",
+    "postil": "POSTIL_CLI_GIT=https://github.com/postil-dev/postil-cli POSTIL_CLI_REV=f25e97bbe473d2df957453bf5439904839a2959c scripts/run-postil.sh",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",

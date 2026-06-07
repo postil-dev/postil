@@ -15,7 +15,13 @@ const TASK_RUNTIME_ENV_VARS = [
   "REVIEW_MODEL",
   "REVIEW_MODEL_CASCADE",
   "POSTIL_CLI_PATH",
+  "TRIGGER_SECRET_KEY",
 ];
+
+function triggerSecretKeyEnv(): Record<string, string> {
+  const value = process.env.TRIGGER_SECRET_KEY?.trim();
+  return value ? { TRIGGER_SECRET_KEY: value } : {};
+}
 
 function taskProject(): string {
   const project = (
@@ -54,11 +60,29 @@ const triggerProjectBuildEnv = {
 const taskRuntimeEnv = syncEnvVars(() =>
   Object.fromEntries(
     TASK_RUNTIME_ENV_VARS.flatMap((name) => {
+      if (name === "TRIGGER_SECRET_KEY") return [];
       const value = process.env[name]?.trim();
       return value ? [[name, value]] : [];
     }),
   ),
 );
+
+const taskRuntimeTriggerSecret = {
+  name: "trigger-secret-runtime-env",
+  onBuildComplete(context: {
+    addLayer(layer: {
+      id: string;
+      deploy: { env: Record<string, string> };
+    }): void;
+  }) {
+    context.addLayer({
+      id: "trigger-secret-runtime-env",
+      deploy: {
+        env: triggerSecretKeyEnv(),
+      },
+    });
+  },
+};
 
 const postilCli = {
   name: "postil-cli",
@@ -84,7 +108,7 @@ export default defineConfig({
   runtime: "bun",
   dirs: ["./src/jobs"],
   build: {
-    extensions: [triggerProjectBuildEnv, taskRuntimeEnv, postilCli],
+    extensions: [triggerProjectBuildEnv, taskRuntimeEnv, taskRuntimeTriggerSecret, postilCli],
   },
   logLevel: "info",
   maxDuration: 15 * 60,

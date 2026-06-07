@@ -217,8 +217,8 @@ jobs:
 
       - name: Review pull request
         if: github.event_name == 'pull_request_target'
-        # Same-org action tracks main for fast iteration; repository policy requires pinning the current main SHA.
-        uses: postil-dev/postil-action@c58e6a6993f326783d4e7e9f2ebb2501e12f2e5f
+        # Same-org @main is intentional so Postil can use its latest review gate while iterating on itself.
+        uses: postil-dev/postil-action@main
         with:
           api-key: ${{ secrets.OPENROUTER_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

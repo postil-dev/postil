@@ -91,6 +91,7 @@ jobs:
         env:
           REPOSITORY_TASK_ACCESS_TOKEN: ${{ secrets.TRIGGER_PAT }}
           REPOSITORY_TASK_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
+          REPOSITORY_TRIGGER_SECRET_KEY: ${{ secrets.TRIGGER_SECRET_KEY }}
           REPOSITORY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REPOSITORY_NEON_CONNECTION_STRING: ${{ secrets.NEON_CONNECTION_STRING }}
           REPOSITORY_GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
@@ -100,6 +101,7 @@ jobs:
         run: |
           export TRIGGER_ACCESS_TOKEN="${TRIGGER_PAT:-${REPOSITORY_TASK_ACCESS_TOKEN:-}}"
           export TRIGGER_PROJECT_ID="${TRIGGER_PROJECT_ID:-${REPOSITORY_TASK_PROJECT_ID:-}}"
+          export TRIGGER_SECRET_KEY="${TRIGGER_SECRET_KEY:-${REPOSITORY_TRIGGER_SECRET_KEY:-}}"
           export DATABASE_URL="${DATABASE_URL:-${REPOSITORY_DATABASE_URL:-}}"
           export NEON_CONNECTION_STRING="${NEON_CONNECTION_STRING:-${REPOSITORY_NEON_CONNECTION_STRING:-}}"
           export GITHUB_APP_ID="${GITHUB_APP_ID:-${REPOSITORY_GITHUB_APP_ID:-}}"
@@ -115,16 +117,8 @@ jobs:
             echo "::error title=Missing task project::Configure the production task project."
             exit 1
           fi
-          if [ -z "${NEON_CONNECTION_STRING:-${DATABASE_URL:-}}" ]; then
-            echo "::error title=Missing task database::Configure NEON_CONNECTION_STRING or DATABASE_URL in the production task environment."
-            exit 1
-          fi
-          if [ -z "${GITHUB_APP_ID:-}" ]; then
-            echo "::error title=Missing GitHub app id::Configure GITHUB_APP_ID in the production task environment."
-            exit 1
-          fi
-          if [ -z "${GITHUB_APP_PRIVATE_KEY_B64:-${GITHUB_APP_PRIVATE_KEY:-}}" ]; then
-            echo "::error title=Missing GitHub app key::Configure GITHUB_APP_PRIVATE_KEY_B64 or GITHUB_APP_PRIVATE_KEY in the production task environment."
+          if [ -z "${TRIGGER_SECRET_KEY:-}" ]; then
+            echo "::error title=Missing review token decrypt secret::Configure TRIGGER_SECRET_KEY in the production task environment."
             exit 1
           fi
           if [ -z "${OPENROUTER_API_KEY:-}" ]; then

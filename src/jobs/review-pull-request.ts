@@ -6,10 +6,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { logger, task, tasks } from "@trigger.dev/sdk/v3";
 import { eq } from "drizzle-orm";
+import { Octokit } from "@octokit/rest";
 import { getDb, schema } from "@/db";
 import { env } from "@/lib/env";
 import { installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
+import { decryptReviewInstallationToken } from "@/lib/review-token";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import {
   type ReviewEnvelope,
@@ -19,6 +21,42 @@ import {
 } from "./review-types";
 
 const execFile = promisify(execFileCb);
+
+function safePayload(payload: ReviewPayload): Omit<ReviewPayload, "encryptedInstallationToken"> {
+  const { encryptedInstallationToken: _encryptedInstallationToken, ...safe } = payload;
+  return safe;
+}
+
+function requireTriggerSecretKey(): string {
+  const secret = env.TRIGGER_SECRET_KEY?.trim();
+  if (!secret) {
+    throw new Error("TRIGGER_SECRET_KEY must be set to decrypt review installation tokens");
+  }
+  return secret;
+}
+
+function decryptedInstallationToken(payload: ReviewPayload): string | undefined {
+  if (!payload.encryptedInstallationToken) return undefined;
+  const triggerSecretKey = requireTriggerSecretKey();
+  return decryptReviewInstallationToken({
+    encryptedToken: payload.encryptedInstallationToken,
+    secret: triggerSecretKey,
+    context: {
+      installationId: payload.installationId,
+      repoFullName: payload.repoFullName,
+      pullNumber: payload.pullNumber,
+      headSha: payload.headSha,
+    },
+  });
+}
+
+async function reviewOctokit(payload: ReviewPayload): Promise<{ request: Octokit["request"] }> {
+  const token = decryptedInstallationToken(payload);
+  if (token) {
+    return new Octokit({ auth: token });
+  }
+  return installationOctokit(payload.installationId);
+}
 
 function triggerClientConfig() {
   if (!env.triggerApiKey) {
@@ -48,6 +86,21 @@ function publicReviewErrorMessage(): string {
   return "Review failed to complete.";
 }
 
+function hasDatabaseUrl(): boolean {
+  return Boolean(env.databaseUrl);
+}
+
+function logDatabaseSkip(op: string, payload: ReviewPayload): void {
+  logger.info("skipping review database write", {
+    op,
+    repoFullName: payload.repoFullName,
+    pullNumber: payload.pullNumber,
+    headSha: payload.headSha,
+    reviewId: payload.reviewId,
+    reason: "database url not configured",
+  });
+}
+
 function checkRunConclusionForResult(result: ReviewEnvelope): "success" | "neutral" | "failure" {
   if (result.findings.some((finding) => finding.severity === "error")) return "failure";
   if (result.findings.some((finding) => finding.severity === "warn")) return "neutral";
@@ -60,7 +113,7 @@ async function completeCheckRunForResult(
 ): Promise<void> {
   if (!payload.checkRunId) return;
 
-  const octokit = await installationOctokit(payload.installationId);
+  const octokit = await reviewOctokit(payload);
   const [owner, repo] = payload.repoFullName.split("/");
   const conclusion = checkRunConclusionForResult(result);
   const summary =
@@ -85,7 +138,7 @@ async function completeCheckRunForResult(
 
 async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
   if (!payload.checkRunId) return;
-  const octokit = await installationOctokit(payload.installationId);
+  const octokit = await reviewOctokit(payload);
   const [owner, repo] = payload.repoFullName.split("/");
   await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
@@ -104,6 +157,10 @@ async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
 
 async function markReviewFailed(payload: ReviewPayload): Promise<void> {
   if (!payload.reviewId) return;
+  if (!hasDatabaseUrl()) {
+    logDatabaseSkip("mark_review_failed", payload);
+    return;
+  }
   const db = getDb();
   await db
     .update(schema.reviews)
@@ -121,7 +178,8 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
   const configPath = join(runDir, "config.json");
   const outputPath = join(runDir, "review.json");
   try {
-    const installationToken = await mintInstallationToken(payload.installationId);
+    const installationToken =
+      decryptedInstallationToken(payload) ?? (await mintInstallationToken(payload.installationId));
     await writeFile(
       configPath,
       JSON.stringify({
@@ -169,7 +227,7 @@ export const reviewPullRequest = task({
   maxDuration: 10 * 60,
   run: async (raw: unknown) => {
     const payload = reviewPayload.parse(raw);
-    logger.info("starting review", { payload });
+    logger.info("starting review", { payload: safePayload(payload) });
     const started = Date.now();
     const reviewModelUsed = selectedReviewModel();
     let installationHash: string | undefined;
@@ -201,15 +259,19 @@ export const reviewPullRequest = task({
 
       if (payload.reviewId) {
         try {
-          const db = getDb();
-          await db
-            .update(schema.reviews)
-            .set({
-              status: "completed",
-              result,
-              completedAt: new Date(),
-            })
-            .where(eq(schema.reviews.id, payload.reviewId));
+          if (hasDatabaseUrl()) {
+            const db = getDb();
+            await db
+              .update(schema.reviews)
+              .set({
+                status: "completed",
+                result,
+                completedAt: new Date(),
+              })
+              .where(eq(schema.reviews.id, payload.reviewId));
+          } else {
+            logDatabaseSkip("update_review_completed", payload);
+          }
         } catch (dbErr) {
           captureException(dbErr, {
             properties: {
@@ -232,8 +294,12 @@ export const reviewPullRequest = task({
 
       try {
         if (payload.reviewId) {
-          await recordReviewCompleted(payload.installationId, payload.reviewId);
-          await recordTokenUsage(payload.installationId, payload.reviewId, result.usage);
+          if (hasDatabaseUrl()) {
+            await recordReviewCompleted(payload.installationId, payload.reviewId);
+            await recordTokenUsage(payload.installationId, payload.reviewId, result.usage);
+          } else {
+            logDatabaseSkip("record_usage", payload);
+          }
         }
       } catch (usageErr) {
         captureException(usageErr, {

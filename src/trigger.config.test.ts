@@ -90,7 +90,7 @@ describe("trigger config", () => {
     }
   });
 
-  it("syncs review task runtime env without Trigger control variables", async () => {
+  it("syncs required review task runtime secrets", async () => {
     const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
     const originalDatabaseUrl = process.env.NEON_CONNECTION_STRING;
     const originalTriggerSecret = process.env.TRIGGER_SECRET_KEY;
@@ -103,6 +103,9 @@ describe("trigger config", () => {
       const layers: Array<{ id: string; deploy?: { env?: Record<string, string> } }> = [];
       const extension = config.build?.extensions?.find(
         (candidate: { name?: string }) => candidate.name === "SyncEnvVarsExtension",
+      );
+      const triggerSecretExtension = config.build?.extensions?.find(
+        (candidate: { name?: string }) => candidate.name === "trigger-secret-runtime-env",
       );
 
       await extension?.onBuildComplete?.(
@@ -123,6 +126,22 @@ describe("trigger config", () => {
         NEON_CONNECTION_STRING: "postgres://example.test/db",
       });
       expect(syncedEnv).not.toHaveProperty("TRIGGER_SECRET_KEY");
+
+      await triggerSecretExtension?.onBuildComplete?.(
+        {
+          addLayer: (layer: { id: string; deploy?: { env?: Record<string, string> } }) => {
+            layers.push(layer);
+          },
+        } as never,
+        { deploy: { env: {} }, environment: "prod" } as never,
+      );
+
+      const triggerSecretEnv = layers.find(
+        (layer) => layer.id === "trigger-secret-runtime-env",
+      )?.deploy?.env;
+      expect(triggerSecretEnv).toMatchObject({
+        TRIGGER_SECRET_KEY: "test-trigger-secret",
+      });
     } finally {
       if (originalOpenRouterKey === undefined) {
         delete process.env.OPENROUTER_API_KEY;

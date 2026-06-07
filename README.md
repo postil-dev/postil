@@ -8,7 +8,7 @@ Let agents write code. Do not let unchecked changes merge.
 [![GitHub release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/postil-dev/postil/releases)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-ready-blue?logo=githubactions)](https://github.com/postil-dev/postil/blob/main/action.yml)
 
-This repository contains the Postil backend, website, GitHub App plumbing, and GitHub Action wrapper. The review engine itself lives in the Rust CLI at [postil-dev/postil-reviewer](https://github.com/postil-dev/postil-reviewer).
+This repository contains the Postil backend, website, GitHub App plumbing, and GitHub Action wrapper. The review engine itself lives in the Rust CLI at [postil-dev/postil-cli](https://github.com/postil-dev/postil-cli).
 
 Postil reviews GitHub pull request diffs, emits merge-relevant findings, and stays out of the way when it has nothing useful to add. It is designed for teams using humans, AI coding tools, and autonomous agents together, where code can be produced faster than traditional review can safely absorb.
 
@@ -25,7 +25,7 @@ Postil reviews GitHub pull request diffs, emits merge-relevant findings, and sta
 Install the Rust reviewer:
 
 ```bash
-cargo install --git https://github.com/postil-dev/postil-reviewer --locked --force
+cargo install --git https://github.com/postil-dev/postil-cli --locked --force
 ```
 
 Review a pull request:
@@ -54,7 +54,7 @@ jobs:
       checks: write
       contents: read
     steps:
-      - uses: postil-dev/postil-reviewer@v1
+      - uses: postil-dev/postil-action@v1
         with:
           api-key: ${{ secrets.OPENROUTER_API_KEY }}
           model: moonshotai/kimi-k2.6
