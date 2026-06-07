@@ -720,7 +720,7 @@ describe("github webhook", () => {
   it("patches a stale app-created review check after the workflow-backed check exits neutral", async () => {
     dbMock.findFirst.mockResolvedValueOnce({
       id: "review-pr-162",
-      checkRunId: null,
+      checkRunId: 79826212795,
     } as never);
     mockAppRequest.mockImplementation(async (route: string) => {
       if (route === "GET /app") {
