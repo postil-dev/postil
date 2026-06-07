@@ -60,12 +60,31 @@ const taskRuntimeEnv = syncEnvVars(() =>
   ),
 );
 
+const postilCli = {
+  name: "postil-cli",
+  onBuildStart(context: {
+    addLayer(layer: {
+      id: string;
+      image?: { pkgs?: string[] };
+      commands?: string[];
+    }): void;
+  }) {
+    context.addLayer({
+      id: "postil-cli",
+      image: {
+        pkgs: ["cargo", "git", "pkg-config", "libssl-dev"],
+      },
+      commands: ["cargo install --git https://github.com/postil-dev/postil-cli --locked --force"],
+    });
+  },
+};
+
 export default defineConfig({
   project,
   runtime: "bun",
   dirs: ["./src/jobs"],
   build: {
-    extensions: [triggerProjectBuildEnv, taskRuntimeEnv],
+    extensions: [triggerProjectBuildEnv, taskRuntimeEnv, postilCli],
   },
   logLevel: "info",
   maxDuration: 15 * 60,
