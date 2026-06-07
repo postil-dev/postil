@@ -8,7 +8,7 @@ describe("env", () => {
     expect(env.SANDBOX_DRIVER).toBe("fly");
   });
 
-  it("prefers the Trigger runtime API token for dispatch auth", async () => {
+  it("prefers TRIGGER_SECRET_KEY for dispatch auth", async () => {
     vi.resetModules();
     const originalApiToken = process.env.TRIGGER_API_TOKEN;
     const originalApiKey = process.env.TRIGGER_API_KEY;
@@ -22,7 +22,7 @@ describe("env", () => {
     process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
     try {
       const { env } = await import("./env");
-      expect(env.triggerApiKey).toBe("test-trigger-api-token");
+      expect(env.triggerApiKey).toBe("test-trigger-secret");
     } finally {
       restore("TRIGGER_API_TOKEN", originalApiToken);
       restore("TRIGGER_API_KEY", originalApiKey);
