@@ -21,9 +21,80 @@ function requireTriggerSecretKey(): string {
   return secret;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  return value as Record<string, unknown>;
+}
+
+function objectValue(value: unknown, path: readonly string[]): unknown {
+  let current: unknown = value;
+  for (const part of path) {
+    const record = asRecord(current);
+    if (!record) return undefined;
+    current = record[part];
+  }
+  return current;
+}
+
+function safeHttpStatus(err: unknown): number | undefined {
+  const candidates = [
+    objectValue(err, ["status"]),
+    objectValue(err, ["statusCode"]),
+    objectValue(err, ["response", "status"]),
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && candidate >= 100 && candidate <= 599) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function safeSymbol(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(trimmed)) return undefined;
+  if (/^(tr_pat|tr_prod|tr_dev|github_pat|ghp|ghs)_/i.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+function safeErrorCode(err: unknown): string | undefined {
+  const candidates = [
+    objectValue(err, ["code"]),
+    objectValue(err, ["response", "data", "code"]),
+    objectValue(err, ["response", "data", "error"]),
+  ];
+  for (const candidate of candidates) {
+    const code = safeSymbol(candidate);
+    if (code) return code;
+  }
+  return undefined;
+}
+
+function safeErrorType(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  return safeSymbol(err.name === "Error" ? undefined : err.name);
+}
+
+function publicTriggerApiFailureSummary(err: unknown): string {
+  const type = safeErrorType(err);
+  const status = safeHttpStatus(err);
+  const code = safeErrorCode(err);
+  const details = [
+    type ? `type=${type}` : undefined,
+    status ? `status=${status}` : undefined,
+    code ? `code=${code}` : undefined,
+  ].filter(Boolean);
+
+  if (details.length === 0) {
+    return "Trigger dispatch failed.";
+  }
+  return `Trigger API error: ${details.join(" ")}.`;
+}
+
 function publicDispatchFailureSummary(err: unknown): string {
   if (!(err instanceof Error)) {
-    return "Hosted review could not be queued.";
+    return publicTriggerApiFailureSummary(err);
   }
 
   switch (err.message) {
@@ -34,7 +105,7 @@ function publicDispatchFailureSummary(err: unknown): string {
     case "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens":
       return "Missing review token encryption secret.";
     default:
-      return "Hosted review could not be queued.";
+      return publicTriggerApiFailureSummary(err);
   }
 }
 export const maxDuration = 300;
