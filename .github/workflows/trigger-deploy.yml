@@ -1,18 +1,12 @@
-name: Trigger.dev Deploy
+name: Production Deploy
 
 on:
   push:
     branches: [main]
-    paths:
-      - "src/jobs/**"
-      - "trigger.config.ts"
-      - "package.json"
-      - "bun.lock"
-      - ".github/workflows/trigger-deploy.yml"
   workflow_dispatch:
 
 concurrency:
-  group: trigger-deploy
+  group: production-deploy
   cancel-in-progress: false
 
 permissions:
@@ -58,13 +52,10 @@ jobs:
       - name: Install flyctl CLI
         uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
 
-      - name: Sync watchdog token
-        env:
-          DEPLOY_APP_NAME: ${{ env.DEPLOY_APP_NAME }}
-          REPOSITORY_WATCHDOG_TOKEN: ${{ secrets.METRICS_API_KEY }}
+      - name: Validate deployment environment
         run: |
           command -v flyctl >/dev/null || {
-            echo "::error title=Missing deploy CLI::Install flyctl before syncing the watchdog token."
+            echo "::error title=Missing deploy CLI::Install flyctl before deploying."
             exit 1
           }
           flyctl version
@@ -78,6 +69,12 @@ jobs:
             echo "::error title=Missing deploy target::Set DEPLOY_APP_NAME for the production environment."
             exit 1
           fi
+
+      - name: Sync watchdog token
+        env:
+          REPOSITORY_WATCHDOG_TOKEN: ${{ secrets.METRICS_API_KEY }}
+        run: |
+          DEPLOY_TOKEN="$(printenv FLY_TOKEN || true)"
           WATCHDOG_TOKEN="${METRICS_API_KEY:-${REPOSITORY_WATCHDOG_TOKEN:-}}"
           if [ -z "${WATCHDOG_TOKEN:-}" ]; then
             echo "::error title=Missing watchdog token::Configure the production watchdog token."
@@ -86,6 +83,12 @@ jobs:
 
           export FLY_API_TOKEN="${DEPLOY_TOKEN}"
           flyctl secrets set --app "${DEPLOY_APP_NAME}" METRICS_API_KEY="${WATCHDOG_TOKEN}"
+
+      - name: Deploy web application
+        run: |
+          DEPLOY_TOKEN="$(printenv FLY_TOKEN || true)"
+          export FLY_API_TOKEN="${DEPLOY_TOKEN}"
+          flyctl deploy --app "${DEPLOY_APP_NAME}" --remote-only
 
       - name: Deploy trigger.dev tasks
         env:
