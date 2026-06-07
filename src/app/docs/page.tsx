@@ -20,7 +20,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: postil-dev/postil-reviewer@main
+      - uses: postil-dev/postil-action@v1
         with:
           openrouter-api-key: \${{ secrets.OPENROUTER_API_KEY }}`;
 
@@ -42,7 +42,7 @@ $ postil review --staged
 $ postil review --base origin/main`;
 
 const sections = [
-  ["Install", "Use the reviewer CLI today. The managed GitHub App opens after final review."],
+  ["Install", "Use the Postil CLI today. The managed GitHub App opens after final review."],
   ["Ask again", "Mention @postil on a PR conversation, review, or inline thread."],
   ["Cut noise", "Use `onClean: skip`, severity thresholds, max findings, and ignored globs."],
   ["Write less", "A finding needs a risk and a line. Otherwise, leave the PR alone."],
@@ -100,9 +100,9 @@ export default function DocsPage() {
               <Link href="https://github.com/postil-dev/postil/blob/main/docs/config.md" className="text-primary hover:underline">
                 docs/config.md
               </Link>
-              . The reviewer CLI lives in{" "}
-              <Link href="https://github.com/postil-dev/postil-reviewer" className="text-primary hover:underline">
-                postil-dev/postil-reviewer
+              . The CLI lives in{" "}
+              <Link href="https://github.com/postil-dev/postil-cli" className="text-primary hover:underline">
+                postil-dev/postil-cli
               </Link>
               .
             </p>
@@ -124,7 +124,7 @@ function DocBlock({ title, code }: { title: string; code: string }) {
   return (
     <article className="min-w-0 border bg-card p-6">
       <h2 className="text-3xl">{title}</h2>
-      <pre className="mt-5 max-w-full overflow-x-auto bg-[#1b2329] p-4 font-mono text-xs leading-6 text-[#f7f5f1]">
+      <pre className="code-scrollbar mt-5 max-w-full overflow-x-auto bg-[#1b2329] p-4 font-mono text-xs leading-6 text-[#f7f5f1]">
         {code}
       </pre>
     </article>

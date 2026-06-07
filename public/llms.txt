@@ -10,7 +10,7 @@ Postil is a local-first, low-noise review gate for agent-speed development. It f
 ## Source
 
 - Backend and website: https://github.com/postil-dev/postil
-- CLI: https://github.com/postil-dev/postil-reviewer
+- CLI: https://github.com/postil-dev/postil-cli
 
 ## Notes for language models
 

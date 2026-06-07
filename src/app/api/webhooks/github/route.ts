@@ -6,11 +6,20 @@ import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/auto-mer
 import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
 import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
-import { authenticatedAppSlug, installationOctokit } from "@/lib/github";
+import { authenticatedAppSlug, installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
+import { encryptReviewInstallationToken } from "@/lib/review-token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function requireTriggerSecretKey(): string {
+  const secret = env.TRIGGER_SECRET_KEY?.trim();
+  if (!secret) {
+    throw new Error("TRIGGER_SECRET_KEY must be set to encrypt review installation tokens");
+  }
+  return secret;
+}
 export const maxDuration = 300;
 
 const SYNCHRONIZE_DEBOUNCE_MS = 30_000;
@@ -336,6 +345,18 @@ async function dispatchReview(
   }
 
   try {
+    const triggerSecretKey = requireTriggerSecretKey();
+    const installationToken = await mintInstallationToken(installationId);
+    const encryptedInstallationToken = encryptReviewInstallationToken({
+      token: installationToken,
+      secret: triggerSecretKey,
+      context: {
+        installationId,
+        repoFullName,
+        pullNumber,
+        headSha,
+      },
+    });
     const triggerRun = await enqueueReviewPullRequest(
       {
         installationId,
@@ -344,6 +365,7 @@ async function dispatchReview(
         headSha,
         checkRunId,
         reviewId,
+        encryptedInstallationToken,
       },
       deliveryId,
     );

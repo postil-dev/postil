@@ -5,6 +5,10 @@ const triggerMock = vi.hoisted(() => ({
   tasksTrigger: vi.fn(async () => ({ id: "trigger-run-123" })),
 }));
 
+const loggerMock = vi.hoisted(() => ({
+  info: vi.fn(),
+}));
+
 const posthogMock = vi.hoisted(() => ({
   captureException: vi.fn(),
   hashInstallationId: vi.fn(() => "hashed-installation"),
@@ -41,6 +45,7 @@ const dbMock = vi.hoisted(() => ({
 }));
 
 const envMock = vi.hoisted(() => ({
+  databaseUrl: "postgres://test-db" as string | undefined,
   OPENROUTER_API_KEY: "test-openrouter-key",
   POSTIL_CLI_PATH: "postil-test",
   REVIEW_MODEL: "test/default",
@@ -53,9 +58,15 @@ const envMock = vi.hoisted(() => ({
 }));
 
 vi.mock("@trigger.dev/sdk/v3", () => ({
-  logger: { info: vi.fn() },
+  logger: loggerMock,
   task: triggerMock.task,
   tasks: { trigger: triggerMock.tasksTrigger },
+}));
+
+vi.mock("@octokit/rest", () => ({
+  Octokit: function MockOctokit() {
+    return { request: githubMock.request };
+  },
 }));
 
 vi.mock("node:fs/promises", () => fsMock);
@@ -93,8 +104,11 @@ const PAYLOAD = {
 };
 
 const { enqueueReviewPullRequest, reviewPullRequest } = await import("./review-pull-request");
+const { encryptReviewInstallationToken } = await import("@/lib/review-token");
 const runReviewTask = reviewPullRequest as unknown as {
-  run: (payload: typeof PAYLOAD) => Promise<{ ok: boolean; findings: number }>;
+  run: (
+    payload: typeof PAYLOAD & { encryptedInstallationToken?: string },
+  ) => Promise<{ ok: boolean; findings: number }>;
 };
 
 describe("reviewPullRequest", () => {
@@ -104,6 +118,8 @@ describe("reviewPullRequest", () => {
     dbMock.updates = [];
     envMock.REVIEW_MODEL_CASCADE = undefined;
     envMock.TRIGGER_PROJECT_ID = "project_test_123";
+    envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
+    envMock.databaseUrl = "postgres://test-db";
     childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
       const outputPath = args[args.indexOf("--output-json") + 1];
       fsMock.files.set(
@@ -179,6 +195,84 @@ describe("reviewPullRequest", () => {
           accessToken: "test-trigger-secret",
         },
       },
+    );
+  });
+
+  it("decrypts the payload installation token for GitHub and redacts token material from logs", async () => {
+    const encryptedInstallationToken = encryptReviewInstallationToken({
+      token: "payload-installation-token",
+      secret: "test-trigger-secret",
+      context: PAYLOAD,
+    });
+    const payload = {
+      ...PAYLOAD,
+      encryptedInstallationToken,
+    };
+
+    await runReviewTask.run(payload);
+
+    expect(githubMock.mintInstallationToken).not.toHaveBeenCalled();
+    expect(loggerMock.info).toHaveBeenCalledWith("starting review", {
+      payload: expect.not.objectContaining({ encryptedInstallationToken: expect.any(String) }),
+    });
+    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("payload-installation-token");
+    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain(encryptedInstallationToken);
+
+    const configPath = childProcessMock.execFile.mock.calls[0][1][2];
+    const cliConfig = JSON.parse(fsMock.files.get(configPath) ?? "{}");
+    expect(cliConfig.githubToken).toBe("payload-installation-token");
+
+    expect(githubMock.installationOctokit).not.toHaveBeenCalled();
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "success",
+      }),
+    );
+  });
+
+  it("requires a Trigger secret before decrypting the payload installation token", async () => {
+    const encryptedInstallationToken = encryptReviewInstallationToken({
+      token: "payload-installation-token",
+      secret: "test-trigger-secret",
+      context: PAYLOAD,
+    });
+    envMock.TRIGGER_SECRET_KEY = " ";
+
+    await expect(runReviewTask.run({ ...PAYLOAD, encryptedInstallationToken })).rejects.toThrow(
+      "Review failed to complete.",
+    );
+
+    expect(childProcessMock.execFile).not.toHaveBeenCalled();
+    expect(githubMock.mintInstallationToken).not.toHaveBeenCalled();
+    expect(githubMock.request).not.toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({ conclusion: "success" }),
+    );
+  });
+
+  it("logs skipped database writes when the Trigger runtime has no database URL", async () => {
+    envMock.databaseUrl = undefined;
+
+    await runReviewTask.run(PAYLOAD);
+
+    expect(dbMock.updates).toEqual([]);
+    expect(usageMock.recordReviewCompleted).not.toHaveBeenCalled();
+    expect(usageMock.recordTokenUsage).not.toHaveBeenCalled();
+    expect(loggerMock.info).toHaveBeenCalledWith(
+      "skipping review database write",
+      expect.objectContaining({
+        op: "update_review_completed",
+        reason: "database url not configured",
+      }),
+    );
+    expect(loggerMock.info).toHaveBeenCalledWith(
+      "skipping review database write",
+      expect.objectContaining({
+        op: "record_usage",
+        reason: "database url not configured",
+      }),
     );
   });
 

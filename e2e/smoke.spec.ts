@@ -46,5 +46,5 @@ test("llms endpoint serves concise guidance", async ({ request }) => {
   expect(body).toContain("review gate for agent-speed development");
   expect(body).toContain("Home: https://postil.dev/");
   expect(body).toContain("Install: https://postil.dev/install");
-  expect(body).toContain("CLI: https://github.com/postil-dev/postil-reviewer");
+  expect(body).toContain("CLI: https://github.com/postil-dev/postil-cli");
 });

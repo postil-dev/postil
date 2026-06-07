@@ -61,16 +61,18 @@ export function DiffPreview({
   const removedLines = removed.split("\n");
   const addedLines = added.split("\n");
   return (
-    <pre className={["overflow-auto bg-[#1f252b] p-4 font-mono text-xs leading-6 text-[#f7f5f1]", className].filter(Boolean).join(" ")}>
-      {context ? <code className="block text-[#c8cdd2]">{context}</code> : null}
-      {removedLines.map((line, index) => {
-        // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
-        return <code key={`removed-${index}-${line}`} className="block whitespace-pre bg-diff-del/60 px-2 text-[#f7f5f1]">- {line}</code>;
-      })}
-      {addedLines.map((line, index) => {
-        // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
-        return <code key={`added-${index}-${line}`} className="block whitespace-pre bg-diff-add/60 px-2 text-[#f7f5f1]">+ {line}</code>;
-      })}
+    <pre className={["code-scrollbar overflow-auto bg-[#1f252b] p-4 font-mono text-xs leading-6 text-[#f7f5f1]", className].filter(Boolean).join(" ")}>
+      <code className="block w-max min-w-full">
+        {context ? <span className="block whitespace-pre px-2 text-[#c8cdd2]">{context}</span> : null}
+        {removedLines.map((line, index) => {
+          // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
+          return <span key={`removed-${index}-${line}`} className="block whitespace-pre bg-diff-del/60 px-2 text-[#f7f5f1]">- {line}</span>;
+        })}
+        {addedLines.map((line, index) => {
+          // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
+          return <span key={`added-${index}-${line}`} className="block whitespace-pre bg-diff-add/60 px-2 text-[#f7f5f1]">+ {line}</span>;
+        })}
+      </code>
     </pre>
   );
 }
@@ -249,14 +251,14 @@ export function CtaStrip() {
         <div>
           <h2 className="text-3xl leading-tight">Trust the merge, not the speed.</h2>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Join the hosted beta queue, or run the reviewer CLI in your own CI.
+            Join the hosted beta queue, or run the Postil CLI in your own CI.
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
           <TrackedLink href="/install" cta="Install on GitHub" className={buttonVariants()}>
             Install on GitHub
           </TrackedLink>
-          <TrackedLink href="https://github.com/postil-dev/postil-reviewer" cta="Try CLI" className={buttonVariants({ variant: "outline" })}>
+          <TrackedLink href="https://github.com/postil-dev/postil-cli" cta="Try CLI" className={buttonVariants({ variant: "outline" })}>
             Try the CLI <ArrowRight className="ml-2 h-4 w-4" />
           </TrackedLink>
         </div>

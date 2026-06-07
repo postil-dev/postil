@@ -28,12 +28,14 @@ const posthogMock = vi.hoisted(() => ({
   captureException: vi.fn(),
   track: vi.fn(),
 }));
+const envMock = vi.hoisted(() => ({
+  CI_RECOVERY_FALLBACK_ASSIGNEE: "engineer",
+  GITHUB_WEBHOOK_SECRET: "test-secret",
+  TRIGGER_SECRET_KEY: "test-trigger-secret" as string | undefined,
+}));
 
 vi.mock("@/lib/env", () => ({
-  env: {
-    CI_RECOVERY_FALLBACK_ASSIGNEE: "engineer",
-    GITHUB_WEBHOOK_SECRET: "test-secret",
-  },
+  env: envMock,
 }));
 
 vi.mock("@/db", () => ({
@@ -105,6 +107,7 @@ vi.mock("@/lib/github", () => ({
     request: mockAppRequest,
   }),
   installationOctokit: vi.fn(async () => ({ request: mockRequest })),
+  mintInstallationToken: vi.fn(async () => "short-lived-installation-token"),
 }));
 
 vi.mock("@/jobs/review-pull-request", () => reviewJobMock);
@@ -112,6 +115,13 @@ vi.mock("@/jobs/review-pull-request", () => reviewJobMock);
 vi.mock("@/lib/posthog", () => ({
   captureException: posthogMock.captureException,
   track: posthogMock.track,
+}));
+
+vi.mock("@/lib/review-token", () => ({
+  encryptReviewInstallationToken: vi.fn(
+    (input: { token: string; secret: string }) =>
+      `encrypted:${input.secret}:${input.token === "short-lived-installation-token"}`,
+  ),
 }));
 
 // Import after mock declarations so the route uses the stubs above.
@@ -146,6 +156,7 @@ describe("github webhook", () => {
     dbMock.failFailedStatusUpdate = false;
     dbMock.failDeliveryDelete = false;
     configMock.review = { auto_merge: true };
+    envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
   });
 
   it("rejects missing signature", async () => {
@@ -196,8 +207,12 @@ describe("github webhook", () => {
         headSha: "abc123def456",
         checkRunId: 321,
         reviewId: "review-1",
+        encryptedInstallationToken: "encrypted:test-trigger-secret:true",
       },
       "pr-opened",
+    );
+    expect(JSON.stringify(reviewJobMock.enqueueReviewPullRequest.mock.calls)).not.toContain(
+      "short-lived-installation-token",
     );
     expect(dbMock.insertCalls).toEqual([dbMock.webhookDeliveries, dbMock.reviews]);
     expect(dbMock.updateCalls).toContainEqual({ triggerRunId: "trigger-run-123" });
@@ -249,6 +264,7 @@ describe("github webhook", () => {
         headSha: "mention-sha",
         checkRunId: 654,
         reviewId: "review-1",
+        encryptedInstallationToken: "encrypted:test-trigger-secret:true",
       },
       "mention-comment",
     );
@@ -335,6 +351,42 @@ describe("github webhook", () => {
     ).toBe(true);
   });
 
+  it("requires a Trigger secret before encrypting the installation token", async () => {
+    envMock.TRIGGER_SECRET_KEY = " ";
+    mockRequest.mockImplementation(async (route: string) => {
+      if (route === "POST /repos/{owner}/{repo}/check-runs") {
+        return { data: { id: 321 } };
+      }
+      if (route === "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}") {
+        return { data: { id: 321 } };
+      }
+      return { data: [] };
+    });
+
+    await expect(
+      POST(
+        signedRequest("pull_request", "pr-missing-trigger-secret", {
+          action: "opened",
+          installation: { id: 123 },
+          repository: { full_name: "acme/widget" },
+          pull_request: {
+            number: 68,
+            draft: false,
+            head: { sha: "abc123def456" },
+          },
+        }),
+      ),
+    ).rejects.toThrow("TRIGGER_SECRET_KEY must be set to encrypt review installation tokens");
+
+    expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
+    expect(dbMock.updateCalls).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "TRIGGER_SECRET_KEY must be set to encrypt review installation tokens",
+      }),
+    );
+  });
+
   it("fails dispatch and allows retry when the review check-run cannot be created", async () => {
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "POST /repos/{owner}/{repo}/check-runs") {
@@ -410,6 +462,7 @@ describe("github webhook", () => {
         headSha: "abc123def456",
         checkRunId: 321,
         reviewId: "review-1",
+        encryptedInstallationToken: "encrypted:test-trigger-secret:true",
       },
       "pr-bookkeeping",
     );

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-# --- postil review bot ---
-FROM docker.io/library/rust:1 AS postil-reviewer
+# --- postil CLI ---
+FROM docker.io/library/rust:1 AS postil-cli
 RUN cargo install --git https://github.com/postil-dev/postil-cli --locked
 
 # --- deps ---
@@ -39,7 +39,7 @@ RUN groupadd --system --gid 1001 nodejs \
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-COPY --from=postil-reviewer /usr/local/cargo/bin/postil /usr/local/bin/postil
+COPY --from=postil-cli /usr/local/cargo/bin/postil /usr/local/bin/postil
 
 USER nextjs
 EXPOSE 3000

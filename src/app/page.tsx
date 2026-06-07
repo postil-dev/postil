@@ -162,7 +162,7 @@ export default function Home() {
               <TrackedLink href="/install" cta="Install on GitHub" className={buttonVariants({ size: "lg" })}>
                 Install on GitHub
               </TrackedLink>
-              <TrackedLink href="https://github.com/postil-dev/postil-reviewer" cta="Try CLI" className={buttonVariants({ variant: "outline", size: "lg" })}>
+              <TrackedLink href="https://github.com/postil-dev/postil-cli" cta="Try CLI" className={buttonVariants({ variant: "outline", size: "lg" })}>
                 Try the CLI <ArrowRight className="ml-2 h-4 w-4" />
               </TrackedLink>
             </div>
@@ -285,7 +285,7 @@ function ReviewExamples() {
   return (
     <div className="min-w-0 border bg-card">
       <div className="border-b p-2">
-        <div className="flex gap-1 overflow-x-auto">
+        <div className="code-scrollbar flex gap-1 overflow-x-auto">
           {examples.map((item, index) => (
             <button
               key={item.id}

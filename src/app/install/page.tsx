@@ -22,10 +22,10 @@ export default function InstallPage() {
           <SectionIntro
             eyebrow="Managed beta"
             title="Hosted installs are opening soon."
-            body="The GitHub App install link will appear here after final review. Until then, run the reviewer CLI in CI."
+            body="The GitHub App install link will appear here after final review. Until then, run the Postil CLI in CI."
           />
           <div className="mt-8 flex flex-wrap gap-3">
-            <TrackedLink href="https://github.com/postil-dev/postil-reviewer" cta="Try CLI" className={buttonVariants({ size: "lg" })}>
+            <TrackedLink href="https://github.com/postil-dev/postil-cli" cta="Try CLI" className={buttonVariants({ size: "lg" })}>
               Try the CLI <ArrowRight className="ml-2 h-4 w-4" />
             </TrackedLink>
             <TrackedLink href="/docs" cta="Read docs" className={buttonVariants({ variant: "outline", size: "lg" })}>
