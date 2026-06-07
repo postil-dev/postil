@@ -4,9 +4,9 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { Octokit } from "@octokit/rest";
 import { logger, task, tasks } from "@trigger.dev/sdk/v3";
 import { eq } from "drizzle-orm";
-import { Octokit } from "@octokit/rest";
 import { getDb, schema } from "@/db";
 import { env } from "@/lib/env";
 import { installationOctokit, mintInstallationToken } from "@/lib/github";
@@ -23,6 +23,20 @@ import {
 const execFile = promisify(execFileCb);
 const REVIEW_CLI_TIMEOUT_MS = 8 * 60 * 1000;
 
+const reviewWorkerFailureStages = [
+  "runtime_env_bootstrap",
+  "cli_unavailable",
+  "github_token_check_completion",
+  "model_provider_call",
+] as const;
+
+type ReviewWorkerFailureStage = (typeof reviewWorkerFailureStages)[number];
+
+type StagedError = Error & {
+  code?: unknown;
+  reviewWorkerFailureStage?: ReviewWorkerFailureStage;
+};
+
 function safePayload(payload: ReviewPayload): Omit<ReviewPayload, "encryptedInstallationToken"> {
   const { encryptedInstallationToken: _encryptedInstallationToken, ...safe } = payload;
   return safe;
@@ -31,7 +45,10 @@ function safePayload(payload: ReviewPayload): Omit<ReviewPayload, "encryptedInst
 function requireTriggerSecretKey(): string {
   const secret = env.reviewTokenSecret?.trim();
   if (!secret) {
-    throw new Error("REVIEW_TOKEN_SECRET must be set to decrypt review installation tokens");
+    throw withWorkerFailureStage(
+      new Error("REVIEW_TOKEN_SECRET must be set to decrypt review installation tokens"),
+      "runtime_env_bootstrap",
+    );
   }
   return secret;
 }
@@ -87,6 +104,84 @@ function publicReviewErrorMessage(): string {
   return "Review failed to complete.";
 }
 
+function publicReviewFailureSummary(stage: ReviewWorkerFailureStage): string {
+  switch (stage) {
+    case "runtime_env_bootstrap":
+      return "Review failed during runtime env/bootstrap.";
+    case "cli_unavailable":
+      return "Review failed because the CLI package/binary/path is unavailable.";
+    case "github_token_check_completion":
+      return "Review failed during GitHub token/check completion.";
+    case "model_provider_call":
+      return "Review failed during model/provider call.";
+  }
+}
+
+function publicReviewFailureText(stage: ReviewWorkerFailureStage): string {
+  return `${publicReviewErrorMessage()} Worker stage: ${stage}. ${publicReviewFailureSummary(stage)}`;
+}
+
+function withWorkerFailureStage<T extends Error>(
+  err: T,
+  stage: ReviewWorkerFailureStage,
+): T & { reviewWorkerFailureStage: ReviewWorkerFailureStage } {
+  return Object.assign(err, { reviewWorkerFailureStage: stage });
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function errorCode(err: unknown): unknown {
+  return typeof err === "object" && err !== null && "code" in err ? err.code : undefined;
+}
+
+function isCliUnavailableError(err: unknown): boolean {
+  const code = errorCode(err);
+  const message = errorMessage(err).toLowerCase();
+  return (
+    code === "ENOENT" ||
+    code === 127 ||
+    message.includes("no such file or directory") ||
+    message.includes("command not found")
+  );
+}
+
+function classifyReviewWorkerFailure(err: unknown): ReviewWorkerFailureStage {
+  if (err instanceof Error) {
+    const staged = err as StagedError;
+    if (
+      staged.reviewWorkerFailureStage &&
+      reviewWorkerFailureStages.includes(staged.reviewWorkerFailureStage)
+    ) {
+      return staged.reviewWorkerFailureStage;
+    }
+  }
+
+  if (isCliUnavailableError(err)) return "cli_unavailable";
+
+  const message = errorMessage(err).toLowerCase();
+  if (
+    message.includes("github") ||
+    message.includes("installation token") ||
+    message.includes("check-run") ||
+    message.includes("check run")
+  ) {
+    return "github_token_check_completion";
+  }
+
+  if (
+    message.includes("openrouter") ||
+    message.includes("model") ||
+    message.includes("provider") ||
+    message.includes("timeout")
+  ) {
+    return "model_provider_call";
+  }
+
+  return "model_provider_call";
+}
+
 function hasDatabaseUrl(): boolean {
   return Boolean(env.databaseUrl);
 }
@@ -137,10 +232,14 @@ async function completeCheckRunForResult(
   });
 }
 
-async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
+async function completeCheckRunFailed(
+  payload: ReviewPayload,
+  stage: ReviewWorkerFailureStage,
+): Promise<void> {
   if (!payload.checkRunId) return;
-  const octokit = await reviewOctokit(payload);
+  const octokit = await installationOctokit(payload.installationId);
   const [owner, repo] = payload.repoFullName.split("/");
+  const publicText = publicReviewFailureText(stage);
   await octokit.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
     owner,
     repo,
@@ -150,13 +249,16 @@ async function completeCheckRunFailed(payload: ReviewPayload): Promise<void> {
     completed_at: new Date().toISOString(),
     output: {
       title: "Postil Review",
-      summary: publicReviewErrorMessage(),
-      text: publicReviewErrorMessage(),
+      summary: publicText,
+      text: publicText,
     },
   });
 }
 
-async function markReviewFailed(payload: ReviewPayload): Promise<void> {
+async function markReviewFailed(
+  payload: ReviewPayload,
+  stage: ReviewWorkerFailureStage,
+): Promise<void> {
   if (!payload.reviewId) return;
   if (!hasDatabaseUrl()) {
     logDatabaseSkip("mark_review_failed", payload);
@@ -167,7 +269,7 @@ async function markReviewFailed(payload: ReviewPayload): Promise<void> {
     .update(schema.reviews)
     .set({
       status: "failed",
-      errorMessage: publicReviewErrorMessage(),
+      errorMessage: publicReviewFailureText(stage),
       completedAt: new Date(),
     })
     .where(eq(schema.reviews.id, payload.reviewId));
@@ -180,7 +282,13 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
   const outputPath = join(runDir, "review.json");
   try {
     const installationToken =
-      decryptedInstallationToken(payload) ?? (await mintInstallationToken(payload.installationId));
+      decryptedInstallationToken(payload) ??
+      (await mintInstallationToken(payload.installationId).catch((err) => {
+        throw withWorkerFailureStage(
+          err instanceof Error ? err : new Error(String(err)),
+          "github_token_check_completion",
+        );
+      }));
     await writeFile(
       configPath,
       JSON.stringify({
@@ -212,9 +320,19 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
       } catch {
         // Preserve the original CLI failure when no valid review envelope exists.
       }
-      throw err;
+      throw withWorkerFailureStage(
+        err instanceof Error ? err : new Error(String(err)),
+        isCliUnavailableError(err) ? "cli_unavailable" : "model_provider_call",
+      );
     }
-    return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
+    try {
+      return reviewEnvelope.parse(JSON.parse(await readFile(outputPath, "utf8")));
+    } catch (err) {
+      throw withWorkerFailureStage(
+        err instanceof Error ? err : new Error(String(err)),
+        "model_provider_call",
+      );
+    }
   } finally {
     await rm(runDir, { recursive: true, force: true });
   }
@@ -315,6 +433,7 @@ export const reviewPullRequest = task({
 
       return { ok: true, findings: result.findings.length };
     } catch (err) {
+      const failureStage = classifyReviewWorkerFailure(err);
       const publicError = new Error(publicReviewErrorMessage());
       captureException(publicError, {
         properties: {
@@ -324,23 +443,25 @@ export const reviewPullRequest = task({
           headSha: payload.headSha,
           modelUsed: reviewModelUsed,
           errorClass: err instanceof Error ? err.name : typeof err,
+          workerStage: failureStage,
         },
       });
 
       try {
-        await markReviewFailed(payload);
+        await markReviewFailed(payload, failureStage);
       } catch (dbErr) {
         captureException(dbErr, {
           properties: {
             op: "update_review_failed",
             repoFullName: payload.repoFullName,
             pullNumber: payload.pullNumber,
+            workerStage: failureStage,
           },
         });
       }
 
       try {
-        await completeCheckRunFailed(payload);
+        await completeCheckRunFailed(payload, failureStage);
       } catch (checkRunErr) {
         captureException(new Error("postil review check-run failure patch failed"), {
           properties: {
@@ -348,6 +469,7 @@ export const reviewPullRequest = task({
             repoFullName: payload.repoFullName,
             pullNumber: payload.pullNumber,
             errorClass: checkRunErr instanceof Error ? checkRunErr.name : typeof checkRunErr,
+            workerStage: failureStage,
           },
         });
       }
@@ -358,6 +480,7 @@ export const reviewPullRequest = task({
         headSha: payload.headSha,
         error: publicReviewErrorMessage(),
         errorClass: err instanceof Error ? err.name : "unknown",
+        workerStage: failureStage,
         modelUsed: reviewModelUsed,
         installationHash,
       });

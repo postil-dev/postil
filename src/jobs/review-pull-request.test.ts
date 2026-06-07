@@ -252,9 +252,33 @@ describe("reviewPullRequest", () => {
 
     expect(childProcessMock.execFile).not.toHaveBeenCalled();
     expect(githubMock.mintInstallationToken).not.toHaveBeenCalled();
+    expect(githubMock.installationOctokit).toHaveBeenCalledWith(PAYLOAD.installationId);
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+        output: expect.objectContaining({
+          summary: expect.stringContaining("Worker stage: runtime_env_bootstrap."),
+        }),
+      }),
+    );
     expect(githubMock.request).not.toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({ conclusion: "success" }),
+      expect.objectContaining({ output: expect.stringContaining("payload-installation-token") }),
+    );
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: expect.stringContaining("Worker stage: runtime_env_bootstrap."),
+      }),
+    );
+    expect(posthogMock.track).toHaveBeenCalledWith(
+      "system",
+      "review_failed",
+      expect.objectContaining({
+        workerStage: "runtime_env_bootstrap",
+      }),
     );
   });
 
@@ -322,7 +346,7 @@ describe("reviewPullRequest", () => {
     expect(dbMock.updates).toContainEqual(
       expect.objectContaining({
         status: "failed",
-        errorMessage: "Review failed to complete.",
+        errorMessage: expect.stringContaining("Worker stage: model_provider_call."),
       }),
     );
     expect(posthogMock.track).toHaveBeenCalledWith(
@@ -330,6 +354,80 @@ describe("reviewPullRequest", () => {
       "review_failed",
       expect.objectContaining({
         error: "Review failed to complete.",
+        workerStage: "model_provider_call",
+      }),
+    );
+  });
+
+  it("exposes a sanitized CLI-unavailable worker stage on hosted review failure", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+      cb(Object.assign(new Error("spawn postil ENOENT"), { code: "ENOENT" }), "", "");
+    });
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+        output: expect.objectContaining({
+          summary: expect.stringContaining("Worker stage: cli_unavailable."),
+          text: expect.stringContaining(
+            "Review failed because the CLI package/binary/path is unavailable.",
+          ),
+        }),
+      }),
+    );
+    expect(JSON.stringify(githubMock.request.mock.calls)).not.toContain("spawn postil");
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: expect.stringContaining("Worker stage: cli_unavailable."),
+      }),
+    );
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          op: "review_cli",
+          workerStage: "cli_unavailable",
+        }),
+      }),
+    );
+  });
+
+  it("exposes a sanitized GitHub-token worker stage on hosted review failure", async () => {
+    githubMock.mintInstallationToken.mockRejectedValueOnce(
+      new Error("installation auth failed: super-secret-token"),
+    );
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(childProcessMock.execFile).not.toHaveBeenCalled();
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+        output: expect.objectContaining({
+          summary: expect.stringContaining("Worker stage: github_token_check_completion."),
+          text: expect.stringContaining("Review failed during GitHub token/check completion."),
+        }),
+      }),
+    );
+    expect(JSON.stringify(githubMock.request.mock.calls)).not.toContain("super-secret-token");
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: expect.stringContaining("Worker stage: github_token_check_completion."),
+      }),
+    );
+    expect(posthogMock.track).toHaveBeenCalledWith(
+      "system",
+      "review_failed",
+      expect.objectContaining({
+        workerStage: "github_token_check_completion",
       }),
     );
   });
@@ -354,7 +452,7 @@ describe("reviewPullRequest", () => {
     expect(dbMock.updates).toContainEqual(
       expect.objectContaining({
         status: "failed",
-        errorMessage: "Review failed to complete.",
+        errorMessage: expect.stringContaining("Worker stage: model_provider_call."),
       }),
     );
   });
@@ -386,7 +484,33 @@ describe("reviewPullRequest", () => {
     expect(dbMock.updates).toContainEqual(
       expect.objectContaining({
         status: "failed",
-        errorMessage: "Review failed to complete.",
+        errorMessage: expect.stringContaining("Worker stage: model_provider_call."),
+      }),
+    );
+  });
+
+  it("falls back to model/provider stage for unclassified worker failures", async () => {
+    childProcessMock.execFile.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+      cb(new Error("unexpected review failure"), "", "");
+    });
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+        output: expect.objectContaining({
+          summary: expect.stringContaining("Worker stage: model_provider_call."),
+        }),
+      }),
+    );
+    expect(posthogMock.track).toHaveBeenCalledWith(
+      "system",
+      "review_failed",
+      expect.objectContaining({
+        workerStage: "model_provider_call",
       }),
     );
   });
