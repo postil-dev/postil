@@ -1,4 +1,21 @@
 import { defineConfig } from "@trigger.dev/sdk";
+import { syncEnvVars } from "@trigger.dev/build/extensions/core";
+
+const TASK_RUNTIME_ENV_VARS = [
+  "APP_URL",
+  "DATABASE_URL",
+  "NEON_CONNECTION_STRING",
+  "GITHUB_APP_ID",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_APP_PRIVATE_KEY_B64",
+  "GITHUB_APP_SLUG",
+  "OPENROUTER_API_KEY",
+  "POSTHOG_HOST",
+  "POSTHOG_PROJECT_TOKEN",
+  "REVIEW_MODEL",
+  "REVIEW_MODEL_CASCADE",
+  "POSTIL_CLI_PATH",
+];
 
 function taskProject(): string {
   const project = (
@@ -34,12 +51,21 @@ const triggerProjectBuildEnv = {
   },
 };
 
+const taskRuntimeEnv = syncEnvVars(() =>
+  Object.fromEntries(
+    TASK_RUNTIME_ENV_VARS.flatMap((name) => {
+      const value = process.env[name]?.trim();
+      return value ? [[name, value]] : [];
+    }),
+  ),
+);
+
 export default defineConfig({
   project,
   runtime: "bun",
   dirs: ["./src/jobs"],
   build: {
-    extensions: [triggerProjectBuildEnv],
+    extensions: [triggerProjectBuildEnv, taskRuntimeEnv],
   },
   logLevel: "info",
   maxDuration: 15 * 60,
