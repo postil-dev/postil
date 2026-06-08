@@ -24,6 +24,11 @@ jobs:
         with:
           openrouter-api-key: \${{ secrets.OPENROUTER_API_KEY }}`;
 
+const install = `cargo install --git https://github.com/postil-dev/postil-cli --locked --force
+
+# Or install from a local checkout while developing:
+cargo install --path . --locked`;
+
 const config = `.postil.yaml
 
 review:
@@ -42,7 +47,7 @@ $ postil review --staged
 $ postil review --base origin/main`;
 
 const sections = [
-  ["Install", "Use the Postil CLI today. The managed GitHub App opens after final review."],
+  ["Install CLI", "Install the reviewer from the CLI repo. The managed GitHub App opens after final review."],
   ["Ask again", "Mention @postil on a PR conversation, review, or inline thread."],
   ["Cut noise", "Use `onClean: skip`, severity thresholds, max findings, and ignored globs."],
   ["Write less", "A finding needs a risk and a line. Otherwise, leave the PR alone."],
@@ -56,7 +61,7 @@ export default function DocsPage() {
           <SectionIntro
             eyebrow="Docs"
             title="Install the reviewer where pull requests already happen."
-            body="Run Postil from GitHub Actions or locally while the hosted app finishes review. The default is simple: report the risky line, or say nothing."
+            body="Run Postil from GitHub Actions or locally while the hosted app finishes review. The website explains the workflow; the CLI repo owns execution details. The default is simple: report the risky line, or say nothing."
           />
         </div>
       </section>
@@ -74,6 +79,7 @@ export default function DocsPage() {
 
       <section className="border-b py-16">
         <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-2">
+          <DocBlock title="CLI install" code={install} />
           <DocBlock title="GitHub Action" code={workflow} />
           <DocBlock title="Repository config" code={config} />
           <DocBlock title="Local review" code={local} />
@@ -103,6 +109,10 @@ export default function DocsPage() {
               . The CLI lives in{" "}
               <Link href="https://github.com/postil-dev/postil-cli" className="text-primary hover:underline">
                 postil-dev/postil-cli
+              </Link>
+              , and the Action lives in{" "}
+              <Link href="https://github.com/postil-dev/postil-action" className="text-primary hover:underline">
+                postil-dev/postil-action
               </Link>
               .
             </p>
