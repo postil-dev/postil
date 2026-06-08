@@ -35,7 +35,7 @@ Use the [pull request template](.github/pull_request_template.md). Include a cle
 | Format | `npm run format` | Before committing |
 | Type-check | `npm run typecheck` | Before pushing |
 | Unit tests | `npm test` | Before pushing; enforced in CI |
-| E2E tests | `npm run test:e2e` | PRs touching UI paths |
+| E2E tests | `npm run test:e2e` | Every PR |
 
 ## CI
 

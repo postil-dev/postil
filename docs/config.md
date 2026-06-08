@@ -59,6 +59,7 @@ review:
     - "Unit tests"
     - "Build"
     - "Docker build"
+    - "E2E tests"
     - "Verify postil/review passed"
 
   # Timeout in milliseconds for GitHub mergeability and check lookups.
@@ -88,13 +89,14 @@ Postil honours the following fields from `.kodo.yaml`:
 
 When `review.autoMerge` is enabled, Postil waits for the PR review check to
 finish before trying to merge. It only merges when the required checks are
-green, and it keeps the `e2e` label gate active by waiting for `E2E tests`
-when that label is present.
+green.
 
 If `review.requiredChecks` is set, those check names are used directly.
 Otherwise Postil asks GitHub for the branch protection required status checks
 on the PR base branch. If neither source yields any required checks, Postil
-skips auto-merge.
+skips auto-merge. Because CI runs E2E on every PR, repos that enable auto-merge
+should include the actual E2E check name in `review.requiredChecks` or in branch
+protection when E2E should block merging.
 
 Other Kodo fields are ignored; defaults apply.
 

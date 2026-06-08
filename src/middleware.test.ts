@@ -1,3 +1,4 @@
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import nextConfig from "../next.config";
@@ -50,10 +51,34 @@ describe("security middleware", () => {
     expect(staticHeaderKeys).not.toContain("content-security-policy");
   });
 
-  it("covers API routes with the middleware CSP instead of a second policy", () => {
-    const matcher = config.matcher[0]?.source;
-
-    expect(matcher).toContain("_next/static");
-    expect(matcher).not.toContain("api|");
+  it("matches API routes except health with the middleware CSP instead of a second policy", () => {
+    expect(
+      unstable_doesMiddlewareMatch({
+        config,
+        nextConfig,
+        url: "/api/metrics",
+      }),
+    ).toBe(true);
+    expect(
+      unstable_doesMiddlewareMatch({
+        config,
+        nextConfig,
+        url: "/api/health",
+      }),
+    ).toBe(false);
+    expect(
+      unstable_doesMiddlewareMatch({
+        config,
+        nextConfig,
+        url: "/api/healthz",
+      }),
+    ).toBe(true);
+    expect(
+      unstable_doesMiddlewareMatch({
+        config,
+        nextConfig,
+        url: "/api/health/check",
+      }),
+    ).toBe(true);
   });
 });
