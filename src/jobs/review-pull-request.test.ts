@@ -447,7 +447,7 @@ describe("reviewPullRequest", () => {
   });
 
   it("reports a safe diagnostic when the configured CLI path is missing", async () => {
-    envMock.POSTIL_CLI_PATH = "/home/bun/.cargo/bin/postil";
+    envMock.POSTIL_CLI_PATH = "/app/.postil/bin/postil";
     fsMock.access.mockRejectedValueOnce(new Error("missing"));
 
     await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
@@ -460,8 +460,8 @@ describe("reviewPullRequest", () => {
         conclusion: "failure",
         output: expect.objectContaining({
           summary:
-            "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/home/bun/.cargo/bin/postil",
-          text: "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/home/bun/.cargo/bin/postil",
+            "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/app/.postil/bin/postil",
+          text: "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/app/.postil/bin/postil",
         }),
       }),
     );
@@ -469,7 +469,7 @@ describe("reviewPullRequest", () => {
       expect.objectContaining({
         status: "failed",
         errorMessage:
-          "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/home/bun/.cargo/bin/postil",
+          "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/app/.postil/bin/postil",
       }),
     );
   });
