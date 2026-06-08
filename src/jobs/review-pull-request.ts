@@ -1,6 +1,7 @@
 import { execFile as execFileCb } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -23,6 +24,15 @@ import {
 const execFile = promisify(execFileCb);
 const REVIEW_CLI_TIMEOUT_MS = 8 * 60 * 1000;
 const CLI_LOG_SNIPPET_LIMIT = 2_000;
+
+class CliNotFoundError extends Error {
+  code = "CLI_NOT_FOUND";
+
+  constructor(public readonly cliPath: string) {
+    super("configured Postil CLI path is not executable");
+    this.name = "CliNotFoundError";
+  }
+}
 
 function safePayload(payload: ReviewPayload): Omit<ReviewPayload, "encryptedInstallationToken"> {
   const { encryptedInstallationToken: _encryptedInstallationToken, ...safe } = payload;
@@ -97,6 +107,9 @@ function publicReviewErrorDetail(err: unknown): string {
       ? `signal=${String(record.signal)}`
       : undefined,
     typeof record.timedOut !== "undefined" ? `timedOut=${String(record.timedOut)}` : undefined,
+    typeof record.cliPath === "string"
+      ? `cliPath=${sanitizeDiagnosticValue(record.cliPath)}`
+      : undefined,
   ].filter(Boolean);
 
   if (parts.length > 0) {
@@ -117,6 +130,10 @@ function publicReviewErrorDetail(err: unknown): string {
   }
 
   return publicReviewErrorMessage();
+}
+
+function sanitizeDiagnosticValue(value: string): string {
+  return value.replace(/\s+/g, "_").slice(0, 200);
 }
 
 function hasDatabaseUrl(): boolean {
@@ -229,6 +246,13 @@ async function runReviewCli(payload: ReviewPayload): Promise<ReviewEnvelope> {
     );
 
     const cli = env.POSTIL_CLI_PATH ?? "postil";
+    if (env.POSTIL_CLI_PATH && cli.includes("/")) {
+      try {
+        await access(cli, constants.X_OK);
+      } catch {
+        throw new CliNotFoundError(cli);
+      }
+    }
     try {
       await execFile(cli, ["review", "--config", configPath, "--output-json", outputPath], {
         cwd: process.cwd(),

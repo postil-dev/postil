@@ -32,6 +32,7 @@ const childProcessMock = vi.hoisted(() => ({
 
 const fsMock = vi.hoisted(() => ({
   files: new Map<string, string>(),
+  access: vi.fn(async () => undefined),
   mkdir: vi.fn(async () => undefined),
   rm: vi.fn(async () => undefined),
   readFile: vi.fn(async (path: string) => fsMock.files.get(path) ?? "{}"),
@@ -123,6 +124,8 @@ describe("reviewPullRequest", () => {
     envMock.triggerApiKey = "test-trigger-secret";
     envMock.reviewTokenSecret = "test-review-token-secret";
     envMock.databaseUrl = "postgres://test-db";
+    envMock.POSTIL_CLI_PATH = "postil-test";
+    fsMock.access.mockResolvedValue(undefined);
     childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
       const outputPath = args[args.indexOf("--output-json") + 1];
       fsMock.files.set(
@@ -441,6 +444,34 @@ describe("reviewPullRequest", () => {
     expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("ghs_secretToken");
     expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("raw-token-value");
     expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("sk-or-secretToken");
+  });
+
+  it("reports a safe diagnostic when the configured CLI path is missing", async () => {
+    envMock.POSTIL_CLI_PATH = "/home/bun/.cargo/bin/postil";
+    fsMock.access.mockRejectedValueOnce(new Error("missing"));
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
+
+    expect(childProcessMock.execFile).not.toHaveBeenCalled();
+    expect(githubMock.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        check_run_id: 77,
+        conclusion: "failure",
+        output: expect.objectContaining({
+          summary:
+            "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/home/bun/.cargo/bin/postil",
+          text: "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/home/bun/.cargo/bin/postil",
+        }),
+      }),
+    );
+    expect(dbMock.updates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        errorMessage:
+          "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/home/bun/.cargo/bin/postil",
+      }),
+    );
   });
 
   it("records a completed review when the CLI exits after writing blocking findings", async () => {
