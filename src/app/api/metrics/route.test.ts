@@ -50,6 +50,7 @@ describe("metrics endpoint", () => {
     // select().from().where(and()) => durationRow
     // select().from().where(and()) => tokenStats
     // select().from().where(and()) => reviewEvents
+    // select().from().where(and()) => staleRunningReviews
     // select().from().where(and()).orderBy().limit() => recentFailures
     let callCount = 0;
     mockSelect.mockImplementation(() => ({
@@ -72,6 +73,10 @@ describe("metrics endpoint", () => {
             // review events — single row
             return [{ count: 5 }];
           }
+          if (callCount === 5) {
+            // stale running reviews — single row
+            return [{ count: 1 }];
+          }
           // recent failures
           return {
             orderBy: () => ({
@@ -89,6 +94,7 @@ describe("metrics endpoint", () => {
     expect(body.reviews.total).toBe(5);
     expect(body.reviews.byStatus.completed).toBe(5);
     expect(body.reviews.successRatePct).toBe(100);
+    expect(body.reviews.staleRunning).toEqual({ olderThanMinutes: 30, count: 1 });
     expect(body.usage.totalTokens).toBe(12000);
   });
 });

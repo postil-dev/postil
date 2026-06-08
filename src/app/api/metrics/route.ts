@@ -28,6 +28,7 @@ export async function GET(req: Request): Promise<Response> {
 
   const db = getDb();
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const staleReviewSince = new Date(Date.now() - 30 * 60 * 1000);
 
   // Review reliability counts.
   const reviewStats = await db
@@ -83,6 +84,16 @@ export async function GET(req: Request): Promise<Response> {
       ),
     );
 
+  const [staleRunningReviews] = await db
+    .select({ count: count() })
+    .from(schema.reviews)
+    .where(
+      and(
+        eq(schema.reviews.status, "running"),
+        sql`${schema.reviews.createdAt} < ${staleReviewSince}`,
+      ),
+    );
+
   // Recent failures for debugging.
   const recentFailures = await db
     .select({
@@ -109,6 +120,10 @@ export async function GET(req: Request): Promise<Response> {
       byStatus: statusCounts,
       successRatePct: successRate,
       avgDurationMs: durationRow?.avgMs ?? null,
+      staleRunning: {
+        olderThanMinutes: 30,
+        count: Number(staleRunningReviews?.count ?? 0),
+      },
     },
     usage: {
       totalTokens: Number(tokenStats?.totalTokens ?? 0),
