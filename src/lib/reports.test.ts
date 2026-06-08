@@ -15,6 +15,20 @@ const rows = [
     createdAt: new Date("2026-06-01T10:00:00Z"),
     completedAt: new Date("2026-06-01T10:02:00Z"),
   },
+  {
+    id: "review-2",
+    organizationSlug: "acme",
+    repoFullName: "acme/widget",
+    pullNumber: 43,
+    headSha: "def456",
+    status: "failed",
+    checkRunId: 8,
+    triggerRunId: "run-2",
+    result: { summary: "timeout", findings: [] },
+    errorMessage: "Review timed out before completion.",
+    createdAt: new Date("2026-06-01T11:00:00Z"),
+    completedAt: new Date("2026-06-01T11:20:00Z"),
+  },
 ];
 
 const dbMock = {
@@ -67,6 +81,7 @@ vi.mock("@/db", () => ({
 
 const { getReviewReport, listReviewReports, reportViewerFromSession, reviewFindingCount } =
   await import("./reports");
+const { reviewFailureClass } = await import("./review-failure");
 
 describe("report helpers", () => {
   beforeEach(() => {
@@ -118,13 +133,20 @@ describe("report helpers", () => {
       },
     });
 
-    expect(reports).toEqual([
+    expect(reports).toHaveLength(2);
+    expect(reports[0]).toEqual(
       expect.objectContaining({
         id: "review-1",
         repoFullName: "acme/widget",
         findingCount: 1,
       }),
-    ]);
+    );
+    expect(reports[1]).toEqual(
+      expect.objectContaining({
+        id: "review-2",
+        failureClass: "timeout",
+      }),
+    );
   });
 
   it("returns detail with the raw result payload", async () => {
@@ -137,6 +159,24 @@ describe("report helpers", () => {
       expect.objectContaining({
         id: "review-1",
         result: { summary: "done", findings: [{ path: "src/a.ts" }] },
+      }),
+    );
+  });
+
+  it("classifies failed reports and exposes the failure class in the summary", async () => {
+    expect(reviewFailureClass("failed", "Review timed out before completion.")).toBe("timeout");
+
+    const reports = await listReviewReports({
+      viewer: {
+        email: "user@example.test",
+        organizationId: "review_organization_id",
+      },
+    });
+
+    expect(reports[1]).toEqual(
+      expect.objectContaining({
+        id: "review-2",
+        failureClass: "timeout",
       }),
     );
   });

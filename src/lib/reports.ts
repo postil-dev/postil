@@ -1,5 +1,6 @@
 import { and, desc, eq, ilike, or, type SQL } from "drizzle-orm";
 import { getDb, schema } from "@/db";
+import { reviewFailureClass } from "@/lib/review-failure";
 
 const MAX_REPORT_LIMIT = 100;
 
@@ -13,6 +14,7 @@ export interface ReviewReportSummary {
   checkRunId: number | null;
   triggerRunId: string | null;
   findingCount: number;
+  failureClass: ReturnType<typeof reviewFailureClass>;
   errorMessage: string | null;
   createdAt: Date;
   completedAt: Date | null;
@@ -100,6 +102,7 @@ function toSummary(row: ReviewReportRow): ReviewReportSummary {
     checkRunId: row.checkRunId,
     triggerRunId: row.triggerRunId,
     findingCount: reviewFindingCount(row.result),
+    failureClass: reviewFailureClass(row.status, row.errorMessage),
     errorMessage: row.errorMessage,
     createdAt: row.createdAt,
     completedAt: row.completedAt,

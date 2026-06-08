@@ -11,6 +11,7 @@ Alert when any of these are true:
 - `reviews.staleRunning.count > 0` for two consecutive polls.
 - `reviews.successRatePct < 95` after at least 10 reviews in the window.
 - `recentFailures` contains the same repository and pull request for two consecutive polls.
+- A `recentFailures[].failureClass` value repeats across multiple polls, especially `timeout`, `dispatch_failure`, or `check_run_update_failure`.
 
 The stale-running signal means a review row has stayed `running` for more than 30 minutes. That normally indicates the required check was created, but the review worker or workflow completion webhook did not finish the check.
 
