@@ -8,6 +8,7 @@ import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
 import { authenticatedAppSlug, installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
+import { classifyReviewFailure, recordReviewMetric } from "@/lib/review-metrics";
 import { encryptReviewInstallationToken } from "@/lib/review-token";
 
 export const runtime = "nodejs";
@@ -354,6 +355,7 @@ async function dispatchReview(
   },
 ): Promise<void> {
   const { deliveryId, installationId, repoFullName, pullNumber, headSha, forceCheckRun } = input;
+  const startedAt = new Date();
   const reviewRow = await db
     .insert(schema.reviews)
     .values({
@@ -427,6 +429,17 @@ async function dispatchReview(
         properties: { op: "create_check_run", repoFullName, pullNumber, headSha },
       });
       await recordReviewDispatchFailure(db, reviewId, err, repoFullName, pullNumber, headSha);
+      await recordDispatchMetricFailure({
+        reviewId,
+        installationId,
+        repoFullName,
+        pullNumber,
+        headSha,
+        checkRunId,
+        forceCheckRun,
+        startedAt,
+        err,
+      });
       await deleteWebhookDelivery(db, deliveryId);
       throw err;
     }
@@ -479,6 +492,30 @@ async function dispatchReview(
     }
 
     try {
+      await recordReviewMetric({
+        reviewId,
+        installationId,
+        repoFullName,
+        pullNumber,
+        headSha,
+        checkRunId,
+        triggerRunId: triggerRun.id,
+        triggerPath: forceCheckRun ? "hosted_mention" : "hosted_pull_request",
+        status: "queued",
+        startedAt,
+      });
+    } catch (metricsErr) {
+      captureException(metricsErr, {
+        properties: {
+          op: "record_review_metrics_queued",
+          repoFullName,
+          pullNumber,
+          reviewId,
+        },
+      });
+    }
+
+    try {
       track("system", "review_enqueued", {
         repoFullName,
         pullNumber,
@@ -526,6 +563,17 @@ async function dispatchReview(
     return;
   } catch (err) {
     await recordReviewDispatchFailure(db, reviewId, err, repoFullName, pullNumber, headSha);
+    await recordDispatchMetricFailure({
+      reviewId,
+      installationId,
+      repoFullName,
+      pullNumber,
+      headSha,
+      checkRunId,
+      forceCheckRun,
+      startedAt,
+      err,
+    });
     captureException(err, {
       properties: {
         op: "trigger_review_pull_request",
@@ -568,6 +616,45 @@ async function dispatchReview(
   }
 }
 
+async function recordDispatchMetricFailure(input: {
+  reviewId: string;
+  installationId: number;
+  repoFullName: string;
+  pullNumber: number;
+  headSha: string;
+  checkRunId?: number;
+  forceCheckRun?: boolean;
+  startedAt: Date;
+  err: unknown;
+}) {
+  try {
+    await recordReviewMetric({
+      reviewId: input.reviewId,
+      installationId: input.installationId,
+      repoFullName: input.repoFullName,
+      pullNumber: input.pullNumber,
+      headSha: input.headSha,
+      checkRunId: input.checkRunId,
+      triggerPath: input.forceCheckRun ? "hosted_mention" : "hosted_pull_request",
+      status: "failed",
+      conclusion: "failure",
+      failureClass: classifyReviewFailure(input.err),
+      startedAt: input.startedAt,
+      completedAt: new Date(),
+      latencyMs: Date.now() - input.startedAt.getTime(),
+    });
+  } catch (metricsErr) {
+    captureException(metricsErr, {
+      properties: {
+        op: "record_review_metrics_dispatch_failed",
+        repoFullName: input.repoFullName,
+        pullNumber: input.pullNumber,
+        reviewId: input.reviewId,
+      },
+    });
+  }
+}
+
 async function recordReviewDispatchFailure(
   db: ReturnType<typeof getDb>,
   reviewId: string,
@@ -604,6 +691,7 @@ async function completeReviewWorkflowFailureCheckRun(
   repoFullName: string,
   pullNumber: number | null,
   candidateHeadShas: Array<string | null | undefined>,
+  workflowRunId: number,
   conclusion: string | null | undefined,
 ): Promise<void> {
   let review: ReviewCheckRun;
@@ -649,6 +737,19 @@ async function completeReviewWorkflowFailureCheckRun(
           completedAt,
         })
         .where(eq(schema.reviews.id, review.id));
+      await recordReviewMetric({
+        reviewId: review.id,
+        repoFullName,
+        pullNumber,
+        headSha: candidateHeadShas.find(Boolean) ?? null,
+        checkRunId: review.checkRunId,
+        triggerPath: "github_action",
+        status: "failed",
+        conclusion: "failure",
+        failureClass: conclusion === "cancelled" ? "timeout" : "cli",
+        completedAt,
+        workflowRunId,
+      });
     }
   } catch (err) {
     captureException(err, {
@@ -695,6 +796,7 @@ async function completeReviewWorkflowSuccessCheckRun(
   repoFullName: string,
   pullNumber: number | null,
   candidateHeadShas: Array<string | null | undefined>,
+  workflowRunId: number,
   conclusion: "neutral" | "success",
 ): Promise<void> {
   let review: ReviewCheckRun;
@@ -730,6 +832,19 @@ async function completeReviewWorkflowSuccessCheckRun(
           completedAt,
         })
         .where(eq(schema.reviews.id, review.id));
+      await recordReviewMetric({
+        reviewId: review.id,
+        repoFullName,
+        pullNumber,
+        headSha: candidateHeadShas.find(Boolean) ?? null,
+        checkRunId: review.checkRunId,
+        triggerPath: "github_action",
+        status: "completed",
+        conclusion,
+        completedAt,
+        workflowRunId,
+        suppressedCleanComment: conclusion === "success",
+      });
     }
   } catch (err) {
     captureException(err, {
@@ -901,6 +1016,7 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
         repoFullName,
         pullNumber ?? reviewContext.pullNumber,
         candidateHeadShas,
+        workflow_run.id,
         workflow_run.conclusion,
       );
     } else if (isReviewWorkflowFailureConclusion(workflow_run.conclusion)) {
@@ -910,6 +1026,7 @@ async function handleWorkflowRun(p: WorkflowRunPayload): Promise<void> {
         repoFullName,
         pullNumber ?? reviewContext.pullNumber,
         candidateHeadShas,
+        workflow_run.id,
         workflow_run.conclusion,
       );
     }

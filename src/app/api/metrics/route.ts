@@ -1,4 +1,4 @@
-import { and, count, eq, gte, sql, sum } from "drizzle-orm";
+import { and, count, desc, eq, gte, sql, sum } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
 import { env } from "@/lib/env";
@@ -115,6 +115,60 @@ export async function GET(req: Request): Promise<Response> {
     .orderBy(schema.reviews.createdAt)
     .limit(20);
 
+  const reviewMetricAggregates = await db
+    .select({
+      triggerPath: schema.reviewMetrics.triggerPath,
+      status: schema.reviewMetrics.status,
+      conclusion: schema.reviewMetrics.conclusion,
+      failureClass: schema.reviewMetrics.failureClass,
+      count: count(),
+      totalTokens: sum(schema.reviewMetrics.totalTokens),
+      postedComments: sum(schema.reviewMetrics.postedCommentCount),
+      suppressedCleanComments: sum(sql<number>`case when ${schema.reviewMetrics.suppressedCleanComment} then 1 else 0 end`),
+    })
+    .from(schema.reviewMetrics)
+    .where(gte(schema.reviewMetrics.createdAt, since))
+    .groupBy(
+      schema.reviewMetrics.triggerPath,
+      schema.reviewMetrics.status,
+      schema.reviewMetrics.conclusion,
+      schema.reviewMetrics.failureClass,
+    );
+
+  const recentReviewMetrics = await db
+    .select({
+      id: schema.reviewMetrics.id,
+      reviewId: schema.reviewMetrics.reviewId,
+      repoFullName: schema.reviewMetrics.repoFullName,
+      pullNumber: schema.reviewMetrics.pullNumber,
+      headSha: schema.reviewMetrics.headSha,
+      checkRunId: schema.reviewMetrics.checkRunId,
+      triggerRunId: schema.reviewMetrics.triggerRunId,
+      workflowRunId: schema.reviewMetrics.workflowRunId,
+      triggerPath: schema.reviewMetrics.triggerPath,
+      status: schema.reviewMetrics.status,
+      conclusion: schema.reviewMetrics.conclusion,
+      failureClass: schema.reviewMetrics.failureClass,
+      latencyMs: schema.reviewMetrics.latencyMs,
+      modelProvider: schema.reviewMetrics.modelProvider,
+      modelUsed: schema.reviewMetrics.modelUsed,
+      totalTokens: schema.reviewMetrics.totalTokens,
+      findingCount: schema.reviewMetrics.findingCount,
+      errorFindingCount: schema.reviewMetrics.errorFindingCount,
+      warnFindingCount: schema.reviewMetrics.warnFindingCount,
+      infoFindingCount: schema.reviewMetrics.infoFindingCount,
+      inlineCommentCount: schema.reviewMetrics.inlineCommentCount,
+      postedCommentCount: schema.reviewMetrics.postedCommentCount,
+      suppressedCleanComment: schema.reviewMetrics.suppressedCleanComment,
+      rerun: schema.reviewMetrics.rerun,
+      replay: schema.reviewMetrics.replay,
+      createdAt: schema.reviewMetrics.createdAt,
+    })
+    .from(schema.reviewMetrics)
+    .where(gte(schema.reviewMetrics.createdAt, since))
+    .orderBy(desc(schema.reviewMetrics.createdAt))
+    .limit(50);
+
   return NextResponse.json({
     window: { days, since: since.toISOString() },
     reviews: {
@@ -140,5 +194,47 @@ export async function GET(req: Request): Promise<Response> {
       error: f.errorMessage,
       at: f.createdAt,
     })),
+    reviewMetrics: {
+      aggregates: reviewMetricAggregates.map((row) => ({
+        triggerPath: row.triggerPath,
+        status: row.status,
+        conclusion: row.conclusion,
+        failureClass: row.failureClass,
+        count: Number(row.count ?? 0),
+        totalTokens: Number(row.totalTokens ?? 0),
+        postedComments: Number(row.postedComments ?? 0),
+        suppressedCleanComments: Number(row.suppressedCleanComments ?? 0),
+      })),
+      recent: recentReviewMetrics.map((row) => ({
+        id: row.id,
+        reviewId: row.reviewId,
+        repo: row.repoFullName,
+        pr: row.pullNumber,
+        headSha: row.headSha,
+        checkRunId: row.checkRunId,
+        triggerRunId: row.triggerRunId,
+        workflowRunId: row.workflowRunId,
+        triggerPath: row.triggerPath,
+        status: row.status,
+        conclusion: row.conclusion,
+        failureClass: row.failureClass,
+        latencyMs: row.latencyMs,
+        modelProvider: row.modelProvider,
+        modelUsed: row.modelUsed,
+        totalTokens: row.totalTokens,
+        findings: {
+          total: row.findingCount,
+          error: row.errorFindingCount,
+          warn: row.warnFindingCount,
+          info: row.infoFindingCount,
+        },
+        inlineCommentCount: row.inlineCommentCount,
+        postedCommentCount: row.postedCommentCount,
+        suppressedCleanComment: row.suppressedCleanComment,
+        rerun: row.rerun,
+        replay: row.replay,
+        at: row.createdAt,
+      })),
+    },
   });
 }

@@ -19,6 +19,10 @@ const usageMock = vi.hoisted(() => ({
   recordReviewCompleted: vi.fn(),
   recordTokenUsage: vi.fn(),
 }));
+const metricsMock = vi.hoisted(() => ({
+  classifyReviewFailure: vi.fn(() => "cli"),
+  recordReviewMetric: vi.fn(),
+}));
 
 const githubMock = vi.hoisted(() => ({
   installationOctokit: vi.fn(async () => ({ request: githubMock.request })),
@@ -80,6 +84,7 @@ vi.mock("@/lib/github", () => ({
 }));
 vi.mock("@/lib/posthog", () => posthogMock);
 vi.mock("@/lib/usage", () => usageMock);
+vi.mock("@/lib/review-metrics", () => metricsMock);
 vi.mock("@/db", () => ({
   getDb: vi.fn(() => ({
     update: () => ({
@@ -172,6 +177,17 @@ describe("reviewPullRequest", () => {
       completionTokens: 2,
       totalTokens: 12,
     });
+    expect(metricsMock.recordReviewMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewId: PAYLOAD.reviewId,
+        repoFullName: PAYLOAD.repoFullName,
+        triggerPath: "hosted_pull_request",
+        status: "completed",
+        conclusion: "success",
+        suppressedCleanComment: true,
+        result: expect.objectContaining({ modelUsed: "test/failover" }),
+      }),
+    );
     expect(dbMock.updates).toContainEqual(
       expect.objectContaining({
         status: "completed",
@@ -337,6 +353,15 @@ describe("reviewPullRequest", () => {
       "review_failed",
       expect.objectContaining({
         error: "Review failed to complete.",
+      }),
+    );
+    expect(metricsMock.classifyReviewFailure).toHaveBeenCalled();
+    expect(metricsMock.recordReviewMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewId: PAYLOAD.reviewId,
+        status: "failed",
+        conclusion: "failure",
+        failureClass: "cli",
       }),
     );
   });

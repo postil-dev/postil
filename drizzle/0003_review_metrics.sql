@@ -1,0 +1,57 @@
+CREATE TABLE "review_metrics" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"review_id" uuid,
+	"organization_id" uuid,
+	"installation_id" bigint,
+	"repo_full_name" text NOT NULL,
+	"pull_number" integer,
+	"head_sha" text,
+	"check_run_id" bigint,
+	"trigger_run_id" text,
+	"workflow_run_id" bigint,
+	"trigger_path" text NOT NULL,
+	"status" text NOT NULL,
+	"conclusion" text,
+	"failure_class" text,
+	"started_at" timestamp with time zone,
+	"completed_at" timestamp with time zone,
+	"latency_ms" integer,
+	"timeout_ms" integer,
+	"model_provider" text,
+	"model_used" text,
+	"model_cascade" text,
+	"prompt_tokens" integer DEFAULT 0 NOT NULL,
+	"completion_tokens" integer DEFAULT 0 NOT NULL,
+	"total_tokens" integer DEFAULT 0 NOT NULL,
+	"cache_hit" boolean DEFAULT false NOT NULL,
+	"fallback_used" boolean DEFAULT false NOT NULL,
+	"cli_version" text,
+	"action_version" text,
+	"hosted_app_version" text,
+	"finding_count" integer DEFAULT 0 NOT NULL,
+	"error_finding_count" integer DEFAULT 0 NOT NULL,
+	"warn_finding_count" integer DEFAULT 0 NOT NULL,
+	"info_finding_count" integer DEFAULT 0 NOT NULL,
+	"finding_category_counts" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"inline_comment_count" integer DEFAULT 0 NOT NULL,
+	"posted_comment_count" integer DEFAULT 0 NOT NULL,
+	"suppressed_clean_comment" boolean DEFAULT false NOT NULL,
+	"review_body_length" integer DEFAULT 0 NOT NULL,
+	"review_comment_length" integer DEFAULT 0 NOT NULL,
+	"rerun" boolean DEFAULT false NOT NULL,
+	"replay" boolean DEFAULT false NOT NULL,
+	"feedback_helpful" boolean,
+	"feedback_false_positive" boolean,
+	"feedback_missed_issue" boolean,
+	"feedback_dismissed_finding" boolean,
+	"metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "review_metrics" ADD CONSTRAINT "review_metrics_review_id_reviews_id_fk" FOREIGN KEY ("review_id") REFERENCES "public"."reviews"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "review_metrics" ADD CONSTRAINT "review_metrics_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "review_metrics_review_id_idx" ON "review_metrics" USING btree ("review_id");--> statement-breakpoint
+CREATE INDEX "review_metrics_recent_idx" ON "review_metrics" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX "review_metrics_repo_pr_idx" ON "review_metrics" USING btree ("repo_full_name","pull_number");--> statement-breakpoint
+CREATE INDEX "review_metrics_status_idx" ON "review_metrics" USING btree ("status","conclusion","failure_class");

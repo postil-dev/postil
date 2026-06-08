@@ -13,6 +13,7 @@ import { env } from "@/lib/env";
 import { installationOctokit, mintInstallationToken } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { decryptReviewInstallationToken } from "@/lib/review-token";
+import { classifyReviewFailure, recordReviewMetric } from "@/lib/review-metrics";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import {
   type ReviewEnvelope,
@@ -399,6 +400,36 @@ export const reviewPullRequest = task({
       });
 
       try {
+        await recordReviewMetric({
+          reviewId: payload.reviewId,
+          installationId: payload.installationId,
+          repoFullName: payload.repoFullName,
+          pullNumber: payload.pullNumber,
+          headSha: payload.headSha,
+          checkRunId: payload.checkRunId,
+          triggerPath: "hosted_pull_request",
+          status: "completed",
+          conclusion: checkRunConclusionForResult(result),
+          startedAt: new Date(started),
+          completedAt: new Date(),
+          latencyMs: Date.now() - started,
+          timeoutMs: REVIEW_CLI_TIMEOUT_MS,
+          modelUsed: result.modelUsed ?? reviewModelUsed,
+          modelCascade: env.REVIEW_MODEL_CASCADE,
+          result,
+          suppressedCleanComment: result.findings.length === 0,
+        });
+      } catch (metricsErr) {
+        captureException(metricsErr, {
+          properties: {
+            op: "record_review_metrics_completed",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
+        });
+      }
+
+      try {
         if (payload.reviewId) {
           if (hasDatabaseUrl()) {
             await recordReviewCompleted(payload.installationId, payload.reviewId);
@@ -465,6 +496,35 @@ export const reviewPullRequest = task({
         modelUsed: reviewModelUsed,
         installationHash,
       });
+
+      try {
+        await recordReviewMetric({
+          reviewId: payload.reviewId,
+          installationId: payload.installationId,
+          repoFullName: payload.repoFullName,
+          pullNumber: payload.pullNumber,
+          headSha: payload.headSha,
+          checkRunId: payload.checkRunId,
+          triggerPath: "hosted_pull_request",
+          status: "failed",
+          conclusion: "failure",
+          failureClass: classifyReviewFailure(err),
+          startedAt: new Date(started),
+          completedAt: new Date(),
+          latencyMs: Date.now() - started,
+          timeoutMs: REVIEW_CLI_TIMEOUT_MS,
+          modelUsed: reviewModelUsed,
+          modelCascade: env.REVIEW_MODEL_CASCADE,
+        });
+      } catch (metricsErr) {
+        captureException(metricsErr, {
+          properties: {
+            op: "record_review_metrics_failed",
+            repoFullName: payload.repoFullName,
+            pullNumber: payload.pullNumber,
+          },
+        });
+      }
 
       throw publicError;
     }

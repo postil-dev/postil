@@ -18,6 +18,10 @@ const dbMock = vi.hoisted(() => ({
 const reviewJobMock = vi.hoisted(() => ({
   enqueueReviewPullRequest: vi.fn(async () => ({ id: "trigger-run-123" })),
 }));
+const metricsMock = vi.hoisted(() => ({
+  classifyReviewFailure: vi.fn(() => "trigger"),
+  recordReviewMetric: vi.fn(),
+}));
 const configMock = vi.hoisted(() => ({
   review: {
     auto_merge: true,
@@ -117,6 +121,7 @@ vi.mock("@/lib/posthog", () => ({
   captureException: posthogMock.captureException,
   track: posthogMock.track,
 }));
+vi.mock("@/lib/review-metrics", () => metricsMock);
 
 vi.mock("@/lib/review-token", () => ({
   encryptReviewInstallationToken: vi.fn(
@@ -218,6 +223,17 @@ describe("github webhook", () => {
     );
     expect(dbMock.insertCalls).toEqual([dbMock.webhookDeliveries, dbMock.reviews]);
     expect(dbMock.updateCalls).toContainEqual({ triggerRunId: "trigger-run-123" });
+    expect(metricsMock.recordReviewMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewId: "review-1",
+        repoFullName: "acme/widget",
+        pullNumber: 68,
+        checkRunId: 321,
+        triggerRunId: "trigger-run-123",
+        triggerPath: "hosted_pull_request",
+        status: "queued",
+      }),
+    );
     expect(mockRequest).toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({
@@ -405,6 +421,13 @@ describe("github webhook", () => {
     );
     expect(JSON.stringify(mockRequest.mock.calls)).not.toContain("tr_pat_secret_leak");
     expect(JSON.stringify(mockRequest.mock.calls)).not.toContain("tr_prod_secret_leak");
+    expect(metricsMock.classifyReviewFailure).toHaveBeenCalledWith(err);
+    expect(metricsMock.recordReviewMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "failed",
+        failureClass: "trigger",
+      }),
+    );
   });
 
   it("reports safe dispatch config failures on the review check-run", async () => {

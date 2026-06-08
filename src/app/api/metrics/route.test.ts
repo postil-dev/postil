@@ -13,6 +13,34 @@ vi.mock("@/db", () => ({
   schema: {
     reviews: { status: "status", createdAt: "createdAt", completedAt: "completedAt", id: "id", repoFullName: "repoFullName", pullNumber: "pullNumber", errorMessage: "errorMessage" },
     usageEvents: { createdAt: "createdAt", kind: "kind", quantity: "quantity" },
+    reviewMetrics: {
+      id: "metricId",
+      reviewId: "reviewId",
+      repoFullName: "repoFullName",
+      pullNumber: "pullNumber",
+      headSha: "headSha",
+      checkRunId: "checkRunId",
+      triggerRunId: "triggerRunId",
+      workflowRunId: "workflowRunId",
+      triggerPath: "triggerPath",
+      status: "metricStatus",
+      conclusion: "conclusion",
+      failureClass: "failureClass",
+      latencyMs: "latencyMs",
+      modelProvider: "modelProvider",
+      modelUsed: "modelUsed",
+      totalTokens: "totalTokens",
+      findingCount: "findingCount",
+      errorFindingCount: "errorFindingCount",
+      warnFindingCount: "warnFindingCount",
+      infoFindingCount: "infoFindingCount",
+      inlineCommentCount: "inlineCommentCount",
+      postedCommentCount: "postedCommentCount",
+      suppressedCleanComment: "suppressedCleanComment",
+      rerun: "rerun",
+      replay: "replay",
+      createdAt: "metricCreatedAt",
+    },
   },
 }));
 
@@ -77,17 +105,62 @@ describe("metrics endpoint", () => {
             // stale running reviews — single row
             return [{ count: 1 }];
           }
-          // recent failures
+          if (callCount === 6) {
+            // recent failures
+            return {
+              orderBy: () => ({
+                limit: () => [
+                  {
+                    id: "failure-1",
+                    repoFullName: "acme/widget",
+                    pullNumber: 99,
+                    status: "failed",
+                    errorMessage: "Review timed out before completion.",
+                    createdAt: new Date("2026-06-01T10:00:00Z"),
+                  },
+                ],
+              }),
+            };
+          }
+          if (callCount === 7) {
+            // review metric aggregates
+            return {
+              groupBy: async () => [
+                {
+                  triggerPath: "hosted_pull_request",
+                  status: "completed",
+                  conclusion: "success",
+                  failureClass: null,
+                  count: 5,
+                  totalTokens: 12000,
+                  postedComments: 0,
+                  suppressedCleanComments: 5,
+                },
+              ],
+            };
+          }
+          // recent review metrics
           return {
             orderBy: () => ({
               limit: () => [
                 {
-                  id: "failure-1",
+                  id: "metric-1",
+                  reviewId: "review-1",
                   repoFullName: "acme/widget",
-                  pullNumber: 99,
-                  status: "failed",
-                  errorMessage: "Review timed out before completion.",
-                  createdAt: new Date("2026-06-01T10:00:00Z"),
+                  pullNumber: 7,
+                  headSha: "abc123",
+                  triggerPath: "hosted_pull_request",
+                  status: "completed",
+                  conclusion: "success",
+                  failureClass: null,
+                  totalTokens: 42,
+                  findingCount: 0,
+                  errorFindingCount: 0,
+                  warnFindingCount: 0,
+                  infoFindingCount: 0,
+                  inlineCommentCount: 0,
+                  postedCommentCount: 0,
+                  suppressedCleanComment: true,
                 },
               ],
             }),
@@ -109,5 +182,16 @@ describe("metrics endpoint", () => {
       failureClass: "timeout",
     });
     expect(body.usage.totalTokens).toBe(12000);
+    expect(body.reviewMetrics.aggregates[0]).toMatchObject({
+      triggerPath: "hosted_pull_request",
+      status: "completed",
+      suppressedCleanComments: 5,
+    });
+    expect(body.reviewMetrics.recent[0]).toMatchObject({
+      reviewId: "review-1",
+      repo: "acme/widget",
+      suppressedCleanComment: true,
+      findings: { total: 0, error: 0, warn: 0, info: 0 },
+    });
   });
 });
