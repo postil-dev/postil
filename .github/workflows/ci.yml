@@ -99,13 +99,13 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Build Docker image (no push)
-        uses: docker/build-push-action@789f68658055d3ca993799b232b5c46dfe3f114d # v6
-        with:
-          context: .
-          build-args: |
-            BETTER_AUTH_SECRET=ci-build-only-auth-secret-00000000
-          push: false
-          tags: postil-web:ci-${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg BETTER_AUTH_SECRET=ci-build-only-auth-secret-00000000 \
+            --tag postil:ci-${{ github.sha }} \
+            .
+        env:
+          DOCKER_BUILDKIT: "0"
 
   e2e:
     name: E2E tests
