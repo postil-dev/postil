@@ -100,7 +100,7 @@ describe("trigger config", () => {
     process.env.NEON_CONNECTION_STRING = "postgres://example.test/db";
     process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
     process.env.REVIEW_TOKEN_SECRET = "test-review-token-secret";
-    process.env.POSTIL_CLI_PATH = "/home/bun/.cargo/bin/postil";
+    process.env.POSTIL_CLI_PATH = "/app/.postil/bin/postil";
 
     try {
       const { default: config } = await import("../trigger.config");
@@ -126,7 +126,7 @@ describe("trigger config", () => {
         OPENROUTER_API_KEY: "test-openrouter-key",
         NEON_CONNECTION_STRING: "postgres://example.test/db",
         REVIEW_TOKEN_SECRET: "test-review-token-secret",
-        POSTIL_CLI_PATH: "/home/bun/.cargo/bin/postil",
+        POSTIL_CLI_PATH: "/app/.postil/bin/postil",
       });
       expect(syncedEnv).not.toHaveProperty("TRIGGER_SECRET_KEY");
     } finally {
@@ -183,7 +183,7 @@ describe("trigger config", () => {
         }),
         commands: expect.arrayContaining([
           "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
-          "mkdir -p /home/bun/.cargo/bin && $HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --rev 3df78f88531aadb76942f4c69bc5a22e4421be34 --locked --force --root /home/bun/.cargo",
+          "mkdir -p /app/.postil/bin && $HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --rev 3df78f88531aadb76942f4c69bc5a22e4421be34 --locked --force --root /app/.postil",
         ]),
       }),
     );

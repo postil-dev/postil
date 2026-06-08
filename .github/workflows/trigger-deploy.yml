@@ -108,7 +108,7 @@ jobs:
           # TRIGGER_SECRET_KEY is the Trigger runtime dispatch key (tr_prod_...),
           # while REVIEW_TOKEN_SECRET encrypts GitHub installation tokens.
           export REVIEW_TOKEN_SECRET="${REVIEW_TOKEN_SECRET:-${REPOSITORY_REVIEW_TOKEN_SECRET:-}}"
-          export POSTIL_CLI_PATH="${POSTIL_CLI_PATH:-/home/bun/.cargo/bin/postil}"
+          export POSTIL_CLI_PATH="${POSTIL_CLI_PATH:-/app/.postil/bin/postil}"
           export DATABASE_URL="${DATABASE_URL:-${REPOSITORY_DATABASE_URL:-}}"
           export NEON_CONNECTION_STRING="${NEON_CONNECTION_STRING:-${REPOSITORY_NEON_CONNECTION_STRING:-}}"
           export GITHUB_APP_ID="${GITHUB_APP_ID:-${REPOSITORY_GITHUB_APP_ID:-}}"

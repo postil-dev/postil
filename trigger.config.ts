@@ -94,7 +94,7 @@ const postilCli = {
       },
       commands: [
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
-        `mkdir -p /home/bun/.cargo/bin && $HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --rev ${POSTIL_CLI_REV} --locked --force --root /home/bun/.cargo`,
+        `mkdir -p /app/.postil/bin && $HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --rev ${POSTIL_CLI_REV} --locked --force --root /app/.postil`,
       ],
     });
   },
