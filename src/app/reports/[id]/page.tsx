@@ -24,6 +24,10 @@ function resultJson(result: unknown): string {
   return JSON.stringify(result ?? {}, null, 2);
 }
 
+function failureClassLabel(failureClass: string | null): string {
+  return failureClass ? failureClass.replace(/_/g, " ") : "";
+}
+
 export default async function ReportDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const viewer = await requireReportSession(`/reports/${id}`);
@@ -65,6 +69,12 @@ export default async function ReportDetailPage({ params }: { params: Promise<{ i
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Completed</p>
           <p className="mt-2 text-sm">{formatDate(report.completedAt)}</p>
         </div>
+        {report.failureClass ? (
+          <div className="rounded-lg border border-border bg-card p-4">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground">Failure class</p>
+            <p className="mt-2 text-sm">{failureClassLabel(report.failureClass)}</p>
+          </div>
+        ) : null}
       </section>
 
       {report.errorMessage ? (

@@ -80,7 +80,16 @@ describe("metrics endpoint", () => {
           // recent failures
           return {
             orderBy: () => ({
-              limit: () => [],
+              limit: () => [
+                {
+                  id: "failure-1",
+                  repoFullName: "acme/widget",
+                  pullNumber: 99,
+                  status: "failed",
+                  errorMessage: "Review timed out before completion.",
+                  createdAt: new Date("2026-06-01T10:00:00Z"),
+                },
+              ],
             }),
           };
         },
@@ -95,6 +104,10 @@ describe("metrics endpoint", () => {
     expect(body.reviews.byStatus.completed).toBe(5);
     expect(body.reviews.successRatePct).toBe(100);
     expect(body.reviews.staleRunning).toEqual({ olderThanMinutes: 30, count: 1 });
+    expect(body.recentFailures[0]).toMatchObject({
+      id: "failure-1",
+      failureClass: "timeout",
+    });
     expect(body.usage.totalTokens).toBe(12000);
   });
 });

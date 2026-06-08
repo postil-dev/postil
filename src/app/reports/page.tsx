@@ -26,6 +26,10 @@ function statusClassName(status: string): string {
   return "border-border bg-muted text-muted-foreground";
 }
 
+function failureClassLabel(failureClass: string | null): string {
+  return failureClass ? failureClass.replace(/_/g, " ") : "";
+}
+
 export default async function ReportsPage({
   searchParams,
 }: {
@@ -99,6 +103,11 @@ export default async function ReportsPage({
                     >
                       {report.status}
                     </span>
+                    {report.failureClass ? (
+                      <span className="mt-2 block text-xs text-muted-foreground">
+                        {failureClassLabel(report.failureClass)}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="text-sm">{report.findingCount}</span>
                   <span className="hidden text-sm text-muted-foreground md:block">

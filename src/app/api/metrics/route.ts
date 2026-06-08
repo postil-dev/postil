@@ -2,6 +2,7 @@ import { and, count, eq, gte, sql, sum } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb, schema } from "@/db";
 import { env } from "@/lib/env";
+import { reviewFailureClass } from "@/lib/review-failure";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -100,6 +101,7 @@ export async function GET(req: Request): Promise<Response> {
       id: schema.reviews.id,
       repoFullName: schema.reviews.repoFullName,
       pullNumber: schema.reviews.pullNumber,
+      status: schema.reviews.status,
       errorMessage: schema.reviews.errorMessage,
       createdAt: schema.reviews.createdAt,
     })
@@ -134,6 +136,7 @@ export async function GET(req: Request): Promise<Response> {
       id: f.id,
       repo: f.repoFullName,
       pr: f.pullNumber,
+      failureClass: reviewFailureClass(f.status, f.errorMessage),
       error: f.errorMessage,
       at: f.createdAt,
     })),
