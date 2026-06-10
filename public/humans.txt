@@ -1,0 +1,4 @@
+Postil is maintained by postil-dev.
+Site: https://postil.dev
+Source: https://github.com/postil-dev/postil
+Contact: hello@postil.dev
