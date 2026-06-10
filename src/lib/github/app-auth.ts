@@ -84,8 +84,12 @@ export async function getInstallationToken(githubInstallationId: number): Promis
   return data.token;
 }
 
+/**
+ * GITHUB_API_URL is the one knob for GHES: the worker uses it here and the
+ * spawned CLI reads the same variable from its inherited environment.
+ */
 export function apiBase(): string {
-  return optionalEnv("GITHUB_API_BASE", GITHUB_API) as string;
+  return optionalEnv("GITHUB_API_URL", GITHUB_API) as string;
 }
 
 function truncate(s: string, n = 300): string {
