@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# env
+.env
+.env.*
+!.env.example
+
+# local scratch
+.cache/
+tmp/
+
+# misc
+*.tsbuildinfo
+next-env.d.ts

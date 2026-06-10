@@ -1,0 +1,102 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "Quickstart",
+  description: "From zero to a first Postil review in a few minutes: CLI, Action, or hosted App.",
+};
+
+export default function QuickstartPage() {
+  return (
+    <div className="prose-postil">
+      <h1 className="serif-display text-4xl text-charcoal">Quickstart</h1>
+      <p className="mt-4 text-lg">
+        Three ways in, one engine. Pick the one that matches where you want the
+        review to happen.
+      </p>
+
+      <h2>1. Local CLI</h2>
+      <p>
+        Install the binary and point it at an OpenAI-compatible endpoint. The
+        default is OpenRouter.
+      </p>
+      <pre>
+        <code>{`cargo install postil-cli      # or download a prebuilt binary
+export OPENROUTER_API_KEY=sk-or-...
+
+# review what you are about to commit
+postil review --staged
+
+# review a branch against main
+postil review --base main`}</code>
+      </pre>
+      <p>
+        On a clean diff the command prints nothing of substance and exits{" "}
+        <code>0</code>. Findings print with severity, path, line, confidence,
+        and kind; gate-failing findings exit <code>1</code>.
+      </p>
+      <p>
+        Verify your setup before the first real review with{" "}
+        <code>postil doctor</code>: it checks the endpoint, key, and model and
+        reports exactly what is wrong if anything is.
+      </p>
+
+      <h2>2. GitHub Actions</h2>
+      <p>
+        The composite action installs a CLI pinned to a full 40-character
+        commit SHA and runs the same review in CI:
+      </p>
+      <pre>
+        <code>{`name: review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  postil:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: postil-dev/postil-action@v1
+        with:
+          cli-ref: <40-hex postil-cli commit SHA>
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}</code>
+      </pre>
+
+      <h2>3. Hosted GitHub App</h2>
+      <p>
+        Install the App from the <Link href="/install">install page</Link>,
+        select repositories, and open a pull request. Postil creates two
+        check-runs — <code>postil/review</code> and <code>postil/gate</code> —
+        and reviews the diff. Drafts are skipped until marked ready.
+      </p>
+      <p>
+        To make the gate binding, require <code>postil/gate</code> in branch
+        protection. See <Link href="/docs/gate">the gate</Link>.
+      </p>
+
+      <h2>Next steps</h2>
+      <ul>
+        <li>
+          Tune thresholds and ignores in{" "}
+          <Link href="/docs/config">.postil.yaml</Link> — or keep your existing{" "}
+          <code>.coderabbit.yaml</code>; Postil reads it.
+        </li>
+        <li>
+          Preview any config change with{" "}
+          <Link href="/docs/plan">postil plan</Link> before deploying it.
+        </li>
+        <li>
+          Run the whole stack yourself:{" "}
+          <Link href="/docs/self-hosted">self-hosted guide</Link>.
+        </li>
+      </ul>
+    </div>
+  );
+}

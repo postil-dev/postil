@@ -1,0 +1,215 @@
+@import "tailwindcss";
+
+@theme {
+  /* Brand System A */
+  --color-ivory: #f7f5f1;
+  --color-charcoal: #1b2329;
+  --color-gate: #64745c;
+  --color-stone: #e3ded8;
+  --color-rust: #c24a2a;
+  --color-softred: #d46a6a;
+  --color-mist: #c8cdd2;
+
+  --color-ink-soft: #3d464d; /* charcoal lightened for long-form body */
+  --color-paper: #fdfcfa; /* card surface a hair above ivory */
+
+  --font-serif: var(--font-source-serif), "Source Serif 4", Georgia, serif;
+  --font-sans: var(--font-inter), Inter, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+
+  --radius-card: 6px;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-ivory);
+  color: var(--color-charcoal);
+  font-family: var(--font-sans);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-gate);
+  color: var(--color-ivory);
+}
+
+/* Editorial primitives */
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-gate);
+}
+
+.serif-display {
+  font-family: var(--font-serif);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.rule {
+  border-top: 1px solid var(--color-stone);
+}
+
+.card {
+  background: var(--color-paper);
+  border: 1px solid var(--color-stone);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.btn-primary {
+  display: inline-block;
+  background: var(--color-rust);
+  color: var(--color-ivory);
+  font-size: 15px;
+  font-weight: 500;
+  padding: 0.625rem 1.25rem;
+  border-radius: var(--radius-card);
+  transition: background-color 120ms ease;
+}
+.btn-primary:hover {
+  background: #a93f23;
+}
+
+.btn-secondary {
+  display: inline-block;
+  border: 1px solid var(--color-charcoal);
+  color: var(--color-charcoal);
+  font-size: 15px;
+  font-weight: 500;
+  padding: 0.625rem 1.25rem;
+  border-radius: var(--radius-card);
+  transition: background-color 120ms ease;
+}
+.btn-secondary:hover {
+  background: var(--color-stone);
+}
+
+.link-arrow {
+  color: var(--color-rust);
+  font-weight: 500;
+}
+.link-arrow::after {
+  content: " \2192";
+}
+.link-arrow:hover {
+  text-decoration: underline;
+}
+
+/* Terminal block */
+.terminal {
+  background: var(--color-charcoal);
+  color: var(--color-ivory);
+  border-radius: var(--radius-card);
+  border: 1px solid #2c363d;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+.terminal .t-dim {
+  color: #8b969e;
+}
+.terminal .t-green {
+  color: #9db18f;
+}
+.terminal .t-rust {
+  color: #e08763;
+}
+.terminal .t-red {
+  color: var(--color-softred);
+}
+
+/* Long-form prose for docs and legal pages */
+.prose-postil {
+  color: var(--color-ink-soft);
+  font-size: 16px;
+  max-width: 46rem;
+}
+.prose-postil h2 {
+  font-family: var(--font-serif);
+  color: var(--color-charcoal);
+  font-size: 24px;
+  line-height: 1.2;
+  margin-top: 2.5rem;
+  margin-bottom: 0.75rem;
+}
+.prose-postil h3 {
+  font-family: var(--font-serif);
+  color: var(--color-charcoal);
+  font-size: 20px;
+  line-height: 1.2;
+  margin-top: 2rem;
+  margin-bottom: 0.5rem;
+}
+.prose-postil p {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.prose-postil ul,
+.prose-postil ol {
+  margin: 0.75rem 0 0.75rem 1.25rem;
+  list-style: disc;
+}
+.prose-postil ol {
+  list-style: decimal;
+}
+.prose-postil li {
+  margin: 0.3rem 0;
+}
+.prose-postil code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--color-stone);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+.prose-postil pre {
+  background: var(--color-charcoal);
+  color: var(--color-ivory);
+  border-radius: var(--radius-card);
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  margin: 1rem 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.prose-postil pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+.prose-postil a {
+  color: var(--color-rust);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-postil table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 14px;
+}
+.prose-postil th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-charcoal);
+  border-bottom: 1px solid var(--color-charcoal);
+  padding: 0.4rem 0.75rem 0.4rem 0;
+}
+.prose-postil td {
+  border-bottom: 1px solid var(--color-stone);
+  padding: 0.45rem 0.75rem 0.45rem 0;
+  vertical-align: top;
+}
