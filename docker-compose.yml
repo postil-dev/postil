@@ -1,0 +1,78 @@
+# Local + self-hosted Postil. `docker compose up` brings up Postgres, runs the
+# Drizzle migrations once, then starts the web (Next.js) and the worker process
+# from the same image.
+
+x-image: &image
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      POSTIL_CLI_REV: ${POSTIL_CLI_REV}
+
+x-env: &env
+  DATABASE_URL: postgres://postil:postil@postgres:5432/postil
+  APP_URL: ${APP_URL:-http://localhost:3000}
+  POSTIL_CLI_PATH: /usr/local/bin/postil
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  REVIEW_MODEL: ${REVIEW_MODEL:-deepseek/deepseek-v4-pro}
+  REVIEW_MODEL_CASCADE: ${REVIEW_MODEL_CASCADE:-}
+  GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+  GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+  GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+  GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+  GITHUB_APP_INSTALL_URL: ${GITHUB_APP_INSTALL_URL:-}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-only-do-not-reuse}
+  BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+  METRICS_API_KEY: ${METRICS_API_KEY:-}
+  REVIEW_TOKEN_SECRET: ${REVIEW_TOKEN_SECRET:-dev-only-do-not-reuse-32-bytes!!}
+  POSTHOG_API_KEY: ${POSTHOG_API_KEY:-}
+  POSTHOG_HOST: ${POSTHOG_HOST:-https://eu.posthog.com}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postil
+      POSTGRES_PASSWORD: postil
+      POSTGRES_DB: postil
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postil -d postil"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  migrate:
+    <<: *image
+    environment: *env
+    command: ["bun", "run", "db:migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  web:
+    <<: *image
+    environment: *env
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    <<: *image
+    environment: *env
+    command: ["bun", "run", "src/worker/run.ts"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data: {}
