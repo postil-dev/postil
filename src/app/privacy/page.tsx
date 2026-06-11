@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AnchorHeading } from "../site";
+import { OptOutButton } from "./opt-out-button";
 
 export const metadata: Metadata = {
   title: "Privacy",
@@ -44,9 +45,10 @@ export default function PrivacyPage() {
           Opting out
         </AnchorHeading>
         <p>
-          You can disable PostHog tracking by enabling Do Not Track in your browser. When opted out,
-          no events are sent and no cookies are set.
+          You can disable PostHog tracking by enabling Do Not Track in your browser, or by using
+          the opt-out button below. When opted out, no events are sent and no cookies are set.
         </p>
+        <OptOutButton />
         <p>
           If you have questions, contact us via the security details in our{" "}
           <a
