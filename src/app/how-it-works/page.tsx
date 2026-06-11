@@ -43,7 +43,7 @@ export default function HowItWorksPage() {
             body="One event in, one diff reviewed, one check run out. If there is nothing worth saying, the PR does not get a bot recap."
             id="top"
           />
-          <ReviewCard />
+          <ReviewCard id="billing-update-now-runs-before-authorization" />
         </div>
       </section>
       <section className="border-b py-16">
