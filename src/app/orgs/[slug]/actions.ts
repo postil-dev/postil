@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { and, eq } from "drizzle-orm";
 
+import { validateApiBase } from "@/lib/api-base";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -63,6 +64,8 @@ export async function saveOrgSettings(formData: FormData): Promise<void> {
   const { orgId } = await requireMembership(slug);
 
   const apiBase = String(formData.get("apiBase") ?? "").trim() || null;
+  // SSRF guard: the worker hands this URL to the CLI as POSTIL_API_BASE.
+  if (apiBase) validateApiBase(apiBase);
   const model = String(formData.get("model") ?? "").trim() || null;
   const modelCascade = String(formData.get("modelCascade") ?? "").trim() || null;
   const apiKey = String(formData.get("apiKey") ?? "").trim();

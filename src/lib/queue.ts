@@ -35,6 +35,9 @@ export interface RespondJobPayload extends Record<string, unknown> {
   number: number; // PR or issue number
   isPr: boolean;
   comment: string; // the maintainer's message text
+  // "path:line" anchor when the mention is a PR review comment, so the bot
+  // knows which code the question is about.
+  commentAnchor?: string;
 }
 
 export async function enqueueJob(

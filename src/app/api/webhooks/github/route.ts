@@ -73,7 +73,14 @@ interface CommentEventPayload {
   installation?: { id: number };
   repository?: RepoSummary;
   sender?: GithubUser;
-  comment?: { body?: string; user?: GithubUser };
+  comment?: {
+    body?: string;
+    user?: GithubUser;
+    author_association?: string;
+    // Present on pull_request_review_comment: the thread's anchor.
+    path?: string;
+    line?: number;
+  };
   issue?: { number: number; body?: string; pull_request?: unknown };
   pull_request?: { number: number };
 }
@@ -83,7 +90,7 @@ interface IssuesEventPayload {
   installation?: { id: number };
   repository?: RepoSummary;
   sender?: GithubUser;
-  issue?: { number: number; body?: string };
+  issue?: { number: number; body?: string; author_association?: string };
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -348,6 +355,21 @@ function isBot(user: GithubUser | undefined): boolean {
   return user?.type === "Bot" || Boolean(user?.login && user.login.endsWith("[bot]"));
 }
 
+/**
+ * Only privileged repo affiliations may summon the bot. Every respond job
+ * spends LLM tokens on the org's (or our) API key, so an open trigger lets
+ * any drive-by commenter burn the budget by spamming @postil on a public
+ * repo. Anything outside this set is dropped silently.
+ */
+const RESPOND_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+function mayTriggerRespond(authorAssociation: string | undefined): boolean {
+  return Boolean(authorAssociation && RESPOND_ALLOWED_ASSOCIATIONS.has(authorAssociation));
+}
+
+// Respond jobs share the delivery-id dedupe at the top of POST: a redelivered
+// issue_comment/issues event is acknowledged as duplicate before dispatch, so
+// it can never enqueue a second bot reply.
 async function enqueueRespond(payload: RespondJobPayload): Promise<void> {
   await enqueueJob(getPool(), "respond", payload, { maxAttempts: 2 });
 }
@@ -356,6 +378,7 @@ async function handleIssueComment(payload: CommentEventPayload): Promise<void> {
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
   if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
+  if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
   if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
   await enqueueRespond({
@@ -373,14 +396,22 @@ async function handleReviewComment(payload: CommentEventPayload): Promise<void> 
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
   if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
+  if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
   if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
+  // Review comments anchor to a file/line; without it the bot answers blind
+  // to which code the question is about.
+  const anchor =
+    payload.comment?.path != null
+      ? `${payload.comment.path}${payload.comment.line != null ? `:${payload.comment.line}` : ""}`
+      : undefined;
   await enqueueRespond({
     installationId: payload.installation!.id,
     repoFullName: payload.repository.full_name,
     number: payload.pull_request.number,
     isPr: true,
     comment: body!,
+    commentAnchor: anchor,
   });
 }
 
@@ -389,6 +420,7 @@ async function handleIssues(payload: IssuesEventPayload): Promise<void> {
   if (payload.action !== "opened") return;
   const body = payload.issue?.body;
   if (!mentionsPostil(body) || isBot(payload.sender)) return;
+  if (!mayTriggerRespond(payload.issue?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
   if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
   await enqueueRespond({

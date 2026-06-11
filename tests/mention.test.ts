@@ -26,4 +26,32 @@ describe("mentionsPostil", () => {
     expect(mentionsPostil("(@postil)")).toBe(true);
     expect(mentionsPostil("cc: @postil.")).toBe(true);
   });
+
+  test("matches plain and mid-sentence mentions", () => {
+    expect(mentionsPostil("@postil")).toBe(true);
+    expect(mentionsPostil("hey @postil, look")).toBe(true);
+  });
+
+  test("does not match other handles that merely start with postil", () => {
+    // GitHub handles allow hyphens; these are different accounts/orgs.
+    expect(mentionsPostil("@postil-dev/maintainers please review")).toBe(false);
+    expect(mentionsPostil("use @postil-action in CI")).toBe(false);
+    expect(mentionsPostil("install @postil-cli first")).toBe(false);
+  });
+
+  test("ignores mentions inside fenced code blocks", () => {
+    expect(mentionsPostil("example:\n```\nsay @postil to summon the bot\n```\nend")).toBe(false);
+    expect(mentionsPostil("```yaml\ncomment: '@postil'\n```")).toBe(false);
+    // Unterminated fences render as code to the end of the comment.
+    expect(mentionsPostil("```\n@postil")).toBe(false);
+  });
+
+  test("ignores mentions inside inline code spans", () => {
+    expect(mentionsPostil("type `@postil` in a comment")).toBe(false);
+  });
+
+  test("still matches prose mentions next to code", () => {
+    expect(mentionsPostil("`config` @postil what does this do?")).toBe(true);
+    expect(mentionsPostil("```\nsome code\n```\n@postil thoughts?")).toBe(true);
+  });
 });

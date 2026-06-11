@@ -1,7 +1,9 @@
+import { accessSync, constants } from "node:fs";
 import { hostname } from "node:os";
+import { delimiter, isAbsolute, join } from "node:path";
 
 import { closeDb, getPool } from "@/lib/db";
-import { validateEnv } from "@/lib/env";
+import { optionalEnv, validateEnv } from "@/lib/env";
 import {
   claimJob,
   completeJob,
@@ -89,8 +91,41 @@ async function watchdogLoop(): Promise<void> {
   }
 }
 
+/**
+ * Fail fast if the postil CLI the worker spawns is missing or not
+ * executable. Compose sets POSTIL_BIN unconditionally, so an image built
+ * without vendor/postil would otherwise boot clean and fail every job.
+ */
+function validatePostilBin(): void {
+  const bin = optionalEnv("POSTIL_BIN", "postil") as string;
+  const candidates =
+    isAbsolute(bin) || bin.includes("/")
+      ? [bin]
+      : (process.env.PATH ?? "")
+          .split(delimiter)
+          .filter(Boolean)
+          .map((dir) => join(dir, bin));
+  const found = candidates.some((candidate) => {
+    try {
+      accessSync(candidate, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!found) {
+    throw new Error(
+      `Postil worker cannot start: postil CLI not found or not executable at '${bin}'` +
+        `${candidates.length > 1 ? " (searched PATH)" : ""}.\n` +
+        `Every review/respond job spawns this binary, so booting without it would fail every job.\n` +
+        `Fix: build the image with vendor/postil present, or point POSTIL_BIN at an executable postil binary.`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   validateEnv("worker");
+  validatePostilBin();
   // Fail fast if the database is unreachable.
   await getPool().query("SELECT 1");
   console.log(`postil worker ${workerId} started (concurrency ${CONCURRENCY})`);

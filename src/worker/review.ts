@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 
+import { validateApiBase } from "@/lib/api-base";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
@@ -51,6 +52,9 @@ export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConf
   if (settings.apiKeyCiphertext) {
     apiKey = unseal(Buffer.from(settings.apiKeyCiphertext), getSealingKey());
   }
+  // SSRF guard at the worker boundary: rows predating write-time validation
+  // must not reach the spawned CLI as POSTIL_API_BASE.
+  if (settings.apiBase) validateApiBase(settings.apiBase);
   return {
     apiBase: settings.apiBase ?? defaults.apiBase,
     apiKey,
