@@ -31,8 +31,6 @@ const posthogMock = vi.hoisted(() => ({
 const envMock = vi.hoisted(() => ({
   CI_RECOVERY_FALLBACK_ASSIGNEE: "engineer",
   GITHUB_WEBHOOK_SECRET: "test-secret",
-  TRIGGER_SECRET_KEY: "test-trigger-secret" as string | undefined,
-  reviewTokenSecret: "test-review-token-secret" as string | undefined,
 }));
 
 vi.mock("@/lib/env", () => ({
@@ -108,7 +106,6 @@ vi.mock("@/lib/github", () => ({
     request: mockAppRequest,
   }),
   installationOctokit: vi.fn(async () => ({ request: mockRequest })),
-  mintInstallationToken: vi.fn(async () => "short-lived-installation-token"),
 }));
 
 vi.mock("@/jobs/review-pull-request", () => reviewJobMock);
@@ -116,13 +113,6 @@ vi.mock("@/jobs/review-pull-request", () => reviewJobMock);
 vi.mock("@/lib/posthog", () => ({
   captureException: posthogMock.captureException,
   track: posthogMock.track,
-}));
-
-vi.mock("@/lib/review-token", () => ({
-  encryptReviewInstallationToken: vi.fn(
-    (input: { token: string; secret: string }) =>
-      `encrypted:${input.secret}:${input.token === "short-lived-installation-token"}`,
-  ),
 }));
 
 // Import after mock declarations so the route uses the stubs above.
@@ -157,8 +147,6 @@ describe("github webhook", () => {
     dbMock.failFailedStatusUpdate = false;
     dbMock.failDeliveryDelete = false;
     configMock.review = { auto_merge: true };
-    envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
-    envMock.reviewTokenSecret = "test-review-token-secret";
   });
 
   it("rejects missing signature", async () => {
@@ -209,12 +197,8 @@ describe("github webhook", () => {
         headSha: "abc123def456",
         checkRunId: 321,
         reviewId: "review-1",
-        encryptedInstallationToken: "encrypted:test-review-token-secret:true",
       },
       "pr-opened",
-    );
-    expect(JSON.stringify(reviewJobMock.enqueueReviewPullRequest.mock.calls)).not.toContain(
-      "short-lived-installation-token",
     );
     expect(dbMock.insertCalls).toEqual([dbMock.webhookDeliveries, dbMock.reviews]);
     expect(dbMock.updateCalls).toContainEqual({ triggerRunId: "trigger-run-123" });
@@ -266,7 +250,6 @@ describe("github webhook", () => {
         headSha: "mention-sha",
         checkRunId: 654,
         reviewId: "review-1",
-        encryptedInstallationToken: "encrypted:test-review-token-secret:true",
       },
       "mention-comment",
     );
@@ -447,9 +430,10 @@ describe("github webhook", () => {
     );
   });
 
-  it("requires a review token secret before encrypting the installation token", async () => {
-    envMock.TRIGGER_SECRET_KEY = " ";
-    envMock.reviewTokenSecret = " ";
+  it("reports a missing trigger dispatch credential as a generic failure", async () => {
+    reviewJobMock.enqueueReviewPullRequest.mockRejectedValueOnce(
+      new Error("Trigger dispatch credential must be set to dispatch review tasks"),
+    );
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "POST /repos/{owner}/{repo}/check-runs") {
         return { data: { id: 321 } };
@@ -473,17 +457,24 @@ describe("github webhook", () => {
           },
         }),
       ),
-    ).rejects.toThrow("REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens");
+    ).rejects.toThrow("Trigger dispatch credential must be set to dispatch review tasks");
 
-    expect(reviewJobMock.enqueueReviewPullRequest).not.toHaveBeenCalled();
+    expect(mockRequest).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+      expect.objectContaining({
+        output: expect.objectContaining({
+          summary: "Missing Trigger dispatch credential.",
+          text: "Missing Trigger dispatch credential.",
+        }),
+      }),
+    );
     expect(dbMock.updateCalls).toContainEqual(
       expect.objectContaining({
         status: "failed",
-        errorMessage: "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens",
+        errorMessage: "Trigger dispatch credential must be set to dispatch review tasks",
       }),
     );
   });
-
   it("fails dispatch and allows retry when the review check-run cannot be created", async () => {
     mockRequest.mockImplementation(async (route: string) => {
       if (route === "POST /repos/{owner}/{repo}/check-runs") {
@@ -559,7 +550,6 @@ describe("github webhook", () => {
         headSha: "abc123def456",
         checkRunId: 321,
         reviewId: "review-1",
-        encryptedInstallationToken: "encrypted:test-review-token-secret:true",
       },
       "pr-bookkeeping",
     );

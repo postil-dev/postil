@@ -7,7 +7,6 @@ export const reviewPayload = z.object({
   headSha: z.string(),
   checkRunId: z.number().int().optional(),
   reviewId: z.string().uuid().optional(),
-  encryptedInstallationToken: z.string().optional(),
 });
 
 export type ReviewPayload = z.infer<typeof reviewPayload>;

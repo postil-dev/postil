@@ -6,20 +6,11 @@ import { attemptAutoMergeApprovedPull, hasApprovedReview } from "@/jobs/auto-mer
 import { enqueueReviewPullRequest } from "@/jobs/review-pull-request";
 import { loadReviewConfig } from "@/lib/config";
 import { env } from "@/lib/env";
-import { authenticatedAppSlug, installationOctokit, mintInstallationToken } from "@/lib/github";
+import { authenticatedAppSlug, installationOctokit } from "@/lib/github";
 import { captureException, track } from "@/lib/posthog";
-import { encryptReviewInstallationToken } from "@/lib/review-token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function requireTriggerSecretKey(): string {
-  const secret = env.reviewTokenSecret?.trim();
-  if (!secret) {
-    throw new Error("REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens");
-  }
-  return secret;
-}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object") return undefined;
@@ -100,10 +91,8 @@ function publicDispatchFailureSummary(err: unknown): string {
   switch (err.message) {
     case "TRIGGER_PROJECT_ID must be set to dispatch review tasks":
       return "Missing Trigger project configuration.";
-    case "Trigger API token must be set to dispatch review tasks":
+    case "Trigger dispatch credential must be set to dispatch review tasks":
       return "Missing Trigger dispatch credential.";
-    case "REVIEW_TOKEN_SECRET must be set to encrypt review installation tokens":
-      return "Missing review token encryption secret.";
     default:
       return publicTriggerApiFailureSummary(err);
   }
@@ -433,18 +422,6 @@ async function dispatchReview(
   }
 
   try {
-    const triggerSecretKey = requireTriggerSecretKey();
-    const installationToken = await mintInstallationToken(installationId);
-    const encryptedInstallationToken = encryptReviewInstallationToken({
-      token: installationToken,
-      secret: triggerSecretKey,
-      context: {
-        installationId,
-        repoFullName,
-        pullNumber,
-        headSha,
-      },
-    });
     const triggerRun = await enqueueReviewPullRequest(
       {
         installationId,
@@ -453,7 +430,6 @@ async function dispatchReview(
         headSha,
         checkRunId,
         reviewId,
-        encryptedInstallationToken,
       },
       deliveryId,
     );

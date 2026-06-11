@@ -1,78 +1,58 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 
-const triggerMock = vi.hoisted(() => ({
-  task: vi.fn((definition: unknown) => definition),
-  tasksTrigger: vi.fn(async () => ({ id: "trigger-run-123" })),
-}));
+const triggerMock = {
+  authConfigure: vi.fn(),
+  trigger: vi.fn(async () => ({ id: "trigger-run-123" })),
+  task: vi.fn((definition: Record<string, unknown>) => ({
+    ...definition,
+    trigger: triggerMock.trigger,
+  })),
+};
 
-const loggerMock = vi.hoisted(() => ({
-  info: vi.fn(),
-}));
-
-const posthogMock = vi.hoisted(() => ({
+const posthogMock = {
   captureException: vi.fn(),
   hashInstallationId: vi.fn(() => "hashed-installation"),
   track: vi.fn(),
-}));
+};
 
-const usageMock = vi.hoisted(() => ({
+const usageMock = {
   recordReviewCompleted: vi.fn(),
   recordTokenUsage: vi.fn(),
-}));
+};
 
-const githubMock = vi.hoisted(() => ({
-  installationOctokit: vi.fn(async () => ({ request: githubMock.request })),
-  mintInstallationToken: vi.fn(async () => "installation-token"),
-  request: vi.fn(async () => ({ data: {} })),
-}));
+const runReviewMock = {
+  runReview: vi.fn(),
+};
 
-const childProcessMock = vi.hoisted(() => ({
-  execFile: vi.fn(),
-}));
+const githubMock = {
+  installationOctokit: vi.fn(),
+  installationRequest: vi.fn(),
+  repositoryRequest: vi.fn(),
+  mintInstallationToken: vi.fn(),
+};
 
-const fsMock = vi.hoisted(() => ({
-  files: new Map<string, string>(),
-  access: vi.fn(async () => undefined),
-  mkdir: vi.fn(async () => undefined),
-  rm: vi.fn(async () => undefined),
-  readFile: vi.fn(async (path: string) => fsMock.files.get(path) ?? "{}"),
-  writeFile: vi.fn(async (path: string, content: string) => {
-    fsMock.files.set(path, content);
-  }),
-}));
-
-const dbMock = vi.hoisted(() => ({
-  updates: [] as Record<string, unknown>[],
-}));
-
-const envMock = vi.hoisted(() => ({
-  databaseUrl: "postgres://test-db" as string | undefined,
-  OPENROUTER_API_KEY: "test-openrouter-key",
-  POSTIL_CLI_PATH: "postil-test",
+const envMock = {
+  GITHUB_PAT: "test-repository-token" as string | undefined,
   REVIEW_MODEL: "test/default",
   REVIEW_MODEL_CASCADE: undefined as string | undefined,
-  TRIGGER_API_KEY: "test-trigger-key",
+  TRIGGER_API_KEY: undefined as string | undefined,
+  triggerApiKey: "test-trigger-key" as string | undefined,
   TRIGGER_API_URL: "https://trigger.example.test",
-  TRIGGER_PROJECT_ID: "project_test_123",
-  TRIGGER_SECRET_KEY: "test-trigger-secret",
-  triggerApiKey: "test-trigger-secret" as string | undefined,
-  reviewTokenSecret: "test-review-token-secret" as string | undefined,
-}));
+};
 
 vi.mock("@trigger.dev/sdk/v3", () => ({
-  logger: loggerMock,
+  auth: { configure: triggerMock.authConfigure },
+  logger: { info: vi.fn() },
   task: triggerMock.task,
-  tasks: { trigger: triggerMock.tasksTrigger },
 }));
 
 vi.mock("@octokit/rest", () => ({
-  Octokit: function MockOctokit() {
-    return { request: githubMock.request };
-  },
+  Octokit: vi.fn(function Octokit() {
+    return { request: githubMock.repositoryRequest };
+  }),
 }));
-
-vi.mock("node:fs/promises", () => fsMock);
-vi.mock("node:child_process", () => childProcessMock);
 vi.mock("@/lib/env", () => ({ env: envMock }));
 vi.mock("@/lib/github", () => ({
   installationOctokit: githubMock.installationOctokit,
@@ -80,16 +60,23 @@ vi.mock("@/lib/github", () => ({
 }));
 vi.mock("@/lib/posthog", () => posthogMock);
 vi.mock("@/lib/usage", () => usageMock);
+vi.mock("./run-review", () => ({
+  isOpenRouterCascadeError: (err: unknown) =>
+    typeof err === "object" &&
+    err !== null &&
+    "attemptedModels" in err &&
+    "providerFailures" in err,
+  publicReviewErrorMessage: (err: unknown) =>
+    typeof err === "object" && err !== null && "attemptedModels" in err && "providerFailures" in err
+      ? "Review failed after all configured model providers were unavailable."
+      : "Review failed to complete.",
+  reviewPayload: {
+    parse: (value: unknown) => value,
+  },
+  runReview: runReviewMock.runReview,
+}));
 vi.mock("@/db", () => ({
-  getDb: vi.fn(() => ({
-    update: () => ({
-      set: (values: Record<string, unknown>) => ({
-        where: async () => {
-          dbMock.updates.push(values);
-        },
-      }),
-    }),
-  })),
+  getDb: vi.fn(),
   schema: { reviews: { id: "id" } },
 }));
 vi.mock("drizzle-orm", () => ({
@@ -101,65 +88,47 @@ const PAYLOAD = {
   repoFullName: "owner/repo",
   pullNumber: 5,
   headSha: "abc123def456",
-  checkRunId: 77,
-  reviewId: "00000000-0000-4000-8000-000000000001",
 };
 
 const { enqueueReviewPullRequest, reviewPullRequest } = await import("./review-pull-request");
-const { encryptReviewInstallationToken } = await import("@/lib/review-token");
 const runReviewTask = reviewPullRequest as unknown as {
-  run: (
-    payload: typeof PAYLOAD & { encryptedInstallationToken?: string },
-  ) => Promise<{ ok: boolean; findings: number }>;
+  run: (payload: typeof PAYLOAD & { checkRunId?: number }) => Promise<{
+    ok: boolean;
+    findings: number;
+  }>;
 };
 
 describe("reviewPullRequest", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    fsMock.files.clear();
-    dbMock.updates = [];
+    triggerMock.authConfigure.mockReset();
+    posthogMock.track.mockReset();
+    posthogMock.captureException.mockReset();
+    posthogMock.hashInstallationId.mockReset();
+    posthogMock.hashInstallationId.mockResolvedValue("hashed-installation");
+    runReviewMock.runReview.mockReset();
+    githubMock.installationOctokit.mockReset();
+    githubMock.installationOctokit.mockResolvedValue({ request: githubMock.installationRequest });
+    githubMock.installationRequest.mockReset();
+    githubMock.installationRequest.mockResolvedValue({ data: {} });
+    githubMock.repositoryRequest.mockReset();
+    githubMock.repositoryRequest.mockResolvedValue({ data: {} });
+    githubMock.mintInstallationToken.mockReset();
+    githubMock.mintInstallationToken.mockResolvedValue("installation-token");
+    envMock.GITHUB_PAT = "test-repository-token";
     envMock.REVIEW_MODEL_CASCADE = undefined;
-    envMock.TRIGGER_PROJECT_ID = "project_test_123";
-    envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
-    envMock.triggerApiKey = "test-trigger-secret";
-    envMock.reviewTokenSecret = "test-review-token-secret";
-    envMock.databaseUrl = "postgres://test-db";
-    envMock.POSTIL_CLI_PATH = "postil-test";
-    fsMock.access.mockResolvedValue(undefined);
-    childProcessMock.execFile.mockImplementation((_cmd, args, _opts, cb) => {
-      const outputPath = args[args.indexOf("--output-json") + 1];
-      fsMock.files.set(
-        outputPath,
-        JSON.stringify({
-          summary: "ok",
-          findings: [],
-          usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
-          modelUsed: "test/failover",
-        }),
-      );
-      cb(null, "", "");
+    envMock.TRIGGER_API_KEY = undefined;
+    envMock.triggerApiKey = "test-trigger-key";
+    runReviewMock.runReview.mockResolvedValue({
+      summary: "ok",
+      findings: [],
+      usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+      modelUsed: "test/failover",
     });
   });
 
-  it("runs the Rust CLI and records completed review telemetry", async () => {
+  it("records the selected cascade model on completed review telemetry", async () => {
     await runReviewTask.run(PAYLOAD);
 
-    expect(fsMock.mkdir).toHaveBeenCalledWith(
-      expect.stringMatching(/(?:^|[\\/])postil-runs[\\/].+/),
-      expect.objectContaining({ recursive: true, mode: 0o700 }),
-    );
-    expect(githubMock.mintInstallationToken).toHaveBeenCalledWith(1);
-    expect(childProcessMock.execFile).toHaveBeenCalledWith(
-      "postil-test",
-      expect.arrayContaining(["review", "--config", expect.any(String), "--output-json"]),
-      expect.objectContaining({
-        timeout: 8 * 60 * 1000,
-      }),
-      expect.any(Function),
-    );
-    const configPath = childProcessMock.execFile.mock.calls[0][1][2];
-    const cliConfig = JSON.parse(fsMock.files.get(configPath) ?? "{}");
-    expect(cliConfig.checkRunId).toBeUndefined();
     expect(posthogMock.track).toHaveBeenCalledWith(
       "system",
       "review_completed",
@@ -167,446 +136,298 @@ describe("reviewPullRequest", () => {
         modelUsed: "test/failover",
       }),
     );
-    expect(usageMock.recordTokenUsage).toHaveBeenCalledWith(1, PAYLOAD.reviewId, {
-      promptTokens: 10,
-      completionTokens: 2,
-      totalTokens: 12,
-    });
-    expect(dbMock.updates).toContainEqual(
-      expect.objectContaining({
-        status: "completed",
-        result: expect.objectContaining({ summary: "ok" }),
-      }),
-    );
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        check_run_id: 77,
-        conclusion: "success",
-        output: expect.objectContaining({
-          summary: "Review completed with no blocking findings.",
-        }),
-      }),
-    );
   });
 
-  it("dispatches review work with explicit backend credentials", async () => {
+  it("configures the trigger client with the normalized dispatch credential", async () => {
     await enqueueReviewPullRequest(PAYLOAD, "delivery-123");
 
-    expect(triggerMock.tasksTrigger).toHaveBeenCalledWith(
-      "review-pull-request",
-      PAYLOAD,
-      { idempotencyKey: "delivery-123" },
-      {
-        clientConfig: {
-          baseURL: "https://trigger.example.test",
-          accessToken: "test-trigger-secret",
-        },
-      },
-    );
+    expect(triggerMock.authConfigure).toHaveBeenCalledWith({
+      baseURL: "https://trigger.example.test",
+      accessToken: "test-trigger-key",
+    });
+    expect(triggerMock.trigger).toHaveBeenCalledWith(PAYLOAD, {
+      idempotencyKey: "delivery-123",
+    });
   });
 
-  it("decrypts the payload installation token for GitHub and redacts token material from logs", async () => {
-    const encryptedInstallationToken = encryptReviewInstallationToken({
-      token: "payload-installation-token",
-      secret: "test-review-token-secret",
-      context: PAYLOAD,
+  it("completes the review check with the precreated client when setup fails before runReview starts", async () => {
+    posthogMock.hashInstallationId.mockRejectedValueOnce(new Error("setup diagnostic placeholder"));
+    githubMock.repositoryRequest.mockRejectedValue(
+      new Error("repository credential path must not be used"),
+    );
+
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toMatchObject({
+      message: "Review setup failed before execution could start.",
+      name: "ReviewSetupError",
     });
-    const payload = {
-      ...PAYLOAD,
-      encryptedInstallationToken,
-    };
 
-    await runReviewTask.run(payload);
-
-    expect(githubMock.mintInstallationToken).not.toHaveBeenCalled();
-    expect(loggerMock.info).toHaveBeenCalledWith("starting review", {
-      payload: expect.not.objectContaining({ encryptedInstallationToken: expect.any(String) }),
-    });
-    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("payload-installation-token");
-    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain(encryptedInstallationToken);
-
-    const configPath = childProcessMock.execFile.mock.calls[0][1][2];
-    const cliConfig = JSON.parse(fsMock.files.get(configPath) ?? "{}");
-    expect(cliConfig.githubToken).toBe("payload-installation-token");
-
-    expect(githubMock.installationOctokit).not.toHaveBeenCalled();
-    expect(githubMock.request).toHaveBeenCalledWith(
+    expect(runReviewMock.runReview).not.toHaveBeenCalled();
+    expect(githubMock.installationOctokit).toHaveBeenCalledWith(1);
+    expect(githubMock.installationRequest).toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({
-        check_run_id: 77,
-        conclusion: "success",
-      }),
-    );
-  });
-
-  it("requires a review token secret before decrypting the payload installation token", async () => {
-    const encryptedInstallationToken = encryptReviewInstallationToken({
-      token: "payload-installation-token",
-      secret: "test-review-token-secret",
-      context: PAYLOAD,
-    });
-    envMock.TRIGGER_SECRET_KEY = " ";
-    envMock.reviewTokenSecret = " ";
-
-    await expect(runReviewTask.run({ ...PAYLOAD, encryptedInstallationToken })).rejects.toThrow(
-      "Review failed to complete.",
-    );
-
-    expect(childProcessMock.execFile).not.toHaveBeenCalled();
-    expect(githubMock.mintInstallationToken).not.toHaveBeenCalled();
-    expect(githubMock.request).not.toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({ conclusion: "success" }),
-    );
-  });
-
-  it("logs skipped database writes when the Trigger runtime has no database URL", async () => {
-    envMock.databaseUrl = undefined;
-
-    await runReviewTask.run(PAYLOAD);
-
-    expect(dbMock.updates).toEqual([]);
-    expect(usageMock.recordReviewCompleted).not.toHaveBeenCalled();
-    expect(usageMock.recordTokenUsage).not.toHaveBeenCalled();
-    expect(loggerMock.info).toHaveBeenCalledWith(
-      "skipping review database write",
-      expect.objectContaining({
-        op: "update_review_completed",
-        reason: "database url not configured",
-      }),
-    );
-    expect(loggerMock.info).toHaveBeenCalledWith(
-      "skipping review database write",
-      expect.objectContaining({
-        op: "record_usage",
-        reason: "database url not configured",
-      }),
-    );
-  });
-
-  it("requires a Trigger project id before hosted dispatch", async () => {
-    envMock.TRIGGER_PROJECT_ID = "";
-
-    await expect(enqueueReviewPullRequest(PAYLOAD, "delivery-123")).rejects.toThrow(
-      "TRIGGER_PROJECT_ID must be set to dispatch review tasks",
-    );
-
-    expect(triggerMock.tasksTrigger).not.toHaveBeenCalled();
-  });
-
-  it("requires a Trigger API credential before hosted dispatch", async () => {
-    envMock.triggerApiKey = undefined;
-    envMock.TRIGGER_SECRET_KEY = "test-trigger-secret";
-    envMock.reviewTokenSecret = "test-review-token-secret";
-
-    await expect(enqueueReviewPullRequest(PAYLOAD, "delivery-123")).rejects.toThrow(
-      "Trigger API token must be set to dispatch review tasks",
-    );
-
-    expect(triggerMock.tasksTrigger).not.toHaveBeenCalled();
-  });
-
-  it("marks the review and check-run failed when CLI execution rejects", async () => {
-    childProcessMock.execFile.mockImplementationOnce((_cmd, _args, _opts, cb) => {
-      cb(new Error("cli failed"), "", "");
-    });
-
-    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
-
-    expect(githubMock.installationOctokit).toHaveBeenCalledWith(PAYLOAD.installationId);
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        check_run_id: 77,
+        owner: "owner",
+        repo: "repo",
+        check_run_id: 321,
+        status: "completed",
         conclusion: "failure",
-        output: expect.objectContaining({
-          summary: "Review failed to complete. Error.",
-          text: "Review failed to complete. Error.",
-        }),
+        output: {
+          title: "Postil Review",
+          summary: "Review failed to complete.",
+          text: "Review failed to complete.",
+        },
       }),
     );
-    expect(dbMock.updates).toContainEqual(
-      expect.objectContaining({
-        status: "failed",
-        errorMessage: "Review failed to complete. Error.",
-      }),
-    );
+    expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
+  });
+
+  it("does not refetch the installation hash while reporting setup failure telemetry", async () => {
+    const rawSetupMessage = "setup diagnostic placeholder";
+    posthogMock.hashInstallationId.mockRejectedValue(new Error(rawSetupMessage));
+
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toMatchObject({
+      message: "Review setup failed before execution could start.",
+      name: "ReviewSetupError",
+    });
+
+    expect(posthogMock.hashInstallationId).toHaveBeenCalledTimes(1);
     expect(posthogMock.track).toHaveBeenCalledWith(
       "system",
       "review_failed",
       expect.objectContaining({
         error: "Review failed to complete.",
+        errorClass: "Error",
+        installationHash: undefined,
       }),
     );
+    expect(JSON.stringify(posthogMock.track.mock.calls)).not.toContain(rawSetupMessage);
+    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(rawSetupMessage);
   });
 
-  it("records a completed review when the CLI exits 1 after writing a clean result", async () => {
-    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
-      const outputPath = args[args.indexOf("--output-json") + 1];
-      fsMock.files.set(
-        outputPath,
-        JSON.stringify({
-          summary: "",
-          findings: [],
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-          modelUsed: "test/default",
+  it("surfaces an explicit unavailable completion path when installation client setup fails", async () => {
+    const rawSetupMessage = "installation setup placeholder";
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    envMock.GITHUB_PAT = undefined;
+    githubMock.installationOctokit.mockRejectedValueOnce(new Error(rawSetupMessage));
+
+    try {
+      await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toMatchObject({
+        message: "Review setup failed before execution could start.",
+        name: "ReviewSetupError",
+      });
+
+      expect(runReviewMock.runReview).not.toHaveBeenCalled();
+      expect(githubMock.installationRequest).not.toHaveBeenCalled();
+      expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(rawSetupMessage);
+      expect(consoleError).toHaveBeenCalledWith(
+        "[check-run]",
+        expect.stringContaining("Review setup failed before a GitHub check client was available"),
+        { errorClass: "Error" },
+      );
+      expect(posthogMock.captureException).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          properties: expect.objectContaining({
+            op: "review_check_completion_unavailable",
+            repoFullName: "owner/repo",
+            pullNumber: 5,
+            headSha: "abc123def456",
+            checkRunId: 321,
+            requiredAction: "Restore GitHub App authentication and rerun the review.",
+          }),
         }),
       );
-      cb(Object.assign(new Error("exit code 1"), { code: 1 }), "", "");
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("sanitizes installation setup failures before runReview starts without a check run", async () => {
+    const rawSetupMessage = "installation setup placeholder";
+    githubMock.installationOctokit.mockRejectedValueOnce(new Error(rawSetupMessage));
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toMatchObject({
+      message: "Review setup failed before execution could start.",
+      name: "ReviewSetupError",
     });
 
-    await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 0 });
+    expect(runReviewMock.runReview).not.toHaveBeenCalled();
+    expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
+    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(rawSetupMessage);
+    expect(JSON.stringify(posthogMock.track.mock.calls)).not.toContain(rawSetupMessage);
+  });
 
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        check_run_id: 77,
-        conclusion: "success",
-      }),
+  it("completes the review check with a repository client when installation client setup fails", async () => {
+    const rawSetupMessage = "installation setup placeholder";
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    githubMock.installationOctokit.mockRejectedValueOnce(new Error(rawSetupMessage));
+
+    try {
+      await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toMatchObject({
+        message: "Review setup failed before execution could start.",
+        name: "ReviewSetupError",
+      });
+
+      expect(runReviewMock.runReview).not.toHaveBeenCalled();
+      expect(githubMock.installationRequest).not.toHaveBeenCalled();
+      expect(githubMock.repositoryRequest).toHaveBeenCalledWith(
+        "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+        expect.objectContaining({
+          owner: "owner",
+          repo: "repo",
+          check_run_id: 321,
+          status: "completed",
+          conclusion: "failure",
+          output: {
+            title: "Postil Review",
+            summary: "Review failed to complete.",
+            text: "Review failed to complete.",
+          },
+        }),
+      );
+      expect(JSON.stringify(githubMock.repositoryRequest.mock.calls)).not.toContain(
+        rawSetupMessage,
+      );
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(rawSetupMessage);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("does not complete the review check in the wrapper after runReview starts", async () => {
+    runReviewMock.runReview.mockRejectedValueOnce(new Error("review execution failed"));
+
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toThrow(
+      "review execution failed",
     );
-    expect(dbMock.updates).toContainEqual(
-      expect.objectContaining({
+
+    expect(runReviewMock.runReview).toHaveBeenCalledWith(
+      { ...PAYLOAD, checkRunId: 321 },
+      { installation: { request: githubMock.installationRequest } },
+    );
+    expect(githubMock.installationOctokit).toHaveBeenCalledWith(1);
+    expect(githubMock.installationRequest).not.toHaveBeenCalled();
+    expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
+  });
+
+  it("reuses the precreated check-run client once runReview starts", async () => {
+    runReviewMock.runReview.mockImplementationOnce(async (_payload, clients) => {
+      await clients.installation.request("PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}", {
+        owner: "owner",
+        repo: "repo",
+        check_run_id: 321,
         status: "completed",
-        result: expect.objectContaining({ findings: [] }),
-      }),
-    );
-    expect(loggerMock.info).toHaveBeenCalledWith(
-      "accepted review CLI output after nonzero exit",
-      expect.objectContaining({
-        exitCode: 1,
-        findings: 0,
-      }),
-    );
-  });
-
-  it("marks the review failed when the CLI exits with an unexpected code", async () => {
-    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
-      const outputPath = args[args.indexOf("--output-json") + 1];
-      fsMock.files.set(
-        outputPath,
-        JSON.stringify({
-          summary: "blocking findings",
-          findings: [
-            {
-              path: "src/billing/checkout.ts",
-              line: 42,
-              severity: "error",
-              body: "Credit is applied twice.",
-            },
-          ],
-          usage: { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
-          modelUsed: "test/default",
-        }),
-      );
-      cb(
-        Object.assign(new Error("exit code 2"), {
-          code: 2,
-          signal: null,
-          stderr: "failed with ghs_secretToken and Bearer raw-token-value",
-          stdout: "openrouter sk-or-secretToken",
-        }),
-        "",
-        "",
-      );
+        conclusion: "failure",
+      });
+      throw new Error("late setup failed");
     });
 
-    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
-
-    expect(dbMock.updates).toContainEqual(
-      expect.objectContaining({
-        status: "failed",
-        errorMessage: expect.stringContaining("exit=2"),
-      }),
+    await expect(runReviewTask.run({ ...PAYLOAD, checkRunId: 321 })).rejects.toThrow(
+      "late setup failed",
     );
-    expect(JSON.stringify(dbMock.updates)).not.toContain("ghs_secretToken");
-    expect(JSON.stringify(dbMock.updates)).not.toContain("raw-token-value");
-    expect(JSON.stringify(dbMock.updates)).not.toContain("sk-or-secretToken");
-    expect(githubMock.request).toHaveBeenCalledWith(
+
+    expect(githubMock.installationOctokit).toHaveBeenCalledTimes(1);
+    expect(githubMock.installationOctokit).toHaveBeenCalledWith(1);
+    expect(githubMock.installationRequest).toHaveBeenCalledWith(
       "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
       expect.objectContaining({
-        check_run_id: 77,
-        conclusion: "failure",
-        output: expect.objectContaining({
-          summary: expect.stringContaining("exit=2"),
-          text: expect.not.stringContaining("stderr="),
-        }),
-      }),
-    );
-    expect(loggerMock.info).toHaveBeenCalledWith(
-      "review CLI failed",
-      expect.objectContaining({
-        exitCode: 2,
-        stderr: expect.stringContaining("[redacted-github-token]"),
-        stdout: expect.stringContaining("[redacted-openrouter-token]"),
-      }),
-    );
-    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("ghs_secretToken");
-    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("raw-token-value");
-    expect(JSON.stringify(loggerMock.info.mock.calls)).not.toContain("sk-or-secretToken");
-  });
-
-  it("reports a safe diagnostic when the configured CLI path is missing", async () => {
-    envMock.POSTIL_CLI_PATH = "/app/.postil/bin/postil";
-    fsMock.access.mockRejectedValueOnce(new Error("missing"));
-
-    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
-
-    expect(childProcessMock.execFile).not.toHaveBeenCalled();
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        check_run_id: 77,
-        conclusion: "failure",
-        output: expect.objectContaining({
-          summary:
-            "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/app/.postil/bin/postil",
-          text: "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/app/.postil/bin/postil",
-        }),
-      }),
-    );
-    expect(dbMock.updates).toContainEqual(
-      expect.objectContaining({
-        status: "failed",
-        errorMessage:
-          "Review failed to complete. exit=CLI_NOT_FOUND cliPath=/app/.postil/bin/postil",
-      }),
-    );
-  });
-
-  it("records a completed review when the CLI exits after writing blocking findings", async () => {
-    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
-      const outputPath = args[args.indexOf("--output-json") + 1];
-      fsMock.files.set(
-        outputPath,
-        JSON.stringify({
-          summary: "blocking findings",
-          findings: [
-            {
-              path: "src/billing/checkout.ts",
-              line: 42,
-              severity: "error",
-              body: "Credit is applied twice.",
-            },
-          ],
-          usage: { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
-          modelUsed: "test/default",
-        }),
-      );
-      cb(Object.assign(new Error("exit code 1"), { code: 1 }), "", "");
-    });
-
-    await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 1 });
-
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        check_run_id: 77,
-        conclusion: "failure",
-        output: expect.objectContaining({
-          summary: "blocking findings",
-        }),
-      }),
-    );
-    expect(dbMock.updates).toContainEqual(
-      expect.objectContaining({
+        owner: "owner",
+        repo: "repo",
+        check_run_id: 321,
         status: "completed",
-        result: expect.objectContaining({
-          summary: "blocking findings",
-          findings: expect.arrayContaining([expect.objectContaining({ severity: "error" })]),
-        }),
+        conclusion: "failure",
       }),
     );
+    expect(githubMock.repositoryRequest).not.toHaveBeenCalled();
+  });
+
+  it("records the failing cascade model when review execution rejects", async () => {
+    envMock.REVIEW_MODEL_CASCADE = "test/primary, test/backup";
+    runReviewMock.runReview.mockRejectedValueOnce(
+      Object.assign(new Error("openrouter model cascade failed"), {
+        modelUsed: "test/backup",
+        attemptedModels: ["test/primary", "test/backup"],
+        providerFailures: [
+          { model: "test/primary", reason: "provider returned an error", status: 429 },
+          { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
+        ],
+      }),
+    );
+
+    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("openrouter model cascade failed");
+
     expect(posthogMock.track).toHaveBeenCalledWith(
       "system",
-      "review_completed",
+      "review_failed",
       expect.objectContaining({
-        findings: 1,
+        error: "Review failed after all configured model providers were unavailable.",
+        modelUsed: "test/backup",
+        attemptedModels: ["test/primary", "test/backup"],
+        providerFailures: [
+          { model: "test/primary", reason: "provider returned an error", status: 429 },
+          { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
+        ],
       }),
     );
-  });
-
-  it("marks warning-only findings as a neutral check-run", async () => {
-    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
-      const outputPath = args[args.indexOf("--output-json") + 1];
-      fsMock.files.set(
-        outputPath,
-        JSON.stringify({
-          summary: "review has warnings",
-          findings: [
-            {
-              path: "src/components/SaveButton.tsx",
-              line: 12,
-              severity: "warn",
-              body: "Button copy changed.",
-            },
+    expect(posthogMock.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          modelUsed: "test/backup",
+          attemptedModels: ["test/primary", "test/backup"],
+          providerFailures: [
+            { model: "test/primary", reason: "provider returned an error", status: 429 },
+            { model: "test/backup", reason: "cascade timeout", errorClass: "AbortError" },
           ],
-          usage: { promptTokens: 18, completionTokens: 6, totalTokens: 24 },
-          modelUsed: "test/default",
-        }),
-      );
-      cb(null, "", "");
-    });
-
-    await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 1 });
-
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        check_run_id: 77,
-        conclusion: "neutral",
-        output: expect.objectContaining({
-          summary: "Review completed with no blocking findings.",
         }),
       }),
     );
   });
 
-  it("marks info-only findings as a successful check-run", async () => {
-    childProcessMock.execFile.mockImplementationOnce((_cmd, args, _opts, cb) => {
-      const outputPath = args[args.indexOf("--output-json") + 1];
-      fsMock.files.set(
-        outputPath,
-        JSON.stringify({
-          summary: "review has context",
-          findings: [
-            {
-              path: "src/billing/checkout.ts",
-              line: 42,
-              severity: "info",
-              body: "This path is covered by the existing retry guard.",
-            },
-          ],
-          usage: { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
-          modelUsed: "test/default",
-        }),
-      );
-      cb(null, "", "");
-    });
+  it("keeps workflow-level secret fetch failures terminal for the review check", () => {
+    const workflow = parseYaml(
+      readFileSync(new URL("../../.github/workflows/postil-review.yml", import.meta.url), "utf8"),
+    ) as {
+      jobs: {
+        review: {
+          steps: Array<{
+            id?: string;
+            if?: string;
+            name?: string;
+            env?: Record<string, string>;
+            run?: string;
+          }>;
+        };
+      };
+    };
+    const steps = workflow.jobs.review.steps;
+    const fetchSecretsIndex = steps.findIndex((step) => step.name === "Fetch review secrets");
+    const completeCheckIndex = steps.findIndex(
+      (step) => step.name === "Complete review check after secret fetch failure",
+    );
+    const setupBunIndex = steps.findIndex((step) => step.name === "Set up Bun");
 
-    await expect(runReviewTask.run(PAYLOAD)).resolves.toEqual({ ok: true, findings: 1 });
-
-    expect(githubMock.request).toHaveBeenCalledWith(
-      "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
-      expect.objectContaining({
-        check_run_id: 77,
-        conclusion: "success",
-        output: expect.objectContaining({
-          summary: "Review completed with no blocking findings.",
-        }),
+    expect(fetchSecretsIndex).toBeGreaterThan(-1);
+    expect(completeCheckIndex).toBe(fetchSecretsIndex + 1);
+    expect(setupBunIndex).toBeGreaterThan(completeCheckIndex);
+    expect(steps[fetchSecretsIndex]).toMatchObject({ id: "fetch-secrets" });
+    expect(steps[completeCheckIndex]).toMatchObject({
+      if: "github.event_name == 'pull_request_target' && failure() && steps.fetch-secrets.outcome == 'failure'",
+      env: expect.objectContaining({
+        GITHUB_PAT: "$" + "{{ secrets.GITHUB_PAT }}",
+        GITHUB_REPOSITORY: "$" + "{{ github.repository }}",
+        GITHUB_EVENT_PATH: "$" + "{{ github.event_path }}",
       }),
-    );
-  });
-
-  it("sanitizes CLI setup failures before telemetry", async () => {
-    githubMock.mintInstallationToken.mockRejectedValueOnce(
-      new Error("installation auth failed: super-secret-token"),
-    );
-
-    await expect(runReviewTask.run(PAYLOAD)).rejects.toThrow("Review failed to complete.");
-
-    expect(JSON.stringify(posthogMock.captureException.mock.calls)).not.toContain(
-      "super-secret-token",
+    });
+    expect(steps[completeCheckIndex].run).toContain("https://api.github.com/repos/");
+    expect(steps[completeCheckIndex].run).toContain("/commits/$" + "{headSha}/check-runs");
+    expect(steps[completeCheckIndex].run).toContain('run.name === "postil/review"');
+    expect(steps[completeCheckIndex].run).toContain("for (const checkRun of checkRuns)");
+    expect(steps[completeCheckIndex].run).toContain("check-runs/$" + "{checkRun.id}");
+    expect(steps[completeCheckIndex].run).toContain('conclusion: "failure"');
+    expect(steps[completeCheckIndex].run).toContain(
+      "Review setup failed before execution could start.",
     );
   });
 });
