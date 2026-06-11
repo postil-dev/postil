@@ -11,6 +11,7 @@ const schema = z.object({
 
   BETTER_AUTH_SECRET: z.string().min(32).optional(),
   BETTER_AUTH_URL: z.string().url().default("http://localhost:3000"),
+  POSTIL_ADMIN_EMAILS: z.string().optional(),
 
   // Database: prefer NEON_CONNECTION_STRING, fall back to DATABASE_URL for
   // self-host users who aren't on Neon.
