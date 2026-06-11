@@ -1,7 +1,8 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockEnv = { METRICS_API_KEY: "test-metrics-key" };
 vi.mock("@/lib/env", () => ({
-  env: { METRICS_API_KEY: "test-metrics-key" },
+  env: mockEnv,
 }));
 
 const mockSelect = vi.fn();
@@ -11,7 +12,15 @@ vi.mock("@/db", () => ({
     select: mockSelect,
   }),
   schema: {
-    reviews: { status: "status", createdAt: "createdAt", completedAt: "completedAt", id: "id", repoFullName: "repoFullName", pullNumber: "pullNumber", errorMessage: "errorMessage" },
+    reviews: {
+      status: "status",
+      createdAt: "createdAt",
+      completedAt: "completedAt",
+      id: "id",
+      repoFullName: "repoFullName",
+      pullNumber: "pullNumber",
+      errorMessage: "errorMessage",
+    },
     usageEvents: { createdAt: "createdAt", kind: "kind", quantity: "quantity" },
   },
 }));
@@ -21,6 +30,7 @@ const { GET } = await import("./route");
 describe("metrics endpoint", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockEnv.METRICS_API_KEY = "test-metrics-key";
   });
 
   function makeRequest(path = "/api/metrics?days=7", key = "test-metrics-key") {
@@ -36,6 +46,12 @@ describe("metrics endpoint", () => {
 
   it("rejects requests with wrong key", async () => {
     const res = await GET(makeRequest("/api/metrics", "wrong-key"));
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects requests when metrics auth is unset", async () => {
+    mockEnv.METRICS_API_KEY = undefined;
+    const res = await GET(makeRequest("/api/metrics", "test-metrics-key"));
     expect(res.status).toBe(401);
   });
 

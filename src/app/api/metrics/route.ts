@@ -17,11 +17,13 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: Request): Promise<Response> {
   // Bearer auth — operators set METRICS_API_KEY in env.
-  if (env.METRICS_API_KEY) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${env.METRICS_API_KEY}`) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    }
+  if (!env.METRICS_API_KEY) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const auth = req.headers.get("authorization");
+  if (auth !== `Bearer ${env.METRICS_API_KEY}`) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const url = new URL(req.url);
@@ -53,12 +55,7 @@ export async function GET(req: Request): Promise<Response> {
       avgMs: sql<number>`avg(extract(epoch from (${schema.reviews.completedAt} - ${schema.reviews.createdAt})) * 1000)::int`,
     })
     .from(schema.reviews)
-    .where(
-      and(
-        gte(schema.reviews.createdAt, since),
-        eq(schema.reviews.status, "completed"),
-      ),
-    );
+    .where(and(gte(schema.reviews.createdAt, since), eq(schema.reviews.status, "completed")));
 
   // Token usage totals.
   const [tokenStats] = await db
@@ -68,10 +65,7 @@ export async function GET(req: Request): Promise<Response> {
     })
     .from(schema.usageEvents)
     .where(
-      and(
-        gte(schema.usageEvents.createdAt, since),
-        eq(schema.usageEvents.kind, "tokens_consumed"),
-      ),
+      and(gte(schema.usageEvents.createdAt, since), eq(schema.usageEvents.kind, "tokens_consumed")),
     );
 
   // Review-completed event count (for cross-checking).
@@ -106,12 +100,7 @@ export async function GET(req: Request): Promise<Response> {
       createdAt: schema.reviews.createdAt,
     })
     .from(schema.reviews)
-    .where(
-      and(
-        gte(schema.reviews.createdAt, since),
-        eq(schema.reviews.status, "failed"),
-      ),
-    )
+    .where(and(gte(schema.reviews.createdAt, since), eq(schema.reviews.status, "failed")))
     .orderBy(schema.reviews.createdAt)
     .limit(20);
 
