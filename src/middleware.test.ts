@@ -6,18 +6,17 @@ import { POSTHOG_BROWSER_ORIGIN } from "./lib/posthog-config";
 import { config, createCsp, middleware } from "./middleware";
 
 describe("security middleware", () => {
-  it("builds a nonce-based CSP without permissive script fallbacks", () => {
+  it("builds a static-site CSP without blocking Next scripts", () => {
     const csp = createCsp("test-nonce");
 
     expect(csp).toContain("default-src 'none'");
-    expect(csp).toContain("script-src 'self' 'nonce-test-nonce' 'strict-dynamic'");
+    expect(csp).toContain("script-src 'self' 'unsafe-inline'");
     expect(csp).toContain(`connect-src 'self' ${POSTHOG_BROWSER_ORIGIN}`);
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("upgrade-insecure-requests");
     const scriptSrc = csp.split("; ").find((directive) => directive.startsWith("script-src"));
-    expect(scriptSrc).not.toContain("'unsafe-eval'");
-    expect(scriptSrc).not.toContain("'unsafe-inline'");
+    expect(scriptSrc).not.toContain("'nonce-");
   });
 
   it("emits the same nonce CSP on the response and forwarded request", () => {
@@ -27,15 +26,12 @@ describe("security middleware", () => {
 
     try {
       const response = middleware(new NextRequest("https://postil.dev/"));
-      const nonce = btoa("00000000-0000-4000-8000-000000000000");
-      const csp = createCsp(nonce);
+      const csp = createCsp("unused");
 
       expect(response.headers.get("Content-Security-Policy")).toBe(csp);
       expect(response.headers.get("x-middleware-request-content-security-policy")).toBe(csp);
-      expect(response.headers.get("x-middleware-request-x-nonce")).toBe(nonce);
-      expect(response.headers.get("x-middleware-override-headers")).toBe(
-        "content-security-policy,x-nonce",
-      );
+      expect(response.headers.get("x-middleware-request-x-nonce")).toBeNull();
+      expect(response.headers.get("x-middleware-override-headers")).toBe("content-security-policy");
     } finally {
       randomUUID.mockRestore();
     }

@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import type { Metadata } from "next";
+import { AnchorHeading } from "../site";
 
 export const metadata: Metadata = {
   title: "About",
@@ -11,7 +12,9 @@ export const metadata: Metadata = {
 export default function AboutPage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center gap-8 p-8">
-      <h1 className="font-display text-4xl tracking-tight">About Postil</h1>
+      <AnchorHeading id="top" as="h1" className="font-display text-4xl tracking-tight">
+        About Postil
+      </AnchorHeading>
 
       <section className="space-y-4 text-muted-foreground">
         <p>
@@ -33,7 +36,9 @@ export default function AboutPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="font-display text-xl">Maintainer</h2>
+        <AnchorHeading id="maintainer" as="h2" className="font-display text-xl">
+          Maintainer
+        </AnchorHeading>
         <p className="text-muted-foreground">
           Postil is maintained by{" "}
           <Link
@@ -47,7 +52,9 @@ export default function AboutPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="font-display text-xl">Contact</h2>
+        <AnchorHeading id="contact" as="h2" className="font-display text-xl">
+          Contact
+        </AnchorHeading>
         <p className="text-muted-foreground">
           Security issues:{" "}
           <Link
@@ -62,7 +69,9 @@ export default function AboutPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="font-display text-xl">Source &amp; License</h2>
+        <AnchorHeading id="source-license" as="h2" className="font-display text-xl">
+          Source &amp; License
+        </AnchorHeading>
         <p className="text-muted-foreground">
           Source code is available at{" "}
           <Link

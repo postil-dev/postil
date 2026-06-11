@@ -3,11 +3,14 @@ import { POSTHOG_BROWSER_ORIGIN } from "@/lib/posthog-config";
 
 export function createCsp(nonce: string) {
   const isDevelopment = process.env.NODE_ENV === "development";
+  void nonce;
+  const scriptSrc = ["script-src 'self' 'unsafe-inline'"];
   const styleSrc = ["style-src 'self' 'unsafe-inline'"];
   const fontSrc = ["font-src 'self'"];
   const connectSrc = ["connect-src 'self'", POSTHOG_BROWSER_ORIGIN];
 
   if (isDevelopment) {
+    scriptSrc.push("'unsafe-eval'");
     styleSrc.push("https://fonts.googleapis.com");
     fontSrc.push("https://fonts.gstatic.com");
     connectSrc.push("https://www.react-grab.com");
@@ -15,7 +18,7 @@ export function createCsp(nonce: string) {
 
   return [
     "default-src 'none'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
+    scriptSrc.join(" "),
     styleSrc.join(" "),
     fontSrc.join(" "),
     "img-src 'self' data:",
@@ -29,10 +32,8 @@ export function createCsp(nonce: string) {
 }
 
 export function middleware(request: NextRequest) {
-  const nonce = btoa(crypto.randomUUID());
-  const csp = createCsp(nonce);
+  const csp = createCsp("unused");
   const requestHeaders = new Headers(request.headers);
-  requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("Content-Security-Policy", csp);
 
   const response = NextResponse.next({
