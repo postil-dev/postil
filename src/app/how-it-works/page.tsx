@@ -43,7 +43,7 @@ export default function HowItWorksPage() {
             body="One event in, one diff reviewed, one check run out. If there is nothing worth saying, the PR does not get a bot recap."
             id="top"
           />
-          <ReviewCard />
+          <ReviewCard headingId="billing-update-example" />
         </div>
       </section>
       <section className="border-b py-16">
@@ -74,7 +74,7 @@ export default function HowItWorksPage() {
               on.
             </p>
           </div>
-          <ReviewCard />
+          <ReviewCard headingId="reviewer-notices-example" />
         </div>
       </section>
       <section className="border-b py-16">

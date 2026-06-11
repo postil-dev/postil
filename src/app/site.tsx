@@ -319,7 +319,7 @@ export function SectionIntro({
   );
 }
 
-export function ReviewCard() {
+export function ReviewCard({ headingId }: { headingId?: string } = {}) {
   return (
     <div className="min-w-0 border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
       <div className="flex items-center justify-between border-b px-4 py-3 font-mono text-xs">
@@ -333,13 +333,13 @@ export function ReviewCard() {
       </div>
       <div className="p-5">
         <div className="font-mono text-xs text-muted-foreground">src/billing/plan.ts:84</div>
-        <AnchorHeading
-          id="billing-update-now-runs-before-authorization"
-          as="h2"
-          className="mt-3 text-2xl leading-snug"
-        >
-          Billing update now runs before authorization.
-        </AnchorHeading>
+        {headingId ? (
+          <AnchorHeading id={headingId} as="h2" className="mt-3 text-2xl leading-snug">
+            Billing update now runs before authorization.
+          </AnchorHeading>
+        ) : (
+          <h2 className="mt-3 text-2xl leading-snug">Billing update now runs before authorization.</h2>
+        )}
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
           The write moved ahead of `canManageBilling`, so a caller can change a plan before the
           permission failure is raised. Move the authorization check before the billing mutation.

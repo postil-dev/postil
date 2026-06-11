@@ -46,8 +46,7 @@ jobs:
 
 const config = `.postil.yaml
 
-githubToken: test-github
-openrouterApiKey: test-openrouter
+# Credentials live in env vars or GitHub Secrets, not in committed repo config.
 repo: owner/repo
 pr: 123
 sha: abc123
