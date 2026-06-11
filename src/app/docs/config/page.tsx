@@ -63,12 +63,40 @@ review:
 
 gate:
   failOn: error          # the gate fails at/above this severity
+  onError: block         # block (fail closed, default) | advisory
+                         # advisory fails open on provider outages only
 
 model:
   name: deepseek/deepseek-v4-pro
   cascade:               # fallbacks, tried in order on provider errors
     - qwen/qwen3-coder
   apiBase: https://openrouter.ai/api/v1`}</code>
+      </pre>
+
+      <h2>Gate behavior on operational errors</h2>
+      <p>
+        <code>gate.onError</code> controls what happens when a review cannot
+        complete — a provider outage, an exhausted key, model output that fails
+        validation. The default, <code>block</code>, fails the gate: an
+        unreviewed head is not a passing head. Setting it to{" "}
+        <code>advisory</code> lets the gate pass on provider outages only, for
+        repos that prefer fail-open over a blocked merge queue when the model
+        endpoint is down. Findings the model did produce still gate normally.
+      </p>
+
+      <h2>Repo guardrails</h2>
+      <p>
+        Drop repo-specific merge rules in <code>.postil/guardrails.md</code>{" "}
+        (plain Markdown, one rule per bullet or heading) and Postil injects
+        them into the review prompt. A change that violates one is reported as
+        a <code>guardrail</code> finding that quotes the rule it breaks — see
+        the <Link href="/docs/envelope">envelope schema</Link>.
+      </p>
+      <pre>
+        <code>{`# .postil/guardrails.md
+- Every new API route must enforce org-scoped authorization.
+- Database migrations must be reversible.
+- No direct writes to the billing tables outside src/billing/.`}</code>
       </pre>
 
       <h2>Environment variables</h2>

@@ -89,10 +89,18 @@ export default function SecurityPage() {
           </div>
           <div className="text-ink-soft">
             <p>
-              In a publicly reported August 2025 incident, security researchers
-              disclosed a remote-code-execution chain in a leading reviewer&apos;s
-              pipeline that exposed installation credentials carrying{" "}
-              <em>write</em> access across a large share of customer repositories.
+              In a{" "}
+              <a
+                href="https://research.kudelskisecurity.com/2025/08/19/how-we-exploited-coderabbit-from-a-simple-pr-to-rce-and-write-access-on-1m-repositories/"
+                className="text-rust underline"
+                rel="noopener"
+              >
+                publicly reported August 2025 disclosure
+              </a>
+              , security researchers described a remote-code-execution chain in
+              a leading reviewer&apos;s pipeline that exposed installation
+              credentials carrying <em>write</em> access across a large share of
+              customer repositories.
             </p>
             <p className="mt-4">
               The mitigation is not a patch, it is an architecture: hold the
@@ -125,6 +133,12 @@ export default function SecurityPage() {
               so there is no window in which a crashed review leaves a check
               hanging <code className="font-mono text-sm">in_progress</code> and
               merge-eligible.
+            </p>
+            <p>
+              Repositories can opt into{" "}
+              <code className="font-mono text-sm">gate.onError: advisory</code>,
+              which fails open on provider outages only; the default remains
+              fail-closed.
             </p>
           </div>
           <div className="card p-6">
@@ -324,17 +338,22 @@ export default function SecurityPage() {
           <p>
             The one-line installer downloads the prebuilt binary over HTTPS and
             verifies it against a SHA-256 checksum fetched over HTTPS from the
-            same GitHub release. That protects against a corrupted or
-            in-transit-tampered download. It does not, on its own, protect
-            against a compromised release — the checksum and the artifact come
-            from the same source.
+            same GitHub release. The checksum alone protects against a corrupted
+            or in-transit-tampered download, not against a compromised release —
+            so release artifacts are additionally signed with Sigstore keyless
+            signing (cosign) via GitHub OIDC in release CI.
           </p>
           <p className="mt-4">
-            Cryptographic artifact signing (cosign or minisign) is on the
-            roadmap and will add an independent signature you can verify against
-            a published key. Until then, you can build from source with{" "}
-            <code className="font-mono text-sm">cargo install postil-cli</code>,
-            or cross-check the published SHA-256 on the{" "}
+            Keyless signing means there is no long-lived published key to manage
+            or leak: the signature is bound to the certificate identity of the
+            release workflow. When <code className="font-mono text-sm">cosign</code>{" "}
+            is installed, the installer verifies the signature automatically;
+            without it, verification falls back to the checksum. You can also
+            build from source with{" "}
+            <code className="font-mono text-sm">
+              cargo install --git https://github.com/postil-dev/postil-cli --locked
+            </code>
+            , or cross-check the published SHA-256 on the{" "}
             <a
               href="https://github.com/postil-dev/postil-cli/releases"
               className="text-rust underline"

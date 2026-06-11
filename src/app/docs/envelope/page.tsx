@@ -59,8 +59,9 @@ export default function EnvelopePage() {
             <td>
               <code>risk</code> (a concrete defect or hazard),{" "}
               <code>humanEscalation</code> (a consequential decision that needs
-              an accountable human), <code>guardrail</code> (repeated feedback
-              that should become a durable rule), <code>uncertainty</code> (the
+              an accountable human), <code>guardrail</code> (the change violates
+              a rule stated in <code>.postil/guardrails.md</code>; the finding
+              quotes the rule it breaks), <code>uncertainty</code> (the
               model flags its own doubt).
             </td>
           </tr>

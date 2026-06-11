@@ -1,6 +1,7 @@
-// Real Postil output, captured June 2026 by running the shipped CLI against the
-// default model (deepseek/deepseek-v4-pro) on representative diffs. The envelope
-// JSON files are the verbatim machine output; the diffs are what was reviewed.
+// Real Postil output, captured June 2026 by running the Postil CLI at commit
+// 560704e against the default model (deepseek/deepseek-v4-pro) on representative
+// diffs. The envelope JSON files are the verbatim machine output; the diffs are
+// what was reviewed.
 import docs from "./docs.json";
 import offbyone from "./offbyone.json";
 import sqli from "./sqli.json";

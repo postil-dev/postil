@@ -89,7 +89,8 @@ export function PricingCalculator() {
               className="mt-2 w-full accent-[#C24A2A]"
             />
             <span className="mt-1 block text-xs text-charcoal/65">
-              Agentic teams report 50-571 PRs per developer per month.
+              Agent-heavy workflows can reach hundreds of PRs per developer per
+              month; one publicly documented developer hit 571 in 30 days.
             </span>
           </label>
           <label className="block">

@@ -68,7 +68,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "GitHub + GitLab (incl. self-managed); on GitLab the gate is a CI job pass/fail, not a named check-run",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early); off GitHub the gate is a CI job pass/fail, not a named check-run",
       },
       { kind: "text", note: "GitHub, GitLab, Azure DevOps, Bitbucket" },
       { kind: "text", note: "GitHub, GitLab" },
@@ -91,18 +91,31 @@ const wedges: Wedge[] = [
     body: (
       <>
         <p>
-          An independent audit of 28 CodeRabbit-reviewed PRs rated 15% of its
-          comments useless noise and another 21% nitpicking. Greptile's own v4
-          release notes show why defaults trend noisy: engagement rose from 30%
-          to 43% only after they tuned low-value comments down. The category
-          optimizes for visible activity.
+          An{" "}
+          <a href="https://lycheeorg.dev/2025-09-13-code-rabbit/" rel="noopener">
+            independent audit of 28 CodeRabbit-reviewed PRs
+          </a>{" "}
+          rated 15% of its comments useless noise and another 21% nitpicking.{" "}
+          <a href="https://www.greptile.com/blog/greptile-v4" rel="noopener">
+            Greptile's own v4 release notes
+          </a>{" "}
+          show comments-addressed rising from 30% to 43% between versions —
+          defaults in this category trend noisy.
         </p>
         <p className="mt-3">
           Postil ships with a high confidence threshold by default and reports
           its silence rate — the share of PRs where it said nothing — as the
           first number on your dashboard, with the confidence distribution of
-          every finding it did ship. GitHub Copilot stays silent on roughly 29%
-          of PRs but never tells the team; we make the number the headline.
+          every finding it did ship.{" "}
+          <a
+            href="https://github.blog/ai-and-ml/github-copilot/60-million-copilot-code-reviews-and-counting/"
+            rel="noopener"
+          >
+            GitHub reports
+          </a>{" "}
+          that Copilot code review stays silent on roughly 29% of reviews, but
+          the number lives in a blog post, not on your dashboard; we make it
+          the headline.
         </p>
       </>
     ),
@@ -114,19 +127,46 @@ const wedges: Wedge[] = [
     body: (
       <>
         <p>
-          Greptile's March 2026 move to $30/seat plus $1 per review past 50
-          produced a public backlash site and churn; a developer pushing 571
-          agent-driven PRs in 30 days would owe roughly $500 a month. GitHub
-          Copilot's June 2026 shift to Actions-minutes billing drew a 958-to-24
-          downvote ratio after one developer burned 8% of a monthly allotment
-          in two hours.
+          Greptile's{" "}
+          <a href="https://www.greptile.com/blog/greptile-v4" rel="noopener">
+            March 2026 move
+          </a>{" "}
+          to $30/seat plus $1 per review past 50 produced a{" "}
+          <a href="https://greptile-fail.vercel.app/" rel="noopener">
+            public backlash site
+          </a>
+          ; a{" "}
+          <a href="https://x.com/mg/status/2029751037716836478" rel="noopener">
+            developer pushing 571 agent-driven PRs in 30 days
+          </a>{" "}
+          would owe roughly $500 a month. GitHub moved Copilot code review{" "}
+          <a
+            href="https://github.blog/changelog/2026-04-27-github-copilot-code-review-will-start-consuming-github-actions-minutes-on-june-1-2026/"
+            rel="noopener"
+          >
+            onto Actions-minutes billing in June 2026
+          </a>
+          ; the{" "}
+          <a
+            href="https://github.com/orgs/community/discussions/192948"
+            rel="noopener"
+          >
+            community discussion
+          </a>{" "}
+          of the underlying usage-based billing change ran 958 downvotes to 24
+          upvotes, with one developer reporting 8% of a monthly allotment
+          burned in two hours.
         </p>
         <p className="mt-3">
           Postil charges a flat $10 per developer per month for orchestration
           and routes inference through your own OpenRouter, Anthropic, Azure,
           or Bedrock key at provider rates, with zero markup. Worst-case bill:
-          seats times ten. Only Kodus offers a comparable model today, at $8
-          plus passthrough, with minimal distribution.
+          seats times ten. Only{" "}
+          <a href="https://kodus.io/pricing/" rel="noopener">
+            Kodus
+          </a>{" "}
+          offers a comparable model today, at $8 plus passthrough, with minimal
+          distribution.
         </p>
       </>
     ),
@@ -149,7 +189,9 @@ const wedges: Wedge[] = [
           <code>postil/gate</code> fails only at or above your configured
           severity and is safe to require in branch protection;{" "}
           <code>postil/review</code> carries everything advisory. On
-          operational errors the gate fails closed — never neutral.
+          operational errors the gate fails closed by default — never neutral.
+          Repos can opt into <code>gate.onError: advisory</code>, which fails
+          open on provider outages only.
         </p>
       </>
     ),
@@ -157,27 +199,27 @@ const wedges: Wedge[] = [
   },
   {
     number: "04",
-    title: "GitHub and GitLab, including self-managed",
+    title: "Every major forge through one CLI",
     body: (
       <>
         <p>
-          Nine of the eighteen tools we track are GitHub-only — including the
-          highest-precision ones: Cubic, Graphite Agent, Macroscope, and
-          Ellipsis. Teams on GitLab Self-Managed in regulated industries are
-          left choosing between platform support and review quality.
+          Many of the highest-precision review tools are GitHub-only. Teams on
+          GitLab Self-Managed in regulated industries are left choosing between
+          platform support and review quality.
         </p>
         <p className="mt-3">
-          Postil's CLI speaks GitHub and GitLab — including self-managed
-          instances via a custom base URL — through the same forge interface,
-          with Bitbucket and Azure DevOps on the roadmap behind the same
-          abstraction. Same engine, same gate semantics, every platform. On
-          GitLab the gate is enforced as a CI job that passes or fails, rather
-          than a named external check-run like GitHub's{" "}
-          <code>postil/gate</code>.
+          Postil's CLI speaks GitHub, GitLab, Bitbucket, and Azure DevOps —
+          each including its self-managed/server variant via a base-URL
+          environment variable — through the same forge interface. Bitbucket
+          and Azure DevOps support is early: shipped and covered by tests, not
+          yet validated against live instances. The hosted app and the{" "}
+          <code>@postil</code> bot are GitHub-only today. Off GitHub the gate
+          is enforced as a CI job that passes or fails, rather than a named
+          external check-run like GitHub's <code>postil/gate</code>.
         </p>
       </>
     ),
-    status: <span className="font-mono text-xs text-gate">quality parity, not a port</span>,
+    status: <span className="font-mono text-xs text-gate">same engine, same gate semantics</span>,
   },
   {
     number: "05",
@@ -185,11 +227,25 @@ const wedges: Wedge[] = [
     body: (
       <>
         <p>
-          PR-Agent's self-hosted config silently fell back to OpenAI when
-          pointed at non-OpenAI models (issue #2083), and a v0.33 regression
-          overwrote non-OpenAI API keys with dummy values. Bito charges a
-          $5/seat surcharge for self-hosting. CodeRabbit gates it behind
-          enterprise sales.
+          PR-Agent's self-hosted config{" "}
+          <a
+            href="https://github.com/qodo-ai/pr-agent/issues/2083"
+            rel="noopener"
+          >
+            silently fell back to OpenAI
+          </a>{" "}
+          when pointed at non-OpenAI models, and a{" "}
+          <a
+            href="https://github.com/The-PR-Agent/pr-agent/issues/2287"
+            rel="noopener"
+          >
+            v0.33 regression
+          </a>{" "}
+          overwrote non-OpenAI API keys with dummy values.{" "}
+          <a href="https://bito.ai/pricing/" rel="noopener">
+            Bito charges a $5/seat add-on
+          </a>{" "}
+          for self-hosting. CodeRabbit gates it behind enterprise sales.
         </p>
         <p className="mt-3">
           Postil ships a Docker Compose that brings up Postgres, the web app,
@@ -210,8 +266,14 @@ const wedges: Wedge[] = [
       <>
         <p>
           Most tools re-review the whole PR on every push, so a one-line fixup
-          triggers a fresh flood. Cursor BugBot shipped incremental review in
-          June 2026; no other major tool has it.
+          triggers a fresh flood.{" "}
+          <a
+            href="https://cursor.com/changelog/bugbot-updates-june-2026"
+            rel="noopener"
+          >
+            Cursor BugBot shipped incremental review in June 2026
+          </a>
+          ; few others have it.
         </p>
         <p className="mt-3">
           Postil records the envelope of every completed review. On the next
@@ -254,11 +316,11 @@ export default function WhyPostilPage() {
         The honest comparison.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        Every claim below is sourced from vendor pricing pages, public
-        post-mortems, and independent benchmarks as of June 2026. Where a
-        competitor is better, we say so: CodeRabbit has wider platform coverage
-        today, Greptile's cross-file recall is genuinely strong, and Qodo leads
-        the offline Martian benchmark. Here is where Postil is different.
+        Every claim below links to its source: vendor pricing pages, public
+        post-mortems, and independent audits as of June 2026. Where a
+        competitor is better, we say so: CodeRabbit's platform coverage is more
+        battle-tested today, and Greptile's cross-file recall is genuinely
+        strong. Here is where Postil is different.
       </p>
 
       {/* At-a-glance comparison */}
@@ -306,8 +368,10 @@ export default function WhyPostilPage() {
         <h2 className="serif-display text-2xl">Where we are honest about trade-offs</h2>
         <ul className="mt-4 space-y-2 text-[15px] text-ink-soft">
           <li>
-            Bitbucket and Azure DevOps support is roadmap, not shipped. If you
-            are on either today, CodeRabbit or CodeAnt covers you now.
+            Bitbucket and Azure DevOps support in the CLI is early: shipped and
+            covered by tests, but not yet validated against live instances. The
+            hosted app is GitHub-only. If you want a battle-tested reviewer on
+            Bitbucket or Azure DevOps today, CodeRabbit covers you now.
           </li>
           <li>
             No benchmark shows any tool catching more than about 65% of real

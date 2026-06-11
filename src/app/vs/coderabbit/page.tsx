@@ -50,7 +50,10 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Platforms",
     cells: [
-      { kind: "text", note: "GitHub, GitLab (incl. self-managed)" },
+      {
+        kind: "text",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early)",
+      },
       { kind: "text", note: "GitHub, GitLab, Azure DevOps, Bitbucket" },
     ],
   },
@@ -98,13 +101,18 @@ export default function VsCodeRabbitPage() {
           ships it: <code>postil/gate</code> fails only at or above your
           configured severity and is safe to require in branch protection, while{" "}
           <code>postil/review</code> carries everything advisory. On operational
-          errors the gate fails closed.
+          errors the gate fails closed by default; repos can opt into{" "}
+          <code>gate.onError: advisory</code>, which fails open on provider
+          outages only.
         </p>
 
         <h2>Noise is a measured number, not a vibe</h2>
         <p>
-          An independent audit of 28 CodeRabbit-reviewed PRs rated 15% of its
-          comments useless and another 21% nitpicking (as of June 2026). Postil
+          An{" "}
+          <a href="https://lycheeorg.dev/2025-09-13-code-rabbit/" rel="noopener">
+            independent audit of 28 CodeRabbit-reviewed PRs
+          </a>{" "}
+          rated 15% of its comments useless and another 21% nitpicking. Postil
           ships with a high confidence threshold by default and reports its
           silence rate — the share of PRs where it said nothing — as the first
           number on the dashboard, with the confidence distribution of every
@@ -122,10 +130,13 @@ export default function VsCodeRabbitPage() {
 
         <h2>Where CodeRabbit is ahead</h2>
         <p>
-          CodeRabbit supports Azure DevOps and Bitbucket today; Postil does not
-          (both are on the roadmap behind the same forge abstraction that already
-          covers GitHub and GitLab). If you are on either platform now, CodeRabbit
-          covers you and Postil does not yet.
+          CodeRabbit&apos;s Azure DevOps and Bitbucket support is mature and
+          widely deployed. Postil&apos;s CLI supports both behind the same forge
+          abstraction that covers GitHub and GitLab, but that support is early —
+          shipped and covered by tests, not yet validated against live
+          instances — and Postil&apos;s hosted app is GitHub-only. If you want a
+          battle-tested reviewer on Bitbucket or Azure DevOps today, CodeRabbit
+          covers you now.
         </p>
       </div>
 

@@ -36,8 +36,9 @@ export default function PlanPage() {
 
       <h2>Usage</h2>
       <pre>
-        <code>{`# preview a candidate config against the last 20 stored envelopes
-postil plan --config .postil.candidate.yaml --last 20
+        <code>{`# store envelopes as you review, then preview a candidate config
+postil review --staged --output-json > .cache/envelopes/r1.json
+postil plan --envelopes .cache/envelopes --config .postil.candidate.yaml
 
   plan over 20 reviews (current config -> candidate)
 

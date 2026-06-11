@@ -73,17 +73,19 @@ export default function HomePage() {
             </p>
           </div>
           <div className="card p-6">
-            <p className="serif-display text-4xl text-rust">1 in 10–20</p>
+            <p className="serif-display text-4xl text-rust">30%</p>
             <p className="mt-3 text-sm text-ink-soft">
-              AI review comments rated actually valuable by working engineers.
-              Teams stop reading the bot weeks before it stops being wrong.
+              of a leading reviewer&apos;s comments were addressed by developers
+              before it retuned its defaults — by its own published numbers.
+              Most AI review comments change nothing.
             </p>
           </div>
           <div className="card p-6">
-            <p className="serif-display text-4xl text-rust">50–571</p>
+            <p className="serif-display text-4xl text-rust">571</p>
             <p className="mt-3 text-sm text-ink-soft">
-              pull requests per developer per month on agentic teams. At that
-              volume, every unnecessary comment is multiplied by hundreds.
+              agent-driven pull requests one developer publicly documented
+              pushing in 30 days. At that volume, every unnecessary comment is
+              multiplied by hundreds.
             </p>
           </div>
         </div>
@@ -94,10 +96,31 @@ export default function HomePage() {
           assumed.
         </p>
         <p className="mt-6 max-w-3xl font-mono text-xs leading-relaxed text-charcoal/60">
-          Figures as of June 2026. The 28-PR audit and value-rate range are from
-          independent third-party reviews of the category leader; the
-          PRs-per-developer range reflects publicly reported agentic-team
-          throughput. See the sourced breakdown on{" "}
+          Figures as of June 2026. Sources: the 28-PR audit is{" "}
+          <a
+            href="https://lycheeorg.dev/2025-09-13-code-rabbit/"
+            className="text-rust underline"
+            rel="noopener"
+          >
+            LycheeOrg&apos;s public review of CodeRabbit
+          </a>
+          ; the 30% comments-addressed figure is from{" "}
+          <a
+            href="https://www.greptile.com/blog/greptile-v4"
+            className="text-rust underline"
+            rel="noopener"
+          >
+            Greptile&apos;s v4 release notes
+          </a>
+          ; the 571-PR month is{" "}
+          <a
+            href="https://x.com/mg/status/2029751037716836478"
+            className="text-rust underline"
+            rel="noopener"
+          >
+            publicly documented
+          </a>
+          . See the sourced breakdown on{" "}
           <Link href="/why-postil" className="text-rust underline">
             Why Postil
           </Link>
@@ -122,8 +145,10 @@ export default function HomePage() {
                   Fails only on gate-level findings (default: severity{" "}
                   <code className="font-mono text-xs">error</code>). Require it
                   in branch protection and nothing below the threshold can
-                  block a merge. Fails closed on operational errors — an
-                  unreviewed head is not a passing head.
+                  block a merge. Fails closed on operational errors by default —
+                  an unreviewed head is not a passing head. Repos can opt into{" "}
+                  <code className="font-mono text-xs">gate.onError: advisory</code>{" "}
+                  to fail open on provider outages only.
                 </p>
               </div>
             </div>

@@ -23,20 +23,26 @@ export default function GitLabDocsPage() {
         In your project, create a project (or group) access token with the{" "}
         <code>api</code> scope and at least <strong>Developer</strong> role so it
         can read the MR diff and post discussion notes. Store it as a masked CI/CD
-        variable named <code>POSTIL_GITLAB_TOKEN</code>. Add your inference key
+        variable named <code>GITLAB_TOKEN</code>. Add your inference key
         (for example <code>OPENROUTER_API_KEY</code>) the same way.
       </p>
 
       <h2>2. Add the CI job</h2>
       <pre>
         <code>{`postil:
-  image: ghcr.io/postil-dev/postil-cli:1
+  image: debian:bookworm-slim
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  before_script:
+    - apt-get update && apt-get install -y curl ca-certificates
+    - curl -fsSL https://postil.dev/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
   script:
-    - postil review --forge gitlab --mr $CI_MERGE_REQUEST_IID
+    - postil review --forge gitlab
+        --repo $CI_PROJECT_PATH
+        --pr $CI_MERGE_REQUEST_IID
   variables:
-    POSTIL_GITLAB_TOKEN: $POSTIL_GITLAB_TOKEN
+    GITLAB_TOKEN: $GITLAB_TOKEN
     OPENROUTER_API_KEY: $OPENROUTER_API_KEY`}</code>
       </pre>
       <p>
@@ -49,14 +55,14 @@ export default function GitLabDocsPage() {
 
       <h2>3. Self-managed instances</h2>
       <p>
-        For GitLab Self-Managed, point the CLI at your instance with{" "}
-        <code>--forge-url</code>:
+        For GitLab Self-Managed, point the CLI at your instance with the{" "}
+        <code>GITLAB_API_URL</code> environment variable:
       </p>
       <pre>
-        <code>{`postil review \\
-  --forge gitlab \\
-  --forge-url https://gitlab.example.com \\
-  --mr $CI_MERGE_REQUEST_IID`}</code>
+        <code>{`export GITLAB_TOKEN=glpat-...
+export GITLAB_API_URL=https://gitlab.example.com/api/v4
+postil review --forge gitlab \\
+  --repo $CI_PROJECT_PATH --pr $CI_MERGE_REQUEST_IID`}</code>
       </pre>
       <p>
         The token, scopes, and gate semantics are identical to GitLab.com. No
@@ -66,15 +72,15 @@ export default function GitLabDocsPage() {
 
       <h2>Local review against a GitLab MR</h2>
       <p>
-        You do not need CI to try it. With <code>POSTIL_GITLAB_TOKEN</code> set
+        You do not need CI to try it. With <code>GITLAB_TOKEN</code> set
         locally:
       </p>
       <pre>
-        <code>{`export POSTIL_GITLAB_TOKEN=glpat-...
-postil review --forge gitlab --mr 88
+        <code>{`export GITLAB_TOKEN=glpat-...
+postil review --forge gitlab --repo group/project --pr 88
 # self-managed:
-postil review --forge gitlab \\
-  --forge-url https://gitlab.example.com --mr 88`}</code>
+export GITLAB_API_URL=https://gitlab.example.com/api/v4
+postil review --forge gitlab --repo group/project --pr 88`}</code>
       </pre>
 
       <h2>Parity and limits</h2>
@@ -88,8 +94,14 @@ postil review --forge gitlab \\
           job result rather than a named external check-run.
         </li>
         <li>
-          Bitbucket and Azure DevOps are on the roadmap behind the same forge
-          abstraction.
+          The hosted Postil app and the interactive <code>@postil</code> bot are
+          GitHub-only today; on GitLab you run the CLI in CI.
+        </li>
+        <li>
+          Bitbucket and Azure DevOps are supported through the same forge
+          abstraction (<code>--forge bitbucket</code>,{" "}
+          <code>--forge azure</code>). Both are early: shipped and covered by
+          tests, but not yet validated against live instances.
         </li>
       </ul>
     </div>

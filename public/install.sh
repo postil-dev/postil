@@ -2,13 +2,14 @@
 # Postil CLI installer. Downloads a prebuilt, checksum-verified release binary.
 #
 #   curl -fsSL https://postil.dev/install.sh | sh
-#   curl -fsSL https://postil.dev/install.sh | sh -s -- --version v1.0.0 --bin-dir ~/.local/bin
+#   curl -fsSL https://postil.dev/install.sh | sh -s -- --version v0.1.0 --bin-dir ~/.local/bin
 #
-# Verifies the SHA-256 of the downloaded archive against the published checksum
-# before installing. Note: the checksum is fetched over HTTPS from the same
-# release, so it guards against corruption and tampering in transit, not against
-# a compromised release. Signature verification is on the roadmap. No build
-# toolchain required. Inspect this script before piping it to a shell.
+# Verification: the archive's SHA-256 is checked against the published checksum
+# (transit integrity), and when cosign is installed the Sigstore keyless
+# signature is verified too (proves the artifact came from this project's
+# release workflow). With cosign present, a missing signature aborts the
+# install unless POSTIL_SKIP_SIG=1 is set. No build toolchain required.
+# Inspect this script before piping it to a shell.
 
 set -eu
 
@@ -31,19 +32,25 @@ done
 err() { echo "install.sh: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+FROM_SOURCE="build from source with: cargo install --git https://github.com/${REPO}"
+
 # Resolve the platform target triple.
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
     Linux)  os_part="unknown-linux-gnu" ;;
     Darwin) os_part="apple-darwin" ;;
-    *) err "unsupported OS: $os (build from source with: cargo install postil-cli)" ;;
+    *) err "unsupported OS: $os ($FROM_SOURCE)" ;;
 esac
 case "$arch" in
     x86_64|amd64)  arch_part="x86_64" ;;
     aarch64|arm64) arch_part="aarch64" ;;
-    *) err "unsupported architecture: $arch (build from source with: cargo install postil-cli)" ;;
+    *) err "unsupported architecture: $arch ($FROM_SOURCE)" ;;
 esac
+# The prebuilt Linux binaries link glibc; a musl libc (Alpine) cannot run them.
+if [ "$os" = "Linux" ] && ldd --version 2>&1 | grep -qi musl; then
+    err "musl libc detected (Alpine?); no musl prebuilt yet ($FROM_SOURCE)"
+fi
 target="${arch_part}-${os_part}"
 
 # Pick a downloader early (needed to resolve "latest").
@@ -96,21 +103,23 @@ echo "Checksum verified."
 # If cosign is installed, additionally verify the Sigstore keyless signature.
 # This is the real supply-chain control (proves the artifact came from this
 # project's release workflow, not just that it matches a same-source checksum).
-if have cosign; then
-    if dl "${url}.sig" "$tmp/$archive.sig" 2>/dev/null \
-       && dl "${url}.pem" "$tmp/$archive.pem" 2>/dev/null; then
-        if cosign verify-blob "$tmp/$archive" \
-            --signature "$tmp/$archive.sig" \
-            --certificate "$tmp/$archive.pem" \
-            --certificate-identity-regexp "https://github.com/${REPO}/.*" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            >/dev/null 2>&1; then
-            echo "Signature verified (Sigstore keyless)."
-        else
-            err "signature verification failed; refusing to install"
-        fi
+# A missing signature is then a hard failure: an attacker who can swap the
+# archive can also swap the same-source checksum and strip the signature files.
+# Releases are signed by the tag-triggered release workflow only.
+if have cosign && [ "${POSTIL_SKIP_SIG:-0}" != "1" ]; then
+    dl "${url}.sig" "$tmp/$archive.sig" 2>/dev/null \
+        || err "signature not found for ${VERSION}; set POSTIL_SKIP_SIG=1 to install on checksum only"
+    dl "${url}.pem" "$tmp/$archive.pem" 2>/dev/null \
+        || err "signing certificate not found for ${VERSION}; set POSTIL_SKIP_SIG=1 to install on checksum only"
+    if cosign verify-blob "$tmp/$archive" \
+        --signature "$tmp/$archive.sig" \
+        --certificate "$tmp/$archive.pem" \
+        --certificate-identity-regexp "https://github.com/${REPO}/\.github/workflows/release\.yml@refs/tags/.*" \
+        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+        >/dev/null 2>&1; then
+        echo "Signature verified (Sigstore keyless)."
     else
-        echo "Note: signature not found for ${VERSION}; verified by checksum only."
+        err "signature verification failed; refusing to install"
     fi
 else
     echo "Note: install cosign to additionally verify the Sigstore signature."
@@ -125,6 +134,7 @@ if [ -w "$BIN_DIR" ] || mkdir -p "$BIN_DIR" 2>/dev/null && [ -w "$BIN_DIR" ]; th
     mv "$tmp/postil" "$BIN_DIR/postil"
 elif have sudo; then
     echo "Elevating to install into ${BIN_DIR} ..."
+    sudo mkdir -p "$BIN_DIR"
     sudo mv "$tmp/postil" "$BIN_DIR/postil"
 else
     err "cannot write to ${BIN_DIR}; re-run with --bin-dir <writable path>"

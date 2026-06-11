@@ -22,7 +22,9 @@ export default function QuickstartPage() {
         default is OpenRouter.
       </p>
       <pre>
-        <code>{`cargo install postil-cli      # or download a prebuilt binary
+        <code>{`curl -fsSL https://postil.dev/install.sh | sh
+# or build from source:
+# cargo install --git https://github.com/postil-dev/postil-cli --locked
 export OPENROUTER_API_KEY=sk-or-...
 
 # review what you are about to commit
@@ -62,6 +64,7 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
+      # the @v1 tag will exist after the first tagged release of the action
       - uses: postil-dev/postil-action@v1
         with:
           cli-ref: 974f63e90505a22e9526224883d79dc4e4263c85
@@ -72,10 +75,10 @@ jobs:
       <p>
         The <code>cli-ref</code> above is current as of June 2026; check the{" "}
         <a
-          href="https://github.com/postil-dev/postil-cli/releases"
+          href="https://github.com/postil-dev/postil-cli"
           rel="noopener"
         >
-          releases page
+          postil-cli repository
         </a>{" "}
         for the latest. The action refuses anything but a full 40-character
         commit SHA — tags move, SHAs do not.
@@ -87,6 +90,12 @@ jobs:
         select repositories, and open a pull request. Postil creates two
         check-runs — <code>postil/review</code> and <code>postil/gate</code> —
         and reviews the diff. Drafts are skipped until marked ready.
+      </p>
+      <p>
+        The hosted app also answers <code>@postil</code> mentions: reply to one
+        of its review comments, mention it in a PR or issue comment, and it
+        responds in thread. It reviews and answers only — it never opens PRs or
+        pushes commits. GitHub only today.
       </p>
       <p>
         To make the gate binding, require <code>postil/gate</code> in branch

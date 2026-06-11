@@ -148,8 +148,8 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
             <p className="ev-eyebrow">Evidence</p>
             <h1 className="ev-h1">We say less. What we say is right.</h1>
             <p className="ev-lede">
-              Real output from the shipped Postil CLI on the default model, run against
-              three representative diffs. Nothing here is mocked: the findings, token
+              Real output from the Postil CLI at commit 560704e on the default model,
+              run against three representative diffs. Nothing here is mocked: the findings, token
               counts, and the silence are the verbatim machine output. A broader public
               benchmark over open-source pull requests is coming; this is the honest
               starting point.

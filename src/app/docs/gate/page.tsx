@@ -95,6 +95,12 @@ gate:
         not a passing head; pushing again or re-requesting the check re-runs
         the review.
       </p>
+      <p>
+        Repos that prefer fail-open over a blocked merge queue during a model
+        outage can set <code>gate.onError: advisory</code>, which fails open on
+        provider outages only; the default remains <code>block</code>. See{" "}
+        <Link href="/docs/config">configuration</Link>.
+      </p>
 
       <h2>Local parity</h2>
       <p>

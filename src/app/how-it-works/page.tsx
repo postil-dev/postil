@@ -55,7 +55,10 @@ export default function HowItWorksPage() {
         <p className="mt-6 max-w-2xl text-lg text-ink-soft">
           The hosted control plane does four things: receive webhooks, queue
           jobs, run the CLI, and store the result. Everything that decides what
-          to say about your code is in the open-source binary.
+          to say about your code is in the open-source binary. The same pipeline
+          answers <code className="font-mono text-base">@postil</code> mentions
+          on PRs and issues (GitHub only) — review and answer only; it never
+          opens PRs or pushes commits.
         </p>
       </div>
 
@@ -180,12 +183,20 @@ export default function HowItWorksPage() {
           </div>
           <div className="text-ink-soft">
             <p>
-              In a publicly reported August 2025 incident, security researchers
-              disclosed a remote-code-execution chain in the category leader&apos;s
-              review pipeline that exposed installation credentials carrying{" "}
-              <em>write</em> access across a large share of customer repositories.
-              The lesson is structural: a reviewer does not need push access, so
-              Postil&apos;s GitHub App never asks for it.
+              In a{" "}
+              <a
+                href="https://research.kudelskisecurity.com/2025/08/19/how-we-exploited-coderabbit-from-a-simple-pr-to-rce-and-write-access-on-1m-repositories/"
+                className="text-rust underline"
+                rel="noopener"
+              >
+                publicly reported August 2025 disclosure
+              </a>
+              , security researchers described a remote-code-execution chain in
+              the category leader&apos;s review pipeline that exposed
+              installation credentials carrying <em>write</em> access across a
+              large share of customer repositories. The lesson is structural: a
+              reviewer does not need push access, so Postil&apos;s GitHub App
+              never asks for it.
             </p>
             <p className="mt-4">
               Installation tokens are minted on demand from the App key, held
@@ -234,7 +245,7 @@ export default function HowItWorksPage() {
       "body": "Retried webhook double-credits."
     }
   ],
-  "counts": { "shipped": 1, "suppressed": 5 },
+  "counts": { "info": 0, "warn": 0, "error": 1, "suppressed": 5 },
   "gate": { "failOn": "error", "failing": true },
   "usage": { "promptTokens": 8421, "completionTokens": 612 }
 }`}</pre>

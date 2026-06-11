@@ -35,7 +35,7 @@ const FAQ = [
   },
   {
     q: "What happens at 10x PR volume?",
-    a: "Your Postil bill does not change. Flat orchestration was chosen specifically because agentic workflows push 50-571 PRs per developer per month, where per-review pricing produces bills in the hundreds of dollars per developer.",
+    a: "Your Postil bill does not change. Flat orchestration was chosen specifically because agentic workflows can push hundreds of PRs per developer per month — one publicly documented developer hit 571 in 30 days — where per-review pricing produces bills in the hundreds of dollars per developer.",
   },
   {
     q: "Do you offer annual billing or invoicing?",
@@ -102,8 +102,8 @@ export default function PricingPage() {
             >
               Talk to us
             </a>
-            . SSO/SAML and a formal DPA are on the roadmap and available on
-            request.
+            . SSO/SAML and a formal DPA are on the roadmap; contact us to
+            discuss requirements.
           </p>
         </div>
 

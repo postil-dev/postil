@@ -57,7 +57,10 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Platforms",
     cells: [
-      { kind: "text", note: "GitHub, GitLab (incl. self-managed)" },
+      {
+        kind: "text",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early)",
+      },
       { kind: "text", note: "GitHub, GitLab" },
     ],
   },
@@ -92,10 +95,16 @@ export default function VsGreptilePage() {
       <div className="prose-postil mt-14 max-w-none">
         <h2>Per-review pricing breaks at agent speed</h2>
         <p>
-          Greptile&apos;s March 2026 move to roughly $30/seat plus about $1 per
-          review past 50 produced a public backlash and churn (as of June 2026).
-          A developer pushing several hundred agent-driven PRs in a month can owe
-          hundreds of dollars. Postil charges a flat $10 per developer per month
+          Greptile&apos;s{" "}
+          <a href="https://www.greptile.com/blog/greptile-v4" rel="noopener">
+            March 2026 move
+          </a>{" "}
+          to $30/seat plus $1 per review past 50 produced a{" "}
+          <a href="https://greptile-fail.vercel.app/" rel="noopener">
+            public backlash
+          </a>
+          . A developer pushing several hundred agent-driven PRs in a month can
+          owe hundreds of dollars. Postil charges a flat $10 per developer per month
           and routes inference through your own key at provider rates with zero
           markup, so your worst-case bill is seats times ten — independent of PR
           count. Compare on the <Link href="/pricing">cost calculator</Link>.
@@ -106,15 +115,19 @@ export default function VsGreptilePage() {
           Greptile posts findings as PR comments. Postil completes{" "}
           <code>postil/gate</code> as a real, separable check you can require in
           branch protection, distinct from advisory <code>postil/review</code>{" "}
-          commentary. On operational errors the gate fails closed rather than
-          completing neutral.
+          commentary. On operational errors the gate fails closed by default
+          rather than completing neutral; repos can opt into{" "}
+          <code>gate.onError: advisory</code>, which fails open on provider
+          outages only.
         </p>
 
         <h2>Restraint is measured</h2>
         <p>
-          Greptile&apos;s own v4 release notes describe lifting engagement from
-          30% to 43% only after tuning low-value comments down — evidence that
-          defaults trend noisy. Postil reports its silence rate and the
+          <a href="https://www.greptile.com/blog/greptile-v4" rel="noopener">
+            Greptile&apos;s own v4 release notes
+          </a>{" "}
+          show comments-addressed rising from 30% to 43% between versions —
+          evidence that defaults trend noisy. Postil reports its silence rate and the
           confidence distribution of shipped findings as the headline metrics, so
           drift toward noise is visible in a chart before engineers feel it in
           notifications.

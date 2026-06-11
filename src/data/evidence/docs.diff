@@ -1,6 +1,0 @@
-diff --git a/README.md b/README.md
---- a/README.md
-+++ b/README.md
-@@ -14,4 +14,4 @@ npm install @acme/widgets
--See the [API refrence](./docs/api.md) for more detials.
-+See the [API reference](./docs/api.md) for more details.

@@ -53,8 +53,10 @@ export default function TermsPage() {
           not guarantee that reviews will run, complete, or complete within any
           particular time. Do not rely on the hosted service as the sole gate on
           a production-critical workflow during the beta; the{" "}
-          <code>postil/gate</code> check fails closed, so a service interruption
-          surfaces as a failing gate rather than a silent pass.
+          <code>postil/gate</code> check fails closed by default, so a service
+          interruption surfaces as a failing gate rather than a silent pass.
+          Repositories can opt into <code>gate.onError: advisory</code>, which
+          fails open on provider outages only; the default remains fail-closed.
         </p>
 
         <h2>Billing and pricing</h2>

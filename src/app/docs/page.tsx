@@ -21,7 +21,7 @@ const CARDS = [
   {
     href: "/docs/cli",
     title: "CLI reference",
-    body: "Every command and flag: review, doctor, plan, plus environment variables and exit codes.",
+    body: "Every command and flag: review, respond, plan, config, init, doctor, hook, plus environment variables and exit codes.",
   },
   {
     href: "/docs/gate",
@@ -71,11 +71,12 @@ export default function DocsIndexPage() {
         <h2>The short version</h2>
         <pre>
           <code>{`# local
-cargo install postil-cli
+curl -fsSL https://postil.dev/install.sh | sh
+# or: cargo install --git https://github.com/postil-dev/postil-cli --locked
 postil doctor            # verify endpoint, key, and model
 postil review --staged
 
-# CI (GitHub Actions)
+# CI (GitHub Actions) — @v1 resolves after the first tagged release
 - uses: postil-dev/postil-action@v1
   with:
     cli-ref: <40-hex postil-cli SHA>

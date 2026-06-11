@@ -59,11 +59,14 @@ export default function InstallPage() {
               .
             </p>
             <p className="text-sm text-ink-soft">
-              The checksum is fetched over HTTPS from the same release, so it
-              guards against a corrupted or in-transit-tampered download — not
-              against a compromised release itself. Cryptographic artifact
-              signing (cosign/minisign) is on the roadmap; until then, verify the
-              published SHA-256 against the{" "}
+              Release artifacts are signed with Sigstore keyless signing
+              (cosign) via GitHub OIDC in release CI, alongside SHA-256
+              checksums. If <code className="font-mono text-xs">cosign</code> is
+              installed, the script additionally verifies the keyless signature
+              against the release workflow&apos;s certificate identity — there
+              is no long-lived published key to manage. Without cosign it falls
+              back to checksum verification only. Cross-check the published
+              SHA-256 on the{" "}
               <a
                 href="https://github.com/postil-dev/postil-cli/releases"
                 className="text-rust underline"
@@ -74,21 +77,17 @@ export default function InstallPage() {
               if you want a second source.
             </p>
 
-            <Terminal title="install — package managers">
+            <Terminal title="install — build from source">
               <code>
-                <span className="t-dim"># Rust toolchain, build from source</span>{"\n"}
-                <span className="t-dim">$</span> cargo install postil-cli{"\n"}
-                {"\n"}
-                <span className="t-dim"># prebuilt binary via cargo-binstall (no compile)</span>{"\n"}
-                <span className="t-dim">$</span> cargo binstall postil-cli{"\n"}
+                <span className="t-dim"># Rust toolchain, build from the repository</span>{"\n"}
+                <span className="t-dim">$</span> cargo install --git https://github.com/postil-dev/postil-cli --locked{"\n"}
               </code>
             </Terminal>
             <p className="text-sm text-ink-soft">
               Prebuilt targets: Linux <code className="font-mono text-xs">x86_64</code>{" "}
               and <code className="font-mono text-xs">aarch64</code>, macOS{" "}
               <code className="font-mono text-xs">arm64</code> and{" "}
-              <code className="font-mono text-xs">x86_64</code>. A Homebrew tap
-              is on the roadmap.
+              <code className="font-mono text-xs">x86_64</code>.
             </p>
 
             <Terminal title="first run">
@@ -108,7 +107,7 @@ export default function InstallPage() {
                 <span className="t-dim">$</span> postil doctor{"\n"}
                 {"\n"}
                 <span className="t-green">ok</span>
-                {"   binary    postil 1.0.0 (x86_64-unknown-linux-gnu)\n"}
+                {"   binary    postil 0.1.0 (x86_64-unknown-linux-gnu)\n"}
                 <span className="t-green">ok</span>
                 {"   config    .postil.yaml found (fail-on: error)\n"}
                 <span className="t-green">ok</span>
@@ -164,6 +163,7 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
+      # the @v1 tag will exist after the first tagged release of the action
       - uses: postil-dev/postil-action@v1
         with:
           cli-ref: `}
@@ -179,11 +179,11 @@ jobs:
               <code className="font-mono text-xs">cli-ref</code> — tags move, SHAs
               do not. The SHA above is current as of June 2026; check the{" "}
               <a
-                href="https://github.com/postil-dev/postil-cli/releases"
+                href="https://github.com/postil-dev/postil-cli"
                 className="text-rust underline"
                 rel="noopener"
               >
-                releases page
+                postil-cli repository
               </a>{" "}
               for the latest blessed SHA.
             </p>
@@ -210,24 +210,29 @@ jobs:
             <Terminal title=".gitlab-ci.yml">
               <code>
                 {`postil:
-  image: ghcr.io/postil-dev/postil-cli:1
+  image: debian:bookworm-slim
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  before_script:
+    - apt-get update && apt-get install -y curl ca-certificates
+    - curl -fsSL https://postil.dev/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
   script:
     - postil review
         --forge gitlab
-        --mr `}
+        --repo $CI_PROJECT_PATH
+        --pr `}
                 <span className="t-rust">$CI_MERGE_REQUEST_IID</span>
                 {`
   variables:
-    POSTIL_GITLAB_TOKEN: $POSTIL_GITLAB_TOKEN   # project access token
+    GITLAB_TOKEN: $GITLAB_TOKEN   # project access token
     OPENROUTER_API_KEY: $OPENROUTER_API_KEY`}
               </code>
             </Terminal>
             <p className="text-sm text-ink-soft">
-              For a self-managed instance, add{" "}
+              For a self-managed instance, set{" "}
               <code className="font-mono text-xs">
-                --forge-url https://gitlab.example.com
+                GITLAB_API_URL=https://gitlab.example.com/api/v4
               </code>
               . Full walkthrough:{" "}
               <Link href="/docs/gitlab" className="text-rust underline">
@@ -254,6 +259,13 @@ jobs:
               <code className="font-mono text-sm">postil/gate</code> in branch
               protection when you are ready to make it binding. No keys leave
               your control: configure your own inference key per organization.
+              The App also answers <code className="font-mono text-sm">@postil</code>{" "}
+              mentions on PRs and issues — review and answer only, it never
+              opens PRs or pushes commits.
+            </p>
+            <p className="mt-3 text-sm text-ink-soft">
+              The hosted App is being published; the CLI and the GitHub Action
+              work today.
             </p>
             <div className="mt-5 flex flex-wrap items-center gap-4">
               <a

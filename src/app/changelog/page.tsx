@@ -34,21 +34,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "1.0.0",
+    version: "0.1.0 (unreleased)",
     date: "June 2026",
     summary:
-      "First stable release of the CLI and the gate contract. The envelope schema, exit codes, and check-run semantics are now considered stable.",
+      "The current development version of the CLI and the gate contract. No tagged release exists yet; install via the one-line script, build from source, or pin the GitHub Action to a commit SHA.",
     changes: [
       {
         label: "Added",
         text: (
           <>
-            Stable <code className="font-mono text-xs">postil review</code> with{" "}
+            <code className="font-mono text-xs">postil review</code> with{" "}
             <code className="font-mono text-xs">--staged</code>,{" "}
             <code className="font-mono text-xs">--base</code>, and{" "}
-            <code className="font-mono text-xs">--diff</code> inputs, plus
+            <code className="font-mono text-xs">--diff-file</code> inputs, plus
             JSON envelope output via{" "}
-            <code className="font-mono text-xs">--output-json</code>.
+            <code className="font-mono text-xs">--output-json</code> and SARIF
+            2.1.0 output via <code className="font-mono text-xs">--sarif</code>.
           </>
         ),
       },
@@ -71,10 +72,14 @@ const RELEASES: Release[] = [
         label: "Added",
         text: (
           <>
-            GitLab support via{" "}
-            <code className="font-mono text-xs">--forge gitlab</code>, including
-            self-managed instances through{" "}
-            <code className="font-mono text-xs">--forge-url</code>.
+            Forge support beyond GitHub via{" "}
+            <code className="font-mono text-xs">--forge gitlab</code>,{" "}
+            <code className="font-mono text-xs">bitbucket</code>, and{" "}
+            <code className="font-mono text-xs">azure</code>, each covering its
+            self-managed/server variant through a base-URL environment variable
+            (<code className="font-mono text-xs">GITLAB_API_URL</code> and
+            friends). Bitbucket and Azure DevOps are early: shipped, not yet
+            validated against live instances.
           </>
         ),
       },
@@ -82,19 +87,55 @@ const RELEASES: Release[] = [
         label: "Added",
         text: (
           <>
-            <code className="font-mono text-xs">postil doctor</code> preflight and{" "}
-            <code className="font-mono text-xs">postil plan</code> dry-run against
-            stored envelopes.
+            Incremental re-review (
+            <code className="font-mono text-xs">--since-sha</code> +{" "}
+            <code className="font-mono text-xs">--baseline</code>) with
+            resolved/carried finding reconciliation.
           </>
         ),
       },
       {
         label: "Added",
-        text: "Verified one-line install script with published SHA-256 checksums; cargo install and cargo binstall support.",
+        text: (
+          <>
+            <code className="font-mono text-xs">postil respond</code>: the
+            interactive <code className="font-mono text-xs">@postil</code> bot
+            engine for PR and issue mentions (GitHub only; review-and-answer
+            only, never opens PRs).
+          </>
+        ),
+      },
+      {
+        label: "Added",
+        text: (
+          <>
+            <code className="font-mono text-xs">postil doctor</code> preflight,{" "}
+            <code className="font-mono text-xs">postil plan</code> dry-run
+            against stored envelopes, and{" "}
+            <code className="font-mono text-xs">postil hook install</code> for a
+            pre-push review hook.
+          </>
+        ),
+      },
+      {
+        label: "Added",
+        text: (
+          <>
+            Repo guardrails: rules in{" "}
+            <code className="font-mono text-xs">.postil/guardrails.md</code> are
+            injected into the prompt; violations surface as{" "}
+            <code className="font-mono text-xs">guardrail</code> findings that
+            quote the rule.
+          </>
+        ),
+      },
+      {
+        label: "Added",
+        text: "One-line install script with SHA-256 checksum verification and Sigstore keyless signature verification when cosign is present; build from source with cargo install --git.",
       },
       {
         label: "Security",
-        text: "Least-privilege GitHub App (no contents:write), fail-closed gate on operational errors, AES-256-GCM sealing for bring-your-own inference keys.",
+        text: "Least-privilege GitHub App (no contents:write), fail-closed gate on operational errors (repos can opt into gate.onError: advisory), AES-256-GCM sealing for bring-your-own inference keys, Sigstore keyless signing of release artifacts in CI.",
       },
     ],
   },
@@ -137,15 +178,15 @@ export default function ChangelogPage() {
       </div>
 
       <p className="mt-14 font-mono text-xs text-charcoal/60">
-        Full release notes and binaries on{" "}
+        Release notes and binaries will land on{" "}
         <a
           href="https://github.com/postil-dev/postil-cli/releases"
           className="text-rust underline"
           rel="noopener"
         >
           GitHub releases
-        </a>
-        .
+        </a>{" "}
+        with the first tagged release.
       </p>
     </div>
   );
