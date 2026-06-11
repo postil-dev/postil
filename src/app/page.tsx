@@ -19,7 +19,7 @@ import {
   statusExamples,
 } from "./site";
 
-const ROTATION_MS = 4200;
+const ROTATION_MS = 3000;
 
 type Example = {
   id: string;
@@ -413,7 +413,7 @@ function ReviewExamples() {
                   ? "border-accent bg-highlight text-foreground"
                   : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
                 index === active && isAutoPlaying
-                  ? "after:animate-[review-example-progress_4200ms_linear_forwards]"
+                  ? "after:animate-[review-example-progress_3000ms_linear_forwards]"
                   : "",
                 index === active && !isAutoPlaying ? "after:scale-x-100" : "",
                 index !== active ? "after:scale-x-0" : "",
