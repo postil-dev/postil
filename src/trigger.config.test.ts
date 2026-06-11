@@ -93,14 +93,8 @@ describe("trigger config", () => {
   it("syncs required review task runtime secrets", async () => {
     const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
     const originalDatabaseUrl = process.env.NEON_CONNECTION_STRING;
-    const originalTriggerSecret = process.env.TRIGGER_SECRET_KEY;
-    const originalReviewTokenSecret = process.env.REVIEW_TOKEN_SECRET;
-    const originalPostilCliPath = process.env.POSTIL_CLI_PATH;
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
     process.env.NEON_CONNECTION_STRING = "postgres://example.test/db";
-    process.env.TRIGGER_SECRET_KEY = "test-trigger-secret";
-    process.env.REVIEW_TOKEN_SECRET = "test-review-token-secret";
-    process.env.POSTIL_CLI_PATH = "/app/.postil/bin/postil";
 
     try {
       const { default: config } = await import("../trigger.config");
@@ -125,10 +119,10 @@ describe("trigger config", () => {
       expect(syncedEnv).toMatchObject({
         OPENROUTER_API_KEY: "test-openrouter-key",
         NEON_CONNECTION_STRING: "postgres://example.test/db",
-        REVIEW_TOKEN_SECRET: "test-review-token-secret",
-        POSTIL_CLI_PATH: "/app/.postil/bin/postil",
       });
       expect(syncedEnv).not.toHaveProperty("TRIGGER_SECRET_KEY");
+      expect(syncedEnv).not.toHaveProperty("REVIEW_TOKEN_SECRET");
+      expect(syncedEnv).not.toHaveProperty("POSTIL_CLI_PATH");
     } finally {
       if (originalOpenRouterKey === undefined) {
         delete process.env.OPENROUTER_API_KEY;
@@ -140,52 +134,14 @@ describe("trigger config", () => {
       } else {
         process.env.NEON_CONNECTION_STRING = originalDatabaseUrl;
       }
-      if (originalTriggerSecret === undefined) {
-        delete process.env.TRIGGER_SECRET_KEY;
-      } else {
-        process.env.TRIGGER_SECRET_KEY = originalTriggerSecret;
-      }
-      if (originalReviewTokenSecret === undefined) {
-        delete process.env.REVIEW_TOKEN_SECRET;
-      } else {
-        process.env.REVIEW_TOKEN_SECRET = originalReviewTokenSecret;
-      }
-      if (originalPostilCliPath === undefined) {
-        delete process.env.POSTIL_CLI_PATH;
-      } else {
-        process.env.POSTIL_CLI_PATH = originalPostilCliPath;
-      }
     }
   });
 
-  it("installs the Postil CLI in the Trigger worker image", async () => {
+  it("does not install the Postil CLI in the Trigger worker image", async () => {
     const { default: config } = await import("../trigger.config");
     const extension = config.build?.extensions?.find(
       (candidate: { name?: string }) => candidate.name === "postil-cli",
     );
-
-    const layers: Array<{ id: string; image?: { pkgs?: string[] }; commands?: string[] }> = [];
-    extension?.onBuildStart?.({
-      addLayer: (layer: {
-        id: string;
-        image?: { pkgs?: string[] };
-        commands?: string[];
-      }) => {
-        layers.push(layer);
-      },
-    } as never);
-
-    expect(layers).toContainEqual(
-      expect.objectContaining({
-        id: "postil-cli",
-        image: expect.objectContaining({
-          pkgs: expect.arrayContaining(["curl", "git"]),
-        }),
-        commands: expect.arrayContaining([
-          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
-          "mkdir -p /app/.postil/bin && $HOME/.cargo/bin/cargo install --git https://github.com/postil-dev/postil-cli --rev 3df78f88531aadb76942f4c69bc5a22e4421be34 --locked --force --root /app/.postil",
-        ]),
-      }),
-    );
+    expect(extension).toBeUndefined();
   });
 });

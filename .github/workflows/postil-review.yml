@@ -352,19 +352,29 @@ jobs:
               "X-GitHub-Api-Version": "2022-11-28",
             };
 
-            const runsResponse = await fetch(
-              `https://api.github.com/repos/${owner}/${repo}/commits/${headSha}/check-runs`,
-              { headers },
-            );
+            const checkRuns = [];
+            for (let page = 1; page <= 10; page += 1) {
+              const runsResponse = await fetch(
+                `https://api.github.com/repos/${owner}/${repo}/commits/${headSha}/check-runs?check_name=postil%2Freview&per_page=100&page=${page}`,
+                { headers },
+              );
 
-            if (!runsResponse.ok) {
-              throw new Error(`check-run lookup failed: ${runsResponse.status}`);
+              if (!runsResponse.ok) {
+                throw new Error(`check-run lookup failed: ${runsResponse.status}`);
+              }
+
+              const runsPayload = await runsResponse.json();
+              const runs = Array.isArray(runsPayload.check_runs) ? runsPayload.check_runs : [];
+              for (const run of runs) {
+                if (run && run.name === "postil/review" && run.status !== "completed") {
+                  checkRuns.push(run);
+                }
+              }
+
+              if (runs.length < 100) {
+                break;
+              }
             }
-
-            const runsPayload = await runsResponse.json();
-            const checkRuns = (runsPayload.check_runs || []).filter(
-              (run) => run && run.name === "postil/review" && run.status !== "completed",
-            );
 
             if (checkRuns.length === 0) {
               throw new Error("open postil/review check run not found");

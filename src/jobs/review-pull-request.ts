@@ -177,7 +177,7 @@ export const reviewPullRequest = task({
         findings: result.findings.length,
         durationMs: Date.now() - started,
         modelUsed: resolveReviewModelUsed(result, reviewModelUsed),
-        installationHash: await hashInstallationId(payload.installationId),
+        installationHash,
       });
 
       try {

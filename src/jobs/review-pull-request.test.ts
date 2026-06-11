@@ -138,6 +138,7 @@ describe("reviewPullRequest", () => {
         modelUsed: "test/failover",
       }),
     );
+    expect(posthogMock.hashInstallationId).toHaveBeenCalledTimes(1);
   });
 
   it("configures the trigger client with the normalized dispatch credential", async () => {
@@ -423,7 +424,10 @@ describe("reviewPullRequest", () => {
       }),
     });
     expect(steps[completeCheckIndex].run).toContain("https://api.github.com/repos/");
-    expect(steps[completeCheckIndex].run).toContain("/commits/$" + "{headSha}/check-runs");
+    expect(steps[completeCheckIndex].run).toContain(
+      "/commits/$" + "{headSha}/check-runs?check_name=postil%2Freview&per_page=100&page=$" +
+        "{page}",
+    );
     expect(steps[completeCheckIndex].run).toContain('run.name === "postil/review"');
     expect(steps[completeCheckIndex].run).toContain("for (const checkRun of checkRuns)");
     expect(steps[completeCheckIndex].run).toContain("check-runs/$" + "{checkRun.id}");
