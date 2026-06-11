@@ -17,12 +17,12 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/auth", () => ({
   assertAuthSecretConfigured: vi.fn(),
-  auth: {
+  getAuth: () => ({
     api: {
       getSession: mocks.getSession,
       listOrganizations: mocks.listOrganizations,
     },
-  },
+  }),
 }));
 
 const { requireReportSession } = await import("./report-auth");

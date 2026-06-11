@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { assertAuthSecretConfigured, auth } from "@/auth";
+import { assertAuthSecretConfigured, getAuth } from "@/auth";
 import { reportViewerFromSession, type ReportViewer } from "@/lib/reports";
 
 type OrganizationListApi = {
@@ -10,6 +10,7 @@ type OrganizationListApi = {
 export async function requireReportSession(nextPath: string): Promise<ReportViewer> {
   assertAuthSecretConfigured();
   const requestHeaders = await headers();
+  const auth = getAuth();
   const session = await auth.api.getSession({
     headers: requestHeaders,
   });

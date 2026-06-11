@@ -2,6 +2,7 @@ import { checkout, polar, portal } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
 import { betterAuth } from "better-auth";
 import { organization } from "better-auth/plugins";
+import { randomUUID } from "node:crypto";
 import { env } from "@/lib/env";
 
 // TODO(postil): replace in-memory adapter with a Drizzle adapter wiring
@@ -15,7 +16,11 @@ const polarClient = env.POLAR_API_KEY
   : undefined;
 
 function authSecret(): string {
-  return env.BETTER_AUTH_SECRET ?? "dev-secret-change-me-dev-secret-change-me";
+  if (env.BETTER_AUTH_SECRET) return env.BETTER_AUTH_SECRET;
+  if (env.NODE_ENV === "production") {
+    throw new Error("BETTER_AUTH_SECRET must be set in production.");
+  }
+  return randomUUID();
 }
 
 export function assertAuthSecretConfigured(): void {
@@ -24,29 +29,36 @@ export function assertAuthSecretConfigured(): void {
   }
 }
 
-export const auth = betterAuth({
-  baseURL: env.BETTER_AUTH_URL,
-  secret: authSecret(),
-  socialProviders: env.GITHUB_APP_CLIENT_ID && env.GITHUB_APP_CLIENT_SECRET
-    ? {
-        github: {
-          clientId: env.GITHUB_APP_CLIENT_ID,
-          clientSecret: env.GITHUB_APP_CLIENT_SECRET,
-        },
-      }
-    : {},
-  plugins: [
-    organization(),
-    ...(polarClient
-      ? [
-          polar({
-            client: polarClient,
-            createCustomerOnSignUp: true,
-            use: [checkout({ authenticatedUsersOnly: true }), portal()],
-          }),
-        ]
-      : []),
-  ],
-});
+function createAuth() {
+  return betterAuth({
+    baseURL: env.BETTER_AUTH_URL,
+    secret: authSecret(),
+    socialProviders: env.GITHUB_APP_CLIENT_ID && env.GITHUB_APP_CLIENT_SECRET
+      ? {
+          github: {
+            clientId: env.GITHUB_APP_CLIENT_ID,
+            clientSecret: env.GITHUB_APP_CLIENT_SECRET,
+          },
+        }
+      : {},
+    plugins: [
+      organization(),
+      ...(polarClient
+        ? [
+            polar({
+              client: polarClient,
+              createCustomerOnSignUp: true,
+              use: [checkout({ authenticatedUsersOnly: true }), portal()],
+            }),
+          ]
+        : []),
+    ],
+  });
+}
 
-export type Auth = typeof auth;
+let authInstance: ReturnType<typeof createAuth> | undefined;
+
+export function getAuth(): ReturnType<typeof createAuth> {
+  authInstance ??= createAuth();
+  return authInstance;
+}

@@ -10,9 +10,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/auth", () => ({
   assertAuthSecretConfigured: mocks.authAssert,
-  auth: {
+  getAuth: () => ({
     handler: {},
-  },
+  }),
 }));
 
 vi.mock("better-auth/next-js", () => ({
