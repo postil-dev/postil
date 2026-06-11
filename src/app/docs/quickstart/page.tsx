@@ -67,7 +67,7 @@ jobs:
       # the @v1 tag will exist after the first tagged release of the action
       - uses: postil-dev/postil-action@v1
         with:
-          cli-ref: 974f63e90505a22e9526224883d79dc4e4263c85
+          cli-ref: 6b9d2db621e12bd558f72ba3e7bd8ecc092cd93a
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}</code>

@@ -167,7 +167,7 @@ jobs:
       - uses: postil-dev/postil-action@v1
         with:
           cli-ref: `}
-                <span className="t-rust">974f63e90505a22e9526224883d79dc4e4263c85</span>
+                <span className="t-rust">6b9d2db621e12bd558f72ba3e7bd8ecc092cd93a</span>
                 {`
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
