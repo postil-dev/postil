@@ -23,6 +23,9 @@ jobs:
     timeout-minutes: 15
     env:
       POSTIL_CLI_REF: d0c81b91b6082c7788b2dec78eaf5f5bacc348c2
+      POSTIL_CLI_REPO: postil-dev/postil-cli
+      POSTIL_CLI_AUTHOR: morgaesis
+      POSTIL_CLI_COMMITTER: web-flow
     steps:
       - name: Validate pinned CLI ref
         env:
@@ -34,13 +37,18 @@ jobs:
             echo "::error::postil-cli ref must be a full 40-character commit SHA."
             exit 1
           fi
+          if [[ ! "$POSTIL_CLI_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::postil-cli repository must be an owner/repo slug."
+            exit 1
+          fi
 
           headers=(-H "Accept: application/vnd.github+json")
           if [[ -n "${GITHUB_TOKEN:-}" ]]; then
             headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
           fi
 
-          verification="$(curl -fsSL "${headers[@]}" "https://api.github.com/repos/postil-dev/postil-cli/commits/$POSTIL_CLI_REF")"
+          verification_url="https://api.github.com/repos/${POSTIL_CLI_REPO}/commits/${POSTIL_CLI_REF}"
+          verification="$(curl -fsSL "${headers[@]}" "$verification_url")"
           if [[ "$(jq -r '.sha' <<<"$verification")" != "$POSTIL_CLI_REF" ]]; then
             echo "::error::postil-cli ref did not resolve to the expected commit."
             exit 1
@@ -50,6 +58,29 @@ jobs:
             echo "::error::postil-cli commit is not verified ($reason)."
             exit 1
           fi
+          if [[ "$(jq -r '.commit.verification.reason' <<<"$verification")" != "valid" ]]; then
+            echo "::error::postil-cli commit verification is not valid."
+            exit 1
+          fi
+          if [[ "$(jq -r '.author.login // empty' <<<"$verification")" != "$POSTIL_CLI_AUTHOR" ]]; then
+            echo "::error::postil-cli commit author is not trusted."
+            exit 1
+          fi
+          if [[ "$(jq -r '.committer.login // empty' <<<"$verification")" != "$POSTIL_CLI_COMMITTER" ]]; then
+            echo "::error::postil-cli commit committer is not trusted."
+            exit 1
+          fi
+
+          checkout_dir="$RUNNER_TEMP/postil-cli-src"
+          rm -rf "$checkout_dir"
+          git init -q "$checkout_dir"
+          git -C "$checkout_dir" remote add origin "https://github.com/${POSTIL_CLI_REPO}.git"
+          git -C "$checkout_dir" fetch --depth=1 origin "$POSTIL_CLI_REF"
+          if [[ "$(git -C "$checkout_dir" rev-parse FETCH_HEAD)" != "$POSTIL_CLI_REF" ]]; then
+            echo "::error::postil-cli commit mismatch after fetch."
+            exit 1
+          fi
+          git -C "$checkout_dir" checkout --force --detach FETCH_HEAD
 
       - name: Set up Rust
         run: |
@@ -62,13 +93,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install Postil CLI
-        run: |
-          set -euo pipefail
-          cargo install \
-            --git https://github.com/postil-dev/postil-cli \
-            --rev "$POSTIL_CLI_REF" \
-            --locked \
-            --force
+        run: cargo install --path "$RUNNER_TEMP/postil-cli-src" --locked --force
 
       - name: Assert output contract
         run: |
@@ -203,6 +228,11 @@ jobs:
       contents: read
       pull-requests: write
       checks: write
+    env:
+      POSTIL_CLI_REF: d0c81b91b6082c7788b2dec78eaf5f5bacc348c2
+      POSTIL_CLI_REPO: postil-dev/postil-cli
+      POSTIL_CLI_AUTHOR: morgaesis
+      POSTIL_CLI_COMMITTER: web-flow
     steps:
       - name: Skip review in merge queue (already ran on PR)
         if: github.event_name == 'merge_group'
@@ -210,22 +240,152 @@ jobs:
 
       - name: Checkout base ref (never PR head)
         if: github.event_name == 'pull_request_target'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+
+          checkout_dir="$GITHUB_WORKSPACE"
+          if [[ "${ACT:-}" == "true" ]]; then
+            checkout_dir="$RUNNER_TEMP/postil-base-checkout"
+            rm -rf "$checkout_dir"
+            mkdir -p "$checkout_dir"
+          fi
+
+          git config --global --add safe.directory "$checkout_dir"
+          if ! git -C "$checkout_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git -C "$checkout_dir" init
+          fi
+          if git -C "$checkout_dir" remote get-url origin >/dev/null 2>&1; then
+            git -C "$checkout_dir" remote set-url origin "https://github.com/${{ github.repository }}.git"
+          else
+            git -C "$checkout_dir" remote add origin "https://github.com/${{ github.repository }}.git"
+          fi
+
+          if [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            if ! git -C "$checkout_dir" fetch --depth=1 origin "$BASE_SHA"; then
+              if [[ "${ACT:-}" != "true" ]]; then
+                exit 1
+              fi
+              echo "::warning::could not fetch act event base SHA; checking out the default branch for local workflow validation."
+              git -C "$checkout_dir" fetch --depth=1 origin "$DEFAULT_BRANCH"
+            fi
+          elif [[ "${ACT:-}" == "true" ]]; then
+            echo "::warning::act event base ref is not a full SHA; checking out the default branch for local workflow validation."
+            git -C "$checkout_dir" fetch --depth=1 origin "$DEFAULT_BRANCH"
+          else
+            echo "::error::pull request base ref must be a full 40-character commit SHA."
+            exit 1
+          fi
+
+          git -C "$checkout_dir" checkout --force FETCH_HEAD
+          git -C "$checkout_dir" rev-parse HEAD
+
+      - name: Verify and checkout Postil CLI
+        if: github.event_name == 'pull_request_target'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$POSTIL_CLI_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::postil-cli ref must be a full 40-character commit SHA."
+            exit 1
+          fi
+          if [[ ! "$POSTIL_CLI_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::postil-cli repository must be an owner/repo slug."
+            exit 1
+          fi
+
+          headers=(-H "Accept: application/vnd.github+json")
+          if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+          fi
+
+          verification_url="https://api.github.com/repos/${POSTIL_CLI_REPO}/commits/${POSTIL_CLI_REF}"
+          verification="$(curl -fsSL "${headers[@]}" "$verification_url")"
+          if [[ "$(jq -r '.sha' <<<"$verification")" != "$POSTIL_CLI_REF" ]]; then
+            echo "::error::postil-cli ref did not resolve to the expected commit."
+            exit 1
+          fi
+          if [[ "$(jq -r '.commit.verification.verified' <<<"$verification")" != "true" ]]; then
+            reason="$(jq -r '.commit.verification.reason' <<<"$verification")"
+            echo "::error::postil-cli commit is not verified ($reason)."
+            exit 1
+          fi
+          if [[ "$(jq -r '.commit.verification.reason' <<<"$verification")" != "valid" ]]; then
+            echo "::error::postil-cli commit verification is not valid."
+            exit 1
+          fi
+          if [[ "$(jq -r '.author.login // empty' <<<"$verification")" != "$POSTIL_CLI_AUTHOR" ]]; then
+            echo "::error::postil-cli commit author is not trusted."
+            exit 1
+          fi
+          if [[ "$(jq -r '.committer.login // empty' <<<"$verification")" != "$POSTIL_CLI_COMMITTER" ]]; then
+            echo "::error::postil-cli commit committer is not trusted."
+            exit 1
+          fi
+
+          checkout_dir="$RUNNER_TEMP/postil-cli-src"
+          rm -rf "$checkout_dir"
+          git init -q "$checkout_dir"
+          git -C "$checkout_dir" remote add origin "https://github.com/${POSTIL_CLI_REPO}.git"
+          git -C "$checkout_dir" fetch --depth=1 origin "$POSTIL_CLI_REF"
+          if [[ "$(git -C "$checkout_dir" rev-parse FETCH_HEAD)" != "$POSTIL_CLI_REF" ]]; then
+            echo "::error::postil-cli commit mismatch after fetch."
+            exit 1
+          fi
+          git -C "$checkout_dir" checkout --force --detach FETCH_HEAD
+
+      - name: Set up Rust
+        if: github.event_name == 'pull_request_target'
+        run: |
+          set -euo pipefail
+          if command -v cargo >/dev/null 2>&1; then
+            exit 0
+          fi
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs |
+            sh -s -- --profile minimal --default-toolchain stable -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Postil CLI
+        if: github.event_name == 'pull_request_target'
+        run: cargo install --path "$RUNNER_TEMP/postil-cli-src" --locked --force
 
       - name: Review pull request
         if: github.event_name == 'pull_request_target'
-        # Same-org action tracks main for fast iteration; org policy requires pinning the current main SHA.
-        uses: postil-dev/postil-action@c58e6a6993f326783d4e7e9f2ebb2501e12f2e5f
-        with:
-          api-key: ${{ secrets.OPENROUTER_API_KEY }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repo: ${{ github.repository }}
-          pr: ${{ github.event.pull_request.number }}
-          sha: ${{ github.event.pull_request.head.sha }}
-          # Keep explicit for pull_request_target so the CLI never receives empty API bases.
-          github-api-url: https://api.github.com
-          openrouter-api-url: https://openrouter.ai/api/v1
-          fail-on: error
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REVIEW_MODEL: deepseek/deepseek-v4-pro
+        run: |
+          set -euo pipefail
+
+          pr_number="${{ github.event.pull_request.number }}"
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          review_repo="${{ github.repository }}"
+          if [[ ! "$review_repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::repository must be an owner/repo slug."
+            exit 1
+          fi
+          if [[ ! "$REVIEW_MODEL" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+            echo "::error::review model contains invalid characters."
+            exit 1
+          fi
+          if [[ "${ACT:-}" == "true" ]]; then
+            pr_number="${ACT_PULL_REQUEST_NUMBER:-$pr_number}"
+            head_sha="${ACT_PULL_REQUEST_SHA:-$head_sha}"
+          fi
+          if [[ -z "$pr_number" || -z "$head_sha" ]]; then
+            echo "::error::pull request number and head SHA are required; set ACT_PULL_REQUEST_NUMBER and ACT_PULL_REQUEST_SHA when running under act."
+            exit 1
+          fi
+
+          postil review \
+            --repo "$review_repo" \
+            --pr "$pr_number" \
+            --sha "$head_sha" \
+            --github-api-url https://api.github.com \
+            --openrouter-api-url https://openrouter.ai/api/v1 \
+            --fail-on error
