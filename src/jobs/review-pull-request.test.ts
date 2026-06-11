@@ -37,8 +37,7 @@ const envMock = {
   GITHUB_PAT: "test-repository-token" as string | undefined,
   REVIEW_MODEL: "test/default",
   REVIEW_MODEL_CASCADE: undefined as string | undefined,
-  TRIGGER_API_KEY: undefined as string | undefined,
-  triggerApiKey: "test-trigger-key" as string | undefined,
+  TRIGGER_API_KEY: "test-trigger-key" as string | undefined,
   TRIGGER_API_URL: "https://trigger.example.test",
 };
 
@@ -75,6 +74,9 @@ vi.mock("./run-review", () => ({
     typeof err === "object" && err !== null && "attemptedModels" in err && "providerFailures" in err
       ? "Review failed after all configured model providers were unavailable."
       : "Review failed to complete.",
+  reviewPayload: {
+    parse: (value: unknown) => value,
+  },
   runReview: runReviewMock.runReview,
 }));
 vi.mock("@/db", () => ({
@@ -118,8 +120,7 @@ describe("reviewPullRequest", () => {
     githubMock.mintInstallationToken.mockResolvedValue("installation-token");
     envMock.GITHUB_PAT = "test-repository-token";
     envMock.REVIEW_MODEL_CASCADE = undefined;
-    envMock.TRIGGER_API_KEY = undefined;
-    envMock.triggerApiKey = "test-trigger-key";
+    envMock.TRIGGER_API_KEY = "test-trigger-key";
     runReviewMock.runReview.mockResolvedValue({
       summary: "ok",
       findings: [],
