@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: postil-dev/postil-action@v1
         with:
-          cli-ref: 56253a6c8b2461f9d625001b130d09e13ff40963
+          cli-ref: 974f63e90505a22e9526224883d79dc4e4263c85
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}</code>
