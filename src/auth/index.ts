@@ -18,6 +18,9 @@ const polarClient = env.POLAR_API_KEY
 
 function authSecret(): string {
   if (env.BETTER_AUTH_SECRET) return env.BETTER_AUTH_SECRET;
+  if (process.env.NEXT_PHASE === "phase-production-build") {
+    return "build-only-secret-build-only-secret";
+  }
   if (env.NODE_ENV === "production") {
     throw new Error("BETTER_AUTH_SECRET must be set in production.");
   }
@@ -34,14 +37,15 @@ function createAuth() {
   return betterAuth({
     baseURL: env.BETTER_AUTH_URL,
     secret: authSecret(),
-    socialProviders: env.GITHUB_APP_CLIENT_ID && env.GITHUB_APP_CLIENT_SECRET
-      ? {
-          github: {
-            clientId: env.GITHUB_APP_CLIENT_ID,
-            clientSecret: env.GITHUB_APP_CLIENT_SECRET,
-          },
-        }
-      : {},
+    socialProviders:
+      env.GITHUB_APP_CLIENT_ID && env.GITHUB_APP_CLIENT_SECRET
+        ? {
+            github: {
+              clientId: env.GITHUB_APP_CLIENT_ID,
+              clientSecret: env.GITHUB_APP_CLIENT_SECRET,
+            },
+          }
+        : {},
     plugins: [
       organization(),
       ...(polarClient
@@ -58,3 +62,5 @@ function createAuth() {
 }
 
 export const getAuth = cache(createAuth);
+
+export type Auth = ReturnType<typeof createAuth>;

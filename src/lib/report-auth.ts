@@ -9,8 +9,8 @@ type OrganizationListApi = {
 
 export async function requireReportSession(nextPath: string): Promise<ReportViewer> {
   assertAuthSecretConfigured();
-  const requestHeaders = await headers();
   const auth = getAuth();
+  const requestHeaders = await headers();
   const session = await auth.api.getSession({
     headers: requestHeaders,
   });

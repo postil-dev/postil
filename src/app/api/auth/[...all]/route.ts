@@ -5,11 +5,13 @@ type AuthRouteContext = {
   params: Promise<{ all: string[] }>;
 };
 
-function getHandler() {
-  return toNextJsHandler(getAuth().handler) as {
-    GET: (request: Request, context: AuthRouteContext) => Response | Promise<Response>;
-    POST: (request: Request, context: AuthRouteContext) => Response | Promise<Response>;
-  };
+type AuthHandler = {
+  GET: (request: Request, context: AuthRouteContext) => Response | Promise<Response>;
+  POST: (request: Request, context: AuthRouteContext) => Response | Promise<Response>;
+};
+
+function getHandler(): AuthHandler {
+  return toNextJsHandler(getAuth().handler) as AuthHandler;
 }
 
 export async function GET(request: Request, context: AuthRouteContext) {
