@@ -37,7 +37,7 @@ const envMock = {
   GITHUB_PAT: "test-repository-token" as string | undefined,
   REVIEW_MODEL: "test/default",
   REVIEW_MODEL_CASCADE: undefined as string | undefined,
-  TRIGGER_API_KEY: "test-trigger-key" as string | undefined,
+  triggerApiKey: "test-trigger-key" as string | undefined,
   TRIGGER_API_URL: "https://trigger.example.test",
 };
 
@@ -120,7 +120,7 @@ describe("reviewPullRequest", () => {
     githubMock.mintInstallationToken.mockResolvedValue("installation-token");
     envMock.GITHUB_PAT = "test-repository-token";
     envMock.REVIEW_MODEL_CASCADE = undefined;
-    envMock.TRIGGER_API_KEY = "test-trigger-key";
+    envMock.triggerApiKey = "test-trigger-key";
     runReviewMock.runReview.mockResolvedValue({
       summary: "ok",
       findings: [],
