@@ -7,12 +7,11 @@ import { installationOctokit } from "@/lib/github";
 import { captureException, hashInstallationId, track } from "@/lib/posthog";
 import { recordReviewCompleted, recordTokenUsage } from "@/lib/usage";
 import { resolveReviewModelUsed, selectedReviewModel } from "./review-models";
+import { reviewPayload, type ReviewPayload } from "./review-types";
 import {
   isOpenRouterCascadeError,
   publicReviewErrorMessage,
   type ReviewClients,
-  type ReviewPayload,
-  reviewPayload,
   runReview,
 } from "./run-review";
 
@@ -267,7 +266,7 @@ export const reviewPullRequest = task({
 });
 
 export async function enqueueReviewPullRequest(
-  payload: import("./run-review").ReviewPayload,
+  payload: ReviewPayload,
   idempotencyKey: string,
 ) {
   ensureTriggerConfigured();

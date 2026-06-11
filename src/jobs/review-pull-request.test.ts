@@ -60,6 +60,11 @@ vi.mock("@/lib/github", () => ({
 }));
 vi.mock("@/lib/posthog", () => posthogMock);
 vi.mock("@/lib/usage", () => usageMock);
+vi.mock("./review-types", () => ({
+  reviewPayload: {
+    parse: (value: unknown) => value,
+  },
+}));
 vi.mock("./run-review", () => ({
   isOpenRouterCascadeError: (err: unknown) =>
     typeof err === "object" &&
@@ -70,9 +75,6 @@ vi.mock("./run-review", () => ({
     typeof err === "object" && err !== null && "attemptedModels" in err && "providerFailures" in err
       ? "Review failed after all configured model providers were unavailable."
       : "Review failed to complete.",
-  reviewPayload: {
-    parse: (value: unknown) => value,
-  },
   runReview: runReviewMock.runReview,
 }));
 vi.mock("@/db", () => ({

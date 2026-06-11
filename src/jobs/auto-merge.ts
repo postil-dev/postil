@@ -155,6 +155,17 @@ function isReviewVerifierCheck(name: string): boolean {
   return name === "Verify postil/review passed";
 }
 
+function pullLabelNames(pull: unknown): string[] {
+  const labels = (pull as { labels?: unknown }).labels;
+  if (!Array.isArray(labels)) return [];
+  return labels.flatMap((label) => {
+    if (typeof label === "string") return [label];
+    if (!label || typeof label !== "object") return [];
+    const name = String((label as { name?: unknown }).name ?? "").trim();
+    return name ? [name] : [];
+  });
+}
+
 export function autoMergeRequiredChecks(
   configuredChecks: string[],
   branchProtectionChecks: string[],
@@ -266,12 +277,16 @@ export async function attemptAutoMergeApprovedPull(
     if (pullHeadSha && pullHeadSha !== payload.headSha) return;
     if ((pull.data as { merged?: unknown }).merged === true) return;
     if (pull.data.mergeable === true && pull.data.mergeable_state === "clean") {
+      const labelNames = pullLabelNames(pull.data);
       const branchName = String((pull.data as { base?: { ref?: unknown } }).base?.ref ?? "").trim();
       const configuredChecks = normalizeCheckNames(reviewConfig.required_checks ?? []);
       const requiredChecks = configuredChecks.length
         ? configuredChecks
         : await fetchBranchProtectionRequiredChecks(octokit, owner, repo, branchName, timeoutMs);
-      const checks = autoMergeRequiredChecks(configuredChecks, requiredChecks);
+      const checks = normalizeCheckNames([
+        ...autoMergeRequiredChecks(configuredChecks, requiredChecks),
+        ...(labelNames.some((label) => label.toLowerCase() === "e2e") ? ["E2E tests"] : []),
+      ]).filter((name) => !isReviewVerifierCheck(name));
       if (!checks.length) return;
 
       const checksPassed = await hasSuccessfulRequiredChecks(
