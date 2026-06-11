@@ -110,6 +110,8 @@ jobs:
   e2e:
     name: E2E tests
     runs-on: ubuntu-latest
+    env:
+      BETTER_AUTH_SECRET: ci-e2e-secret-ci-e2e-secret-ci-e2e-secret
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
