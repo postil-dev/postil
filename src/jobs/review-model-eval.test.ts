@@ -4,9 +4,13 @@ import { evaluateReviewModelFixtures, type ReviewModelEvalSuite } from "./review
 
 describe("evaluateReviewModelFixtures", () => {
   it("reports actionable and noise signals for the default and candidate models", () => {
-    const report = evaluateReviewModelFixtures(fixtureSuite as ReviewModelEvalSuite);
+    const configuredDefaultModel = "moonshotai/kimi-k2.6";
+    const report = evaluateReviewModelFixtures(
+      fixtureSuite as ReviewModelEvalSuite,
+      configuredDefaultModel,
+    );
 
-    expect(report.configuredDefaultModel).toBe("moonshotai/kimi-k2.6");
+    expect(report.configuredDefaultModel).toBe(configuredDefaultModel);
     expect(report.recommendedFixturePrimary).toBe("moonshotai/kimi-k2.6");
     expect(report.results).toMatchObject([
       {
