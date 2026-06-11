@@ -8,7 +8,7 @@ describe("evaluateReviewModelFixtures", () => {
 
     expect(report.configuredDefaultModel).toBe("moonshotai/kimi-k2.6");
     expect(report.recommendedFixturePrimary).toBe("moonshotai/kimi-k2.6");
-    expect(report.results).toEqual([
+    expect(report.results).toMatchObject([
       {
         model: "moonshotai/kimi-k2.6",
         cases: 3,
@@ -46,12 +46,12 @@ describe("evaluateReviewModelFixtures", () => {
         model: "google/gemini-2.5-flash-lite",
         cases: 3,
         expectedActionableFindings: 2,
-        actionableFindings: 0,
-        missedActionableFindings: 2,
-        falsePositiveFindings: 1,
+        actionableFindings: 1,
+        missedActionableFindings: 1,
+        falsePositiveFindings: 0,
         cleanCaseNoiseFindings: 0,
-        severityMismatches: 0,
-        actionableRate: 0,
+        severityMismatches: 1,
+        actionableRate: 0.5,
       },
       {
         model: "anthropic/claude-sonnet-4.5",
@@ -65,6 +65,18 @@ describe("evaluateReviewModelFixtures", () => {
         actionableRate: 1,
       },
     ]);
+
+    for (const result of report.results) {
+      expect(result.outputProvenances).toHaveLength(3);
+      for (const provenance of result.outputProvenances) {
+        expect(provenance.source).toBe("synthetic-regression-fixture");
+        expect(provenance.caseId).toMatch(
+          /^(clean-docs-copy-edit|missing-null-guard|auth-bypass)$/,
+        );
+        expect(provenance.inputDigest).toMatch(/^[a-f0-9]{64}$/);
+        expect(provenance.outputDigest).toMatch(/^[a-f0-9]{64}$/);
+      }
+    }
   });
 
   it("keeps eval inputs reusable with provenance and diff text", () => {

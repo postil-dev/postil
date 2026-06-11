@@ -9,11 +9,15 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import {
   type ReviewEnvelope,
-  type ReviewFinding,
   reviewEnvelope,
   reviewFinding,
   reviewPayload,
 } from "@/jobs/review-types";
+import {
+  emptyReviewScoringMetrics,
+  scoreReviewFindings,
+  type ReviewFindingExpectation,
+} from "@/lib/review-scoring";
 
 const execFile = promisify(execFileCb);
 
@@ -245,7 +249,10 @@ async function runPrReviewBenchmarkCase(
     return failedCaseResult(benchmarkCase, runDir, promptGuardrailFailures, result);
   }
 
-  const metrics = scoreFindings(benchmarkCase.groundTruth.findings, result.findings);
+  const metrics = scoreReviewFindings(
+    benchmarkCase.groundTruth.findings as ReviewFindingExpectation[],
+    result.findings,
+  );
   if (commandError && !(isExpectedFindingsExit(commandError) && result.findings.length > 0)) {
     return failedCaseResult(
       benchmarkCase,
@@ -291,8 +298,11 @@ function failedCaseResult(
     findings: result?.findings.length ?? 0,
     scoringLabels: benchmarkCase.scoringLabels,
     metrics: result
-      ? scoreFindings(benchmarkCase.groundTruth.findings, result.findings)
-      : emptyMetrics(),
+      ? scoreReviewFindings(
+          benchmarkCase.groundTruth.findings as ReviewFindingExpectation[],
+          result.findings,
+        )
+      : emptyReviewScoringMetrics(),
     failures,
     error: failures.join("; "),
   };
@@ -596,52 +606,6 @@ async function listFiles(path: string): Promise<string[]> {
   return files;
 }
 
-function scoreFindings(
-  expected: z.infer<typeof expectedFinding>[],
-  actual: ReviewFinding[],
-): PrReviewBenchmarkMetrics {
-  const matchedActual = new Set<number>();
-  let truePositives = 0;
-  let severityMatches = 0;
-  let fileLineMatches = 0;
-  let commentUsefulness = 0;
-
-  for (const expectedFinding of expected) {
-    const matchIndex = actual.findIndex(
-      (finding, index) =>
-        !matchedActual.has(index) &&
-        finding.path === expectedFinding.path &&
-        (expectedFinding.line === undefined || finding.line === expectedFinding.line),
-    );
-    if (matchIndex === -1) continue;
-
-    matchedActual.add(matchIndex);
-    truePositives += 1;
-    const finding = actual[matchIndex];
-    if (expectedFinding.severity === undefined || finding.severity === expectedFinding.severity) {
-      severityMatches += 1;
-    }
-    if (expectedFinding.line !== undefined && finding.line === expectedFinding.line) {
-      fileLineMatches += 1;
-    }
-    if (
-      expectedFinding.bodyIncludes === undefined ||
-      finding.body.includes(expectedFinding.bodyIncludes)
-    ) {
-      commentUsefulness += 1;
-    }
-  }
-
-  return {
-    truePositives,
-    falsePositives: actual.length - matchedActual.size,
-    falseNegatives: expected.length - truePositives,
-    severityMatches,
-    fileLineMatches,
-    commentUsefulness,
-  };
-}
-
 function sumMetrics(metrics: PrReviewBenchmarkMetrics[]): PrReviewBenchmarkMetrics {
   return metrics.reduce(
     (sum, item) => ({
@@ -652,19 +616,8 @@ function sumMetrics(metrics: PrReviewBenchmarkMetrics[]): PrReviewBenchmarkMetri
       fileLineMatches: sum.fileLineMatches + item.fileLineMatches,
       commentUsefulness: sum.commentUsefulness + item.commentUsefulness,
     }),
-    emptyMetrics(),
+    emptyReviewScoringMetrics(),
   );
-}
-
-function emptyMetrics(): PrReviewBenchmarkMetrics {
-  return {
-    truePositives: 0,
-    falsePositives: 0,
-    falseNegatives: 0,
-    severityMatches: 0,
-    fileLineMatches: 0,
-    commentUsefulness: 0,
-  };
 }
 
 function validateUniqueCaseIds(cases: PrReviewBenchmarkCase[]) {

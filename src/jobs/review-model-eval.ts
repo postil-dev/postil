@@ -1,6 +1,11 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { env } from "@/lib/env";
 import type { ReviewFinding } from "./review-types";
+import {
+  scoreReviewFindings,
+  type ReviewFindingExpectation,
+} from "@/lib/review-scoring";
 
 type ExpectedFinding = {
   path: string;
@@ -12,6 +17,7 @@ type ExpectedFinding = {
 type ModelOutput = {
   summary: string;
   findings: ReviewFinding[];
+  provenance?: EvalProvenance;
 };
 
 type EvalInput = {
@@ -23,6 +29,13 @@ type EvalProvenance = {
   source: string;
   createdAt: string;
   notes: string;
+};
+
+type OutputProvenance = EvalProvenance & {
+  caseId: string;
+  model: string;
+  inputDigest: string;
+  outputDigest: string;
 };
 
 export type ReviewModelEvalCase = {
@@ -48,7 +61,10 @@ export type ReviewModelEvalResult = {
   falsePositiveFindings: number;
   cleanCaseNoiseFindings: number;
   severityMismatches: number;
+  fileLineMatches: number;
+  commentUsefulness: number;
   actionableRate: number;
+  outputProvenances: OutputProvenance[];
 };
 
 export type ReviewModelEvalReport = {
@@ -58,13 +74,6 @@ export type ReviewModelEvalReport = {
   results: ReviewModelEvalResult[];
 };
 
-function matchesExpected(finding: ReviewFinding, expected: ExpectedFinding): boolean {
-  const bodyMatches = expected.bodyIncludes
-    ? finding.body.toLowerCase().includes(expected.bodyIncludes.toLowerCase())
-    : true;
-  return finding.path === expected.path && finding.line === expected.line && bodyMatches;
-}
-
 function roundRate(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
@@ -73,6 +82,10 @@ function evalCandidates(suite: ReviewModelEvalSuite, configuredDefaultModel: str
   return [configuredDefaultModel, ...suite.models].filter((model, index, models) => {
     return model.trim() !== "" && models.indexOf(model) === index;
   });
+}
+
+function digest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 export function evaluateReviewModelFixtures(
@@ -87,6 +100,9 @@ export function evaluateReviewModelFixtures(
     let falsePositiveFindings = 0;
     let cleanCaseNoiseFindings = 0;
     let severityMismatches = 0;
+    let fileLineMatches = 0;
+    let commentUsefulness = 0;
+    const outputProvenances: OutputProvenance[] = [];
 
     for (const evalCase of suite.cases) {
       const expectedFindings = evalCase.expectedFindings;
@@ -98,26 +114,31 @@ export function evaluateReviewModelFixtures(
       }
 
       expectedActionableFindings += expectedFindings.length;
-      const matchedActualIndexes = new Set<number>();
+      const metrics = scoreReviewFindings(
+        expectedFindings as ReviewFindingExpectation[],
+        output.findings,
+      );
 
-      for (const expected of expectedFindings) {
-        const actualIndex = output.findings.findIndex((finding, index) => {
-          return !matchedActualIndexes.has(index) && matchesExpected(finding, expected);
-        });
+      actionableFindings += metrics.truePositives;
+      missedActionableFindings += metrics.falseNegatives;
+      falsePositiveFindings += metrics.falsePositives;
+      fileLineMatches += metrics.fileLineMatches;
+      commentUsefulness += metrics.commentUsefulness;
+      severityMismatches += metrics.truePositives - metrics.severityMatches;
+      if (expectedFindings.length === 0) cleanCaseNoiseFindings += metrics.falsePositives;
 
-        if (actualIndex === -1) {
-          missedActionableFindings++;
-          continue;
-        }
-
-        matchedActualIndexes.add(actualIndex);
-        actionableFindings++;
-        if (output.findings[actualIndex]?.severity !== expected.severity) severityMismatches++;
-      }
-
-      const falsePositives = output.findings.length - matchedActualIndexes.size;
-      falsePositiveFindings += falsePositives;
-      if (expectedFindings.length === 0) cleanCaseNoiseFindings += falsePositives;
+      const inputDigest = digest(evalCase.input);
+      const outputDigest = digest({
+        summary: output.summary,
+        findings: output.findings,
+      });
+      outputProvenances.push({
+        ...((output.provenance ?? evalCase.provenance) as EvalProvenance),
+        caseId: evalCase.id,
+        model,
+        inputDigest,
+        outputDigest,
+      });
     }
 
     const actionableRate =
@@ -132,7 +153,10 @@ export function evaluateReviewModelFixtures(
       falsePositiveFindings,
       cleanCaseNoiseFindings,
       severityMismatches,
+      fileLineMatches,
+      commentUsefulness,
       actionableRate: roundRate(actionableRate),
+      outputProvenances,
     };
   });
 
@@ -145,6 +169,9 @@ export function evaluateReviewModelFixtures(
       }
       if (a.severityMismatches !== b.severityMismatches) {
         return a.severityMismatches - b.severityMismatches;
+      }
+      if (a.commentUsefulness !== b.commentUsefulness) {
+        return b.commentUsefulness - a.commentUsefulness;
       }
       return (candidateOrder.get(a.model) ?? 0) - (candidateOrder.get(b.model) ?? 0);
     })[0]?.model ?? null;
