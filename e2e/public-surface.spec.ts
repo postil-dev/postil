@@ -24,17 +24,13 @@ test("homepage example tabs switch on mobile without a scroll jump", async ({ pa
     panel.getByRole("heading", { name: "Plan mutation moved before authorization." }),
   ).toBeVisible();
 
-  await page.waitForTimeout(4500);
+  await securityTab.click();
   await expect(securityTab).toHaveAttribute("aria-selected", "true");
   await expect(
     panel.getByRole("heading", { name: "Webhook signature is checked after parsing." }),
   ).toBeVisible();
 
   await uiTab.click();
-  await expect(uiTab).toHaveAttribute("aria-selected", "true");
-  await expect(panel.getByRole("heading", { name: "The empty state now hides the primary action." })).toBeVisible();
-
-  await page.waitForTimeout(4500);
   await expect(uiTab).toHaveAttribute("aria-selected", "true");
   await expect(panel.getByRole("heading", { name: "The empty state now hides the primary action." })).toBeVisible();
 

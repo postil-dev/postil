@@ -3,6 +3,7 @@ import { Polar } from "@polar-sh/sdk";
 import { betterAuth } from "better-auth";
 import { organization } from "better-auth/plugins";
 import { randomUUID } from "node:crypto";
+import { cache } from "react";
 import { env } from "@/lib/env";
 
 // TODO(postil): replace in-memory adapter with a Drizzle adapter wiring
@@ -56,9 +57,4 @@ function createAuth() {
   });
 }
 
-let authInstance: ReturnType<typeof createAuth> | undefined;
-
-export function getAuth(): ReturnType<typeof createAuth> {
-  authInstance ??= createAuth();
-  return authInstance;
-}
+export const getAuth = cache(createAuth);
