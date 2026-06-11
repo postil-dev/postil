@@ -20,7 +20,7 @@ const reasons = [
   },
   {
     title: "Security and privacy posture",
-    body: "Public copy should state what is collected, where security issues go, and what the product does not do with diff data. That keeps trust claims concrete.",
+    body: "Trust claims stay concrete by stating what is collected, where security issues go, and what the product does not do with diff data.",
   },
 ];
 
@@ -32,8 +32,8 @@ const fitPoints = [
 
 const caveats = [
   "Benchmark superiority claims are unavailable until reviewed eval data is public.",
-  "Competitor comparisons are intentionally withheld until the research owner signs off.",
-  "Product copy should distinguish shipped behavior from planned behavior.",
+  "Competitor comparisons stay out of the page until the underlying data is ready.",
+  "Shipped behavior is described separately from planned behavior.",
 ];
 
 export default function WhyPostilPage() {
@@ -175,8 +175,8 @@ export default function WhyPostilPage() {
               >
                 Boundary
               </AnchorHeading>
-              <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                Until reviewed data lands, this page should describe the product honestly instead of
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                Until reviewed data lands, this page describes the product honestly instead of
                 promising ranking language the evidence does not yet support.
               </p>
             </article>

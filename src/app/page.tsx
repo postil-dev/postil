@@ -356,10 +356,10 @@ function ReviewExamples() {
 
   useEffect(() => {
     if (!isAutoPlaying) return;
-    const timer = window.setTimeout(() => {
+    const timer = window.setInterval(() => {
       setActive((current) => (current + 1) % examples.length);
     }, ROTATION_MS);
-    return () => window.clearTimeout(timer);
+    return () => window.clearInterval(timer);
   }, [isAutoPlaying]);
 
   function pauseAndSelect(index: number) {

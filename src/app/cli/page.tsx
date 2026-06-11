@@ -153,7 +153,8 @@ export default function CliPage() {
               Behavior boundary
             </AnchorHeading>
             <p className="mt-4">
-              Public site copy should describe how to run the CLI and what its output means. It should not promise hidden benchmarking claims or detailed execution internals.
+              The page stays focused on setup, output, and what the CLI does today. Benchmark claims
+              and low-level execution details stay out of the public surface until they are ready.
             </p>
           </div>
         </div>
