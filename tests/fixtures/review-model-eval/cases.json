@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    "deepseek/deepseek-v4-flash",
+    "qwen/qwen3-coder-30b-a3b-instruct",
+    "google/gemini-2.5-flash-lite",
+    "anthropic/claude-sonnet-4.5"
+  ],
+  "cases": [
+    {
+      "id": "clean-docs-copy-edit",
+      "provenance": {
+        "source": "synthetic-regression-fixture",
+        "createdAt": "2026-06-11",
+        "notes": "Clean documentation-only diff used to measure review noise on non-code changes."
+      },
+      "input": {
+        "title": "Clarify setup wording",
+        "diff": "diff --git a/README.md b/README.md\n@@\n-Run the setup command to install Postil.\n+Run the setup command to install Postil locally."
+      },
+      "expectedFindings": [],
+      "modelOutputs": {
+        "moonshotai/kimi-k2.6": {
+          "summary": "No correctness issues found.",
+          "findings": []
+        },
+        "deepseek/deepseek-v4-flash": {
+          "summary": "No issues found.",
+          "findings": []
+        },
+        "qwen/qwen3-coder-30b-a3b-instruct": {
+          "summary": "Looks safe, but one wording nit may be worth considering.",
+          "findings": [
+            {
+              "path": "README.md",
+              "line": 14,
+              "severity": "info",
+              "body": "Consider making this sentence shorter."
+            }
+          ]
+        },
+        "google/gemini-2.5-flash-lite": {
+          "summary": "No correctness issues found.",
+          "findings": []
+        },
+        "anthropic/claude-sonnet-4.5": {
+          "summary": "No issues found.",
+          "findings": []
+        }
+      }
+    },
+    {
+      "id": "missing-null-guard",
+      "provenance": {
+        "source": "synthetic-regression-fixture",
+        "createdAt": "2026-06-11",
+        "notes": "Small TypeScript nullability regression modeled after common PR review failures."
+      },
+      "input": {
+        "title": "Inline user profile lookup",
+        "diff": "diff --git a/src/user.ts b/src/user.ts\n@@\n-const user = await findUser(id);\n-if (!user) return null;\n-return user.profile.name;\n+const user = await findUser(id);\n+return user.profile.name;"
+      },
+      "expectedFindings": [
+        {
+          "path": "src/user.ts",
+          "line": 42,
+          "severity": "warn",
+          "bodyIncludes": "null"
+        }
+      ],
+      "modelOutputs": {
+        "moonshotai/kimi-k2.6": {
+          "summary": "The diff removes a null guard before reading the profile.",
+          "findings": [
+            {
+              "path": "src/user.ts",
+              "line": 42,
+              "severity": "warn",
+              "body": "The lookup result can be null before profile is read."
+            }
+          ]
+        },
+        "deepseek/deepseek-v4-flash": {
+          "summary": "The diff can throw when the user lookup is absent.",
+          "findings": [
+            {
+              "path": "src/user.ts",
+              "line": 42,
+              "severity": "warn",
+              "body": "Missing null guard before reading profile."
+            }
+          ]
+        },
+        "qwen/qwen3-coder-30b-a3b-instruct": {
+          "summary": "One real nullability bug and one minor naming concern.",
+          "findings": [
+            {
+              "path": "src/user.ts",
+              "line": 42,
+              "severity": "warn",
+              "body": "The lookup result can be null before profile is read."
+            },
+            {
+              "path": "src/user.ts",
+              "line": 8,
+              "severity": "info",
+              "body": "Consider renaming the helper for clarity."
+            }
+          ]
+        },
+        "google/gemini-2.5-flash-lite": {
+          "summary": "No issues found.",
+          "findings": []
+        },
+        "anthropic/claude-sonnet-4.5": {
+          "summary": "The new access path can throw for missing users.",
+          "findings": [
+            {
+              "path": "src/user.ts",
+              "line": 42,
+              "severity": "warn",
+              "body": "The user record may be null here."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "auth-bypass",
+      "provenance": {
+        "source": "synthetic-regression-fixture",
+        "createdAt": "2026-06-11",
+        "notes": "Security regression where authorization moves after a state-changing operation."
+      },
+      "input": {
+        "title": "Move audit write into handler",
+        "diff": "diff --git a/src/auth.ts b/src/auth.ts\n@@\n-await assertCanWrite(actor, resource);\n-await writeSecret(resource, payload);\n+await writeSecret(resource, payload);\n+await assertCanWrite(actor, resource);"
+      },
+      "expectedFindings": [
+        {
+          "path": "src/auth.ts",
+          "line": 88,
+          "severity": "error",
+          "bodyIncludes": "authorization"
+        }
+      ],
+      "modelOutputs": {
+        "moonshotai/kimi-k2.6": {
+          "summary": "Authorization now happens after the write.",
+          "findings": [
+            {
+              "path": "src/auth.ts",
+              "line": 88,
+              "severity": "error",
+              "body": "Authorization is checked after the privileged write."
+            }
+          ]
+        },
+        "deepseek/deepseek-v4-flash": {
+          "summary": "The guard moved after the privileged action.",
+          "findings": [
+            {
+              "path": "src/auth.ts",
+              "line": 88,
+              "severity": "error",
+              "body": "Authorization now happens after the write."
+            }
+          ]
+        },
+        "qwen/qwen3-coder-30b-a3b-instruct": {
+          "summary": "The authorization check is too late, with one extra cleanup suggestion.",
+          "findings": [
+            {
+              "path": "src/auth.ts",
+              "line": 88,
+              "severity": "error",
+              "body": "Authorization is checked after the privileged write."
+            },
+            {
+              "path": "src/auth.ts",
+              "line": 91,
+              "severity": "info",
+              "body": "Consider extracting the audit log call."
+            }
+          ]
+        },
+        "google/gemini-2.5-flash-lite": {
+          "summary": "Authorization runs after a state-changing call.",
+          "findings": [
+            {
+              "path": "src/auth.ts",
+              "line": 88,
+              "severity": "warn",
+              "body": "The permission check is after the write."
+            }
+          ]
+        },
+        "anthropic/claude-sonnet-4.5": {
+          "summary": "The diff introduces an authorization bypass.",
+          "findings": [
+            {
+              "path": "src/auth.ts",
+              "line": 88,
+              "severity": "error",
+              "body": "Authorization is checked after the privileged write."
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
