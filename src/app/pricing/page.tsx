@@ -1,7 +1,7 @@
 import { CheckCircle2 } from "lucide-react";
 import { TrackedLink } from "@/components/tracked-link";
 import { buttonVariants } from "@/components/ui/button";
-import { CtaStrip, PageFrame, SectionIntro } from "../site";
+import { AnchorHeading, CtaStrip, PageFrame, SectionIntro } from "../site";
 
 export const metadata = {
   title: "Pricing",
@@ -31,6 +31,7 @@ export default function PricingPage() {
             eyebrow="Pricing"
             title="Free until billing is real."
             body="Hosted access opens as a free beta after final review. The CLI stays Apache-2.0."
+            id="top"
           />
         </div>
       </section>
@@ -38,7 +39,9 @@ export default function PricingPage() {
         <div className="mx-auto grid max-w-7xl gap-4 px-4 sm:px-6 md:grid-cols-2">
           {plans.map((plan) => (
             <article key={plan.name} className="border bg-card p-6">
-              <div className="font-mono text-xs uppercase tracking-[0.16em] text-primary">{plan.name}</div>
+              <AnchorHeading id={plan.name.toLowerCase().replace(/\s+/g, "-")} as="h2" className="font-mono text-xs uppercase tracking-[0.16em] text-primary">
+                {plan.name}
+              </AnchorHeading>
               <div className="mt-5 text-4xl">{plan.price}</div>
               <p className="mt-4 text-sm leading-6 text-muted-foreground">{plan.body}</p>
               <ul className="mt-6 space-y-3 text-sm">

@@ -4,7 +4,7 @@ import { env } from "@/lib/env";
 import type { Metadata } from "next";
 import { TrackedLink } from "@/components/tracked-link";
 import { buttonVariants } from "@/components/ui/button";
-import { CtaStrip, PageFrame, SectionIntro } from "../site";
+import { AnchorHeading, CtaStrip, PageFrame, SectionIntro } from "../site";
 
 export const dynamic = "force-dynamic";
 
@@ -23,9 +23,10 @@ export default function InstallPage() {
             eyebrow="Managed beta"
             title="Hosted installs are opening soon."
             body="The GitHub App install link will appear here after final review. Until then, run the Postil CLI in CI."
+            id="top"
           />
           <div className="mt-8 flex flex-wrap gap-3">
-            <TrackedLink href="https://github.com/postil-dev/postil-cli" cta="Try CLI" className={buttonVariants({ size: "lg" })}>
+            <TrackedLink href="/cli" cta="Try CLI" className={buttonVariants({ size: "lg" })}>
               Try the CLI <ArrowRight className="ml-2 h-4 w-4" />
             </TrackedLink>
             <TrackedLink href="/docs" cta="Read docs" className={buttonVariants({ variant: "outline", size: "lg" })}>
@@ -42,7 +43,9 @@ export default function InstallPage() {
             ["Quiet", "No issue found means no recap comment."],
           ].map(([title, body]) => (
             <article key={title} className="border bg-card p-6">
-              <h2 className="text-2xl">{title}</h2>
+              <AnchorHeading id={title.toLowerCase()} as="h2" className="text-2xl">
+                {title}
+              </AnchorHeading>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">{body}</p>
             </article>
           ))}

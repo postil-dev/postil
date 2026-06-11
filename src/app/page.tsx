@@ -3,10 +3,21 @@
 import { ArrowRight, CheckCircle2, GitBranch, Server, TestTubeDiagonal } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { TrackedLink } from "@/components/tracked-link";
 import { buttonVariants } from "@/components/ui/button";
-import { CtaStrip, DiffPreview, Eyebrow, PageFrame, proofPoints, StatusLine, StatusMark, type StatusKind, statusExamples } from "./site";
+import {
+  AnchorHeading,
+  CtaStrip,
+  DiffPreview,
+  Eyebrow,
+  PageFrame,
+  proofPoints,
+  StatusLine,
+  StatusMark,
+  type StatusKind,
+  statusExamples,
+} from "./site";
 
 const ROTATION_MS = 4200;
 
@@ -31,8 +42,10 @@ const examples: Example[] = [
     severity: "error",
     status: ["error"],
     body: "The write now happens before the permission check, so an unauthorized caller can change a plan and still receive an authorization error. Put the authorization gate before the mutation.",
-    before: "await billing.updatePlan(org.id, plan)\nif (!canManageBilling(actor, org)) throw new Error('denied')",
-    after: "if (!canManageBilling(actor, org)) throw new Error('denied')\nawait billing.updatePlan(org.id, plan)",
+    before:
+      "await billing.updatePlan(org.id, plan)\nif (!canManageBilling(actor, org)) throw new Error('denied')",
+    after:
+      "if (!canManageBilling(actor, org)) throw new Error('denied')\nawait billing.updatePlan(org.id, plan)",
   },
   {
     id: "security",
@@ -76,7 +89,8 @@ const examples: Example[] = [
     status: ["warn", "info"],
     body: "Existing rows will fail the migration because `billing_email` is added as non-null without a default or staged backfill.",
     before: "ALTER TABLE accounts ADD COLUMN billing_email text NOT NULL;",
-    after: "ALTER TABLE accounts ADD COLUMN billing_email text;\nUPDATE accounts SET billing_email = owner_email;\nALTER TABLE accounts ALTER COLUMN billing_email SET NOT NULL;",
+    after:
+      "ALTER TABLE accounts ADD COLUMN billing_email text;\nUPDATE accounts SET billing_email = owner_email;\nALTER TABLE accounts ALTER COLUMN billing_email SET NOT NULL;",
   },
   {
     id: "cache",
@@ -152,17 +166,31 @@ export default function Home() {
         <div className="relative z-10 mx-auto flex max-w-7xl items-start px-4 pb-14 pt-[28vh] sm:min-h-[calc(100vh-4rem)] sm:items-center sm:px-6 sm:py-14">
           <div className="max-w-3xl">
             <Eyebrow>Calm review gate</Eyebrow>
-            <h1 className="mt-4 max-w-3xl text-5xl leading-[1.05] sm:text-6xl lg:text-7xl">
+            <AnchorHeading
+              id="trust-the-merge-not-the-speed"
+              as="h1"
+              className="mt-4 max-w-3xl text-5xl leading-[1.05] sm:text-6xl lg:text-7xl"
+            >
               Trust the merge, not the speed.
-            </h1>
+            </AnchorHeading>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
-              Postil looks for the pull-request bugs reviewers usually have to reconstruct by hand: moved auth checks, unsafe deletes, race windows, bad migrations. Clean change? No filler comment.
+              Postil looks for the pull-request bugs reviewers usually have to reconstruct by hand:
+              moved auth checks, unsafe deletes, race windows, bad migrations. Clean change? No
+              filler comment.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <TrackedLink href="/install" cta="Install on GitHub" className={buttonVariants({ size: "lg" })}>
+              <TrackedLink
+                href="/install"
+                cta="Install on GitHub"
+                className={buttonVariants({ size: "lg" })}
+              >
                 Install on GitHub
               </TrackedLink>
-              <TrackedLink href="https://github.com/postil-dev/postil-cli" cta="Try CLI" className={buttonVariants({ variant: "outline", size: "lg" })}>
+              <TrackedLink
+                href="/cli"
+                cta="Try CLI"
+                className={buttonVariants({ variant: "outline", size: "lg" })}
+              >
                 Try the CLI <ArrowRight className="ml-2 h-4 w-4" />
               </TrackedLink>
             </div>
@@ -174,15 +202,26 @@ export default function Home() {
         <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-[0.75fr_1.25fr]">
           <div>
             <Eyebrow>What changes</Eyebrow>
-            <h2 className="mt-4 text-4xl leading-tight">Fewer comments. Better reasons.</h2>
+            <AnchorHeading
+              id="fewer-comments-better-reasons"
+              as="h2"
+              className="mt-4 text-4xl leading-tight"
+            >
+              Fewer comments. Better reasons.
+            </AnchorHeading>
           </div>
           <div className="divide-y border-y">
             {proofPoints.map(([title, body]) => (
               <article key={title} className="grid gap-3 py-5 sm:grid-cols-[13rem_1fr]">
-                <h3 className="flex items-center gap-3 text-xl">
+                <AnchorHeading
+                  id={title.toLowerCase().replace(/\s+/g, "-")}
+                  label={title}
+                  as="h3"
+                  className="flex items-center gap-3 text-xl"
+                >
                   <CheckCircle2 className="h-5 w-5 text-accent" />
                   {title}
-                </h3>
+                </AnchorHeading>
                 <p className="text-sm leading-6 text-muted-foreground">{body}</p>
               </article>
             ))}
@@ -195,7 +234,13 @@ export default function Home() {
           <div className="mb-6 flex flex-col gap-3 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <Eyebrow>Status line</Eyebrow>
-              <h2 className="mt-4 text-3xl leading-tight sm:text-4xl">Compact signal, no counters.</h2>
+              <AnchorHeading
+                id="compact-signal-no-counters"
+                as="h2"
+                className="mt-4 text-3xl leading-tight sm:text-4xl"
+              >
+                Compact signal, no counters.
+              </AnchorHeading>
             </div>
             <Link href="/how-it-works" className="font-mono text-sm text-primary hover:underline">
               How reviews run
@@ -205,10 +250,19 @@ export default function Home() {
             {statusExamples.map((item) => {
               const Icon = item.icon;
               return (
-                <article key={item.label} className="flex items-center gap-4 py-4 sm:border sm:bg-card sm:p-5 md:block">
+                <article
+                  key={item.label}
+                  className="flex items-center gap-4 py-4 sm:border sm:bg-card sm:p-5 md:block"
+                >
                   <Icon className="h-5 w-5 shrink-0 text-accent" />
-                  <div className="min-w-24 font-mono text-xs uppercase text-muted-foreground sm:mt-5">{item.label}</div>
-                  <StatusLine label="status:" marks={item.status} className="ml-auto text-base sm:ml-0 sm:mt-2 sm:text-lg" />
+                  <div className="min-w-24 font-mono text-xs uppercase text-muted-foreground sm:mt-5">
+                    {item.label}
+                  </div>
+                  <StatusLine
+                    label="status:"
+                    marks={item.status}
+                    className="ml-auto text-base sm:ml-0 sm:mt-2 sm:text-lg"
+                  />
                 </article>
               );
             })}
@@ -220,7 +274,13 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6">
           <div className="mb-8">
             <Eyebrow>Examples</Eyebrow>
-            <h2 className="mt-4 text-4xl leading-tight">Different risks, same restraint.</h2>
+            <AnchorHeading
+              id="different-risks-same-restraint"
+              as="h2"
+              className="mt-4 text-4xl leading-tight"
+            >
+              Different risks, same restraint.
+            </AnchorHeading>
           </div>
           <ReviewExamples />
         </div>
@@ -231,11 +291,22 @@ export default function Home() {
           <article className="bg-card p-6 sm:p-8">
             <Server className="h-6 w-6 text-accent" />
             <Eyebrow>Hosted</Eyebrow>
-            <h2 className="mt-4 max-w-lg text-4xl leading-tight">Managed beta stays free while installs open.</h2>
+            <AnchorHeading
+              id="managed-beta-stays-free-while-installs-open"
+              as="h2"
+              className="mt-4 max-w-lg text-4xl leading-tight"
+            >
+              Managed beta stays free while installs open.
+            </AnchorHeading>
             <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
-              The public app link lands on a wait page until review is done. No surprise billing while that door is closed.
+              The public app link lands on a wait page until review is done. No surprise billing
+              while that door is closed.
             </p>
-            <TrackedLink href="/install" cta="Join hosted beta" className={`${buttonVariants()} mt-7`}>
+            <TrackedLink
+              href="/install"
+              cta="Join hosted beta"
+              className={`${buttonVariants()} mt-7`}
+            >
               Join beta
             </TrackedLink>
           </article>
@@ -244,7 +315,9 @@ export default function Home() {
               <GitBranch className="h-6 w-6 text-accent" />
               <div>
                 <Eyebrow>CI</Eyebrow>
-                <h2 className="mt-3 text-2xl">Run it from your workflow.</h2>
+                <AnchorHeading id="run-it-from-your-workflow" as="h2" className="mt-3 text-2xl">
+                  Run it from your workflow.
+                </AnchorHeading>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
                   Add the CLI to GitHub Actions and keep model choice in repo config.
                 </p>
@@ -254,10 +327,19 @@ export default function Home() {
               <TestTubeDiagonal className="h-6 w-6 text-accent" />
               <div>
                 <Eyebrow>Benchmarks</Eyebrow>
-                <h2 className="mt-3 text-2xl">Numbers after the harness.</h2>
+                <AnchorHeading id="numbers-after-the-harness" as="h2" className="mt-3 text-2xl">
+                  Numbers after the harness.
+                </AnchorHeading>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Isolated PR fixtures first: real bugs, no upstream answers, human review before claims.
+                  Isolated PR fixtures first: real bugs, no upstream answers, human review before
+                  claims.
                 </p>
+                <Link
+                  href="/benchmarks"
+                  className="mt-4 inline-flex text-sm text-primary hover:underline"
+                >
+                  Read the benchmark status
+                </Link>
               </div>
             </article>
           </div>
@@ -274,54 +356,101 @@ function ReviewExamples() {
 
   useEffect(() => {
     if (!isAutoPlaying) return;
-    const timer = window.setInterval(() => {
+    const timer = window.setTimeout(() => {
       setActive((current) => (current + 1) % examples.length);
     }, ROTATION_MS);
-    return () => window.clearInterval(timer);
+    return () => window.clearTimeout(timer);
   }, [isAutoPlaying]);
+
+  function pauseAndSelect(index: number) {
+    setActive(index);
+    setIsAutoPlaying(false);
+  }
+
+  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      event.preventDefault();
+      pauseAndSelect((index + 1) % examples.length);
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      pauseAndSelect((index - 1 + examples.length) % examples.length);
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      pauseAndSelect(0);
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      pauseAndSelect(examples.length - 1);
+    }
+  }
 
   const example = examples[active] ?? examples[0];
 
   return (
     <div className="min-w-0 border bg-card">
       <div className="border-b p-2">
-        <div className="code-scrollbar flex gap-1 overflow-x-auto">
+        <div
+          className="code-scrollbar flex gap-1 overflow-x-auto"
+          role="tablist"
+          aria-label="Example categories"
+        >
           {examples.map((item, index) => (
             <button
               key={item.id}
               type="button"
-              onClick={() => {
-                setActive(index);
-                setIsAutoPlaying(false);
-              }}
+              role="tab"
+              aria-selected={index === active}
+              aria-controls={`example-panel-${item.id}`}
+              id={`example-tab-${item.id}`}
+              tabIndex={index === active ? 0 : -1}
+              onClick={() => pauseAndSelect(index)}
+              onKeyDown={(event) => handleTabKeyDown(event, index)}
               className={[
                 "relative shrink-0 border px-3 py-2 text-sm transition after:absolute after:inset-x-2 after:bottom-1 after:h-px after:origin-left after:bg-accent after:content-['']",
                 index === active
                   ? "border-accent bg-highlight text-foreground"
                   : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
-                index === active && isAutoPlaying ? "after:animate-[review-example-progress_4200ms_linear_forwards]" : "",
+                index === active && isAutoPlaying
+                  ? "after:animate-[review-example-progress_4200ms_linear_forwards]"
+                  : "",
                 index === active && !isAutoPlaying ? "after:scale-x-100" : "",
                 index !== active ? "after:scale-x-0" : "",
               ].join(" ")}
-              aria-current={index === active ? "true" : undefined}
             >
               {item.label}
             </button>
           ))}
         </div>
       </div>
-      <article className="grid h-[760px] min-w-0 grid-rows-[320px_1fr] gap-px overflow-hidden bg-border sm:h-[700px] sm:grid-rows-[300px_1fr] lg:h-[540px] lg:grid-cols-[0.9fr_1.1fr] lg:grid-rows-none">
+      <article
+        className="grid min-h-[760px] min-w-0 grid-rows-[320px_1fr] gap-px overflow-hidden bg-border sm:min-h-[700px] sm:grid-rows-[300px_1fr] lg:min-h-[540px] lg:grid-cols-[0.9fr_1.1fr] lg:grid-rows-none"
+        role="tabpanel"
+        aria-labelledby={`example-tab-${example.id}`}
+        id={`example-panel-${example.id}`}
+      >
         <div className="flex min-h-0 min-w-0 flex-col bg-card p-5">
           <div className="flex items-center justify-between gap-4">
             <div className="font-mono text-xs text-muted-foreground">{example.file}</div>
             <StatusMark kind={example.severity} />
           </div>
-          <h3 className="mt-4 text-3xl leading-tight">{example.title}</h3>
+          <AnchorHeading
+            id={`example-title-${example.id}`}
+            as="h3"
+            className="mt-4 text-3xl leading-tight"
+          >
+            {example.title}
+          </AnchorHeading>
           <p className="mt-3 max-h-40 overflow-auto text-sm leading-6 text-muted-foreground sm:max-h-36">
             {example.body}
           </p>
           <div className="mt-auto pt-5">
-            <StatusLine label="status:" marks={example.status} className="text-sm text-muted-foreground" />
+            <StatusLine
+              label="status:"
+              marks={example.status}
+              className="text-sm text-muted-foreground"
+            />
           </div>
         </div>
         <div className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#1b2329] p-5 font-mono text-xs leading-6 text-[#f7f5f1]">

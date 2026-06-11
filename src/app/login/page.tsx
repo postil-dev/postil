@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { SignInButton } from "./sign-in-button";
 import { safeReportsCallbackPath } from "@/lib/login-callback";
+import { AnchorHeading } from "../site";
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -19,7 +20,9 @@ export default async function LoginPage({
 
   return (
     <main className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center gap-6 p-8 text-center">
-      <h1 className="text-3xl font-semibold">Sign in</h1>
+      <AnchorHeading id="top" as="h1" className="text-3xl font-semibold">
+        Sign in
+      </AnchorHeading>
       <p className="text-muted-foreground">
         Postil uses GitHub OAuth as its only sign-in path. We never ask for a password directly.
       </p>

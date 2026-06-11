@@ -1,4 +1,12 @@
-import { CtaStrip, PageFrame, ReviewCard, SectionIntro, StatusLine, statusExamples } from "../site";
+import {
+  AnchorHeading,
+  CtaStrip,
+  PageFrame,
+  ReviewCard,
+  SectionIntro,
+  StatusLine,
+  statusExamples,
+} from "../site";
 
 export const metadata = {
   title: "How It Works",
@@ -20,6 +28,10 @@ const details = [
   ["Line-backed", "Each finding points to the changed file and line it depends on."],
 ];
 
+function toAnchorId(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
 export default function HowItWorksPage() {
   return (
     <PageFrame>
@@ -29,6 +41,7 @@ export default function HowItWorksPage() {
             eyebrow="How it works"
             title="A review run you can audit."
             body="One event in, one diff reviewed, one check run out. If there is nothing worth saying, the PR does not get a bot recap."
+            id="top"
           />
           <ReviewCard />
         </div>
@@ -38,7 +51,9 @@ export default function HowItWorksPage() {
           {steps.map(([number, title, body]) => (
             <article key={title} className="border bg-card p-5">
               <div className="font-mono text-sm text-primary">{number}</div>
-              <h2 className="mt-5 text-2xl">{title}</h2>
+              <AnchorHeading id={toAnchorId(title)} label={title} as="h2" className="mt-5 text-2xl">
+                {title}
+              </AnchorHeading>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">{body}</p>
             </article>
           ))}
@@ -47,9 +62,16 @@ export default function HowItWorksPage() {
       <section className="border-b py-16">
         <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-[0.72fr_1.28fr]">
           <div>
-            <h2 className="text-4xl leading-tight">What the reviewer notices</h2>
+            <AnchorHeading
+              id="what-the-reviewer-notices"
+              as="h2"
+              className="text-4xl leading-tight"
+            >
+              What the reviewer notices
+            </AnchorHeading>
             <p className="mt-4 text-sm leading-6 text-muted-foreground">
-              The examples rotate, but each one is the kind of issue a reviewer would actually block on.
+              The examples rotate, but each one is the kind of issue a reviewer would actually block
+              on.
             </p>
           </div>
           <ReviewCard />
@@ -59,7 +81,14 @@ export default function HowItWorksPage() {
         <div className="mx-auto grid max-w-7xl gap-3 px-4 sm:px-6 md:grid-cols-4">
           {details.map(([title, body]) => (
             <article key={title} className="border bg-card p-5">
-              <h2 className="text-2xl">{title}</h2>
+              <AnchorHeading
+                id={`detail-${toAnchorId(title)}`}
+                label={title}
+                as="h2"
+                className="text-2xl"
+              >
+                {title}
+              </AnchorHeading>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">{body}</p>
             </article>
           ))}
@@ -67,14 +96,18 @@ export default function HowItWorksPage() {
       </section>
       <section className="py-16">
         <div className="mx-auto max-w-7xl px-4 sm:px-6">
-          <h2 className="text-4xl">Status examples</h2>
+          <AnchorHeading id="status-examples" as="h2" className="text-4xl">
+            Status examples
+          </AnchorHeading>
           <div className="mt-8 grid gap-3 md:grid-cols-4">
             {statusExamples.map((item) => {
               const Icon = item.icon;
               return (
                 <article key={item.label} className="border bg-card p-5">
                   <Icon className="h-5 w-5 text-accent" />
-                  <div className="mt-5 font-mono text-xs uppercase text-muted-foreground">{item.label}</div>
+                  <div className="mt-5 font-mono text-xs uppercase text-muted-foreground">
+                    {item.label}
+                  </div>
                   <StatusLine label="status:" marks={item.status} className="mt-2 text-lg" />
                 </article>
               );

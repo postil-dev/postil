@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AnchorHeading } from "../site";
 
 export const metadata: Metadata = {
   title: "Privacy",
@@ -8,7 +9,9 @@ export const metadata: Metadata = {
 export default function PrivacyPage() {
   return (
     <main className="mx-auto max-w-2xl px-5 py-20">
-      <h1 className="font-display text-3xl">Privacy</h1>
+      <AnchorHeading id="top" as="h1" className="font-display text-3xl">
+        Privacy
+      </AnchorHeading>
       <section className="mt-10 space-y-6 text-sm leading-relaxed text-muted-foreground">
         <p>
           Postil uses PostHog (EU-hosted) to understand how visitors use the marketing site and
@@ -21,7 +24,7 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong className="text-foreground">CTA clicks</strong> - when you click buttons such as
-            “Install CLI” or “CLI source”.
+            “Install on GitHub” or “Try CLI”.
           </li>
           <li>
             <strong className="text-foreground">Errors</strong> - if the site crashes, we capture
@@ -33,18 +36,24 @@ export default function PrivacyPage() {
           this analytics surface. Diff data is processed only by the review worker and is never used
           for analytics or training.
         </p>
-        <h2 className="mt-8 font-display text-xl text-foreground">Opting out</h2>
+        <AnchorHeading
+          id="opting-out"
+          as="h2"
+          className="mt-8 font-display text-xl text-foreground"
+        >
+          Opting out
+        </AnchorHeading>
         <p>
-          You can disable PostHog tracking by enabling Do Not Track in your browser, or by using the
-          opt-out toggle below. When opted out, no events are sent and no cookies are set.
+          You can disable PostHog tracking by enabling Do Not Track in your browser. When opted out,
+          no events are sent and no cookies are set.
         </p>
         <p>
           If you have questions, contact us via the security details in our{" "}
           <a
-            href="/.well-known/security.txt"
+            href="/security"
             className="underline decoration-dotted underline-offset-4 hover:text-foreground"
           >
-            security.txt
+            security page
           </a>
           .
         </p>
