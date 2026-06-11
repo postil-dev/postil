@@ -3,7 +3,7 @@
 import { ArrowRight, CheckCircle2, GitBranch, Server, TestTubeDiagonal } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { TrackedLink } from "@/components/tracked-link";
 import { buttonVariants } from "@/components/ui/button";
 import {
@@ -353,14 +353,30 @@ export default function Home() {
 function ReviewExamples() {
   const [active, setActive] = useState(0);
   const [isAutoPlaying, setIsAutoPlaying] = useState(true);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!isAutoPlaying) return;
-    const timer = window.setTimeout(() => {
-      setActive((current) => (current + 1) % examples.length);
-      setIsAutoPlaying(false);
-    }, AUTO_ADVANCE_MS);
-    return () => window.clearTimeout(timer);
+    const root = rootRef.current;
+    if (!root) return;
+
+    let timer: number | undefined;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting || timer) return;
+        timer = window.setTimeout(() => {
+          setActive((current) => (current + 1) % examples.length);
+          setIsAutoPlaying(false);
+        }, AUTO_ADVANCE_MS);
+      },
+      { threshold: 0.6 },
+    );
+
+    observer.observe(root);
+    return () => {
+      observer.disconnect();
+      if (timer) window.clearTimeout(timer);
+    };
   }, [isAutoPlaying]);
 
   function pauseAndSelect(index: number) {
@@ -390,7 +406,7 @@ function ReviewExamples() {
   const example = examples[active] ?? examples[0];
 
   return (
-    <div className="min-w-0 border bg-card">
+    <div ref={rootRef} className="min-w-0 border bg-card">
       <div className="border-b p-2">
         <div
           className="code-scrollbar flex gap-1 overflow-x-auto"
