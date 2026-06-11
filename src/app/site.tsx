@@ -1,4 +1,12 @@
-import { ArrowRight, CheckCircle2, GitPullRequest, Info, Mail, ShieldCheck, TriangleAlert } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  GitPullRequest,
+  Info,
+  Mail,
+  ShieldCheck,
+  TriangleAlert,
+} from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { TrackedLink } from "@/components/tracked-link";
@@ -61,23 +69,43 @@ export function DiffPreview({
   const removedLines = removed.split("\n");
   const addedLines = added.split("\n");
   return (
-    <pre className={["code-scrollbar overflow-auto bg-[#1f252b] p-4 font-mono text-xs leading-6 text-[#f7f5f1]", className].filter(Boolean).join(" ")}>
+    <pre
+      className={[
+        "code-scrollbar overflow-auto bg-[#1f252b] p-4 font-mono text-xs leading-6 text-[#f7f5f1]",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <code className="block w-max min-w-full">
-        {context ? <span className="block whitespace-pre px-2 text-[#c8cdd2]">{context}</span> : null}
-        {removedLines.map((line, index) => {
-          // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
-          return <span key={`removed-${index}-${line}`} className="block whitespace-pre bg-diff-del/60 px-2 text-[#f7f5f1]">- {line}</span>;
-        })}
-        {addedLines.map((line, index) => {
-          // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
-          return <span key={`added-${index}-${line}`} className="block whitespace-pre bg-diff-add/60 px-2 text-[#f7f5f1]">+ {line}</span>;
-        })}
+        {context ? (
+          <span className="block whitespace-pre px-2 text-[#c8cdd2]">{context}</span>
+        ) : null}
+        {removedLines.map((line, index) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
+            key={`removed-${index}-${line}`}
+            className="block whitespace-pre bg-diff-del/60 px-2 text-[#f7f5f1]"
+          >
+            - {line}
+          </span>
+        ))}
+        {addedLines.map((line, index) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: static diff snippets can repeat identical lines.
+            key={`added-${index}-${line}`}
+            className="block whitespace-pre bg-diff-add/60 px-2 text-[#f7f5f1]"
+          >
+            + {line}
+          </span>
+        ))}
       </code>
     </pre>
   );
 }
 
 export const navItems = [
+  { href: "/dashboard", label: "Dashboard" },
   { href: "/why-postil", label: "Why Postil" },
   { href: "/how-it-works", label: "How it works" },
   { href: "/docs", label: "Docs" },
@@ -99,7 +127,11 @@ export const proofPoints = [
 
 export const statusExamples = [
   { label: "Pass", status: ["pass"] satisfies StatusKind[], icon: CheckCircle2 },
-  { label: "Warning", status: ["warn", "warn", "info"] satisfies StatusKind[], icon: TriangleAlert },
+  {
+    label: "Warning",
+    status: ["warn", "warn", "info"] satisfies StatusKind[],
+    icon: TriangleAlert,
+  },
   { label: "Blocking", status: ["error", "warn"] satisfies StatusKind[], icon: ShieldCheck },
   { label: "Context", status: ["info"] satisfies StatusKind[], icon: Info },
 ];
@@ -122,7 +154,11 @@ export function SiteHeader() {
             </Link>
           ))}
         </nav>
-        <TrackedLink href="/install" cta="Install on GitHub" className={buttonVariants({ size: "sm" })}>
+        <TrackedLink
+          href="/install"
+          cta="Install on GitHub"
+          className={buttonVariants({ size: "sm" })}
+        >
           Install
         </TrackedLink>
       </div>
@@ -137,7 +173,8 @@ export function SiteFooter() {
         <div className="max-w-sm">
           <BrandLockup />
           <p className="mt-4 text-xs leading-6">
-            Postil reviews pull requests for bugs that need code context. Hosted beta at postil.dev, CLI under Apache-2.0.
+            Postil reviews pull requests for bugs that need code context. Hosted beta at postil.dev,
+            CLI under Apache-2.0.
           </p>
         </div>
         <div className="grid gap-5 text-xs sm:min-w-[25rem]">
@@ -177,7 +214,9 @@ function BrandLockup() {
   return (
     <span className="flex items-center gap-3">
       <Image src="/brand/postil-mark.svg" alt="" width={36} height={36} priority />
-      <span className="font-display text-2xl font-semibold leading-none text-foreground">Postil</span>
+      <span className="font-display text-2xl font-semibold leading-none text-foreground">
+        Postil
+      </span>
     </span>
   );
 }
@@ -193,7 +232,11 @@ export function PageFrame({ children }: { children: React.ReactNode }) {
 }
 
 export function Eyebrow({ children }: { children: React.ReactNode }) {
-  return <div className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-primary">{children}</div>;
+  return (
+    <div className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-primary">
+      {children}
+    </div>
+  );
 }
 
 export function SectionIntro({
@@ -209,7 +252,9 @@ export function SectionIntro({
     <div className="min-w-0 max-w-3xl">
       <Eyebrow>{eyebrow}</Eyebrow>
       <h1 className="mt-4 text-4xl leading-tight sm:text-5xl">{title}</h1>
-      {body ? <p className="mt-4 text-base leading-7 text-muted-foreground sm:text-lg">{body}</p> : null}
+      {body ? (
+        <p className="mt-4 text-base leading-7 text-muted-foreground sm:text-lg">{body}</p>
+      ) : null}
     </div>
   );
 }
@@ -228,14 +273,19 @@ export function ReviewCard() {
       </div>
       <div className="p-5">
         <div className="font-mono text-xs text-muted-foreground">src/billing/plan.ts:84</div>
-        <h2 className="mt-3 text-2xl leading-snug">Billing update now runs before authorization.</h2>
+        <h2 className="mt-3 text-2xl leading-snug">
+          Billing update now runs before authorization.
+        </h2>
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
-          The write moved ahead of `canManageBilling`, so a caller can change a plan before the permission failure is raised. Move the authorization check before the billing mutation.
+          The write moved ahead of `canManageBilling`, so a caller can change a plan before the
+          permission failure is raised. Move the authorization check before the billing mutation.
         </p>
         <div className="mt-5">
           <DiffPreview
             removed="await billing.updatePlan(org.id, plan)"
-            added={'if (!canManageBilling(actor, org)) throw new Error("authorization failed")\nawait billing.updatePlan(org.id, plan)'}
+            added={
+              'if (!canManageBilling(actor, org)) throw new Error("authorization failed")\nawait billing.updatePlan(org.id, plan)'
+            }
           />
         </div>
         <StatusLine label="status:" marks={["error"]} className="mt-5 text-sm text-primary" />
@@ -258,7 +308,11 @@ export function CtaStrip() {
           <TrackedLink href="/install" cta="Install on GitHub" className={buttonVariants()}>
             Install on GitHub
           </TrackedLink>
-          <TrackedLink href="https://github.com/postil-dev/postil-cli" cta="Try CLI" className={buttonVariants({ variant: "outline" })}>
+          <TrackedLink
+            href="https://github.com/postil-dev/postil-cli"
+            cta="Try CLI"
+            className={buttonVariants({ variant: "outline" })}
+          >
             Try the CLI <ArrowRight className="ml-2 h-4 w-4" />
           </TrackedLink>
         </div>
