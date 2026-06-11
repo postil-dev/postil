@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockEnv = { METRICS_API_KEY: "test-metrics-key" };
+const mockEnv: { METRICS_API_KEY: string | undefined } = { METRICS_API_KEY: "test-metrics-key" };
 vi.mock("@/lib/env", () => ({
   env: mockEnv,
 }));

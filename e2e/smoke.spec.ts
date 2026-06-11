@@ -41,8 +41,8 @@ test("llms endpoint serves concise guidance", async ({ request }) => {
 
   const body = await response.text();
   expect(body).toContain("# Postil");
-  expect(body).toContain("review gate for agent-speed development");
+  expect(body).toContain("AI pull-request reviewer for GitHub repositories");
   expect(body).toContain("Home: https://postil.dev/");
-  expect(body).toContain("Install: https://postil.dev/install");
-  expect(body).toContain("CLI: https://github.com/postil-dev/postil-cli");
+  expect(body).toContain("Pricing: https://postil.dev/#pricing");
+  expect(body).toContain("Repository: https://github.com/postil-dev/postil");
 });
