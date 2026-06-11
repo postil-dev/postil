@@ -2,7 +2,14 @@ import { hostname } from "node:os";
 
 import { closeDb, getPool } from "@/lib/db";
 import { validateEnv } from "@/lib/env";
-import { claimJob, completeJob, failJob, type ReviewJobPayload } from "@/lib/queue";
+import {
+  claimJob,
+  completeJob,
+  failJob,
+  type RespondJobPayload,
+  type ReviewJobPayload,
+} from "@/lib/queue";
+import { runRespondJob } from "./respond";
 import { runReviewJob } from "./review";
 import { watchdogPass } from "./watchdog";
 
@@ -31,6 +38,9 @@ async function handleJob(kind: string, payload: Record<string, unknown>): Promis
   switch (kind) {
     case "review":
       await runReviewJob(payload as ReviewJobPayload);
+      break;
+    case "respond":
+      await runRespondJob(payload as RespondJobPayload);
       break;
     default:
       throw new Error(`unknown job kind: ${kind}`);

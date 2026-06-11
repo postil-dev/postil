@@ -31,7 +31,7 @@ interface CliEnvConfig {
 }
 
 /** Resolve LLM config: org BYO settings win, env defaults otherwise. */
-async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConfig> {
+export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConfig> {
   const defaults: CliEnvConfig = {
     apiBase: optionalEnv("POSTIL_API_BASE", "https://openrouter.ai/api/v1") as string,
     apiKey: optionalEnv("POSTIL_API_KEY") ?? optionalEnv("OPENROUTER_API_KEY"),
@@ -66,7 +66,7 @@ interface CliResult {
   timedOut: boolean;
 }
 
-function runCli(args: string[], env: Record<string, string>): Promise<CliResult> {
+export function runCli(args: string[], env: Record<string, string>): Promise<CliResult> {
   const bin = optionalEnv("POSTIL_BIN", "postil") as string;
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {

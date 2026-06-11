@@ -28,6 +28,15 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   baseSha: string;
 }
 
+/** An @postil mention on a PR or issue the bot should reply to. */
+export interface RespondJobPayload extends Record<string, unknown> {
+  installationId: number;
+  repoFullName: string;
+  number: number; // PR or issue number
+  isPr: boolean;
+  comment: string; // the maintainer's message text
+}
+
 export async function enqueueJob(
   pool: Pool,
   kind: string,
