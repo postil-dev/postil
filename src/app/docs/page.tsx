@@ -13,7 +13,7 @@ const localUsage = `$ postil review --diff-file .cache/change.diff
 $ postil review --staged
 $ postil review --base origin/main`;
 
-const setup = `export GITHUB_TOKEN=ghp_...
+const setup = `export GITHUB_TOKEN=your-github-token
 export OPENROUTER_API_KEY=...
 
 export REVIEW_MODEL=moonshotai/kimi-k2.6

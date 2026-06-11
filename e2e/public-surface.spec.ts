@@ -14,13 +14,21 @@ test("homepage example tabs switch on mobile without a scroll jump", async ({ pa
   const beforeScrollY = await page.evaluate(() => window.scrollY);
 
   const tablist = page.getByRole("tablist", { name: "Example categories" });
+  const billingTab = tablist.getByRole("tab", { name: "Billing" });
   const securityTab = tablist.getByRole("tab", { name: "Security" });
   const uiTab = tablist.getByRole("tab", { name: "UI" });
   const panel = page.getByRole("tabpanel");
 
-  await securityTab.click();
+  await expect(billingTab).toHaveAttribute("aria-selected", "true");
+  await expect(
+    panel.getByRole("heading", { name: "Plan mutation moved before authorization." }),
+  ).toBeVisible();
+
+  await page.waitForTimeout(4500);
   await expect(securityTab).toHaveAttribute("aria-selected", "true");
-  await expect(panel.getByRole("heading", { name: "Webhook signature is checked after parsing." })).toBeVisible();
+  await expect(
+    panel.getByRole("heading", { name: "Webhook signature is checked after parsing." }),
+  ).toBeVisible();
 
   await uiTab.click();
   await expect(uiTab).toHaveAttribute("aria-selected", "true");
