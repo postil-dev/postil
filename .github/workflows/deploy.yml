@@ -12,7 +12,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Skips quietly until the FLY_API_TOKEN secret is configured.
+    # Skips quietly until the FLY_DEPLOY_ENABLED repo variable is set to
+    # 'true' (and the FLY_API_TOKEN secret is configured).
     if: ${{ vars.FLY_DEPLOY_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@v4
