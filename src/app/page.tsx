@@ -19,7 +19,7 @@ import {
   statusExamples,
 } from "./site";
 
-const ROTATION_MS = 3000;
+const AUTO_ADVANCE_MS = 1000;
 
 type Example = {
   id: string;
@@ -356,10 +356,11 @@ function ReviewExamples() {
 
   useEffect(() => {
     if (!isAutoPlaying) return;
-    const timer = window.setInterval(() => {
+    const timer = window.setTimeout(() => {
       setActive((current) => (current + 1) % examples.length);
-    }, ROTATION_MS);
-    return () => window.clearInterval(timer);
+      setIsAutoPlaying(false);
+    }, AUTO_ADVANCE_MS);
+    return () => window.clearTimeout(timer);
   }, [isAutoPlaying]);
 
   function pauseAndSelect(index: number) {
@@ -413,7 +414,7 @@ function ReviewExamples() {
                   ? "border-accent bg-highlight text-foreground"
                   : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
                 index === active && isAutoPlaying
-                  ? "after:animate-[review-example-progress_3000ms_linear_forwards]"
+                  ? "after:animate-[review-example-progress_1000ms_linear_forwards]"
                   : "",
                 index === active && !isAutoPlaying ? "after:scale-x-100" : "",
                 index !== active ? "after:scale-x-0" : "",
