@@ -16,7 +16,7 @@ jobs:
     # 'true' (and the FLY_API_TOKEN secret is configured).
     if: ${{ vars.FLY_DEPLOY_ENABLED == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # Bake the pinned CLI into the image so the worker can spawn it.
       # POSTIL_CLI_TAG is a repo variable naming a postil-cli release tag;
       # when unset the image builds web-only (Dockerfile warns).
@@ -35,7 +35,7 @@ jobs:
           mkdir -p vendor
           tar -xzf "${tmp}/${art}" -C "$tmp" postil
           install -m 0755 "${tmp}/postil" vendor/postil
-      - uses: superfly/flyctl-actions/setup-flyctl@v1
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.4
       - run: flyctl deploy --remote-only --build-arg POSTIL_CLI_REV="${{ vars.POSTIL_CLI_TAG || 'unpinned' }}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
