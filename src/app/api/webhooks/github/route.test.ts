@@ -1590,6 +1590,7 @@ describe("github webhook", () => {
               "Unit tests",
               "Build",
               "Docker build",
+              "E2E tests",
               "Verify postil/review passed",
             ],
           },
@@ -1631,6 +1632,12 @@ describe("github webhook", () => {
               },
               {
                 name: "Docker build",
+                head_sha: "abc123def456",
+                status: "completed",
+                conclusion: "success",
+              },
+              {
+                name: "E2E tests",
                 head_sha: "abc123def456",
                 status: "completed",
                 conclusion: "success",
