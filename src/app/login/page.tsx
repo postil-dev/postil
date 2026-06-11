@@ -4,6 +4,7 @@ import Image from "next/image";
 export const metadata: Metadata = {
   title: "Sign in",
   description: "Sign in to Postil with GitHub.",
+  alternates: { canonical: "/login" },
 };
 
 const ERROR_MESSAGES: Record<string, string> = {

@@ -1,9 +1,15 @@
+import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 
+import { PrMock } from "@/components/pr-mock";
 import { Section } from "@/components/section";
 import { StatusIcon } from "@/components/status-icon";
 import { Terminal } from "@/components/terminal";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
 
 export default function HomePage() {
   return (
@@ -31,7 +37,7 @@ export default function HomePage() {
                 Read the docs
               </Link>
             </div>
-            <p className="mt-6 font-mono text-xs text-charcoal/50">
+            <p className="mt-6 font-mono text-xs text-charcoal/65">
               Apache-2.0 CLI · free on public repos · self-hosted forever
             </p>
           </div>
@@ -44,7 +50,7 @@ export default function HomePage() {
               priority
               className="h-auto w-full"
             />
-            <p className="border-t border-stone px-4 py-3 font-mono text-xs text-charcoal/50">
+            <p className="border-t border-stone px-4 py-3 font-mono text-xs text-charcoal/65">
               fig. 1 — the gate: every change passes through, few are stopped
             </p>
           </div>
@@ -86,6 +92,17 @@ export default function HomePage() {
           location, clears a confidence threshold, and could change the merge
           decision. Everything else is silence — and silence is measured, not
           assumed.
+        </p>
+        <p className="mt-6 max-w-3xl font-mono text-xs leading-relaxed text-charcoal/60">
+          Figures as of June 2026. The 28-PR audit and value-rate range are from
+          independent third-party reviews of the category leader; the
+          PRs-per-developer range reflects publicly reported agentic-team
+          throughput. See the sourced breakdown on{" "}
+          <Link href="/why-postil" className="text-rust underline">
+            Why Postil
+          </Link>
+          . Postil&apos;s own measured numbers will be published as they accrue;
+          dashboard figures shown on this page are illustrative.
         </p>
       </Section>
 
@@ -153,9 +170,44 @@ export default function HomePage() {
         </div>
       </Section>
 
-      {/* 03 — Terminal demo */}
+      {/* 02b — On the PR */}
       <Section
         number="03"
+        eyebrow="On the pull request"
+        title="What the two checks look like on a failing PR."
+      >
+        <div className="grid items-start gap-8 lg:grid-cols-[3fr_2fr]">
+          <PrMock />
+          <div>
+            <p className="text-ink-soft">
+              On GitHub, Postil shows up as exactly two check-runs plus, when
+              warranted, batched inline comments. The gate fails on a finding it
+              can stand behind — here a missing idempotency key on a refund path
+              — while advisory commentary stays out of the blocking lane.
+            </p>
+            <ul className="mt-6 space-y-3 text-sm text-ink-soft">
+              <li className="flex gap-3">
+                <span className="font-mono text-gate">→</span>
+                Every finding cites a file and line, and carries a confidence
+                score you can threshold on.
+              </li>
+              <li className="flex gap-3">
+                <span className="font-mono text-gate">→</span>
+                Require <code className="font-mono text-xs">postil/gate</code> in
+                branch protection to make the verdict binding.
+              </li>
+              <li className="flex gap-3">
+                <span className="font-mono text-gate">→</span>A clean PR shows two
+                green checks and no comments at all.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </Section>
+
+      {/* 04 — Terminal demo */}
+      <Section
+        number="04"
         eyebrow="One engine everywhere"
         title="The same binary runs locally, in CI, and behind the hosted app."
       >
@@ -177,7 +229,7 @@ export default function HomePage() {
               {"\n"}
               <span className="t-dim">2 findings · 5 suppressed below confidence 0.6</span>
               {"\n"}
-              <span className="t-green">gate: failing (fail-on: error)</span>{"\n"}
+              <span className="t-red">gate: failing (fail-on: error)</span>{"\n"}
               <span className="t-dim">exit 1</span>
             </code>
           </Terminal>
@@ -212,45 +264,72 @@ export default function HomePage() {
         </div>
       </Section>
 
-      {/* 04 — Silence dashboard teaser */}
+      {/* 05 — Silence dashboard teaser */}
       <Section
-        number="04"
+        number="05"
         eyebrow="Provable restraint"
         title="Silence is a metric, not a hope."
       >
         <div className="grid items-center gap-10 lg:grid-cols-2">
-          <div className="card p-8">
-            <p className="eyebrow">This week, your org</p>
+          <figure className="card p-8">
+            <div className="flex items-center justify-between">
+              <p className="eyebrow">Silence dashboard</p>
+              <span className="rounded-full border border-stone px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-charcoal/60">
+                illustrative
+              </span>
+            </div>
             <div className="mt-4 flex items-end gap-3">
               <span className="serif-display text-6xl">68%</span>
-              <span className="pb-2 text-sm text-charcoal/60">
-                of PRs passed in silence
+              <span className="pb-2 text-sm text-charcoal/70">
+                of PRs passed in silence{" "}
+                <span className="text-charcoal/50">(illustrative)</span>
               </span>
             </div>
             <div className="mt-8">
-              <p className="font-mono text-xs text-charcoal/50">
+              <p className="font-mono text-xs text-charcoal/60">
                 confidence distribution of shipped findings
               </p>
-              <div className="mt-3 flex h-24 items-end gap-2">
-                {[4, 7, 12, 38, 74].map((v, i) => (
-                  <div key={i} className="flex-1">
-                    <div
-                      className="w-full rounded-t-[3px] bg-gate"
-                      style={{ height: `${v}%`, opacity: 0.45 + i * 0.13 }}
-                    />
+              {(() => {
+                const bars = [
+                  { bucket: "0.0–0.2", value: 4 },
+                  { bucket: "0.2–0.4", value: 7 },
+                  { bucket: "0.4–0.6", value: 12 },
+                  { bucket: "0.6–0.8", value: 38 },
+                  { bucket: "0.8–1.0", value: 74 },
+                ];
+                return (
+                  <div
+                    role="img"
+                    aria-label={`Confidence distribution of shipped findings (illustrative): ${bars
+                      .map((b) => `${b.bucket} confidence, ${b.value} findings`)
+                      .join("; ")}. Findings concentrate at high confidence.`}
+                  >
+                    <div className="mt-3 flex h-24 items-end gap-2">
+                      {bars.map((b, i) => (
+                        <div key={b.bucket} className="flex-1">
+                          <div
+                            className="w-full rounded-t-[3px] bg-gate"
+                            style={{ height: `${b.value}%`, opacity: 0.5 + i * 0.12 }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex justify-between font-mono text-[10px] text-charcoal/55">
+                      <span>0.0</span>
+                      <span>0.2</span>
+                      <span>0.4</span>
+                      <span>0.6</span>
+                      <span>0.8</span>
+                      <span>1.0</span>
+                    </div>
                   </div>
-                ))}
-              </div>
-              <div className="mt-2 flex justify-between font-mono text-[10px] text-charcoal/40">
-                <span>0.0</span>
-                <span>0.2</span>
-                <span>0.4</span>
-                <span>0.6</span>
-                <span>0.8</span>
-                <span>1.0</span>
-              </div>
+                );
+              })()}
             </div>
-          </div>
+            <figcaption className="mt-4 font-mono text-[11px] text-charcoal/55">
+              Illustrative sample, not a live account.
+            </figcaption>
+          </figure>
           <div>
             <p className="text-ink-soft">
               Every Postil dashboard leads with the silence rate: the share of
@@ -263,18 +342,21 @@ export default function HomePage() {
               engineers feel it in their notifications. No incumbent surfaces
               this number; most would rather you didn't ask.
             </p>
-            <p className="mt-6">
-              <Link href="/login" className="link-arrow">
-                See your dashboard
+            <p className="mt-6 flex flex-wrap gap-x-6 gap-y-2">
+              <Link href="/how-it-works#data" className="link-arrow">
+                How the silence metric is computed
+              </Link>
+              <Link href="/why-postil" className="link-arrow">
+                Why no incumbent shows it
               </Link>
             </p>
           </div>
         </div>
       </Section>
 
-      {/* 05 — Pricing teaser */}
+      {/* 06 — Pricing teaser */}
       <Section
-        number="05"
+        number="06"
         eyebrow="Pricing without meter anxiety"
         title="Flat $10 per developer. Inference on your own key, zero markup."
       >

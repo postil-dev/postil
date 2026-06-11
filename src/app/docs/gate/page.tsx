@@ -4,6 +4,7 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "The gate",
   description: "postil/gate semantics, fail-on thresholds, and requiring the gate in GitHub branch protection.",
+  alternates: { canonical: "/docs/gate" },
 };
 
 export default function GatePage() {

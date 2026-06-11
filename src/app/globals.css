@@ -26,6 +26,47 @@ html {
   scroll-behavior: smooth;
 }
 
+/* Skip-to-content link: visually hidden until focused. */
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -120%;
+  z-index: 100;
+  background: var(--color-charcoal);
+  color: var(--color-ivory);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-card);
+  transition: top 120ms ease;
+}
+.skip-link:focus {
+  top: 1rem;
+  outline: 2px solid var(--color-rust);
+  outline-offset: 2px;
+}
+
+/* Keyboard focus rings on all interactive elements. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-rust);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
 body {
   background-color: var(--color-ivory);
   color: var(--color-charcoal);
@@ -118,10 +159,11 @@ body {
   overflow-x: auto;
 }
 .terminal .t-dim {
-  color: #8b969e;
+  /* Raised from #8b969e to clear WCAG AA on the charcoal terminal background. */
+  color: #a7b1b8;
 }
 .terminal .t-green {
-  color: #9db18f;
+  color: #a9bd9b;
 }
 .terminal .t-rust {
   color: #e08763;

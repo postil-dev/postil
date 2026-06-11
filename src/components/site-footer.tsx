@@ -8,16 +8,27 @@ const COLUMNS = [
       { href: "/why-postil", label: "Why Postil" },
       { href: "/how-it-works", label: "How it works" },
       { href: "/pricing", label: "Pricing" },
+      { href: "/security", label: "Security" },
       { href: "/install", label: "Install" },
+      { href: "/changelog", label: "Changelog" },
     ],
   },
   {
     title: "Docs",
     links: [
       { href: "/docs/quickstart", label: "Quickstart" },
+      { href: "/docs/cli", label: "CLI reference" },
       { href: "/docs/config", label: "Configuration" },
+      { href: "/docs/gitlab", label: "GitLab" },
       { href: "/docs/self-hosted", label: "Self-hosted" },
       { href: "/docs/gate", label: "The gate" },
+    ],
+  },
+  {
+    title: "Compare",
+    links: [
+      { href: "/vs/coderabbit", label: "vs CodeRabbit" },
+      { href: "/vs/greptile", label: "vs Greptile" },
     ],
   },
   {
@@ -26,7 +37,8 @@ const COLUMNS = [
       { href: "https://github.com/postil-dev/postil", label: "GitHub" },
       { href: "https://github.com/postil-dev/postil-cli", label: "CLI source" },
       { href: "/privacy", label: "Privacy" },
-      { href: "/.well-known/security.txt", label: "Security" },
+      { href: "/terms", label: "Terms" },
+      { href: "/.well-known/security.txt", label: "security.txt" },
     ],
   },
 ] as const;
@@ -45,7 +57,7 @@ export function SiteFooter() {
               A low-noise review gate for teams shipping at agent speed.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-10 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-x-10 gap-y-8 sm:grid-cols-4">
             {COLUMNS.map((col) => (
               <div key={col.title}>
                 <p className="eyebrow">{col.title}</p>
@@ -54,7 +66,7 @@ export function SiteFooter() {
                     <li key={link.href}>
                       <Link
                         href={link.href}
-                        className="text-charcoal/70 hover:text-charcoal"
+                        className="text-charcoal/75 hover:text-charcoal"
                       >
                         {link.label}
                       </Link>
@@ -65,7 +77,7 @@ export function SiteFooter() {
             ))}
           </div>
         </div>
-        <div className="rule mt-10 pt-6 text-xs text-charcoal/50">
+        <div className="rule mt-10 pt-6 text-xs text-charcoal/65">
           <p>
             Postil. CLI and Action are Apache-2.0. Hosted beta is free while in
             beta. No code is persisted by the control plane; review envelopes

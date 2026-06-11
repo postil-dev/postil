@@ -3,7 +3,8 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Configuration",
-  description: "The full .postil.yaml reference, config precedence, and CodeRabbit/Kodo compatibility.",
+  description: "The full .postil.yaml reference, config precedence, and CodeRabbit config translation.",
+  alternates: { canonical: "/docs/config" },
 };
 
 export default function ConfigPage() {
@@ -23,12 +24,12 @@ export default function ConfigPage() {
         <li>Environment variables</li>
         <li><code>.postil.{"{yaml,yml,json}"}</code></li>
         <li><code>.coderabbit.yaml</code> (compatibility read)</li>
-        <li><code>.kodo.yaml</code> (compatibility read)</li>
         <li>Built-in defaults</li>
       </ol>
       <p>
-        Migrating from CodeRabbit or Kodo costs nothing: leave the existing
-        file in place and Postil maps the overlapping settings (ignore
+        Migrating from CodeRabbit costs nothing: leave the existing
+        <code>.coderabbit.yaml</code> in place and Postil maps the overlapping
+        settings (ignore
         patterns, severity thresholds, review toggles). Add a{" "}
         <code>.postil.yaml</code> later to use Postil-specific features; it
         wins wherever both define a value. Use{" "}

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Self-hosted",
   description: "Run the full Postil stack with Docker Compose in under 15 minutes, with OpenRouter, Azure OpenAI, or local Ollama.",
+  alternates: { canonical: "/docs/self-hosted" },
 };
 
 export default function SelfHostedPage() {

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Envelope schema",
   description: "The frozen JSON contract the postil CLI emits with --output-json, stored verbatim by the control plane.",
+  alternates: { canonical: "/docs/envelope" },
 };
 
 export default function EnvelopePage() {

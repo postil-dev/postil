@@ -5,6 +5,15 @@ import { useMemo, useState } from "react";
 const CODERABBIT_PRO_SEAT = 24; // $/user/mo, annual billing
 const POSTIL_SEAT = 10;
 
+// Greptile metered model, as of June 2026: per-seat base plus a per-review
+// overage once a developer passes the included monthly review allowance.
+// Numbers are uncertain and intentionally kept editable in one place.
+const GREPTILE = {
+  seat: 30, // $/user/mo base
+  includedReviewsPerDev: 50, // reviews per developer included before overage
+  overagePerReview: 1, // $ per review past the included allowance
+} as const;
+
 function dollars(n: number): string {
   return n.toLocaleString("en-US", {
     style: "currency",
@@ -29,7 +38,22 @@ export function PricingCalculator() {
     const inference = (reviews * centsPerReview) / 100;
     const postil = devs * POSTIL_SEAT + inference;
     const coderabbit = devs * CODERABBIT_PRO_SEAT;
-    return { reviews, inference, postil, coderabbit, savings: coderabbit - postil };
+    const overageReviewsPerDev = Math.max(
+      0,
+      prsPerDev - GREPTILE.includedReviewsPerDev,
+    );
+    const greptile =
+      devs * GREPTILE.seat +
+      devs * overageReviewsPerDev * GREPTILE.overagePerReview;
+    return {
+      reviews,
+      inference,
+      postil,
+      coderabbit,
+      greptile,
+      savings: coderabbit - postil,
+      savingsVsGreptile: greptile - postil,
+    };
   }, [devs, prsPerDev, centsPerReview]);
 
   return (
@@ -64,7 +88,7 @@ export function PricingCalculator() {
               onChange={(e) => setPrsPerDev(Number(e.target.value))}
               className="mt-2 w-full accent-[#C24A2A]"
             />
-            <span className="mt-1 block text-xs text-charcoal/50">
+            <span className="mt-1 block text-xs text-charcoal/65">
               Agentic teams report 50-571 PRs per developer per month.
             </span>
           </label>
@@ -81,14 +105,14 @@ export function PricingCalculator() {
               onChange={(e) => setCentsPerReview(Number(e.target.value))}
               className="mt-2 w-full accent-[#C24A2A]"
             />
-            <span className="mt-1 block text-xs text-charcoal/50">
+            <span className="mt-1 block text-xs text-charcoal/65">
               Paid to your provider at their rates. Postil adds zero markup.
             </span>
           </label>
         </div>
 
         <div className="flex flex-col justify-between gap-6">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="rounded-card border border-gate bg-ivory p-4">
               <p className="eyebrow">Postil</p>
               <p className="serif-display mt-2 text-3xl">{dollars(result.postil)}</p>
@@ -100,10 +124,18 @@ export function PricingCalculator() {
               </p>
             </div>
             <div className="rounded-card border border-stone bg-ivory p-4">
-              <p className="eyebrow text-charcoal/50">CodeRabbit Pro</p>
+              <p className="eyebrow text-charcoal/65">CodeRabbit Pro</p>
               <p className="serif-display mt-2 text-3xl">{dollars(result.coderabbit)}</p>
               <p className="mt-1 text-xs text-charcoal/60">
                 $24/seat/mo, annual billing
+              </p>
+            </div>
+            <div className="rounded-card border border-stone bg-ivory p-4">
+              <p className="eyebrow text-charcoal/65">Greptile</p>
+              <p className="serif-display mt-2 text-3xl">{dollars(result.greptile)}</p>
+              <p className="mt-1 text-xs text-charcoal/60">
+                ${GREPTILE.seat}/seat + ${GREPTILE.overagePerReview}/review past{" "}
+                {GREPTILE.includedReviewsPerDev}/dev (as of June 2026)
               </p>
             </div>
           </div>
@@ -113,8 +145,13 @@ export function PricingCalculator() {
             </p>
             <p className="serif-display mt-1 text-3xl">
               {result.savings >= 0
-                ? `${dollars(result.savings)} saved with Postil`
-                : `${dollars(-result.savings)} more with Postil`}
+                ? `${dollars(result.savings)} saved vs CodeRabbit`
+                : `${dollars(-result.savings)} more than CodeRabbit`}
+            </p>
+            <p className="mt-1 text-sm text-ivory/80">
+              {result.savingsVsGreptile >= 0
+                ? `${dollars(result.savingsVsGreptile)} saved vs Greptile`
+                : `${dollars(-result.savingsVsGreptile)} more than Greptile`}
             </p>
             <p className="mt-2 text-xs text-ivory/60">
               And the hosted beta is currently free, so today's number is{" "}

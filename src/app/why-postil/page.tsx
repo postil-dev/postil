@@ -1,11 +1,81 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import {
+  ComparisonTable,
+  type ComparisonRow,
+} from "@/components/comparison-table";
+
 export const metadata: Metadata = {
   title: "Why Postil",
   description:
-    "Where Postil differs from CodeRabbit, Greptile, Copilot, and the rest: silence rate, flat pricing with BYO keys, a hard merge gate, and self-hosting that works.",
+    "Postil as a CodeRabbit alternative: where it differs from CodeRabbit, Greptile, Copilot, and the rest — silence rate, flat pricing with BYO keys, a hard merge gate, and self-hosting that works.",
+  alternates: { canonical: "/why-postil" },
+  openGraph: {
+    title: "Why Postil — the honest comparison",
+    description:
+      "Hard merge gate, a published silence metric, flat BYO-key pricing, real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
+    url: "https://postil.dev/why-postil",
+  },
 };
+
+const COMPARISON_COLUMNS = [
+  "Postil",
+  "CodeRabbit",
+  "Greptile",
+  "Copilot code review",
+];
+
+const COMPARISON_ROWS: ComparisonRow[] = [
+  {
+    feature: "Hard merge gate (separate blocking check)",
+    cells: [
+      { kind: "yes", note: "postil/gate, fail-closed" },
+      { kind: "no", note: "comments only" },
+      { kind: "no", note: "comments only" },
+      { kind: "partial", note: "neutral check, not blocking" },
+    ],
+  },
+  {
+    feature: "Published silence / quiet-rate metric",
+    cells: [
+      { kind: "yes", note: "headline dashboard number" },
+      { kind: "no" },
+      { kind: "no" },
+      { kind: "no" },
+    ],
+  },
+  {
+    feature: "Pricing model",
+    cells: [
+      { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
+      { kind: "text", note: "~$24/seat (Pro, annual)" },
+      { kind: "text", note: "Per-seat + per-review overage" },
+      { kind: "text", note: "Bundled / Actions-minutes" },
+    ],
+  },
+  {
+    feature: "Self-host (no enterprise gate)",
+    cells: [
+      { kind: "yes", note: "free, Docker Compose" },
+      { kind: "partial", note: "enterprise sales" },
+      { kind: "no" },
+      { kind: "no" },
+    ],
+  },
+  {
+    feature: "Platforms",
+    cells: [
+      {
+        kind: "text",
+        note: "GitHub + GitLab (incl. self-managed); on GitLab the gate is a CI job pass/fail, not a named check-run",
+      },
+      { kind: "text", note: "GitHub, GitLab, Azure DevOps, Bitbucket" },
+      { kind: "text", note: "GitHub, GitLab" },
+      { kind: "text", note: "GitHub" },
+    ],
+  },
+];
 
 interface Wedge {
   number: string;
@@ -100,7 +170,10 @@ const wedges: Wedge[] = [
           Postil's CLI speaks GitHub and GitLab — including self-managed
           instances via a custom base URL — through the same forge interface,
           with Bitbucket and Azure DevOps on the roadmap behind the same
-          abstraction. Same engine, same gate semantics, every platform.
+          abstraction. Same engine, same gate semantics, every platform. On
+          GitLab the gate is enforced as a CI job that passes or fails, rather
+          than a named external check-run like GitHub's{" "}
+          <code>postil/gate</code>.
         </p>
       </>
     ),
@@ -188,6 +261,34 @@ export default function WhyPostilPage() {
         the offline Martian benchmark. Here is where Postil is different.
       </p>
 
+      {/* At-a-glance comparison */}
+      <div className="mt-12">
+        <p className="eyebrow">At a glance</p>
+        <h2 className="serif-display mt-2 text-2xl">How the category lines up.</h2>
+        <p className="mt-3 max-w-2xl text-[15px] text-ink-soft">
+          Compiled from vendor pricing and documentation as of June 2026.
+          Competitor capabilities change; the sourced detail behind each row is
+          in the wedges below.
+        </p>
+        <div className="mt-6">
+          <ComparisonTable
+            columns={COMPARISON_COLUMNS}
+            rows={COMPARISON_ROWS}
+            caption="Postil compared with CodeRabbit, Greptile, and Copilot code review across merge gate, silence metric, pricing model, self-hosting, and platform coverage."
+          />
+        </div>
+        <p className="mt-3 font-mono text-xs text-charcoal/60">
+          Compare in detail:{" "}
+          <Link href="/vs/coderabbit" className="text-rust underline">
+            Postil vs CodeRabbit
+          </Link>
+          {" · "}
+          <Link href="/vs/greptile" className="text-rust underline">
+            Postil vs Greptile
+          </Link>
+        </p>
+      </div>
+
       <div className="mt-14 space-y-12">
         {wedges.map((w) => (
           <section key={w.number} className="rule grid gap-6 pt-10 md:grid-cols-[1fr_3fr]">
@@ -223,6 +324,27 @@ export default function WhyPostilPage() {
             Compare costs with the calculator
           </Link>
         </p>
+      </div>
+
+      <div className="card mt-10 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="serif-display text-3xl">See it on your own diff.</h2>
+          <p className="mt-2 max-w-xl text-sm text-ivory/70">
+            Install the CLI in one line and run a review before you push. If we
+            have nothing merge-relevant to say, you will hear nothing.
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-4">
+          <Link href="/install" className="btn-primary">
+            Install the CLI
+          </Link>
+          <Link
+            href="/how-it-works"
+            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
+          >
+            How it works
+          </Link>
+        </div>
       </div>
     </div>
   );

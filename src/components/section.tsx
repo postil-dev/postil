@@ -1,4 +1,5 @@
 interface SectionProps {
+  id?: string;
   number?: string;
   eyebrow: string;
   title: string;
@@ -7,9 +8,12 @@ interface SectionProps {
 }
 
 /** Editorial numbered section: mono eyebrow, serif title, hairline rule. */
-export function Section({ number, eyebrow, title, children, className }: SectionProps) {
+export function Section({ id, number, eyebrow, title, children, className }: SectionProps) {
   return (
-    <section className={`mx-auto max-w-6xl px-6 py-16 md:py-20 ${className ?? ""}`}>
+    <section
+      id={id}
+      className={`mx-auto max-w-6xl px-6 py-16 scroll-mt-20 md:py-20 ${className ?? ""}`}
+    >
       <div className="rule pt-8">
         <p className="eyebrow">
           {number ? `${number} — ` : ""}

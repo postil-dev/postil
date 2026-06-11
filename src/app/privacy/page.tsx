@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Privacy",
   description: "What Postil stores, what it never stores, and how bring-your-own keys are handled.",
+  alternates: { canonical: "/privacy" },
 };
 
 export default function PrivacyPage() {

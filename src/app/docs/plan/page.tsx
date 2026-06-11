@@ -4,6 +4,7 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "postil plan",
   description: "Dry-run a review config change against stored envelopes. Terraform-plan semantics for review configuration.",
+  alternates: { canonical: "/docs/plan" },
 };
 
 export default function PlanPage() {

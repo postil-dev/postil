@@ -34,11 +34,20 @@ export const metadata: Metadata = {
   description:
     "Postil is a low-noise pull-request review gate. We say less. What we say is right.",
   openGraph: {
+    type: "website",
     title: "Postil — Trust the merge, not the speed.",
     description:
       "A low-noise review gate for teams shipping at agent speed. Silent on clean PRs, hard gate on what matters.",
     url: "https://postil.dev",
     siteName: "Postil",
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Postil — Trust the merge, not the speed.",
+    description:
+      "A low-noise review gate for teams shipping at agent speed. Silent on clean PRs, hard gate on what matters.",
+    images: ["/opengraph-image"],
   },
 };
 
@@ -51,8 +60,13 @@ export default function RootLayout({
       className={`${sourceSerif.variable} ${inter.variable} ${plexMono.variable}`}
     >
       <body className="flex min-h-screen flex-col">
+        <a href="#main-content" className="skip-link">
+          Skip to content
+        </a>
         <SiteHeader />
-        <main className="flex-1">{children}</main>
+        <main id="main-content" className="flex-1">
+          {children}
+        </main>
         <SiteFooter />
       </body>
     </html>

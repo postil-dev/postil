@@ -7,6 +7,13 @@ export const metadata: Metadata = {
   title: "Pricing",
   description:
     "Free on public repos. Flat $10/dev/mo orchestration with BYO inference key at zero markup. Self-hosted free forever.",
+  alternates: { canonical: "/pricing" },
+  openGraph: {
+    title: "Postil pricing",
+    description:
+      "Flat $10/dev/mo orchestration, bring your own inference key at zero markup, free self-hosting. No meter anxiety.",
+    url: "https://postil.dev/pricing",
+  },
 };
 
 const FAQ = [
@@ -59,7 +66,7 @@ export default function PricingPage() {
             <li>Hosted reviews on public repositories</li>
             <li>The full CLI, locally and in CI (Apache-2.0)</li>
             <li>GitHub Action with pinned-SHA installs</li>
-            <li>coderabbit.yaml / .kodo.yaml config compatibility</li>
+            <li>CodeRabbit config translation (reads .coderabbit.yaml)</li>
           </ul>
           <Link href="/install" className="btn-secondary mt-8 text-center">
             Install the CLI
@@ -87,6 +94,17 @@ export default function PricingPage() {
           <Link href="/install" className="btn-primary mt-8 text-center">
             Install the App
           </Link>
+          <p className="mt-4 text-xs text-charcoal/65">
+            Over 50 seats, or have procurement, invoicing, or DPA questions?{" "}
+            <a
+              href="mailto:hello@postil.dev"
+              className="text-rust underline"
+            >
+              Talk to us
+            </a>
+            . SSO/SAML and a formal DPA are on the roadmap and available on
+            request.
+          </p>
         </div>
 
         <div className="card flex flex-col p-7">
@@ -114,8 +132,10 @@ export default function PricingPage() {
           </h2>
           <p className="mt-3 max-w-2xl text-ink-soft">
             Compared against CodeRabbit Pro at its published $24/user/mo annual
-            rate. Adjust the inference estimate to match your model; it is paid
-            to your provider either way.
+            rate and Greptile&apos;s metered model ($30/seat plus per-review
+            overage past the included allowance, as of June 2026). Adjust the
+            inference estimate to match your model; it is paid to your provider
+            either way.
           </p>
         </div>
         <div className="mt-8">

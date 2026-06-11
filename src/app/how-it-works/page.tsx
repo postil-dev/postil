@@ -8,6 +8,13 @@ export const metadata: Metadata = {
   title: "How it works",
   description:
     "Webhook to queue to CLI to check-runs: the Postil hosted pipeline, its fail-closed doctrine, minimal GitHub permissions, and what is (not) stored.",
+  alternates: { canonical: "/how-it-works" },
+  openGraph: {
+    title: "How Postil works",
+    description:
+      "A small, auditable pipeline around one review engine: webhook, queue, CLI, check-runs. Fail-closed by design.",
+    url: "https://postil.dev/how-it-works",
+  },
 };
 
 const PIPELINE = [
@@ -139,8 +146,12 @@ export default function HowItWorksPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-charcoal text-left">
-                  <th className="py-2 pr-4 font-semibold">Permission</th>
-                  <th className="py-2 font-semibold">Level</th>
+                  <th scope="col" className="py-2 pr-4 font-semibold">
+                    Permission
+                  </th>
+                  <th scope="col" className="py-2 font-semibold">
+                    Level
+                  </th>
                 </tr>
               </thead>
               <tbody className="text-ink-soft">
@@ -169,11 +180,12 @@ export default function HowItWorksPage() {
           </div>
           <div className="text-ink-soft">
             <p>
-              In August 2025, researchers exploited the category leader's
-              review pipeline into remote code execution and walked away with
-              credentials carrying <em>write</em> access to about a million
-              repositories. The lesson is structural: a reviewer does not need
-              push access, so Postil's GitHub App never asks for it.
+              In a publicly reported August 2025 incident, security researchers
+              disclosed a remote-code-execution chain in the category leader&apos;s
+              review pipeline that exposed installation credentials carrying{" "}
+              <em>write</em> access across a large share of customer repositories.
+              The lesson is structural: a reviewer does not need push access, so
+              Postil&apos;s GitHub App never asks for it.
             </p>
             <p className="mt-4">
               Installation tokens are minted on demand from the App key, held
@@ -186,6 +198,7 @@ export default function HowItWorksPage() {
       </Section>
 
       <Section
+        id="data"
         number="03"
         eyebrow="Data"
         title="We store the review, not the code."
@@ -208,16 +221,26 @@ export default function HowItWorksPage() {
           <div className="card p-6">
             <p className="eyebrow">Stored per review</p>
             <pre className="mt-4 overflow-x-auto font-mono text-xs leading-relaxed text-ink-soft">{`{
-  "summary": "...",
+  "summary": "Refund path missing idempotency key.",
   "silent": false,
-  "findings": [{ "path", "line",
-    "severity", "kind",
-    "confidence", "title", "body" }],
-  "counts": { ... },
-  "gate": { "failOn", "failing" },
-  "usage": { "promptTokens",
-             "completionTokens" }
+  "findings": [
+    {
+      "path": "src/billing/invoice.ts",
+      "line": 84,
+      "severity": "error",
+      "kind": "risk",
+      "confidence": 0.91,
+      "title": "Non-idempotent refund",
+      "body": "Retried webhook double-credits."
+    }
+  ],
+  "counts": { "shipped": 1, "suppressed": 5 },
+  "gate": { "failOn": "error", "failing": true },
+  "usage": { "promptTokens": 8421, "completionTokens": 612 }
 }`}</pre>
+            <p className="mt-2 font-mono text-[10px] text-charcoal/55">
+              Illustrative envelope.
+            </p>
             <p className="mt-3 text-xs text-charcoal/50">
               The full schema is documented at{" "}
               <Link href="/docs/envelope" className="text-rust underline">

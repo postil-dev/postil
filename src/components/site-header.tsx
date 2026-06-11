@@ -1,17 +1,20 @@
 import Image from "next/image";
 import Link from "next/link";
 
-const NAV = [
+import { MobileNav, type NavItem } from "@/components/mobile-nav";
+
+const NAV: readonly NavItem[] = [
   { href: "/why-postil", label: "Why Postil" },
   { href: "/how-it-works", label: "How it works" },
   { href: "/pricing", label: "Pricing" },
+  { href: "/security", label: "Security" },
   { href: "/docs", label: "Docs" },
   { href: "/install", label: "Install" },
 ] as const;
 
 export function SiteHeader() {
   return (
-    <header className="border-b border-stone bg-ivory">
+    <header className="relative border-b border-stone bg-ivory">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
         <Link href="/" aria-label="Postil home" className="shrink-0">
           <Image
@@ -22,7 +25,10 @@ export function SiteHeader() {
             priority
           />
         </Link>
-        <nav className="hidden items-center gap-7 text-[15px] md:flex">
+        <nav
+          aria-label="Primary"
+          className="hidden items-center gap-7 text-[15px] md:flex"
+        >
           {NAV.map((item) => (
             <Link
               key={item.href}
@@ -34,12 +40,19 @@ export function SiteHeader() {
           ))}
         </nav>
         <div className="flex items-center gap-4">
-          <Link href="/login" className="text-[15px] text-charcoal/80 hover:text-charcoal">
+          <Link
+            href="/login"
+            className="hidden text-[15px] text-charcoal/80 hover:text-charcoal md:inline-block"
+          >
             Sign in
           </Link>
-          <Link href="/install" className="btn-primary hidden text-sm sm:inline-block">
+          <Link
+            href="/install"
+            className="btn-primary hidden text-sm sm:inline-block"
+          >
             Install
           </Link>
+          <MobileNav items={NAV} />
         </div>
       </div>
     </header>

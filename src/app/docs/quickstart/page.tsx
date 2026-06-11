@@ -4,6 +4,7 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Quickstart",
   description: "From zero to a first Postil review in a few minutes: CLI, Action, or hosted App.",
+  alternates: { canonical: "/docs/quickstart" },
 };
 
 export default function QuickstartPage() {

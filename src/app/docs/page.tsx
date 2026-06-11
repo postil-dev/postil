@@ -4,6 +4,7 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Docs",
   description: "Postil documentation: quickstart, configuration, the gate, self-hosting, and the envelope schema.",
+  alternates: { canonical: "/docs" },
 };
 
 const CARDS = [
@@ -15,7 +16,12 @@ const CARDS = [
   {
     href: "/docs/config",
     title: "Configuration",
-    body: "The full .postil.yaml reference, including .coderabbit.yaml and .kodo.yaml compatibility.",
+    body: "The full .postil.yaml reference, including CodeRabbit config translation (reads .coderabbit.yaml).",
+  },
+  {
+    href: "/docs/cli",
+    title: "CLI reference",
+    body: "Every command and flag: review, doctor, plan, plus environment variables and exit codes.",
   },
   {
     href: "/docs/gate",
@@ -31,6 +37,11 @@ const CARDS = [
     href: "/docs/envelope",
     title: "Envelope schema",
     body: "The JSON contract between the CLI and everything else: findings, counts, gate, usage.",
+  },
+  {
+    href: "/docs/gitlab",
+    title: "GitLab",
+    body: "Run Postil on GitLab.com and self-managed: CI job, project tokens, and merge-request review.",
   },
   {
     href: "/docs/self-hosted",
@@ -61,6 +72,7 @@ export default function DocsIndexPage() {
         <pre>
           <code>{`# local
 cargo install postil-cli
+postil doctor            # verify endpoint, key, and model
 postil review --staged
 
 # CI (GitHub Actions)
