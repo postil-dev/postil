@@ -37,13 +37,18 @@ jobs:
             echo "::error::postil-cli ref must be a full 40-character commit SHA."
             exit 1
           fi
+          if [[ ! "$POSTIL_CLI_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::postil-cli repository must be an owner/repo slug."
+            exit 1
+          fi
 
           headers=(-H "Accept: application/vnd.github+json")
           if [[ -n "${GITHUB_TOKEN:-}" ]]; then
             headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
           fi
 
-          verification="$(curl -fsSL "${headers[@]}" "https://api.github.com/repos/${POSTIL_CLI_REPO}/commits/$POSTIL_CLI_REF")"
+          verification_url="https://api.github.com/repos/${POSTIL_CLI_REPO}/commits/${POSTIL_CLI_REF}"
+          verification="$(curl -fsSL "${headers[@]}" "$verification_url")"
           if [[ "$(jq -r '.sha' <<<"$verification")" != "$POSTIL_CLI_REF" ]]; then
             echo "::error::postil-cli ref did not resolve to the expected commit."
             exit 1
@@ -288,13 +293,18 @@ jobs:
             echo "::error::postil-cli ref must be a full 40-character commit SHA."
             exit 1
           fi
+          if [[ ! "$POSTIL_CLI_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::postil-cli repository must be an owner/repo slug."
+            exit 1
+          fi
 
           headers=(-H "Accept: application/vnd.github+json")
           if [[ -n "${GITHUB_TOKEN:-}" ]]; then
             headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
           fi
 
-          verification="$(curl -fsSL "${headers[@]}" "https://api.github.com/repos/${POSTIL_CLI_REPO}/commits/$POSTIL_CLI_REF")"
+          verification_url="https://api.github.com/repos/${POSTIL_CLI_REPO}/commits/${POSTIL_CLI_REF}"
+          verification="$(curl -fsSL "${headers[@]}" "$verification_url")"
           if [[ "$(jq -r '.sha' <<<"$verification")" != "$POSTIL_CLI_REF" ]]; then
             echo "::error::postil-cli ref did not resolve to the expected commit."
             exit 1
@@ -354,6 +364,15 @@ jobs:
 
           pr_number="${{ github.event.pull_request.number }}"
           head_sha="${{ github.event.pull_request.head.sha }}"
+          review_repo="${{ github.repository }}"
+          if [[ ! "$review_repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::repository must be an owner/repo slug."
+            exit 1
+          fi
+          if [[ ! "$REVIEW_MODEL" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+            echo "::error::review model contains invalid characters."
+            exit 1
+          fi
           if [[ "${ACT:-}" == "true" ]]; then
             pr_number="${ACT_PULL_REQUEST_NUMBER:-$pr_number}"
             head_sha="${ACT_PULL_REQUEST_SHA:-$head_sha}"
@@ -364,7 +383,7 @@ jobs:
           fi
 
           postil review \
-            --repo "${{ github.repository }}" \
+            --repo "$review_repo" \
             --pr "$pr_number" \
             --sha "$head_sha" \
             --github-api-url https://api.github.com \
