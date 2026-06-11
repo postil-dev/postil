@@ -159,10 +159,10 @@ export default function Home() {
           width={1536}
           height={1024}
           priority
-          className="absolute inset-x-0 top-0 h-[30vh] w-full object-contain object-right-top sm:inset-0 sm:h-full sm:object-cover sm:object-center"
+          className="pointer-events-none absolute inset-x-0 top-0 h-[30vh] w-full object-contain object-right-top sm:inset-0 sm:h-full sm:object-cover sm:object-center"
         />
-        <div className="absolute inset-x-0 top-0 h-[34vh] bg-gradient-to-b from-transparent via-background/12 to-background sm:inset-0 sm:h-auto sm:bg-[linear-gradient(90deg,#f7f5f1_0%,rgba(247,245,241,0.96)_22%,rgba(247,245,241,0.76)_46%,rgba(247,245,241,0.18)_100%)]" />
-        <div className="absolute inset-x-0 bottom-0 hidden h-40 bg-gradient-to-b from-transparent to-background sm:block" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[34vh] bg-gradient-to-b from-transparent via-background/12 to-background sm:inset-0 sm:h-auto sm:bg-[linear-gradient(90deg,#f7f5f1_0%,rgba(247,245,241,0.96)_22%,rgba(247,245,241,0.76)_46%,rgba(247,245,241,0.18)_100%)]" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 hidden h-40 bg-gradient-to-b from-transparent to-background sm:block" />
         <div className="relative z-10 mx-auto flex max-w-7xl items-start px-4 pb-14 pt-[28vh] sm:min-h-[calc(100vh-4rem)] sm:items-center sm:px-6 sm:py-14">
           <div className="max-w-3xl">
             <Eyebrow>Calm review gate</Eyebrow>

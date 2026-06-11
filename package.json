@@ -8,7 +8,7 @@
     "setup": "bun scripts/install-hooks.ts",
     "dev": "next dev --turbopack",
     "build": "next build",
-    "start": "next start",
+    "start": "rm -rf .next/standalone/.next/static .next/standalone/public && ln -sfn ../../static .next/standalone/.next/static && ln -sfn ../../public .next/standalone/public && node .next/standalone/server.js",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",

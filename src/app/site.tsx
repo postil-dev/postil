@@ -224,7 +224,14 @@ export function SiteFooter() {
 function BrandLockup() {
   return (
     <span className="flex items-center gap-3">
-      <Image src="/brand/postil-mark.svg" alt="" width={36} height={36} priority />
+      <Image
+        src="/brand/postil-mark.svg"
+        alt=""
+        width={36}
+        height={36}
+        priority
+        className="pointer-events-none"
+      />
       <span className="font-display text-2xl font-semibold leading-none text-foreground">
         Postil
       </span>

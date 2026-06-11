@@ -1,9 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { POSTHOG_BROWSER_ORIGIN } from "@/lib/posthog-config";
 
-export function createCsp(nonce: string) {
+export function createCsp() {
   const isDevelopment = process.env.NODE_ENV === "development";
-  const scriptSrc = [`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`];
+  const scriptSrc = ["script-src 'self' 'unsafe-inline'"];
   const styleSrc = ["style-src 'self' 'unsafe-inline'"];
   const fontSrc = ["font-src 'self'"];
   const connectSrc = ["connect-src 'self'", POSTHOG_BROWSER_ORIGIN];
@@ -30,18 +30,10 @@ export function createCsp(nonce: string) {
   ].join("; ");
 }
 
-export function middleware(request: NextRequest) {
-  const nonce = btoa(crypto.randomUUID());
-  const csp = createCsp(nonce);
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set("x-nonce", nonce);
-  requestHeaders.set("Content-Security-Policy", csp);
+export function middleware(_request: NextRequest) {
+  const csp = createCsp();
 
-  const response = NextResponse.next({
-    request: {
-      headers: requestHeaders,
-    },
-  });
+  const response = NextResponse.next();
   response.headers.set("Content-Security-Policy", csp);
 
   return response;
