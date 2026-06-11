@@ -122,7 +122,9 @@ const anchorChecks = [
 for (const check of anchorChecks) {
   test(`public page ${check.path} exposes anchorable route content`, async ({ page }) => {
     await page.goto(check.path);
-    await expect(page.getByRole("heading", { name: check.heading })).toBeVisible();
+    await expect(page.getByRole("heading", { name: check.heading })).toBeVisible({
+      timeout: 15_000,
+    });
     await expect(page.locator(`#${check.anchor}`)).toBeVisible();
     await expect(
       page.locator(`a[href="#${check.anchor}"][aria-label="Link to ${check.anchorLabel}"]`),

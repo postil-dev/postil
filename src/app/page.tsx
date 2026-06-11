@@ -353,33 +353,32 @@ export default function Home() {
 function ReviewExamples() {
   const [active, setActive] = useState(0);
   const [isAutoPlaying, setIsAutoPlaying] = useState(true);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const rotationTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!isAutoPlaying) return;
-    const root = rootRef.current;
-    if (!root) return;
-
-    let timer: number | undefined;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry.isIntersecting || timer) return;
-        timer = window.setTimeout(() => {
-          setActive((current) => (current + 1) % examples.length);
-          setIsAutoPlaying(false);
-        }, AUTO_ADVANCE_MS);
-      },
-      { threshold: 0.6 },
-    );
-
-    observer.observe(root);
+    if (rotationTimerRef.current !== null) {
+      window.clearTimeout(rotationTimerRef.current);
+      rotationTimerRef.current = null;
+    }
+    rotationTimerRef.current = window.setTimeout(() => {
+      rotationTimerRef.current = null;
+      setActive((current) => (current + 1) % examples.length);
+      setIsAutoPlaying(false);
+    }, AUTO_ADVANCE_MS);
     return () => {
-      observer.disconnect();
-      if (timer) window.clearTimeout(timer);
+      if (rotationTimerRef.current !== null) {
+        window.clearTimeout(rotationTimerRef.current);
+        rotationTimerRef.current = null;
+      }
     };
   }, [isAutoPlaying]);
 
   function pauseAndSelect(index: number) {
+    if (rotationTimerRef.current !== null) {
+      window.clearTimeout(rotationTimerRef.current);
+      rotationTimerRef.current = null;
+    }
     setActive(index);
     setIsAutoPlaying(false);
   }
@@ -406,7 +405,7 @@ function ReviewExamples() {
   const example = examples[active] ?? examples[0];
 
   return (
-    <div ref={rootRef} className="min-w-0 border bg-card">
+    <div className="min-w-0 border bg-card">
       <div className="border-b p-2">
         <div
           className="code-scrollbar flex gap-1 overflow-x-auto"
