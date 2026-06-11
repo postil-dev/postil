@@ -2,8 +2,6 @@ import { checkout, polar, portal } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
 import { betterAuth } from "better-auth";
 import { organization } from "better-auth/plugins";
-import { randomUUID } from "node:crypto";
-import { cache } from "react";
 import { env } from "@/lib/env";
 
 // TODO(postil): replace in-memory adapter with a Drizzle adapter wiring
@@ -16,15 +14,18 @@ const polarClient = env.POLAR_API_KEY
     })
   : undefined;
 
+const devAuthSecret = "dev-secret-change-me-dev-secret-change-me";
+const buildAuthSecret = "build-only-secret-build-only-secret";
+
 function authSecret(): string {
   if (env.BETTER_AUTH_SECRET) return env.BETTER_AUTH_SECRET;
   if (process.env.NEXT_PHASE === "phase-production-build") {
-    return "build-only-secret-build-only-secret";
+    return buildAuthSecret;
   }
   if (env.NODE_ENV === "production") {
     throw new Error("BETTER_AUTH_SECRET must be set in production.");
   }
-  return randomUUID();
+  return devAuthSecret;
 }
 
 export function assertAuthSecretConfigured(): void {
@@ -61,6 +62,11 @@ function createAuth() {
   });
 }
 
-export const getAuth = cache(createAuth);
+let authSingleton: Auth | undefined;
+
+export function getAuth(): Auth {
+  authSingleton ??= createAuth();
+  return authSingleton;
+}
 
 export type Auth = ReturnType<typeof createAuth>;
