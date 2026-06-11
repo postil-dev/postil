@@ -93,6 +93,29 @@ fi
 [ "$actual" = "$expected" ] || err "checksum mismatch: expected $expected, got $actual"
 echo "Checksum verified."
 
+# If cosign is installed, additionally verify the Sigstore keyless signature.
+# This is the real supply-chain control (proves the artifact came from this
+# project's release workflow, not just that it matches a same-source checksum).
+if have cosign; then
+    if dl "${url}.sig" "$tmp/$archive.sig" 2>/dev/null \
+       && dl "${url}.pem" "$tmp/$archive.pem" 2>/dev/null; then
+        if cosign verify-blob "$tmp/$archive" \
+            --signature "$tmp/$archive.sig" \
+            --certificate "$tmp/$archive.pem" \
+            --certificate-identity-regexp "https://github.com/${REPO}/.*" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            >/dev/null 2>&1; then
+            echo "Signature verified (Sigstore keyless)."
+        else
+            err "signature verification failed; refusing to install"
+        fi
+    else
+        echo "Note: signature not found for ${VERSION}; verified by checksum only."
+    fi
+else
+    echo "Note: install cosign to additionally verify the Sigstore signature."
+fi
+
 tar -xzf "$tmp/$archive" -C "$tmp"
 [ -f "$tmp/postil" ] || err "archive did not contain the postil binary"
 chmod +x "$tmp/postil"

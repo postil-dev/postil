@@ -64,11 +64,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: postil-dev/postil-action@v1
         with:
-          cli-ref: <40-hex postil-cli commit SHA>
+          cli-ref: 56253a6c8b2461f9d625001b130d09e13ff40963
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}</code>
       </pre>
+      <p>
+        The <code>cli-ref</code> above is current as of June 2026; check the{" "}
+        <a
+          href="https://github.com/postil-dev/postil-cli/releases"
+          rel="noopener"
+        >
+          releases page
+        </a>{" "}
+        for the latest. The action refuses anything but a full 40-character
+        commit SHA — tags move, SHAs do not.
+      </p>
 
       <h2>3. Hosted GitHub App</h2>
       <p>

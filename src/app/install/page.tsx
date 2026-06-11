@@ -167,7 +167,7 @@ jobs:
       - uses: postil-dev/postil-action@v1
         with:
           cli-ref: `}
-                <span className="t-rust">{"<40-hex postil-cli commit SHA>"}</span>
+                <span className="t-rust">56253a6c8b2461f9d625001b130d09e13ff40963</span>
                 {`
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
@@ -177,15 +177,15 @@ jobs:
             <p className="text-sm text-ink-soft">
               The action refuses anything but a full 40-character commit SHA for{" "}
               <code className="font-mono text-xs">cli-ref</code> — tags move, SHAs
-              do not. Pin the latest blessed SHA from the{" "}
+              do not. The SHA above is current as of June 2026; check the{" "}
               <a
                 href="https://github.com/postil-dev/postil-cli/releases"
                 className="text-rust underline"
                 rel="noopener"
               >
                 releases page
-              </a>
-              .
+              </a>{" "}
+              for the latest blessed SHA.
             </p>
           </div>
         </section>

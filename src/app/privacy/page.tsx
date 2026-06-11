@@ -83,23 +83,43 @@ export default function PrivacyPage() {
         <h2>Subprocessors</h2>
         <ul>
           <li>
-            <strong>GitHub</strong> — source forge: webhooks, check-runs,
-            review comments.
+            <strong>GitHub</strong> — source forge and OAuth identity: webhooks,
+            check-runs, review comments, sign-in.
           </li>
           <li>
-            <strong>Your configured model provider</strong> — receives the
-            diff for the duration of a model call. With a BYO key this is your
-            own provider relationship under your own data terms; the default
-            for orgs without a key is OpenRouter.
+            <strong>Your configured model provider</strong> — receives the diff
+            for the duration of a model call. With a BYO key this is your own
+            provider relationship under your own data terms. The default for orgs
+            without a key is <strong>OpenRouter</strong>, which is a router: it
+            forwards the request to a downstream model provider, so the diff
+            transits OpenRouter and then that provider. For sensitive code we
+            recommend a BYO key pointed directly at your chosen provider, or
+            self-hosting (below).
           </li>
           <li>
-            <strong>Our hosting and database provider</strong> — runs the
-            control plane and Postgres (envelope storage).
+            <strong>Fly.io</strong> — application hosting: runs the web control
+            plane and the review worker.
+          </li>
+          <li>
+            <strong>Neon</strong> — managed PostgreSQL: stores accounts,
+            installations, and review envelopes.
           </li>
         </ul>
         <p>
           There is no analytics or tracking subprocessor. The site sets one
           cookie, the session cookie, only after sign-in.
+        </p>
+
+        <h2>Where data is processed (residency)</h2>
+        <p>
+          For the hosted service, application hosting runs on Fly.io in the
+          London region (<code>lhr</code>) and the managed database (Neon) runs
+          in a European region, so your account data and review envelopes are
+          processed and stored in the UK/EU. Two things sit outside that
+          boundary by design: when your org uses a BYO model key, diffs go to
+          whatever provider and region you configure; and a self-hosted
+          deployment keeps all data on your own infrastructure, wherever you run
+          it. We make no SOC 2 or ISO certification claim.
         </p>
 
         <h2>Self-hosted</h2>

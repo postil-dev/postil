@@ -7,6 +7,7 @@ const SITE_URL = "https://postil.dev";
 const ROUTES: { path: string; priority: number; changeFrequency: MetadataRoute.Sitemap[number]["changeFrequency"] }[] = [
   { path: "/", priority: 1.0, changeFrequency: "weekly" },
   { path: "/why-postil", priority: 0.9, changeFrequency: "monthly" },
+  { path: "/evidence", priority: 0.8, changeFrequency: "monthly" },
   { path: "/how-it-works", priority: 0.8, changeFrequency: "monthly" },
   { path: "/pricing", priority: 0.9, changeFrequency: "monthly" },
   { path: "/install", priority: 0.8, changeFrequency: "monthly" },

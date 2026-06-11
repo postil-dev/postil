@@ -118,10 +118,10 @@ export default function TermsPage() {
 
         <h2>Governing law</h2>
         <p>
-          {/* Owner-supply: fill in the governing-law jurisdiction. */}
-          These terms are governed by the laws of{" "}
-          <span className="text-charcoal/50">[jurisdiction to be specified]</span>
-          , without regard to conflict-of-law rules.
+          These terms are governed by the laws of Iceland, without regard to
+          conflict-of-law rules. Any dispute arising from them is subject to the
+          exclusive jurisdiction of the District Court of Reykjavík
+          (Héraðsdómur Reykjavíkur).
         </p>
 
         <h2>Contact</h2>

@@ -1,0 +1,11 @@
+diff --git a/src/users/lookup.ts b/src/users/lookup.ts
+--- a/src/users/lookup.ts
++++ b/src/users/lookup.ts
+@@ -12,8 +12,9 @@ export class UserLookup {
+   async byEmail(email: string, sortBy?: string): Promise<User | null> {
+-    const res = await this.db.query('SELECT * FROM users WHERE email = $1', [email]);
++    const order = sortBy ?? 'created_at';
++    const res = await this.db.query(`SELECT * FROM users WHERE email = '${email}' ORDER BY ${order}`);
+     return res.rows[0] ?? null;
+   }
+ }
