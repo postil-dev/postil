@@ -1,61 +1,73 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Inter, Source_Serif_4 } from "next/font/google";
-import { PostHogProvider } from "@/components/providers/posthog-provider";
+
+import { SiteFooter } from "@/components/site-footer";
+import { SiteHeader } from "@/components/site-header";
+
 import "./globals.css";
 
-const body = Inter({
+const sourceSerif = Source_Serif_4({
   subsets: ["latin"],
-  variable: "--font-body",
+  variable: "--font-source-serif",
+  display: "swap",
+});
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
   weight: ["400", "500", "600"],
-});
-
-const display = Source_Serif_4({
-  subsets: ["latin"],
-  variable: "--font-display",
-  weight: ["400", "600", "700"],
-});
-
-const mono = IBM_Plex_Mono({
-  weight: ["400", "500"],
-  subsets: ["latin"],
-  variable: "--font-mono",
+  variable: "--font-plex-mono",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://postil.dev"),
-  alternates: {
-    canonical: "/",
-  },
   title: {
-    default: "Postil — AI pull request reviews",
-    template: "%s · Postil",
+    default: "Postil — Trust the merge, not the speed.",
+    template: "%s — Postil",
   },
   description:
-    "Postil reviews pull requests for bugs that need code context: auth checks, unsafe deletes, migrations, race windows, and clean PRs that need no bot recap.",
-  applicationName: "Postil",
+    "Postil is a low-noise pull-request review gate. We say less. What we say is right.",
   openGraph: {
     type: "website",
-    siteName: "Postil",
-    title: "Postil — AI pull request reviews",
+    title: "Postil — Trust the merge, not the speed.",
     description:
-      "A calm review gate for agent-speed development. Managed beta or self-host under Apache-2.0.",
+      "A low-noise review gate for teams shipping at agent speed. Silent on clean PRs, hard gate on what matters.",
     url: "https://postil.dev",
+    siteName: "Postil",
+    locale: "en_US",
   },
   twitter: {
-    card: "summary",
-    title: "Postil",
-    description: "AI pull request reviews that ship with the PR.",
+    card: "summary_large_image",
+    title: "Postil — Trust the merge, not the speed.",
+    description:
+      "A low-noise review gate for teams shipping at agent speed. Silent on clean PRs, hard gate on what matters.",
+    images: ["/opengraph-image"],
   },
-  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${body.variable} ${display.variable} ${mono.variable}`}>
-      <body>
-        <PostHogProvider>{children}</PostHogProvider>
+    <html
+      lang="en"
+      className={`${sourceSerif.variable} ${inter.variable} ${plexMono.variable}`}
+    >
+      <body className="flex min-h-screen flex-col">
+        <a href="#main-content" className="skip-link">
+          Skip to content
+        </a>
+        <SiteHeader />
+        <main id="main-content" className="flex-1">
+          {children}
+        </main>
+        <SiteFooter />
       </body>
     </html>
   );

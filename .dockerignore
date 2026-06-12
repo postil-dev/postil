@@ -1,36 +1,10 @@
 .git
-.github
-.githooks
-.gitignore
-.infisical-scan.toml
-
 node_modules
 .next
-dist
-coverage
-test-results
-playwright-report
-.playwright
-.playwright-mcp
-
-# secrets — never into a build context
 .env
 .env.*
 !.env.example
-
-# local-only files
 .cache
 tmp
-HANDOFF.md
-*.log
-
-# editor / OS
-.vscode
-.idea
-.DS_Store
-
 Dockerfile
-.dockerignore
 docker-compose.yml
-fly.toml
-README.md

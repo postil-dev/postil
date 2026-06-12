@@ -1,7 +1,5 @@
-import Link from "next/link";
 import type { Metadata } from "next";
-import { SignInButton } from "./sign-in-button";
-import { safeReportsCallbackPath } from "@/lib/login-callback";
+import Image from "next/image";
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -9,24 +7,47 @@ export const metadata: Metadata = {
   alternates: { canonical: "/login" },
 };
 
+const ERROR_MESSAGES: Record<string, string> = {
+  oauth_state: "The sign-in attempt expired or was tampered with. Try again.",
+  token_exchange: "GitHub did not accept the sign-in. Try again.",
+  profile: "Could not load your GitHub profile. Try again.",
+};
+
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string }>;
+  searchParams: Promise<{ error?: string; next?: string }>;
 }) {
-  const { next } = await searchParams;
-  const callbackUrl = safeReportsCallbackPath(next);
+  const params = await searchParams;
+  const error = params.error ? (ERROR_MESSAGES[params.error] ?? "Sign-in failed. Try again.") : null;
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center gap-6 p-8 text-center">
-      <h1 className="text-3xl font-semibold">Sign in</h1>
-      <p className="text-muted-foreground">
-        Postil uses GitHub OAuth as its only sign-in path. We never ask for a password directly.
-      </p>
-      <SignInButton callbackUrl={callbackUrl} />
-      <Link href="/" className="text-sm underline">
-        Return home
-      </Link>
-    </main>
+    <div className="mx-auto flex max-w-6xl justify-center px-6 py-24">
+      <div className="card w-full max-w-md p-10 text-center">
+        <Image
+          src="/brand/postil-mark.svg"
+          alt=""
+          width={40}
+          height={54}
+          className="mx-auto"
+        />
+        <h1 className="serif-display mt-6 text-3xl">Sign in to Postil</h1>
+        <p className="mt-3 text-sm text-ink-soft">
+          Your dashboard: silence rate, confidence distribution, and every
+          review across your organizations.
+        </p>
+        {error && (
+          <p className="mt-4 rounded-card border border-softred bg-softred/10 px-4 py-2 text-sm text-rust">
+            {error}
+          </p>
+        )}
+        <a href="/api/auth/login" className="btn-primary mt-8 block w-full">
+          Continue with GitHub
+        </a>
+        <p className="mt-4 font-mono text-xs text-charcoal/50">
+          OAuth scopes: read:user, user:email, read:org
+        </p>
+      </div>
+    </div>
   );
 }

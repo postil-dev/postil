@@ -1,59 +1,24 @@
-import { type NextRequest, NextResponse } from "next/server";
-import { POSTHOG_BROWSER_ORIGIN } from "@/lib/posthog-config";
+import { NextResponse, type NextRequest } from "next/server";
 
-export function createCsp(nonce: string) {
-  const isDevelopment = process.env.NODE_ENV === "development";
-  const styleSrc = ["style-src 'self' 'unsafe-inline'"];
-  const fontSrc = ["font-src 'self'"];
-  const connectSrc = ["connect-src 'self'", POSTHOG_BROWSER_ORIGIN];
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/session-token";
 
-  if (isDevelopment) {
-    styleSrc.push("https://fonts.googleapis.com");
-    fontSrc.push("https://fonts.gstatic.com");
-    connectSrc.push("https://www.react-grab.com");
+/**
+ * Gate /reports and /orgs/* behind a validly signed session cookie. The
+ * cookie signature is checked here (edge-compatible Web Crypto); the
+ * session row itself is checked in the page, which redirects on expiry.
+ */
+export async function middleware(request: NextRequest) {
+  const token = request.cookies.get(SESSION_COOKIE)?.value;
+  const secret = process.env.POSTIL_SESSION_SECRET;
+  const sessionId = secret ? await verifySessionToken(token, secret) : null;
+  if (!sessionId) {
+    const login = new URL("/login", request.url);
+    login.searchParams.set("next", request.nextUrl.pathname);
+    return NextResponse.redirect(login);
   }
-
-  return [
-    "default-src 'none'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
-    styleSrc.join(" "),
-    fontSrc.join(" "),
-    "img-src 'self' data:",
-    connectSrc.join(" "),
-    "object-src 'none'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "frame-ancestors 'none'",
-    "upgrade-insecure-requests",
-  ].join("; ");
-}
-
-export function middleware(request: NextRequest) {
-  const nonce = btoa(crypto.randomUUID());
-  const csp = createCsp(nonce);
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set("x-nonce", nonce);
-  requestHeaders.set("Content-Security-Policy", csp);
-
-  const response = NextResponse.next({
-    request: {
-      headers: requestHeaders,
-    },
-  });
-  response.headers.set("Content-Security-Policy", csp);
-
-  return response;
+  return NextResponse.next();
 }
 
 export const config = {
-  matcher: [
-    {
-      source:
-        "/((?!_next/static|_next/image|favicon.ico|icon.svg|apple-icon.png|api/health$).*)",
-      missing: [
-        { type: "header", key: "next-router-prefetch" },
-        { type: "header", key: "purpose", value: "prefetch" },
-      ],
-    },
-  ],
+  matcher: ["/reports/:path*", "/reports", "/orgs/:path*"],
 };

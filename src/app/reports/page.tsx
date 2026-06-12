@@ -1,124 +1,158 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { requireReportSession } from "@/lib/report-auth";
-import { listReviewReports } from "@/lib/reports";
+import { redirect } from "next/navigation";
 
+import { desc, eq, inArray } from "drizzle-orm";
+
+import {
+  formatDuration,
+  GateBadge,
+  ReviewStatusBadge,
+} from "@/components/review-status";
+import { getDb, schema } from "@/lib/db";
+import { getSessionUser } from "@/lib/session";
+
+export const metadata: Metadata = { title: "Reports" };
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Reports",
-  description: "Browse completed Postil review reports.",
-  alternates: { canonical: "/reports" },
-};
+export default async function ReportsPage() {
+  const user = await getSessionUser();
+  if (!user) redirect("/login");
 
-function formatDate(value: Date | null): string {
-  if (!value) return "Not completed";
-  return new Intl.DateTimeFormat("en", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  }).format(value);
-}
+  const db = getDb();
+  const memberships = await db
+    .select({
+      orgId: schema.organizations.id,
+      slug: schema.organizations.slug,
+      name: schema.organizations.name,
+      plan: schema.organizations.plan,
+    })
+    .from(schema.orgMembers)
+    .innerJoin(schema.organizations, eq(schema.organizations.id, schema.orgMembers.orgId))
+    .where(eq(schema.orgMembers.userId, user.id));
 
-function statusClassName(status: string): string {
-  if (status === "completed") return "border-accent/40 bg-accent/10 text-accent-foreground";
-  if (status === "failed") return "border-destructive/40 bg-destructive/10 text-foreground";
-  return "border-border bg-muted text-muted-foreground";
-}
-
-function failureClassLabel(failureClass: string | null): string {
-  return failureClass ? failureClass.replace(/_/g, " ") : "";
-}
-
-export default async function ReportsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ q?: string }>;
-}) {
-  const viewer = await requireReportSession("/reports");
-  const { q } = await searchParams;
-  const reports = await listReviewReports({ viewer, q, limit: 100 });
+  const orgIds = memberships.map((m) => m.orgId);
+  const reviews =
+    orgIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: schema.reviews.id,
+            prNumber: schema.reviews.prNumber,
+            status: schema.reviews.status,
+            silent: schema.reviews.silent,
+            gateFailing: schema.reviews.gateFailing,
+            envelope: schema.reviews.envelope,
+            startedAt: schema.reviews.startedAt,
+            finishedAt: schema.reviews.finishedAt,
+            queuedAt: schema.reviews.queuedAt,
+            repoFullName: schema.repositories.fullName,
+            orgSlug: schema.organizations.slug,
+          })
+          .from(schema.reviews)
+          .innerJoin(
+            schema.repositories,
+            eq(schema.repositories.id, schema.reviews.repositoryId),
+          )
+          .innerJoin(
+            schema.installations,
+            eq(schema.installations.id, schema.repositories.installationId),
+          )
+          .innerJoin(
+            schema.organizations,
+            eq(schema.organizations.id, schema.installations.orgId),
+          )
+          .where(inArray(schema.organizations.id, orgIds))
+          .orderBy(desc(schema.reviews.queuedAt))
+          .limit(50);
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-4 py-6 sm:px-8 lg:px-12">
-      <header className="flex flex-col gap-4 border-b border-border pb-6 md:flex-row md:items-end md:justify-between">
-        <div className="flex flex-col gap-2">
-          <span className="text-xs uppercase tracking-wider text-muted-foreground">Reports</span>
-          <h1 className="text-3xl font-semibold">Review reports</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            Authenticated access to persisted review results, failures, and check-run links.
-          </p>
+    <div className="mx-auto max-w-6xl px-6 py-14">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="eyebrow">Reports</p>
+          <h1 className="serif-display mt-2 text-3xl">
+            Recent reviews, {user.login}
+          </h1>
         </div>
-        <form action="/reports" className="flex w-full gap-2 md:w-80">
-          <input
-            aria-label="Search reports"
-            className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
-            name="q"
-            placeholder="Repository, SHA, status"
-            type="search"
-            defaultValue={q ?? ""}
-          />
-          <button
-            className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground"
-            type="submit"
-          >
-            Search
+        <form action="/api/auth/logout" method="post">
+          <button type="submit" className="text-sm text-charcoal/60 underline hover:text-charcoal">
+            Sign out
           </button>
         </form>
-      </header>
+      </div>
 
-      {reports.length === 0 ? (
-        <section className="rounded-lg border border-border bg-card p-8">
-          <h2 className="text-lg font-semibold">No reports found</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Reviews will appear here after the app receives GitHub events and completes a run.
-          </p>
-        </section>
-      ) : (
-        <section className="overflow-hidden rounded-lg border border-border bg-card">
-          <div className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] gap-4 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wider text-muted-foreground md:grid-cols-[minmax(0,1fr)_8rem_8rem_11rem]">
-            <span>Pull request</span>
-            <span>Status</span>
-            <span>Findings</span>
-            <span className="hidden md:block">Completed</span>
+      <div className="mt-8 flex flex-wrap gap-3">
+        {memberships.map((m) => (
+          <Link
+            key={m.orgId}
+            href={`/orgs/${m.slug}`}
+            className="card px-4 py-2.5 text-sm transition-colors hover:border-gate"
+          >
+            <span className="font-medium">{m.name}</span>
+            <span className="ml-2 font-mono text-xs text-gate">{m.plan}</span>
+          </Link>
+        ))}
+        {memberships.length === 0 && (
+          <div className="card w-full p-8 text-center">
+            <p className="serif-display text-xl">No organizations yet.</p>
+            <p className="mx-auto mt-2 max-w-md text-sm text-ink-soft">
+              Install the GitHub App on an organization or your personal
+              account, then sign in again so we can link your membership.
+            </p>
+            <Link href="/install" className="btn-primary mt-6 inline-block">
+              Install the App
+            </Link>
           </div>
-          <ul className="divide-y divide-border">
-            {reports.map((report) => (
-              <li key={report.id}>
-                <Link
-                  className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] gap-4 px-4 py-4 transition hover:bg-muted/60 md:grid-cols-[minmax(0,1fr)_8rem_8rem_11rem]"
-                  href={`/reports/${report.id}`}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium">
-                      {report.repoFullName}#{report.pullNumber}
-                    </span>
-                    <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">
-                      {report.headSha}
-                    </span>
-                  </span>
-                  <span>
-                    <span
-                      className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium ${statusClassName(report.status)}`}
-                    >
-                      {report.status}
-                    </span>
-                    {report.failureClass ? (
-                      <span className="mt-2 block text-xs text-muted-foreground">
-                        {failureClassLabel(report.failureClass)}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="text-sm">{report.findingCount}</span>
-                  <span className="hidden text-sm text-muted-foreground md:block">
-                    {formatDate(report.completedAt)}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
+        )}
+      </div>
+
+      {reviews.length > 0 && (
+        <div className="card mt-8 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/50">
+                <th className="px-4 py-3 font-normal">repository</th>
+                <th className="px-4 py-3 font-normal">PR</th>
+                <th className="px-4 py-3 font-normal">status</th>
+                <th className="px-4 py-3 font-normal">gate</th>
+                <th className="px-4 py-3 font-normal">findings</th>
+                <th className="px-4 py-3 font-normal">duration</th>
+                <th className="px-4 py-3 font-normal">org</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reviews.map((r) => (
+                <tr key={r.id} className="border-b border-stone/60 last:border-0">
+                  <td className="px-4 py-2.5 font-mono text-xs">{r.repoFullName}</td>
+                  <td className="px-4 py-2.5 font-mono text-xs">#{r.prNumber}</td>
+                  <td className="px-4 py-2.5">
+                    <ReviewStatusBadge status={r.status} gateFailing={r.gateFailing} />
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <GateBadge gateFailing={r.gateFailing} status={r.status} />
+                  </td>
+                  <td className="px-4 py-2.5 font-mono text-xs">
+                    {r.silent ? (
+                      <span className="text-gate">silent</span>
+                    ) : (
+                      (r.envelope?.findings.length ?? "—")
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 font-mono text-xs">
+                    {formatDuration(r.startedAt, r.finishedAt)}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <Link href={`/orgs/${r.orgSlug}`} className="text-rust hover:underline">
+                      {r.orgSlug}
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
-    </main>
+    </div>
   );
 }

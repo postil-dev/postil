@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "summary": "",
+  "silent": true,
+  "findings": [],
+  "resolved": [],
+  "counts": {
+    "info": 0,
+    "warn": 0,
+    "error": 0,
+    "suppressed": 0
+  },
+  "confidenceBuckets": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "gate": {
+    "failOn": "error",
+    "failing": false
+  },
+  "modelUsed": "deepseek/deepseek-v4-pro",
+  "usage": {
+    "promptTokens": 757,
+    "completionTokens": 188
+  },
+  "baseSha": null,
+  "headSha": "560704e44f4737479900c690f5b101428d06134e",
+  "sinceSha": null
+}

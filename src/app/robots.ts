@@ -1,25 +1,17 @@
 import type { MetadataRoute } from "next";
 
-const crawlableBots = ["GPTBot", "ClaudeBot", "Google-Extended", "PerplexityBot", "CCBot"];
-
-const protectedPaths = ["/login"];
-
-const rules = [
-  {
-    userAgent: "*",
-    allow: "/",
-    disallow: protectedPaths,
-  },
-  ...crawlableBots.map((userAgent) => ({
-    userAgent,
-    allow: "/",
-    disallow: protectedPaths,
-  })),
-];
+const SITE_URL = "https://postil.dev";
 
 export default function robots(): MetadataRoute.Robots {
   return {
-    rules,
-    sitemap: "https://postil.dev/sitemap.xml",
+    rules: {
+      userAgent: "*",
+      allow: "/",
+      // Session-gated app surfaces and API routes carry no SEO value.
+      // Trailing slashes keep these from prefix-matching unrelated routes.
+      disallow: ["/api/", "/reports/", "/orgs/", "/login"],
+    },
+    sitemap: `${SITE_URL}/sitemap.xml`,
+    host: SITE_URL,
   };
 }

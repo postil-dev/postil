@@ -1,141 +1,95 @@
+import type { Metadata } from "next";
 import Link from "next/link";
-import { CtaStrip, PageFrame, SectionIntro, StatusLine, type StatusKind } from "../site";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Docs",
+  description: "Postil documentation: quickstart, configuration, the gate, self-hosting, and the envelope schema.",
+  alternates: { canonical: "/docs" },
 };
 
-const workflow = `name: Postil Review
+const CARDS = [
+  {
+    href: "/docs/quickstart",
+    title: "Quickstart",
+    body: "Install the CLI, review your first staged diff, and wire up the GitHub App or Action.",
+  },
+  {
+    href: "/docs/config",
+    title: "Configuration",
+    body: "The full .postil.yaml reference, including CodeRabbit config translation (reads .coderabbit.yaml).",
+  },
+  {
+    href: "/docs/cli",
+    title: "CLI reference",
+    body: "Every command and flag: review, respond, plan, config, init, doctor, hook, plus environment variables and exit codes.",
+  },
+  {
+    href: "/docs/gate",
+    title: "The gate",
+    body: "postil/gate semantics, fail-on thresholds, and how to require it in branch protection.",
+  },
+  {
+    href: "/docs/plan",
+    title: "postil plan",
+    body: "Dry-run a config change against stored envelopes before deploying it. No model calls.",
+  },
+  {
+    href: "/docs/envelope",
+    title: "Envelope schema",
+    body: "The JSON contract between the CLI and everything else: findings, counts, gate, usage.",
+  },
+  {
+    href: "/docs/gitlab",
+    title: "GitLab",
+    body: "Run Postil on GitLab.com and self-managed: CI job, project tokens, and merge-request review.",
+  },
+  {
+    href: "/docs/self-hosted",
+    title: "Self-hosted",
+    body: "Docker Compose quickstart in under 15 minutes, with OpenRouter, Azure, and Ollama examples.",
+  },
+] as const;
 
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-
-permissions:
-  contents: read
-  pull-requests: write
-  checks: write
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: postil-dev/postil-action@v1
-        with:
-          openrouter-api-key: \${{ secrets.OPENROUTER_API_KEY }}`;
-
-const config = `.postil.yaml
-
-review:
-  review:
-    onClean: skip
-  severityThreshold: warn
-  maxFindings: 12
-  reviewer:
-    focus:
-      - authorization-sensitive code
-      - billing mutations
-      - data deletion paths`;
-
-const local = `$ postil review --diff-file .cache/change.diff
-$ postil review --staged
-$ postil review --base origin/main`;
-
-const sections = [
-  ["Install", "Use the Postil CLI today. The managed GitHub App opens after final review."],
-  ["Ask again", "Mention @postil on a PR conversation, review, or inline thread."],
-  ["Cut noise", "Use `onClean: skip`, severity thresholds, max findings, and ignored globs."],
-  ["Write less", "A finding needs a risk and a line. Otherwise, leave the PR alone."],
-];
-
-export default function DocsPage() {
+export default function DocsIndexPage() {
   return (
-    <PageFrame>
-      <section className="border-b py-16">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6">
-          <SectionIntro
-            eyebrow="Docs"
-            title="Install the reviewer where pull requests already happen."
-            body="Run Postil from GitHub Actions or locally while the hosted app finishes review. The default is simple: report the risky line, or say nothing."
-          />
-        </div>
-      </section>
+    <div>
+      <h1 className="serif-display text-4xl">Documentation</h1>
+      <p className="prose-postil mt-4 text-lg">
+        Postil is one Rust binary (<code>postil</code>) and a thin control
+        plane around it. These pages cover everything from the first local
+        review to running the whole stack on your own hardware.
+      </p>
+      <div className="mt-10 grid gap-5 sm:grid-cols-2">
+        {CARDS.map((card) => (
+          <Link key={card.href} href={card.href} className="card block p-5 transition-colors hover:border-gate">
+            <p className="serif-display text-xl">{card.title}</p>
+            <p className="mt-2 text-sm text-ink-soft">{card.body}</p>
+          </Link>
+        ))}
+      </div>
+      <div className="prose-postil mt-12">
+        <h2>The short version</h2>
+        <pre>
+          <code>{`# local
+curl -fsSL https://postil.dev/install.sh | sh
+# or: cargo install --git https://github.com/postil-dev/postil-cli --locked
+postil doctor            # verify endpoint, key, and model
+postil review --staged
 
-      <section className="border-b py-16">
-        <div className="mx-auto grid max-w-7xl gap-3 px-4 sm:px-6 md:grid-cols-4">
-          {sections.map(([title, body]) => (
-            <article key={title} className="border bg-card p-5">
-              <h2 className="text-2xl">{title}</h2>
-              <p className="mt-3 text-sm leading-6 text-muted-foreground">{body}</p>
-            </article>
-          ))}
-        </div>
-      </section>
+# CI (GitHub Actions) — @v1 resolves after the first tagged release
+- uses: postil-dev/postil-action@v1
+  with:
+    cli-ref: <40-hex postil-cli SHA>
 
-      <section className="border-b py-16">
-        <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-2">
-          <DocBlock title="GitHub Action" code={workflow} />
-          <DocBlock title="Repository config" code={config} />
-          <DocBlock title="Local review" code={local} />
-          <article className="border bg-card p-6">
-            <h2 className="text-3xl">Status line</h2>
-            <p className="mt-4 text-sm leading-6 text-muted-foreground">
-              Postil uses compact SVG status marks instead of platform emoji, so the result is consistent across GitHub, browser tabs, and docs.
-            </p>
-            <div className="mt-6 space-y-3 font-mono text-sm">
-              <StatusRow label="clean" marks={["pass"]} />
-              <StatusRow label="warning" marks={["warn", "warn", "info"]} />
-              <StatusRow label="blocking" marks={["error", "warn"]} />
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section className="py-16">
-        <div className="mx-auto grid max-w-7xl gap-8 px-4 text-sm leading-7 text-muted-foreground sm:px-6 lg:grid-cols-2">
-          <div>
-            <h2 className="text-3xl text-foreground">Useful links</h2>
-            <p className="mt-4">
-              Configuration reference lives in{" "}
-              <Link href="https://github.com/postil-dev/postil/blob/main/docs/config.md" className="text-primary hover:underline">
-                docs/config.md
-              </Link>
-              . The CLI lives in{" "}
-              <Link href="https://github.com/postil-dev/postil-cli" className="text-primary hover:underline">
-                postil-dev/postil-cli
-              </Link>
-              .
-            </p>
-          </div>
-          <div>
-            <h2 className="text-3xl text-foreground">Benchmark direction</h2>
-            <p className="mt-4">
-              Public evals are coming after human review. The harness uses isolated PR fixtures, real bugs, no upstream fixes, and separate scores for hits, misses, noise, and clean silence.
-            </p>
-          </div>
-        </div>
-      </section>
-      <CtaStrip />
-    </PageFrame>
-  );
-}
-
-function DocBlock({ title, code }: { title: string; code: string }) {
-  return (
-    <article className="min-w-0 border bg-card p-6">
-      <h2 className="text-3xl">{title}</h2>
-      <pre className="code-scrollbar mt-5 max-w-full overflow-x-auto bg-[#1b2329] p-4 font-mono text-xs leading-6 text-[#f7f5f1]">
-        {code}
-      </pre>
-    </article>
-  );
-}
-
-function StatusRow({ label, marks }: { label: string; marks: StatusKind[] }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-20 text-muted-foreground">{label}</span>
-      <StatusLine label="status:" marks={marks} />
+# hosted
+Install the GitHub App; reviews start on the next PR.`}</code>
+        </pre>
+        <p>
+          Exit codes: <code>0</code> clean or below the gate threshold,{" "}
+          <code>1</code> gate-failing findings, <code>2</code> operational
+          error. Postil never reports an operational error as a pass.
+        </p>
+      </div>
     </div>
   );
 }

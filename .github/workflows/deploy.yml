@@ -1,0 +1,41 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Skips quietly until the FLY_DEPLOY_ENABLED repo variable is set to
+    # 'true' (and the FLY_API_TOKEN secret is configured).
+    if: ${{ vars.FLY_DEPLOY_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # Bake the pinned CLI into the image so the worker can spawn it.
+      # POSTIL_CLI_TAG is a repo variable naming a postil-cli release tag;
+      # when unset the image builds web-only (Dockerfile warns).
+      - name: Fetch pinned postil CLI
+        if: ${{ vars.POSTIL_CLI_TAG != '' }}
+        env:
+          TAG: ${{ vars.POSTIL_CLI_TAG }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/postil-dev/postil-cli/releases/download/${TAG}"
+          art="postil-x86_64-unknown-linux-gnu.tar.gz"
+          tmp="$(mktemp -d)"
+          curl -fsSL -o "${tmp}/${art}" "${base}/${art}"
+          curl -fsSL -o "${tmp}/${art}.sha256" "${base}/${art}.sha256"
+          (cd "$tmp" && sha256sum -c "${art}.sha256")
+          mkdir -p vendor
+          tar -xzf "${tmp}/${art}" -C "$tmp" postil
+          install -m 0755 "${tmp}/postil" vendor/postil
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.4
+      - run: flyctl deploy --remote-only --build-arg POSTIL_CLI_REV="${{ vars.POSTIL_CLI_TAG || 'unpinned' }}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

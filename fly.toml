@@ -1,30 +1,49 @@
+# Fly.io deployment for the Postil control plane.
+#
+# Two process groups share one image: `web` serves the Next.js app, `worker`
+# runs the job queue. Set secrets before the first deploy:
+#
+#   fly secrets set DATABASE_URL=... POSTIL_SESSION_SECRET=... \
+#     GITHUB_WEBHOOK_SECRET=... GITHUB_OAUTH_CLIENT_ID=... \
+#     GITHUB_OAUTH_CLIENT_SECRET=... POSTIL_SEALING_KEY=... \
+#     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... OPENROUTER_API_KEY=...
+#
+# Migrations: fly ssh console -C "bun run db:migrate"
+
+app = "postil"
 primary_region = "lhr"
 
 [build]
-  dockerfile = "Dockerfile"
+
+[processes]
+web = "bun run start"
+worker = "bun run worker"
 
 [env]
-  PORT = "3000"
-  NODE_ENV = "production"
-  NEXT_TELEMETRY_DISABLED = "1"
+NODE_ENV = "production"
+POSTIL_BIN = "/usr/local/bin/postil"
 
 [http_service]
-  internal_port = 3000
-  force_https = true
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
+processes = ["web"]
+internal_port = 3000
+force_https = true
+auto_stop_machines = "stop"
+auto_start_machines = true
+min_machines_running = 1
 
-  [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "30s"
-    method = "GET"
-    path = "/api/health"
+[[http_service.checks]]
+interval = "15s"
+timeout = "5s"
+grace_period = "20s"
+method = "GET"
+path = "/api/health"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+processes = ["web"]
+size = "shared-cpu-1x"
+memory = "512mb"
 
-[deploy]
-  strategy = "rolling"
+[[vm]]
+processes = ["worker"]
+size = "shared-cpu-1x"
+memory = "512mb"

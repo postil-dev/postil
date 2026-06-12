@@ -1,41 +1,43 @@
-# syntax=docker/dockerfile:1.7
+# Postil control plane: one image serving both the web app (Next.js) and the
+# worker (bun run worker); docker-compose selects the command per service.
+#
+# The postil CLI is baked into the runtime image at a pinned revision so the
+# reviewer version is an image property, not a runtime download. Supply it by
+# placing the binary at vendor/postil in the build context (see
+# vendor/README.md). POSTIL_CLI_REV records the pinned postil-cli commit for
+# provenance/labels; a dedicated cargo build stage can replace the COPY when
+# building fully from source.
 
-# --- postil CLI ---
-FROM docker.io/library/rust:1 AS postil-cli
-RUN cargo install --git https://github.com/postil-dev/postil-cli --locked
+ARG POSTIL_CLI_REV=unpinned
 
-# --- deps ---
-FROM docker.io/oven/bun:1.3 AS deps
+FROM oven/bun:1.3 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN bun install --frozen-lockfile
 
-# --- builder ---
-FROM docker.io/oven/bun:1.3 AS builder
+FROM oven/bun:1.3 AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ARG BETTER_AUTH_SECRET=build-only-auth-secret-000000000000
-ENV NEXT_TELEMETRY_DISABLED=1
-RUN BETTER_AUTH_SECRET="$BETTER_AUTH_SECRET" bun run build
+# next build needs no live environment; env is validated at boot instead.
+RUN bun run build
 
-# --- runner ---
-FROM docker.io/oven/bun:1.3-slim AS runner
+FROM oven/bun:1.3 AS runtime
+ARG POSTIL_CLI_REV
+LABEL org.opencontainers.image.title="postil-control-plane" \
+      org.opencontainers.image.source="https://github.com/postil-dev/postil" \
+      dev.postil.cli-rev="${POSTIL_CLI_REV}"
 WORKDIR /app
 ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-
-RUN groupadd --system --gid 1001 nodejs \
- && useradd --system --uid 1001 --gid nodejs nextjs
-
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-COPY --from=postil-cli /usr/local/cargo/bin/postil /usr/local/bin/postil
-
-USER nextjs
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+COPY --from=build /app/.next ./.next
+# Bake the pinned CLI (vendor/postil if provided; see vendor/README.md).
+RUN if [ -f vendor/postil ]; then \
+      install -m 0755 vendor/postil /usr/local/bin/postil; \
+    else \
+      echo "NOTE: vendor/postil not present; worker requires POSTIL_BIN at runtime"; \
+    fi
 EXPOSE 3000
-ENV PORT=3000
-ENV HOSTNAME=0.0.0.0
-
-CMD ["bun", "server.js"]
+# Web by default; the worker service overrides with: bun run worker
+CMD ["bun", "run", "start"]

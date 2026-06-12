@@ -1,114 +1,147 @@
-import { z } from "zod";
-
 /**
- * Zod-validated environment. Pulls from process.env, which in local dev is
- * populated from .env.local. Env var names match deployed service
- * services where possible (NEON_CONNECTION_STRING, FLY_ORG_TOKEN, etc).
+ * Startup configuration validation.
+ *
+ * Both the web process and the worker call validateEnv() at boot and fail
+ * fast with an actionable message listing every missing variable, what it
+ * is for, and an example value. Silent fallback to a broken default is the
+ * documented anti-goal here.
  */
-const schema = z.object({
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  APP_URL: z.string().url().default("http://localhost:3000"),
 
-  BETTER_AUTH_SECRET: z.string().min(32).optional(),
-  BETTER_AUTH_URL: z.string().url().default("http://localhost:3000"),
-
-  // Database: prefer NEON_CONNECTION_STRING, fall back to DATABASE_URL for
-  // self-host users who aren't on Neon.
-  DATABASE_URL: z.string().optional(),
-  NEON_CONNECTION_STRING: z.string().optional(),
-  DATABASE_URL_UNPOOLED: z.string().optional(),
-  NEON_PERSONAL_API_KEY: z.string().optional(),
-
-  // GitHub App
-  GITHUB_APP_ID: z.string().optional(),
-  GITHUB_APP_CLIENT_ID: z.string().optional(),
-  GITHUB_APP_CLIENT_SECRET: z.string().optional(),
-  GITHUB_APP_PRIVATE_KEY: z.string().optional(),
-  GITHUB_APP_PRIVATE_KEY_B64: z.string().optional(),
-  GITHUB_APP_SLUG: z.string().optional(),
-  GITHUB_APP_INSTALL_URL: z.string().url().optional(),
-  GITHUB_WEBHOOK_SECRET: z.string().optional(),
-  CI_RECOVERY_FALLBACK_ASSIGNEE: z.string().optional(),
-  // Personal access token (bootstrap / CI), not for runtime request auth.
-  GITHUB_PAT: z.string().optional(),
-
-  // Polar (billing). Live checkout blocked until KYC approval; sandbox works.
-  POLAR_API_KEY: z.string().optional(),
-  POLAR_WEBHOOK_SECRET: z.string().optional(),
-  POLAR_ORG_ID: z.string().optional(),
-  POLAR_ORG_SLUG: z.string().optional(),
-  POLAR_ENVIRONMENT: z.enum(["sandbox", "production"]).default("sandbox"),
-
-  // Trigger.dev
-  TRIGGER_API_KEY: z.string().optional(),
-  TRIGGER_SECRET_KEY: z.string().optional(),
-  TRIGGER_API_TOKEN: z.string().optional(),
-  TRIGGER_ACCESS_TOKEN: z.string().optional(),
-  TRIGGER_PAT: z.string().optional(),
-  TRIGGER_PROJECT_ID: z.string().optional(),
-  TRIGGER_API_URL: z.string().url().default("https://api.trigger.dev"),
-  REVIEW_TOKEN_SECRET: z.string().optional(),
-
-  // Fly
-  FLY_ORG_TOKEN: z.string().optional(),
-  FLY_ORG_SLUG: z.string().default("personal"),
-  FLY_SANDBOX_APP: z.string().optional(),
-
-  // PostHog (EU)
-  POSTHOG_PROJECT_TOKEN: z.string().optional(),
-  POSTHOG_HOST: z.string().url().default("https://eu.i.posthog.com"),
-  POSTHOG_REGION: z.string().default("eu"),
-  POSTHOG_PROJECT_ID: z.string().optional(),
-  POSTHOG_PERSONAL_API_KEY: z.string().optional(),
-
-  // PostHog client-side (marketing site)
-  NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
-  NEXT_PUBLIC_POSTHOG_HOST: z.string().url().default("https://eu.i.posthog.com"),
-
-  // OpenRouter (AI provider for the review bot). Management key is used to
-  // vend per-workspace keys.
-  OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_MANAGEMENT_KEY: z.string().optional(),
-  REVIEW_MODEL: z.string().default("moonshotai/kimi-k2.6"),
-  REVIEW_MODEL_CASCADE: z.string().optional(),
-  POSTIL_CLI_PATH: z.string().optional(),
-
-  // Cloudflare
-  CLOUDFLARE_API_TOKEN: z.string().optional(),
-  CLOUDFLARE_ZONE_ID: z.string().optional(),
-
-  // Sandbox driver selection
-  SANDBOX_DRIVER: z.enum(["fly", "e2b", "docker"]).default("fly"),
-
-  // Operator metrics endpoint auth
-  METRICS_API_KEY: z.string().optional(),
-});
-
-export type Env = z.infer<typeof schema>;
-
-const parsed = schema.parse(process.env);
-
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
-  return values.find((value) => value?.trim());
+interface EnvVarSpec {
+  name: string;
+  purpose: string;
+  example: string;
+  /** Required for which processes. */
+  scope: Array<"web" | "worker">;
+  optional?: boolean;
 }
 
-export const env: Env & {
-  /** Unified database URL: `NEON_CONNECTION_STRING` takes precedence. */
-  databaseUrl: string | undefined;
-  /** Unified Trigger dispatch token. */
-  triggerApiKey: string | undefined;
-  /** Shared secret for encrypted review installation tokens. */
-  reviewTokenSecret: string | undefined;
-} = {
-  ...parsed,
-  databaseUrl: parsed.NEON_CONNECTION_STRING ?? parsed.DATABASE_URL,
-  // Trigger backend dispatch uses the project/environment API secret.
-  // `TRIGGER_ACCESS_TOKEN` / `TRIGGER_PAT` is only for CLI deployment.
-  triggerApiKey: firstNonEmpty(
-    parsed.TRIGGER_SECRET_KEY,
-    parsed.TRIGGER_API_TOKEN,
-    parsed.TRIGGER_API_KEY,
-  ),
-  // Keep installation-token encryption separate from Trigger dispatch auth.
-  reviewTokenSecret: firstNonEmpty(parsed.REVIEW_TOKEN_SECRET),
-};
+const ENV_SPECS: EnvVarSpec[] = [
+  {
+    name: "DATABASE_URL",
+    purpose: "Postgres connection string used by web and worker",
+    example: "postgres://postil:postil@localhost:5432/postil",
+    scope: ["web", "worker"],
+  },
+  {
+    name: "POSTIL_SESSION_SECRET",
+    purpose: "HMAC key for signing session cookies (32+ random bytes)",
+    example: "openssl rand -hex 32",
+    scope: ["web"],
+  },
+  {
+    name: "GITHUB_WEBHOOK_SECRET",
+    purpose: "Shared secret for verifying X-Hub-Signature-256 on GitHub webhooks",
+    example: "openssl rand -hex 32",
+    scope: ["web"],
+  },
+  {
+    name: "GITHUB_OAUTH_CLIENT_ID",
+    purpose: "OAuth app client id for dashboard login",
+    example: "Iv1.0123456789abcdef",
+    scope: ["web"],
+  },
+  {
+    name: "GITHUB_OAUTH_CLIENT_SECRET",
+    purpose: "OAuth app client secret for dashboard login",
+    example: "from the GitHub OAuth app settings page",
+    scope: ["web"],
+  },
+  {
+    name: "GITHUB_APP_ID",
+    purpose: "GitHub App id used to mint installation tokens",
+    example: "123456",
+    scope: ["worker"],
+  },
+  {
+    name: "GITHUB_APP_PRIVATE_KEY",
+    purpose: "GitHub App private key, PEM or base64-encoded PEM",
+    example: "-----BEGIN RSA PRIVATE KEY----- ... (or its base64)",
+    scope: ["worker"],
+  },
+  {
+    name: "POSTIL_SEALING_KEY",
+    purpose: "AES-256-GCM key (32 bytes, hex or base64) sealing org BYO API keys",
+    example: "openssl rand -hex 32",
+    scope: ["web", "worker"],
+  },
+  {
+    name: "POSTIL_API_KEY",
+    purpose:
+      "Default LLM API key for hosted reviews when an org has no BYO key (falls back to OPENROUTER_API_KEY)",
+    example: "sk-or-v1-...",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_API_BASE",
+    purpose: "OpenAI-compatible API base URL",
+    example: "https://openrouter.ai/api/v1",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "REVIEW_MODEL",
+    purpose: "Default review model",
+    example: "deepseek/deepseek-v4-pro",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "REVIEW_MODEL_CASCADE",
+    purpose: "Comma-separated fallback models",
+    example: "deepseek/deepseek-v4-pro,qwen/qwen3-coder",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_BIN",
+    purpose: "Path to the postil CLI binary the worker spawns",
+    example: "/usr/local/bin/postil",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "METRICS_TOKEN",
+    purpose: "Bearer token protecting /api/metrics",
+    example: "openssl rand -hex 24",
+    scope: ["web"],
+    optional: true,
+  },
+];
+
+export function validateEnv(processKind: "web" | "worker"): void {
+  const missing: EnvVarSpec[] = [];
+  for (const spec of ENV_SPECS) {
+    if (!spec.scope.includes(processKind) || spec.optional) continue;
+    const value = process.env[spec.name];
+    if (!value || value.trim() === "") missing.push(spec);
+  }
+  if (missing.length > 0) {
+    const lines = missing.map(
+      (s) => `  ${s.name}\n    purpose: ${s.purpose}\n    example: ${s.example}`,
+    );
+    throw new Error(
+      `Postil ${processKind} cannot start: ${missing.length} required environment variable(s) missing.\n` +
+        `${lines.join("\n")}\n` +
+        `Copy .env.example to .env and fill these in. See /docs/self-hosted for details.`,
+    );
+  }
+}
+
+/** Read a required env var lazily, with an actionable error. */
+export function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value || value.trim() === "") {
+    const spec = ENV_SPECS.find((s) => s.name === name);
+    const hint = spec ? ` (${spec.purpose}; example: ${spec.example})` : "";
+    throw new Error(`Missing required environment variable ${name}${hint}`);
+  }
+  return value;
+}
+
+export function optionalEnv(name: string, fallback?: string): string | undefined {
+  const value = process.env[name];
+  if (value && value.trim() !== "") return value;
+  return fallback;
+}

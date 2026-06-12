@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-# Delegates to the local pre-push hook installed by the development bootstrap.
-# The policy implementation lives outside this repository and is configured by
-# scripts/install-hooks.ts.
-HOOKS_DIR="${POSTIL_HOOKS_DIR:-$HOME/.config/postil/hooks}"
-if [ -x "$HOOKS_DIR/pre-push" ]; then
-  exec "$HOOKS_DIR/pre-push" "$@"
-fi
-exit 0
