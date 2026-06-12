@@ -51,7 +51,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
       { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
       { kind: "text", note: "Per-seat + per-review overage" },
-      { kind: "text", note: "Bundled / Actions-minutes" },
+      { kind: "text", note: "AI Credits + Actions minutes (Jun 2026)" },
     ],
   },
   {
@@ -347,6 +347,18 @@ export default function WhyPostilPage() {
           {" · "}
           <Link href="/vs/greptile" className="text-rust underline">
             Postil vs Greptile
+          </Link>
+          {" · "}
+          <Link href="/vs/qodo" className="text-rust underline">
+            Postil vs Qodo
+          </Link>
+          {" · "}
+          <Link href="/vs/macroscope" className="text-rust underline">
+            Postil vs Macroscope
+          </Link>
+          {" · "}
+          <Link href="/vs/copilot" className="text-rust underline">
+            Postil vs Copilot
           </Link>
         </p>
       </div>

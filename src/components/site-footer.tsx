@@ -12,6 +12,7 @@ const COLUMNS = [
       { href: "/security", label: "Security" },
       { href: "/install", label: "Install" },
       { href: "/changelog", label: "Changelog" },
+      { href: "/blog", label: "Blog" },
     ],
   },
   {
@@ -30,6 +31,9 @@ const COLUMNS = [
     links: [
       { href: "/vs/coderabbit", label: "vs CodeRabbit" },
       { href: "/vs/greptile", label: "vs Greptile" },
+      { href: "/vs/qodo", label: "vs Qodo" },
+      { href: "/vs/macroscope", label: "vs Macroscope" },
+      { href: "/vs/copilot", label: "vs Copilot" },
     ],
   },
   {
