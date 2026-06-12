@@ -5,8 +5,10 @@ import { z } from "zod";
  *
  * This is the JSON the `postil` CLI writes to stdout with --output-json.
  * The control plane stores it verbatim (jsonb) and derives only a few
- * denormalized columns (silent, gateFailing) for querying. Do not extend
- * or reshape this without a version bump in the CLI contract.
+ * denormalized columns (silent, gateFailing) for querying. Reshaping or
+ * removing fields requires a version bump in the CLI contract; optional
+ * additive fields (absent meaning zero) are allowed within v1 and must be
+ * mirrored here, or the default-stripping parse drops them from storage.
  */
 
 export const severitySchema = z.enum(["info", "warn", "error"]);
@@ -39,6 +41,8 @@ export const envelopeSchema = z.object({
     warn: z.number().int().nonnegative(),
     error: z.number().int().nonnegative(),
     suppressed: z.number().int().nonnegative(),
+    // Model findings dropped for not citing a changed line (model-quality signal).
+    ungrounded: z.number().int().nonnegative().optional().default(0),
   }),
   // Counts in [0-.2, .2-.4, .4-.6, .6-.8, .8-1].
   confidenceBuckets: z.tuple([
@@ -57,6 +61,8 @@ export const envelopeSchema = z.object({
     promptTokens: z.number().int().nonnegative(),
     completionTokens: z.number().int().nonnegative(),
   }),
+  // Engine wall-clock duration in milliseconds (0 when emitted by older CLIs).
+  durationMs: z.number().int().nonnegative().optional().default(0),
   baseSha: z.string(),
   headSha: z.string(),
   sinceSha: z.string().nullable(),
