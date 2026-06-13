@@ -132,6 +132,48 @@ describeDb("postgres job queue", () => {
     expect(await claimJob(pool, "w")).toBeNull();
   });
 
+  test("failJob {permanent} fails immediately without consuming remaining attempts", async () => {
+    // A deterministic error (broken CA store, missing binary) must not burn the
+    // retry budget: the very first attempt goes straight to `failed`.
+    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 3 });
+
+    const job = await claimJob(pool, "w");
+    expect(job?.attempts).toBe(1);
+    expect(job?.maxAttempts).toBe(3);
+
+    // attempts (1) < maxAttempts (3): the default path would requeue. The
+    // permanent flag overrides that and performs the running -> failed flip.
+    const outcome = await failJob(
+      pool,
+      job!,
+      "No CA certificates were loaded from the system",
+      { permanent: true },
+    );
+    expect(outcome).toBe("failed");
+
+    const row = await pool.query("SELECT status, attempts, last_error FROM jobs WHERE id = $1", [
+      job!.id,
+    ]);
+    expect(row.rows[0].status).toBe("failed");
+    // Only the one attempt was consumed; the other two were skipped.
+    expect(row.rows[0].attempts).toBe(1);
+    expect(row.rows[0].last_error).toContain("No CA certificates");
+    expect(await claimJob(pool, "w")).toBeNull();
+  });
+
+  test("failJob {permanent} on an already-failed job returns 'lost' (single-post guard holds)", async () => {
+    // The conditional running -> failed UPDATE is shared with the exhausted
+    // path, so the permanent path also yields exactly one "failed" winner.
+    await enqueueJob(pool, "respond", { n: 1 }, { maxAttempts: 3 });
+    const job = await claimJob(pool, "w");
+
+    expect(await failJob(pool, job!, "builder error", { permanent: true })).toBe("failed");
+    expect(await failJob(pool, job!, "builder error", { permanent: true })).toBe("lost");
+
+    const row = await pool.query("SELECT status FROM jobs WHERE id = $1", [job!.id]);
+    expect(row.rows[0].status).toBe("failed");
+  });
+
   test("a second failJob on an already-failed job returns 'lost' (single-post guard)", async () => {
     // The runner and the watchdog can both reach the final-fail path for the
     // same job. Only the call that performs the `running` -> `failed`

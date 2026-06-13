@@ -119,13 +119,22 @@ export function backoffMs(attempts: number): number {
  * Returns "retried" if requeued, "failed" if this call performed the
  * permanent transition, or "lost" if another path (the watchdog) had
  * already failed the job. Only "failed" owns post-failure side effects.
+ *
+ * Pass `opts.permanent` for a deterministic, non-retryable error (e.g. a
+ * broken CA store or a missing CLI binary): the job goes straight to `failed`
+ * regardless of remaining attempts, since retrying the same job against the
+ * same image would fail identically. The permanent path reuses the same
+ * conditional `running` -> `failed` UPDATE as the exhausted-attempts path, so
+ * the single-post guard (only the winner of that transition returns "failed")
+ * still holds for the user-facing failure comment.
  */
 export async function failJob(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "attempts" | "maxAttempts">,
   error: string,
+  opts: { permanent?: boolean } = {},
 ): Promise<"retried" | "failed" | "lost"> {
-  if (job.attempts < job.maxAttempts) {
+  if (!opts.permanent && job.attempts < job.maxAttempts) {
     const delay = backoffMs(job.attempts);
     await pool.query(
       `UPDATE jobs
@@ -136,10 +145,11 @@ export async function failJob(
     );
     return "retried";
   }
-  // Conditional transition: only the caller that flips `running` -> `failed`
-  // gets rowCount 1. If the watchdog already failed this job (worker died
-  // mid-run), this affects 0 rows. The winner is the single owner of any
-  // follow-up side effect (e.g. posting a user-facing failure comment).
+  // Conditional transition (reached on exhausted attempts or a permanent
+  // error): only the caller that flips `running` -> `failed` gets rowCount 1.
+  // If the watchdog already failed this job (worker died mid-run), this
+  // affects 0 rows. The winner is the single owner of any follow-up side
+  // effect (e.g. posting a user-facing failure comment).
   const res = await pool.query(
     `UPDATE jobs
      SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2
