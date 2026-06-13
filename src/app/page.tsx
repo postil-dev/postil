@@ -314,25 +314,26 @@ export default function HomePage() {
       >
         <div className="grid items-center gap-10 lg:grid-cols-2">
           {/*
-            Measured numbers, not a mockup. Every figure below comes from a
-            recorded run of the released v0.1.0 CLI over 40 recently merged
-            public pull requests (8 repos across JS/TS, Python, Go, Rust;
-            deepseek-v4-pro; one run each), 2026-06-13. 26 of 40 were silent
-            (65%); the 18 findings it did ship fell in confidence buckets
-            [0,0,0,8,10]. Full methodology and raw envelopes are recorded
-            privately in measurements/measurements-2026-06-13.md. When a newer
-            run supersedes this, replace silenceRate and buckets together from
-            that run's aggregate; do not hand-tune.
+            Measured numbers, not a mockup. Pooled across two recorded runs of
+            the released v0.1.0 CLI over 125 recently merged public pull
+            requests (~18 repos across JS/TS, Python, Go, Rust;
+            deepseek-v4-pro; one run each), 2026-06-13. 78 of 125 were silent
+            (62.4%, 95% Wilson CI 54-70%); the 57 findings it did ship fell in
+            confidence buckets [0,0,0,23,34]. Full methodology and raw envelopes
+            are recorded privately in measurements/ (measurements-2026-06-13.md
+            + measurements-large-2026-06-13). When a newer run supersedes this,
+            replace silenceRate and buckets together from that run's aggregate;
+            do not hand-tune.
           */}
           <figure className="card p-8">
             <div className="flex items-center justify-between">
               <p className="eyebrow">Silence rate</p>
               <span className="rounded-full border border-stone px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-charcoal/70">
-                n = 40
+                n = 125
               </span>
             </div>
             <div className="mt-4 flex items-end gap-3">
-              <span className="serif-display text-6xl">65%</span>
+              <span className="serif-display text-6xl">62%</span>
               <span className="pb-2 text-sm text-charcoal/70">
                 of recent public PRs reviewed in silence
               </span>
@@ -346,14 +347,14 @@ export default function HomePage() {
                   { bucket: "0.0–0.2", count: 0 },
                   { bucket: "0.2–0.4", count: 0 },
                   { bucket: "0.4–0.6", count: 0 },
-                  { bucket: "0.6–0.8", count: 8 },
-                  { bucket: "0.8–1.0", count: 10 },
+                  { bucket: "0.6–0.8", count: 23 },
+                  { bucket: "0.8–1.0", count: 34 },
                 ];
                 const max = Math.max(...bars.map((b) => b.count));
                 return (
                   <div
                     role="img"
-                    aria-label={`Confidence of the 18 findings Postil shipped across 40 public pull requests: ${bars
+                    aria-label={`Confidence of the 57 findings Postil shipped across 125 public pull requests: ${bars
                       .filter((b) => b.count > 0)
                       .map((b) => `${b.count} at ${b.bucket}`)
                       .join("; ")}. Every shipped finding was at 0.6 confidence or higher.`}
@@ -383,7 +384,7 @@ export default function HomePage() {
               })()}
             </div>
             <figcaption className="mt-4 font-mono text-[11px] text-charcoal/70">
-              Measured across 40 recently merged public pull requests, June 2026.
+              Measured across 125 recently merged public pull requests, June 2026.
             </figcaption>
           </figure>
           <div>
