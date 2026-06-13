@@ -70,3 +70,18 @@ export async function completeCheckRun(
     output: { title, summary },
   });
 }
+
+/**
+ * Post a comment to a PR or issue. GitHub exposes one endpoint for both:
+ * `POST /repos/{repo}/issues/{number}/comments` works on pull requests too
+ * (a PR is an issue with code attached), so respond jobs can reuse it
+ * regardless of whether the mention came from an issue or a PR.
+ */
+export async function postIssueComment(
+  token: string,
+  repoFullName: string,
+  number: number,
+  body: string,
+): Promise<void> {
+  await githubFetch(token, "POST", `/repos/${repoFullName}/issues/${number}/comments`, { body });
+}

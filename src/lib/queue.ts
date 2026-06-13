@@ -113,12 +113,18 @@ export function backoffMs(attempts: number): number {
   return Math.min(30_000 * 2 ** Math.max(attempts - 1, 0), 15 * 60_000);
 }
 
-/** Mark a job failed; requeue with backoff while attempts remain. */
+/**
+ * Mark a job failed; requeue with backoff while attempts remain.
+ *
+ * Returns "retried" if requeued, "failed" if this call performed the
+ * permanent transition, or "lost" if another path (the watchdog) had
+ * already failed the job. Only "failed" owns post-failure side effects.
+ */
 export async function failJob(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "attempts" | "maxAttempts">,
   error: string,
-): Promise<"retried" | "failed"> {
+): Promise<"retried" | "failed" | "lost"> {
   if (job.attempts < job.maxAttempts) {
     const delay = backoffMs(job.attempts);
     await pool.query(
@@ -130,13 +136,17 @@ export async function failJob(
     );
     return "retried";
   }
-  await pool.query(
+  // Conditional transition: only the caller that flips `running` -> `failed`
+  // gets rowCount 1. If the watchdog already failed this job (worker died
+  // mid-run), this affects 0 rows. The winner is the single owner of any
+  // follow-up side effect (e.g. posting a user-facing failure comment).
+  const res = await pool.query(
     `UPDATE jobs
      SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2
-     WHERE id = $1`,
+     WHERE id = $1 AND status = 'running'`,
     [job.id, error.slice(0, 2000)],
   );
-  return "failed";
+  return (res.rowCount ?? 0) > 0 ? "failed" : "lost";
 }
 
 export async function queueDepth(pool: Pool): Promise<number> {
