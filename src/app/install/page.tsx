@@ -39,7 +39,7 @@ export default function InstallPage() {
               Local reviews before you push. Apache-2.0. Works today.
             </p>
           </div>
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <Terminal title="install — one line">
               <code>
                 <span className="t-dim"># install script (verifies the published SHA-256 over HTTPS)</span>{"\n"}
@@ -147,7 +147,7 @@ export default function InstallPage() {
               CI reviews with a SHA-pinned CLI.
             </p>
           </div>
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <Terminal title=".github/workflows/review.yml">
               <code>
                 {`on:
@@ -199,7 +199,7 @@ jobs:
               Same gate semantics on GitLab.com and self-managed.
             </p>
           </div>
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <p className="text-ink-soft">
               The CLI speaks GitLab through{" "}
               <code className="font-mono text-xs">--forge gitlab</code>, including
@@ -252,7 +252,7 @@ jobs:
               Zero-config reviews on every PR. Free during beta.
             </p>
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-ink-soft">
               Install the App, pick repositories, open a pull request. Two
               check-runs appear; require{" "}
