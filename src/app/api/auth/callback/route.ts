@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 
-import { and, eq } from "drizzle-orm";
-
 import { getDb, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { OAUTH_STATE_COOKIE } from "@/lib/oauth";
+import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
 import { createSession, SESSION_COOKIE } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -98,32 +97,19 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   // Map the user onto organizations we know about: their GitHub orgs plus
-  // their personal account (user-scoped installations).
-  const accountIds: Array<{ githubOrgId: number; role: string }> = [
-    { githubOrgId: ghUser.id, role: "admin" },
-  ];
+  // their personal account (user-scoped installations). This is the full,
+  // current set of accounts the user belongs to on GitHub; reconciliation
+  // below both grants new memberships and revokes ones they have lost.
+  //
+  // Only reconcile org membership when GitHub returns the org list. If
+  // /user/orgs fails we cannot tell "left every org" from "GitHub blipped",
+  // so we keep the user's last-known memberships rather than revoke them all.
   const orgsRes = await fetch("https://api.github.com/user/orgs", { headers: ghHeaders });
   if (orgsRes.ok) {
+    const accounts: GithubAccountMembership[] = [{ githubOrgId: ghUser.id, role: "admin" }];
     const orgs = (await orgsRes.json()) as GithubOrg[];
-    for (const org of orgs) accountIds.push({ githubOrgId: org.id, role: "member" });
-  }
-  for (const { githubOrgId, role } of accountIds) {
-    const org = (
-      await db
-        .select({ id: schema.organizations.id })
-        .from(schema.organizations)
-        .where(eq(schema.organizations.githubOrgId, githubOrgId))
-        .limit(1)
-    )[0];
-    if (!org) continue;
-    const existing = await db
-      .select({ id: schema.orgMembers.id })
-      .from(schema.orgMembers)
-      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, userId)))
-      .limit(1);
-    if (existing.length === 0) {
-      await db.insert(schema.orgMembers).values({ orgId: org.id, userId, role });
-    }
+    for (const org of orgs) accounts.push({ githubOrgId: org.id, role: "member" });
+    await reconcileOrgMemberships(db, userId, accounts);
   }
 
   const sessionToken = await createSession(userId);
