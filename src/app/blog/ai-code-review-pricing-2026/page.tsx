@@ -7,17 +7,41 @@ export const metadata: Metadata = {
     "Four AI code review vendors changed pricing models in roughly ninety days. We run the same 20-developer team through CodeRabbit, Qodo, Greptile, Macroscope, Copilot, Bugbot, and Postil, with every assumption stated and every price dated and sourced.",
   alternates: { canonical: "/blog/ai-code-review-pricing-2026" },
   openGraph: {
+    type: "article",
+    publishedTime: "2026-06-13T00:00:00.000Z",
     title:
       "AI code review pricing in 2026: what a 20-developer team actually pays",
     description:
       "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price dated and sourced.",
     url: "https://postil.dev/blog/ai-code-review-pricing-2026",
+    images: ["/opengraph-image"],
+  },
+};
+
+const articleJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  headline:
+    "AI code review pricing in 2026: what a 20-developer team actually pays",
+  description:
+    "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price dated and sourced.",
+  url: "https://postil.dev/blog/ai-code-review-pricing-2026",
+  datePublished: "2026-06-13",
+  image: "https://postil.dev/opengraph-image",
+  author: {
+    "@type": "Organization",
+    name: "Postil",
+    url: "https://postil.dev",
   },
 };
 
 export default function PricingArticle() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16 md:py-20">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
+      />
       <p className="eyebrow">Blog</p>
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">
         AI code review pricing in 2026: what a 20-developer team actually pays
