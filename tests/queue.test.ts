@@ -132,6 +132,26 @@ describeDb("postgres job queue", () => {
     expect(await claimJob(pool, "w")).toBeNull();
   });
 
+  test("a second failJob on an already-failed job returns 'lost' (single-post guard)", async () => {
+    // The runner and the watchdog can both reach the final-fail path for the
+    // same job. Only the call that performs the `running` -> `failed`
+    // transition returns "failed" and owns the user-facing reply; a later
+    // call sees the row already failed and returns "lost", so the reply is
+    // posted at most once.
+    await enqueueJob(pool, "respond", { n: 1 }, { maxAttempts: 1 });
+    const job = await claimJob(pool, "w");
+    expect(job?.attempts).toBe(1);
+
+    expect(await failJob(pool, job!, "boom")).toBe("failed");
+    let row = await pool.query("SELECT status FROM jobs WHERE id = $1", [job!.id]);
+    expect(row.rows[0].status).toBe("failed");
+
+    // Replaying the same final-fail (e.g. the other path) does not re-transition.
+    expect(await failJob(pool, job!, "boom again")).toBe("lost");
+    row = await pool.query("SELECT status FROM jobs WHERE id = $1", [job!.id]);
+    expect(row.rows[0].status).toBe("failed");
+  });
+
   test("completeJob marks the job done and releases the lock", async () => {
     await enqueueJob(pool, "review", { n: 1 });
     const job = await claimJob(pool, "w");

@@ -2,6 +2,8 @@ import { and, eq, lt, sql } from "drizzle-orm";
 
 import { getDb, getPool, schema } from "@/lib/db";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import type { RespondJobPayload } from "@/lib/queue";
+import { postRespondFailureComment } from "./respond";
 import { REVIEW_DEADLINE_MS, failCheckRuns } from "./review";
 
 export const WATCHDOG_ERROR_PREFIX = "watchdog:";
@@ -56,16 +58,26 @@ export async function watchdogPass(now = new Date()): Promise<{ killed: number }
     }
   }
 
-  // Requeue or fail jobs whose worker died mid-run.
+  // Requeue or fail jobs whose worker died mid-run. RETURNING tells us which
+  // rows this pass moved to `failed`, so a respond job that exhausts its
+  // retries here still gets the one user-facing reply. The conditional
+  // `status = 'running'` guard means only this transition wins the row; the
+  // runner's failJob would affect 0 rows and stay silent (no double-post).
   const pool = getPool();
-  await pool.query(
+  const updated = await pool.query<{ kind: string; status: string; payload: RespondJobPayload }>(
     `UPDATE jobs
      SET status = CASE WHEN attempts < max_attempts THEN 'queued'::job_status ELSE 'failed'::job_status END,
          locked_at = NULL, locked_by = NULL,
          last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
-     WHERE status = 'running' AND locked_at < $1`,
+     WHERE status = 'running' AND locked_at < $1
+     RETURNING kind, status, payload`,
     [cutoff],
   );
+  for (const row of updated.rows) {
+    if (row.kind === "respond" && row.status === "failed") {
+      await postRespondFailureComment(row.payload);
+    }
+  }
 
   return { killed: stuck.length };
 }

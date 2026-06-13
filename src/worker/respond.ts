@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import { getDb, schema } from "@/lib/db";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { postIssueComment } from "@/lib/github/checks";
 import type { RespondJobPayload } from "@/lib/queue";
 import { resolveLlmConfig, runCli } from "./review";
 
@@ -89,6 +90,85 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
   if (result.exitCode !== 0) {
     throw new Error(
       `postil respond exited with code ${result.exitCode}: ${result.stderr.slice(0, 500)}`,
+    );
+  }
+}
+
+/** The user-facing message posted when a respond job exhausts its retries. */
+export const RESPOND_FAILURE_COMMENT =
+  "Postil could not complete this request after several attempts. " +
+  "The maintainers can re-run by mentioning @postil again, or check the run logs.";
+
+/**
+ * Post one brief, honest fallback comment after a respond job has been
+ * permanently failed (retries exhausted). Call this only when the job has
+ * actually transitioned to `failed`, and only once — the queue's conditional
+ * transition (failJob returning "failed") is the single-post guard.
+ *
+ * Never throws: a respond job is already failed when this runs, so a failed
+ * comment POST must not turn into an unhandled rejection in the worker loop.
+ * It is also silent for genuinely skipped work (installation missing/suspended
+ * or repository missing/disabled) — those jobs complete, they do not fail, but
+ * we re-check defensively so a suspended install never gets an unwanted ping.
+ */
+export async function postRespondFailureComment(
+  payload: RespondJobPayload,
+): Promise<void> {
+  try {
+    // A malformed payload that failed every attempt may lack the routing
+    // fields; there is nothing to post to.
+    if (
+      typeof payload.installationId !== "number" ||
+      typeof payload.repoFullName !== "string" ||
+      typeof payload.number !== "number"
+    ) {
+      console.warn("respond failure comment skipped: payload missing routing fields");
+      return;
+    }
+
+    const db = getDb();
+    const installation = (
+      await db
+        .select()
+        .from(schema.installations)
+        .where(eq(schema.installations.githubInstallationId, payload.installationId))
+        .limit(1)
+    )[0];
+    if (!installation || installation.suspended) {
+      console.warn(
+        `respond failure comment skipped: installation ${payload.installationId} missing/suspended`,
+      );
+      return;
+    }
+    const repository = (
+      await db
+        .select()
+        .from(schema.repositories)
+        .where(
+          and(
+            eq(schema.repositories.installationId, installation.id),
+            eq(schema.repositories.fullName, payload.repoFullName),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (!repository || !repository.enabled) {
+      console.warn(
+        `respond failure comment skipped: repository ${payload.repoFullName} missing/disabled`,
+      );
+      return;
+    }
+
+    const token = await getInstallationToken(payload.installationId);
+    await postIssueComment(token, payload.repoFullName, payload.number, RESPOND_FAILURE_COMMENT);
+    console.warn(
+      `respond failure comment posted to ${payload.repoFullName}#${payload.number}`,
+    );
+  } catch (err) {
+    // Swallow: the job is already failed; a failed fallback comment must not
+    // re-throw into the worker loop.
+    console.error(
+      `respond failure comment could not be posted: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }

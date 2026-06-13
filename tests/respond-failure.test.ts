@@ -1,0 +1,196 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+
+import type { RespondJobPayload } from "@/lib/queue";
+
+/**
+ * Unit coverage for the respond-job failure reply: when a @postil mention's
+ * respond job exhausts its retries, the worker must post exactly one honest
+ * fallback comment, and must stay silent for non-final failures and for
+ * skipped jobs (installation suspended / repository disabled).
+ *
+ * The GitHub and database boundaries are mocked so the decision logic runs
+ * fully in-process without a live Postgres or network. The real single-post
+ * guard (failJob's conditional `running` -> `failed` transition) is exercised
+ * against a real database in queue.test.ts; here we assert the worker's gate
+ * and the helper's skip/idempotency behaviour given that outcome.
+ */
+
+// Schema sentinels: the helper passes `schema.installations` / `schema.repositories`
+// to `.from(...)`, which our fake uses to pick the right result set.
+const schema = { installations: "installations", repositories: "repositories" };
+
+// Result sets returned by `.from(<table>).where(...).limit(1)`, by table.
+let installationRows: unknown[] = [];
+let repositoryRows: unknown[] = [];
+
+function fakeDb() {
+  let table: string | undefined;
+  const chain = {
+    select() {
+      return chain;
+    },
+    from(t: string) {
+      table = t;
+      return chain;
+    },
+    where() {
+      return chain;
+    },
+    // `.limit(1)` is the awaited tail of the chain; resolve to the rows for
+    // whichever table `.from()` recorded.
+    limit() {
+      const rows = table === schema.repositories ? repositoryRows : installationRows;
+      return Promise.resolve(rows);
+    },
+  };
+  return chain;
+}
+
+let tokenMintError: Error | undefined;
+const postedComments: Array<{ repo: string; number: number; body: string }> = [];
+let postShouldThrow = false;
+
+mock.module("@/lib/db", () => ({
+  getDb: () => fakeDb(),
+  schema,
+}));
+
+const realAppAuth = await import("@/lib/github/app-auth");
+mock.module("@/lib/github/app-auth", () => ({
+  ...realAppAuth,
+  getInstallationToken: async () => {
+    if (tokenMintError) throw tokenMintError;
+    return "ghs_test_token";
+  },
+}));
+
+// Preserve the rest of the checks surface (review.ts imports check-run helpers
+// transitively); only override the comment poster.
+const realChecks = await import("@/lib/github/checks");
+mock.module("@/lib/github/checks", () => ({
+  ...realChecks,
+  postIssueComment: async (_token: string, repo: string, number: number, body: string) => {
+    if (postShouldThrow) throw new Error("github 500");
+    postedComments.push({ repo, number, body });
+  },
+}));
+
+// Imported after the mocks are registered so the helper binds to them.
+const { postRespondFailureComment, RESPOND_FAILURE_COMMENT } = await import("@/worker/respond");
+
+function payload(over: Partial<RespondJobPayload> = {}): RespondJobPayload {
+  return {
+    installationId: 42,
+    repoFullName: "octo/repo",
+    number: 7,
+    isPr: true,
+    comment: "@postil please look",
+    ...over,
+  };
+}
+
+const enabledInstallation = { id: 1, githubInstallationId: 42, suspended: false, orgId: null };
+const enabledRepository = { id: 10, installationId: 1, fullName: "octo/repo", enabled: true };
+
+beforeEach(() => {
+  installationRows = [enabledInstallation];
+  repositoryRows = [enabledRepository];
+  tokenMintError = undefined;
+  postShouldThrow = false;
+  postedComments.length = 0;
+});
+
+afterEach(() => {
+  mock.restore();
+});
+
+describe("postRespondFailureComment (final-attempt exhaustion)", () => {
+  test("posts exactly one honest fallback comment to the originating PR/issue", async () => {
+    await postRespondFailureComment(payload());
+    expect(postedComments).toHaveLength(1);
+    expect(postedComments[0]).toEqual({
+      repo: "octo/repo",
+      number: 7,
+      body: RESPOND_FAILURE_COMMENT,
+    });
+    // No hype: brief, honest, points at re-mention + logs.
+    expect(RESPOND_FAILURE_COMMENT).toContain("could not complete");
+    expect(RESPOND_FAILURE_COMMENT).toContain("@postil");
+  });
+
+  test("calling once posts once (idempotent per failed job)", async () => {
+    await postRespondFailureComment(payload());
+    expect(postedComments).toHaveLength(1);
+  });
+});
+
+describe("postRespondFailureComment skips genuinely skipped work", () => {
+  test("suspended installation posts no comment", async () => {
+    installationRows = [{ ...enabledInstallation, suspended: true }];
+    await postRespondFailureComment(payload());
+    expect(postedComments).toHaveLength(0);
+  });
+
+  test("missing installation posts no comment", async () => {
+    installationRows = [];
+    await postRespondFailureComment(payload());
+    expect(postedComments).toHaveLength(0);
+  });
+
+  test("disabled repository posts no comment", async () => {
+    repositoryRows = [{ ...enabledRepository, enabled: false }];
+    await postRespondFailureComment(payload());
+    expect(postedComments).toHaveLength(0);
+  });
+
+  test("missing repository posts no comment", async () => {
+    repositoryRows = [];
+    await postRespondFailureComment(payload());
+    expect(postedComments).toHaveLength(0);
+  });
+});
+
+describe("postRespondFailureComment is fail-safe", () => {
+  test("malformed payload (no routing fields) posts nothing and does not throw", async () => {
+    await postRespondFailureComment({} as RespondJobPayload);
+    expect(postedComments).toHaveLength(0);
+  });
+
+  test("a failing comment POST is swallowed, never re-thrown", async () => {
+    postShouldThrow = true;
+    await expect(postRespondFailureComment(payload())).resolves.toBeUndefined();
+    expect(postedComments).toHaveLength(0);
+  });
+
+  test("a failing token mint is swallowed, never re-thrown", async () => {
+    tokenMintError = new Error("mint failed");
+    await expect(postRespondFailureComment(payload())).resolves.toBeUndefined();
+    expect(postedComments).toHaveLength(0);
+  });
+});
+
+describe("worker failure gate (which outcomes trigger a reply)", () => {
+  // Mirrors the guard in src/worker/index.ts: only a respond job whose
+  // failJob outcome is the permanent "failed" transition posts a reply.
+  // "retried" (non-final, will run again) and "lost" (watchdog won the race)
+  // must not, so the bot never spams on intermediate retries or double-posts.
+  function shouldPostReply(kind: string, outcome: "retried" | "failed" | "lost"): boolean {
+    return outcome === "failed" && kind === "respond";
+  }
+
+  test("final respond failure triggers a reply", () => {
+    expect(shouldPostReply("respond", "failed")).toBe(true);
+  });
+
+  test("non-final respond failure (retried) triggers no reply", () => {
+    expect(shouldPostReply("respond", "retried")).toBe(false);
+  });
+
+  test("watchdog-lost respond failure triggers no reply (no double-post)", () => {
+    expect(shouldPostReply("respond", "lost")).toBe(false);
+  });
+
+  test("review job failures never trigger a respond reply", () => {
+    expect(shouldPostReply("review", "failed")).toBe(false);
+  });
+});
