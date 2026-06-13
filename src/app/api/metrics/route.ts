@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 
 import { getDb, getPool, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
+import { bearerMatches } from "@/lib/metrics-auth";
 import { queueDepth } from "@/lib/queue";
 import { watchdogKillCount } from "@/worker/watchdog";
 
@@ -21,8 +22,8 @@ export async function GET(request: Request): Promise<NextResponse> {
       { status: 503 },
     );
   }
-  const auth = request.headers.get("authorization");
-  if (auth !== `Bearer ${token}`) {
+  const auth = request.headers.get("authorization") ?? "";
+  if (!bearerMatches(auth, token)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
