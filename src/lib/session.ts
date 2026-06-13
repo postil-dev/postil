@@ -11,7 +11,13 @@ import {
   verifySessionToken,
 } from "@/lib/session-token";
 
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Session lifetime, single source of truth so the server-side expiry and the
+// OAuth callback's cookie maxAge cannot drift. This also bounds how long a user
+// removed from a GitHub org keeps dashboard access without re-logging in
+// (membership is reconciled at login); a shorter window narrows that residual
+// gap. See org-membership-ttl-plan for the per-request re-check follow-up.
+export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+const SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
 
 export interface SessionUser {
   id: number;
