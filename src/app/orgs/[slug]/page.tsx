@@ -6,6 +6,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 
 import {
   formatDuration,
+  formatMs,
   GateBadge,
   ReviewStatusBadge,
 } from "@/components/review-status";
@@ -87,6 +88,44 @@ export default async function OrgDashboardPage({
     }
   }
   const bucketMax = Math.max(...buckets, 1);
+
+  // Engine telemetry across completed reviews, read from stored envelopes.
+  // Older envelopes lack durationMs / counts.ungrounded; COALESCE treats the
+  // missing JSONB keys as 0 so they neither break the median nor inflate it.
+  const telemetryAgg = (
+    await db
+      .select({
+        // Median wall-clock duration in ms; ignore 0s (older CLIs / not recorded).
+        medianDurationMs: sql<number | null>`
+          percentile_cont(0.5) WITHIN GROUP (
+            ORDER BY (${schema.reviews.envelope} ->> 'durationMs')::int
+          ) FILTER (WHERE (${schema.reviews.envelope} ->> 'durationMs')::int > 0)
+        `,
+        // Total ungrounded findings dropped for not citing a changed line.
+        ungrounded: sql<number>`
+          COALESCE(SUM((${schema.reviews.envelope} -> 'counts' ->> 'ungrounded')::int), 0)::int
+        `,
+        // Findings actually shipped, summed from stored envelopes.
+        shipped: sql<number>`
+          COALESCE(SUM(jsonb_array_length(${schema.reviews.envelope} -> 'findings')), 0)::int
+        `,
+      })
+      .from(schema.reviews)
+      .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+      .innerJoin(
+        schema.installations,
+        eq(schema.installations.id, schema.repositories.installationId),
+      )
+      .where(and(eq(schema.installations.orgId, org.id), eq(schema.reviews.status, "completed")))
+  )[0] ?? { medianDurationMs: null, ungrounded: 0, shipped: 0 };
+
+  const medianDurationMs =
+    telemetryAgg.medianDurationMs != null ? Math.round(telemetryAgg.medianDurationMs) : null;
+  const ungrounded = telemetryAgg.ungrounded ?? 0;
+  const shipped = telemetryAgg.shipped ?? 0;
+  // Share of model findings discarded for failing to cite a changed line.
+  const ungroundedRate =
+    ungrounded + shipped > 0 ? Math.round((ungrounded / (ungrounded + shipped)) * 100) : null;
 
   const recentReviews = await db
     .select({
@@ -194,6 +233,38 @@ export default async function OrgDashboardPage({
           <p className="mt-4 text-sm text-ink-soft">
             Shipped findings by model confidence, across the last{" "}
             {bucketRows.length} reviews.
+          </p>
+        </div>
+      </div>
+
+      {/* Engine telemetry */}
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="card p-8">
+          <p className="eyebrow">Median review time</p>
+          <div className="mt-3 flex items-end gap-3">
+            <span className="serif-display text-6xl">
+              {medianDurationMs === null ? "—" : formatMs(medianDurationMs)}
+            </span>
+            <span className="pb-2 text-sm text-charcoal/60">engine wall-clock</span>
+          </div>
+          <p className="mt-4 text-sm text-ink-soft">
+            Median time the review engine spends per pull request, measured from
+            its own envelope across completed reviews.
+          </p>
+        </div>
+        <div className="card p-8">
+          <p className="eyebrow">Ungrounded rate</p>
+          <div className="mt-3 flex items-end gap-3">
+            <span className="serif-display text-6xl">
+              {ungroundedRate === null ? "—" : `${ungroundedRate}%`}
+            </span>
+            <span className="pb-2 text-sm text-charcoal/60">
+              {ungrounded} dropped, {shipped} shipped
+            </span>
+          </div>
+          <p className="mt-4 text-sm text-ink-soft">
+            A model-quality signal: the share of model findings discarded for not
+            citing a changed line, before anything reached a pull request.
           </p>
         </div>
       </div>

@@ -59,7 +59,17 @@ export function GateBadge({
 
 export function formatDuration(start: Date | null, end: Date | null): string {
   if (!start || !end) return "—";
-  const seconds = Math.round((end.getTime() - start.getTime()) / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return formatMs(end.getTime() - start.getTime());
+}
+
+/** Human-friendly elapsed time from a millisecond count: "9.4s", "1m 12s". */
+export function formatMs(ms: number | null): string {
+  if (ms == null || ms < 0) return "—";
+  if (ms < 60_000) {
+    const seconds = ms / 1000;
+    // One decimal under 10s ("9.4s"), whole seconds above ("42s").
+    return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
+  }
+  const totalSeconds = Math.round(ms / 1000);
+  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
