@@ -30,7 +30,6 @@ export default function HomePage() {
             src="/brand/postil-hero-gate-sketch.png"
             alt=""
             fill
-            priority
             draggable={false}
             sizes="(min-width: 1024px) 56vw, 72vw"
             className="object-contain object-right opacity-30 mix-blend-multiply [mask-image:linear-gradient(to_right,transparent,black_42%)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_42%)]"
