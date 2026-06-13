@@ -17,6 +17,14 @@ export const metadata: Metadata = {
 
 const POSTS = [
   {
+    href: "/blog/where-does-your-code-go",
+    date: "June 2026",
+    title:
+      "Where does your code actually go? A data-flow audit of AI code review tools",
+    description:
+      "AI reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class audit of retention, training, and inference location, every fact dated and sourced.",
+  },
+  {
     href: "/blog/self-hosted-ai-code-review",
     date: "June 2026",
     title:
