@@ -186,8 +186,8 @@ export default function VsCopilotPage() {
 
         <h2>Data handling depends on your plan</h2>
         <p>
-          On Copilot Free and Pro, interaction data is used for model training
-          unless you opt out (
+          On Copilot Free, Pro, and Pro+, interaction data is used for model
+          training unless you opt out (
           <a
             href="https://github.blog/news-insights/company-news/updates-to-github-copilot-interaction-data-usage-policy/"
             rel="noopener"

@@ -244,8 +244,9 @@ export default function WhereDoesYourCodeGoArticle() {
           posture you get depends on the tier you buy.
         </p>
         <p>
-          <strong>GitHub Copilot</strong> uses Free and Pro interaction data for
-          training unless you opt out, a policy in effect since April 24, 2025;
+          <strong>GitHub Copilot</strong> uses Free, Pro, and Pro+ interaction
+          data for training unless you opt out, a policy in effect since April
+          24, 2025;
           Business and Enterprise are excluded (
           <a
             href="https://github.blog/news-insights/company-news/updates-to-github-copilot-interaction-data-usage-policy/"
