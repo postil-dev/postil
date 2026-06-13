@@ -147,7 +147,13 @@ export default function VsCopilotPage() {
           >
             consumes GitHub Actions minutes
           </a>{" "}
-          per agentic run; legacy plans saw a 13x premium-request multiplier
+          per agentic run; legacy plans saw a{" "}
+          <a
+            href="https://github.blog/news-insights/company-news/github-copilot-is-moving-to-usage-based-billing/"
+            rel="noopener"
+          >
+            13x premium-request multiplier
+          </a>{" "}
           for review. Users report large cost swings, including{" "}
           <a
             href="https://www.reddit.com/r/GithubCopilot/comments/1tvjhm1/i_wholeheartedly_recommend_to_everyone_to_turn/"
@@ -204,10 +210,16 @@ export default function VsCopilotPage() {
             Pullflow&apos;s analysis of 40.3M public PRs
           </a>{" "}
           found Copilot leads org adoption among AI reviewers. It is also
-          improving quickly: an agentic architecture went GA in March 2026 and
-          severity levels with grouped comments landed in May 2026. If you
-          want advisory review with no procurement step, Copilot is the
-          obvious first try.
+          improving quickly: an{" "}
+          <a
+            href="https://github.blog/changelog/2026-03-05-copilot-code-review-now-runs-on-an-agentic-architecture/"
+            rel="noopener"
+          >
+            agentic architecture went GA in March 2026
+          </a>
+          , followed by severity levels and grouped comments. If you want
+          advisory review with no procurement step, Copilot is the obvious first
+          try.
         </p>
       </div>
 

@@ -118,13 +118,13 @@ export default function VsQodoPage() {
         <p>
           Qodo Teams costs{" "}
           <a href="https://www.qodo.ai/pricing/" rel="noopener">
-            $30 per user per month annual, $38 monthly
+            $30 per user per month annual, $38 monthly, and meters usage in
+            credits on top, with premium models consuming five credits per
+            request
           </a>{" "}
-          as of June 2026, roughly double the widely cited $19 of 2025, and
-          meters usage in credits on top (premium models consume five credits
-          per request). The free tier is credit-limited; Qodo&apos;s docs and
-          pricing page describe its limits differently, so verify both before
-          relying on it. Postil charges a flat $10 per developer per month and
+          as of June 2026, roughly double its earlier Teams pricing. The free
+          tier is credit-limited; Qodo&apos;s docs and pricing page describe its
+          limits differently, so verify both before relying on it. Postil charges a flat $10 per developer per month and
           routes inference through your own key at provider rates with zero
           markup, so the bill does not move with model choice or review
           volume. Run the numbers on the <Link href="/pricing">cost

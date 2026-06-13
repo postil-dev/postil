@@ -122,11 +122,15 @@ export default function VsCodeRabbitPage() {
 
         <h2>Flat pricing survives 10x PR volume</h2>
         <p>
-          Postil charges a flat $10 per developer per month for orchestration and
-          routes inference through your own key at provider rates with zero
-          markup. Your worst-case bill is seats times ten, regardless of whether
-          your team opens 40 or 400 PRs each. Run the numbers on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          CodeRabbit Pro is{" "}
+          <a href="https://www.coderabbit.ai/pricing" rel="noopener">
+            $24 per seat per month on the annual plan
+          </a>{" "}
+          as of June 2026. Postil charges a flat $10 per developer per month for
+          orchestration and routes inference through your own key at provider
+          rates with zero markup. Your worst-case bill is seats times ten,
+          regardless of whether your team opens 40 or 400 PRs each. Run the
+          numbers on the <Link href="/pricing">cost calculator</Link>.
         </p>
 
         <h2>Where CodeRabbit is ahead</h2>

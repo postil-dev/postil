@@ -149,9 +149,15 @@ export default function SilenceRateArticle() {
             DeepSource documented
           </a>{" "}
           that every vendor benchmark in the category ranks its own product
-          first. When Augment re-ran Greptile&apos;s evaluation on the same
-          dataset, Greptile scored 45% against its self-reported 82%.
-          Greptile&apos;s benchmark{" "}
+          first, including that{" "}
+          <a
+            href="https://deepsource.com/blog/ai-code-review-benchmarks"
+            rel="noopener"
+          >
+            when Augment re-ran Greptile&apos;s evaluation on the same dataset,
+            Greptile scored 45% against its self-reported 82%
+          </a>
+          . Greptile&apos;s benchmark{" "}
           <a href="https://www.greptile.com/benchmarks" rel="noopener">
             explicitly does not score false positives
           </a>
@@ -230,8 +236,8 @@ export default function SilenceRateArticle() {
           published comparative numbers, so there is nothing honest to claim
           yet. The claim is narrower and checkable: the metric exists, it is
           on the dashboard from day one, and you can watch it on your own
-          traffic. <Link href="/evidence">The evidence page</Link> tracks what
-          we can and cannot prove so far.
+          traffic. You can <Link href="/evidence">see it run</Link> on three
+          real diffs, including one where it correctly stays silent.
         </p>
 
         <h2>What to ask any vendor (including us)</h2>
@@ -375,7 +381,7 @@ export default function SilenceRateArticle() {
             href="/evidence"
             className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-center text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
           >
-            See the evidence
+            See it run
           </Link>
         </div>
       </div>

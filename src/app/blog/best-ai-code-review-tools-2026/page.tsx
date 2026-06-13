@@ -61,10 +61,11 @@ export default function BestToolsArticle() {
             href="https://deepsource.com/blog/ai-code-review-benchmarks"
             rel="noopener"
           >
-            every vendor benchmark ranks its own product first
+            every vendor benchmark ranks its own product first, and when Augment
+            re-ran Greptile&apos;s own evaluation dataset, Greptile scored 45%
+            against its self-reported 82%
           </a>
-          , and when Augment re-ran Greptile&apos;s own evaluation dataset,
-          Greptile scored 45% against its self-reported 82%.
+          .
         </p>
         <p>
           A disclosure before anything else: we build Postil, one of the seven
@@ -478,9 +479,9 @@ export default function BestToolsArticle() {
           CLI covers GitHub and GitLab, with Bitbucket and Azure DevOps support
           that is early (shipped and tested, not yet validated against live
           instances). The CLI and Action are Apache-2.0, and the control plane
-          stores review envelopes, never code. What we cannot show you yet: a
-          peer-run benchmark. Our accuracy claims are limited to{" "}
-          <Link href="/evidence">the evidence we publish</Link>.
+          stores review envelopes, never code. We make no peer-run benchmark
+          claim; you can <Link href="/evidence">see it run</Link> on three real
+          diffs and judge the output yourself.
         </p>
 
         <h2>Which tool for which team</h2>

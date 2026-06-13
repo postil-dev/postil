@@ -112,9 +112,15 @@ export default function VsMacroscopePage() {
 
         <h2>Per-kilobyte billing puts a meter on your diff</h2>
         <p>
-          Macroscope launched in September 2025 at $30 per developer per month
-          with a five-seat minimum, then flipped to usage-based pricing in
-          March 2026:{" "}
+          Macroscope{" "}
+          <a
+            href="https://techcrunch.com/2025/09/17/meet-macroscope-an-ai-tool-for-understanding-your-code-base-fixing-bugs/"
+            rel="noopener"
+          >
+            launched in September 2025 at $30 per developer per month with a
+            five-seat minimum
+          </a>
+          , then flipped to usage-based pricing in March 2026:{" "}
           <a href="https://docs.macroscope.com/pricing" rel="noopener">
             $0.05 per kilobyte of diff
           </a>{" "}
@@ -154,11 +160,14 @@ export default function VsMacroscopePage() {
 
         <h2>Where Macroscope is ahead</h2>
         <p>
-          Macroscope builds an AST and reference graph for eight languages,
+          Macroscope builds an AST and reference graph across several languages,
           giving it structural context a diff-first reviewer does not have. It
-          ships quickly (check-run agents and a CLI both landed in May 2026),
-          and its usage pricing includes spend caps, which several usage-priced
-          competitors lack. If you are entirely on GitHub Cloud and want its
+          ships quickly (
+          <a href="https://docs.macroscope.com/changelog" rel="noopener">
+            check-run agents and a CLI both landed in May 2026
+          </a>
+          ), and its usage pricing includes spend caps, which several
+          usage-priced competitors lack. If you are entirely on GitHub Cloud and want its
           codebase-understanding features, it is a serious product. If you are
           on GitLab, Bitbucket, self-managed anything, or need code to stay
           inside your network, it is not currently an option.
