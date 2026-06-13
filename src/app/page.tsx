@@ -16,14 +16,15 @@ export default function HomePage() {
     <>
       {/* Hero */}
       <section className="relative overflow-hidden">
-        {/* Gate engraving — quiet background watermark, anchored right.
-            mix-blend-multiply drops the sketch's near-white ground onto the
-            ivory page so only the pencil lines remain; the gradient mask fades
-            the engraving out under the text. Hidden below sm so the mobile
-            hero stays text-only and free of overflow. */}
+        {/* Gate engraving — quiet background watermark, anchored to the right
+            edge and held to the hero band. mix-blend-multiply drops the
+            sketch's near-white ground onto the ivory page so only the pencil
+            lines remain; the gradient mask fades the engraving out under the
+            text so the copy keeps a clean, high-contrast ground. Hidden below
+            sm so the mobile hero stays text-only and free of overflow. */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 right-0 -z-10 hidden w-[78%] select-none sm:block lg:w-[58%]"
+          className="pointer-events-none absolute right-0 top-0 -z-10 hidden h-full w-[72%] select-none sm:block lg:w-[56%]"
         >
           <Image
             src="/brand/postil-hero-gate-sketch.png"
@@ -31,12 +32,12 @@ export default function HomePage() {
             fill
             priority
             draggable={false}
-            sizes="(min-width: 1024px) 58vw, 78vw"
-            className="object-contain object-right opacity-[0.22] mix-blend-multiply [mask-image:linear-gradient(to_right,transparent,black_42%)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_42%)]"
+            sizes="(min-width: 1024px) 56vw, 72vw"
+            className="object-contain object-right opacity-30 mix-blend-multiply [mask-image:linear-gradient(to_right,transparent,black_42%)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_42%)]"
           />
         </div>
 
-        <div className="relative mx-auto max-w-6xl px-6 pt-16 md:pt-24">
+        <div className="relative mx-auto w-full max-w-6xl px-6 pt-16 pb-20 md:pt-24 md:pb-28">
           <div className="max-w-2xl">
             <p className="font-mono text-sm uppercase tracking-[0.16em] text-charcoal/80">
               A review gate for agent-speed development
@@ -64,7 +65,6 @@ export default function HomePage() {
               Apache-2.0 CLI · free on public repos · self-hosted forever
             </p>
           </div>
-          <div className="h-16 md:h-24" aria-hidden="true" />
         </div>
       </section>
 
