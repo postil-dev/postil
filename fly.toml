@@ -10,7 +10,7 @@
 #
 # Migrations: fly ssh console -C "bun run db:migrate"
 
-app = "postil"
+app = "postil-web"
 primary_region = "lhr"
 
 [build]
