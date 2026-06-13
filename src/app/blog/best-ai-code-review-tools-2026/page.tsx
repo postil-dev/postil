@@ -25,7 +25,7 @@ export default function BestToolsArticle() {
         June 2026 · Postil team
       </p>
 
-      <div className="prose-postil mt-10">
+      <div className="prose-postil blog-prose mt-10">
         <p>
           Two things make &quot;best AI code review tool&quot; a hard question
           to answer honestly in 2026. First, the pricing landscape moved four
@@ -133,7 +133,7 @@ export default function BestToolsArticle() {
           <thead>
             <tr>
               <th scope="col">Tool</th>
-              <th scope="col">Model</th>
+              <th scope="col" className="hidden sm:table-cell">Model</th>
               <th scope="col">List price (as of June 2026)</th>
               <th scope="col">Recent change</th>
             </tr>
@@ -141,43 +141,43 @@ export default function BestToolsArticle() {
           <tbody>
             <tr>
               <td>CodeRabbit</td>
-              <td>Per seat</td>
+              <td className="hidden sm:table-cell">Per seat</td>
               <td>Pro $24/user/mo annual; Pro Plus $48</td>
               <td>Lite tier removed, Pro Plus added (spring 2026)</td>
             </tr>
             <tr>
               <td>Qodo</td>
-              <td>Per seat + credits</td>
+              <td className="hidden sm:table-cell">Per seat + credits</td>
               <td>Teams $30/user/mo annual, $38 monthly</td>
               <td>Up from the widely cited $19 (2025)</td>
             </tr>
             <tr>
               <td>Greptile</td>
-              <td>Per seat + per review</td>
+              <td className="hidden sm:table-cell">Per seat + per review</td>
               <td>$30/seat/mo, 50 reviews included, then $1/review</td>
               <td>Overage model introduced March 2026</td>
             </tr>
             <tr>
               <td>Macroscope</td>
-              <td>Usage (per KB)</td>
+              <td className="hidden sm:table-cell">Usage (per KB)</td>
               <td>$0.05/KB of diff, 10 KB min (~$0.95–$1.50/PR)</td>
               <td>Replaced $30/dev seats March 2026</td>
             </tr>
             <tr>
               <td>Copilot code review</td>
-              <td>Plan + usage</td>
+              <td className="hidden sm:table-cell">Plan + usage</td>
               <td>Paid Copilot plan + AI Credits + Actions minutes</td>
               <td>Usage billing from June 1, 2026</td>
             </tr>
             <tr>
               <td>Cursor Bugbot</td>
-              <td>Usage (per run)</td>
+              <td className="hidden sm:table-cell">Usage (per run)</td>
               <td>~$1.00–$1.50 per run (no published rate card)</td>
               <td>Replaced $40/seat at renewals after June 8, 2026</td>
             </tr>
             <tr>
               <td>Postil</td>
-              <td>Flat per dev</td>
+              <td className="hidden sm:table-cell">Flat per dev</td>
               <td>$10/dev/mo + your own API key at provider rates</td>
               <td>Unchanged; hosted beta currently free</td>
             </tr>
@@ -598,7 +598,7 @@ export default function BestToolsArticle() {
         </ul>
       </div>
 
-      <div className="card mt-14 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
+      <div className="rounded-card shadow-card mt-14 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="serif-display text-2xl">Judge us the same way.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
@@ -606,13 +606,13 @@ export default function BestToolsArticle() {
             rate before you require the gate.
           </p>
         </div>
-        <div className="flex shrink-0 gap-4">
-          <Link href="/install" className="btn-primary">
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">
+          <Link href="/install" className="btn-primary text-center">
             Install the CLI
           </Link>
           <Link
             href="/why-postil"
-            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
+            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-center text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
           >
             Why Postil
           </Link>

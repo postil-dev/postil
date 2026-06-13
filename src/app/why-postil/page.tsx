@@ -315,7 +315,7 @@ export default function WhyPostilPage() {
       <h1 className="serif-display mt-4 max-w-3xl text-4xl md:text-5xl">
         The honest comparison.
       </h1>
-      <p className="mt-6 max-w-2xl text-lg text-ink-soft">
+      <p className="mt-6 max-w-3xl text-lg text-ink-soft">
         Every claim below links to its source: vendor pricing pages, public
         post-mortems, and independent audits as of June 2026. Where a
         competitor is better, we say so: CodeRabbit's platform coverage is more
@@ -339,25 +339,36 @@ export default function WhyPostilPage() {
             caption="Postil compared with CodeRabbit, Greptile, and Copilot code review across merge gate, silence metric, pricing model, self-hosting, and platform coverage."
           />
         </div>
-        <p className="mt-3 font-mono text-xs text-charcoal/60">
-          Compare in detail:{" "}
-          <Link href="/vs/coderabbit" className="text-rust underline">
+        <p className="mt-3 flex flex-wrap gap-x-4 gap-y-2 font-mono text-[13px] text-charcoal/75">
+          <span>Compare in detail:</span>
+          <Link
+            href="/vs/coderabbit"
+            className="whitespace-nowrap text-rust underline"
+          >
             Postil vs CodeRabbit
           </Link>
-          {" · "}
-          <Link href="/vs/greptile" className="text-rust underline">
+          <Link
+            href="/vs/greptile"
+            className="whitespace-nowrap text-rust underline"
+          >
             Postil vs Greptile
           </Link>
-          {" · "}
-          <Link href="/vs/qodo" className="text-rust underline">
+          <Link
+            href="/vs/qodo"
+            className="whitespace-nowrap text-rust underline"
+          >
             Postil vs Qodo
           </Link>
-          {" · "}
-          <Link href="/vs/macroscope" className="text-rust underline">
+          <Link
+            href="/vs/macroscope"
+            className="whitespace-nowrap text-rust underline"
+          >
             Postil vs Macroscope
           </Link>
-          {" · "}
-          <Link href="/vs/copilot" className="text-rust underline">
+          <Link
+            href="/vs/copilot"
+            className="whitespace-nowrap text-rust underline"
+          >
             Postil vs Copilot
           </Link>
         </p>
@@ -402,7 +413,7 @@ export default function WhyPostilPage() {
         </p>
       </div>
 
-      <div className="card mt-10 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
+      <div className="rounded-card shadow-card mt-10 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="serif-display text-3xl">See it on your own diff.</h2>
           <p className="mt-2 max-w-xl text-sm text-ivory/70">
@@ -410,13 +421,13 @@ export default function WhyPostilPage() {
             have nothing merge-relevant to say, you will hear nothing.
           </p>
         </div>
-        <div className="flex shrink-0 gap-4">
-          <Link href="/install" className="btn-primary">
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">
+          <Link href="/install" className="btn-primary text-center">
             Install the CLI
           </Link>
           <Link
             href="/how-it-works"
-            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
+            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-center text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
           >
             How it works
           </Link>

@@ -210,7 +210,7 @@ export default function VsCopilotPage() {
         </p>
       </div>
 
-      <div className="card mt-12 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
+      <div className="rounded-card shadow-card mt-12 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="serif-display text-2xl">
             Comments don&apos;t stop merges.
@@ -220,13 +220,13 @@ export default function VsCopilotPage() {
             like it. Install the CLI and try it on your next diff.
           </p>
         </div>
-        <div className="flex shrink-0 gap-4">
-          <Link href="/install" className="btn-primary">
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">
+          <Link href="/install" className="btn-primary text-center">
             Install the CLI
           </Link>
           <Link
             href="/why-postil"
-            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
+            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-center text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
           >
             Full comparison
           </Link>
