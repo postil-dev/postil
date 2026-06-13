@@ -11,6 +11,7 @@ import {
   type RespondJobPayload,
   type ReviewJobPayload,
 } from "@/lib/queue";
+import { isPermanentFailure } from "./failure-classifier";
 import { postRespondFailureComment, runRespondJob } from "./respond";
 import { runReviewJob } from "./review";
 import { watchdogPass } from "./watchdog";
@@ -73,8 +74,16 @@ async function claimLoop(slot: number): Promise<void> {
       console.log(`[worker ${slot}] job ${job.id} done in ${Date.now() - started}ms`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const outcome = await failJob(pool, job, message);
-      console.error(`[worker ${slot}] job ${job.id} ${outcome}: ${message}`);
+      // Deterministic, non-retryable errors (broken CA store, missing CLI
+      // binary, build/loader defect, malformed payload, unsupported forge)
+      // fail straight to `failed`: a retry against the same image would fail
+      // identically and just burn the attempt budget. Everything else (5xx,
+      // 429, timeouts, network/socket) follows the normal backoff retry.
+      const permanent = isPermanentFailure(message);
+      const outcome = await failJob(pool, job, message, { permanent });
+      console.error(
+        `[worker ${slot}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
+      );
       // Only the call that performed the permanent transition ("failed", not a
       // backoff retry or a watchdog-lost race) posts the one user-facing reply.
       if (outcome === "failed" && job.kind === "respond") {
