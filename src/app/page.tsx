@@ -135,8 +135,7 @@ export default function HomePage() {
           <Link href="/why-postil" className="text-rust underline">
             Why Postil
           </Link>
-          . Postil&apos;s own measured numbers will be published as they accrue;
-          dashboard figures shown on this page are illustrative.
+          .
         </p>
       </Section>
 
@@ -315,44 +314,60 @@ export default function HomePage() {
         title="Silence is a metric, not a hope."
       >
         <div className="grid items-center gap-10 lg:grid-cols-2">
+          {/*
+            Measured numbers, not a mockup. Every figure below comes from a
+            recorded run of the released v0.1.0 CLI over 40 recently merged
+            public pull requests (8 repos across JS/TS, Python, Go, Rust;
+            deepseek-v4-pro; one run each), 2026-06-13. 26 of 40 were silent
+            (65%); the 18 findings it did ship fell in confidence buckets
+            [0,0,0,8,10]. Full methodology and raw envelopes are recorded
+            privately in measurements/measurements-2026-06-13.md. When a newer
+            run supersedes this, replace silenceRate and buckets together from
+            that run's aggregate; do not hand-tune.
+          */}
           <figure className="card p-8">
             <div className="flex items-center justify-between">
-              <p className="eyebrow">Silence dashboard</p>
+              <p className="eyebrow">Silence rate</p>
               <span className="rounded-full border border-stone px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-charcoal/60">
-                illustrative
+                n = 40
               </span>
             </div>
             <div className="mt-4 flex items-end gap-3">
-              <span className="serif-display text-6xl">68%</span>
+              <span className="serif-display text-6xl">65%</span>
               <span className="pb-2 text-sm text-charcoal/70">
-                of PRs passed in silence
+                of recent public PRs reviewed in silence
               </span>
             </div>
             <div className="mt-8">
               <p className="font-mono text-xs text-charcoal/60">
-                confidence distribution of shipped findings
+                confidence of the findings it did ship
               </p>
               {(() => {
                 const bars = [
-                  { bucket: "0.0–0.2", value: 4 },
-                  { bucket: "0.2–0.4", value: 7 },
-                  { bucket: "0.4–0.6", value: 12 },
-                  { bucket: "0.6–0.8", value: 38 },
-                  { bucket: "0.8–1.0", value: 74 },
+                  { bucket: "0.0–0.2", count: 0 },
+                  { bucket: "0.2–0.4", count: 0 },
+                  { bucket: "0.4–0.6", count: 0 },
+                  { bucket: "0.6–0.8", count: 8 },
+                  { bucket: "0.8–1.0", count: 10 },
                 ];
+                const max = Math.max(...bars.map((b) => b.count));
                 return (
                   <div
                     role="img"
-                    aria-label={`Confidence distribution of shipped findings (illustrative): ${bars
-                      .map((b) => `${b.bucket} confidence, ${b.value} findings`)
-                      .join("; ")}. Findings concentrate at high confidence.`}
+                    aria-label={`Confidence of the 18 findings Postil shipped across 40 public pull requests: ${bars
+                      .filter((b) => b.count > 0)
+                      .map((b) => `${b.count} at ${b.bucket}`)
+                      .join("; ")}. Every shipped finding was at 0.6 confidence or higher.`}
                   >
                     <div className="mt-3 flex h-24 items-end gap-2">
                       {bars.map((b, i) => (
                         <div
                           key={b.bucket}
                           className="flex-1 rounded-t-[3px] bg-gate"
-                          style={{ height: `${b.value}%`, opacity: 0.5 + i * 0.12 }}
+                          style={{
+                            height: `${max ? (b.count / max) * 100 : 0}%`,
+                            opacity: 0.5 + i * 0.12,
+                          }}
                         />
                       ))}
                     </div>
@@ -369,7 +384,7 @@ export default function HomePage() {
               })()}
             </div>
             <figcaption className="mt-4 font-mono text-[11px] text-charcoal/55">
-              Illustrative sample, not a live account.
+              Measured across 40 recently merged public pull requests, June 2026.
             </figcaption>
           </figure>
           <div>
