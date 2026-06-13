@@ -98,7 +98,7 @@ export default function VsCopilotPage() {
           rows={ROWS}
           caption="Postil compared with GitHub Copilot code review across merge gate, silence metric, pricing, cost predictability, model choice, self-hosting, and platforms."
         />
-        <p className="mt-3 font-mono text-xs text-charcoal/60">
+        <p className="mt-3 font-mono text-xs text-charcoal/70">
           Compiled from vendor pricing and documentation as of June 2026.
         </p>
       </div>

@@ -44,7 +44,7 @@ export default function BenchmarkAuthorArticle() {
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">
         Every AI code review benchmark has the same winner: its author
       </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/60">
+      <p className="mt-4 font-mono text-sm text-charcoal/70">
         June 2026 · Postil team
       </p>
 

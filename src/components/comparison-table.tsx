@@ -105,7 +105,7 @@ export function ComparisonTable({
                 <div key={i} className="flex gap-3">
                   <dt
                     className={`w-28 shrink-0 font-mono text-xs ${
-                      i === 0 ? "text-gate" : "text-charcoal/60"
+                      i === 0 ? "text-gate" : "text-charcoal/70"
                     }`}
                   >
                     {columns[i]}

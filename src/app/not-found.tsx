@@ -27,7 +27,7 @@ export default function NotFound() {
         </Link>
       </div>
       <div className="rule mt-12 w-full max-w-xl pt-6">
-        <p className="font-mono text-xs text-charcoal/60">
+        <p className="font-mono text-xs text-charcoal/70">
           Looking for something specific?{" "}
           <Link href="/why-postil" className="text-rust underline">
             Why Postil

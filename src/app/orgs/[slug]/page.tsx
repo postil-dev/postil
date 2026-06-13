@@ -202,7 +202,7 @@ export default async function OrgDashboardPage({
             <span className="serif-display text-6xl">
               {silenceRate === null ? "—" : `${silenceRate}%`}
             </span>
-            <span className="pb-2 text-sm text-charcoal/60">
+            <span className="pb-2 text-sm text-charcoal/70">
               of {silenceAgg.completed} completed reviews said nothing
             </span>
           </div>
@@ -224,7 +224,7 @@ export default async function OrgDashboardPage({
                     opacity: 0.45 + i * 0.13,
                   }}
                 />
-                <span className="font-mono text-[10px] text-charcoal/40">
+                <span className="font-mono text-[10px] text-charcoal/70">
                   {BUCKET_LABELS[i]}
                 </span>
               </div>
@@ -245,7 +245,7 @@ export default async function OrgDashboardPage({
             <span className="serif-display text-6xl">
               {medianDurationMs === null ? "—" : formatMs(medianDurationMs)}
             </span>
-            <span className="pb-2 text-sm text-charcoal/60">engine wall-clock</span>
+            <span className="pb-2 text-sm text-charcoal/70">engine wall-clock</span>
           </div>
           <p className="mt-4 text-sm text-ink-soft">
             Median time the review engine spends per pull request, measured from
@@ -258,7 +258,7 @@ export default async function OrgDashboardPage({
             <span className="serif-display text-6xl">
               {ungroundedRate === null ? "—" : `${ungroundedRate}%`}
             </span>
-            <span className="pb-2 text-sm text-charcoal/60">
+            <span className="pb-2 text-sm text-charcoal/70">
               {ungrounded} dropped, {shipped} shipped
             </span>
           </div>
@@ -303,7 +303,7 @@ export default async function OrgDashboardPage({
                       (r.envelope?.findings.length ?? "—")
                     )}
                   </td>
-                  <td className="px-4 py-2.5 font-mono text-xs text-charcoal/60">
+                  <td className="px-4 py-2.5 font-mono text-xs text-charcoal/70">
                     {r.envelope?.modelUsed ?? "—"}
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs">
@@ -332,7 +332,7 @@ export default async function OrgDashboardPage({
               <div key={repo.id} className="flex items-center justify-between px-4 py-3">
                 <div>
                   <p className="font-mono text-sm">{repo.fullName}</p>
-                  <p className="font-mono text-[11px] text-charcoal/40">
+                  <p className="font-mono text-[11px] text-charcoal/70">
                     {repo.private ? "private" : "public"}
                   </p>
                 </div>

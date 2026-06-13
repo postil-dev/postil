@@ -17,7 +17,7 @@ export function PrMock() {
           <span className="h-2.5 w-2.5 rounded-full bg-stone" />
           <span className="ml-2">github.com/acme/payments · #4127</span>
         </div>
-        <span className="rounded-full border border-stone px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-charcoal/60">
+        <span className="rounded-full border border-stone px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-charcoal/70">
           illustrative
         </span>
       </div>
@@ -27,7 +27,7 @@ export function PrMock() {
           <p className="serif-display text-lg text-charcoal">
             Add refund webhook handler
           </p>
-          <p className="mt-0.5 font-mono text-xs text-charcoal/60">
+          <p className="mt-0.5 font-mono text-xs text-charcoal/70">
             feat/refund-webhook → main · 4 files, +212 −18
           </p>
         </div>
@@ -41,8 +41,8 @@ export function PrMock() {
             <li className="flex items-center gap-3 px-4 py-2.5">
               <StatusIcon kind="error" size={16} />
               <span className="font-mono text-charcoal">postil/gate</span>
-              <span className="text-softred">Failing</span>
-              <span className="ml-auto text-charcoal/60">
+              <span className="text-rust">Failing</span>
+              <span className="ml-auto text-charcoal/70">
                 1 gate-level finding (severity error)
               </span>
             </li>
@@ -50,7 +50,7 @@ export function PrMock() {
               <StatusIcon kind="warn" size={16} />
               <span className="font-mono text-charcoal">postil/review</span>
               <span className="text-gate">Neutral</span>
-              <span className="ml-auto text-charcoal/60">2 advisory comments</span>
+              <span className="ml-auto text-charcoal/70">2 advisory comments</span>
             </li>
           </ul>
         </div>
@@ -59,15 +59,15 @@ export function PrMock() {
         <div className="rounded-card border border-stone">
           <div className="flex items-center gap-2 border-b border-stone bg-paper px-4 py-2 font-mono text-xs text-charcoal/70">
             <span>src/billing/invoice.ts</span>
-            <span className="text-charcoal/40">·</span>
+            <span className="text-charcoal/70">·</span>
             <span>line 84</span>
           </div>
           <div className="bg-charcoal px-4 py-2.5 font-mono text-xs text-ivory/90">
-            <span className="text-ivory/40">84</span>{"  "}
+            <span className="text-ivory/60">84</span>{"  "}
             <span className="text-softred">- await issueRefund(charge.id)</span>
             <br />
-            <span className="text-ivory/40">84</span>{"  "}
-            <span className="text-gate/90">
+            <span className="text-ivory/60">84</span>{"  "}
+            <span className="text-[#a9bd9b]">
               + await issueRefund(charge.id, {"{"} idempotencyKey {"}"})
             </span>
           </div>
@@ -77,7 +77,7 @@ export function PrMock() {
               <span className="text-sm font-medium text-charcoal">
                 Postil — gate finding
               </span>
-              <span className="ml-auto font-mono text-[11px] text-charcoal/60">
+              <span className="ml-auto font-mono text-[11px] text-charcoal/70">
                 confidence 0.91 · kind: risk
               </span>
             </div>
@@ -91,7 +91,7 @@ export function PrMock() {
         </div>
       </div>
 
-      <figcaption className="border-t border-stone px-5 py-3 font-mono text-[11px] text-charcoal/55">
+      <figcaption className="border-t border-stone px-5 py-3 font-mono text-[11px] text-charcoal/70">
         Illustration of the Postil PR surface. Not a screenshot of a live pull
         request.
       </figcaption>

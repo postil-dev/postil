@@ -88,7 +88,7 @@ export default function VsMacroscopePage() {
           rows={ROWS}
           caption="Postil compared with Macroscope across merge gate, silence metric, pricing, cost at high PR volume, self-hosting, and platforms."
         />
-        <p className="mt-3 font-mono text-xs text-charcoal/60">
+        <p className="mt-3 font-mono text-xs text-charcoal/70">
           Compiled from vendor pricing and documentation as of June 2026.
         </p>
       </div>

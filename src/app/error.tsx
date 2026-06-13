@@ -35,7 +35,7 @@ export default function Error({
         </Link>
       </div>
       {error.digest && (
-        <p className="rule mt-12 w-full max-w-xl pt-6 font-mono text-xs text-charcoal/60">
+        <p className="rule mt-12 w-full max-w-xl pt-6 font-mono text-xs text-charcoal/70">
           Reference: {error.digest}
         </p>
       )}

@@ -26,7 +26,7 @@ export function ReviewStatusBadge({
           status === "failed"
             ? "text-softred"
             : status === "stale"
-              ? "text-charcoal/40"
+              ? "text-charcoal/70"
               : "text-charcoal/80"
         }
       >
@@ -44,7 +44,7 @@ export function GateBadge({
   status: ReviewStatus;
 }) {
   if (status !== "completed" || gateFailing === null) {
-    return <span className="font-mono text-xs text-charcoal/40">—</span>;
+    return <span className="font-mono text-xs text-charcoal/70">—</span>;
   }
   return gateFailing ? (
     <span className="inline-flex items-center gap-1.5 font-mono text-xs text-rust">
