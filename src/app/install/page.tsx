@@ -103,6 +103,9 @@ export default function InstallPage() {
               tells you exactly what is wrong if anything is:
             </p>
 
+            {/* Illustrative demo output: the doctor checks and their pass/fail
+                behavior are real, but the latency (84 ms) and remote name are
+                example values, not a captured run. */}
             <Terminal title="postil doctor">
               <code>
                 <span className="t-dim">$</span> postil doctor{"\n"}
