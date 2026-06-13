@@ -99,31 +99,30 @@ export default function InstallPage() {
             </Terminal>
             <p className="text-sm text-ink-soft">
               Always run <code className="font-mono text-xs">postil doctor</code>{" "}
-              before your first review. It checks the endpoint, key, and model and
-              tells you exactly what is wrong if anything is:
+              before your first review. It checks the resolved config, the git
+              work tree, your API key, a live probe of the model endpoint, and
+              any forge tokens, and tells you exactly what is wrong if anything
+              is:
             </p>
 
-            {/* Illustrative demo output: the doctor checks and their pass/fail
-                behavior are real, but the latency (84 ms) and remote name are
-                example values, not a captured run. */}
+            {/* Illustrative demo output: the five checks, their order, and the
+                [ok  ]/[FAIL] format match the CLI; the endpoint detail is from a
+                real reachable run, but the exact strings are example values. */}
             <Terminal title="postil doctor">
               <code>
                 <span className="t-dim">$</span> postil doctor{"\n"}
+                <span className="t-green">[ok  ]</span>
+                {" config           loaded from .postil.yaml (model: deepseek/deepseek-v4-pro, gate failOn: error, minConfidence: 0.6)\n"}
+                <span className="t-green">[ok  ]</span>
+                {" git              inside a git work tree\n"}
+                <span className="t-green">[ok  ]</span>
+                {" api key          POSTIL_API_KEY or OPENROUTER_API_KEY is set (value not shown)\n"}
+                <span className="t-green">[ok  ]</span>
+                {" model endpoint   https://openrouter.ai/api/v1 answered for model deepseek/deepseek-v4-pro\n"}
+                <span className="t-green">[ok  ]</span>
+                {" forge tokens     GITHUB_TOKEN set, GITLAB_TOKEN unset (only needed for remote review)\n"}
                 {"\n"}
-                <span className="t-green">ok</span>
-                {"   binary    postil 0.1.0 (x86_64-unknown-linux-gnu)\n"}
-                <span className="t-green">ok</span>
-                {"   config    .postil.yaml found (fail-on: error)\n"}
-                <span className="t-green">ok</span>
-                {"   provider  openrouter — key present (env OPENROUTER_API_KEY)\n"}
-                <span className="t-green">ok</span>
-                {"   endpoint  https://openrouter.ai/api/v1 reachable (84 ms)\n"}
-                <span className="t-green">ok</span>
-                {"   model     deepseek/deepseek-v4-pro available\n"}
-                <span className="t-green">ok</span>
-                {"   forge     git remote: github.com/acme/payments\n"}
-                {"\n"}
-                <span className="t-dim">all checks passed · ready to review</span>
+                <span className="t-dim">postil doctor: ready.</span>
               </code>
             </Terminal>
             <p className="text-sm text-ink-soft">
@@ -258,7 +257,8 @@ jobs:
           </div>
           <div className="min-w-0">
             <p className="text-ink-soft">
-              Install the App, pick repositories, open a pull request. Two
+              Once published, the App installs in a click: pick repositories,
+              open a pull request, and two
               check-runs appear; require{" "}
               <code className="font-mono text-sm">postil/gate</code> in branch
               protection when you are ready to make it binding. No keys leave
@@ -268,19 +268,16 @@ jobs:
               opens PRs or pushes commits.
             </p>
             <p className="mt-3 text-sm text-ink-soft">
-              The hosted App is being published; the CLI and the GitHub Action
-              work today.
+              The hosted App is not published yet. The CLI and the GitHub Action
+              work today, and you can run the full review service yourself in the
+              meantime. This page will link to the App once it ships.
             </p>
             <div className="mt-5 flex flex-wrap items-center gap-4">
-              <a
-                href="https://github.com/apps/postil"
-                className="btn-primary"
-                rel="noopener"
-              >
-                Install from GitHub
-              </a>
+              <Link href="/docs/self-hosted" className="btn-primary">
+                Run it yourself
+              </Link>
               <span className="font-mono text-xs text-charcoal/60">
-                hosted beta — free while in beta
+                GitHub App: coming soon
               </span>
             </div>
             <p className="mt-4 text-sm text-ink-soft">
