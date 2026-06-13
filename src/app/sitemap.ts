@@ -29,6 +29,12 @@ const ROUTES: {
   { path: "/vs/copilot", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-06-13" },
   { path: "/blog", priority: 0.7, changeFrequency: "weekly", lastModified: "2026-06-13" },
   {
+    path: "/blog/where-does-your-code-go",
+    priority: 0.7,
+    changeFrequency: "monthly",
+    lastModified: "2026-06-13",
+  },
+  {
     path: "/blog/self-hosted-ai-code-review",
     priority: 0.7,
     changeFrequency: "monthly",
