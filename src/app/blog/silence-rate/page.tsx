@@ -7,16 +7,39 @@ export const metadata: Metadata = {
     "Developers stop reading AI reviewers above roughly 30% false positives. The metric that predicts it is the one no vendor benchmark reports: how often the tool correctly says nothing.",
   alternates: { canonical: "/blog/silence-rate" },
   openGraph: {
+    type: "article",
+    publishedTime: "2026-06-13T00:00:00.000Z",
     title: "The silence rate: the AI code review metric nobody publishes",
     description:
       "Developers stop reading AI reviewers above roughly 30% false positives. The metric that predicts it: how often the tool correctly says nothing.",
     url: "https://postil.dev/blog/silence-rate",
+    images: ["/opengraph-image"],
+  },
+};
+
+const articleJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  headline: "The silence rate: the AI code review metric nobody publishes",
+  description:
+    "Developers stop reading AI reviewers above roughly 30% false positives. The metric that predicts it is the one no vendor benchmark reports: how often the tool correctly says nothing.",
+  url: "https://postil.dev/blog/silence-rate",
+  datePublished: "2026-06-13",
+  image: "https://postil.dev/opengraph-image",
+  author: {
+    "@type": "Organization",
+    name: "Postil",
+    url: "https://postil.dev",
   },
 };
 
 export default function SilenceRateArticle() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16 md:py-20">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
+      />
       <p className="eyebrow">Blog</p>
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">
         The silence rate: the AI code review metric nobody publishes

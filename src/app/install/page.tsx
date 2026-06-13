@@ -13,6 +13,7 @@ export const metadata: Metadata = {
     description:
       "Install the Postil CLI in one line, run it in CI, on GitLab, or via the hosted GitHub App.",
     url: "https://postil.dev/install",
+    images: ["/opengraph-image"],
   },
 };
 

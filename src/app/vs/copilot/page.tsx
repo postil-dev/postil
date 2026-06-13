@@ -16,6 +16,7 @@ export const metadata: Metadata = {
     description:
       "A blocking merge gate where Copilot is comment-only, flat BYO-key pricing instead of AI Credits, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/copilot",
+    images: ["/opengraph-image"],
   },
 };
 

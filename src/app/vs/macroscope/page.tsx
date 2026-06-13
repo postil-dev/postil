@@ -16,6 +16,7 @@ export const metadata: Metadata = {
     description:
       "Flat BYO-key pricing instead of per-kilobyte billing, a blocking merge gate instead of neutral checks, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/macroscope",
+    images: ["/opengraph-image"],
   },
 };
 

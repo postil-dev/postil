@@ -27,7 +27,11 @@ POSTIL_BIN = "/usr/local/bin/postil"
 processes = ["web"]
 internal_port = 3000
 force_https = true
-auto_stop_machines = "stop"
+# The control plane must stay warm to receive GitHub webhooks promptly; a
+# stopped machine that the proxy has to cold-start drops/retries deliveries and,
+# with two web machines, produced lease contention and machine-API rate-limit
+# errors. Keep web machines running rather than auto-stopping them.
+auto_stop_machines = false
 auto_start_machines = true
 min_machines_running = 1
 

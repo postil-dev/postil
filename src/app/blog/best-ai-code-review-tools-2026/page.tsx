@@ -7,16 +7,39 @@ export const metadata: Metadata = {
     "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim dated and sourced, as of June 2026.",
   alternates: { canonical: "/blog/best-ai-code-review-tools-2026" },
   openGraph: {
+    type: "article",
+    publishedTime: "2026-06-13T00:00:00.000Z",
     title: "Best AI code review tools in 2026: an evidence-first comparison",
     description:
       "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim dated and sourced.",
     url: "https://postil.dev/blog/best-ai-code-review-tools-2026",
+    images: ["/opengraph-image"],
+  },
+};
+
+const articleJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  headline: "Best AI code review tools in 2026: an evidence-first comparison",
+  description:
+    "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim dated and sourced, as of June 2026.",
+  url: "https://postil.dev/blog/best-ai-code-review-tools-2026",
+  datePublished: "2026-06-13",
+  image: "https://postil.dev/opengraph-image",
+  author: {
+    "@type": "Organization",
+    name: "Postil",
+    url: "https://postil.dev",
   },
 };
 
 export default function BestToolsArticle() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16 md:py-20">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
+      />
       <p className="eyebrow">Blog</p>
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">
         Best AI code review tools in 2026: an evidence-first comparison

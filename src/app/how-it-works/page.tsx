@@ -14,6 +14,7 @@ export const metadata: Metadata = {
     description:
       "A small, auditable pipeline around one review engine: webhook, queue, CLI, check-runs. Fail-closed by design.",
     url: "https://postil.dev/how-it-works",
+    images: ["/opengraph-image"],
   },
 };
 
