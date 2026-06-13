@@ -11,7 +11,7 @@ import {
   type RespondJobPayload,
   type ReviewJobPayload,
 } from "@/lib/queue";
-import { runRespondJob } from "./respond";
+import { postRespondFailureComment, runRespondJob } from "./respond";
 import { runReviewJob } from "./review";
 import { watchdogPass } from "./watchdog";
 
@@ -75,6 +75,11 @@ async function claimLoop(slot: number): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       const outcome = await failJob(pool, job, message);
       console.error(`[worker ${slot}] job ${job.id} ${outcome}: ${message}`);
+      // Only the call that performed the permanent transition ("failed", not a
+      // backoff retry or a watchdog-lost race) posts the one user-facing reply.
+      if (outcome === "failed" && job.kind === "respond") {
+        await postRespondFailureComment(job.payload as RespondJobPayload);
+      }
     }
   }
 }
