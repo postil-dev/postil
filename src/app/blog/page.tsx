@@ -16,6 +16,14 @@ export const metadata: Metadata = {
 
 const POSTS = [
   {
+    href: "/blog/ai-code-review-pricing-2026",
+    date: "June 2026",
+    title:
+      "AI code review pricing in 2026: what a 20-developer team actually pays",
+    description:
+      "Four vendors changed pricing models in ninety days. We run the same 20-developer team through seven tools, assumptions stated, arithmetic shown, every price dated and sourced.",
+  },
+  {
     href: "/blog/best-ai-code-review-tools-2026",
     date: "June 2026",
     title: "Best AI code review tools in 2026: an evidence-first comparison",
