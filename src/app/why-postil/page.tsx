@@ -171,7 +171,7 @@ const wedges: Wedge[] = [
           <a href="https://kodus.io/pricing/" rel="noopener">
             Kodus
           </a>
-          , at $8 plus passthrough, with minimal distribution.
+          , at $10 per developer plus passthrough, with minimal distribution.
         </p>
       </>
     ),

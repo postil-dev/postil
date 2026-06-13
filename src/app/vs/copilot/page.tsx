@@ -149,7 +149,7 @@ export default function VsCopilotPage() {
           </a>{" "}
           per agentic run; legacy plans saw a{" "}
           <a
-            href="https://github.blog/news-insights/company-news/github-copilot-is-moving-to-usage-based-billing/"
+            href="https://docs.github.com/en/copilot/managing-copilot/understanding-and-managing-copilot-usage/understanding-and-managing-requests-in-copilot"
             rel="noopener"
           >
             13x premium-request multiplier
