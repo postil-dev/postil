@@ -29,6 +29,12 @@ LABEL org.opencontainers.image.title="postil-control-plane" \
       dev.postil.cli-rev="${POSTIL_CLI_REV}"
 WORKDIR /app
 ENV NODE_ENV=production
+# The baked postil CLI (Rust) makes outbound HTTPS calls to the forge and the
+# model endpoint; the slim bun image ships no root certificates, so without
+# this every review fails with "No CA certificates were loaded from the system".
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 COPY --from=build /app/.next ./.next
