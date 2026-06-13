@@ -17,6 +17,14 @@ export const metadata: Metadata = {
 
 const POSTS = [
   {
+    href: "/blog/ai-code-review-benchmarks",
+    date: "June 2026",
+    title:
+      "Every AI code review benchmark has the same winner: its author",
+    description:
+      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
+  },
+  {
     href: "/blog/why-copilot-cant-block-your-merge",
     date: "June 2026",
     title:

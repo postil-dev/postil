@@ -34,6 +34,12 @@ const ROUTES: {
     changeFrequency: "monthly",
     lastModified: "2026-06-13",
   },
+  {
+    path: "/blog/ai-code-review-benchmarks",
+    priority: 0.7,
+    changeFrequency: "monthly",
+    lastModified: "2026-06-13",
+  },
   { path: "/blog/silence-rate", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-13" },
   {
     path: "/blog/ai-code-review-pricing-2026",
