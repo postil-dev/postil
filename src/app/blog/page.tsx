@@ -17,6 +17,14 @@ export const metadata: Metadata = {
 
 const POSTS = [
   {
+    href: "/blog/why-copilot-cant-block-your-merge",
+    date: "June 2026",
+    title:
+      "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
+    description:
+      "Branch protection blocks on required status checks that conclude failure, not on review comments or neutral checks. Copilot posts a Comment, Claude Code review and Macroscope conclude neutral. The mechanic, and how a real two-check gate works.",
+  },
+  {
     href: "/blog/ai-code-review-pricing-2026",
     date: "June 2026",
     title:

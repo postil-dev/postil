@@ -41,6 +41,12 @@ const ROUTES: {
     changeFrequency: "monthly",
     lastModified: "2026-06-13",
   },
+  {
+    path: "/blog/why-copilot-cant-block-your-merge",
+    priority: 0.7,
+    changeFrequency: "monthly",
+    lastModified: "2026-06-13",
+  },
   { path: "/privacy", priority: 0.4, changeFrequency: "yearly", lastModified: "2026-06-12" },
   { path: "/terms", priority: 0.4, changeFrequency: "yearly", lastModified: "2026-06-12" },
   { path: "/docs", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-06-12" },
