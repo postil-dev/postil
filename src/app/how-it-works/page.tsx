@@ -69,7 +69,7 @@ export default function HowItWorksPage() {
           {PIPELINE.map((stage, i) => (
             <div key={stage.step} className="relative">
               <div className="card h-full p-5">
-                <p className="font-mono text-xs text-charcoal/40">
+                <p className="font-mono text-xs text-charcoal/70">
                   step {stage.step}
                 </p>
                 <p className="serif-display mt-1 text-xl">{stage.name}</p>
@@ -232,7 +232,11 @@ export default function HowItWorksPage() {
           </div>
           <div className="card p-6">
             <p className="eyebrow">Stored per review</p>
-            <pre className="mt-4 overflow-x-auto font-mono text-xs leading-relaxed text-ink-soft">{`{
+            <pre
+              className="mt-4 overflow-x-auto font-mono text-xs leading-relaxed text-ink-soft"
+              tabIndex={0}
+              aria-label="Code sample"
+            >{`{
   "summary": "Refund path missing idempotency key.",
   "silent": false,
   "findings": [
@@ -250,7 +254,7 @@ export default function HowItWorksPage() {
   "gate": { "failOn": "error", "failing": true },
   "usage": { "promptTokens": 8421, "completionTokens": 612 }
 }`}</pre>
-            <p className="mt-2 font-mono text-[10px] text-charcoal/55">
+            <p className="mt-2 font-mono text-[10px] text-charcoal/70">
               Illustrative envelope.
             </p>
             <p className="mt-3 text-xs text-charcoal/50">

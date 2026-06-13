@@ -170,8 +170,8 @@ export default function CliReferencePage() {
             <table>
               <thead>
                 <tr>
-                  <th>Flag</th>
-                  <th>Description</th>
+                  <th scope="col">Flag</th>
+                  <th scope="col">Description</th>
                 </tr>
               </thead>
               <tbody>
@@ -193,8 +193,8 @@ export default function CliReferencePage() {
       <table>
         <thead>
           <tr>
-            <th>Variable</th>
-            <th>Purpose</th>
+            <th scope="col">Variable</th>
+            <th scope="col">Purpose</th>
           </tr>
         </thead>
         <tbody>
@@ -219,8 +219,8 @@ export default function CliReferencePage() {
       <table>
         <thead>
           <tr>
-            <th>Code</th>
-            <th>Meaning</th>
+            <th scope="col">Code</th>
+            <th scope="col">Meaning</th>
           </tr>
         </thead>
         <tbody>
@@ -246,7 +246,7 @@ export default function CliReferencePage() {
       </table>
 
       <h2>Examples</h2>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`# review staged changes locally
 postil review --staged
 

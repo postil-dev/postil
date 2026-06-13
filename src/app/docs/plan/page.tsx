@@ -35,7 +35,7 @@ export default function PlanPage() {
       </p>
 
       <h2>Usage</h2>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`# store envelopes as you review, then preview a candidate config
 postil review --staged --output-json > .cache/envelopes/r1.json
 postil plan --envelopes .cache/envelopes --config .postil.candidate.yaml

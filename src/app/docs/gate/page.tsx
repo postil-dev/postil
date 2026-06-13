@@ -22,9 +22,9 @@ export default function GatePage() {
       <table>
         <thead>
           <tr>
-            <th>Check</th>
-            <th>Job</th>
-            <th>Fails when</th>
+            <th scope="col">Check</th>
+            <th scope="col">Job</th>
+            <th scope="col">Fails when</th>
           </tr>
         </thead>
         <tbody>
@@ -71,7 +71,7 @@ export default function GatePage() {
       </p>
 
       <h2>Choosing a threshold</h2>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`# .postil.yaml
 gate:
   failOn: error   # default: block only on error-severity findings

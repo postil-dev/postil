@@ -14,7 +14,13 @@ export function Terminal({ title = "postil", children, className }: TerminalProp
         <span className="h-2.5 w-2.5 rounded-full bg-[#3d464d]" />
         <span className="t-dim ml-2 text-xs">{title}</span>
       </div>
-      <pre className="overflow-x-auto px-4 py-4">{children}</pre>
+      <pre
+        className="overflow-x-auto px-4 py-4"
+        tabIndex={0}
+        aria-label={`${title} terminal output`}
+      >
+        {children}
+      </pre>
     </div>
   );
 }

@@ -44,7 +44,7 @@ export default function SelfHostedAiCodeReviewArticle() {
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">
         Self-hosted AI code review without the 500-seat enterprise gate
       </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/60">
+      <p className="mt-4 font-mono text-sm text-charcoal/70">
         June 2026 · Postil team
       </p>
 
@@ -182,7 +182,7 @@ export default function SelfHostedAiCodeReviewArticle() {
           and the worker, via Docker Compose. It is free forever with no seat
           limit. The concrete path:
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`git clone https://github.com/postil-dev/postil
 cd postil
 cp .env.example .env
@@ -203,7 +203,7 @@ docker compose exec web bun run db:migrate`}</code>
           runs a live probe that proves the whole chain in one shot. Point it at
           Ollama with a one-line block:
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`POSTIL_API_BASE=http://ollama:11434/v1
 POSTIL_API_KEY=ollama        # any non-empty value
 REVIEW_MODEL=qwen3-coder:30b`}</code>
@@ -211,7 +211,7 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
         <p>
           Then run the doctor inside the worker container. The output shape:
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`docker compose exec worker postil doctor
 
   endpoint  http://ollama:11434/v1 ... ok (142ms)
@@ -238,7 +238,7 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
           key is not a feature bolted on for the enterprise tier; it is the only
           way the tool talks to a model at all.
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`# OpenRouter (default)
 POSTIL_API_BASE=https://openrouter.ai/api/v1
 POSTIL_API_KEY=sk-or-v1-...

@@ -38,7 +38,7 @@ export default function ConfigPage() {
       </p>
 
       <h2>Full reference</h2>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`# .postil.yaml — every key, with defaults
 enabled: true            # disable reviews for this repo entirely
 
@@ -93,7 +93,7 @@ model:
         a <code>guardrail</code> finding that quotes the rule it breaks — see
         the <Link href="/docs/envelope">envelope schema</Link>.
       </p>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`# .postil/guardrails.md
 - Every new API route must enforce org-scoped authorization.
 - Database migrations must be reversible.
@@ -104,8 +104,8 @@ model:
       <table>
         <thead>
           <tr>
-            <th>Variable</th>
-            <th>Meaning</th>
+            <th scope="col">Variable</th>
+            <th scope="col">Meaning</th>
           </tr>
         </thead>
         <tbody>

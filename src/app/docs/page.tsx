@@ -69,7 +69,7 @@ export default function DocsIndexPage() {
       </div>
       <div className="prose-postil mt-12">
         <h2>The short version</h2>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`# local
 curl -fsSL https://postil.dev/install.sh | sh
 # or: cargo install --git https://github.com/postil-dev/postil-cli --locked

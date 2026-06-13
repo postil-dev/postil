@@ -17,7 +17,7 @@ export default function SelfHostedPage() {
       </p>
 
       <h2>Quickstart</h2>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`git clone https://github.com/postil-dev/postil
 cd postil
 cp .env.example .env
@@ -37,20 +37,20 @@ docker compose exec web bun run db:migrate`}</code>
 
       <h2>Pointing it at a model</h2>
       <h3>OpenRouter (default)</h3>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=https://openrouter.ai/api/v1
 POSTIL_API_KEY=sk-or-v1-...
 REVIEW_MODEL=deepseek/deepseek-v4-pro
 REVIEW_MODEL_CASCADE=qwen/qwen3-coder`}</code>
       </pre>
       <h3>Azure OpenAI</h3>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
 POSTIL_API_KEY=<azure-api-key>
 REVIEW_MODEL=<deployment-name>`}</code>
       </pre>
       <h3>Ollama (local, no API key)</h3>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=http://ollama:11434/v1
 POSTIL_API_KEY=ollama        # any non-empty value
 REVIEW_MODEL=qwen3-coder:30b`}</code>
@@ -70,7 +70,7 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
       {/* Illustrative demo output: the doctor checks and their pass/fail
           behavior are real, but the latencies (142ms, 1.2s first token) are
           example values, not a captured run. */}
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`docker compose exec worker postil doctor
 
   endpoint  http://ollama:11434/v1 ... ok (142ms)
