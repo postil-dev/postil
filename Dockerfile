@@ -31,19 +31,36 @@ WORKDIR /app
 ENV NODE_ENV=production
 # The baked postil CLI (Rust) makes outbound HTTPS calls to the forge and the
 # model endpoint; the slim bun image ships no root certificates, so without
-# this every review fails with "No CA certificates were loaded from the system".
+# ca-certificates every review fails with "No CA certificates were loaded from
+# the system". curl fetches the pinned CLI below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 COPY --from=build /app/.next ./.next
-# Bake the pinned CLI (vendor/postil if provided; see vendor/README.md).
-RUN if [ -f vendor/postil ]; then \
+# Bake the pinned postil CLI into the image. Prefer a vendored binary if the
+# build context carries one; otherwise fetch and checksum-verify the pinned
+# release directly. The remote build context does not reliably carry an
+# untracked binary, so the in-build fetch is the dependable path. Fail the
+# build if neither is available rather than ship a worker that cannot review.
+RUN set -eu; \
+    if [ -f vendor/postil ]; then \
       install -m 0755 vendor/postil /usr/local/bin/postil; \
+    elif [ -n "${POSTIL_CLI_REV}" ] && [ "${POSTIL_CLI_REV}" != "unpinned" ]; then \
+      base="https://github.com/postil-dev/postil-cli/releases/download/${POSTIL_CLI_REV}"; \
+      art="postil-x86_64-unknown-linux-gnu.tar.gz"; \
+      curl -fsSL -o "/tmp/${art}" "${base}/${art}"; \
+      curl -fsSL -o "/tmp/${art}.sha256" "${base}/${art}.sha256"; \
+      (cd /tmp && sha256sum -c "${art}.sha256"); \
+      tar -xzf "/tmp/${art}" -C /tmp postil; \
+      install -m 0755 /tmp/postil /usr/local/bin/postil; \
+      rm -f "/tmp/${art}" "/tmp/${art}.sha256" /tmp/postil; \
     else \
-      echo "NOTE: vendor/postil not present; worker requires POSTIL_BIN at runtime"; \
-    fi
+      echo "ERROR: no postil CLI: vendor/postil absent and POSTIL_CLI_REV unset" >&2; \
+      exit 1; \
+    fi; \
+    /usr/local/bin/postil --version
 EXPOSE 3000
 # Web by default; the worker service overrides with: bun run worker
 CMD ["bun", "run", "start"]
