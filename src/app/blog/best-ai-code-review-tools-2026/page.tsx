@@ -184,7 +184,7 @@ export default function BestToolsArticle() {
             <tr>
               <td>Macroscope</td>
               <td className="hidden sm:table-cell">Usage (per KB)</td>
-              <td>$0.05/KB of diff, 10 KB min (~$0.95–$1.50/PR)</td>
+              <td>$0.05/KB of diff, 10 KB min ($0.50 floor, ~$1.50/PR)</td>
               <td>Replaced $30/dev seats March 2026</td>
             </tr>
             <tr>

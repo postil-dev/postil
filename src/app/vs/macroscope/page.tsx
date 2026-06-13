@@ -38,7 +38,7 @@ const ROWS: ComparisonRow[] = [
     feature: "Pricing",
     cells: [
       { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
-      { kind: "text", note: "$0.05/KB of diff (~$0.95–$1.50 typical PR)" },
+      { kind: "text", note: "$0.05/KB of diff ($0.50 min, ~$1.50 medium PR)" },
     ],
   },
   {
