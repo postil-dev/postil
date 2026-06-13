@@ -94,8 +94,13 @@ postil review --forge gitlab --repo group/project --pr 88`}</code>
           job result rather than a named external check-run.
         </li>
         <li>
-          The hosted Postil app and the interactive <code>@postil</code> bot are
-          GitHub-only today; on GitLab you run the CLI in CI.
+          The hosted Postil app is GitHub-only today; on GitLab you run the CLI
+          in CI. The CLI&apos;s interactive bot does work on GitLab:{" "}
+          <code>postil respond</code> replies to an <code>@postil</code> mention
+          on a GitLab merge request or issue (
+          <code>--forge gitlab</code> with <code>--pr</code> or{" "}
+          <code>--issue</code>). See the{" "}
+          <Link href="/docs/cli">CLI reference</Link>.
         </li>
         <li>
           Bitbucket and Azure DevOps are supported through the same forge

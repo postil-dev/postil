@@ -58,11 +58,11 @@ const COMMANDS = [
   {
     name: "postil respond",
     summary:
-      "Reply to an @postil mention on a pull request or issue (the interactive bot). GitHub only today. Review-and-answer only: it never opens PRs or pushes commits.",
+      "Reply to an @postil mention on a pull request or issue (the interactive bot). GitHub and GitLab cover issues and PRs/MRs; Bitbucket and Azure DevOps cover pull requests only. Review-and-answer only: it never opens PRs or pushes commits.",
     flags: [
       [
         "--forge <forge>",
-        "Code host. Only github is supported today (default github).",
+        "Code host: github, gitlab, bitbucket, or azure (default github). GitHub and GitLab accept --pr or --issue; Bitbucket and Azure DevOps accept --pr only.",
       ],
       ["--repo <repo>", "Repository as owner/name."],
       ["--pr <n>", "Pull request number the mention is on."],

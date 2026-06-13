@@ -217,10 +217,13 @@ const wedges: Wedge[] = [
           each including its self-managed/server variant via a base-URL
           environment variable — through the same forge interface. Bitbucket
           and Azure DevOps support is early: shipped and covered by tests, not
-          yet validated against live instances. The hosted app and the{" "}
-          <code>@postil</code> bot are GitHub-only today. Off GitHub the gate
-          is enforced as a CI job that passes or fails, rather than a named
-          external check-run like GitHub's <code>postil/gate</code>.
+          yet validated against live instances. The CLI's interactive{" "}
+          <code>@postil</code> bot (<code>postil respond</code>) follows the
+          same reach: GitHub and GitLab cover issues and PRs/MRs, Bitbucket and
+          Azure DevOps cover pull requests only. The hosted app is GitHub-only
+          today. Off GitHub the gate is enforced as a CI job that passes or
+          fails, rather than a named external check-run like GitHub's{" "}
+          <code>postil/gate</code>.
         </p>
       </>
     ),
