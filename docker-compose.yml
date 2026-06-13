@@ -26,7 +26,10 @@ services:
     build:
       context: .
       args:
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-unpinned}
+        # Pinned postil-cli release the runtime image fetches and bakes in.
+        # Override to a 40-hex commit or another release tag to upgrade the
+        # reviewer, or drop a binary at vendor/postil to skip the fetch.
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.1}
     env_file: .env
     environment:
       DATABASE_URL: postgres://postil:postil@db:5432/postil
@@ -46,7 +49,7 @@ services:
     build:
       context: .
       args:
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-unpinned}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.1}
     command: ["bun", "run", "worker"]
     env_file: .env
     environment:
@@ -56,5 +59,21 @@ services:
       db:
         condition: service_healthy
 
+  # Optional local model server. Not started by default; bring it up with
+  #   docker compose --profile ollama up -d
+  # then pull a model before the first review:
+  #   docker compose exec ollama ollama pull qwen3-coder:30b
+  # Set POSTIL_API_BASE=http://ollama:11434/v1 in .env so the worker can reach
+  # it on the compose network. Omit the profile and run Ollama on the host
+  # (POSTIL_API_BASE=http://host.docker.internal:11434/v1) if you prefer.
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    volumes:
+      - postil-ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+
 volumes:
   postil-pgdata:
+  postil-ollama:
