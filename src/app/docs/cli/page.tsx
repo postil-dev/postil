@@ -60,6 +60,10 @@ const COMMANDS = [
     summary:
       "Reply to an @postil mention on a pull request or issue (the interactive bot). GitHub only today. Review-and-answer only: it never opens PRs or pushes commits.",
     flags: [
+      [
+        "--forge <forge>",
+        "Code host. Only github is supported today (default github).",
+      ],
       ["--repo <repo>", "Repository as owner/name."],
       ["--pr <n>", "Pull request number the mention is on."],
       ["--issue <n>", "Issue number the mention is on."],
@@ -67,6 +71,7 @@ const COMMANDS = [
         "--comment <text>",
         "The maintainer's message text. Falls back to the POSTIL_COMMENT environment variable; prefer that in automation.",
       ],
+      ["--config <path>", "Explicit config file (bypasses discovery)."],
       ["--model <id>", "Model override for this reply."],
       ["--no-post", "Print the reply instead of posting it."],
     ],
@@ -95,7 +100,7 @@ const COMMANDS = [
   {
     name: "postil init",
     summary: "Write a starter .postil.yaml.",
-    flags: [],
+    flags: [["--force", "Overwrite an existing .postil.yaml."]],
   },
   {
     name: "postil doctor",
@@ -107,7 +112,9 @@ const COMMANDS = [
     name: "postil hook",
     summary:
       "Manage git hooks. postil hook install adds a pre-push hook that reviews outgoing commits.",
-    flags: [],
+    flags: [
+      ["install --force", "Overwrite an existing pre-push hook on install."],
+    ],
   },
 ] as const;
 
