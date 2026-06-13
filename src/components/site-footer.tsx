@@ -6,7 +6,7 @@ const COLUMNS = [
     title: "Product",
     links: [
       { href: "/why-postil", label: "Why Postil" },
-      { href: "/evidence", label: "Evidence" },
+      { href: "/evidence", label: "See it run" },
       { href: "/how-it-works", label: "How it works" },
       { href: "/pricing", label: "Pricing" },
       { href: "/security", label: "Security" },

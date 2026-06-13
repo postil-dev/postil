@@ -67,6 +67,9 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
         It checks the API base is reachable, the key is accepted, and the
         configured model responds:
       </p>
+      {/* Illustrative demo output: the doctor checks and their pass/fail
+          behavior are real, but the latencies (142ms, 1.2s first token) are
+          example values, not a captured run. */}
       <pre>
         <code>{`docker compose exec worker postil doctor
 

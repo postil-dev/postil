@@ -128,7 +128,11 @@ const wedges: Wedge[] = [
     body: (
       <>
         <p>
-          Greptile's{" "}
+          CodeRabbit Pro is{" "}
+          <a href="https://www.coderabbit.ai/pricing" rel="noopener">
+            $24 per seat per month on the annual plan
+          </a>{" "}
+          as of June 2026. Greptile's{" "}
           <a href="https://www.greptile.com/blog/greptile-v4" rel="noopener">
             March 2026 move
           </a>{" "}
@@ -162,12 +166,12 @@ const wedges: Wedge[] = [
           Postil charges a flat $10 per developer per month for orchestration
           and routes inference through your own OpenRouter, Anthropic, Azure,
           or Bedrock key at provider rates, with zero markup. Worst-case bill:
-          seats times ten. Only{" "}
+          seats times ten. As of June 2026, the closest comparable model we
+          found is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">
             Kodus
-          </a>{" "}
-          offers a comparable model today, at $8 plus passthrough, with minimal
-          distribution.
+          </a>
+          , at $8 plus passthrough, with minimal distribution.
         </p>
       </>
     ),
@@ -398,9 +402,13 @@ export default function WhyPostilPage() {
             Bitbucket or Azure DevOps today, CodeRabbit covers you now.
           </li>
           <li>
-            No benchmark shows any tool catching more than about 65% of real
-            bugs. Postil optimizes the precision of what it says, not the claim
-            that it catches everything.
+            No AI reviewer catches every real bug; independent benchmarks find
+            current systems{" "}
+            <a href="https://arxiv.org/abs/2509.01494" rel="noopener">
+              substantially underperform on real pull requests
+            </a>
+            . Postil optimizes the precision of what it says, not the claim that
+            it catches everything.
           </li>
           <li>
             The hosted app is in beta. The CLI and self-hosted stack are the

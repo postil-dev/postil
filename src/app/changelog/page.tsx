@@ -35,10 +35,10 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.1.0 (unreleased)",
-    date: "June 2026",
+    version: "0.1.0",
+    date: "June 13, 2026",
     summary:
-      "The current development version of the CLI and the gate contract. No tagged release exists yet; install via the one-line script, build from source, or pin the GitHub Action to a commit SHA.",
+      "First tagged release of the CLI and the gate contract. Signed multi-arch binaries are published on GitHub releases; you can also install via the one-line script, build from source, or pin the GitHub Action to a commit SHA.",
     changes: [
       {
         label: "Added",
@@ -179,15 +179,15 @@ export default function ChangelogPage() {
       </div>
 
       <p className="mt-14 font-mono text-xs text-charcoal/60">
-        Release notes and binaries will land on{" "}
+        Release notes and signed binaries are published on{" "}
         <a
           href="https://github.com/postil-dev/postil-cli/releases"
           className="text-rust underline"
           rel="noopener"
         >
           GitHub releases
-        </a>{" "}
-        with the first tagged release.
+        </a>
+        .
       </p>
     </div>
   );
