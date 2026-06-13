@@ -28,12 +28,14 @@ processes = ["web"]
 internal_port = 3000
 force_https = true
 # The control plane must stay warm to receive GitHub webhooks promptly; a
-# stopped machine that the proxy has to cold-start drops/retries deliveries and,
-# with two web machines, produced lease contention and machine-API rate-limit
-# errors. Keep web machines running rather than auto-stopping them.
+# stopped machine that the proxy has to cold-start drops/retries deliveries and
+# produced lease contention and machine-API rate-limit errors. Keep both web
+# machines running (min = 2, no auto-stop): with min = 1 the second machine sat
+# stopped and the proxy 5xx'd trying to wake it on demand during deploys, which
+# an operational audit caught hitting /api/webhooks/github.
 auto_stop_machines = false
 auto_start_machines = true
-min_machines_running = 1
+min_machines_running = 2
 
 [[http_service.checks]]
 interval = "15s"
