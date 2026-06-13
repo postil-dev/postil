@@ -18,26 +18,29 @@ export default function HomePage() {
       <section className="mx-auto max-w-6xl px-6 pt-16 md:pt-24">
         <div className="grid items-center gap-12 lg:grid-cols-[7fr_5fr]">
           <div>
-            <p className="eyebrow">A review gate for agent-speed development</p>
+            <p className="font-mono text-sm uppercase tracking-[0.16em] text-charcoal/80">
+              A review gate for agent-speed development
+            </p>
             <h1 className="serif-display mt-4 text-4xl md:text-[56px]">
               Trust the merge,
               <br />
               not the speed.
             </h1>
             <p className="mt-6 max-w-xl text-lg text-ink-soft">
-              We say less. What we say is right. Postil reviews every pull
+              AI code review that blocks bad merges. Postil reviews every pull
               request, comments only when it can affect the merge, and stays
-              completely silent on clean PRs.
+              completely silent on clean PRs. We say less. What we say is
+              right.
             </p>
             <div className="mt-8 flex flex-wrap gap-4">
               <Link href="/install" className="btn-primary">
-                Try the CLI
+                Install the CLI
               </Link>
               <Link href="/docs" className="btn-secondary">
                 Read the docs
               </Link>
             </div>
-            <p className="mt-6 font-mono text-xs text-charcoal/65">
+            <p className="mt-6 font-mono text-xs text-charcoal/75">
               Apache-2.0 CLI · free on public repos · self-hosted forever
             </p>
           </div>
@@ -50,7 +53,7 @@ export default function HomePage() {
               priority
               className="h-auto w-full"
             />
-            <p className="border-t border-stone px-4 py-3 font-mono text-xs text-charcoal/65">
+            <p className="border-t border-stone px-4 py-3 font-mono text-xs text-charcoal/75">
               fig. 1 — the gate: every change passes through, few are stopped
             </p>
           </div>
@@ -95,7 +98,7 @@ export default function HomePage() {
           decision. Everything else is silence — and silence is measured, not
           assumed.
         </p>
-        <p className="mt-6 max-w-3xl font-mono text-xs leading-relaxed text-charcoal/60">
+        <p className="mt-6 max-w-3xl font-mono text-[13px] leading-relaxed text-charcoal/75">
           Figures as of June 2026. Sources: the 28-PR audit is{" "}
           <a
             href="https://lycheeorg.dev/2025-09-13-code-rabbit/"
@@ -218,8 +221,10 @@ export default function HomePage() {
               </li>
               <li className="flex gap-3">
                 <span className="font-mono text-gate">→</span>
-                Require <code className="font-mono text-xs">postil/gate</code> in
-                branch protection to make the verdict binding.
+                <span>
+                  Require <code className="font-mono text-xs">postil/gate</code>{" "}
+                  in branch protection to make the verdict binding.
+                </span>
               </li>
               <li className="flex gap-3">
                 <span className="font-mono text-gate">→</span>A clean PR shows two
@@ -241,18 +246,24 @@ export default function HomePage() {
             <code>
               <span className="t-dim">$</span> postil review --staged{"\n"}
               {"\n"}
-              <span className="t-dim">reviewing 4 files, 212 added lines (model: deepseek/deepseek-v4-pro)</span>
+              <span className="t-dim">reviewing 4 files, 212 added lines</span>
+              {"\n"}
+              <span className="t-dim">(model: deepseek/deepseek-v4-pro)</span>
               {"\n"}
               {"\n"}
               <span className="t-red">error</span>{"  "}src/billing/invoice.ts:84{"\n"}
-              {"  "}Refund path skips idempotency key; a retried webhook double-credits{"\n"}
-              {"  "}the customer. (confidence 0.91, kind: risk){"\n"}
+              {"  "}Refund path skips idempotency key;{"\n"}
+              {"  "}a retried webhook double-credits the{"\n"}
+              {"  "}customer. (confidence 0.91, kind: risk){"\n"}
               {"\n"}
               <span className="t-rust">warn</span>{"   "}src/api/export.ts:31{"\n"}
-              {"  "}Unbounded query feeds the CSV stream; the new endpoint has no{"\n"}
-              {"  "}pagination or row cap. (confidence 0.78, kind: risk){"\n"}
+              {"  "}Unbounded query feeds the CSV stream;{"\n"}
+              {"  "}the new endpoint has no pagination or{"\n"}
+              {"  "}row cap. (confidence 0.78, kind: risk){"\n"}
               {"\n"}
-              <span className="t-dim">2 findings · 5 suppressed below confidence 0.6</span>
+              <span className="t-dim">2 findings</span>
+              {"\n"}
+              <span className="t-dim">5 suppressed below confidence 0.6</span>
               {"\n"}
               <span className="t-red">gate: failing (fail-on: error)</span>{"\n"}
               <span className="t-dim">exit 1</span>
@@ -306,8 +317,7 @@ export default function HomePage() {
             <div className="mt-4 flex items-end gap-3">
               <span className="serif-display text-6xl">68%</span>
               <span className="pb-2 text-sm text-charcoal/70">
-                of PRs passed in silence{" "}
-                <span className="text-charcoal/50">(illustrative)</span>
+                of PRs passed in silence
               </span>
             </div>
             <div className="mt-8">
@@ -331,12 +341,11 @@ export default function HomePage() {
                   >
                     <div className="mt-3 flex h-24 items-end gap-2">
                       {bars.map((b, i) => (
-                        <div key={b.bucket} className="flex-1">
-                          <div
-                            className="w-full rounded-t-[3px] bg-gate"
-                            style={{ height: `${b.value}%`, opacity: 0.5 + i * 0.12 }}
-                          />
-                        </div>
+                        <div
+                          key={b.bucket}
+                          className="flex-1 rounded-t-[3px] bg-gate"
+                          style={{ height: `${b.value}%`, opacity: 0.5 + i * 0.12 }}
+                        />
                       ))}
                     </div>
                     <div className="mt-2 flex justify-between font-mono text-[10px] text-charcoal/55">
@@ -423,7 +432,7 @@ export default function HomePage() {
 
       {/* Closing CTA */}
       <section className="mx-auto max-w-6xl px-6 pb-24">
-        <div className="card flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
+        <div className="rounded-card shadow-card flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="serif-display text-3xl">
               Review by default. Trust by evidence.
@@ -433,13 +442,13 @@ export default function HomePage() {
               have nothing to say, you will hear nothing.
             </p>
           </div>
-          <div className="flex shrink-0 gap-4">
-            <Link href="/install" className="btn-primary">
-              Try the CLI
+          <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">
+            <Link href="/install" className="btn-primary text-center">
+              Install the CLI
             </Link>
             <Link
               href="/docs"
-              className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
+              className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-center text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
             >
               Read the docs
             </Link>

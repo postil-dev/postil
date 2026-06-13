@@ -1,10 +1,4 @@
-"use client";
-
-import { useEffect, useRef, useState } from "react";
-
 import type { EvidenceCase, EvidenceFinding } from "@/data/evidence";
-
-type Theme = "light" | "dark";
 
 /** Minimal inline-markdown: **bold** and `code`. Input is trusted (our own envelopes). */
 function renderInline(text: string): React.ReactNode[] {
@@ -82,65 +76,22 @@ function Finding({ f }: { f: EvidenceFinding }) {
   );
 }
 
+/**
+ * Entrance animation wrapper. Pure CSS (motion-safe keyframes), so content is
+ * always visible without JavaScript and ends visible even if a paint races
+ * scroll position. Never gates visibility on an IntersectionObserver.
+ */
 function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [shown, setShown] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setShown(true);
-      return;
-    }
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) {
-            setShown(true);
-            io.disconnect();
-          }
-        }
-      },
-      { threshold: 0.12 },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
   return (
-    <div ref={ref} className={`ev-reveal${shown ? " ev-in" : ""}`} style={{ transitionDelay: `${delay}ms` }}>
+    <div className="ev-reveal" style={delay ? { animationDelay: `${delay}ms` } : undefined}>
       {children}
     </div>
   );
 }
 
 export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
-  const [theme, setTheme] = useState<Theme>("light");
-
-  useEffect(() => {
-    const stored = (typeof localStorage !== "undefined" && localStorage.getItem("ev-theme")) as
-      | Theme
-      | null;
-    if (stored === "light" || stored === "dark") {
-      setTheme(stored);
-    } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
-      setTheme("dark");
-    }
-  }, []);
-
-  function toggle() {
-    setTheme((t) => {
-      const next = t === "light" ? "dark" : "light";
-      try {
-        localStorage.setItem("ev-theme", next);
-      } catch {
-        // ignore (private mode)
-      }
-      return next;
-    });
-  }
-
   return (
-    <div className="ev-root" data-theme={theme}>
+    <div className="ev-root">
       <style>{EV_CSS}</style>
       <div className="ev-shell">
         <header className="ev-header">
@@ -155,15 +106,6 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
               starting point.
             </p>
           </Reveal>
-          <button
-            type="button"
-            className="ev-toggle"
-            onClick={toggle}
-            aria-pressed={theme === "dark"}
-            aria-label={`switch to ${theme === "light" ? "dark" : "light"} mode`}
-          >
-            {theme === "light" ? "◑ Dark" : "◐ Light"}
-          </button>
         </header>
 
         <div className="ev-meta-note">
@@ -252,12 +194,6 @@ const EV_CSS = `
   background: var(--bg); color: var(--ink);
   font-family: var(--font-inter, system-ui, sans-serif);
 }
-.ev-root[data-theme="dark"] {
-  --bg: #12171b; --panel: #1b2329; --panel-2: #222c33; --ink: #f3f1ec;
-  --ink-soft: #9aa6ae; --line: #2b353c; --green: #8fa585; --rust: #e0673f;
-  --red: #e6837d; --add-bg: rgba(143,165,133,0.14); --add-ink: #a9c39c;
-  --del-bg: rgba(230,131,125,0.12); --del-ink: #e6837d; --hunk: #b3a9d6;
-}
 .ev-shell { max-width: 64rem; margin: 0 auto; padding: 4rem 1.5rem 6rem; }
 .ev-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 2rem; }
 .ev-eyebrow { text-transform: uppercase; letter-spacing: 0.12em; font-size: 0.72rem;
@@ -265,10 +201,6 @@ const EV_CSS = `
 .ev-h1 { font-family: var(--font-source-serif, Georgia, serif); font-size: clamp(2rem, 5vw, 3rem);
   line-height: 1.05; margin: 0; color: var(--ink); }
 .ev-lede { margin: 1.25rem 0 0; max-width: 44rem; color: var(--ink-soft); font-size: 1.05rem; line-height: 1.6; }
-.ev-toggle { flex: none; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
-  border-radius: 999px; padding: 0.5rem 1rem; font-size: 0.85rem; cursor: pointer; transition: background 0.2s, border-color 0.2s; }
-.ev-toggle:hover { border-color: var(--green); }
-.ev-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .ev-meta-note { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin: 2rem 0 1rem;
   font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.78rem; color: var(--ink-soft); }
 .ev-case { border: 1px solid var(--line); background: var(--panel); border-radius: 14px;
@@ -280,12 +212,13 @@ const EV_CSS = `
 .ev-fail { color: var(--red); background: var(--del-bg); }
 .ev-pass { color: var(--green); background: var(--add-bg); }
 .ev-blurb { color: var(--ink-soft); margin: 0.75rem 0 1.25rem; line-height: 1.6; max-width: 50rem; }
-.ev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
-@media (max-width: 760px) { .ev-grid { grid-template-columns: 1fr; } }
+.ev-grid { display: grid; grid-template-columns: 1fr; gap: 1.25rem; }
+@media (min-width: 1024px) { .ev-grid { grid-template-columns: minmax(0, 1fr) 380px; } }
+.ev-col { min-width: 0; }
 .ev-col-label { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.7rem;
   font-weight: 600; color: var(--ink-soft); margin: 0 0 0.5rem; }
 .ev-diff { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
-  padding: 0.85rem 0; overflow-x: auto; margin: 0; }
+  padding: 0.85rem 0; overflow-x: auto; max-width: 100%; margin: 0; }
 .ev-diff code { display: block; font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.78rem; line-height: 1.5; }
 .ev-line { display: block; padding: 0 0.9rem; white-space: pre; }
 .ev-add { background: var(--add-bg); color: var(--add-ink); }
@@ -320,7 +253,14 @@ const EV_CSS = `
 .ev-cta { display: inline-block; color: var(--ink); border: 1px solid var(--green); background: var(--add-bg);
   padding: 0.6rem 1.25rem; border-radius: 999px; text-decoration: none; font-size: 0.9rem; }
 .ev-cta:hover { background: var(--green); color: var(--bg); }
-.ev-reveal { opacity: 0; transform: translateY(12px); transition: opacity 0.6s ease, transform 0.6s ease; }
-.ev-reveal.ev-in { opacity: 1; transform: none; }
-@media (prefers-reduced-motion: reduce) { .ev-reveal { opacity: 1; transform: none; transition: none; } }
+/* Entrance animation is a motion-safe enhancement: content is visible by
+   default and ends visible even without JavaScript. */
+.ev-reveal { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .ev-reveal { animation: ev-fade-in 0.6s ease backwards; }
+}
+@keyframes ev-fade-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
 `;

@@ -71,7 +71,7 @@ export function PricingCalculator() {
               max={200}
               value={devs}
               onChange={(e) => setDevs(Number(e.target.value))}
-              className="mt-2 w-full accent-[#C24A2A]"
+              className="slider mt-2 w-full"
             />
           </label>
           <label className="block">
@@ -86,7 +86,7 @@ export function PricingCalculator() {
               step={5}
               value={prsPerDev}
               onChange={(e) => setPrsPerDev(Number(e.target.value))}
-              className="mt-2 w-full accent-[#C24A2A]"
+              className="slider mt-2 w-full"
             />
             <span className="mt-1 block text-xs text-charcoal/65">
               Agent-heavy workflows can reach hundreds of PRs per developer per
@@ -104,7 +104,7 @@ export function PricingCalculator() {
               max={20}
               value={centsPerReview}
               onChange={(e) => setCentsPerReview(Number(e.target.value))}
-              className="mt-2 w-full accent-[#C24A2A]"
+              className="slider mt-2 w-full"
             />
             <span className="mt-1 block text-xs text-charcoal/65">
               Paid to your provider at their rates. Postil adds zero markup.

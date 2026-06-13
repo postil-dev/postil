@@ -23,8 +23,14 @@ function CellView({ cell }: { cell: Cell }) {
     <span className="inline-flex items-start gap-1.5">
       <StatusIcon kind={icon} size={15} className="mt-0.5 shrink-0" />
       <span>
-        <span className="sr-only">{label}. </span>
-        {cell.note && <span className="text-ink-soft">{cell.note}</span>}
+        {cell.note ? (
+          <>
+            <span className="sr-only">{label}. </span>
+            <span className="text-ink-soft">{cell.note}</span>
+          </>
+        ) : (
+          <span className="text-ink-soft">{label.toLowerCase()}</span>
+        )}
       </span>
     </span>
   );

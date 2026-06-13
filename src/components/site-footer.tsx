@@ -54,7 +54,13 @@ export function SiteFooter() {
       <div className="mx-auto max-w-6xl px-6 py-12">
         <div className="flex flex-col gap-10 md:flex-row md:justify-between">
           <div className="max-w-xs">
-            <Image src="/brand/postil-mark.svg" alt="" width={28} height={38} />
+            <Image
+              src="/brand/postil-mark.svg"
+              alt=""
+              width={28}
+              height={38}
+              loading="eager"
+            />
             <p className="serif-display mt-4 text-lg">
               Trust the merge, not the speed.
             </p>
@@ -82,7 +88,7 @@ export function SiteFooter() {
             ))}
           </div>
         </div>
-        <div className="rule mt-10 pt-6 text-xs text-charcoal/65">
+        <div className="rule mt-10 pt-6 text-xs text-charcoal/75">
           <p>
             Postil. CLI and Action are Apache-2.0. Hosted beta is free while in
             beta. No code is persisted by the control plane; review envelopes

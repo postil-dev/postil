@@ -9,7 +9,7 @@ export interface NavItem {
 }
 
 /**
- * Accessible disclosure menu for viewports below `md`. Toggles with a
+ * Accessible disclosure menu for viewports below `lg`. Toggles with a
  * hamburger button, traps nothing but closes on Escape, outside click,
  * route change, and viewport widening.
  */
@@ -47,7 +47,7 @@ export function MobileNav({ items }: { items: readonly NavItem[] }) {
   }, [open]);
 
   return (
-    <div className="md:hidden">
+    <div className="lg:hidden">
       <button
         ref={buttonRef}
         type="button"
@@ -84,9 +84,15 @@ export function MobileNav({ items }: { items: readonly NavItem[] }) {
 
       {open && (
         <div
+          aria-hidden="true"
+          className="absolute inset-x-0 top-full z-40 h-screen bg-charcoal/25"
+        />
+      )}
+      {open && (
+        <div
           id="mobile-nav-panel"
           ref={panelRef}
-          className="absolute inset-x-0 top-full z-50 border-b border-stone bg-ivory shadow-card"
+          className="absolute inset-x-0 top-full z-50 border-b border-charcoal/10 bg-ivory shadow-lg"
         >
           <nav className="mx-auto flex max-w-6xl flex-col px-6 py-3 text-[15px]">
             {items.map((item) => (
@@ -112,7 +118,7 @@ export function MobileNav({ items }: { items: readonly NavItem[] }) {
                 onClick={() => setOpen(false)}
                 className="btn-primary flex-1 text-center text-sm"
               >
-                Install
+                Install the CLI
               </Link>
             </div>
           </nav>

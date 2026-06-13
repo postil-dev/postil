@@ -25,7 +25,7 @@ export default function SilenceRateArticle() {
         June 2026 · Postil team
       </p>
 
-      <div className="prose-postil mt-10">
+      <div className="prose-postil blog-prose mt-10">
         <p>
           Ask any team that has turned off an AI code reviewer why they did it
           and you will hear the same word: noise. Not &quot;it missed
@@ -336,7 +336,7 @@ export default function SilenceRateArticle() {
         </ul>
       </div>
 
-      <div className="card mt-14 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
+      <div className="rounded-card shadow-card mt-14 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="serif-display text-2xl">Watch the number yourself.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
@@ -344,13 +344,13 @@ export default function SilenceRateArticle() {
             first thing on the dashboard.
           </p>
         </div>
-        <div className="flex shrink-0 gap-4">
-          <Link href="/install" className="btn-primary">
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">
+          <Link href="/install" className="btn-primary text-center">
             Install the CLI
           </Link>
           <Link
             href="/evidence"
-            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
+            className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-center text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
           >
             See the evidence
           </Link>
