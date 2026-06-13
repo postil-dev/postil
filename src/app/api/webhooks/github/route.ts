@@ -128,28 +128,53 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, duplicate: true });
   }
 
-  switch (event) {
-    case "installation":
-      await handleInstallation(payload as InstallationEventPayload);
-      break;
-    case "installation_repositories":
-      await handleInstallationRepositories(payload as InstallationEventPayload);
-      break;
-    case "pull_request":
-      await handlePullRequest(payload as PullRequestEventPayload);
-      break;
-    case "issue_comment":
-      await handleIssueComment(payload as CommentEventPayload);
-      break;
-    case "pull_request_review_comment":
-      await handleReviewComment(payload as CommentEventPayload);
-      break;
-    case "issues":
-      await handleIssues(payload as IssuesEventPayload);
-      break;
-    default:
-      // Acknowledged, intentionally ignored.
-      break;
+  // The dedupe row is now committed, but the side effect (enqueue / DB writes)
+  // has not run yet. If dispatch throws, we must NOT leave the dedupe row
+  // behind: GitHub redelivers the same X-GitHub-Delivery, the redelivery would
+  // hit `dedupe.length === 0` and be acknowledged as a duplicate, and the event
+  // would be permanently lost (the review/reply never runs). So on dispatch
+  // failure, delete the dedupe row and return non-2xx; GitHub then retries and
+  // the redelivery is processed as fresh. A genuine duplicate still short-
+  // circuits above before reaching dispatch.
+  try {
+    switch (event) {
+      case "installation":
+        await handleInstallation(payload as InstallationEventPayload);
+        break;
+      case "installation_repositories":
+        await handleInstallationRepositories(payload as InstallationEventPayload);
+        break;
+      case "pull_request":
+        await handlePullRequest(payload as PullRequestEventPayload);
+        break;
+      case "issue_comment":
+        await handleIssueComment(payload as CommentEventPayload);
+        break;
+      case "pull_request_review_comment":
+        await handleReviewComment(payload as CommentEventPayload);
+        break;
+      case "issues":
+        await handleIssues(payload as IssuesEventPayload);
+        break;
+      default:
+        // Acknowledged, intentionally ignored.
+        break;
+    }
+  } catch (err) {
+    // Roll back the dedupe claim so the redelivery is not dropped. Best-effort:
+    // if the cleanup delete itself fails we still return non-2xx so GitHub
+    // retries (a stale dedupe row would only resurface as a swallowed
+    // duplicate, which is the pre-existing failure mode, not a regression).
+    await db
+      .delete(schema.webhookDeliveries)
+      .where(eq(schema.webhookDeliveries.deliveryId, deliveryId))
+      .catch((cleanupErr) => {
+        console.error(
+          `webhook dispatch failed and dedupe cleanup failed for delivery ${deliveryId}: ${cleanupErr}`,
+        );
+      });
+    console.error(`webhook dispatch failed for delivery ${deliveryId} (${event}): ${err}`);
+    return NextResponse.json({ error: "dispatch failed" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

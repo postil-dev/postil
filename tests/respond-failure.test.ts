@@ -52,6 +52,13 @@ let postShouldThrow = false;
 
 mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
+  // Mirror the real module's export surface so a concurrently-loaded consumer
+  // of getPool does not crash with "Export named 'getPool' not found". These
+  // tests never call it; throw if they ever do.
+  getPool: () => {
+    throw new Error("getPool is not mocked for respond-failure tests");
+  },
+  closeDb: async () => undefined,
   schema,
 }));
 
