@@ -4,7 +4,7 @@ import { getDb, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { OAUTH_STATE_COOKIE } from "@/lib/oauth";
 import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
-import { createSession, SESSION_COOKIE } from "@/lib/session";
+import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -118,7 +118,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
-    maxAge: 30 * 24 * 60 * 60,
+    maxAge: SESSION_TTL_SECONDS,
     path: "/",
   });
   response.cookies.delete(OAUTH_STATE_COOKIE);
