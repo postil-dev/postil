@@ -71,7 +71,7 @@ async function claimLoop(slot: number): Promise<void> {
     console.log(`[worker ${slot}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
     try {
       await handleJob(job.kind, job.payload);
-      await completeJob(pool, job.id);
+      await completeJob(pool, job);
       console.log(`[worker ${slot}] job ${job.id} done in ${Date.now() - started}ms`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

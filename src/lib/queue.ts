@@ -18,6 +18,13 @@ export interface ClaimedJob {
   payload: Record<string, unknown>;
   attempts: number;
   maxAttempts: number;
+  /**
+   * The worker id this claim was locked under. failJob/completeJob scope their
+   * UPDATEs by this value so a stalled-then-re-claimed job (watchdog requeue +
+   * re-claim by another worker) is not clobbered by the original owner's late
+   * call: only the current lock holder can transition the row.
+   */
+  lockedBy: string;
 }
 
 export interface ReviewJobPayload extends Record<string, unknown> {
@@ -93,6 +100,7 @@ export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob
       payload: row.payload,
       attempts: row.attempts + 1,
       maxAttempts: row.max_attempts,
+      lockedBy: workerId,
     };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => undefined);
@@ -102,10 +110,20 @@ export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob
   }
 }
 
-export async function completeJob(pool: Pool, jobId: number): Promise<void> {
+/**
+ * Mark a job done. Scoped by `status = 'running' AND locked_by = $lockedBy` so
+ * a worker finishing late cannot stamp `done` over a job the watchdog already
+ * requeued and a second worker re-claimed under a new lock (which would mask a
+ * concurrent double-run). Only the current lock holder can complete the row.
+ */
+export async function completeJob(
+  pool: Pool,
+  job: Pick<ClaimedJob, "id" | "lockedBy">,
+): Promise<void> {
   await pool.query(
-    `UPDATE jobs SET status = 'done', locked_at = NULL, locked_by = NULL WHERE id = $1`,
-    [jobId],
+    `UPDATE jobs SET status = 'done', locked_at = NULL, locked_by = NULL
+     WHERE id = $1 AND status = 'running' AND locked_by = $2`,
+    [job.id, job.lockedBy],
   );
 }
 
@@ -117,8 +135,11 @@ export function backoffMs(attempts: number): number {
  * Mark a job failed; requeue with backoff while attempts remain.
  *
  * Returns "retried" if requeued, "failed" if this call performed the
- * permanent transition, or "lost" if another path (the watchdog) had
- * already failed the job. Only "failed" owns post-failure side effects.
+ * permanent transition, or "lost" if another path (the watchdog, or a
+ * re-claim after a watchdog requeue) already owns the row. Both the retry
+ * and the final-fail UPDATEs are conditioned on `status = 'running'`, so a
+ * late call that lost the row to a re-claim returns "lost" rather than
+ * resurrecting or re-failing it. Only "failed" owns post-failure side effects.
  *
  * Pass `opts.permanent` for a deterministic, non-retryable error (e.g. a
  * broken CA store or a missing CLI binary): the job goes straight to `failed`
@@ -130,20 +151,28 @@ export function backoffMs(attempts: number): number {
  */
 export async function failJob(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "attempts" | "maxAttempts">,
+  job: Pick<ClaimedJob, "id" | "attempts" | "maxAttempts" | "lockedBy">,
   error: string,
   opts: { permanent?: boolean } = {},
 ): Promise<"retried" | "failed" | "lost"> {
   if (!opts.permanent && job.attempts < job.maxAttempts) {
     const delay = backoffMs(job.attempts);
-    await pool.query(
+    // Guarded by `status = 'running'` (mirroring the final-fail path below).
+    // If the watchdog already requeued this stalled job and a second worker
+    // re-claimed it (`status` now 'queued' or 'running' under a new owner with
+    // a higher attempt count), a late transient-retry from the original worker
+    // must NOT reset it back to 'queued': that would resurrect a job another
+    // worker owns and let a third worker run it concurrently (double review /
+    // reply / check-runs / LLM spend). rowCount 0 means we lost the row; report
+    // "lost" and do not resurrect it.
+    const res = await pool.query(
       `UPDATE jobs
        SET status = 'queued', locked_at = NULL, locked_by = NULL,
            last_error = $2, run_after = now() + ($3 || ' milliseconds')::interval
-       WHERE id = $1`,
-      [job.id, error.slice(0, 2000), String(delay)],
+       WHERE id = $1 AND status = 'running' AND locked_by = $4`,
+      [job.id, error.slice(0, 2000), String(delay), job.lockedBy],
     );
-    return "retried";
+    return (res.rowCount ?? 0) > 0 ? "retried" : "lost";
   }
   // Conditional transition (reached on exhausted attempts or a permanent
   // error): only the caller that flips `running` -> `failed` gets rowCount 1.
@@ -153,8 +182,8 @@ export async function failJob(
   const res = await pool.query(
     `UPDATE jobs
      SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2
-     WHERE id = $1 AND status = 'running'`,
-    [job.id, error.slice(0, 2000)],
+     WHERE id = $1 AND status = 'running' AND locked_by = $3`,
+    [job.id, error.slice(0, 2000), job.lockedBy],
   );
   return (res.rowCount ?? 0) > 0 ? "failed" : "lost";
 }

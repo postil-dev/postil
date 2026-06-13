@@ -194,10 +194,81 @@ describeDb("postgres job queue", () => {
     expect(row.rows[0].status).toBe("failed");
   });
 
+  test("failJob retry does not resurrect a job another worker re-claimed (returns 'lost')", async () => {
+    // H1 race: worker W claims J; the job stalls past the watchdog deadline;
+    // the watchdog requeues J; worker W2 re-claims and is now running J; then
+    // W's late transient error reaches failJob's retry branch. Without the
+    // `status='running' AND locked_by=$owner` guard, W would reset the running
+    // row back to 'queued' and a third worker could run J concurrently with W2.
+    // With the guard, W's retry matches 0 rows (W2 holds the lock under a new
+    // attempt) and returns "lost", leaving W2's claim intact.
+    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 3 });
+
+    const w1 = await claimJob(pool, "w1");
+    expect(w1?.attempts).toBe(1);
+
+    // Simulate the watchdog requeue: status back to 'queued', lock cleared.
+    await pool.query(
+      "UPDATE jobs SET status = 'queued', locked_at = NULL, locked_by = NULL, run_after = now() WHERE id = $1",
+      [w1!.id],
+    );
+
+    // Worker W2 re-claims the same row; it is now 'running' under W2 (attempt 2).
+    const w2 = await claimJob(pool, "w2");
+    expect(w2?.id).toBe(w1?.id);
+    expect(w2?.attempts).toBe(2);
+
+    // W's late transient retry must NOT resurrect the row W2 now owns.
+    expect(await failJob(pool, w1!, "late transient from w1")).toBe("lost");
+
+    const row = await pool.query(
+      "SELECT status, locked_by, attempts FROM jobs WHERE id = $1",
+      [w1!.id],
+    );
+    // Still claimed-and-running under W2; not reset to 'queued'.
+    expect(row.rows[0].status).toBe("running");
+    expect(row.rows[0].locked_by).toBe("w2");
+    expect(row.rows[0].attempts).toBe(2);
+    // The row is not re-claimable while W2 holds it (no second concurrent run).
+    expect(await claimJob(pool, "w3")).toBeNull();
+  });
+
+  test("failJob retry still requeues when the caller still owns the running row", async () => {
+    // Control for the guard above: the normal retry path (no intervening
+    // re-claim) must keep working and return "retried".
+    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 3 });
+    const job = await claimJob(pool, "w");
+    expect(job?.attempts).toBe(1);
+    expect(await failJob(pool, job!, "transient boom")).toBe("retried");
+    const row = await pool.query("SELECT status FROM jobs WHERE id = $1", [job!.id]);
+    expect(row.rows[0].status).toBe("queued");
+  });
+
+  test("completeJob does not stamp 'done' over a re-claimed running job", async () => {
+    // Symmetric defense-in-depth: a worker finishing late must not mark a job
+    // 'done' after the watchdog requeued it and another worker re-claimed it.
+    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 3 });
+    const w1 = await claimJob(pool, "w1");
+
+    // Watchdog requeue + W2 re-claim.
+    await pool.query(
+      "UPDATE jobs SET status = 'queued', locked_at = NULL, locked_by = NULL, run_after = now() WHERE id = $1",
+      [w1!.id],
+    );
+    const w2 = await claimJob(pool, "w2");
+    expect(w2?.id).toBe(w1?.id);
+
+    // W1 completes late; the guard means it does not clobber W2's running claim.
+    await completeJob(pool, w1!);
+    const row = await pool.query("SELECT status, locked_by FROM jobs WHERE id = $1", [w1!.id]);
+    expect(row.rows[0].status).toBe("running");
+    expect(row.rows[0].locked_by).toBe("w2");
+  });
+
   test("completeJob marks the job done and releases the lock", async () => {
     await enqueueJob(pool, "review", { n: 1 });
     const job = await claimJob(pool, "w");
-    await completeJob(pool, job!.id);
+    await completeJob(pool, job!);
     const row = await pool.query("SELECT status, locked_by FROM jobs");
     expect(row.rows[0].status).toBe("done");
     expect(row.rows[0].locked_by).toBeNull();
