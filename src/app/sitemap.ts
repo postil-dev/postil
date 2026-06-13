@@ -25,6 +25,11 @@ const ROUTES: { path: string; priority: number; changeFrequency: MetadataRoute.S
     changeFrequency: "monthly",
   },
   { path: "/blog/silence-rate", priority: 0.6, changeFrequency: "monthly" },
+  {
+    path: "/blog/ai-code-review-pricing-2026",
+    priority: 0.7,
+    changeFrequency: "monthly",
+  },
   { path: "/privacy", priority: 0.4, changeFrequency: "yearly" },
   { path: "/terms", priority: 0.4, changeFrequency: "yearly" },
   { path: "/docs", priority: 0.7, changeFrequency: "monthly" },
