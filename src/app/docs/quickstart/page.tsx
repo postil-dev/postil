@@ -21,7 +21,7 @@ export default function QuickstartPage() {
         Install the binary and point it at an OpenAI-compatible endpoint. The
         default is OpenRouter.
       </p>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`curl -fsSL https://postil.dev/install.sh | sh
 # or build from source:
 # cargo install --git https://github.com/postil-dev/postil-cli --locked
@@ -49,7 +49,7 @@ postil review --base main`}</code>
         The composite action installs a CLI pinned to a full 40-character
         commit SHA and runs the same review in CI:
       </p>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`name: review
 on:
   pull_request:

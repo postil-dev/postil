@@ -157,7 +157,7 @@ export default function ChangelogPage() {
           <article key={release.version} className="rule pt-8">
             <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
               <h2 className="serif-display text-3xl">v{release.version}</h2>
-              <span className="font-mono text-sm text-charcoal/60">
+              <span className="font-mono text-sm text-charcoal/70">
                 {release.date}
               </span>
             </div>
@@ -178,7 +178,7 @@ export default function ChangelogPage() {
         ))}
       </div>
 
-      <p className="mt-14 font-mono text-xs text-charcoal/60">
+      <p className="mt-14 font-mono text-xs text-charcoal/70">
         Release notes and signed binaries are published on{" "}
         <a
           href="https://github.com/postil-dev/postil-cli/releases"

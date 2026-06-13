@@ -17,7 +17,7 @@ export default function EnvelopePage() {
       </p>
 
       <h2>Schema (version 1)</h2>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`{
   "version": 1,
   "summary": "1-3 sentence merge-relevant summary, empty string when silent",
@@ -43,8 +43,8 @@ export default function EnvelopePage() {
       <table>
         <thead>
           <tr>
-            <th>Field</th>
-            <th>Meaning</th>
+            <th scope="col">Field</th>
+            <th scope="col">Meaning</th>
           </tr>
         </thead>
         <tbody>

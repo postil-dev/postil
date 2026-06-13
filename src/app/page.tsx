@@ -328,7 +328,7 @@ export default function HomePage() {
           <figure className="card p-8">
             <div className="flex items-center justify-between">
               <p className="eyebrow">Silence rate</p>
-              <span className="rounded-full border border-stone px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-charcoal/60">
+              <span className="rounded-full border border-stone px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-charcoal/70">
                 n = 40
               </span>
             </div>
@@ -339,7 +339,7 @@ export default function HomePage() {
               </span>
             </div>
             <div className="mt-8">
-              <p className="font-mono text-xs text-charcoal/60">
+              <p className="font-mono text-xs text-charcoal/70">
                 confidence of the findings it did ship
               </p>
               {(() => {
@@ -371,7 +371,7 @@ export default function HomePage() {
                         />
                       ))}
                     </div>
-                    <div className="mt-2 flex justify-between font-mono text-[10px] text-charcoal/55">
+                    <div className="mt-2 flex justify-between font-mono text-[10px] text-charcoal/70">
                       <span>0.0</span>
                       <span>0.2</span>
                       <span>0.4</span>
@@ -383,7 +383,7 @@ export default function HomePage() {
                 );
               })()}
             </div>
-            <figcaption className="mt-4 font-mono text-[11px] text-charcoal/55">
+            <figcaption className="mt-4 font-mono text-[11px] text-charcoal/70">
               Measured across 40 recently merged public pull requests, June 2026.
             </figcaption>
           </figure>

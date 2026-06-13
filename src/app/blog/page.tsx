@@ -84,7 +84,7 @@ export default function BlogIndexPage() {
             href={post.href}
             className="card block p-7 transition-colors hover:border-gate"
           >
-            <p className="font-mono text-xs text-charcoal/60">{post.date}</p>
+            <p className="font-mono text-xs text-charcoal/70">{post.date}</p>
             <h2 className="serif-display mt-2 text-2xl">{post.title}</h2>
             <p className="mt-3 text-sm text-ink-soft">{post.description}</p>
           </Link>

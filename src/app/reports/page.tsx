@@ -76,7 +76,7 @@ export default async function ReportsPage() {
           </h1>
         </div>
         <form action="/api/auth/logout" method="post">
-          <button type="submit" className="text-sm text-charcoal/60 underline hover:text-charcoal">
+          <button type="submit" className="text-sm text-charcoal/70 underline hover:text-charcoal">
             Sign out
           </button>
         </form>

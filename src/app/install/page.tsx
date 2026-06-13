@@ -34,7 +34,7 @@ export default function InstallPage() {
         {/* CLI — first, works today */}
         <section className="rule grid gap-8 pt-10 md:grid-cols-[1fr_2fr]">
           <div>
-            <p className="font-mono text-sm text-charcoal/40">01</p>
+            <p className="font-mono text-sm text-charcoal/70">01</p>
             <h2 className="serif-display mt-1 text-2xl">CLI</h2>
             <p className="mt-2 text-sm text-ink-soft">
               Local reviews before you push. Apache-2.0. Works today.
@@ -144,7 +144,7 @@ export default function InstallPage() {
         {/* GitHub Action */}
         <section className="rule grid gap-8 pt-10 md:grid-cols-[1fr_2fr]">
           <div>
-            <p className="font-mono text-sm text-charcoal/40">02</p>
+            <p className="font-mono text-sm text-charcoal/70">02</p>
             <h2 className="serif-display mt-1 text-2xl">GitHub Action</h2>
             <p className="mt-2 text-sm text-ink-soft">
               CI reviews with a SHA-pinned CLI.
@@ -196,7 +196,7 @@ jobs:
         {/* GitLab */}
         <section className="rule grid gap-8 pt-10 md:grid-cols-[1fr_2fr]">
           <div>
-            <p className="font-mono text-sm text-charcoal/40">03</p>
+            <p className="font-mono text-sm text-charcoal/70">03</p>
             <h2 className="serif-display mt-1 text-2xl">GitLab</h2>
             <p className="mt-2 text-sm text-ink-soft">
               Same gate semantics on GitLab.com and self-managed.
@@ -249,7 +249,7 @@ jobs:
         {/* GitHub App */}
         <section className="rule grid gap-8 pt-10 md:grid-cols-[1fr_2fr]">
           <div>
-            <p className="font-mono text-sm text-charcoal/40">04</p>
+            <p className="font-mono text-sm text-charcoal/70">04</p>
             <h2 className="serif-display mt-1 text-2xl">Hosted GitHub App</h2>
             <p className="mt-2 text-sm text-ink-soft">
               Zero-config reviews on every PR. Free during beta.
@@ -276,7 +276,7 @@ jobs:
               <Link href="/docs/self-hosted" className="btn-primary">
                 Run it yourself
               </Link>
-              <span className="font-mono text-xs text-charcoal/60">
+              <span className="font-mono text-xs text-charcoal/70">
                 GitHub App: coming soon
               </span>
             </div>

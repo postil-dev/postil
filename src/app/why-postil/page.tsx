@@ -383,7 +383,7 @@ export default function WhyPostilPage() {
         {wedges.map((w) => (
           <section key={w.number} className="rule grid gap-6 pt-10 md:grid-cols-[1fr_3fr]">
             <div>
-              <p className="font-mono text-sm text-charcoal/40">{w.number}</p>
+              <p className="font-mono text-sm text-charcoal/70">{w.number}</p>
               <h2 className="serif-display mt-1 text-2xl">{w.title}</h2>
               <p className="mt-3">{w.status}</p>
             </div>

@@ -32,7 +32,7 @@ function FindingBody({ body }: { body: string }) {
 
 function DiffBlock({ diff }: { diff: string }) {
   return (
-    <pre className="ev-diff" aria-label="reviewed diff">
+    <pre className="ev-diff" aria-label="reviewed diff" tabIndex={0}>
       <code>
         {diff.split("\n").map((line, i) => {
           let cls = "ev-line";
@@ -70,7 +70,7 @@ function Finding({ f }: { f: EvidenceFinding }) {
         </span>
         <span className="ev-conf">{Math.round(f.confidence * 100)}% confidence</span>
       </div>
-      <h4 className="ev-finding-title">{f.title}</h4>
+      <h3 className="ev-finding-title">{f.title}</h3>
       <FindingBody body={f.body} />
     </div>
   );
@@ -186,9 +186,9 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
 const EV_CSS = `
 .ev-root {
   --bg: #f7f5f1; --panel: #ffffff; --panel-2: #efece6; --ink: #1b2329;
-  --ink-soft: #5b6770; --line: #e3ded8; --green: #64745c; --rust: #c24a2a;
-  --red: #c0453f; --add-bg: rgba(100,116,92,0.12); --add-ink: #3f5a36;
-  --del-bg: rgba(192,69,63,0.10); --del-ink: #9c3b36; --hunk: #8a7fb0;
+  --ink-soft: #5b6770; --line: #e3ded8; --green: #586a4f; --rust: #b8431f;
+  --red: #b23c37; --add-bg: rgba(100,116,92,0.12); --add-ink: #3f5a36;
+  --del-bg: rgba(192,69,63,0.10); --del-ink: #9c3b36; --hunk: #6a5e9c;
   background: var(--bg); color: var(--ink);
   font-family: var(--font-inter, system-ui, sans-serif);
 }
@@ -221,7 +221,7 @@ const EV_CSS = `
 .ev-line { display: block; padding: 0 0.9rem; white-space: pre; }
 .ev-add { background: var(--add-bg); color: var(--add-ink); }
 .ev-del { background: var(--del-bg); color: var(--del-ink); }
-.ev-meta { color: var(--ink-soft); opacity: 0.7; }
+.ev-meta { color: #4a555d; }
 .ev-hunk { color: var(--hunk); }
 .ev-summary { color: var(--ink); font-size: 0.95rem; line-height: 1.55; margin: 0 0 1rem;
   padding-left: 0.75rem; border-left: 2px solid var(--green); }

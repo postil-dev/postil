@@ -64,14 +64,16 @@ export function SiteFooter() {
             <p className="serif-display mt-4 text-lg">
               Trust the merge, not the speed.
             </p>
-            <p className="mt-2 text-sm text-charcoal/60">
+            <p className="mt-2 text-sm text-charcoal/70">
               A low-noise review gate for teams shipping at agent speed.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-x-10 gap-y-8 sm:grid-cols-4">
             {COLUMNS.map((col) => (
-              <div key={col.title}>
-                <p className="eyebrow">{col.title}</p>
+              <nav key={col.title} aria-labelledby={`footer-${col.title}`}>
+                <h2 id={`footer-${col.title}`} className="eyebrow">
+                  {col.title}
+                </h2>
                 <ul className="mt-3 space-y-2 text-sm">
                   {col.links.map((link) => (
                     <li key={link.href}>
@@ -84,7 +86,7 @@ export function SiteFooter() {
                     </li>
                   ))}
                 </ul>
-              </div>
+              </nav>
             ))}
           </div>
         </div>

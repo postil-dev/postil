@@ -63,13 +63,16 @@ export function PricingCalculator() {
           <label className="block">
             <span className="flex justify-between text-sm">
               <span className="font-medium">Developers</span>
-              <span className="font-mono">{devs}</span>
+              <span className="font-mono" aria-hidden="true">
+                {devs}
+              </span>
             </span>
             <input
               type="range"
               min={1}
               max={200}
               value={devs}
+              aria-valuetext={`${devs} developers`}
               onChange={(e) => setDevs(Number(e.target.value))}
               className="slider mt-2 w-full"
             />
@@ -77,7 +80,9 @@ export function PricingCalculator() {
           <label className="block">
             <span className="flex justify-between text-sm">
               <span className="font-medium">PRs per developer per month</span>
-              <span className="font-mono">{prsPerDev}</span>
+              <span className="font-mono" aria-hidden="true">
+                {prsPerDev}
+              </span>
             </span>
             <input
               type="range"
@@ -85,10 +90,11 @@ export function PricingCalculator() {
               max={600}
               step={5}
               value={prsPerDev}
+              aria-valuetext={`${prsPerDev} PRs per developer per month`}
               onChange={(e) => setPrsPerDev(Number(e.target.value))}
               className="slider mt-2 w-full"
             />
-            <span className="mt-1 block text-xs text-charcoal/65">
+            <span className="mt-1 block text-xs text-charcoal/70">
               Agent-heavy workflows can reach hundreds of PRs per developer per
               month; one publicly documented developer hit 571 in 30 days.
             </span>
@@ -96,17 +102,20 @@ export function PricingCalculator() {
           <label className="block">
             <span className="flex justify-between text-sm">
               <span className="font-medium">Estimated inference per review (your key)</span>
-              <span className="font-mono">{(centsPerReview / 100).toFixed(2)} USD</span>
+              <span className="font-mono" aria-hidden="true">
+                {(centsPerReview / 100).toFixed(2)} USD
+              </span>
             </span>
             <input
               type="range"
               min={0}
               max={20}
               value={centsPerReview}
+              aria-valuetext={`$${(centsPerReview / 100).toFixed(2)} per review`}
               onChange={(e) => setCentsPerReview(Number(e.target.value))}
               className="slider mt-2 w-full"
             />
-            <span className="mt-1 block text-xs text-charcoal/65">
+            <span className="mt-1 block text-xs text-charcoal/70">
               Paid to your provider at their rates. Postil adds zero markup.
             </span>
           </label>
@@ -117,7 +126,7 @@ export function PricingCalculator() {
             <div className="rounded-card border border-gate bg-ivory p-4">
               <p className="eyebrow">Postil</p>
               <p className="serif-display mt-2 text-3xl">{dollars(result.postil)}</p>
-              <p className="mt-1 text-xs text-charcoal/60">
+              <p className="mt-1 text-xs text-charcoal/70">
                 {dollars(devs * POSTIL_SEAT)} orchestration
                 {result.inference > 0 && (
                   <> + {dollars(result.inference)} inference on your key</>
@@ -125,16 +134,16 @@ export function PricingCalculator() {
               </p>
             </div>
             <div className="rounded-card border border-stone bg-ivory p-4">
-              <p className="eyebrow text-charcoal/65">CodeRabbit Pro</p>
+              <p className="eyebrow text-charcoal/70">CodeRabbit Pro</p>
               <p className="serif-display mt-2 text-3xl">{dollars(result.coderabbit)}</p>
-              <p className="mt-1 text-xs text-charcoal/60">
+              <p className="mt-1 text-xs text-charcoal/70">
                 $24/seat/mo, annual billing
               </p>
             </div>
             <div className="rounded-card border border-stone bg-ivory p-4">
-              <p className="eyebrow text-charcoal/65">Greptile</p>
+              <p className="eyebrow text-charcoal/70">Greptile</p>
               <p className="serif-display mt-2 text-3xl">{dollars(result.greptile)}</p>
-              <p className="mt-1 text-xs text-charcoal/60">
+              <p className="mt-1 text-xs text-charcoal/70">
                 ${GREPTILE.seat}/seat + ${GREPTILE.overagePerReview}/review past{" "}
                 {GREPTILE.includedReviewsPerDev}/dev (as of June 2026)
               </p>

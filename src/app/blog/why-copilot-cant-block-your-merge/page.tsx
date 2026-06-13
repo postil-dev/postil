@@ -48,7 +48,7 @@ export default function CopilotMergeGateArticle() {
         Why GitHub Copilot can&apos;t block your merge (and how a real AI merge
         gate works)
       </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/60">
+      <p className="mt-4 font-mono text-sm text-charcoal/70">
         June 2026 · Postil team
       </p>
 
@@ -212,7 +212,7 @@ export default function CopilotMergeGateArticle() {
           The CLI opens both checks <code>in_progress</code> at the start of a
           review:
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`for name in ["postil/review", "postil/gate"] {
     // POST /check-runs  { name, head_sha, status: "in_progress" }
 }`}</code>
@@ -233,7 +233,7 @@ export default function CopilotMergeGateArticle() {
           <code>CheckState</code> enum in <code>src/forge/mod.rs</code> states the
           contract:
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`/// Check conclusions, mapped per-forge. Postil semantics:
 /// - advisory check (\`postil/review\`): success unless the run itself failed.
 /// - gate check (\`postil/gate\`): failure iff gate-level findings exist (or the
@@ -248,7 +248,7 @@ export default function CopilotMergeGateArticle() {
           and Macroscope checks non-blocking. The conclusion is computed
           straight from the gate outcome:
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`let gate_state = if envelope.gate.failing {
     CheckState::Failure
 } else {
@@ -274,7 +274,7 @@ export default function CopilotMergeGateArticle() {
           a run errors, the gate concludes <code>failure</code> rather than
           standing aside:
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`let gate_state = match cfg.gate_on_error {
     OnError::Block => CheckState::Failure,   // default: fail closed
     OnError::Advisory => CheckState::Success,
@@ -303,7 +303,7 @@ export default function CopilotMergeGateArticle() {
           stored past reviews under a candidate configuration and reports what
           would change, without posting anything or blocking anything:
         </p>
-        <pre>
+        <pre tabIndex={0} aria-label="Code sample">
           <code>{`postil plan: replaying N stored review(s) under candidate config
   pr-123: 4 -> 2 finding(s); gate: FAILING -> passing
   pr-128: 1 -> 1 finding(s); gate: passing -> FAILING

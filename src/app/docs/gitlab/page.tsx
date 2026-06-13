@@ -28,7 +28,7 @@ export default function GitLabDocsPage() {
       </p>
 
       <h2>2. Add the CI job</h2>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`postil:
   image: debian:bookworm-slim
   rules:
@@ -58,7 +58,7 @@ export default function GitLabDocsPage() {
         For GitLab Self-Managed, point the CLI at your instance with the{" "}
         <code>GITLAB_API_URL</code> environment variable:
       </p>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`export GITLAB_TOKEN=glpat-...
 export GITLAB_API_URL=https://gitlab.example.com/api/v4
 postil review --forge gitlab \\
@@ -75,7 +75,7 @@ postil review --forge gitlab \\
         You do not need CI to try it. With <code>GITLAB_TOKEN</code> set
         locally:
       </p>
-      <pre>
+      <pre tabIndex={0} aria-label="Code sample">
         <code>{`export GITLAB_TOKEN=glpat-...
 postil review --forge gitlab --repo group/project --pr 88
 # self-managed:

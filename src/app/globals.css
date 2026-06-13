@@ -6,7 +6,7 @@
   --color-charcoal: #1b2329;
   --color-gate: #64745c;
   --color-stone: #e3ded8;
-  --color-rust: #c24a2a;
+  --color-rust: #b8431f;
   --color-softred: #d46a6a;
   --color-mist: #c8cdd2;
 
@@ -55,6 +55,13 @@ summary:focus-visible,
   outline: 2px solid var(--color-rust);
   outline-offset: 2px;
   border-radius: 3px;
+}
+
+/* The skip link moves focus here programmatically; it is a focus target, not an
+   interactive control, so suppress the outline on the container itself. */
+#main-content:focus,
+#main-content:focus-visible {
+  outline: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -272,6 +279,11 @@ body {
   color: var(--color-rust);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+/* Inline code inside a link: rust on the stone code background falls below AA,
+   so keep the link colour but lighten the code chip so the text clears 4.5:1. */
+.prose-postil a code {
+  background: var(--color-paper);
 }
 /* Blog article body: slightly larger type and a comfortable reading measure.
    Headings and tables keep the container width; only running text is capped. */

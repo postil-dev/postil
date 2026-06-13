@@ -62,7 +62,7 @@ export default function PricingPage() {
         <div className="card flex flex-col p-7">
           <p className="eyebrow">Free</p>
           <p className="serif-display mt-3 text-4xl">$0</p>
-          <p className="mt-1 text-sm text-charcoal/60">forever</p>
+          <p className="mt-1 text-sm text-charcoal/70">forever</p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Hosted reviews on public repositories</li>
             <li>The full CLI, locally and in CI (Apache-2.0)</li>
@@ -82,7 +82,7 @@ export default function PricingPage() {
             </span>
           </div>
           <p className="serif-display mt-3 text-4xl">$10</p>
-          <p className="mt-1 text-sm text-charcoal/60">
+          <p className="mt-1 text-sm text-charcoal/70">
             per developer per month, flat
           </p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
@@ -95,7 +95,7 @@ export default function PricingPage() {
           <Link href="/install" className="btn-primary mt-8 text-center">
             Install the App
           </Link>
-          <p className="mt-4 text-xs text-charcoal/65">
+          <p className="mt-4 text-xs text-charcoal/70">
             Over 50 seats, or have procurement, invoicing, or DPA questions?{" "}
             <a
               href="mailto:hello@postil.dev"
@@ -111,7 +111,7 @@ export default function PricingPage() {
         <div className="card flex flex-col p-7">
           <p className="eyebrow">Self-hosted</p>
           <p className="serif-display mt-3 text-4xl">Free</p>
-          <p className="mt-1 text-sm text-charcoal/60">forever, no seat limit</p>
+          <p className="mt-1 text-sm text-charcoal/70">forever, no seat limit</p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Docker Compose: Postgres, web, worker</li>
             <li>Startup validation with actionable errors</li>
