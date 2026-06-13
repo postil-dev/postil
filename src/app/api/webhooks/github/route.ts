@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { verifyWebhookSignature } from "@/lib/crypto/webhook";
 import { getDb, getPool, schema } from "@/lib/db";
@@ -365,11 +365,22 @@ async function enabledRepoForMention(
       .limit(1)
   )[0];
   if (!installation || installation.suspended) return false;
+  // Defense in depth: require the repo row to belong to the claimed
+  // installation, matching the worker path (review.ts / respond.ts both join
+  // the repo via installationId). Without the join, a signature-valid payload
+  // claiming installation A plus a repo row owned by installation B would pass
+  // the enabled check; here we reject that mismatch at the webhook gate rather
+  // than relying solely on GitHub's downstream token scoping.
   const repoRow = (
     await db
       .select({ enabled: schema.repositories.enabled })
       .from(schema.repositories)
-      .where(eq(schema.repositories.githubRepoId, repo.id))
+      .where(
+        and(
+          eq(schema.repositories.githubRepoId, repo.id),
+          eq(schema.repositories.installationId, installation.id),
+        ),
+      )
       .limit(1)
   )[0];
   return Boolean(repoRow?.enabled);
