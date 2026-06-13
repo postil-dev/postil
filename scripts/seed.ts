@@ -27,7 +27,13 @@ function envelope(
   findings: Finding[],
   opts: { failing?: boolean; resolved?: Finding[]; sinceSha?: string | null } = {},
 ): Envelope {
-  const counts = { info: 0, warn: 0, error: 0, suppressed: Math.floor(Math.random() * 4) };
+  const counts = {
+    info: 0,
+    warn: 0,
+    error: 0,
+    suppressed: Math.floor(Math.random() * 4),
+    ungrounded: 0,
+  };
   for (const f of findings) counts[f.severity] += 1;
   const silent = findings.length === 0;
   return {
@@ -46,6 +52,7 @@ function envelope(
       promptTokens: 2000 + Math.floor(Math.random() * 6000),
       completionTokens: 150 + Math.floor(Math.random() * 700),
     },
+    durationMs: 5000 + Math.floor(Math.random() * 55000),
     baseSha: randomBytes(20).toString("hex"),
     headSha: randomBytes(20).toString("hex"),
     sinceSha: opts.sinceSha ?? null,

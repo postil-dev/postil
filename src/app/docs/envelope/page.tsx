@@ -29,11 +29,12 @@ export default function EnvelopePage() {
       "confidence": 0.85, "title": "short", "body": "markdown" }
   ],
   "resolved": [ /* same shape as findings; from the baseline, now fixed */ ],
-  "counts": { "info": 0, "warn": 0, "error": 0, "suppressed": 0 },
+  "counts": { "info": 0, "warn": 0, "error": 0, "suppressed": 0, "ungrounded": 0 },
   "confidenceBuckets": [0, 0, 0, 0, 0],
   "gate": { "failOn": "error", "failing": false },
   "modelUsed": "deepseek/deepseek-v4-pro",
   "usage": { "promptTokens": 0, "completionTokens": 0 },
+  "durationMs": 0,
   "baseSha": "...", "headSha": "...", "sinceSha": null
 }`}</code>
       </pre>
@@ -94,6 +95,22 @@ export default function EnvelopePage() {
               The configured fail-on severity and whether this review fails the
               gate. Mirrors the exit code: <code>failing: true</code> means
               exit <code>1</code>.
+            </td>
+          </tr>
+          <tr>
+            <td><code>counts.ungrounded</code></td>
+            <td>
+              Findings the model reported that did not cite a changed line and
+              were dropped. A nonzero value is a model-quality signal; a run
+              where every finding was ungrounded fails closed. Optional within
+              v1 (absent means 0).
+            </td>
+          </tr>
+          <tr>
+            <td><code>durationMs</code></td>
+            <td>
+              Wall-clock duration of the review engine run in milliseconds.
+              Optional within v1 (absent means 0 from older CLIs).
             </td>
           </tr>
           <tr>
