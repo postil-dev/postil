@@ -315,10 +315,10 @@ export default function HomePage() {
         <div className="grid items-center gap-10 lg:grid-cols-2">
           {/*
             Measured numbers, not a mockup. Pooled across two recorded runs of
-            the released v0.1.0 CLI over 125 recently merged public pull
+            the released v0.1.0 CLI over 126 recently merged public pull
             requests (~18 repos across JS/TS, Python, Go, Rust;
-            deepseek-v4-pro; one run each), 2026-06-13. 78 of 125 were silent
-            (62.4%, 95% Wilson CI 54-70%); the 57 findings it did ship fell in
+            deepseek-v4-pro; one run each), 2026-06-13. 79 of 126 were silent
+            (62.7%, 95% Wilson CI 54-71%); the 57 findings it did ship fell in
             confidence buckets [0,0,0,23,34]. Full methodology and raw envelopes
             are recorded privately in measurements/ (measurements-2026-06-13.md
             + measurements-large-2026-06-13). When a newer run supersedes this,
@@ -329,11 +329,11 @@ export default function HomePage() {
             <div className="flex items-center justify-between">
               <p className="eyebrow">Silence rate</p>
               <span className="rounded-full border border-stone px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-charcoal/70">
-                n = 125
+                n = 126
               </span>
             </div>
             <div className="mt-4 flex items-end gap-3">
-              <span className="serif-display text-6xl">62%</span>
+              <span className="serif-display text-6xl">63%</span>
               <span className="pb-2 text-sm text-charcoal/70">
                 of recent public PRs reviewed in silence
               </span>
@@ -354,7 +354,7 @@ export default function HomePage() {
                 return (
                   <div
                     role="img"
-                    aria-label={`Confidence of the 57 findings Postil shipped across 125 public pull requests: ${bars
+                    aria-label={`Confidence of the 57 findings Postil shipped across 126 public pull requests: ${bars
                       .filter((b) => b.count > 0)
                       .map((b) => `${b.count} at ${b.bucket}`)
                       .join("; ")}. Every shipped finding was at 0.6 confidence or higher.`}
@@ -384,7 +384,7 @@ export default function HomePage() {
               })()}
             </div>
             <figcaption className="mt-4 font-mono text-[11px] text-charcoal/70">
-              Measured across 125 recently merged public pull requests, June 2026.
+              Measured across 126 recently merged public pull requests, June 2026.
             </figcaption>
           </figure>
           <div>
