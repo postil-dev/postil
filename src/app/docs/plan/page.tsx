@@ -40,16 +40,17 @@ export default function PlanPage() {
 postil review --staged --output-json > .cache/envelopes/r1.json
 postil plan --envelopes .cache/envelopes --config .postil.candidate.yaml
 
-  plan over 20 reviews (current config -> candidate)
+postil plan: replaying 3 stored review(s) under candidate config (.postil.candidate.yaml)
 
-  gate verdicts        2 failing -> 3 failing  (+1)
-    src/payments PR#412: warn "unbounded retry loop" now gate-failing
-  shipped findings     31 -> 19  (-12)
-    11 suppressed by minConfidence 0.6 -> 0.75
-    1 suppressed by new ignore glob "generated/**"
-  silence rate         55% -> 70%
+  r1.json: 5 -> 3 finding(s); gate: passing (unchanged)
+      would suppress: src/api/users.ts:88 [warn] broad except swallows errors
+      would suppress: src/api/users.ts:140 [info] redundant null check
+  r2.json: 4 -> 2 finding(s); gate: FAILING -> passing
+      would suppress: src/billing/charge.ts:51 [error] retry has no upper bound
+      would suppress: generated/schema.ts:12 [warn] unused import
+  r3.json: 2 -> 2 finding(s); gate: passing (unchanged)
 
-  no model calls were made.`}</code>
+Summary: 4 finding(s) would be suppressed; 1 gate outcome(s) would change.`}</code>
       </pre>
 
       <h2>What it answers</h2>

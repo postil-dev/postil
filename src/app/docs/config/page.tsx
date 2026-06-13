@@ -52,14 +52,13 @@ minConfidence: 0.6       # drop findings below this confidence
 maxFindings: 20          # hard cap per review; excess counted as suppressed
 
 reviewer:
-  tone: terse            # terse | neutral
+  tone: "direct, specific, no praise, no filler"  # free-form, passed to the model
   focus:                 # steer attention; free-form, passed to the model
     - correctness
     - security
 
 review:
-  onClean: skip          # skip = stay silent on clean PRs (default)
-  incremental: true      # review only new hunks since the last review
+  onClean: skip          # skip = stay silent on clean PRs (default) | comment
 
 gate:
   failOn: error          # the gate fails at/above this severity
@@ -70,7 +69,9 @@ model:
   name: deepseek/deepseek-v4-pro
   cascade:               # fallbacks, tried in order on provider errors
     - qwen/qwen3-coder
-  apiBase: https://openrouter.ai/api/v1`}</code>
+  apiBase: https://openrouter.ai/api/v1
+  consensus: 1           # run the first N of [name + cascade], keep only
+                         # findings they agree on (must be >= 1)`}</code>
       </pre>
 
       <h2>Gate behavior on operational errors</h2>
