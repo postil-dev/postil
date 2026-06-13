@@ -15,9 +15,29 @@ export default function HomePage() {
   return (
     <>
       {/* Hero */}
-      <section className="mx-auto max-w-6xl px-6 pt-16 md:pt-24">
-        <div className="grid items-center gap-12 lg:grid-cols-[7fr_5fr]">
-          <div>
+      <section className="relative overflow-hidden">
+        {/* Gate engraving — quiet background watermark, anchored right.
+            mix-blend-multiply drops the sketch's near-white ground onto the
+            ivory page so only the pencil lines remain; the gradient mask fades
+            the engraving out under the text. Hidden below sm so the mobile
+            hero stays text-only and free of overflow. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 right-0 -z-10 hidden w-[78%] select-none sm:block lg:w-[58%]"
+        >
+          <Image
+            src="/brand/postil-hero-gate-sketch.png"
+            alt=""
+            fill
+            priority
+            draggable={false}
+            sizes="(min-width: 1024px) 58vw, 78vw"
+            className="object-contain object-right opacity-[0.22] mix-blend-multiply [mask-image:linear-gradient(to_right,transparent,black_42%)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_42%)]"
+          />
+        </div>
+
+        <div className="relative mx-auto max-w-6xl px-6 pt-16 md:pt-24">
+          <div className="max-w-2xl">
             <p className="font-mono text-sm uppercase tracking-[0.16em] text-charcoal/80">
               A review gate for agent-speed development
             </p>
@@ -44,20 +64,7 @@ export default function HomePage() {
               Apache-2.0 CLI · free on public repos · self-hosted forever
             </p>
           </div>
-          <div className="card overflow-hidden">
-            <Image
-              src="/brand/postil-hero-gate-sketch.png"
-              alt="Architectural sketch of the Postil review gate"
-              width={1831}
-              height={859}
-              sizes="(min-width: 1024px) 40rem, 100vw"
-              priority
-              className="h-auto w-full"
-            />
-            <p className="border-t border-stone px-4 py-3 font-mono text-xs text-charcoal/75">
-              fig. 1 — the gate: every change passes through, few are stopped
-            </p>
-          </div>
+          <div className="h-16 md:h-24" aria-hidden="true" />
         </div>
       </section>
 
