@@ -1,9 +1,11 @@
 import type { NextConfig } from "next";
 
-// Report-only first: collect violations from real traffic before enforcing.
-// Next.js emits inline bootstrap scripts, so script-src needs 'unsafe-inline'
-// until nonces are wired through middleware.
-const cspReportOnly = [
+// Enforced CSP. The site loads only first-party assets (verified: no
+// cross-origin requests in a full render trace), so the policy is restrictive
+// by default. Next.js emits inline bootstrap scripts and the pages embed inline
+// JSON-LD, so script-src needs 'unsafe-inline' until nonces are wired through
+// middleware; inline style attributes need it on style-src.
+const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
@@ -28,7 +30,7 @@ const securityHeaders = [
     key: "Permissions-Policy",
     value: "camera=(), microphone=(), geolocation=()",
   },
-  { key: "Content-Security-Policy-Report-Only", value: cspReportOnly },
+  { key: "Content-Security-Policy", value: csp },
 ];
 
 const nextConfig: NextConfig = {
