@@ -6,7 +6,7 @@ import { MobileNav, type NavItem } from "@/components/mobile-nav";
 const NAV: readonly NavItem[] = [
   { href: "/why-postil", label: "Why Postil" },
   { href: "/how-it-works", label: "How it works" },
-  { href: "/evidence", label: "Evidence" },
+  { href: "/evidence", label: "See it run" },
   { href: "/pricing", label: "Pricing" },
   { href: "/security", label: "Security" },
   { href: "/docs", label: "Docs" },

@@ -96,19 +96,18 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
       <div className="ev-shell">
         <header className="ev-header">
           <Reveal>
-            <p className="ev-eyebrow">Evidence</p>
+            <p className="ev-eyebrow">See it run</p>
             <h1 className="ev-h1">We say less. What we say is right.</h1>
             <p className="ev-lede">
-              Real output from the Postil CLI at commit 560704e on the default model,
-              run against three representative diffs. Nothing here is mocked: the findings, token
-              counts, and the silence are the verbatim machine output. A broader public
-              benchmark over open-source pull requests is coming; this is the honest
-              starting point.
+              Three real runs of the Postil CLI on the default model, against
+              three representative diffs. Nothing here is mocked: the findings,
+              token counts, and the silence are the verbatim machine output.
             </p>
           </Reveal>
         </header>
 
         <div className="ev-meta-note">
+          <span>commit 560704e</span>
           <span>model: deepseek/deepseek-v4-pro</span>
           <span>captured June 2026</span>
           <span>default low-noise config</span>
@@ -172,8 +171,7 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
           <footer className="ev-foot">
             <p>
               This is the bar we hold ourselves to: catch the regression, catch the subtle
-              bug, and stay quiet on everything else. When the public benchmark lands, the
-              raw envelopes will live here too.
+              bug, and stay quiet on everything else.
             </p>
             <a className="ev-cta" href="/install">
               Try it on your own diff →
