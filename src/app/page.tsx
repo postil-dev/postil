@@ -50,6 +50,7 @@ export default function HomePage() {
               alt="Architectural sketch of the Postil review gate"
               width={1831}
               height={859}
+              sizes="(min-width: 1024px) 40rem, 100vw"
               priority
               className="h-auto w-full"
             />

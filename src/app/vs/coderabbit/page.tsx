@@ -16,6 +16,7 @@ export const metadata: Metadata = {
     description:
       "A hard merge gate, a published silence metric, flat BYO-key pricing, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/coderabbit",
+    images: ["/opengraph-image"],
   },
 };
 

@@ -16,6 +16,7 @@ export const metadata: Metadata = {
     description:
       "Hard merge gate, a published silence metric, flat BYO-key pricing, real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
     url: "https://postil.dev/why-postil",
+    images: ["/opengraph-image"],
   },
 };
 

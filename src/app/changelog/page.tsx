@@ -10,6 +10,7 @@ export const metadata: Metadata = {
     title: "Postil changelog",
     description: "Releases, gate and CLI changes, and platform support.",
     url: "https://postil.dev/changelog",
+    images: ["/opengraph-image"],
   },
 };
 

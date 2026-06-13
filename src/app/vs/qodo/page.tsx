@@ -16,6 +16,7 @@ export const metadata: Metadata = {
     description:
       "Flat BYO-key pricing instead of seats plus credits, a hard merge gate, and a published silence metric. The honest comparison.",
     url: "https://postil.dev/vs/qodo",
+    images: ["/opengraph-image"],
   },
 };
 

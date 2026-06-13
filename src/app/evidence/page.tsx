@@ -13,6 +13,7 @@ export const metadata: Metadata = {
     description:
       "Catch the regression, catch the subtle bug, stay quiet on everything else. Real reviewer output with token counts.",
     url: "/evidence",
+    images: ["/opengraph-image"],
   },
 };
 

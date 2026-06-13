@@ -13,6 +13,7 @@ export const metadata: Metadata = {
     description:
       "Flat $10/dev/mo orchestration, bring your own inference key at zero markup, free self-hosting. No meter anxiety.",
     url: "https://postil.dev/pricing",
+    images: ["/opengraph-image"],
   },
 };
 

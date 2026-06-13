@@ -14,6 +14,7 @@ export const metadata: Metadata = {
     description:
       "Least-privilege permissions, fail-closed by design, AES-256-GCM key sealing, short-lived tokens, coordinated disclosure.",
     url: "https://postil.dev/security",
+    images: ["/opengraph-image"],
   },
 };
 

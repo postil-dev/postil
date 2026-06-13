@@ -11,6 +11,7 @@ export const metadata: Metadata = {
     description:
       "Research notes on AI code review: evidence-first comparisons and the metrics vendors don't publish.",
     url: "https://postil.dev/blog",
+    images: ["/opengraph-image"],
   },
 };
 
