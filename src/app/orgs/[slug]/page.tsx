@@ -392,7 +392,7 @@ export default async function OrgDashboardPage({
                 type="text"
                 name="modelCascade"
                 defaultValue={settings?.modelCascade ?? ""}
-                placeholder="qwen/qwen3-coder,deepseek/deepseek-v4"
+                placeholder="qwen/qwen3-coder"
                 className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
               />
             </label>
