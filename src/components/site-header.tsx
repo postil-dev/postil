@@ -9,6 +9,7 @@ const NAV: readonly NavItem[] = [
   { href: "/pricing", label: "Pricing" },
   { href: "/security", label: "Security" },
   { href: "/docs", label: "Docs" },
+  { href: "/blog", label: "Blog" },
   { href: "/install", label: "Install" },
 ] as const;
 
