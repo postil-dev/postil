@@ -90,7 +90,7 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "REVIEW_MODEL_CASCADE",
     purpose: "Comma-separated fallback models",
-    example: "deepseek/deepseek-v4-pro,qwen/qwen3-coder",
+    example: "qwen/qwen3-coder",
     scope: ["worker"],
     optional: true,
   },

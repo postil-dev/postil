@@ -132,16 +132,75 @@ model:
           </tr>
           <tr>
             <td><code>GITHUB_TOKEN</code></td>
-            <td>Token for forge API access in remote mode</td>
+            <td>
+              Token for GitHub API access (<code>--forge github</code>;
+              required for remote reviews)
+            </td>
+          </tr>
+          <tr>
+            <td><code>GITHUB_API_URL</code></td>
+            <td>
+              GitHub API base URL for GitHub Enterprise Server (default{" "}
+              <code>https://api.github.com</code>)
+            </td>
+          </tr>
+          <tr>
+            <td><code>GITLAB_TOKEN</code></td>
+            <td>Token for GitLab API access (<code>--forge gitlab</code>)</td>
+          </tr>
+          <tr>
+            <td><code>GITLAB_API_URL</code></td>
+            <td>
+              GitLab API base URL for self-managed instances (default{" "}
+              <code>https://gitlab.com/api/v4</code>)
+            </td>
+          </tr>
+          <tr>
+            <td><code>BITBUCKET_TOKEN</code></td>
+            <td>
+              Token for Bitbucket API access (<code>--forge bitbucket</code>);
+              sent as a bearer token, or as the password for basic auth when{" "}
+              <code>BITBUCKET_USER</code> is also set
+            </td>
+          </tr>
+          <tr>
+            <td><code>BITBUCKET_USER</code></td>
+            <td>
+              Username for Bitbucket app-password (basic) auth; when set,{" "}
+              <code>BITBUCKET_TOKEN</code> is used as the password
+            </td>
+          </tr>
+          <tr>
+            <td><code>BITBUCKET_API_URL</code></td>
+            <td>
+              Bitbucket API base URL (default{" "}
+              <code>https://api.bitbucket.org/2.0</code>)
+            </td>
+          </tr>
+          <tr>
+            <td><code>AZURE_DEVOPS_TOKEN</code></td>
+            <td>
+              Personal access token for Azure DevOps (
+              <code>--forge azure</code>)
+            </td>
+          </tr>
+          <tr>
+            <td><code>AZURE_DEVOPS_API_URL</code></td>
+            <td>
+              Azure DevOps API base URL (default{" "}
+              <code>https://dev.azure.com</code>)
+            </td>
           </tr>
         </tbody>
       </table>
       <p>
-        Unlike some self-hosted reviewers, Postil never silently substitutes a
-        different provider: if the configured model cannot be reached with the
-        configured credentials, the review fails with exit code <code>2</code>{" "}
-        and a precise error. <code>postil doctor</code> runs the same checks
-        standalone.
+        Each remote forge reads its own token plus an optional base-URL
+        override for self-managed or enterprise instances. Only the variables
+        for the forge you target are required. Unlike some self-hosted
+        reviewers, Postil never silently substitutes a different provider: if
+        the configured model cannot be reached with the configured credentials,
+        the review fails with exit code <code>2</code> and a precise error.{" "}
+        <code>postil doctor</code> runs the same checks standalone.
       </p>
 
       <h2>Trying changes safely</h2>
