@@ -14,6 +14,7 @@ import {
 import { isPermanentFailure } from "./failure-classifier";
 import { postRespondFailureComment, runRespondJob } from "./respond";
 import { runReviewJob } from "./review";
+import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
 
 /**
@@ -142,6 +143,8 @@ async function main(): Promise<void> {
   validatePostilBin();
   // Fail fast if the database is unreachable.
   await getPool().query("SELECT 1");
+  // Fail fast if the image's CA trust store is broken (see tlsSelfTest).
+  await tlsSelfTest();
   console.log(`postil worker ${workerId} started (concurrency ${CONCURRENCY})`);
 
   const shutdown = (signal: string) => {
