@@ -6,11 +6,11 @@ import { MobileNav, type NavItem } from "@/components/mobile-nav";
 const NAV: readonly NavItem[] = [
   { href: "/why-postil", label: "Why Postil" },
   { href: "/how-it-works", label: "How it works" },
+  { href: "/evidence", label: "Evidence" },
   { href: "/pricing", label: "Pricing" },
   { href: "/security", label: "Security" },
   { href: "/docs", label: "Docs" },
   { href: "/blog", label: "Blog" },
-  { href: "/install", label: "Install" },
 ] as const;
 
 export function SiteHeader() {
@@ -28,7 +28,7 @@ export function SiteHeader() {
         </Link>
         <nav
           aria-label="Primary"
-          className="hidden items-center gap-7 text-[15px] md:flex"
+          className="hidden items-center gap-6 text-[15px] lg:flex xl:gap-7"
         >
           {NAV.map((item) => (
             <Link
@@ -43,7 +43,7 @@ export function SiteHeader() {
         <div className="flex items-center gap-4">
           <Link
             href="/login"
-            className="hidden text-[15px] text-charcoal/80 hover:text-charcoal md:inline-block"
+            className="hidden text-[15px] text-charcoal/80 hover:text-charcoal lg:inline-block"
           >
             Sign in
           </Link>
@@ -51,7 +51,7 @@ export function SiteHeader() {
             href="/install"
             className="btn-primary hidden text-sm sm:inline-block"
           >
-            Install
+            Install the CLI
           </Link>
           <MobileNav items={NAV} />
         </div>
