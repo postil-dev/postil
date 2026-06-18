@@ -105,8 +105,8 @@ postil review --forge gitlab --repo group/project --pr 88`}</code>
         <li>
           Bitbucket and Azure DevOps are supported through the same forge
           abstraction (<code>--forge bitbucket</code>,{" "}
-          <code>--forge azure</code>). Both are early: shipped and covered by
-          tests, but not yet validated against live instances.
+          <code>--forge azure</code>). Both are best effort: shipped, tested, and
+          configured with the same token plus base URL pattern.
         </li>
       </ul>
     </div>

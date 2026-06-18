@@ -364,6 +364,12 @@ export default function SecurityPage() {
             </a>
             .
           </p>
+          <p className="mt-4">
+            We do not publish a separate GPG release key today. That is
+            intentional: Sigstore keyless signing keeps release identity tied to
+            GitHub OIDC and avoids a static private key that would need storage,
+            rotation, revocation, and out-of-band trust distribution.
+          </p>
         </div>
       </Section>
     </div>

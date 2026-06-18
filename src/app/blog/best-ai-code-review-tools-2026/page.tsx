@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/blog/best-ai-code-review-tools-2026" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-06-13T00:00:00.000Z",
+    publishedTime: "2026-09-05T00:00:00.000Z",
     title: "Best AI code review tools in 2026: an evidence-first comparison",
     description:
       "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim dated and sourced.",
@@ -24,7 +24,7 @@ const articleJsonLd = {
   description:
     "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim dated and sourced, as of June 2026.",
   url: "https://postil.dev/blog/best-ai-code-review-tools-2026",
-  datePublished: "2026-06-13",
+  datePublished: "2026-09-05",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -45,7 +45,7 @@ export default function BestToolsArticle() {
         Best AI code review tools in 2026: an evidence-first comparison
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
-        June 2026 · Postil team
+        September 2026 · Postil team
       </p>
 
       <div className="prose-postil blog-prose mt-10">
@@ -471,17 +471,17 @@ export default function BestToolsArticle() {
           restraint is reported, not promised: the first number on the
           dashboard is the silence rate, the share of PRs where Postil said
           nothing, alongside the confidence distribution of every finding it
-          shipped. Pricing is a flat $10 per developer per month with your own
-          inference key billed at provider rates and zero markup (the hosted
-          beta is currently free). Self-hosting is free via{" "}
+          shipped. Pricing keeps orchestration flat and gives teams either BYOK
+          at zero markup or managed inference with transparent pass-through
+          markup (the hosted beta is currently free). Self-hosting is free via{" "}
           <Link href="/docs/self-hosted">Docker Compose</Link>, same product as
           hosted, with Ollama support. The hosted app is GitHub-only today; the
           CLI covers GitHub and GitLab, with Bitbucket and Azure DevOps support
-          that is early (shipped and tested, not yet validated against live
-          instances). The CLI and Action are Apache-2.0, and the control plane
-          stores review envelopes, never code. We make no peer-run benchmark
-          claim; you can <Link href="/evidence">see it run</Link> on three real
-          diffs and judge the output yourself.
+          on a best-effort CI gate. The CLI and Action are Apache-2.0, and the
+          control plane stores review envelopes, never code. We make no
+          peer-run benchmark claim; you can{" "}
+          <Link href="/evidence">see it run</Link> across the evidence fixtures
+          and judge the output yourself.
         </p>
 
         <h2>Which tool for which team</h2>

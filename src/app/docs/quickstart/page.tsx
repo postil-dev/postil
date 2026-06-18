@@ -64,16 +64,15 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      # the @v1 tag will exist after the first tagged release of the action
       - uses: postil-dev/postil-action@v1
         with:
-          cli-ref: 6b9d2db621e12bd558f72ba3e7bd8ecc092cd93a
+          cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}</code>
       </pre>
       <p>
-        The <code>cli-ref</code> above is current as of June 2026; check the{" "}
+        The <code>cli-ref</code> above is the current blessed CLI ref; check the{" "}
         <a
           href="https://github.com/postil-dev/postil-cli"
           rel="noopener"

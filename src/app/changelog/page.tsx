@@ -79,8 +79,8 @@ const RELEASES: Release[] = [
             <code className="font-mono text-xs">azure</code>, each covering its
             self-managed/server variant through a base-URL environment variable
             (<code className="font-mono text-xs">GITLAB_API_URL</code> and
-            friends). Bitbucket and Azure DevOps are early: shipped, not yet
-            validated against live instances.
+            friends). Bitbucket and Azure DevOps are best effort: shipped,
+            tested, and refined as platform-specific edge cases surface.
           </>
         ),
       },

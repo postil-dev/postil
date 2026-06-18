@@ -1,0 +1,43 @@
+name: Dated text maintenance
+
+on:
+  schedule:
+    - cron: "17 9 1 * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  opencode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run OpenCode
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          model: anthropic/claude-sonnet-4-5
+          use_github_token: true
+          prompt: |
+            Monthly dated-text maintenance for postil.dev.
+
+            Find visible product, pricing, comparison, docs, changelog, sitemap,
+            and blog text that contains stale dates or time-sensitive wording:
+            month names with years, YYYY-MM-DD dates, "as of", "current",
+            "latest", "beta", "coming soon", and fixed release timelines.
+
+            Update facts that can be verified from primary sources and open a
+            pull request with concise changes. Keep PR prose plain and minimal.
+            If a claim cannot be verified safely, open an issue instead with the
+            file path, stale text, source needed, and recommended owner action.
+            Do not read or print secret values.

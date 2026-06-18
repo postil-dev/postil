@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Macroscope",
   description:
-    "Postil is a Macroscope alternative with flat $10/dev BYO-key pricing instead of per-kilobyte usage billing, a blocking merge gate instead of neutral checks, and free self-hosting. Compared honestly, as of June 2026.",
+    "Postil is a Macroscope alternative with transparent inference billing instead of per-kilobyte usage billing, a blocking merge gate instead of neutral checks, and free self-hosting.",
   alternates: { canonical: "/vs/macroscope" },
   openGraph: {
     title: "Postil vs Macroscope",
     description:
-      "Flat BYO-key pricing instead of per-kilobyte billing, a blocking merge gate instead of neutral checks, and free self-hosting. The honest comparison.",
+      "Transparent inference billing instead of per-kilobyte billing, a blocking merge gate instead of neutral checks, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/macroscope",
     images: ["/opengraph-image"],
   },
@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
+      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
       { kind: "text", note: "$0.05/KB of diff ($0.50 min, ~$1.50 medium PR)" },
     ],
   },
@@ -60,7 +60,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early)",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       { kind: "text", note: "GitHub Cloud only" },
     ],
@@ -127,10 +127,10 @@ export default function VsMacroscopePage() {
           with a 10 KB minimum, around $0.95 to $1.50 for a typical PR. Two
           pricing models in six months. To its credit, Macroscope offers spend
           caps and $100 of credit for new workspaces, but the structure still
-          charges you more for bigger changes and more PRs. Postil charges a
-          flat $10 per developer per month and routes inference through your
-          own key at provider rates with zero markup; your worst-case bill is
-          seats times ten. Compare on the{" "}
+          charges you more for bigger changes and more PRs. Postil keeps
+          orchestration flat and makes inference explicit: BYOK at provider
+          rates, or managed inference with transparent pass-through markup.
+          Compare on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 

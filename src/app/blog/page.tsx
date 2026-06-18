@@ -17,6 +17,13 @@ export const metadata: Metadata = {
 
 const POSTS = [
   {
+    href: "/blog/silence-rate",
+    date: "June 2026",
+    title: "The silence rate: the AI code review metric nobody publishes",
+    description:
+      "Developers stop reading AI reviewers that are wrong a third of the time. The metric that predicts it is the one no vendor benchmark reports: how often the tool says nothing.",
+  },
+  {
     href: "/blog/where-does-your-code-go",
     date: "June 2026",
     title:
@@ -26,7 +33,7 @@ const POSTS = [
   },
   {
     href: "/blog/self-hosted-ai-code-review",
-    date: "June 2026",
+    date: "July 2026",
     title:
       "Self-hosted AI code review without the 500-seat enterprise gate",
     description:
@@ -34,7 +41,7 @@ const POSTS = [
   },
   {
     href: "/blog/ai-code-review-benchmarks",
-    date: "June 2026",
+    date: "July 2026",
     title:
       "Every AI code review benchmark has the same winner: its author",
     description:
@@ -42,7 +49,7 @@ const POSTS = [
   },
   {
     href: "/blog/why-copilot-cant-block-your-merge",
-    date: "June 2026",
+    date: "August 2026",
     title:
       "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
     description:
@@ -50,7 +57,7 @@ const POSTS = [
   },
   {
     href: "/blog/ai-code-review-pricing-2026",
-    date: "June 2026",
+    date: "August 2026",
     title:
       "AI code review pricing in 2026: what a 20-developer team actually pays",
     description:
@@ -58,17 +65,10 @@ const POSTS = [
   },
   {
     href: "/blog/best-ai-code-review-tools-2026",
-    date: "June 2026",
+    date: "September 2026",
     title: "Best AI code review tools in 2026: an evidence-first comparison",
     description:
       "CodeRabbit, Qodo, Macroscope, Greptile, Copilot, Bugbot, and Postil, compared on noise, merge gating, self-hosting, data handling, and a pricing landscape that changed four times in ninety days. Every claim dated and sourced.",
-  },
-  {
-    href: "/blog/silence-rate",
-    date: "June 2026",
-    title: "The silence rate: the AI code review metric nobody publishes",
-    description:
-      "Developers stop reading AI reviewers that are wrong a third of the time. The metric that predicts it is the one no vendor benchmark reports: how often the tool says nothing.",
   },
 ] as const;
 

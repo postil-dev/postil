@@ -136,7 +136,9 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
       </p>
       <p>
         The worker talks plain OpenAI-compatible chat completions, so anything
-        that serves that API (vLLM, LiteLLM, TGI) works the same way.
+        that serves that API (vLLM, LiteLLM, SGLang, TGI) works the same way.
+        The <a href="/docs/models">models guide</a> lists current hosted and
+        local recommendations plus the live benchmark command.
       </p>
 
       <h2>postil doctor</h2>

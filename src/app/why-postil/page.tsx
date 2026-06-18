@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Why Postil",
   description:
-    "Postil as a CodeRabbit alternative: where it differs from CodeRabbit, Greptile, Copilot, and the rest — silence rate, flat pricing with BYO keys, a hard merge gate, and self-hosting that works.",
+    "Postil as a CodeRabbit alternative: where it differs from CodeRabbit, Greptile, Copilot, and the rest — silence rate, transparent inference billing, a hard merge gate, and self-hosting that works.",
   alternates: { canonical: "/why-postil" },
   openGraph: {
     title: "Why Postil — the honest comparison",
     description:
-      "Hard merge gate, a published silence metric, flat BYO-key pricing, real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
+      "Hard merge gate, a published silence metric, transparent inference billing, real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
     url: "https://postil.dev/why-postil",
     images: ["/opengraph-image"],
   },
@@ -49,7 +49,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
   {
     feature: "Pricing model",
     cells: [
-      { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
+      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
       { kind: "text", note: "Per-seat + per-review overage" },
       { kind: "text", note: "AI Credits + Actions minutes (Jun 2026)" },
@@ -69,7 +69,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early); off GitHub the gate is a CI job pass/fail, not a named check-run",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate; off GitHub the gate is a CI job pass/fail, not a named check-run",
       },
       { kind: "text", note: "GitHub, GitLab, Azure DevOps, Bitbucket" },
       { kind: "text", note: "GitHub, GitLab" },
@@ -124,7 +124,7 @@ const wedges: Wedge[] = [
   },
   {
     number: "02",
-    title: "Flat $10/dev orchestration, BYO key, zero markup",
+    title: "Flat orchestration, BYO key or managed inference",
     body: (
       <>
         <p>
@@ -163,10 +163,10 @@ const wedges: Wedge[] = [
           burned in two hours.
         </p>
         <p className="mt-3">
-          Postil charges a flat $10 per developer per month for orchestration
-          and routes inference through your own OpenRouter, Anthropic, Azure,
-          or Bedrock key at provider rates, with zero markup. Worst-case bill:
-          seats times ten. As of June 2026, the closest comparable model we
+          Postil keeps orchestration flat and makes inference explicit: bring
+          your own OpenRouter, Anthropic, Azure, or Bedrock key at provider
+          rates, or use managed inference with transparent pass-through markup.
+          As of June 2026, the closest comparable model we
           found is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">
             Kodus
@@ -216,8 +216,9 @@ const wedges: Wedge[] = [
           Postil's CLI speaks GitHub, GitLab, Bitbucket, and Azure DevOps —
           each including its self-managed/server variant via a base-URL
           environment variable — through the same forge interface. Bitbucket
-          and Azure DevOps support is early: shipped and covered by tests, not
-          yet validated against live instances. The CLI's interactive{" "}
+          and Azure DevOps support follows the same best-effort contract:
+          shipped, covered by tests, and driven by customer feedback where
+          platform edge cases differ. The CLI's interactive{" "}
           <code>@postil</code> bot (<code>postil respond</code>) follows the
           same reach: GitHub and GitLab cover issues and PRs/MRs, Bitbucket and
           Azure DevOps cover pull requests only. The hosted app is GitHub-only
@@ -399,10 +400,9 @@ export default function WhyPostilPage() {
         <h2 className="serif-display text-2xl">Where we are honest about trade-offs</h2>
         <ul className="mt-4 space-y-2 text-[15px] text-ink-soft">
           <li>
-            Bitbucket and Azure DevOps support in the CLI is early: shipped and
-            covered by tests, but not yet validated against live instances. The
-            hosted app is GitHub-only. If you want a battle-tested reviewer on
-            Bitbucket or Azure DevOps today, CodeRabbit covers you now.
+            Bitbucket and Azure DevOps support in the CLI is best effort:
+            shipped, tested, and expected to work through the documented base
+            URL and token configuration. The hosted app is GitHub-only.
           </li>
           <li>
             No AI reviewer catches every real bug; independent benchmarks find

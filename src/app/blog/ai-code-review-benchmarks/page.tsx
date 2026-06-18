@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/blog/ai-code-review-benchmarks" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-06-13T00:00:00.000Z",
+    publishedTime: "2026-07-25T00:00:00.000Z",
     title: "Every AI code review benchmark has the same winner: its author",
     description:
       "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
@@ -24,7 +24,7 @@ const articleJsonLd = {
   description:
     "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
   url: "https://postil.dev/blog/ai-code-review-benchmarks",
-  datePublished: "2026-06-13",
+  datePublished: "2026-07-25",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -45,7 +45,7 @@ export default function BenchmarkAuthorArticle() {
         Every AI code review benchmark has the same winner: its author
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
-        June 2026 · Postil team
+        July 2026 · Postil team
       </p>
 
       <div className="prose-postil blog-prose mt-10">

@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/blog/ai-code-review-pricing-2026" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-06-13T00:00:00.000Z",
+    publishedTime: "2026-08-22T00:00:00.000Z",
     title:
       "AI code review pricing in 2026: what a 20-developer team actually pays",
     description:
@@ -26,7 +26,7 @@ const articleJsonLd = {
   description:
     "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price dated and sourced.",
   url: "https://postil.dev/blog/ai-code-review-pricing-2026",
-  datePublished: "2026-06-13",
+  datePublished: "2026-08-22",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -47,7 +47,7 @@ export default function PricingArticle() {
         AI code review pricing in 2026: what a 20-developer team actually pays
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
-        June 2026 · Postil team
+        August 2026 · Postil team
       </p>
 
       <div className="prose-postil blog-prose mt-10">
@@ -349,13 +349,13 @@ export default function PricingArticle() {
         <p>
           Our row. 20 developers × $10 flat = <strong>$200 per month</strong>{" "}
           for orchestration, at any PR volume; the number does not change in
-          the agent-heavy scenario. Inference runs on your own API key and is
-          billed by your provider at its list rates with zero markup, so the
-          metered part of the cost exists, but it is paid to your model
-          provider at prices you can read on their pricing page, and it scales
-          with your usage, not ours. Hosted reviews on public repositories are
-          free, the self-hosted stack is free with no seat limit, and while
-          the GitHub App is in beta, hosted orchestration is free as well.
+          the agent-heavy scenario. Inference is either billed on your own API
+          key at zero markup or billed by Postil as managed pass-through with
+          transparent markup, so the metered part of the cost remains visible
+          and tied to the model you choose. Hosted reviews on public
+          repositories are free, the self-hosted stack is free with no seat
+          limit, and while the GitHub App is in beta, hosted orchestration is
+          free as well.
           Source: <Link href="/pricing">postil.dev/pricing</Link>.
         </p>
 
