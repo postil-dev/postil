@@ -9,6 +9,8 @@ export type Database = NodePgDatabase<typeof schema>;
 let pool: Pool | undefined;
 let database: Database | undefined;
 
+const DATABASE_CONNECT_TIMEOUT_MS = 2_000;
+
 /**
  * Lazy singleton so `next build` never needs a live database. The first
  * runtime call requires DATABASE_URL and fails with an actionable message
@@ -16,7 +18,11 @@ let database: Database | undefined;
  */
 export function getDb(): Database {
   if (!database) {
-    pool = new Pool({ connectionString: requireEnv("DATABASE_URL"), max: 10 });
+    pool = new Pool({
+      connectionString: requireEnv("DATABASE_URL"),
+      max: 10,
+      connectionTimeoutMillis: DATABASE_CONNECT_TIMEOUT_MS,
+    });
     database = drizzle(pool, { schema });
   }
   return database;

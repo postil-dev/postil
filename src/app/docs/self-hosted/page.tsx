@@ -220,13 +220,18 @@ postil doctor: ready.`}</code>
       <h2>Operations</h2>
       <ul>
         <li>
-          <code>/api/health</code> — database ping, suitable for liveness
-          probes.
+          <code>/api/health</code> — cheap web-process liveness, suitable for
+          container and proxy health checks.
+        </li>
+        <li>
+          <code>/api/health/dependencies</code> — dependency readiness check
+          that returns 503 when Postgres is unavailable.
         </li>
         <li>
           <code>/api/metrics</code> — Prometheus text (queue depth, reviews by
-          status, silence rate, watchdog kills), bearer-protected by{" "}
-          <code>METRICS_TOKEN</code>.
+          status, 24-hour activity, jobs, sessions, installations, database-up
+          signal),
+          bearer-protected by <code>METRICS_TOKEN</code>.
         </li>
         <li>
           The worker's watchdog fails any review running longer than 10
