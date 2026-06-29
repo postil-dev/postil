@@ -34,7 +34,7 @@ interface DatabaseMetrics {
 
 /** Prometheus text exposition, protected by a bearer token. */
 export async function GET(request: Request): Promise<NextResponse> {
-  const token = optionalEnv("METRICS_TOKEN");
+  const token = metricsToken();
   if (!token) {
     return NextResponse.json(
       { error: "metrics disabled: METRICS_TOKEN is not configured" },
@@ -149,6 +149,10 @@ export async function GET(request: Request): Promise<NextResponse> {
   return new NextResponse(`${lines.join("\n")}\n`, {
     headers: { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" },
   });
+}
+
+function metricsToken(): string | undefined {
+  return optionalEnv("METRICS_TOKEN") ?? optionalEnv("METRICS_API_KEY");
 }
 
 async function collectDatabaseMetricsOrNull(): Promise<DatabaseMetrics | null> {

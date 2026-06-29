@@ -108,6 +108,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     scope: ["web"],
     optional: true,
   },
+  {
+    name: "METRICS_API_KEY",
+    purpose: "Legacy bearer token name accepted for /api/metrics",
+    example: "openssl rand -hex 24",
+    scope: ["web"],
+    optional: true,
+  },
 ];
 
 export function validateEnv(processKind: "web" | "worker"): void {

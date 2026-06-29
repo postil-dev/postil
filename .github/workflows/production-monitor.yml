@@ -23,6 +23,7 @@ jobs:
         shell: bash
         env:
           EVENT_SCHEDULE: ${{ github.event.schedule }}
+          METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
         run: |
           set -euo pipefail
 
@@ -57,4 +58,23 @@ jobs:
               --max-time 15 \
               --output /dev/null \
               "https://postil.dev/api/health/dependencies"
+
+            if [[ -n "${METRICS_API_KEY:-}" ]]; then
+              mkdir -p .cache
+              trap 'rm -f .cache/curl-metrics.conf .cache/metrics.out' EXIT
+              printf 'header = "Authorization: Bearer %s"\n' "${METRICS_API_KEY}" > .cache/curl-metrics.conf
+              chmod 0600 .cache/curl-metrics.conf
+              echo "Checking metrics: https://postil.dev/api/metrics"
+              curl \
+                --fail \
+                --location \
+                --silent \
+                --show-error \
+                --connect-timeout 5 \
+                --max-time 15 \
+                --config .cache/curl-metrics.conf \
+                --output .cache/metrics.out \
+                "https://postil.dev/api/metrics"
+              grep -E '^postil_database_up [01]$' .cache/metrics.out
+            fi
           fi
