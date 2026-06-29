@@ -1,0 +1,60 @@
+name: Production monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-monitor
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Smoke check production
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check public endpoints
+        shell: bash
+        env:
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+
+          public_endpoints=(
+            "site https://postil.dev/"
+            "liveness https://postil.dev/api/health"
+          )
+
+          for endpoint in "${public_endpoints[@]}"; do
+            name="${endpoint%% *}"
+            url="${endpoint#* }"
+            echo "Checking ${name}: ${url}"
+            curl \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --connect-timeout 5 \
+              --max-time 15 \
+              --output /dev/null \
+              "${url}"
+          done
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${EVENT_SCHEDULE:-}" == "17 8 * * *" ]]; then
+            echo "Checking dependencies: https://postil.dev/api/health/dependencies"
+            curl \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --connect-timeout 5 \
+              --max-time 15 \
+              --output /dev/null \
+              "https://postil.dev/api/health/dependencies"
+          fi

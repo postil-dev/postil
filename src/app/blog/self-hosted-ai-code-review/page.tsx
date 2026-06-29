@@ -284,10 +284,11 @@ POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
         <h2>Operations, briefly</h2>
         <p>
           A few signals that this is operable rather than a toy.{" "}
-          <code>/api/health</code> is a database ping suitable for liveness
-          probes. <code>/api/metrics</code> emits Prometheus text, including the
-          silence rate, protected by a <code>METRICS_TOKEN</code> bearer. The
-          worker&apos;s watchdog fails any review running longer than 10 minutes
+          <code>/api/health</code> is a cheap web-process liveness check, while{" "}
+          <code>/api/health/dependencies</code> checks Postgres readiness.{" "}
+          <code>/api/metrics</code> emits Prometheus text, including the silence
+          rate and database-up signal, protected by a <code>METRICS_TOKEN</code>{" "}
+          bearer. The worker&apos;s watchdog fails any review running longer than 10 minutes
           and completes its check runs as failed, so a stuck review cannot hold
           a PR hostage as eternally in progress. And the CLI binary is baked
           into the worker image at a pinned commit, so upgrading the reviewer is
