@@ -30,6 +30,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.METRICS_TOKEN;
+  delete process.env.METRICS_API_KEY;
 });
 
 function queryResponse(text: string): { rows: Array<Record<string, string | null>> } {
@@ -134,6 +135,18 @@ describe("/api/metrics", () => {
     expect(await response.json()).toEqual({ error: "unauthorized" });
     expect(getPoolCalls).toBe(0);
     expect(queryCalls).toBe(0);
+  });
+
+  test("accepts the legacy METRICS_API_KEY env name", async () => {
+    delete process.env.METRICS_TOKEN;
+    process.env.METRICS_API_KEY = TOKEN;
+
+    const response = await GET(metricsRequest());
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).toContain("# TYPE postil_database_up gauge\npostil_database_up 1\n");
+    expect(getPoolCalls).toBe(1);
   });
 
   test("emits activity and operations metrics when the DB is reachable", async () => {
