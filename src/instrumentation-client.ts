@@ -1,6 +1,6 @@
 import posthog from "posthog-js";
 
-import { publicTelemetryProperties } from "@/lib/telemetry";
+import { publicTelemetryProperties, sanitizePostHogProperties } from "@/lib/telemetry";
 
 const token = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 const host = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://eu.i.posthog.com";
@@ -15,7 +15,7 @@ if (token) {
     person_profiles: "identified_only",
     before_send: (event) => {
       if (!event?.properties) return event;
-      delete event.properties.$ip;
+      sanitizePostHogProperties(event.properties, window.location.origin);
       return event;
     },
   });
