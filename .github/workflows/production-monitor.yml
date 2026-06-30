@@ -49,24 +49,28 @@ jobs:
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${EVENT_SCHEDULE:-}" == "17 8 * * *" ]]; then
             echo "Checking dependencies: https://postil.dev/api/health/dependencies"
-            curl \
-              --fail \
+            mkdir -p .cache
+            dependency_status="$(curl \
               --location \
               --silent \
               --show-error \
               --connect-timeout 5 \
               --max-time 15 \
-              --output /dev/null \
-              "https://postil.dev/api/health/dependencies"
+              --output .cache/dependencies.out \
+              --write-out '%{http_code}' \
+              "https://postil.dev/api/health/dependencies")"
+            if [[ "${dependency_status}" != 2* ]]; then
+              echo "Dependency check failed with HTTP ${dependency_status}"
+              cat .cache/dependencies.out
+              exit 1
+            fi
 
             if [[ -n "${METRICS_API_KEY:-}" ]]; then
-              mkdir -p .cache
-              trap 'rm -f .cache/curl-metrics.conf .cache/metrics.out' EXIT
+              trap 'rm -f .cache/curl-metrics.conf .cache/metrics.out .cache/dependencies.out' EXIT
               printf 'header = "Authorization: Bearer %s"\n' "${METRICS_API_KEY}" > .cache/curl-metrics.conf
               chmod 0600 .cache/curl-metrics.conf
               echo "Checking metrics: https://postil.dev/api/metrics"
-              curl \
-                --fail \
+              metrics_status="$(curl \
                 --location \
                 --silent \
                 --show-error \
@@ -74,7 +78,17 @@ jobs:
                 --max-time 15 \
                 --config .cache/curl-metrics.conf \
                 --output .cache/metrics.out \
-                "https://postil.dev/api/metrics"
-              grep -E '^postil_database_up [01]$' .cache/metrics.out
+                --write-out '%{http_code}' \
+                "https://postil.dev/api/metrics")"
+              if [[ "${metrics_status}" != 2* ]]; then
+                echo "Metrics check failed with HTTP ${metrics_status}"
+                cat .cache/metrics.out
+                exit 1
+              fi
+              if ! grep -E '^postil_database_up 1$' .cache/metrics.out; then
+                echo "Metrics check did not report postil_database_up 1"
+                cat .cache/metrics.out
+                exit 1
+              fi
             fi
           fi
