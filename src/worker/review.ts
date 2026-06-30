@@ -17,6 +17,7 @@ import {
   createCheckRun,
 } from "@/lib/github/checks";
 import type { ReviewJobPayload } from "@/lib/queue";
+import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 
 export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
 
@@ -194,6 +195,7 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
   let advisoryCheckRunId: number | undefined;
   let gateCheckRunId: number | undefined;
   let baselinePath: string | undefined;
+  let sensitiveValues: string[] = [];
 
   try {
     token = await getInstallationToken(payload.installationId);
@@ -238,6 +240,7 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
     args.push("--output-json");
 
     const llm = await resolveLlmConfig(installation.orgId);
+    sensitiveValues = [token, llm.apiKey].filter((value): value is string => Boolean(value));
     const cliEnv: Record<string, string> = {
       GITHUB_TOKEN: token,
       POSTIL_API_BASE: llm.apiBase,
@@ -254,8 +257,9 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
     // Exit 0 = clean/below gate, 1 = gate-failing findings; both produce a
     // valid envelope. 2 (or anything else) is an operational error.
     if (result.exitCode !== 0 && result.exitCode !== 1) {
+      const stderr = redactAndTruncate(result.stderr, 500, sensitiveValues);
       throw new OperationalError(
-        `postil CLI exited with code ${result.exitCode}: ${result.stderr.slice(0, 500)}`,
+        `postil CLI exited with code ${result.exitCode}: ${stderr}`,
       );
     }
 
@@ -281,10 +285,14 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
       modelUsed: ingested.modelUsed,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = redactSecrets(err, sensitiveValues);
     await db
       .update(schema.reviews)
-      .set({ status: "failed", errorMessage: message.slice(0, 2000), finishedAt: new Date() })
+      .set({
+        status: "failed",
+        errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
+        finishedAt: new Date(),
+      })
       .where(eq(schema.reviews.id, reviewId));
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed.
@@ -309,7 +317,9 @@ export async function failCheckRuns(
   gateCheckRunId: number | undefined | null,
   message: string,
 ): Promise<void> {
-  const summary = `Postil could not complete this review: ${message.slice(0, 400)}`;
+  const summary = `Postil could not complete this review: ${redactAndTruncate(message, 400, [
+    token,
+  ])}`;
   if (gateCheckRunId != null) {
     await completeCheckRun(
       token,
@@ -318,7 +328,7 @@ export async function failCheckRuns(
       "failure",
       "Review did not complete",
       `${summary}\n\nThe gate fails closed: an unreviewed head is not a passing head. Re-run by pushing or re-requesting the check.`,
-    ).catch((e) => console.error(`failed to complete gate check-run: ${e}`));
+    ).catch((e) => console.error(`failed to complete gate check-run: ${redactSecrets(e, [token])}`));
   }
   if (advisoryCheckRunId != null) {
     await completeCheckRun(
@@ -328,6 +338,8 @@ export async function failCheckRuns(
       "neutral",
       "Review did not complete",
       summary,
-    ).catch((e) => console.error(`failed to complete advisory check-run: ${e}`));
+    ).catch((e) =>
+      console.error(`failed to complete advisory check-run: ${redactSecrets(e, [token])}`),
+    );
   }
 }

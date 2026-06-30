@@ -7,6 +7,7 @@ import { getDb, getPool, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { mentionsPostil } from "@/lib/mentions";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
+import { triggerQueueDrain } from "@/worker/runner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -345,6 +346,7 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
     baseSha,
   };
   await enqueueJob(getPool(), "review", jobPayload);
+  triggerQueueDrain("review");
 }
 
 /**
@@ -408,6 +410,7 @@ function mayTriggerRespond(authorAssociation: string | undefined): boolean {
 // it can never enqueue a second bot reply.
 async function enqueueRespond(payload: RespondJobPayload): Promise<void> {
   await enqueueJob(getPool(), "respond", payload, { maxAttempts: 2 });
+  triggerQueueDrain("respond");
 }
 
 async function handleIssueComment(payload: CommentEventPayload): Promise<void> {

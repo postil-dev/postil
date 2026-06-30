@@ -4,6 +4,7 @@ import { getDb, schema } from "@/lib/db";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { postIssueComment } from "@/lib/github/checks";
 import type { RespondJobPayload } from "@/lib/queue";
+import { redactAndTruncate } from "@/lib/redact";
 import { resolveLlmConfig, runCli } from "./review";
 
 /**
@@ -88,8 +89,9 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
     throw new Error("respond exceeded the CLI deadline");
   }
   if (result.exitCode !== 0) {
+    const stderr = redactAndTruncate(result.stderr, 500, [token, llm.apiKey]);
     throw new Error(
-      `postil respond exited with code ${result.exitCode}: ${result.stderr.slice(0, 500)}`,
+      `postil respond exited with code ${result.exitCode}: ${stderr}`,
     );
   }
 }

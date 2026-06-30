@@ -6,7 +6,11 @@
 #   fly secrets set DATABASE_URL=... POSTIL_SESSION_SECRET=... \
 #     GITHUB_WEBHOOK_SECRET=... GITHUB_OAUTH_CLIENT_ID=... \
 #     GITHUB_OAUTH_CLIENT_SECRET=... POSTIL_SEALING_KEY=... \
-#     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... OPENROUTER_API_KEY=...
+#     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... OPENROUTER_API_KEY=... \
+#     METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=...
+#
+# Browser PostHog also needs NEXT_PUBLIC_POSTHOG_KEY as a Docker build arg.
+# The GitHub Actions deploy workflow passes it from repo variables.
 #
 # Migrations: fly ssh console -C "bun run db:migrate"
 
@@ -15,6 +19,10 @@ primary_region = "lhr"
 
 [build]
 
+[build.args]
+POSTIL_CLI_REV = "v0.1.1"
+NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
+
 [processes]
 web = "bun run start"
 worker = "bun run worker"
@@ -22,6 +30,16 @@ worker = "bun run worker"
 [env]
 NODE_ENV = "production"
 POSTIL_BIN = "/usr/local/bin/postil"
+POSTIL_DB_POOL_MAX = "2"
+POSTIL_WEBHOOK_DRAIN_ENABLED = "1"
+POSTIL_QUEUE_DRAIN_MAX_JOBS = "1"
+POSTIL_QUEUE_DRAIN_DEADLINE_MS = "720000"
+WORKER_CONCURRENCY = "1"
+WORKER_POLL_INTERVAL_MS = "1000"
+WORKER_IDLE_POLL_MAX_MS = "900000"
+WORKER_WATCHDOG_INTERVAL_MS = "900000"
+POSTHOG_SERVER_CAPTURE = "1"
+NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 
 [http_service]
 processes = ["web"]

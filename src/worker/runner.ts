@@ -1,0 +1,108 @@
+import { hostname } from "node:os";
+
+import { getPool } from "@/lib/db";
+import { redactSecrets } from "@/lib/redact";
+import {
+  claimJob,
+  completeJob,
+  failJob,
+  type ClaimedJob,
+  type RespondJobPayload,
+  type ReviewJobPayload,
+} from "@/lib/queue";
+import { optionalEnv } from "@/lib/env";
+import { isPermanentFailure } from "./failure-classifier";
+import { postRespondFailureComment, runRespondJob } from "./respond";
+import { runReviewJob } from "./review";
+import { watchdogPass } from "./watchdog";
+
+const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv("POSTIL_QUEUE_DRAIN_MAX_JOBS", 1);
+const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
+  "POSTIL_QUEUE_DRAIN_DEADLINE_MS",
+  12 * 60 * 1000,
+);
+
+let backgroundDrain: Promise<void> | undefined;
+
+async function handleJob(kind: string, payload: Record<string, unknown>): Promise<void> {
+  switch (kind) {
+    case "review":
+      await runReviewJob(payload as ReviewJobPayload);
+      break;
+    case "respond":
+      await runRespondJob(payload as RespondJobPayload);
+      break;
+    default:
+      throw new Error(`unknown job kind: ${kind}`);
+  }
+}
+
+export async function runClaimedJob(job: ClaimedJob, label: string): Promise<void> {
+  const started = Date.now();
+  console.log(`[${label}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
+  try {
+    await handleJob(job.kind, job.payload);
+    await completeJob(getPool(), job);
+    console.log(`[${label}] job ${job.id} done in ${Date.now() - started}ms`);
+  } catch (err) {
+    const message = redactSecrets(err);
+    const permanent = isPermanentFailure(message);
+    const outcome = await failJob(getPool(), job, message, { permanent });
+    console.error(
+      `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
+    );
+    if (outcome === "failed" && job.kind === "respond") {
+      await postRespondFailureComment(job.payload as RespondJobPayload);
+    }
+  }
+}
+
+export async function drainQueueOnce(
+  label: string,
+  opts: { maxJobs?: number; deadlineMs?: number } = {},
+): Promise<number> {
+  const maxJobs = Math.max(1, opts.maxJobs ?? DEFAULT_DRAIN_MAX_JOBS);
+  const deadlineAt = Date.now() + Math.max(1_000, opts.deadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS);
+  const workerId = `${label}-${hostname()}-${process.pid}`;
+  let drained = 0;
+
+  await watchdogPass().catch((err) => {
+    console.error(`[${label}] watchdog pass failed before drain: ${redactSecrets(err)}`);
+  });
+
+  while (drained < maxJobs && Date.now() < deadlineAt) {
+    const job = await claimJob(getPool(), workerId);
+    if (!job) break;
+    await runClaimedJob(job, label);
+    drained += 1;
+  }
+
+  return drained;
+}
+
+export function triggerQueueDrain(reason: string): void {
+  if (optionalEnv("POSTIL_WEBHOOK_DRAIN_ENABLED", "0") !== "1") return;
+  if (backgroundDrain) return;
+  const label = `web-drain:${reason.replace(/[^a-z0-9_-]/gi, "_")}`;
+  backgroundDrain = drainQueueOnce(label)
+    .then((count) => {
+      if (count > 0) console.log(`[${label}] drained ${count} job(s)`);
+    })
+    .catch((err) => {
+      console.error(`[${label}] drain failed: ${redactSecrets(err)}`);
+    })
+    .finally(() => {
+      backgroundDrain = undefined;
+    });
+}
+
+export function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = optionalEnv(name);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.warn(`${name} must be a positive integer; using ${fallback}`);
+    return fallback;
+  }
+  return parsed;
+}

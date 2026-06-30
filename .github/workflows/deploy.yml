@@ -36,6 +36,23 @@ jobs:
           tar -xzf "${tmp}/${art}" -C "$tmp" postil
           install -m 0755 "${tmp}/postil" vendor/postil
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.4
-      - run: flyctl deploy --remote-only --build-arg POSTIL_CLI_REV="${{ vars.POSTIL_CLI_TAG || 'unpinned' }}"
+      - name: Stage observability runtime secrets
+        run: |
+          set -euo pipefail
+          if [[ -n "${POSTHOG_PROJECT_TOKEN:-}" ]]; then
+            printf 'POSTHOG_PROJECT_TOKEN=%s\n' "${POSTHOG_PROJECT_TOKEN}" | flyctl secrets import --stage
+          fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+      - run: |
+          flyctl deploy \
+            --remote-only \
+            --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG:-v0.1.1}" \
+            --build-arg NEXT_PUBLIC_POSTHOG_KEY="${NEXT_PUBLIC_POSTHOG_KEY:-}" \
+            --build-arg NEXT_PUBLIC_POSTHOG_HOST="${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
+          POSTIL_CLI_TAG: ${{ vars.POSTIL_CLI_TAG }}

@@ -24,6 +24,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     scope: ["web", "worker"],
   },
   {
+    name: "POSTIL_DB_POOL_MAX",
+    purpose: "Maximum Postgres connections per process; keep low for free-tier hosted Postgres",
+    example: "2",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
     name: "POSTIL_SESSION_SECRET",
     purpose: "HMAC key for signing session cookies (32+ random bytes)",
     example: "openssl rand -hex 32",
@@ -96,8 +103,53 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "POSTIL_BIN",
-    purpose: "Path to the postil CLI binary the worker spawns",
+    purpose: "Path to the postil CLI binary the worker or webhook drain spawns",
     example: "/usr/local/bin/postil",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_WEBHOOK_DRAIN_ENABLED",
+    purpose:
+      "When set to 1, the web process drains a small number of queued jobs immediately after webhook enqueue",
+    example: "1",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_QUEUE_DRAIN_MAX_JOBS",
+    purpose: "Maximum jobs a webhook-triggered web drain processes before yielding",
+    example: "1",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_QUEUE_DRAIN_DEADLINE_MS",
+    purpose: "Wall-clock budget for one webhook-triggered queue drain",
+    example: "720000",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "WORKER_POLL_INTERVAL_MS",
+    purpose: "Initial worker queue poll interval",
+    example: "1000",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "WORKER_IDLE_POLL_MAX_MS",
+    purpose:
+      "Maximum idle worker queue poll interval; raise this for serverless Postgres free-tier scale-to-zero",
+    example: "900000",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "WORKER_WATCHDOG_INTERVAL_MS",
+    purpose:
+      "Worker watchdog interval; raise this with idle polling for serverless Postgres free-tier scale-to-zero",
+    example: "900000",
     scope: ["worker"],
     optional: true,
   },
@@ -115,6 +167,35 @@ const ENV_SPECS: EnvVarSpec[] = [
     scope: ["web"],
     optional: true,
   },
+  {
+    name: "POSTHOG_PROJECT_TOKEN",
+    purpose:
+      "PostHog project token for server-side request telemetry; same value as NEXT_PUBLIC_POSTHOG_KEY",
+    example: "phc_...",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "NEXT_PUBLIC_POSTHOG_KEY",
+    purpose: "PostHog project token compiled into the browser analytics bundle",
+    example: "phc_...",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "NEXT_PUBLIC_POSTHOG_HOST",
+    purpose: "PostHog ingestion host matching the project region",
+    example: "https://eu.i.posthog.com",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "POSTHOG_SERVER_CAPTURE",
+    purpose: "Set to 0 to disable server-side request telemetry while keeping browser analytics",
+    example: "1",
+    scope: ["web"],
+    optional: true,
+  },
 ];
 
 export function validateEnv(processKind: "web" | "worker"): void {
@@ -123,6 +204,13 @@ export function validateEnv(processKind: "web" | "worker"): void {
     if (!spec.scope.includes(processKind) || spec.optional) continue;
     const value = process.env[spec.name];
     if (!value || value.trim() === "") missing.push(spec);
+  }
+  if (processKind === "web" && process.env.POSTIL_WEBHOOK_DRAIN_ENABLED === "1") {
+    for (const name of ["GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "POSTIL_BIN"]) {
+      const spec = ENV_SPECS.find((s) => s.name === name);
+      const value = process.env[name];
+      if (spec && (!value || value.trim() === "")) missing.push(spec);
+    }
   }
   if (missing.length > 0) {
     const lines = missing.map(

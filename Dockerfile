@@ -9,6 +9,8 @@
 # building fully from source.
 
 ARG POSTIL_CLI_REV=unpinned
+ARG NEXT_PUBLIC_POSTHOG_KEY
+ARG NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com
 
 FROM oven/bun:1.3 AS deps
 WORKDIR /app
@@ -16,6 +18,10 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 FROM oven/bun:1.3 AS build
+ARG NEXT_PUBLIC_POSTHOG_KEY
+ARG NEXT_PUBLIC_POSTHOG_HOST
+ENV NEXT_PUBLIC_POSTHOG_KEY=${NEXT_PUBLIC_POSTHOG_KEY}
+ENV NEXT_PUBLIC_POSTHOG_HOST=${NEXT_PUBLIC_POSTHOG_HOST}
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

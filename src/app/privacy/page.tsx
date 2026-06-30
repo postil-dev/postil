@@ -101,21 +101,37 @@ export default function PrivacyPage() {
             plane and the review worker.
           </li>
           <li>
-            <strong>Neon</strong> — managed PostgreSQL: stores accounts,
+            <strong>Managed PostgreSQL</strong> — Neon or another Postgres
+            provider: stores accounts,
             installations, and review envelopes.
+          </li>
+          <li>
+            <strong>PostHog</strong> — privacy-scoped analytics: stores
+            aggregate pageview and request telemetry so we can understand
+            traffic sources, documentation usage, and likely bot or automation
+            traffic.
           </li>
         </ul>
         <p>
-          There is no analytics or tracking subprocessor. The site sets one
-          cookie, the session cookie, only after sign-in.
+          Hosted Postil uses analytics for product and traffic measurement on
+          public marketing, documentation, blog, install, pricing, and
+          comparison pages. Browser analytics record pageviews, sanitized
+          referrers, and campaign parameters with session replay and
+          autocaptured clicks disabled. Server-side request telemetry records
+          sanitized path, referrer origin/public path, campaign parameters,
+          user agent, and Cloudflare bot metadata when present; it does not
+          send IP addresses, arbitrary query strings, or protected dashboard
+          paths. The site also sets one first-party session cookie after
+          sign-in.
         </p>
 
         <h2>Where data is processed (residency)</h2>
         <p>
           For the hosted service, application hosting runs on Fly.io in the
-          London region (<code>lhr</code>) and the managed database (Neon) runs
-          in a European region, so your account data and review envelopes are
-          processed and stored in the UK/EU. Two things sit outside that
+          London region (<code>lhr</code>) and the managed database runs in a
+          European region, so your account data and review envelopes are
+          processed and stored in the UK/EU. PostHog analytics should use EU
+          Cloud for the hosted service. Two things sit outside that
           boundary by design: when your org uses a BYO model key, diffs go to
           whatever provider and region you configure; and a self-hosted
           deployment keeps all data on your own infrastructure, wherever you run
