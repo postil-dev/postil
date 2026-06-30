@@ -5,9 +5,13 @@ import { publicTelemetryProperties, sanitizePostHogProperties } from "@/lib/tele
 const token = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 const host = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://eu.i.posthog.com";
 
-if (token) {
-  posthog.init(token, {
-    api_host: host,
+void bootPostHog();
+
+async function bootPostHog(): Promise<void> {
+  const config = token ? { key: token, host } : await runtimeConfig();
+  if (!config?.key) return;
+  posthog.init(config.key, {
+    api_host: config.host,
     defaults: "2026-05-30",
     autocapture: false,
     capture_pageview: false,
@@ -20,6 +24,23 @@ if (token) {
     },
   });
   installPageviewCapture();
+}
+
+interface PostHogConfig {
+  key: string;
+  host: string;
+}
+
+async function runtimeConfig(): Promise<PostHogConfig | undefined> {
+  try {
+    const response = await fetch("/api/analytics/posthog", { cache: "force-cache" });
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as Partial<PostHogConfig>;
+    if (typeof body.key !== "string" || typeof body.host !== "string") return undefined;
+    return { key: body.key, host: body.host };
+  } catch {
+    return undefined;
+  }
 }
 
 let lastCapturedUrl = "";
