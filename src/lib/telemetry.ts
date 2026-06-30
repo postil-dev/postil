@@ -29,7 +29,10 @@ const PUBLIC_EXACT_PATHS = new Set([
 const PUBLIC_PREFIXES = ["/blog/", "/docs/", "/vs/"];
 
 export function isPublicTelemetryPath(pathname: string): boolean {
-  return PUBLIC_EXACT_PATHS.has(pathname) || PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  return (
+    PUBLIC_EXACT_PATHS.has(pathname) ||
+    PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))
+  );
 }
 
 export function sanitizedPublicUrl(source: URL | string): string {
@@ -87,6 +90,42 @@ export function publicTelemetryProperties(
     $referrer: sanitizedReferrer(referrer, url.origin),
     ...campaignProperties(url),
   });
+}
+
+export function sanitizePostHogProperties(
+  properties: Record<string, unknown>,
+  currentOrigin: string,
+): Record<string, unknown> {
+  delete properties.$ip;
+  for (const [key, value] of Object.entries(properties)) {
+    if (typeof value !== "string") continue;
+    const lowerKey = key.toLowerCase();
+    if (lowerKey.includes("referrer")) {
+      const sanitized = sanitizedReferrer(value, currentOrigin);
+      if (sanitized) properties[key] = sanitized;
+      else delete properties[key];
+      continue;
+    }
+    if (lowerKey.includes("url")) {
+      const sanitized = sanitizedTelemetryUrl(value, currentOrigin);
+      if (sanitized) properties[key] = sanitized;
+      else delete properties[key];
+    }
+  }
+  return properties;
+}
+
+function sanitizedTelemetryUrl(value: string, currentOrigin: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.origin === currentOrigin) {
+      if (isPublicTelemetryPath(url.pathname)) return sanitizedPublicUrl(url);
+      return new URL(url.origin).toString();
+    }
+    return sanitizedReferrer(value, currentOrigin);
+  } catch {
+    return undefined;
+  }
 }
 
 export function removeEmpty(
