@@ -10,6 +10,7 @@ let pool: Pool | undefined;
 let database: Database | undefined;
 
 const DATABASE_CONNECT_TIMEOUT_MS = 2_000;
+const DEFAULT_POOL_MAX = 10;
 
 /**
  * Lazy singleton so `next build` never needs a live database. The first
@@ -20,7 +21,7 @@ export function getDb(): Database {
   if (!database) {
     pool = new Pool({
       connectionString: requireEnv("DATABASE_URL"),
-      max: 10,
+      max: positiveIntEnv("POSTIL_DB_POOL_MAX", DEFAULT_POOL_MAX),
       connectionTimeoutMillis: DATABASE_CONNECT_TIMEOUT_MS,
     });
     database = drizzle(pool, { schema });
@@ -43,3 +44,12 @@ export async function closeDb(): Promise<void> {
 }
 
 export { schema };
+
+function positiveIntEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  console.warn(`${name} must be a positive integer; using ${fallback}`);
+  return fallback;
+}

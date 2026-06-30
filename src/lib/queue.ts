@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
 
+import { redactAndTruncate } from "@/lib/redact";
+
 /**
  * Postgres-native job queue.
  *
@@ -155,6 +157,7 @@ export async function failJob(
   error: string,
   opts: { permanent?: boolean } = {},
 ): Promise<"retried" | "failed" | "lost"> {
+  const redactedError = redactAndTruncate(error, 2000);
   if (!opts.permanent && job.attempts < job.maxAttempts) {
     const delay = backoffMs(job.attempts);
     // Guarded by `status = 'running'` (mirroring the final-fail path below).
@@ -170,7 +173,7 @@ export async function failJob(
        SET status = 'queued', locked_at = NULL, locked_by = NULL,
            last_error = $2, run_after = now() + ($3 || ' milliseconds')::interval
        WHERE id = $1 AND status = 'running' AND locked_by = $4`,
-      [job.id, error.slice(0, 2000), String(delay), job.lockedBy],
+      [job.id, redactedError, String(delay), job.lockedBy],
     );
     return (res.rowCount ?? 0) > 0 ? "retried" : "lost";
   }
@@ -183,7 +186,7 @@ export async function failJob(
     `UPDATE jobs
      SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2
      WHERE id = $1 AND status = 'running' AND locked_by = $3`,
-    [job.id, error.slice(0, 2000), job.lockedBy],
+    [job.id, redactedError, job.lockedBy],
   );
   return (res.rowCount ?? 0) > 0 ? "failed" : "lost";
 }

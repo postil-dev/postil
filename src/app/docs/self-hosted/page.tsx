@@ -32,8 +32,8 @@ docker compose exec web bun run db:migrate`}</code>
         The compose file pins the reviewer CLI to a released version
         (<code>POSTIL_CLI_REV</code>, default a current tag) and fetches it
         during the image build, so a clean clone builds without extra steps.
-        Set <code>POSTIL_CLI_REV</code> to a different tag or a 40-character
-        commit to change the reviewer version, or drop a prebuilt binary at{" "}
+        Set <code>POSTIL_CLI_REV</code> to a different release tag to change
+        the reviewer version, or drop a prebuilt binary at{" "}
         <code>vendor/postil</code> to skip the fetch.
       </p>
       <p>
@@ -41,6 +41,25 @@ docker compose exec web bun run db:migrate`}</code>
         malformed variable stops the process with the variable name, what it
         is for, and an example value — not a stack trace from the first
         request that happened to need it.
+      </p>
+
+      <h2>Database choice</h2>
+      <p>
+        Postil expects PostgreSQL. The schema uses enums, <code>jsonb</code>,
+        <code>bytea</code>, identity columns, and a queue claimed with{" "}
+        <code>FOR UPDATE SKIP LOCKED</code>. SQLite-style hosted databases can
+        work only after a queue and schema rewrite; they are not drop-in
+        replacements for the hosted control plane.
+      </p>
+      <p>
+        For a free-tier managed Postgres, use either Neon Free or Supabase Free
+        with the low-idle queue profile in <code>.env.example</code>. Webhooks
+        kick a bounded web-process queue drain, while the worker stays as a
+        slow fallback. On Neon Free, set <code>WORKER_CONCURRENCY=1</code> and{" "}
+        <code>WORKER_IDLE_POLL_MAX_MS=900000</code> and{" "}
+        <code>WORKER_WATCHDOG_INTERVAL_MS=900000</code> so the database gets
+        real scale-to-zero windows instead of a query every few seconds
+        forever.
       </p>
 
       <h2>Required configuration</h2>
@@ -232,6 +251,22 @@ postil doctor: ready.`}</code>
           status, 24-hour activity, jobs, sessions, installations, database-up
           signal),
           bearer-protected by <code>METRICS_TOKEN</code>.
+        </li>
+        <li>
+          PostHog analytics are optional. Set <code>POSTHOG_PROJECT_TOKEN</code>{" "}
+          for server-side request telemetry, and set{" "}
+          <code>NEXT_PUBLIC_POSTHOG_KEY</code> as a Docker build arg for
+          browser pageviews. Analytics capture is limited to public marketing,
+          docs, blog, install, pricing, and comparison pages. The server event
+          sends sanitized path, referrer origin/public path, campaign
+          parameters, user agent, and Cloudflare bot metadata when present; it
+          does not send IP addresses or protected dashboard paths.
+        </li>
+        <li>
+          Scrape <code>/api/metrics</code> conservatively on small database
+          tiers, for example every few minutes rather than every few seconds.
+          The endpoint is bearer-protected, but each scrape still performs
+          database reads.
         </li>
         <li>
           The worker's watchdog fails any review running longer than 10

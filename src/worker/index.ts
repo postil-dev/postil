@@ -4,16 +4,8 @@ import { delimiter, isAbsolute, join } from "node:path";
 
 import { closeDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
-import {
-  claimJob,
-  completeJob,
-  failJob,
-  type RespondJobPayload,
-  type ReviewJobPayload,
-} from "@/lib/queue";
-import { isPermanentFailure } from "./failure-classifier";
-import { postRespondFailureComment, runRespondJob } from "./respond";
-import { runReviewJob } from "./review";
+import { claimJob } from "@/lib/queue";
+import { readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
 
@@ -27,9 +19,13 @@ import { watchdogPass } from "./watchdog";
  *   completes their check-runs as failed; requeues jobs whose worker died.
  */
 
-const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY ?? 4);
-const POLL_INTERVAL_MS = 1000;
-const WATCHDOG_INTERVAL_MS = 60_000;
+const CONCURRENCY = readPositiveIntEnv("WORKER_CONCURRENCY", 4);
+const POLL_INTERVAL_MS = readPositiveIntEnv("WORKER_POLL_INTERVAL_MS", 1_000);
+const IDLE_POLL_MAX_MS = Math.max(
+  POLL_INTERVAL_MS,
+  readPositiveIntEnv("WORKER_IDLE_POLL_MAX_MS", POLL_INTERVAL_MS),
+);
+const WATCHDOG_INTERVAL_MS = readPositiveIntEnv("WORKER_WATCHDOG_INTERVAL_MS", 60_000);
 
 const workerId = `${hostname()}-${process.pid}`;
 let shuttingDown = false;
@@ -38,60 +34,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function handleJob(kind: string, payload: Record<string, unknown>): Promise<void> {
-  switch (kind) {
-    case "review":
-      await runReviewJob(payload as ReviewJobPayload);
-      break;
-    case "respond":
-      await runRespondJob(payload as RespondJobPayload);
-      break;
-    default:
-      throw new Error(`unknown job kind: ${kind}`);
-  }
-}
-
 async function claimLoop(slot: number): Promise<void> {
-  const pool = getPool();
+  let idleDelayMs = POLL_INTERVAL_MS;
   while (!shuttingDown) {
     let job;
     try {
-      job = await claimJob(pool, `${workerId}#${slot}`);
+      job = await claimJob(getPool(), `${workerId}#${slot}`);
     } catch (err) {
       console.error(`[worker ${slot}] claim error: ${err}`);
-      await sleep(POLL_INTERVAL_MS * 5);
+      await sleep(Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS));
+      idleDelayMs = Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS);
       continue;
     }
     if (!job) {
-      // Jittered poll to avoid thundering herd across slots.
-      await sleep(POLL_INTERVAL_MS + Math.random() * 500);
+      await sleep(jitter(idleDelayMs));
+      idleDelayMs = Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS);
       continue;
     }
-    const started = Date.now();
-    console.log(`[worker ${slot}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
-    try {
-      await handleJob(job.kind, job.payload);
-      await completeJob(pool, job);
-      console.log(`[worker ${slot}] job ${job.id} done in ${Date.now() - started}ms`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // Deterministic, non-retryable errors (broken CA store, missing CLI
-      // binary, build/loader defect, malformed payload, unsupported forge)
-      // fail straight to `failed`: a retry against the same image would fail
-      // identically and just burn the attempt budget. Everything else (5xx,
-      // 429, timeouts, network/socket) follows the normal backoff retry.
-      const permanent = isPermanentFailure(message);
-      const outcome = await failJob(pool, job, message, { permanent });
-      console.error(
-        `[worker ${slot}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
-      );
-      // Only the call that performed the permanent transition ("failed", not a
-      // backoff retry or a watchdog-lost race) posts the one user-facing reply.
-      if (outcome === "failed" && job.kind === "respond") {
-        await postRespondFailureComment(job.payload as RespondJobPayload);
-      }
-    }
+    idleDelayMs = POLL_INTERVAL_MS;
+    await runClaimedJob(job, `worker ${slot}`);
   }
+}
+
+function jitter(delayMs: number): number {
+  return delayMs + Math.floor(Math.random() * Math.min(500, Math.max(1, delayMs / 4)));
 }
 
 async function watchdogLoop(): Promise<void> {
@@ -145,7 +111,9 @@ async function main(): Promise<void> {
   await getPool().query("SELECT 1");
   // Fail fast if the image's CA trust store is broken (see tlsSelfTest).
   await tlsSelfTest();
-  console.log(`postil worker ${workerId} started (concurrency ${CONCURRENCY})`);
+  console.log(
+    `postil worker ${workerId} started (concurrency ${CONCURRENCY}, idle poll max ${IDLE_POLL_MAX_MS}ms, watchdog ${WATCHDOG_INTERVAL_MS}ms)`,
+  );
 
   const shutdown = (signal: string) => {
     console.log(`received ${signal}, draining...`);

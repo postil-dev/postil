@@ -30,6 +30,8 @@ services:
         # Override to a 40-hex commit or another release tag to upgrade the
         # reviewer, or drop a binary at vendor/postil to skip the fetch.
         POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.1}
+        NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     env_file: .env
     environment:
       DATABASE_URL: postgres://postil:postil@db:5432/postil
@@ -50,6 +52,8 @@ services:
       context: .
       args:
         POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.1}
+        NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     command: ["bun", "run", "worker"]
     env_file: .env
     environment:

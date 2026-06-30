@@ -29,7 +29,7 @@ const PIPELINE = [
     step: "2",
     name: "Queue",
     detail:
-      "A review job lands in a Postgres-native queue (FOR UPDATE SKIP LOCKED). No external queue service; retries use exponential backoff, and a watchdog reclaims anything stuck.",
+      "A review job lands in a Postgres-native queue (FOR UPDATE SKIP LOCKED). Webhooks can kick a bounded drain immediately, while the worker remains a slow fallback; retries use exponential backoff, and a watchdog reclaims anything stuck.",
   },
   {
     step: "3",
