@@ -18,6 +18,7 @@ describe("/api/analytics/posthog", () => {
     const response = await route.GET();
 
     expect(response.status).toBe(204);
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
   test("returns the public project config from runtime env", async () => {

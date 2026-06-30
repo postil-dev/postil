@@ -39,12 +39,14 @@ jobs:
       - name: Stage observability runtime secrets
         run: |
           set -euo pipefail
-          if [[ -n "${POSTHOG_PROJECT_TOKEN:-}" ]]; then
-            printf 'POSTHOG_PROJECT_TOKEN=%s\n' "${POSTHOG_PROJECT_TOKEN}" | flyctl secrets import --stage
+          token="${POSTHOG_PROJECT_TOKEN:-${NEXT_PUBLIC_POSTHOG_KEY:-}}"
+          if [[ -n "${token}" ]]; then
+            printf 'POSTHOG_PROJECT_TOKEN=%s\n' "${token}" | flyctl secrets import --stage
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
       - run: |
           flyctl deploy \
             --remote-only \
