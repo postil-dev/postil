@@ -131,6 +131,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_RESPOND_HOURLY_CAP",
+    purpose:
+      "Maximum @postil respond jobs enqueued per installation per rolling hour before further mentions are skipped",
+    example: "30",
+    scope: ["web"],
+    optional: true,
+  },
+  {
     name: "WORKER_POLL_INTERVAL_MS",
     purpose: "Initial worker queue poll interval",
     example: "1000",
