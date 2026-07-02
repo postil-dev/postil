@@ -155,9 +155,11 @@ export default function ExitCodesPage() {
         <code>postil doctor</code> uses the same two-tier signal:{" "}
         <code>0</code> when every check passes, <code>1</code> when a check
         fails (its report format is documented in{" "}
-        <Link href="/docs/self-hosted">self-hosted</Link>). It does not use
-        exit <code>2</code> — a doctor run that cannot even load its
-        configuration reports that as a failed check rather than crashing.
+        <Link href="/docs/self-hosted">self-hosted</Link>). Exit{" "}
+        <code>2</code> still applies to operational errors that happen before
+        the checks can run — a config file that fails to parse exits{" "}
+        <code>2</code> with a <code>postil: error</code> line, exactly like
+        any other command.
       </p>
 
       <h2>Reference: what a CI job should check</h2>
