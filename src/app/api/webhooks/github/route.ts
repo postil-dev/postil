@@ -6,6 +6,7 @@ import { verifyWebhookSignature } from "@/lib/crypto/webhook";
 import { getDb, getPool, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { ADVISORY_CHECK_NAME, GATE_CHECK_NAME } from "@/lib/github/checks";
 import { mentionsPostil } from "@/lib/mentions";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
@@ -66,6 +67,47 @@ const REVIEWABLE_PR_ACTIONS = new Set([
   "reopened",
   "ready_for_review",
 ]);
+
+/**
+ * The subset of a check_run/check_suite `pull_requests[]` entry we need to
+ * rebuild a review job. GitHub includes head/base sha on these references
+ * even though the top-level check_run/check_suite object does not carry a
+ * base sha, so no extra PR lookup is needed before enqueueing.
+ */
+interface CheckPullRequestRef {
+  number: number;
+  head?: { sha?: string };
+  base?: { sha?: string };
+}
+
+interface CheckRunEventPayload {
+  action?: string;
+  installation?: { id: number };
+  repository?: RepoSummary;
+  check_run?: {
+    name?: string;
+    head_sha?: string;
+    pull_requests?: CheckPullRequestRef[];
+  };
+}
+
+interface CheckSuiteEventPayload {
+  action?: string;
+  installation?: { id: number };
+  repository?: RepoSummary;
+  check_suite?: {
+    head_sha?: string;
+    pull_requests?: CheckPullRequestRef[];
+  };
+}
+
+/**
+ * The two check-run names this app creates (see lib/github/checks.ts). A
+ * check_run.rerequested only ever names a run this app itself created, but
+ * we still gate on it defensively in case the App is ever subscribed to a
+ * repo with other checks.
+ */
+const OWN_CHECK_NAMES = new Set<string>([ADVISORY_CHECK_NAME, GATE_CHECK_NAME]);
 
 interface GithubUser {
   login?: string;
@@ -150,6 +192,12 @@ export async function POST(request: Request): Promise<NextResponse> {
         break;
       case "pull_request":
         await handlePullRequest(payload as PullRequestEventPayload);
+        break;
+      case "check_run":
+        await handleCheckRun(payload as CheckRunEventPayload);
+        break;
+      case "check_suite":
+        await handleCheckSuite(payload as CheckSuiteEventPayload);
         break;
       case "issue_comment":
         await handleIssueComment(payload as CommentEventPayload);
@@ -444,15 +492,184 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
     .returning({ enabled: schema.repositories.enabled });
   if (!repoRow[0]?.enabled) return;
 
-  const jobPayload: ReviewJobPayload = {
+  await enqueueReviewJob({
     installationId,
     repoFullName: repo.full_name,
     prNumber: pr.number,
     headSha,
     baseSha,
-  };
-  await enqueueJob(getPool(), "review", jobPayload);
+  });
+}
+
+/**
+ * True when a review job for this exact repo+PR+head is already queued or
+ * running. Guards the check_run/check_suite rerequest path: unlike
+ * pull_request (one delivery per push), GitHub can send a rerequested event
+ * per check-run, and a maintainer can also click "Re-run" more than once
+ * before the first attempt starts, so the delivery-id dedupe alone is not
+ * enough here. Cheap count against the existing jobs table, same pattern as
+ * respondRateLimited above; no new table or state.
+ */
+async function reviewJobInFlight(
+  repoFullName: string,
+  prNumber: number,
+  headSha: string,
+): Promise<boolean> {
+  const res = await getPool().query<{ count: string }>(
+    `SELECT count(*)::text AS count
+       FROM jobs
+      WHERE kind = 'review'
+        AND status IN ('queued', 'running')
+        AND payload->>'repoFullName' = $1
+        AND (payload->>'prNumber')::int = $2
+        AND payload->>'headSha' = $3`,
+    [repoFullName, prNumber, headSha],
+  );
+  return Number(res.rows[0]?.count ?? 0) > 0;
+}
+
+/**
+ * Resolve the enabled, non-suspended installation for `installationId` and
+ * enqueue a review job for it. Shared by pull_request and the
+ * check_run/check_suite rerequest handlers so both go through the same
+ * installation/repo-enabled gate and enqueue semantics.
+ */
+async function enqueueReviewJob(job: ReviewJobPayload): Promise<void> {
+  if (await reviewJobInFlight(job.repoFullName, job.prNumber, job.headSha)) {
+    console.log(
+      `review job skipped: ${job.repoFullName}#${job.prNumber}@${job.headSha} already queued or running`,
+    );
+    return;
+  }
+  await enqueueJob(getPool(), "review", job);
   triggerQueueDrain("review");
+}
+
+/**
+ * Resolve an enabled, non-suspended repository row for a check_run/check_suite
+ * rerequest. Mirrors the installation + repo-enabled gate in handlePullRequest,
+ * but does not upsert the repo row: a rerequest only ever targets a repo the
+ * app already knows (the check-run was created by a prior pull_request
+ * delivery), so if the repo is missing here something is inconsistent and
+ * skipping is the safe default rather than materializing a new row.
+ */
+async function enabledRepoForRerequest(
+  installationId: number | undefined,
+  repo: RepoSummary | undefined,
+): Promise<boolean> {
+  if (!installationId || !repo) return false;
+  const db = getDb();
+  const installation = (
+    await db
+      .select({ id: schema.installations.id, suspended: schema.installations.suspended })
+      .from(schema.installations)
+      .where(eq(schema.installations.githubInstallationId, installationId))
+      .limit(1)
+  )[0];
+  if (!installation || installation.suspended) return false;
+  const repoRow = (
+    await db
+      .select({ enabled: schema.repositories.enabled })
+      .from(schema.repositories)
+      .where(
+        and(
+          eq(schema.repositories.githubRepoId, repo.id),
+          eq(schema.repositories.installationId, installation.id),
+        ),
+      )
+      .limit(1)
+  )[0];
+  return Boolean(repoRow?.enabled);
+}
+
+/**
+ * Shared core for handleCheckRun and handleCheckSuite: both rerequest events
+ * carry a repository, installation, head sha, and a `pull_requests[]` ref
+ * with head/base shas, and both resolve to the exact same review-job
+ * enqueue. `label` and `checkName` only affect log lines.
+ *
+ * NOTE: this only fires if the GitHub App's webhook subscription includes
+ * the check_run (and, for "Re-run all checks", check_suite) event. The app
+ * manifest/settings must add it; this handler alone does not turn
+ * deliveries on.
+ */
+async function handleCheckRerequest(
+  label: "check_run" | "check_suite",
+  checkName: string | undefined,
+  repo: RepoSummary | undefined,
+  installationId: number | undefined,
+  headSha: string | undefined,
+  prRefs: CheckPullRequestRef[],
+): Promise<void> {
+  const suffix = checkName ? ` (${checkName})` : "";
+  if (!repo || !installationId || !headSha) {
+    console.warn(
+      `${label} rerequested: missing repository/installation/head_sha${suffix}; skipping`,
+    );
+    return;
+  }
+
+  if (prRefs.length === 0) {
+    // Detached head (e.g. the branch's PR was closed, or the check predates
+    // any PR association): nothing to re-review against.
+    console.log(
+      `${label} rerequested: no associated pull_requests for ${repo.full_name}@${headSha}${suffix}; skipping`,
+    );
+    return;
+  }
+  const pr = prRefs[0]!;
+  const baseSha = pr.base?.sha;
+  if (!baseSha) {
+    console.warn(
+      `${label} rerequested: pull_requests[0] missing base sha for ${repo.full_name}#${pr.number}${suffix}; skipping`,
+    );
+    return;
+  }
+
+  if (!(await enabledRepoForRerequest(installationId, repo))) return;
+
+  await enqueueReviewJob({
+    installationId,
+    repoFullName: repo.full_name,
+    prNumber: pr.number,
+    headSha,
+    baseSha,
+  });
+}
+
+/** Handle GitHub's "Re-run" button on our own check-runs. */
+async function handleCheckRun(payload: CheckRunEventPayload): Promise<void> {
+  if (payload.action !== "rerequested") return;
+  const checkRun = payload.check_run;
+  const name = checkRun?.name;
+  if (!name || !OWN_CHECK_NAMES.has(name)) return;
+
+  await handleCheckRerequest(
+    "check_run",
+    name,
+    payload.repository,
+    payload.installation?.id,
+    checkRun?.head_sha,
+    checkRun?.pull_requests ?? [],
+  );
+}
+
+/**
+ * Handle GitHub's "Re-run all checks" button, which fires check_suite
+ * rerequested rather than one check_run event per run.
+ */
+async function handleCheckSuite(payload: CheckSuiteEventPayload): Promise<void> {
+  if (payload.action !== "rerequested") return;
+  const suite = payload.check_suite;
+
+  await handleCheckRerequest(
+    "check_suite",
+    undefined,
+    payload.repository,
+    payload.installation?.id,
+    suite?.head_sha,
+    suite?.pull_requests ?? [],
+  );
 }
 
 /**
