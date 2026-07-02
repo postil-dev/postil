@@ -73,6 +73,7 @@ const ROUTES: {
   { path: "/docs/gate", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-12" },
   { path: "/docs/plan", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-06-12" },
   { path: "/docs/envelope", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-06-13" },
+  { path: "/docs/content-policy", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-07-02" },
   { path: "/docs/cli", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-18" },
   { path: "/docs/gitlab", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-18" },
   { path: "/docs/self-hosted", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-18" },

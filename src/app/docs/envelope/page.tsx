@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Envelope schema",
@@ -25,7 +26,7 @@ export default function EnvelopePage() {
   "findings": [
     { "path": "src/x.ts", "line": 42, "endLine": 45,
       "severity": "info|warn|error",
-      "kind": "risk|humanEscalation|guardrail|uncertainty",
+      "kind": "risk|humanEscalation|guardrail|uncertainty|contentPolicy",
       "confidence": 0.85, "title": "short", "body": "markdown" }
   ],
   "resolved": [ /* same shape as findings; from the baseline, now fixed */ ],
@@ -63,7 +64,9 @@ export default function EnvelopePage() {
               an accountable human), <code>guardrail</code> (the change violates
               a rule stated in <code>.postil/guardrails.md</code>; the finding
               quotes the rule it breaks), <code>uncertainty</code> (the
-              model flags its own doubt).
+              model flags its own doubt), <code>contentPolicy</code> (opt-in
+              review of prose in the diff — see{" "}
+              <Link href="/docs/content-policy">content policy</Link>).
             </td>
           </tr>
           <tr>

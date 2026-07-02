@@ -39,6 +39,11 @@ const CARDS = [
     body: "The JSON contract between the CLI and everything else: findings, counts, gate, usage.",
   },
   {
+    href: "/docs/content-policy",
+    title: "Content policy",
+    body: "Opt-in review of prose in the diff: fabricated claims, AI-authorship residue, and the built-in baseline.",
+  },
+  {
     href: "/docs/gitlab",
     title: "GitLab",
     body: "Run Postil on GitLab.com and self-managed: CI job, project tokens, and merge-request review.",
@@ -82,9 +87,9 @@ postil doctor            # verify endpoint, key, and model
 postil review --staged
 
 # CI (GitHub Actions) — @v1 resolves after the first tagged release
-- uses: postil-dev/postil-action@v1
+- uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # main
   with:
-    cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5
+    cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5 # postil-cli v0.1.1
 
 # hosted
 Install the GitHub App; reviews start on the next PR.`}</code>

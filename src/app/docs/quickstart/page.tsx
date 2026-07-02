@@ -47,7 +47,9 @@ postil review --base main`}</code>
       <h2>2. GitHub Actions</h2>
       <p>
         The composite action installs a CLI pinned to a full 40-character
-        commit SHA and runs the same review in CI:
+        commit SHA and runs the same review in CI. The action itself has no
+        tagged releases yet, so pin it to a commit SHA too —{" "}
+        <code>@v1</code> will resolve once the first tag ships:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`name: review
@@ -64,15 +66,24 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: postil-dev/postil-action@v1
+      - uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # main, @v1 resolves after the first tagged release
         with:
-          cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5
+          cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5 # postil-cli v0.1.1
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}</code>
       </pre>
       <p>
-        The <code>cli-ref</code> above is the current blessed CLI ref; check the{" "}
+        The action SHA above is the current head of its <code>main</code>{" "}
+        branch, and <code>cli-ref</code> pins the postil-cli v0.1.1 release
+        commit; check the{" "}
+        <a
+          href="https://github.com/postil-dev/postil-action"
+          rel="noopener"
+        >
+          postil-action repository
+        </a>{" "}
+        and the{" "}
         <a
           href="https://github.com/postil-dev/postil-cli"
           rel="noopener"
@@ -80,7 +91,7 @@ jobs:
           postil-cli repository
         </a>{" "}
         for the latest. The action refuses anything but a full 40-character
-        commit SHA — tags move, SHAs do not.
+        commit SHA for <code>cli-ref</code> — tags move, SHAs do not.
       </p>
 
       <h2>3. Hosted GitHub App</h2>
