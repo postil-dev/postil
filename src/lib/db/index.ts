@@ -1,7 +1,9 @@
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+import { parse as parseConnectionString } from "pg-connection-string";
 
 import { requireEnv } from "@/lib/env";
+import { redactSecrets } from "@/lib/redact";
 import * as schema from "./schema";
 
 export type Database = NodePgDatabase<typeof schema>;
@@ -19,11 +21,26 @@ const DEFAULT_POOL_MAX = 10;
  */
 export function getDb(): Database {
   if (!database) {
-    pool = new Pool({
-      connectionString: requireEnv("DATABASE_URL"),
-      max: positiveIntEnv("POSTIL_DB_POOL_MAX", DEFAULT_POOL_MAX),
-      connectionTimeoutMillis: DATABASE_CONNECT_TIMEOUT_MS,
-    });
+    const connectionString = requireEnv("DATABASE_URL");
+    try {
+      // pg defers parsing the connection string to first connect, so a
+      // malformed DATABASE_URL surfaces later as an error whose message embeds
+      // the raw string (credentials included) - a boot-time credential leak in
+      // platform logs. Parse eagerly here so a malformed URL fails at
+      // construction, and redact the connection string out of any error
+      // (including the parser's own, which echoes the offending URL) before it
+      // escapes. Never log the URL itself.
+      parseConnectionString(connectionString);
+      pool = new Pool({
+        connectionString,
+        max: positiveIntEnv("POSTIL_DB_POOL_MAX", DEFAULT_POOL_MAX),
+        connectionTimeoutMillis: DATABASE_CONNECT_TIMEOUT_MS,
+      });
+    } catch (err) {
+      throw new Error(
+        `failed to construct database pool from DATABASE_URL: ${redactSecrets(err, [connectionString])}`,
+      );
+    }
     database = drizzle(pool, { schema });
   }
   return database;

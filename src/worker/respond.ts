@@ -9,7 +9,7 @@ import { getInstallationToken } from "@/lib/github/app-auth";
 import { postIssueComment } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
 import type { RespondJobPayload } from "@/lib/queue";
-import { redactAndTruncate } from "@/lib/redact";
+import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { resolveLlmConfig, runCli } from "./review";
 
 /**
@@ -186,7 +186,7 @@ export async function postRespondFailureComment(
     // Swallow: the job is already failed; a failed fallback comment must not
     // re-throw into the worker loop.
     console.error(
-      `respond failure comment could not be posted: ${err instanceof Error ? err.message : String(err)}`,
+      `respond failure comment could not be posted: ${redactSecrets(err)}`,
     );
   }
 }

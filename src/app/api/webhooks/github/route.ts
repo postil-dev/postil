@@ -7,6 +7,7 @@ import { getDb, getPool, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { mentionsPostil } from "@/lib/mentions";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
+import { redactSecrets } from "@/lib/redact";
 import { triggerQueueDrain } from "@/worker/runner";
 
 export const runtime = "nodejs";
@@ -171,10 +172,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       .where(eq(schema.webhookDeliveries.deliveryId, deliveryId))
       .catch((cleanupErr) => {
         console.error(
-          `webhook dispatch failed and dedupe cleanup failed for delivery ${deliveryId}: ${cleanupErr}`,
+          `webhook dispatch failed and dedupe cleanup failed for delivery ${deliveryId}: ${redactSecrets(cleanupErr)}`,
         );
       });
-    console.error(`webhook dispatch failed for delivery ${deliveryId} (${event}): ${err}`);
+    console.error(
+      `webhook dispatch failed for delivery ${deliveryId} (${event}): ${redactSecrets(err)}`,
+    );
     return NextResponse.json({ error: "dispatch failed" }, { status: 500 });
   }
 

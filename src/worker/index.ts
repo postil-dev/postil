@@ -5,6 +5,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { closeDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
 import { claimJob } from "@/lib/queue";
+import { redactSecrets } from "@/lib/redact";
 import { readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
@@ -41,7 +42,7 @@ async function claimLoop(slot: number): Promise<void> {
     try {
       job = await claimJob(getPool(), `${workerId}#${slot}`);
     } catch (err) {
-      console.error(`[worker ${slot}] claim error: ${err}`);
+      console.error(`[worker ${slot}] claim error: ${redactSecrets(err)}`);
       await sleep(Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS));
       idleDelayMs = Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS);
       continue;
@@ -66,7 +67,7 @@ async function watchdogLoop(): Promise<void> {
       const { killed } = await watchdogPass();
       if (killed > 0) console.warn(`[watchdog] killed ${killed} stuck review(s)`);
     } catch (err) {
-      console.error(`[watchdog] pass failed: ${err}`);
+      console.error(`[watchdog] pass failed: ${redactSecrets(err)}`);
     }
     await sleep(WATCHDOG_INTERVAL_MS);
   }
@@ -133,6 +134,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err);
+  // Boot failures (e.g. a malformed DATABASE_URL surfacing from getPool) can
+  // embed credentials in the error; redact before it hits platform logs.
+  console.error(redactSecrets(err));
   process.exit(1);
 });

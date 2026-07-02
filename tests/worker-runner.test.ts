@@ -93,6 +93,29 @@ describe("drainQueueOnce", () => {
     expect(jobs.map((job) => job.id)).toEqual([2]);
   });
 
+  test("redacts secret-looking tokens from the error handed to failJob and the log", async () => {
+    jobs.push(reviewJob(1));
+    const token = "ghs_abcdefghijklmnopqrstuvwxyz0123456789";
+    reviewRun = async () => {
+      throw new Error(`upstream rejected credential ${token}`);
+    };
+    const logged: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      await drainQueueOnce("redact-drain", { maxJobs: 1, deadlineMs: 60_000 });
+    } finally {
+      console.error = realError;
+    }
+
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.error).not.toContain(token);
+    expect(failed[0]!.error).toContain("[redacted github token]");
+    expect(logged.join("\n")).not.toContain(token);
+  });
+
   test("stops after the drain deadline before claiming another job", async () => {
     jobs.push(reviewJob(1), reviewJob(2));
     const realNow = Date.now;
