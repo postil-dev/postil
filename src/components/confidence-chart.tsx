@@ -57,11 +57,15 @@ export function ConfidenceChart({
   const yTicks = [0, Math.round(max / 2), max];
 
   const width = 320;
-  const height = size === "lg" ? 140 : 110;
+  // Extra bottom band holds the x-axis tick labels inside the SVG, so they
+  // share the plot's coordinate system and can never drift from the bucket
+  // boundaries the way a separate HTML flex row can.
+  const axisBand = 14;
+  const height = (size === "lg" ? 140 : 110) + axisBand;
   const padLeft = 26;
   const padRight = 10;
   const padTop = 18;
-  const padBottom = 10;
+  const padBottom = 10 + axisBand;
   const plotW = width - padLeft - padRight;
   const plotH = height - padTop - padBottom;
 
@@ -155,12 +159,28 @@ export function ConfidenceChart({
                   strokeWidth={1}
                 />
               ))}
+              {/* x-axis tick labels at the exact bucket boundaries */}
+              {AXIS_LABELS.map((label, i) => (
+                <text
+                  key={label}
+                  x={padLeft + (plotW * i) / (AXIS_LABELS.length - 1)}
+                  y={height - 3}
+                  textAnchor={
+                    i === 0
+                      ? "start"
+                      : i === AXIS_LABELS.length - 1
+                        ? "end"
+                        : "middle"
+                  }
+                  className="font-mono"
+                  fontSize={10}
+                  fill="var(--color-charcoal)"
+                  fillOpacity={0.7}
+                >
+                  {label}
+                </text>
+              ))}
             </svg>
-          </div>
-          <div className="mt-2 ml-7 flex justify-between font-mono text-[10px] text-charcoal/70">
-            {AXIS_LABELS.map((label) => (
-              <span key={label}>{label}</span>
-            ))}
           </div>
           <p className="mt-1 ml-7 text-center font-mono text-[10px] text-charcoal/70">
             finding confidence
