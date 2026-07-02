@@ -17,6 +17,10 @@ export const findingKindSchema = z.enum([
   "humanEscalation",
   "guardrail",
   "uncertainty",
+  // Opt-in prose/content review dimension (CLI >= v0.1.2). Missing here
+  // meant ingestion rejected the whole envelope and the review failed
+  // closed the first time a repo with a content policy produced a finding.
+  "contentPolicy",
 ]);
 
 export const findingSchema = z.object({

@@ -72,6 +72,27 @@ describe("envelope ingestion", () => {
     expect(() => ingestEnvelope(JSON.stringify(wrong))).toThrow("envelope schema v1");
   });
 
+  test("ingests a contentPolicy finding (CLI >= v0.1.2)", () => {
+    const withPolicy = validEnvelope({
+      findings: [
+        {
+          path: ".postil/pr-description",
+          line: 2,
+          severity: "warn",
+          kind: "contentPolicy",
+          confidence: 0.9,
+          title: "Fabricated adoption claim",
+          body: "The description asserts unverifiable user counts.",
+        },
+      ],
+      counts: { info: 0, warn: 1, error: 0, suppressed: 0, ungrounded: 0 },
+      gate: { failOn: "error", failing: false },
+    });
+    const ingested = ingestEnvelope(JSON.stringify(withPolicy));
+    expect(ingested.findingCount).toBe(1);
+    expect(ingested.envelope.findings.map((f) => f.kind)).toEqual(["contentPolicy"]);
+  });
+
   test("rejects schema violations with a precise path", () => {
     const bad = validEnvelope();
     // severity outside the enum
