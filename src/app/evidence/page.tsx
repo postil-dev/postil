@@ -6,12 +6,12 @@ import { EVIDENCE_CASES } from "@/data/evidence";
 export const metadata: Metadata = {
   title: "See it run — real Postil output",
   description:
-    "Representative Postil review evidence across security, correctness, payments, API contracts, concurrency, CI secrets, and clean changes, with token counts and model cost context.",
+    "Real, linked catches from Postil's own public repos: a migration that would fail against production duplicates, swapped commit SHAs in docs, a Rust panic on non-ASCII input, an uninstalled CI dependency, and a finding that asks a human to confirm instead of guessing.",
   alternates: { canonical: "/evidence" },
   openGraph: {
     title: "See it run — real Postil output",
     description:
-      "Catch tenant-boundary regressions, replayable payments, subtle logic bugs, and CI leaks while staying quiet on clean changes.",
+      "Every case here links to the public pull request it came from. No invented bugs.",
     url: "/evidence",
     images: ["/opengraph-image"],
   },

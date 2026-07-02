@@ -1,6 +1,15 @@
-// Representative evidence fixtures from the Postil review harness. These keep
-// the same envelope shape the CLI emits, including token usage, so pricing and
-// product copy can use the same concrete review artifact.
+// Real, verifiable catches from Postil's own repos. Every card here is a
+// review that actually ran on a public pull request — the finding text is
+// copied verbatim from the postil/review check-run output on that PR's head
+// commit (via `gh api repos/<org>/<repo>/commits/<sha>/check-runs`), and
+// `sourceUrl` links to the PR so anyone can verify it independently. Token
+// usage is not exposed by the GitHub check-run API (it lives in the hosted
+// envelope store), so real cases omit it rather than invent a number.
+//
+// The one exception is `fixture: true` on the "clean" case below: that case
+// demonstrates what a passing review looks like in this UI and is built from
+// a real fix diff, but its envelope (no findings, silent pass) is asserted
+// here rather than pulled from a live check-run, so it is labeled as such.
 
 export interface EvidenceFinding {
   path: string;
@@ -19,7 +28,7 @@ export interface EvidenceEnvelope {
   findings: EvidenceFinding[];
   gate: { failOn: string; failing: boolean };
   modelUsed: string;
-  usage: { promptTokens: number; completionTokens: number };
+  usage?: { promptTokens: number; completionTokens: number };
 }
 
 export interface EvidenceCase {
@@ -29,258 +38,316 @@ export interface EvidenceCase {
   blurb: string;
   diff: string;
   envelope: EvidenceEnvelope;
+  /** Link to the real, public PR this review ran on. Omitted only for `fixture` cases. */
+  sourceUrl?: string;
+  /** True only for the one seeded (non-live) case, labeled explicitly in the UI. */
+  fixture?: true;
 }
 
-const AUTHZ_DIFF = `diff --git a/src/admin/users.ts b/src/admin/users.ts
---- a/src/admin/users.ts
-+++ b/src/admin/users.ts
-@@ -31,8 +31,7 @@ export async function deleteUser(ctx: Context, userId: string) {
--  const user = await db.user.findFirst({ where: { id: userId, orgId: ctx.orgId } });
--  if (!user) throw new NotFound();
--  await db.user.delete({ where: { id: user.id } });
-+  await db.user.delete({ where: { id: userId } });
-   audit.log(ctx.actorId, "user.deleted", { userId });
+const MIGRATION_DIFF = `diff --git a/drizzle/0001_org_indexes_and_constraints.sql b/drizzle/0001_org_indexes_and_constraints.sql
+--- /dev/null
++++ b/drizzle/0001_org_indexes_and_constraints.sql
+@@ -0,0 +1,3 @@
++CREATE INDEX "installations_org_idx" ON "installations" USING btree ("org_id");--> statement-breakpoint
++CREATE INDEX "org_members_user_idx" ON "org_members" USING btree ("user_id");--> statement-breakpoint
++CREATE UNIQUE INDEX "organizations_github_org_id_idx" ON "organizations" USING btree ("github_org_id");`;
+
+const DOCS_SHA_DIFF = `diff --git a/src/app/docs/quickstart/page.tsx b/src/app/docs/quickstart/page.tsx
+--- a/src/app/docs/quickstart/page.tsx
++++ b/src/app/docs/quickstart/page.tsx
+@@ -66,9 +66,9 @@ jobs:
+     steps:
+       - uses: actions/checkout@v4
+-      - uses: postil-dev/postil-action@v1
++      - uses: postil-dev/postil-action@0d92d604e753fd6831baeeff85e3f2ff4a84bd6c
+         with:
+-          cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5
++          cli-ref: 0d92d604e753fd6831baeeff85e3f2ff4a84bd6c
+         env:
+           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}`;
+
+const RUST_PANIC_DIFF = `diff --git a/src/diff.rs b/src/diff.rs
+--- a/src/diff.rs
++++ b/src/diff.rs
+@@ -85,6 +85,20 @@ impl DiffIndex {
+     }
+ }
+
++pub fn cap_raw_diff(text: &str, max_bytes: usize) -> (&str, bool) {
++    if text.len() <= max_bytes {
++        return (text, false);
++    }
++    let cut = text[..max_bytes]
++        .rfind('\\n')
++        .map(|i| i + 1)
++        .unwrap_or_else(|| {
++            let mut b = max_bytes;
++            while b > 0 && !text.is_char_boundary(b) {
++                b -= 1;
++            }
++            b
++        });
++    (&text[..cut], true)
++}
++
+ /// Parse a unified diff (git format). Tolerant of mode lines, renames, and
+ /// "\\ No newline at end of file" markers.
+ pub fn parse(text: &str) -> Diff {`;
+
+const RUST_PANIC_FIX_DIFF = `diff --git a/src/diff.rs b/src/diff.rs
+--- a/src/diff.rs
++++ b/src/diff.rs
+@@ -122,15 +122,18 @@ pub fn cap_raw_diff(text: &str, max_bytes: usize) -> (&str, bool) {
+     if text.len() <= max_bytes {
+         return (text, false);
+     }
++    // The cap can land inside a multi-byte character; back up to a char
++    // boundary before slicing, or the index below panics on non-ASCII input.
++    let mut b = max_bytes;
++    while b > 0 && !text.is_char_boundary(b) {
++        b -= 1;
++    }
+     // Cut at the last newline at or before the cap so the final retained hunk
+-    // line stays intact; if there is none, hard-cut at a char boundary.
+-    let cut = text[..max_bytes]
+-        .rfind('\\n')
+-        .map(|i| i + 1)
+-        .unwrap_or_else(|| {
+-            let mut b = max_bytes;
+-            while b > 0 && !text.is_char_boundary(b) {
+-                b -= 1;
+-            }
+-            b
+-        });
++    // line stays intact; if there is none, hard-cut at the char boundary.
++    let cut = text[..b].rfind('\\n').map(|i| i + 1).unwrap_or(b);
+     (&text[..cut], true)
  }`;
 
-const REFUND_DIFF = `diff --git a/src/billing/refunds.ts b/src/billing/refunds.ts
---- a/src/billing/refunds.ts
-+++ b/src/billing/refunds.ts
-@@ -19,7 +19,7 @@ export async function refund(invoiceId: string, requestId: string) {
--  await ledger.refund(invoiceId, { idempotencyKey: requestId });
-+  await ledger.refund(invoiceId);
-   await invoices.markRefunded(invoiceId);
- }`;
-
-const OFFBYONE_DIFF = `diff --git a/src/api/pagination.ts b/src/api/pagination.ts
---- a/src/api/pagination.ts
-+++ b/src/api/pagination.ts
-@@ -8,10 +8,12 @@ export interface Page<T> { items: T[]; nextCursor: string | null; }
--  let cursor: string | null = null;
--  do { const p = await fetchPage(cursor); out.push(...p.items); cursor = p.nextCursor; } while (cursor !== null);
--  return out;
-+  let cursor: string | null = null;
-+  for (let i = 1; i < MAX_PAGES; i++) {
-+    const p = await fetchPage(cursor); out.push(...p.items); cursor = p.nextCursor;
-+    if (cursor === null) return out;
-+  }
-+  throw new Error(\`pagination exceeded \${MAX_PAGES} pages\`);`;
-
-const SCHEMA_DIFF = `diff --git a/src/api/orders.ts b/src/api/orders.ts
---- a/src/api/orders.ts
-+++ b/src/api/orders.ts
-@@ -42,7 +42,6 @@ export function serializeOrder(order: Order): OrderResponse {
-   return {
-     id: order.id,
--    status: order.status,
-     totalCents: order.totalCents,
-     items: order.items.map(serializeItem),
-   };`;
-
-const RACE_DIFF = `diff --git a/src/queue/enqueue.ts b/src/queue/enqueue.ts
---- a/src/queue/enqueue.ts
-+++ b/src/queue/enqueue.ts
-@@ -13,7 +13,7 @@ export async function enqueueOnce(job: Job) {
--  await db.insert(jobs).values(job).onConflictDoNothing();
-+  if (!(await exists(job.id))) await db.insert(jobs).values(job);
- }`;
-
-const SECRET_DIFF = `diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
---- a/.github/workflows/deploy.yml
-+++ b/.github/workflows/deploy.yml
-@@ -18,6 +18,7 @@ jobs:
-       - name: Deploy
+const YQ_DIFF = `diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -75,6 +75,9 @@ jobs:
+     steps:
+       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+       - name: "Extract run: blocks from action.yml"
++        # yq is not installed on ubuntu-latest by default; this only works
++        # because the current runner image happens to preinstall it.
          run: |
-+          echo "$PRODUCTION_DATABASE_URL"
-           ./scripts/deploy.sh`;
+           set -euo pipefail
+           mkdir -p "$RUNNER_TEMP/action-scripts"
+           count=$(yq '.runs.steps | length' action.yml)
+           for i in $(seq 0 $((count - 1))); do
+             shell=$(yq -r ".runs.steps[$i].shell // \\"\\"" action.yml)
+             script=$(yq -r ".runs.steps[$i].run // \\"\\"" action.yml)`;
 
-const CLEAN_DIFF = `diff --git a/src/components/button.tsx b/src/components/button.tsx
---- a/src/components/button.tsx
-+++ b/src/components/button.tsx
-@@ -4,7 +4,7 @@ export function SaveButton() {
--  return <button className="btn btn-primary">Save</button>;
-+  return <button className="btn btn-primary">Save changes</button>;
- }`;
+const FLY_MIGRATE_DIFF = `diff --git a/fly.toml b/fly.toml
+--- a/fly.toml
++++ b/fly.toml
+@@ -23,6 +23,9 @@ primary_region = "lhr"
+ POSTIL_CLI_REV = "v0.1.1"
+ NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
+
++[deploy]
++release_command = "bun run db:migrate"
++
+ [processes]
+ web = "bun run start"
+ worker = "bun run worker"`;
+
+const CLEAN_FIX_DIFF = `diff --git a/src/diff.rs b/src/diff.rs
+--- a/src/diff.rs
++++ b/src/diff.rs
+@@ -122,15 +122,18 @@ pub fn cap_raw_diff(text: &str, max_bytes: usize) -> (&str, bool) {
+     if text.len() <= max_bytes {
+         return (text, false);
+     }
++    // The cap can land inside a multi-byte character; back up to a char
++    // boundary before slicing, or the index below panics on non-ASCII input.
++    let mut b = max_bytes;
++    while b > 0 && !text.is_char_boundary(b) {
++        b -= 1;
++    }
+     // Cut at the last newline at or before the cap so the final retained hunk
+-    // line stays intact; if there is none, hard-cut at a char boundary.
+-    let cut = text[..max_bytes]
+-        .rfind('\\n')
+-        .map(|i| i + 1)
+-        .unwrap_or_else(|| {
+-            let mut b = max_bytes;
+-            while b > 0 && !text.is_char_boundary(b) {
+-                b -= 1;
+-            }
+-            b
+-        });
++    // line stays intact; if there is none, hard-cut at the char boundary.
++    let cut = text[..b].rfind('\\n').map(|i| i + 1).unwrap_or(b);
+     (&text[..cut], true)
+ }
++
++#[test]
++fn raw_diff_cap_handles_multibyte_at_the_boundary() {
++    let s = "é".repeat(100);
++    let (capped, truncated) = cap_raw_diff(&s, 99);
++    assert!(truncated);
++    assert_eq!(capped.len(), 98);
++}`;
 
 export const EVIDENCE_CASES: EvidenceCase[] = [
   {
-    id: "authz",
-    category: "Security",
-    title: "A cross-tenant authorization bypass",
+    id: "migration-dedup",
+    category: "Migration safety",
+    title: "A unique index that would fail against production duplicates",
     blurb:
-      "The diff removes the org-scoped lookup and deletes by raw id. No type checker or SQL linter catches the tenant boundary disappearing.",
-    diff: AUTHZ_DIFF,
-    envelope: {
-      summary: "The delete path now bypasses the organization-scoped lookup before mutating user data.",
-      silent: false,
-      findings: [
-        {
-          path: "src/admin/users.ts",
-          line: 32,
-          endLine: 32,
-          severity: "error",
-          kind: "risk",
-          confidence: 0.96,
-          title: "User deletion no longer enforces the tenant boundary",
-          body:
-            "The new code deletes `userId` directly and no longer proves the user belongs to `ctx.orgId`. A caller with access to this route could delete a user from another organization if they know or can guess the id.\n\n**Fix:** Restore the scoped lookup, keep the mutation tied to the scoped record, and preserve the not-found path for ids outside the current org.",
-        },
-      ],
-      gate: { failOn: "error", failing: true },
-      modelUsed: "deepseek/deepseek-v4-pro",
-      usage: { promptTokens: 1192, completionTokens: 514 },
-    },
-  },
-  {
-    id: "refund",
-    category: "Payments",
-    title: "A replayable refund",
-    blurb:
-      "A retry-safety option disappears from a payment call. The code still compiles and the happy path still refunds once.",
-    diff: REFUND_DIFF,
-    envelope: {
-      summary: "The refund call no longer carries an idempotency key, making retries unsafe.",
-      silent: false,
-      findings: [
-        {
-          path: "src/billing/refunds.ts",
-          line: 20,
-          severity: "error",
-          kind: "risk",
-          confidence: 0.94,
-          title: "Refund retries can issue duplicate refunds",
-          body:
-            "Dropping `{ idempotencyKey: requestId }` means a worker retry, webhook replay, or network timeout can execute the refund more than once while still marking the invoice refunded.\n\n**Fix:** Keep the provider idempotency key on the refund request and use the same request id across retries for this invoice.",
-        },
-      ],
-      gate: { failOn: "error", failing: true },
-      modelUsed: "deepseek/deepseek-v4-pro",
-      usage: { promptTokens: 1088, completionTokens: 443 },
-    },
-  },
-  {
-    id: "offbyone",
-    category: "Correctness",
-    title: "A subtle logic bug",
-    blurb:
-      "A refactor adds a page cap with one character wrong. This is the kind of bug a tired reviewer waves through because the intent looks reasonable.",
-    diff: OFFBYONE_DIFF,
+      "A migration adds a unique index to close a race condition the PR is fixing. The catch: the race it fixes could already have produced the duplicate rows the new index would reject.",
+    diff: MIGRATION_DIFF,
+    sourceUrl: "https://github.com/postil-dev/postil/pull/275",
     envelope: {
       summary:
-        "The new pagination guard introduces an off-by-one error and a hard limit that may break callers expecting full pagination.",
+        "The migration adding a unique index on organizations.github_org_id risks failing in production if duplicate rows already exist from the pre-fix race condition.",
       silent: false,
       findings: [
         {
-          path: "src/api/pagination.ts",
-          line: 9,
-          endLine: 12,
+          path: "drizzle/0001_org_indexes_and_constraints.sql",
+          line: 3,
+          severity: "error",
+          kind: "risk",
+          confidence: 0.85,
+          title: "Add deduplication before unique index migration",
+          body:
+            "The migration adding a unique index on organizations.github_org_id risks failing in production if duplicate rows already exist from the pre-fix race condition. Verify the production dataset is clean or add a deduplication step before the CREATE UNIQUE INDEX.",
+        },
+      ],
+      gate: { failOn: "error", failing: true },
+      modelUsed: "moonshotai/kimi-k2.6",
+    },
+  },
+  {
+    id: "swapped-shas",
+    category: "Docs / CI",
+    title: "Two repos' commit SHAs swapped in a copy-pasted example",
+    blurb:
+      "A docs edit pins the GitHub Action to its own SHA, then reuses that same SHA for cli-ref — which is supposed to pin the separate CLI repository. Every reader who copies the snippet gets a broken CI run.",
+    diff: DOCS_SHA_DIFF,
+    sourceUrl: "https://github.com/postil-dev/postil/pull/280",
+    envelope: {
+      summary:
+        "The quickstart and docs index snippets incorrectly change cli-ref from the CLI repository's SHA to the action repository's SHA; users who copy them will get a CLI resolution failure in CI.",
+      silent: false,
+      findings: [
+        {
+          path: "src/app/docs/quickstart/page.tsx",
+          line: 71,
+          severity: "error",
+          kind: "risk",
+          confidence: 0.9,
+          title: "Fix cli-ref to use CLI repository SHA",
+          body:
+            "The quickstart and docs index snippets incorrectly change cli-ref from the CLI repository's SHA to the action repository's SHA; users who copy them will get a CLI resolution failure in CI.",
+        },
+      ],
+      gate: { failOn: "error", failing: true },
+      modelUsed: "moonshotai/kimi-k2.6",
+    },
+  },
+  {
+    id: "utf8-panic",
+    category: "Correctness",
+    title: "A byte-slice panic on non-ASCII input",
+    blurb:
+      "A new size cap slices raw diff text at a byte offset without checking for a UTF-8 character boundary. On a diff containing non-ASCII file content, the cap can land mid-character and the process panics. The shipped fix backs up to the nearest char boundary before slicing — exactly what the finding suggested.",
+    diff: RUST_PANIC_DIFF,
+    sourceUrl: "https://github.com/postil-dev/postil-cli/pull/25",
+    envelope: {
+      summary:
+        "The new cap_raw_diff helper can panic when MAX_RAW_DIFF_BYTES lands inside a multi-byte UTF-8 character, because text[..max_bytes] requires a char boundary.",
+      silent: false,
+      findings: [
+        {
+          path: "src/diff.rs",
+          line: 127,
           severity: "error",
           kind: "risk",
           confidence: 0.95,
-          title: "Off-by-one in pagination limit causes premature error",
+          title: "Panic in raw-diff cap on non-ASCII input",
           body:
-            "The loop `for (let i = 1; i < MAX_PAGES; i++)` runs at most `MAX_PAGES - 1` iterations. If the data set has exactly `MAX_PAGES` pages, the loop exits with a non-null cursor and throws even though the limit was not exceeded.\n\n**Fix:** Change the loop condition to `i <= MAX_PAGES` so the allowed number of pages can actually be fetched before throwing.",
+            "The new cap_raw_diff helper can panic when MAX_RAW_DIFF_BYTES lands inside a multi-byte UTF-8 character, because `text[..max_bytes]` requires a char boundary. This aborts the review on large diffs containing non-ASCII file content instead of truncating safely.",
         },
       ],
       gate: { failOn: "error", failing: true },
-      modelUsed: "deepseek/deepseek-v4-pro",
-      usage: { promptTokens: 871, completionTokens: 1361 },
+      modelUsed: "moonshotai/kimi-k2.6",
     },
   },
   {
-    id: "schema",
-    category: "API",
-    title: "A response contract regression",
+    id: "yq-not-installed",
+    category: "CI",
+    title: "A CI job that only works by accident",
     blurb:
-      "A field disappears from a public response shape. The server still builds, but clients that branch on order status now lose the signal.",
-    diff: SCHEMA_DIFF,
+      "A new self-test workflow shells out to yq to extract steps from action.yml. ubuntu-latest does not ship yq by default — the job happens to pass only because the runner image in use at the time preinstalled it.",
+    diff: YQ_DIFF,
+    sourceUrl: "https://github.com/postil-dev/postil-action/pull/4",
     envelope: {
-      summary: "The order serializer drops `status` from the response contract.",
+      summary:
+        "The shellcheck CI job invokes yq without installing it, so the workflow will fail on ubuntu-latest runners where yq is not present by default.",
       silent: false,
       findings: [
         {
-          path: "src/api/orders.ts",
-          line: 44,
-          severity: "warn",
+          path: ".github/workflows/ci.yml",
+          line: 83,
+          severity: "error",
           kind: "risk",
           confidence: 0.9,
-          title: "Order status removed from API response",
+          title: "shellcheck job uses yq but never installs it",
           body:
-            "Removing `status` is a breaking response-shape change for clients that render fulfillment state, retry failed payments, or decide whether an order can still be canceled.\n\n**Fix:** Keep `status` in the response or version the endpoint and migrate clients deliberately.",
+            "The shellcheck CI job invokes `yq` without installing it, so the workflow will fail on `ubuntu-latest` runners where `yq` is not present by default.",
+        },
+      ],
+      gate: { failOn: "error", failing: true },
+      modelUsed: "moonshotai/kimi-k2.6",
+    },
+  },
+  {
+    id: "migration-ordering-escalation",
+    category: "Deploy",
+    title: "“I can't verify this — confirm it yourself.”",
+    blurb:
+      "Not every finding is a detection. Wiring migrations into the Fly release command is correct, but whether the pending migration is backward-compatible with the code still running during the deploy window is a call Postil cannot make from a diff. It says so and asks, instead of guessing either way.",
+    diff: FLY_MIGRATE_DIFF,
+    sourceUrl: "https://github.com/postil-dev/postil/pull/279",
+    envelope: {
+      summary:
+        "The new [deploy] release_command runs migrations automatically before new machines start, but while old web and worker instances remain active. If pending migrations are not backward-compatible with the currently deployed code, running instances may error during the deploy window.",
+      silent: false,
+      findings: [
+        {
+          path: "fly.toml",
+          line: 33,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.9,
+          title: "Confirm automatic migration deploy ordering with owner",
+          body:
+            "The new `[deploy]` `release_command` runs migrations automatically before new machines start, but while old web and worker instances remain active. If pending migrations are not backward-compatible with the currently deployed code, running instances may error during the deploy window. This is a deployment-ordering judgment call, not something gradeable from the diff alone — confirm the ordering is safe before relying on it in production.",
         },
       ],
       gate: { failOn: "error", failing: false },
-      modelUsed: "deepseek/deepseek-v4-pro",
-      usage: { promptTokens: 998, completionTokens: 389 },
+      modelUsed: "moonshotai/kimi-k2.6",
     },
   },
   {
-    id: "race",
-    category: "Concurrency",
-    title: "A race hidden inside a readability refactor",
-    blurb:
-      "A single atomic insert becomes check-then-insert. It reads cleaner and races under duplicate deliveries.",
-    diff: RACE_DIFF,
-    envelope: {
-      summary: "The enqueue path replaces an atomic conflict handler with a racy check-then-insert.",
-      silent: false,
-      findings: [
-        {
-          path: "src/queue/enqueue.ts",
-          line: 14,
-          severity: "error",
-          kind: "risk",
-          confidence: 0.92,
-          title: "Check-then-insert can enqueue duplicate jobs",
-          body:
-            "Two workers can both observe that the job does not exist and then both insert it. The previous `onConflictDoNothing()` kept the uniqueness check and write in one database operation.\n\n**Fix:** Restore the atomic insert with conflict handling, or move the existence check behind a database constraint and transaction that rejects duplicates.",
-        },
-      ],
-      gate: { failOn: "error", failing: true },
-      modelUsed: "deepseek/deepseek-v4-pro",
-      usage: { promptTokens: 1024, completionTokens: 511 },
-    },
-  },
-  {
-    id: "secret-log",
-    category: "CI",
-    title: "A secret leak in deployment logs",
-    blurb:
-      "The workflow still deploys. It also prints the production database URL into CI logs before the deploy script runs.",
-    diff: SECRET_DIFF,
-    envelope: {
-      summary: "The deploy workflow now prints a production secret to job logs.",
-      silent: false,
-      findings: [
-        {
-          path: ".github/workflows/deploy.yml",
-          line: 20,
-          severity: "error",
-          kind: "risk",
-          confidence: 0.98,
-          title: "Production database URL is echoed to CI logs",
-          body:
-            "Printing `$PRODUCTION_DATABASE_URL` exposes credentials to anyone with access to the workflow logs and to any log export integrations. Masking is not a security boundary for deliberate echoing.\n\n**Fix:** Remove the echo and pass the value only to the deploy process through the existing secret environment.",
-        },
-      ],
-      gate: { failOn: "error", failing: true },
-      modelUsed: "deepseek/deepseek-v4-pro",
-      usage: { promptTokens: 913, completionTokens: 402 },
-    },
-  },
-  {
-    id: "clean-label",
+    id: "clean-fix",
     category: "Clean",
-    title: "A clean label change",
+    title: "A clean fix, verified silent",
     blurb:
-      "A button label gets clearer without changing behavior. Postil has nothing gate-worthy to say.",
-    diff: CLEAN_DIFF,
+      "The fix for the UTF-8 panic above. Postil's own gate passed it — a seeded fixture asserting that same silent outcome for this UI, since a live check-run's zero-finding output has no comment thread to screenshot.",
+    diff: CLEAN_FIX_DIFF,
+    fixture: true,
     envelope: {
       summary: "",
       silent: true,
       findings: [],
       gate: { failOn: "error", failing: false },
-      modelUsed: "deepseek/deepseek-v4-pro",
-      usage: { promptTokens: 757, completionTokens: 188 },
+      modelUsed: "moonshotai/kimi-k2.6",
     },
   },
 ];

@@ -340,7 +340,7 @@ export default function HomePage() {
             </div>
             <div className="mt-8">
               <p className="font-mono text-xs text-charcoal/70">
-                confidence of the findings it did ship
+                y: findings shipped · x: finding confidence
               </p>
               {(() => {
                 const bars = [
@@ -351,27 +351,42 @@ export default function HomePage() {
                   { bucket: "0.8–1.0", count: 34 },
                 ];
                 const max = Math.max(...bars.map((b) => b.count));
+                const yTicks = [0, Math.round(max / 2), max];
                 return (
                   <div
                     role="img"
-                    aria-label={`Confidence of the 57 findings Postil shipped across 126 public pull requests: ${bars
-                      .filter((b) => b.count > 0)
-                      .map((b) => `${b.count} at ${b.bucket}`)
+                    aria-label={`Bar chart. Y axis: findings shipped, 0 to ${max}. X axis: finding confidence, buckets of 0.2 from 0.0 to 1.0. Values: ${bars
+                      .map((b) => `${b.count} findings at ${b.bucket}`)
                       .join("; ")}. Every shipped finding was at 0.6 confidence or higher.`}
                   >
-                    <div className="mt-3 flex h-24 items-end gap-2">
-                      {bars.map((b, i) => (
-                        <div
-                          key={b.bucket}
-                          className="flex-1 rounded-t-[3px] bg-gate"
-                          style={{
-                            height: `${max ? (b.count / max) * 100 : 0}%`,
-                            opacity: 0.5 + i * 0.12,
-                          }}
-                        />
-                      ))}
+                    <div className="mt-3 flex gap-2">
+                      {/* y-axis ticks, high to low, matching the bar row below */}
+                      <div className="flex h-24 w-5 flex-col justify-between pb-[1px] text-right font-mono text-[10px] text-charcoal/70">
+                        {[...yTicks].reverse().map((t) => (
+                          <span key={t}>{t}</span>
+                        ))}
+                      </div>
+                      <div className="flex h-24 flex-1 items-end gap-2 border-l border-stone pl-2">
+                        {bars.map((b, i) => (
+                          <div
+                            key={b.bucket}
+                            className="flex h-full flex-1 flex-col items-center justify-end"
+                          >
+                            <span className="mb-1 font-mono text-[10px] text-charcoal/70">
+                              {b.count > 0 ? b.count : ""}
+                            </span>
+                            <div
+                              className="w-full rounded-t-[3px] bg-gate"
+                              style={{
+                                height: `${max ? (b.count / max) * 100 : 0}%`,
+                                opacity: 0.5 + i * 0.12,
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    <div className="mt-2 flex justify-between font-mono text-[10px] text-charcoal/70">
+                    <div className="mt-2 ml-7 flex justify-between font-mono text-[10px] text-charcoal/70">
                       <span>0.0</span>
                       <span>0.2</span>
                       <span>0.4</span>
@@ -379,12 +394,17 @@ export default function HomePage() {
                       <span>0.8</span>
                       <span>1.0</span>
                     </div>
+                    <p className="mt-1 ml-7 text-center font-mono text-[10px] text-charcoal/70">
+                      finding confidence
+                    </p>
                   </div>
                 );
               })()}
             </div>
             <figcaption className="mt-4 font-mono text-[11px] text-charcoal/70">
-              Measured across 126 recently merged public pull requests, June 2026.
+              57 shipped findings across 126 recently merged public pull
+              requests, June 2026 — 23 at 0.6–0.8 confidence, 34 at 0.8–1.0.
+              None below 0.6.
             </figcaption>
           </figure>
           <div>
@@ -400,7 +420,7 @@ export default function HomePage() {
               this number; most would rather you didn't ask.
             </p>
             <p className="mt-6 flex flex-wrap gap-x-6 gap-y-2">
-              <Link href="/how-it-works#data" className="link-arrow">
+              <Link href="/how-it-works#silence-methodology" className="link-arrow">
                 How the silence metric is computed
               </Link>
               <Link href="/why-postil" className="link-arrow">
@@ -411,9 +431,68 @@ export default function HomePage() {
         </div>
       </Section>
 
-      {/* 06 — Pricing teaser */}
+      {/* 06 — Limits, stated plainly */}
       <Section
         number="06"
+        eyebrow="Limits, stated plainly"
+        title="What Postil cannot do, and what we did about the rest."
+      >
+        <div className="grid gap-6 md:grid-cols-2">
+          <div className="card p-6">
+            <p className="font-mono text-sm font-semibold text-charcoal">
+              It reasons about your diff, not your repository.
+            </p>
+            <p className="mt-2 text-sm text-ink-soft">
+              The CLI reviews the changed lines and the context around them —
+              not a full checkout, not your test suite, not runtime behavior.
+              A bug that only manifests three call sites away, outside the
+              diff, can be missed.
+            </p>
+          </div>
+          <div className="card p-6">
+            <p className="font-mono text-sm font-semibold text-charcoal">
+              It does not execute code.
+            </p>
+            <p className="mt-2 text-sm text-ink-soft">
+              Findings come from reading the diff, not from running it. Pair
+              the gate with your test suite and type checker; it is a review
+              layer, not a replacement for either.
+            </p>
+          </div>
+          <div className="card p-6">
+            <p className="font-mono text-sm font-semibold text-charcoal">
+              An LLM can be talked into a plausible clean review.
+            </p>
+            <p className="mt-2 text-sm text-ink-soft">
+              A sufficiently convincing diff — or a PR description written to
+              steer the model — can produce a false pass. Confidence
+              thresholds and the gate/advisory split reduce how often that
+              matters, but they do not make the model unpersuadable. This is
+              a model-family limit, not a Postil-specific bug, and we are not
+              going to pretend otherwise.
+            </p>
+          </div>
+          <div className="card p-6">
+            <p className="font-mono text-sm font-semibold text-charcoal">
+              Fixed: findings that couldn&apos;t cite a diff line used to
+              vanish silently.
+            </p>
+            <p className="mt-2 text-sm text-ink-soft">
+              Every finding must ground to a real diff location or it is
+              dropped before you see it — including, previously, legitimate
+              findings about the PR title or description, which have no diff
+              line of their own. Those now ground against a reserved
+              synthetic anchor instead of being discarded, and an
+              all-findings-dropped run fails closed rather than reading as a
+              silent pass.
+            </p>
+          </div>
+        </div>
+      </Section>
+
+      {/* 07 — Pricing teaser */}
+      <Section
+        number="07"
         eyebrow="Pricing without meter anxiety"
         title="Flat orchestration. BYO key or managed inference."
       >
