@@ -1,6 +1,9 @@
 # Postil self-hosted stack: Postgres, web, worker.
 #
 #   cp .env.example .env   # fill in the required values
+#   # Download the postil-cli release matching POSTIL_CLI_REV below, verify
+#   # its checksum/signature, and place the binary at vendor/postil - the
+#   # Dockerfile bakes it in from there and does not fetch one itself.
 #   docker compose up -d
 #   docker compose exec web bun run db:migrate
 #
@@ -26,9 +29,11 @@ services:
     build:
       context: .
       args:
-        # Pinned postil-cli release the runtime image fetches and bakes in.
-        # Override to a 40-hex commit or another release tag to upgrade the
-        # reviewer, or drop a binary at vendor/postil to skip the fetch.
+        # Records which postil-cli release the vendor/postil binary should
+        # match, for provenance/labels only - the build itself always uses
+        # whatever binary is at vendor/postil (see the header comment).
+        # Override alongside a new vendor/postil binary to upgrade the
+        # reviewer version.
         POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.1}
         NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}

@@ -2,11 +2,12 @@
 # worker (bun run worker); docker-compose selects the command per service.
 #
 # The postil CLI is baked into the runtime image at a pinned revision so the
-# reviewer version is an image property, not a runtime download. Supply it by
-# placing the binary at vendor/postil in the build context (see
-# vendor/README.md). POSTIL_CLI_REV records the pinned postil-cli commit for
-# provenance/labels; a dedicated cargo build stage can replace the COPY when
-# building fully from source.
+# reviewer version is an image property, not a runtime download. Production
+# images MUST supply the binary via vendor/postil in the build context (see
+# vendor/README.md): deploy.yml fetches the pinned release and verifies its
+# Sigstore signature before writing vendor/postil, so that is the only path
+# that authenticates the binary, not just checksums it. POSTIL_CLI_REV
+# records the pinned postil-cli commit/tag for provenance/labels.
 
 ARG POSTIL_CLI_REV=unpinned
 ARG NEXT_PUBLIC_POSTHOG_KEY
@@ -38,32 +39,34 @@ ENV NODE_ENV=production
 # The baked postil CLI (Rust) makes outbound HTTPS calls to the forge and the
 # model endpoint; the slim bun image ships no root certificates, so without
 # ca-certificates every review fails with "No CA certificates were loaded from
-# the system". curl fetches the pinned CLI below.
+# the system". curl is kept for in-container debugging/health checks.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 COPY --from=build /app/.next ./.next
-# Bake the pinned postil CLI into the image. Prefer a vendored binary if the
-# build context carries one; otherwise fetch and checksum-verify the pinned
-# release directly. The remote build context does not reliably carry an
-# untracked binary, so the in-build fetch is the dependable path. Fail the
-# build if neither is available rather than ship a worker that cannot review.
+# Bake the pinned postil CLI into the image. This stage only installs a
+# binary that is already present at vendor/postil; it does not fetch or
+# verify one itself. Production (deploy.yml) always populates vendor/postil
+# after a cosign signature check before this build runs (see the header
+# comment above). For local/dev builds without a signed release to hand -
+# e.g. POSTIL_CLI_REV=unpinned while iterating on postil-cli - build the CLI
+# yourself and drop the binary at vendor/postil (see vendor/README.md);
+# there is deliberately no in-Dockerfile fallback that fetches a release
+# tarball and only checksum-verifies it, since a checksum fetched from the
+# same unauthenticated URL as the artifact proves transit integrity, not
+# that the artifact is what postil-cli's release workflow actually
+# published.
 RUN set -eu; \
     if [ -f vendor/postil ]; then \
       install -m 0755 vendor/postil /usr/local/bin/postil; \
-    elif [ -n "${POSTIL_CLI_REV}" ] && [ "${POSTIL_CLI_REV}" != "unpinned" ]; then \
-      base="https://github.com/postil-dev/postil-cli/releases/download/${POSTIL_CLI_REV}"; \
-      art="postil-x86_64-unknown-linux-gnu.tar.gz"; \
-      curl -fsSL -o "/tmp/${art}" "${base}/${art}"; \
-      curl -fsSL -o "/tmp/${art}.sha256" "${base}/${art}.sha256"; \
-      (cd /tmp && sha256sum -c "${art}.sha256"); \
-      tar -xzf "/tmp/${art}" -C /tmp postil; \
-      install -m 0755 /tmp/postil /usr/local/bin/postil; \
-      rm -f "/tmp/${art}" "/tmp/${art}.sha256" /tmp/postil; \
     else \
-      echo "ERROR: no postil CLI: vendor/postil absent and POSTIL_CLI_REV unset" >&2; \
+      echo "ERROR: vendor/postil is missing. Production images must be built" >&2; \
+      echo "with a cosign-verified CLI binary at vendor/postil (see deploy.yml's" >&2; \
+      echo "'Fetch pinned postil CLI' step and vendor/README.md). For local/dev" >&2; \
+      echo "builds, place a self-built postil binary at vendor/postil; this" >&2; \
+      echo "Dockerfile does not fetch or verify a release itself." >&2; \
       exit 1; \
     fi; \
     /usr/local/bin/postil --version

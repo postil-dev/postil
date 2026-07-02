@@ -29,12 +29,14 @@ docker compose up -d
 docker compose exec web bun run db:migrate`}</code>
       </pre>
       <p>
-        The compose file pins the reviewer CLI to a released version
-        (<code>POSTIL_CLI_REV</code>, default a current tag) and fetches it
-        during the image build, so a clean clone builds without extra steps.
-        Set <code>POSTIL_CLI_REV</code> to a different release tag to change
-        the reviewer version, or drop a prebuilt binary at{" "}
-        <code>vendor/postil</code> to skip the fetch.
+        The Docker image bakes in the reviewer CLI from a binary you supply at{" "}
+        <code>vendor/postil</code> in the build context; the Dockerfile does
+        not fetch or verify a release itself, so the build fails clearly if
+        that file is missing. Download the release matching{" "}
+        <code>POSTIL_CLI_REV</code> in <code>docker-compose.yml</code> (verify
+        its checksum and Sigstore signature, both published alongside the
+        release) and place it at <code>vendor/postil</code> before running{" "}
+        <code>docker compose up -d</code>.
       </p>
       <p>
         Both web and worker validate their configuration at boot. A missing or
