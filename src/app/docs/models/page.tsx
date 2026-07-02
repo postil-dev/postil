@@ -101,9 +101,17 @@ postil review --staged --output-json`}</code>
         </h2>
         <p className="prose-postil mt-2">
           Method: seeded-defect fixtures run through a mock forge against the
-          real model, scored against ground truth. Once populated, mean cost
-          per review is the headline column — it reflects actual reviews
-          produced, ahead of catalog list price.
+          real model, scored against ground truth. Mean cost per review is
+          the headline column — it reflects actual reviews produced, ahead of
+          catalog list price.
+        </p>
+        <p className="prose-postil mt-2">
+          Read detection rate as a floor, not a ranking: the current fixture
+          set seeds clear, unambiguous defects, and capable models saturate
+          it. It tells you a model handles the review pipeline and obvious
+          bugs at the stated cost — a harder, non-public fixture set for
+          separating frontier models is planned and its results will be
+          published the same way.
         </p>
         <div className="mt-4">
           <BenchResultsSection />
