@@ -1,15 +1,31 @@
+import { lookup } from "node:dns/promises";
+
 /**
  * Validation for org-supplied LLM API base URLs.
  *
  * The apiBase from org settings is handed to the spawned CLI as
- * POSTIL_API_BASE and fetched with the worker's network identity, so a
- * hostile value is a straight SSRF primitive (cloud metadata endpoints,
- * internal services, the database). Enforced at write time (settings form)
- * and again at read time before the CLI env is built, so rows written
- * before this check existed cannot slip through.
+ * POSTIL_API_BASE and fetched with the worker's network identity, so an
+ * internal-network target is a straight SSRF primitive (cloud metadata
+ * endpoints, internal services, the database). Enforced at write time
+ * (settings form) and again at read time before the CLI env is built, so rows
+ * written before this check existed cannot slip through.
+ *
+ * Beyond the syntactic/literal checks, the hostname is resolved and every
+ * returned address is checked, so a public-looking hostname that resolves to
+ * private/loopback/link-local/metadata space is rejected too. This is
+ * best-effort against time-of-check/time-of-use DNS changes: the resolved
+ * address here may differ from the one the CLI later connects to. The
+ * authoritative control is the CLI-side pin — the worker always sets
+ * POSTIL_API_BASE explicitly in the spawned env — this check is defense in
+ * depth on top of it.
  */
 
-export function validateApiBase(url: string): void {
+/** Resolver seam so tests can stay hermetic; defaults to node:dns lookup. */
+export type DnsLookup = (hostname: string) => Promise<Array<{ address: string }>>;
+
+const defaultLookup: DnsLookup = (hostname) => lookup(hostname, { all: true });
+
+export async function validateApiBase(url: string, resolver: DnsLookup = defaultLookup): Promise<void> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -30,19 +46,51 @@ export function validateApiBase(url: string): void {
   if (hostname.endsWith(".internal")) {
     throw new Error("API base URL must not point at .internal hostnames");
   }
+  // Fast path: reject an outright private/loopback/link-local IP literal
+  // without a DNS round-trip.
   if (isPrivateIpLiteral(hostname)) {
     throw new Error("API base URL must not point at private, loopback, or link-local addresses");
+  }
+
+  // A bracketed/bare IP literal that survived the check above is a public
+  // literal; there is nothing to resolve.
+  if (isIpLiteral(hostname)) return;
+
+  // Resolve the hostname and reject if any returned address is internal. A
+  // resolution failure rejects the value rather than fail open.
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await resolver(hostname);
+  } catch {
+    throw new Error(`API base URL host ${hostname} could not be resolved`);
+  }
+  if (addresses.length === 0) {
+    throw new Error(`API base URL host ${hostname} did not resolve to any address`);
+  }
+  for (const { address } of addresses) {
+    if (isPrivateIpLiteral(address.toLowerCase())) {
+      throw new Error(
+        "API base URL must not resolve to private, loopback, or link-local addresses",
+      );
+    }
   }
 }
 
 /** True when the validator accepts the URL; convenience for callers that branch. */
-export function isValidApiBase(url: string): boolean {
+export async function isValidApiBase(url: string, resolver: DnsLookup = defaultLookup): Promise<boolean> {
   try {
-    validateApiBase(url);
+    await validateApiBase(url, resolver);
     return true;
   } catch {
     return false;
   }
+}
+
+/** True when the hostname is an IPv4 or (bracketed/bare) IPv6 literal. */
+function isIpLiteral(hostname: string): boolean {
+  if (parseIpv4(hostname)) return true;
+  if (hostname.startsWith("[") && hostname.endsWith("]")) return true;
+  return hostname.includes(":");
 }
 
 function isPrivateIpLiteral(hostname: string): boolean {
