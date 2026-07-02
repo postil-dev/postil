@@ -1,7 +1,13 @@
 name: deploy
 
 on:
-  push:
+  # Deploy only after the ci workflow has completed successfully on main,
+  # not merely on push: ci and deploy used to run in parallel off the same
+  # push event, so a merge commit that failed post-merge CI could still
+  # deploy while its own test run was still in flight or had failed.
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -13,13 +19,20 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     # Skips quietly until the FLY_DEPLOY_ENABLED repo variable is set to
-    # 'true' (and the FLY_API_TOKEN secret is configured).
-    if: ${{ vars.FLY_DEPLOY_ENABLED == 'true' }}
+    # 'true' (and the FLY_API_TOKEN secret is configured). Also skips a
+    # workflow_run event whose ci run did not succeed; workflow_dispatch
+    # (manual deploy) has no associated ci run and always proceeds.
+    if: vars.FLY_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       # Bake the pinned CLI into the image so the worker can spawn it.
       # POSTIL_CLI_TAG is a repo variable naming a postil-cli release tag;
       # when unset the image builds web-only (Dockerfile warns).
+      - name: Install cosign
+        if: ${{ vars.POSTIL_CLI_TAG != '' }}
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
       - name: Fetch pinned postil CLI
         if: ${{ vars.POSTIL_CLI_TAG != '' }}
         env:
@@ -31,7 +44,17 @@ jobs:
           tmp="$(mktemp -d)"
           curl -fsSL -o "${tmp}/${art}" "${base}/${art}"
           curl -fsSL -o "${tmp}/${art}.sha256" "${base}/${art}.sha256"
+          curl -fsSL -o "${tmp}/${art}.sig" "${base}/${art}.sig"
+          curl -fsSL -o "${tmp}/${art}.pem" "${base}/${art}.pem"
           (cd "$tmp" && sha256sum -c "${art}.sha256")
+          # Checksum guards transit corruption only; the Sigstore signature is
+          # tied to postil-cli's own release.yml workflow identity via keyless
+          # OIDC and is what actually proves this artifact came from there.
+          cosign verify-blob "${tmp}/${art}" \
+            --signature "${tmp}/${art}.sig" \
+            --certificate "${tmp}/${art}.pem" \
+            --certificate-identity-regexp 'https://github.com/postil-dev/postil-cli/\.github/workflows/release\.yml@refs/tags/.*' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
           mkdir -p vendor
           tar -xzf "${tmp}/${art}" -C "$tmp" postil
           install -m 0755 "${tmp}/postil" vendor/postil
@@ -58,3 +81,22 @@ jobs:
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
           POSTIL_CLI_TAG: ${{ vars.POSTIL_CLI_TAG }}
+      - name: Restart any machines left stopped by the deploy
+        # The worker process group has no http health check to auto-wake it
+        # (only the web group does), so a deploy that leaves a machine in
+        # `stopped` - seen on the first cutover - needs an explicit restart
+        # or the review queue/webhook receiver stays dark until someone
+        # notices and starts it by hand.
+        run: |
+          set -euo pipefail
+          stopped=$(flyctl machine list --app postil-web --json | jq -r '.[] | select(.state == "stopped") | .id')
+          if [ -z "$stopped" ]; then
+            echo "No stopped machines after deploy."
+          else
+            for id in $stopped; do
+              echo "Restarting machine left stopped by deploy: $id"
+              flyctl machine start "$id" --app postil-web
+            done
+          fi
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
