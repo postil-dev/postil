@@ -1,5 +1,46 @@
 {
-  "generatedAt": "",
-  "cliVersion": "",
-  "models": []
+  "generatedAt": "2026-07-02T17:27:54.422Z",
+  "cliVersion": "postil 0.1.2",
+  "models": [
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "detectionRate": 0.96,
+      "falsePositives": 0,
+      "casesRun": 30,
+      "meanCostUsdPerReview": 0.001105,
+      "meanDurationMs": 18820.433333
+    },
+    {
+      "id": "moonshotai/kimi-k2.6",
+      "detectionRate": 0.8,
+      "falsePositives": 0,
+      "casesRun": 30,
+      "meanCostUsdPerReview": 0.007331,
+      "meanDurationMs": 14152.8
+    },
+    {
+      "id": "qwen/qwen3-32b",
+      "detectionRate": 0.96,
+      "falsePositives": 0,
+      "casesRun": 30,
+      "meanCostUsdPerReview": 0.000204,
+      "meanDurationMs": 2782.1
+    },
+    {
+      "id": "mistralai/mistral-small-3.2-24b-instruct",
+      "detectionRate": 1,
+      "falsePositives": 0,
+      "casesRun": 30,
+      "meanCostUsdPerReview": 0.000102,
+      "meanDurationMs": 3698.5
+    },
+    {
+      "id": "google/gemma-3-27b-it",
+      "detectionRate": 1,
+      "falsePositives": 0,
+      "casesRun": 30,
+      "meanCostUsdPerReview": 8.9e-05,
+      "meanDurationMs": 6161.6
+    }
+  ]
 }
