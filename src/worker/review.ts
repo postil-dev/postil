@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 
@@ -16,6 +16,7 @@ import {
   completeCheckRun,
   createCheckRun,
 } from "@/lib/github/checks";
+import { materializeRepoConfig } from "@/lib/github/contents";
 import type { ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 
@@ -71,11 +72,16 @@ interface CliResult {
   timedOut: boolean;
 }
 
-export function runCli(args: string[], env: Record<string, string>): Promise<CliResult> {
+export function runCli(
+  args: string[],
+  env: Record<string, string>,
+  cwd?: string,
+): Promise<CliResult> {
   const bin = optionalEnv("POSTIL_BIN", "postil") as string;
-  return new Promise((resolve, reject) => {
+  return new Promise((resolvePromise, reject) => {
     const child = spawn(bin, args, {
       env: { ...process.env, ...env },
+      cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -97,7 +103,7 @@ export function runCli(args: string[], env: Record<string, string>): Promise<Cli
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ exitCode: code, stdout, stderr, timedOut });
+      resolvePromise({ exitCode: code, stdout, stderr, timedOut });
     });
   });
 }
@@ -195,6 +201,7 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
   let advisoryCheckRunId: number | undefined;
   let gateCheckRunId: number | undefined;
   let baselinePath: string | undefined;
+  let workDir: string | undefined;
   let sensitiveValues: string[] = [];
 
   try {
@@ -235,9 +242,24 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
       await mkdir(join(CACHE_DIR, "baselines"), { recursive: true });
       baselinePath = join(CACHE_DIR, "baselines", `review-${reviewId}.json`);
       await writeFile(baselinePath, JSON.stringify(baseline.envelope));
-      args.push("--since-sha", baseline.headSha, "--baseline", baselinePath);
+      // Absolute: the CLI resolves --baseline against its own cwd, which is
+      // the per-review work dir below, not the worker's.
+      args.push("--since-sha", baseline.headSha, "--baseline", resolve(baselinePath));
     }
     args.push("--output-json");
+
+    // Materialize the repo's .postil config (default branch) into a fresh
+    // per-review directory and run the CLI there, so repo-level config works
+    // hosted exactly as it does locally. See lib/github/contents.ts for the
+    // trust model (default branch only, never the PR head).
+    workDir = resolve(CACHE_DIR, "workdirs", `review-${reviewId}`);
+    await mkdir(workDir, { recursive: true });
+    const configFiles = await materializeRepoConfig(token, payload.repoFullName, workDir);
+    if (configFiles.length > 0) {
+      console.log(
+        `review ${reviewId}: using repo config from ${payload.repoFullName} (${configFiles.join(", ")})`,
+      );
+    }
 
     const llm = await resolveLlmConfig(installation.orgId);
     sensitiveValues = [token, llm.apiKey].filter((value): value is string => Boolean(value));
@@ -249,7 +271,7 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
     if (llm.model) cliEnv.REVIEW_MODEL = llm.model;
     if (llm.modelCascade) cliEnv.REVIEW_MODEL_CASCADE = llm.modelCascade;
 
-    const result = await runCli(args, cliEnv);
+    const result = await runCli(args, cliEnv, workDir);
 
     if (result.timedOut) {
       throw new OperationalError(`review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline`);
@@ -318,6 +340,7 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
     throw err;
   } finally {
     if (baselinePath) await rm(baselinePath, { force: true }).catch(() => undefined);
+    if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 

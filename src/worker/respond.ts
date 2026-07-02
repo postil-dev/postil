@@ -1,8 +1,13 @@
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { resolve } from "node:path";
+
 import { and, eq } from "drizzle-orm";
 
 import { getDb, schema } from "@/lib/db";
+import { optionalEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { postIssueComment } from "@/lib/github/checks";
+import { materializeRepoConfig } from "@/lib/github/contents";
 import type { RespondJobPayload } from "@/lib/queue";
 import { redactAndTruncate } from "@/lib/redact";
 import { resolveLlmConfig, runCli } from "./review";
@@ -84,15 +89,26 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
   if (llm.model) cliEnv.REVIEW_MODEL = llm.model;
   if (llm.modelCascade) cliEnv.REVIEW_MODEL_CASCADE = llm.modelCascade;
 
-  const result = await runCli(args, cliEnv);
-  if (result.timedOut) {
-    throw new Error("respond exceeded the CLI deadline");
-  }
-  if (result.exitCode !== 0) {
-    const stderr = redactAndTruncate(result.stderr, 500, [token, llm.apiKey]);
-    throw new Error(
-      `postil respond exited with code ${result.exitCode}: ${stderr}`,
-    );
+  // Same repo-config materialization as review jobs, so replies honor the
+  // repo's tone/guardrails/content-policy settings. See lib/github/contents.ts.
+  const cacheDir = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
+  await mkdir(resolve(cacheDir, "workdirs"), { recursive: true });
+  const workDir = await mkdtemp(resolve(cacheDir, "workdirs", "respond-"));
+  try {
+    await materializeRepoConfig(token, payload.repoFullName, workDir);
+
+    const result = await runCli(args, cliEnv, workDir);
+    if (result.timedOut) {
+      throw new Error("respond exceeded the CLI deadline");
+    }
+    if (result.exitCode !== 0) {
+      const stderr = redactAndTruncate(result.stderr, 500, [token, llm.apiKey]);
+      throw new Error(
+        `postil respond exited with code ${result.exitCode}: ${stderr}`,
+      );
+    }
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
