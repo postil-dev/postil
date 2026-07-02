@@ -17,9 +17,45 @@ interface GithubUser {
   avatar_url: string | null;
 }
 
-interface GithubOrg {
-  id: number;
-  login: string;
+interface GithubOrgMembership {
+  role?: string;
+  state?: string;
+  organization?: { id?: number };
+}
+
+/**
+ * Page through GET /user/memberships/orgs, which returns the authenticated
+ * user's org memberships WITH role (admin/member) and paginates via the Link
+ * rel="next" header. Returns the complete list, or null if any page fails —
+ * the caller must skip reconciliation on null rather than delete memberships
+ * from a truncated set (a user in more orgs than one page holds would
+ * otherwise have the missing orgs silently revoked).
+ */
+async function fetchAllOrgMemberships(
+  headers: Record<string, string>,
+): Promise<GithubOrgMembership[] | null> {
+  const memberships: GithubOrgMembership[] = [];
+  // Active memberships only: a pending invite is not a membership yet.
+  let next: string | null = "https://api.github.com/user/memberships/orgs?per_page=100&state=active";
+  // Bound the loop defensively against a malformed Link header cycle.
+  for (let page = 0; next && page < 100; page++) {
+    const res: Response = await fetch(next, { headers });
+    if (!res.ok) return null;
+    const batch = (await res.json()) as GithubOrgMembership[];
+    memberships.push(...batch);
+    next = nextPageUrl(res.headers.get("link"));
+  }
+  return memberships;
+}
+
+/** Extract the rel="next" URL from a GitHub Link header, or null when absent. */
+function nextPageUrl(link: string | null): string | null {
+  if (!link) return null;
+  for (const part of link.split(",")) {
+    const m = /<([^>]+)>\s*;\s*rel="next"/.exec(part.trim());
+    if (m) return m[1]!;
+  }
+  return null;
 }
 
 function getCookie(request: Request, name: string): string | undefined {
@@ -99,16 +135,26 @@ export async function GET(request: Request): Promise<NextResponse> {
   // Map the user onto organizations we know about: their GitHub orgs plus
   // their personal account (user-scoped installations). This is the full,
   // current set of accounts the user belongs to on GitHub; reconciliation
-  // below both grants new memberships and revokes ones they have lost.
+  // below both grants new memberships and revokes ones they have lost, and
+  // records the real per-org role so write actions can gate on it.
   //
-  // Only reconcile org membership when GitHub returns the org list. If
-  // /user/orgs fails we cannot tell "left every org" from "GitHub blipped",
-  // so we keep the user's last-known memberships rather than revoke them all.
-  const orgsRes = await fetch("https://api.github.com/user/orgs", { headers: ghHeaders });
-  if (orgsRes.ok) {
+  // /user/memberships/orgs carries the caller's role (admin/member) per org
+  // and paginates. Only reconcile when the full list is fetched: on any page
+  // failure we cannot tell "left every org" from "GitHub blipped" or a
+  // truncated page, so we keep the user's last-known memberships rather than
+  // revoke from an incomplete set.
+  const memberships = await fetchAllOrgMemberships(ghHeaders);
+  if (memberships) {
+    // The user owns their personal account; user-scoped installations are
+    // always administered by the account holder.
     const accounts: GithubAccountMembership[] = [{ githubOrgId: ghUser.id, role: "admin" }];
-    const orgs = (await orgsRes.json()) as GithubOrg[];
-    for (const org of orgs) accounts.push({ githubOrgId: org.id, role: "member" });
+    for (const m of memberships) {
+      const orgId = m.organization?.id;
+      if (typeof orgId !== "number") continue;
+      // GitHub reports "admin" or "member"; keep it verbatim and default any
+      // unexpected value to the least-privileged role.
+      accounts.push({ githubOrgId: orgId, role: m.role === "admin" ? "admin" : "member" });
+    }
     await reconcileOrgMemberships(db, userId, accounts);
   }
 

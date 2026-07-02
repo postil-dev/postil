@@ -17,13 +17,16 @@ export interface GithubAccountMembership {
  * currently belong to.
  *
  * org_members is the single source of truth for dashboard read and write
- * access (see orgs/[slug]/page.tsx and orgs/[slug]/actions.ts), and every row
- * is sourced from GitHub membership at login — nothing else inserts into the
+ * access (see orgs/[slug]/page.tsx and orgs/[slug]/actions.ts). The `role`
+ * column authorizes the write actions (settings save, repository toggle),
+ * which require the admin role; read access only needs a row. Every row is
+ * sourced from GitHub membership at login — nothing else inserts into the
  * table. Login previously only ever INSERTed, so a user removed from a GitHub
  * org kept dashboard access until their (up to 30-day) session expired. This
  * reconciles in both directions:
  *
- *   - insert/keep a membership for every GitHub account the user still has, and
+ *   - insert/keep a membership (with its current role) for every GitHub
+ *     account the user still has, and
  *   - delete memberships for orgs the user no longer belongs to.
  *
  * Deletions are scoped to this user only; other users' rows are never touched.
@@ -51,10 +54,10 @@ export async function reconcileOrgMemberships(
   const currentOrgIds = knownOrgs.map((o) => o.id);
 
   // Insert any memberships the user is missing for orgs they currently belong
-  // to, and update the role on ones that already exist: nothing else
-  // authorizes on org_members.role today, but this is the only writer of the
-  // table and "reconcile in both directions" means a GitHub-side demotion
-  // must land here too, not just new/removed memberships.
+  // to, and update the role on ones that already exist. The write actions
+  // authorize on org_members.role, and this is the only writer of the table,
+  // so "reconcile in both directions" must also land a GitHub-side demotion
+  // (admin -> member) here, not just new/removed memberships.
   for (const org of knownOrgs) {
     if (org.githubOrgId === null) continue;
     const role = byGithubId.get(org.githubOrgId) ?? "member";
