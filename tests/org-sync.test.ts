@@ -154,6 +154,27 @@ describeDb("org membership reconciliation", () => {
     expect(row!.role).toBe("member");
   });
 
+  test("records a plain member role distinctly from admin", async () => {
+    // The write actions gate on this role (requireAdmin), so a non-admin
+    // member must be stored as "member", not silently promoted.
+    const userId = await makeUser(1001, "alice");
+    const acmeId = await makeOrg("acme", 9001);
+    const betaId = await makeOrg("beta", 9002);
+
+    await reconcileOrgMemberships(db, userId, [
+      { githubOrgId: 9001, role: "admin" },
+      { githubOrgId: 9002, role: "member" },
+    ]);
+
+    const rows = await db
+      .select({ orgId: schema.orgMembers.orgId, role: schema.orgMembers.role })
+      .from(schema.orgMembers)
+      .where(eq(schema.orgMembers.userId, userId));
+    const byOrg = new Map(rows.map((r) => [r.orgId, r.role]));
+    expect(byOrg.get(acmeId)).toBe("admin");
+    expect(byOrg.get(betaId)).toBe("member");
+  });
+
   test("revokes all memberships when the user belongs to no known orgs", async () => {
     const userId = await makeUser(1001, "alice");
     const acmeId = await makeOrg("acme", 9001);

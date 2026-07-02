@@ -54,9 +54,9 @@ export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConf
   if (settings.apiKeyCiphertext) {
     apiKey = unseal(Buffer.from(settings.apiKeyCiphertext), getSealingKey());
   }
-  // SSRF guard at the worker boundary: rows predating write-time validation
-  // must not reach the spawned CLI as POSTIL_API_BASE.
-  if (settings.apiBase) validateApiBase(settings.apiBase);
+  // Internal-network guard at the worker boundary: rows predating write-time
+  // validation must not reach the spawned CLI as POSTIL_API_BASE.
+  if (settings.apiBase) await validateApiBase(settings.apiBase);
   return {
     apiBase: settings.apiBase ?? defaults.apiBase,
     apiKey,

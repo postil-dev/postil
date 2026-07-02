@@ -9,8 +9,13 @@ import { getSealingKey, seal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 
-/** Resolve org by slug and assert the current user is a member. */
-async function requireMembership(slug: string): Promise<{ orgId: number }> {
+/**
+ * Resolve org by slug and load the current user's membership row, returning
+ * the org id and the user's role. Read access (dashboard viewing) only needs
+ * membership; write actions additionally assert the admin role via
+ * requireAdmin below.
+ */
+async function requireMembership(slug: string): Promise<{ orgId: number; role: string }> {
   const user = await getSessionUser();
   if (!user) throw new Error("not signed in");
   const db = getDb();
@@ -22,20 +27,37 @@ async function requireMembership(slug: string): Promise<{ orgId: number }> {
       .limit(1)
   )[0];
   if (!org) throw new Error("organization not found");
-  const member = await db
-    .select({ id: schema.orgMembers.id })
-    .from(schema.orgMembers)
-    .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
-    .limit(1);
-  if (member.length === 0) throw new Error("not a member of this organization");
-  return { orgId: org.id };
+  const member = (
+    await db
+      .select({ role: schema.orgMembers.role })
+      .from(schema.orgMembers)
+      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
+      .limit(1)
+  )[0];
+  if (!member) throw new Error("not a member of this organization");
+  return { orgId: org.id, role: member.role };
+}
+
+/**
+ * Resolve org by slug and assert the current user is an admin of it. Gates the
+ * write actions (settings save, repository toggle): the BYO LLM API key and
+ * per-repo review coverage are org-wide controls, so a plain member must not
+ * be able to overwrite or clear them. Roles are sourced from GitHub org
+ * membership at login (admin/member); personal accounts are always admin.
+ */
+async function requireAdmin(slug: string): Promise<{ orgId: number }> {
+  const { orgId, role } = await requireMembership(slug);
+  if (role !== "admin") {
+    throw new Error("this action requires an organization admin");
+  }
+  return { orgId };
 }
 
 export async function toggleRepository(formData: FormData): Promise<void> {
   const slug = String(formData.get("slug") ?? "");
   const repositoryId = Number(formData.get("repositoryId"));
   const enable = formData.get("enable") === "true";
-  const { orgId } = await requireMembership(slug);
+  const { orgId } = await requireAdmin(slug);
 
   const db = getDb();
   // Constrain the update to repositories that actually belong to this org.
@@ -61,11 +83,12 @@ export async function toggleRepository(formData: FormData): Promise<void> {
 
 export async function saveOrgSettings(formData: FormData): Promise<void> {
   const slug = String(formData.get("slug") ?? "");
-  const { orgId } = await requireMembership(slug);
+  const { orgId } = await requireAdmin(slug);
 
   const apiBase = String(formData.get("apiBase") ?? "").trim() || null;
-  // SSRF guard: the worker hands this URL to the CLI as POSTIL_API_BASE.
-  if (apiBase) validateApiBase(apiBase);
+  // Guard against internal-network targets: the worker hands this URL to the
+  // CLI as POSTIL_API_BASE and fetches it with the worker's network identity.
+  if (apiBase) await validateApiBase(apiBase);
   const model = String(formData.get("model") ?? "").trim() || null;
   const modelCascade = String(formData.get("modelCascade") ?? "").trim() || null;
   const apiKey = String(formData.get("apiKey") ?? "").trim();

@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { verifyWebhookSignature } from "@/lib/crypto/webhook";
 import { getDb, getPool, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
+import { getInstallationToken } from "@/lib/github/app-auth";
 import { mentionsPostil } from "@/lib/mentions";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
-import { triggerQueueDrain } from "@/worker/runner";
+import { failCheckRuns } from "@/worker/review";
+import { readPositiveIntEnv, triggerQueueDrain } from "@/worker/runner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -284,6 +286,11 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
       break;
     }
     case "deleted":
+      // Deleting the installation cascades to its repositories and their
+      // reviews, which orphans any in-flight review's check-runs as
+      // in_progress. Unlike repositories_removed, the installation's token is
+      // revoked the moment it is uninstalled, so there is no way to complete
+      // those check-runs from here; just delete.
       await db
         .delete(schema.installations)
         .where(eq(schema.installations.githubInstallationId, installation.id));
@@ -323,10 +330,76 @@ async function handleInstallationRepositories(
   if (payload.repositories_added?.length) {
     await upsertRepositories(row.id, payload.repositories_added);
   }
-  for (const repo of payload.repositories_removed ?? []) {
+  const removed = payload.repositories_removed ?? [];
+  if (removed.length > 0) {
+    // The installation is still valid here (only specific repos were removed),
+    // so its token is still mintable. Deleting the repository rows cascades to
+    // their reviews; complete any in-flight review's check-runs first so they
+    // don't hang in_progress forever in the branch-protection UI. Best-effort:
+    // a failure to complete must not block the removal.
+    await completeRunningReviewsForRemovedRepos(installation.id, removed);
+    for (const repo of removed) {
+      await db
+        .delete(schema.repositories)
+        .where(eq(schema.repositories.githubRepoId, repo.id));
+    }
+  }
+}
+
+/**
+ * Fail-close the check-runs of any review still `running` for repositories
+ * about to be removed from an installation, reusing the watchdog's completion
+ * path and wording. Runs before the delete cascades the review rows away.
+ */
+async function completeRunningReviewsForRemovedRepos(
+  githubInstallationId: number,
+  removed: RepoSummary[],
+): Promise<void> {
+  const db = getDb();
+  const githubRepoIds = removed.map((r) => r.id);
+  const stuck = await db
+    .select({
+      id: schema.reviews.id,
+      advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
+      gateCheckRunId: schema.reviews.gateCheckRunId,
+      repoFullName: schema.repositories.fullName,
+    })
+    .from(schema.reviews)
+    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+    .where(
+      and(
+        eq(schema.reviews.status, "running"),
+        inArray(schema.repositories.githubRepoId, githubRepoIds),
+      ),
+    );
+  if (stuck.length === 0) return;
+
+  const message = "repository removed from the installation before the review completed";
+  let token: string;
+  try {
+    token = await getInstallationToken(githubInstallationId);
+  } catch (err) {
+    console.error(
+      `installation_repositories removed: could not mint token to complete check-runs: ${redactSecrets(err)}`,
+    );
+    return;
+  }
+  for (const review of stuck) {
     await db
-      .delete(schema.repositories)
-      .where(eq(schema.repositories.githubRepoId, repo.id));
+      .update(schema.reviews)
+      .set({ status: "failed", errorMessage: message, finishedAt: new Date() })
+      .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")));
+    await failCheckRuns(
+      token,
+      review.repoFullName,
+      review.advisoryCheckRunId,
+      review.gateCheckRunId,
+      message,
+    ).catch((err) =>
+      console.error(
+        `installation_repositories removed: could not complete check-runs for review ${review.id}: ${redactSecrets(err)}`,
+      ),
+    );
   }
 }
 
@@ -362,7 +435,11 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
     })
     .onConflictDoUpdate({
       target: schema.repositories.githubRepoId,
-      set: { fullName: repo.full_name, private: repo.private },
+      // Re-pin installationId on conflict, matching upsertRepositories: a repo
+      // transferred between installations would otherwise stay bound to the old
+      // installation, and every review path joins the repo by installationId,
+      // so reviews would silently skip.
+      set: { fullName: repo.full_name, private: repo.private, installationId: installation.id },
     })
     .returning({ enabled: schema.repositories.enabled });
   if (!repoRow[0]?.enabled) return;
@@ -434,10 +511,43 @@ function mayTriggerRespond(authorAssociation: string | undefined): boolean {
   return Boolean(authorAssociation && RESPOND_ALLOWED_ASSOCIATIONS.has(authorAssociation));
 }
 
+/**
+ * Per-installation cap on @postil respond jobs enqueued per rolling hour.
+ * Every respond job spends LLM tokens, so a burst of qualifying comments must
+ * not translate one-to-one into jobs. Configurable via env; default 30/hour.
+ */
+function respondHourlyCap(): number {
+  return readPositiveIntEnv("POSTIL_RESPOND_HOURLY_CAP", 30);
+}
+
+/**
+ * True when this installation has already enqueued at least `cap` respond jobs
+ * in the last hour. Cheap count against the existing jobs table keyed on the
+ * payload's installationId; no new table or state.
+ */
+async function respondRateLimited(installationId: number, cap: number): Promise<boolean> {
+  const res = await getPool().query<{ count: string }>(
+    `SELECT count(*)::text AS count
+       FROM jobs
+      WHERE kind = 'respond'
+        AND created_at >= now() - interval '1 hour'
+        AND (payload->>'installationId')::bigint = $1`,
+    [installationId],
+  );
+  return Number(res.rows[0]?.count ?? 0) >= cap;
+}
+
 // Respond jobs share the delivery-id dedupe at the top of POST: a redelivered
 // issue_comment/issues event is acknowledged as duplicate before dispatch, so
 // it can never enqueue a second bot reply.
 async function enqueueRespond(payload: RespondJobPayload): Promise<void> {
+  const cap = respondHourlyCap();
+  if (await respondRateLimited(payload.installationId, cap)) {
+    console.warn(
+      `respond job skipped: installation ${payload.installationId} exceeded ${cap} respond jobs/hour`,
+    );
+    return;
+  }
   await enqueueJob(getPool(), "respond", payload, { maxAttempts: 2 });
   triggerQueueDrain("respond");
 }
