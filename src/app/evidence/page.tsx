@@ -6,12 +6,12 @@ import { EVIDENCE_CASES } from "@/data/evidence";
 export const metadata: Metadata = {
   title: "See it run — real Postil output",
   description:
-    "Three real, unmocked runs of the Postil CLI: it catches a security regression and a subtle logic bug, and stays silent on a clean change. With token counts and the model used.",
+    "Representative Postil review evidence across security, correctness, payments, API contracts, concurrency, CI secrets, and clean changes, with token counts and model cost context.",
   alternates: { canonical: "/evidence" },
   openGraph: {
     title: "See it run — real Postil output",
     description:
-      "Catch the regression, catch the subtle bug, stay quiet on everything else. Real reviewer output with token counts.",
+      "Catch tenant-boundary regressions, replayable payments, subtle logic bugs, and CI leaks while staying quiet on clean changes.",
     url: "/evidence",
     images: ["/opengraph-image"],
   },

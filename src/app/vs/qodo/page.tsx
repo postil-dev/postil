@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Qodo",
   description:
-    "Postil is a Qodo alternative with flat $10/dev BYO-key pricing instead of seats plus credits, a hard merge gate, and self-hosting of the full product, not a separate open-source tool. Compared honestly, as of June 2026.",
+    "Postil is a Qodo alternative with transparent inference billing instead of seats plus credits, a hard merge gate, and self-hosting of the full product, not a separate open-source tool.",
   alternates: { canonical: "/vs/qodo" },
   openGraph: {
     title: "Postil vs Qodo",
     description:
-      "Flat BYO-key pricing instead of seats plus credits, a hard merge gate, and a published silence metric. The honest comparison.",
+      "Transparent inference billing instead of seats plus credits, a hard merge gate, and a published silence metric. The honest comparison.",
     url: "https://postil.dev/vs/qodo",
     images: ["/opengraph-image"],
   },
@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
+      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
       { kind: "text", note: "Teams $30/user annual ($38 monthly) + credits" },
     ],
   },
@@ -60,7 +60,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early)",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       {
         kind: "text",

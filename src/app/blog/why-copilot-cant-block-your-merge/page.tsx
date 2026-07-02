@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/blog/why-copilot-cant-block-your-merge" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-06-13T00:00:00.000Z",
+    publishedTime: "2026-08-08T00:00:00.000Z",
     title:
       "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
     description:
@@ -27,7 +27,7 @@ const articleJsonLd = {
   description:
     "GitHub branch protection blocks on required status checks, not review comments. Copilot code review posts a Comment, Claude Code review and Macroscope conclude neutral, so none of them can gate a merge. Here is the mechanic, and how a real check-run gate works.",
   url: "https://postil.dev/blog/why-copilot-cant-block-your-merge",
-  datePublished: "2026-06-13",
+  datePublished: "2026-08-08",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -49,7 +49,7 @@ export default function CopilotMergeGateArticle() {
         gate works)
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
-        June 2026 · Postil team
+        August 2026 · Postil team
       </p>
 
       <div className="prose-postil blog-prose mt-10">

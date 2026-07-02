@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs CodeRabbit",
   description:
-    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, flat $10/dev BYO-key pricing, and free self-hosting — compared honestly, as of June 2026.",
+    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, transparent inference billing, and free self-hosting.",
   alternates: { canonical: "/vs/coderabbit" },
   openGraph: {
     title: "Postil vs CodeRabbit",
     description:
-      "A hard merge gate, a published silence metric, flat BYO-key pricing, and free self-hosting. The honest comparison.",
+      "A hard merge gate, a published silence metric, transparent inference billing, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/coderabbit",
     images: ["/opengraph-image"],
   },
@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
+      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
     ],
   },
@@ -53,7 +53,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early)",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       { kind: "text", note: "GitHub, GitLab, Azure DevOps, Bitbucket" },
     ],
@@ -126,22 +126,19 @@ export default function VsCodeRabbitPage() {
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             $24 per seat per month on the annual plan
           </a>{" "}
-          as of June 2026. Postil charges a flat $10 per developer per month for
-          orchestration and routes inference through your own key at provider
-          rates with zero markup. Your worst-case bill is seats times ten,
-          regardless of whether your team opens 40 or 400 PRs each. Run the
-          numbers on the <Link href="/pricing">cost calculator</Link>.
+          as of June 2026. Postil keeps orchestration flat and makes inference
+          explicit: bring your own key at provider rates or use managed
+          inference with transparent pass-through markup. Run the numbers on the{" "}
+          <Link href="/pricing">cost calculator</Link>.
         </p>
 
         <h2>Where CodeRabbit is ahead</h2>
         <p>
           CodeRabbit&apos;s Azure DevOps and Bitbucket support is mature and
           widely deployed. Postil&apos;s CLI supports both behind the same forge
-          abstraction that covers GitHub and GitLab, but that support is early —
-          shipped and covered by tests, not yet validated against live
-          instances — and Postil&apos;s hosted app is GitHub-only. If you want a
-          battle-tested reviewer on Bitbucket or Azure DevOps today, CodeRabbit
-          covers you now.
+          abstraction that covers GitHub and GitLab on a best-effort basis, and
+          Postil&apos;s hosted app is GitHub-only. If your install finds a
+          platform-specific edge case, we want the report.
         </p>
       </div>
 

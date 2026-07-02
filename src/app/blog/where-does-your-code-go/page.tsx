@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/blog/where-does-your-code-go" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-06-13T00:00:00.000Z",
+    publishedTime: "2026-06-27T00:00:00.000Z",
     title:
       "Where does your code actually go? A data-flow audit of AI code review tools",
     description:
@@ -26,7 +26,7 @@ const articleJsonLd = {
   description:
     "AI code reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class data-flow audit: retention, training, and where inference runs, each fact dated and sourced.",
   url: "https://postil.dev/blog/where-does-your-code-go",
-  datePublished: "2026-06-13",
+  datePublished: "2026-06-27",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",

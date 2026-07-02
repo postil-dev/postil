@@ -166,11 +166,10 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      # the @v1 tag will exist after the first tagged release of the action
       - uses: postil-dev/postil-action@v1
         with:
           cli-ref: `}
-                <span className="t-rust">6b9d2db621e12bd558f72ba3e7bd8ecc092cd93a</span>
+                <span className="t-rust">87f4bf08b63712d3600030a7c458f0b790cfc0d5</span>
                 {`
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
@@ -180,7 +179,7 @@ jobs:
             <p className="text-sm text-ink-soft">
               The action refuses anything but a full 40-character commit SHA for{" "}
               <code className="font-mono text-xs">cli-ref</code> — tags move, SHAs
-              do not. The SHA above is current as of June 2026; check the{" "}
+              do not. The SHA above is the current blessed CLI ref; check the{" "}
               <a
                 href="https://github.com/postil-dev/postil-cli"
                 className="text-rust underline"
@@ -257,28 +256,26 @@ jobs:
           </div>
           <div className="min-w-0">
             <p className="text-ink-soft">
-              Once published, the App installs in a click: pick repositories,
-              open a pull request, and two
-              check-runs appear; require{" "}
+              The App installs in a click: pick repositories, open a pull
+              request, and two check-runs appear; require{" "}
               <code className="font-mono text-sm">postil/gate</code> in branch
               protection when you are ready to make it binding. No keys leave
-              your control: configure your own inference key per organization.
-              The App also answers <code className="font-mono text-sm">@postil</code>{" "}
-              mentions on PRs and issues — review and answer only, it never
-              opens PRs or pushes commits.
+              your control unless you choose managed inference: configure your
+              own key per organization or let Postil bill provider cost with a
+              transparent markup. The App also answers{" "}
+              <code className="font-mono text-sm">@postil</code> mentions on PRs
+              and issues — review and answer only, it never opens PRs or pushes
+              commits.
             </p>
             <p className="mt-3 text-sm text-ink-soft">
-              The hosted App is not published yet. The CLI and the GitHub Action
-              work today, and you can run the full review service yourself in the
-              meantime. This page will link to the App once it ships.
+              Hosted access is rolling out as a best-effort beta. The CLI,
+              GitHub Action, and self-hosted stack use the same review engine.
             </p>
             <div className="mt-5 flex flex-wrap items-center gap-4">
               <Link href="/docs/self-hosted" className="btn-primary">
                 Run it yourself
               </Link>
-              <span className="font-mono text-xs text-charcoal/70">
-                GitHub App: coming soon
-              </span>
+              <span className="font-mono text-xs text-charcoal/70">GitHub App beta</span>
             </div>
             <p className="mt-4 text-sm text-ink-soft">
               Permissions requested: contents (read), pull requests (write),

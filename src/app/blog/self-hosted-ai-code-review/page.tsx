@@ -4,11 +4,11 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Self-hosted AI code review without the 500-seat enterprise gate",
   description:
-    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size, BYO key, no markup.",
+    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size.",
   alternates: { canonical: "/blog/self-hosted-ai-code-review" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-06-13T00:00:00.000Z",
+    publishedTime: "2026-07-11T00:00:00.000Z",
     title: "Self-hosted AI code review without the 500-seat enterprise gate",
     description:
       "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes.",
@@ -22,9 +22,9 @@ const articleJsonLd = {
   "@type": "BlogPosting",
   headline: "Self-hosted AI code review without the 500-seat enterprise gate",
   description:
-    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size, BYO key, no markup.",
+    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size.",
   url: "https://postil.dev/blog/self-hosted-ai-code-review",
-  datePublished: "2026-06-13",
+  datePublished: "2026-07-11",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -45,7 +45,7 @@ export default function SelfHostedAiCodeReviewArticle() {
         Self-hosted AI code review without the 500-seat enterprise gate
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
-        June 2026 · Postil team
+        July 2026 · Postil team
       </p>
 
       <div className="prose-postil blog-prose mt-10">
@@ -232,11 +232,11 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
           chat completions, against{" "}
           <code>POST {"{base}"}/chat/completions</code>. The same binary points
           at Ollama, vLLM, LiteLLM, TGI, Azure OpenAI, or OpenRouter by changing
-          one base URL. There is no proxy in the middle and no per-review
-          billing: your inference goes to your endpoint at your provider&apos;s
-          rates. Postil never proxies or marks up the model call. Bring your own
-          key is not a feature bolted on for the enterprise tier; it is the only
-          way the tool talks to a model at all.
+          one base URL. In self-hosted and BYOK modes there is no proxy in the
+          middle and no per-review Postil markup: your inference goes to your
+          endpoint at your provider&apos;s rates. Hosted teams can also use managed
+          inference, where Postil bills provider cost with a transparent
+          pass-through markup.
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`# OpenRouter (default)
@@ -248,6 +248,22 @@ POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
 
 # Ollama, vLLM, LiteLLM, TGI: same shape, different base URL`}</code>
         </pre>
+
+        <h2>Models worth trying first</h2>
+        <p>
+          Start with one cheap model and one stronger model, then promote the
+          cheapest one that preserves detection rate and silence on clean PRs.
+          On OpenRouter today, the practical shortlist is DeepSeek V4 Flash for
+          low-cost volume, DeepSeek V4 Pro as the balanced default, Qwen3.7 Plus
+          for fast coding reviews, and Kimi K2.7 Code or GLM 5.2 for larger
+          engineering diffs. Locally, use the largest coder model your hardware
+          can serve reliably and verify it with{" "}
+          <code>postil doctor</code> plus the live benchmark harness.
+        </p>
+        <p>
+          The maintained model table and live benchmark commands are in the{" "}
+          <a href="/docs/models">models guide</a>.
+        </p>
 
         <h2>The doctor is the differentiator for self-hosters</h2>
         <p>

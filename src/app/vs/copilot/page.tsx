@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs GitHub Copilot code review",
   description:
-    "Postil is a Copilot code review alternative with a blocking merge gate (Copilot reviews are comment-only), flat $10/dev BYO-key pricing instead of AI Credits, and free self-hosting. Compared honestly, as of June 2026.",
+    "Postil is a Copilot code review alternative with a blocking merge gate (Copilot reviews are comment-only), transparent inference billing instead of AI Credits, and free self-hosting.",
   alternates: { canonical: "/vs/copilot" },
   openGraph: {
     title: "Postil vs GitHub Copilot code review",
     description:
-      "A blocking merge gate where Copilot is comment-only, flat BYO-key pricing instead of AI Credits, and free self-hosting. The honest comparison.",
+      "A blocking merge gate where Copilot is comment-only, transparent inference billing instead of AI Credits, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/copilot",
     images: ["/opengraph-image"],
   },
@@ -43,7 +43,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
+      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
       {
         kind: "text",
         note: "Paid Copilot plan + AI Credits + Actions minutes per review",
@@ -70,7 +70,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early)",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       { kind: "text", note: "GitHub; Azure DevOps in preview" },
     ],

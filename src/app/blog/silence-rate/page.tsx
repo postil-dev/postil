@@ -236,8 +236,8 @@ export default function SilenceRateArticle() {
           published comparative numbers, so there is nothing honest to claim
           yet. The claim is narrower and checkable: the metric exists, it is
           on the dashboard from day one, and you can watch it on your own
-          traffic. You can <Link href="/evidence">see it run</Link> on three
-          real diffs, including one where it correctly stays silent.
+          traffic. You can <Link href="/evidence">see it run</Link> across the
+          evidence fixtures, including one where it correctly stays silent.
         </p>
 
         <h2>What to ask any vendor (including us)</h2>

@@ -13,6 +13,7 @@ const DOCS_NAV = [
   { href: "/docs/envelope", label: "Envelope schema" },
   { href: "/docs/gitlab", label: "GitLab" },
   { href: "/docs/self-hosted", label: "Self-hosted" },
+  { href: "/docs/models", label: "Models and local inference" },
 ] as const;
 
 export function DocsNav() {

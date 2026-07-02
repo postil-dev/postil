@@ -415,7 +415,7 @@ export default function HomePage() {
       <Section
         number="06"
         eyebrow="Pricing without meter anxiety"
-        title="Flat $10 per developer. Inference on your own key, zero markup."
+        title="Flat orchestration. BYO key or managed inference."
       >
         <div className="grid gap-8 md:grid-cols-3">
           <div className="card p-6">
@@ -427,9 +427,9 @@ export default function HomePage() {
           <div className="card border-gate p-6">
             <p className="serif-display text-2xl">$10 / dev / mo</p>
             <p className="mt-2 text-sm text-ink-soft">
-              Flat orchestration. Bring your own OpenRouter, Anthropic, Azure,
-              or Bedrock key — we pass inference through at provider rates.
-              Hosted beta is currently free.
+              Bring your own OpenRouter, Anthropic, Azure, or Bedrock key, or
+              use managed inference with transparent pass-through markup. Hosted
+              beta is currently free.
             </p>
           </div>
           <div className="card p-6">

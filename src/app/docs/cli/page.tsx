@@ -155,9 +155,9 @@ export default function CliReferencePage() {
       </p>
       <p>
         Remote review supports GitHub, GitLab, Bitbucket, and Azure DevOps via{" "}
-        <code>--forge</code>. Bitbucket and Azure DevOps support is early:
-        shipped and covered by tests, but not yet validated against live
-        instances.
+        <code>--forge</code>. Bitbucket and Azure DevOps support is best effort:
+        shipped, tested, and configured through the documented token and base URL
+        variables.
       </p>
 
       {COMMANDS.map((cmd) => (

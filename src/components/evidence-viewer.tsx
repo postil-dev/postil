@@ -1,3 +1,7 @@
+"use client";
+
+import { useMemo, useState } from "react";
+
 import type { EvidenceCase, EvidenceFinding } from "@/data/evidence";
 
 /** Minimal inline-markdown: **bold** and `code`. Input is trusted (our own envelopes). */
@@ -90,6 +94,22 @@ function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
 }
 
 export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
+  const [active, setActive] = useState(0);
+  const current = cases[active] ?? cases[0]!;
+  const env = current.envelope;
+  const tokens = env.usage.promptTokens + env.usage.completionTokens;
+  const totals = useMemo(() => {
+    const tokenCounts = cases.map(
+      (c) => c.envelope.usage.promptTokens + c.envelope.usage.completionTokens,
+    );
+    const total = tokenCounts.reduce((sum, n) => sum + n, 0);
+    return {
+      average: Math.round(total / Math.max(1, tokenCounts.length)),
+      max: Math.max(...tokenCounts),
+      failing: cases.filter((c) => c.envelope.gate.failing).length,
+    };
+  }, [cases]);
+
   return (
     <div className="ev-root">
       <style>{EV_CSS}</style>
@@ -97,84 +117,105 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
         <header className="ev-header">
           <Reveal>
             <p className="ev-eyebrow">See it run</p>
-            <h1 className="ev-h1">We say less. What we say is right.</h1>
+            <h1 className="ev-h1">Evidence across the bugs reviewers miss.</h1>
             <p className="ev-lede">
-              Three real runs of the Postil CLI on the default model, against
-              three representative diffs. Nothing here is mocked: the findings,
-              token counts, and the silence are the verbatim machine output.
+              Postil is tuned for merge decisions, not comment volume. These
+              representative review fixtures show where it blocks, where it
+              advises, and where it stays quiet.
             </p>
           </Reveal>
         </header>
 
         <div className="ev-meta-note">
-          <span>commit 560704e</span>
-          <span>model: deepseek/deepseek-v4-pro</span>
-          <span>captured June 2026</span>
+          <span>{cases.length} review types</span>
+          <span>model: {cases[0]?.envelope.modelUsed}</span>
+          <span>avg {totals.average.toLocaleString()} tokens/review</span>
+          <span>max {totals.max.toLocaleString()} tokens</span>
           <span>default low-noise config</span>
         </div>
 
-        {cases.map((c, idx) => {
-          const env = c.envelope;
-          const tokens = env.usage.promptTokens + env.usage.completionTokens;
-          return (
-            <Reveal key={c.id} delay={idx === 0 ? 0 : 60}>
-              <section className="ev-case">
-                <div className="ev-case-head">
-                  <h2 className="ev-case-title">{c.title}</h2>
-                  <span className={`ev-verdict ${env.gate.failing ? "ev-fail" : "ev-pass"}`}>
-                    {env.gate.failing ? "● gate failing" : "✓ gate passing"}
-                  </span>
-                </div>
-                <p className="ev-blurb">{c.blurb}</p>
+        <Reveal>
+          <div className="ev-tabs" role="tablist" aria-label="Evidence types">
+            {cases.map((c, idx) => (
+              <button
+                key={c.id}
+                type="button"
+                role="tab"
+                aria-selected={idx === active}
+                aria-controls="evidence-panel"
+                className={idx === active ? "ev-tab ev-tab-active" : "ev-tab"}
+                onClick={() => setActive(idx)}
+              >
+                <span>{c.category}</span>
+                <small>{c.envelope.gate.failing ? "blocks" : c.envelope.silent ? "silent" : "advises"}</small>
+              </button>
+            ))}
+          </div>
+        </Reveal>
 
-                <div className="ev-grid">
-                  <div className="ev-col">
-                    <p className="ev-col-label">The diff under review</p>
-                    <DiffBlock diff={c.diff} />
-                  </div>
-                  <div className="ev-col">
-                    <p className="ev-col-label">What Postil did</p>
-                    {env.silent ? (
-                      <div className="ev-silent">
-                        <span className="ev-silent-check">✓</span>
-                        <p className="ev-silent-title">Silent. Postil posted nothing.</p>
-                        <p className="ev-silent-sub">
-                          It reviewed the change and found nothing that affects the merge
-                          decision. No comment, no noise — the check just goes green. That
-                          restraint is the product.
-                        </p>
-                      </div>
-                    ) : (
-                      <>
-                        {env.summary ? <p className="ev-summary">{env.summary}</p> : null}
-                        {env.findings.map((f, i) => (
-                          <Finding key={i} f={f} />
-                        ))}
-                      </>
-                    )}
-                  </div>
-                </div>
+        <Reveal key={current.id} delay={60}>
+          <section className="ev-case" id="evidence-panel" role="tabpanel">
+            <div className="ev-case-head">
+              <div>
+                <p className="ev-case-category">{current.category}</p>
+                <h2 className="ev-case-title">{current.title}</h2>
+              </div>
+              <span className={`ev-verdict ${env.gate.failing ? "ev-fail" : "ev-pass"}`}>
+                {env.gate.failing ? "gate failing" : "gate passing"}
+              </span>
+            </div>
+            <p className="ev-blurb">{current.blurb}</p>
 
-                <div className="ev-stats">
-                  <span>
-                    {env.findings.length} finding{env.findings.length === 1 ? "" : "s"}
-                  </span>
-                  <span>{tokens.toLocaleString()} tokens</span>
-                  <span>gate failOn: {env.gate.failOn}</span>
-                </div>
-              </section>
-            </Reveal>
-          );
-        })}
+            <div className="ev-grid">
+              <div className="ev-col">
+                <p className="ev-col-label">The diff under review</p>
+                <DiffBlock diff={current.diff} />
+              </div>
+              <div className="ev-col">
+                <p className="ev-col-label">What Postil did</p>
+                {env.silent ? (
+                  <div className="ev-silent">
+                    <span className="ev-silent-check">✓</span>
+                    <p className="ev-silent-title">No blocking finding.</p>
+                    <p className="ev-silent-sub">
+                      It reviewed the change and found nothing that affects the merge
+                      decision. The check goes green and no advisory comment is posted.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {env.summary ? <p className="ev-summary">{env.summary}</p> : null}
+                    {env.findings.map((f, i) => (
+                      <Finding key={i} f={f} />
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="ev-stats">
+              <span>
+                {env.findings.length} finding{env.findings.length === 1 ? "" : "s"}
+              </span>
+              <span>{tokens.toLocaleString()} tokens</span>
+              <span>
+                {env.usage.promptTokens.toLocaleString()} prompt +{" "}
+                {env.usage.completionTokens.toLocaleString()} completion
+              </span>
+              <span>gate failOn: {env.gate.failOn}</span>
+            </div>
+          </section>
+        </Reveal>
 
         <Reveal>
           <footer className="ev-foot">
             <p>
-              This is the bar we hold ourselves to: catch the regression, catch the subtle
-              bug, and stay quiet on everything else.
+              Current fixture set: {totals.failing} blocking reviews,{" "}
+              {cases.length - totals.failing} non-blocking reviews, and measured
+              token counts for every case.
             </p>
             <a className="ev-cta" href="/install">
-              Try it on your own diff →
+              Try it on your own diff
             </a>
           </footer>
         </Reveal>
@@ -201,9 +242,17 @@ const EV_CSS = `
 .ev-lede { margin: 1.25rem 0 0; max-width: 44rem; color: var(--ink-soft); font-size: 1.05rem; line-height: 1.6; }
 .ev-meta-note { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin: 2rem 0 1rem;
   font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.78rem; color: var(--ink-soft); }
-.ev-case { border: 1px solid var(--line); background: var(--panel); border-radius: 14px;
+.ev-tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: 0.5rem; margin: 1.5rem 0; }
+.ev-tab { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 0.75rem;
+  text-align: left; color: var(--ink); cursor: pointer; min-height: 4rem; }
+.ev-tab:hover { border-color: var(--green); }
+.ev-tab-active { border-color: var(--green); background: var(--add-bg); }
+.ev-tab span { display: block; font-weight: 600; }
+.ev-tab small { display: block; margin-top: 0.2rem; color: var(--ink-soft); font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.68rem; }
+.ev-case { border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
   padding: 1.75rem; margin-top: 1.75rem; }
 .ev-case-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.ev-case-category { margin: 0 0 0.3rem; color: var(--green); font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.72rem; text-transform: uppercase; }
 .ev-case-title { font-family: var(--font-source-serif, Georgia, serif); font-size: 1.5rem; margin: 0; color: var(--ink); }
 .ev-verdict { font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.78rem;
   padding: 0.25rem 0.6rem; border-radius: 999px; white-space: nowrap; }
@@ -215,7 +264,7 @@ const EV_CSS = `
 .ev-col { min-width: 0; }
 .ev-col-label { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.7rem;
   font-weight: 600; color: var(--ink-soft); margin: 0 0 0.5rem; }
-.ev-diff { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+.ev-diff { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
   padding: 0.85rem 0; overflow-x: auto; max-width: 100%; margin: 0; }
 .ev-diff code { display: block; font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.78rem; line-height: 1.5; }
 .ev-line { display: block; padding: 0 0.9rem; white-space: pre; }
@@ -225,7 +274,7 @@ const EV_CSS = `
 .ev-hunk { color: var(--hunk); }
 .ev-summary { color: var(--ink); font-size: 0.95rem; line-height: 1.55; margin: 0 0 1rem;
   padding-left: 0.75rem; border-left: 2px solid var(--green); }
-.ev-finding { border: 1px solid var(--line); border-radius: 10px; padding: 0.9rem 1rem; margin-bottom: 0.75rem; }
+.ev-finding { border: 1px solid var(--line); border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 0.75rem; }
 .ev-sev-error { border-left: 3px solid var(--red); }
 .ev-sev-warn { border-left: 3px solid var(--rust); }
 .ev-sev-info { border-left: 3px solid var(--green); }
@@ -240,7 +289,7 @@ const EV_CSS = `
 .ev-finding-para { font-size: 0.9rem; line-height: 1.6; color: var(--ink-soft); margin: 0 0 0.6rem; }
 .ev-code { font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.82em;
   background: var(--panel-2); padding: 0.05rem 0.3rem; border-radius: 4px; color: var(--ink); }
-.ev-silent { text-align: center; padding: 1.75rem 1rem; background: var(--add-bg); border-radius: 10px; }
+.ev-silent { text-align: center; padding: 1.75rem 1rem; background: var(--add-bg); border-radius: 8px; }
 .ev-silent-check { display: inline-block; font-size: 1.75rem; color: var(--green); }
 .ev-silent-title { font-weight: 600; margin: 0.5rem 0 0.4rem; color: var(--ink); }
 .ev-silent-sub { color: var(--ink-soft); font-size: 0.9rem; line-height: 1.6; margin: 0 auto; max-width: 30rem; }

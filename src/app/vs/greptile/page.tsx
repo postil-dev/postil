@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Greptile",
   description:
-    "Postil is a Greptile alternative with flat $10/dev BYO-key pricing instead of per-review overage, a hard merge gate, a published silence metric, and free self-hosting — as of June 2026.",
+    "Postil is a Greptile alternative with transparent inference billing instead of per-review overage, a hard merge gate, a published silence metric, and free self-hosting.",
   alternates: { canonical: "/vs/greptile" },
   openGraph: {
     title: "Postil vs Greptile",
     description:
-      "Flat BYO-key pricing instead of per-review overage, a hard merge gate, and a published silence metric. The honest comparison.",
+      "Transparent inference billing instead of per-review overage, a hard merge gate, and a published silence metric. The honest comparison.",
     url: "https://postil.dev/vs/greptile",
     images: ["/opengraph-image"],
   },
@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat $10/dev, BYO key, zero markup" },
+      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
       { kind: "text", note: "~$30/seat + ~$1 per review past 50" },
     ],
   },
@@ -60,7 +60,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps (early)",
+        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       { kind: "text", note: "GitHub, GitLab" },
     ],
@@ -146,7 +146,7 @@ export default function VsGreptilePage() {
         <div>
           <h2 className="serif-display text-2xl">No meter anxiety.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Flat orchestration, your inference key, zero markup. Install the CLI
+            Flat orchestration, BYO key or managed inference. Install the CLI
             and try it on your next diff.
           </p>
         </div>

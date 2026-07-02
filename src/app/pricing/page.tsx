@@ -6,12 +6,12 @@ import { PricingCalculator } from "@/components/pricing-calculator";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Free on public repos. Flat $10/dev/mo orchestration with BYO inference key at zero markup. Self-hosted free forever.",
+    "Free on public repos. Hosted teams can bring their own inference key or use managed inference with transparent pass-through markup. Self-hosted is free forever.",
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
     description:
-      "Flat $10/dev/mo orchestration, bring your own inference key at zero markup, free self-hosting. No meter anxiety.",
+      "BYO key or managed inference, transparent model pricing, free self-hosting, and no per-review orchestration meter.",
     url: "https://postil.dev/pricing",
     images: ["/opengraph-image"],
   },
@@ -20,11 +20,11 @@ export const metadata: Metadata = {
 const FAQ = [
   {
     q: "What is my worst-case monthly cost?",
-    a: "Your seat count times $10, period. Orchestration is flat. Inference runs on your own key at your provider's rates and is visible in your provider's dashboard, not hidden in ours. There are no per-review surcharges, overage tiers, or credits.",
+    a: "Your orchestration cost is flat by seat. Inference is either paid directly to your provider with BYOK or billed as managed pass-through with a visible markup. There are no hidden credits or per-review orchestration overages.",
   },
   {
-    q: "What does \"BYO key, zero markup\" mean exactly?",
-    a: "You configure your own OpenRouter, Anthropic, Azure OpenAI, or Bedrock API key per organization. Postil passes every model call through on that key and adds nothing. If your company has a negotiated enterprise LLM agreement, reviews run at those rates.",
+    q: "Do I have to bring my own key?",
+    a: "No. BYOK remains available for teams that already have OpenRouter, Anthropic, Azure OpenAI, Bedrock, vLLM, or Ollama set up. Managed inference is the easier path: Postil holds the provider key and bills model cost with a transparent 0.5% to 5.0% markup.",
   },
   {
     q: "What does the hosted beta cost today?",
@@ -49,12 +49,12 @@ export default function PricingPage() {
     <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
       <p className="eyebrow">Pricing</p>
       <h1 className="serif-display mt-4 max-w-3xl text-4xl md:text-5xl">
-        Flat orchestration. Your inference, your rates.
+        Flat orchestration. BYO key or managed inference.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         Pricing in this category fails in one of two ways: per-review meters
         that punish fast teams, or opaque bundles that hide the model bill.
-        Postil does neither.
+        Postil does neither: seats are predictable, model cost is explicit.
       </p>
 
       {/* Tiers */}
@@ -87,7 +87,8 @@ export default function PricingPage() {
           </p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Private repositories, unlimited reviews</li>
-            <li>BYO inference key — zero markup, provider rates</li>
+            <li>BYO inference key at zero markup</li>
+            <li>Managed inference with transparent 0.5% to 5.0% markup</li>
             <li>postil/gate for branch protection</li>
             <li>Silence-rate and confidence dashboards</li>
             <li>Incremental re-review on every push</li>
@@ -115,7 +116,7 @@ export default function PricingPage() {
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Docker Compose: Postgres, web, worker</li>
             <li>Startup validation with actionable errors</li>
-            <li>OpenRouter, Azure OpenAI, and Ollama configs documented</li>
+            <li>OpenRouter, Azure OpenAI, Ollama, vLLM, and LiteLLM documented</li>
             <li>postil doctor verifies endpoint, key, and model</li>
           </ul>
           <Link href="/docs/self-hosted" className="btn-secondary mt-8 text-center">
@@ -134,9 +135,20 @@ export default function PricingPage() {
           <p className="mt-3 max-w-2xl text-ink-soft">
             Compared against CodeRabbit Pro at its published $24/user/mo annual
             rate and Greptile&apos;s metered model ($30/seat plus per-review
-            overage past the included allowance, as of June 2026). Adjust the
-            inference estimate to match your model; it is paid to your provider
-            either way.
+            overage past the included allowance). Pick a model to calculate
+            inference from prompt and completion tokens instead of guessing a
+            cents-per-review number.
+          </p>
+          <p className="mt-2 max-w-2xl text-sm text-charcoal/70">
+            Model prices are read from the public{" "}
+            <a
+              href="https://openrouter.ai/api/v1/models"
+              className="text-rust underline"
+              rel="noopener"
+            >
+              OpenRouter model catalog
+            </a>
+            .
           </p>
         </div>
         <div className="mt-8">

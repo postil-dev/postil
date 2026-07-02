@@ -48,6 +48,11 @@ const CARDS = [
     title: "Self-hosted",
     body: "Docker Compose quickstart in under 15 minutes, with OpenRouter, Azure, and Ollama examples.",
   },
+  {
+    href: "/docs/models",
+    title: "Models",
+    body: "Recommended OpenRouter and local models, token-cost math, and how to run the live model benchmark.",
+  },
 ] as const;
 
 export default function DocsIndexPage() {
@@ -79,7 +84,7 @@ postil review --staged
 # CI (GitHub Actions) — @v1 resolves after the first tagged release
 - uses: postil-dev/postil-action@v1
   with:
-    cli-ref: <40-hex postil-cli SHA>
+    cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5
 
 # hosted
 Install the GitHub App; reviews start on the next PR.`}</code>
