@@ -86,7 +86,11 @@ jobs:
         # (only the web group does), so a deploy that leaves a machine in
         # `stopped` - seen on the first cutover - needs an explicit restart
         # or the review queue/webhook receiver stays dark until someone
-        # notices and starts it by hand.
+        # notices and starts it by hand. Must run even when the flyctl deploy
+        # step itself fails (a partial rolling deploy that times out waiting
+        # for one machine's health check is exactly when this matters most;
+        # a plain dependent step would be skipped by default on that failure).
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           stopped=$(flyctl machine list --app postil-web --json | jq -r '.[] | select(.state == "stopped") | .id')
@@ -97,6 +101,20 @@ jobs:
               echo "Restarting machine left stopped by deploy: $id"
               flyctl machine start "$id" --app postil-web
             done
+            sleep 15
+          fi
+          # fly.toml requires min_machines_running = 2 for the web group: a
+          # stopped machine the proxy has to cold-start drops/retries webhook
+          # deliveries. Surface the current count rather than assume the
+          # restart above (or the deploy itself) actually achieved it. A
+          # warning, not a hard failure: not confident enough in the exact
+          # `fly_process_group` metadata field path to fail every future
+          # deploy on a possible field-name mismatch rather than a real gap.
+          web_running=$(flyctl machine list --app postil-web --json \
+            | jq -r '[.[] | select(.config.metadata.fly_process_group == "web" and .state == "started")] | length')
+          echo "web machines running: ${web_running}"
+          if [ "${web_running}" -lt 2 ]; then
+            echo "::warning::Only ${web_running} web machine(s) reported running after deploy; fly.toml requires min_machines_running = 2. Verify with 'fly status -a postil-web'."
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
