@@ -12,8 +12,11 @@ import { signWebhookBody } from "@/lib/crypto/webhook";
  *  - a repo transferred between installations is re-pinned to the new
  *    installation on the pull_request upsert (otherwise reviews skip),
  *  - removing repos from an installation completes any in-flight review's
- *    check-runs before the delete cascades them away, and
- *  - respond jobs are rate-limited per installation per hour.
+ *    check-runs before the delete cascades them away,
+ *  - respond jobs are rate-limited per installation per hour, and
+ *  - check_run rerequested (GitHub's "Re-run" button) re-enqueues a review
+ *    job, skips unknown/disabled repos, and does not double-enqueue over an
+ *    already in-flight job for the same repo+PR+head.
  *
  * The GitHub token mint and check-run PATCH are stubbed so the suite stays
  * hermetic; everything else runs against a real Postgres. Set
@@ -235,5 +238,91 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM jobs WHERE kind = 'respond'",
     );
     expect(jobs.rows[0]!.c).toBe(2);
+  });
+
+  function checkRunRerequestedEvent(
+    deliveryId: string,
+    overrides: {
+      installationId?: number;
+      repo?: { id: number; full_name: string; private?: boolean };
+      name?: string;
+      headSha?: string;
+      prNumber?: number | null;
+      baseSha?: string | null;
+    } = {},
+  ): Promise<Response> {
+    const prNumber = overrides.prNumber === undefined ? 42 : overrides.prNumber;
+    return post(
+      "check_run",
+      {
+        action: "rerequested",
+        installation: { id: overrides.installationId ?? 500 },
+        repository: overrides.repo ?? { id: 5555, full_name: "octo/gate", private: false },
+        check_run: {
+          name: overrides.name ?? "postil/gate",
+          head_sha: overrides.headSha ?? "deadbeef",
+          pull_requests:
+            prNumber === null
+              ? []
+              : [
+                  {
+                    number: prNumber,
+                    head: { sha: overrides.headSha ?? "deadbeef" },
+                    base: { sha: overrides.baseSha === undefined ? "basesha" : overrides.baseSha },
+                  },
+                ],
+        },
+      },
+      deliveryId,
+    );
+  }
+
+  test("check_run rerequested for postil/gate enqueues a review job", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 500);
+    await seedRepo(inst, 5555, "octo/gate");
+
+    const res = await checkRunRerequestedEvent("delivery-rerequest-1");
+    expect(res.status).toBe(200);
+
+    const jobs = await pool.query<{ payload: { prNumber: number; headSha: string } }>(
+      "SELECT payload FROM jobs WHERE kind = 'review'",
+    );
+    expect(jobs.rows).toHaveLength(1);
+    expect(jobs.rows[0]!.payload.prNumber).toBe(42);
+    expect(jobs.rows[0]!.payload.headSha).toBe("deadbeef");
+  });
+
+  test("check_run rerequested for an unknown/disabled repo is skipped", async () => {
+    // No org/installation/repo seeded at all: installation lookup fails closed.
+    const res = await checkRunRerequestedEvent("delivery-rerequest-unknown");
+    expect(res.status).toBe(200);
+
+    const jobs = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM jobs WHERE kind = 'review'",
+    );
+    expect(jobs.rows[0]!.c).toBe(0);
+  });
+
+  test("check_run rerequested does not double-enqueue over an in-flight review job", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 500);
+    await seedRepo(inst, 5555, "octo/gate");
+
+    const first = await checkRunRerequestedEvent("delivery-rerequest-dup-1");
+    expect(first.status).toBe(200);
+
+    // A second rerequest for the same repo+PR+head (e.g. the maintainer
+    // clicks "Re-run" twice, or GitHub fires check_run once per check name)
+    // must not enqueue a second review job while the first is still queued.
+    const second = await checkRunRerequestedEvent("delivery-rerequest-dup-2", {
+      name: "postil/review",
+    });
+    expect(second.status).toBe(200);
+
+    const jobs = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM jobs WHERE kind = 'review'",
+    );
+    expect(jobs.rows[0]!.c).toBe(1);
   });
 });
