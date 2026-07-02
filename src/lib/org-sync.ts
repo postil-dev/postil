@@ -51,15 +51,19 @@ export async function reconcileOrgMemberships(
   const currentOrgIds = knownOrgs.map((o) => o.id);
 
   // Insert any memberships the user is missing for orgs they currently belong
-  // to. The unique (org_id, user_id) index makes a duplicate insert a no-op.
+  // to, and update the role on ones that already exist: nothing else
+  // authorizes on org_members.role today, but this is the only writer of the
+  // table and "reconcile in both directions" means a GitHub-side demotion
+  // must land here too, not just new/removed memberships.
   for (const org of knownOrgs) {
     if (org.githubOrgId === null) continue;
     const role = byGithubId.get(org.githubOrgId) ?? "member";
     await db
       .insert(schema.orgMembers)
       .values({ orgId: org.id, userId, role })
-      .onConflictDoNothing({
+      .onConflictDoUpdate({
         target: [schema.orgMembers.orgId, schema.orgMembers.userId],
+        set: { role },
       });
   }
 

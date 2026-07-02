@@ -139,6 +139,21 @@ describeDb("org membership reconciliation", () => {
     expect(rows[0]!.id).toBe(first!.id);
   });
 
+  test("demotes an existing member's role instead of leaving it stale", async () => {
+    const userId = await makeUser(1001, "alice");
+    const acmeId = await makeOrg("acme", 9001);
+    await reconcileOrgMemberships(db, userId, [{ githubOrgId: 9001, role: "admin" }]);
+
+    // GitHub now reports alice as a plain member (demoted).
+    await reconcileOrgMemberships(db, userId, [{ githubOrgId: 9001, role: "member" }]);
+
+    const [row] = await db
+      .select({ role: schema.orgMembers.role })
+      .from(schema.orgMembers)
+      .where(and(eq(schema.orgMembers.userId, userId), eq(schema.orgMembers.orgId, acmeId)));
+    expect(row!.role).toBe("member");
+  });
+
   test("revokes all memberships when the user belongs to no known orgs", async () => {
     const userId = await makeUser(1001, "alice");
     const acmeId = await makeOrg("acme", 9001);

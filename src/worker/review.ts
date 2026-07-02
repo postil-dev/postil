@@ -265,7 +265,16 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
 
     const ingested = ingestEnvelope(result.stdout);
 
-    await db
+    // The watchdog's cutoff clock starts at insert (before the token mint
+    // and check-run creates above), while the CLI's own kill-timer starts
+    // later at spawn, so a review can legitimately still be completing here
+    // after the watchdog has already marked it `failed` and completed its
+    // check-runs. Guard on status so a late completion can't flap the row
+    // back to `completed` or attribute usage to a review the system already
+    // recorded as failed. The CLI itself owns the check-runs on this path
+    // (they were created with the CLI's own token, not completed here), so
+    // there is no matching duplicate GitHub call to suppress in this file.
+    const completedRows = await db
       .update(schema.reviews)
       .set({
         status: "completed",
@@ -274,29 +283,36 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
         gateFailing: ingested.gateFailing,
         finishedAt: new Date(),
       })
-      .where(eq(schema.reviews.id, reviewId));
+      .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
+      .returning({ id: schema.reviews.id });
 
-    await db.insert(schema.usageEvents).values({
-      orgId: installation.orgId,
-      repositoryId: repository.id,
-      reviewId,
-      promptTokens: ingested.promptTokens,
-      completionTokens: ingested.completionTokens,
-      modelUsed: ingested.modelUsed,
-    });
+    if (completedRows.length > 0) {
+      await db.insert(schema.usageEvents).values({
+        orgId: installation.orgId,
+        repositoryId: repository.id,
+        reviewId,
+        promptTokens: ingested.promptTokens,
+        completionTokens: ingested.completionTokens,
+        modelUsed: ingested.modelUsed,
+      });
+    } else {
+      console.warn(`review ${reviewId} completed after the watchdog already marked it failed`);
+    }
   } catch (err) {
     const message = redactSecrets(err, sensitiveValues);
-    await db
+    const failedRows = await db
       .update(schema.reviews)
       .set({
         status: "failed",
         errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
         finishedAt: new Date(),
       })
-      .where(eq(schema.reviews.id, reviewId));
+      .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
+      .returning({ id: schema.reviews.id });
     // Without a token there are no check-runs to complete (creation is the
-    // first tokened call); with one, fail them closed.
-    if (token) {
+    // first tokened call); with one, fail them closed - unless the watchdog
+    // already claimed this review and completed them itself (0 rows above).
+    if (token && failedRows.length > 0) {
       await failCheckRuns(token, payload.repoFullName, advisoryCheckRunId, gateCheckRunId, message);
     }
     throw err;

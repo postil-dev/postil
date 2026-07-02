@@ -40,10 +40,19 @@ export async function watchdogPass(now = new Date()): Promise<{ killed: number }
 
   for (const review of stuck) {
     const message = `${WATCHDOG_ERROR_PREFIX} review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline`;
-    await db
+    // The row's `startedAt` clock starts before the CLI subprocess's own
+    // kill-timer does (token mint + two check-run creates happen first), so
+    // there's a real window where this pass's cutoff test is true for a
+    // review that is in fact about to complete normally. `returning()` turns
+    // the update into the compare-and-swap that decides the race: if the
+    // worker's own completion already flipped the status away from
+    // `running`, this affects 0 rows and we must not touch its check-runs.
+    const claimed = await db
       .update(schema.reviews)
       .set({ status: "failed", errorMessage: message, finishedAt: now })
-      .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")));
+      .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")))
+      .returning({ id: schema.reviews.id });
+    if (claimed.length === 0) continue;
     try {
       const token = await getInstallationToken(review.githubInstallationId);
       await failCheckRuns(
