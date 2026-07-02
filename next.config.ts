@@ -49,6 +49,16 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async redirects() {
+    return [
+      {
+        // /docs/gitlab folded into the forges section; keep the old URL alive.
+        source: "/docs/gitlab",
+        destination: "/docs/forges/gitlab",
+        permanent: true,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

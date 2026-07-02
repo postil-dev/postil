@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Self-hosted",
-  description: "Run the full Postil stack with Docker Compose in under 15 minutes, with OpenRouter, Azure OpenAI, or local Ollama.",
+  description: "Two ways to self-host Postil: run the CLI in your own CI with your own key, or host the full web + worker control plane on your own infrastructure.",
   alternates: { canonical: "/docs/self-hosted" },
 };
 
@@ -11,12 +12,45 @@ export default function SelfHostedPage() {
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">Self-hosted</h1>
       <p className="mt-4 text-lg">
-        The same stack we run hosted: Postgres, the web app, and the worker.
-        Free forever, no seat limit. Budget under 15 minutes from clone to a
-        reviewed test PR.
+        &quot;Self-hosted&quot; means two different things depending on what
+        you need. Most teams only need the first one.
       </p>
 
-      <h2>Quickstart</h2>
+      <h2>Most self-hosting is just the CLI</h2>
+      <p>
+        Postil is one binary. Run it in your own CI with your own inference
+        key and nothing ever leaves infrastructure you control — no hosted
+        app, no dashboard, no dependency on postil.dev at all:
+      </p>
+      <pre tabIndex={0} aria-label="Code sample">
+        <code>{`curl -fsSL https://postil.dev/install.sh | sh
+export OPENROUTER_API_KEY=...   # or POSTIL_API_KEY with any OpenAI-compatible endpoint
+postil review --repo owner/name --pr 123`}</code>
+      </pre>
+      <p>
+        This is what the <Link href="/docs/quickstart">quickstart</Link>{" "}
+        walks through for local runs and GitHub Actions, and what the{" "}
+        <Link href="/docs/forges">forges</Link> pages cover for GitLab CI,
+        Bitbucket Pipelines, and Azure Pipelines. There is no server to run,
+        nothing to keep patched, and no seat limit — it is a CLI invocation
+        in a job you already have. If that is what you came here for, stop
+        here and go set it up.
+      </p>
+
+      <h2>Hosting the control plane</h2>
+      <p>
+        The rest of this page is for organizations that also want the bot
+        experience — inline PR comments posted automatically, the{" "}
+        <code>@postil</code> mention bot, a dashboard, webhook-driven reviews
+        — running on their own infrastructure instead of postil.dev. That
+        means standing up the same stack we run hosted: Postgres, the web
+        app, and the worker. Free forever, no seat limit. Budget under 15
+        minutes from clone to a reviewed test PR. The marketing site at
+        postil.dev is irrelevant to this path — you are replacing it, not
+        depending on it.
+      </p>
+
+      <h3>Quickstart</h3>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`git clone https://github.com/postil-dev/postil
 cd postil
@@ -45,7 +79,7 @@ docker compose exec web bun run db:migrate`}</code>
         request that happened to need it.
       </p>
 
-      <h2>Database choice</h2>
+      <h3>Database choice</h3>
       <p>
         Postil expects PostgreSQL. The schema uses enums, <code>jsonb</code>,
         <code>bytea</code>, identity columns, and a queue claimed with{" "}
@@ -64,13 +98,13 @@ docker compose exec web bun run db:migrate`}</code>
         forever.
       </p>
 
-      <h2>Required configuration</h2>
+      <h3>Required configuration</h3>
       <p>
         Compose injects <code>DATABASE_URL</code> for both services. Everything
         else comes from your <code>.env</code>. The web process refuses to boot
         without all of its required variables, and so does the worker.
       </p>
-      <h3>Web</h3>
+      <h4>Web</h4>
       <ul>
         <li>
           <code>POSTIL_SESSION_SECRET</code>: signs session cookies.{" "}
@@ -93,7 +127,7 @@ docker compose exec web bun run db:migrate`}</code>
           <code>openssl rand -hex 32</code>.
         </li>
       </ul>
-      <h3>Worker</h3>
+      <h4>Worker</h4>
       <ul>
         <li>
           <code>GITHUB_APP_ID</code>: numeric id from the GitHub App settings
@@ -112,27 +146,27 @@ docker compose exec web bun run db:migrate`}</code>
         </li>
       </ul>
 
-      <h2>Pointing it at a model</h2>
+      <h3>Pointing it at a model</h3>
       <p>
         These are worker variables. <code>POSTIL_API_KEY</code> falls back to{" "}
         <code>OPENROUTER_API_KEY</code> if it is unset.{" "}
         <code>REVIEW_MODEL_CASCADE</code> is an optional comma-separated list of
         fallback models tried in order on provider errors.
       </p>
-      <h3>OpenRouter (default)</h3>
+      <h4>OpenRouter (default)</h4>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=https://openrouter.ai/api/v1
 POSTIL_API_KEY=sk-or-v1-...
 REVIEW_MODEL=deepseek/deepseek-v4-pro
 REVIEW_MODEL_CASCADE=qwen/qwen3-coder`}</code>
       </pre>
-      <h3>Azure OpenAI</h3>
+      <h4>Azure OpenAI</h4>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
 POSTIL_API_KEY=<azure-api-key>
 REVIEW_MODEL=<deployment-name>`}</code>
       </pre>
-      <h3>Ollama (local, no API key)</h3>
+      <h4>Ollama (local, no API key)</h4>
       <p>
         Ollama is not part of the default stack; you run it yourself. The
         compose file ships an optional <code>ollama</code> service behind a
@@ -162,7 +196,7 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
         local recommendations plus the live benchmark command.
       </p>
 
-      <h2>postil doctor</h2>
+      <h3>postil doctor</h3>
       <p>
         Before opening a test PR, run the doctor inside the worker container.
         It resolves the config, checks the git work tree, the API key, a live
@@ -195,14 +229,14 @@ postil doctor: ready.`}</code>
         back to a provider you did not configure.
       </p>
 
-      <h2>GitHub setup</h2>
+      <h3>GitHub setup</h3>
       <p>
         Self-hosting needs two distinct GitHub registrations: a GitHub App
         (delivers webhooks and mints installation tokens for reviews) and a
         GitHub OAuth App (dashboard sign-in). The web container will not boot
         without the OAuth credentials.
       </p>
-      <h3>GitHub App</h3>
+      <h4>GitHub App</h4>
       <ol>
         <li>
           Create a GitHub App on your org with permissions{" "}
@@ -224,7 +258,7 @@ postil doctor: ready.`}</code>
         </li>
         <li>Install the App on a test repository and open a PR.</li>
       </ol>
-      <h3>GitHub OAuth App</h3>
+      <h4>GitHub OAuth App</h4>
       <ol>
         <li>
           Create a GitHub OAuth App (Settings → Developer settings → OAuth
@@ -240,7 +274,11 @@ postil doctor: ready.`}</code>
         </li>
       </ol>
 
-      <h2>Operations</h2>
+      <h2 id="operations">Operations</h2>
+      <p>
+        Monitoring, health checks, and metrics for the control plane once it
+        is running.
+      </p>
       <ul>
         <li>
           <code>/api/health</code> — cheap web-process liveness, suitable for
@@ -280,6 +318,12 @@ postil doctor: ready.`}</code>
         <li>
           The CLI binary is baked into the worker image at a pinned commit;
           upgrading the reviewer is an image upgrade, not a runtime download.
+        </li>
+        <li>
+          Schema migrations run with{" "}
+          <code>docker compose exec web bun run db:migrate</code> (Drizzle).
+          Run it once after the initial <code>up</code> and again after every
+          upgrade that changes the schema, before traffic hits the new image.
         </li>
       </ul>
     </div>

@@ -8,12 +8,14 @@ const DOCS_NAV = [
   { href: "/docs/quickstart", label: "Quickstart" },
   { href: "/docs/config", label: "Configuration (.postil.yaml)" },
   { href: "/docs/cli", label: "CLI reference" },
+  { href: "/docs/exit-codes", label: "Exit codes" },
   { href: "/docs/gate", label: "The gate and branch protection" },
   { href: "/docs/plan", label: "postil plan (dry-run)" },
   { href: "/docs/envelope", label: "Envelope schema" },
   { href: "/docs/content-policy", label: "Content policy" },
-  { href: "/docs/gitlab", label: "GitLab" },
+  { href: "/docs/forges", label: "Forges (GitHub, GitLab, Bitbucket, Azure)" },
   { href: "/docs/self-hosted", label: "Self-hosted" },
+  { href: "/docs/self-hosted#operations", label: "Self-hosted: Operations" },
   { href: "/docs/models", label: "Models and local inference" },
 ] as const;
 
