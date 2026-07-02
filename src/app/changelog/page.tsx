@@ -101,8 +101,11 @@ const RELEASES: Release[] = [
           <>
             <code className="font-mono text-xs">postil respond</code>: the
             interactive <code className="font-mono text-xs">@postil</code> bot
-            engine for PR and issue mentions (GitHub only; review-and-answer
-            only, never opens PRs).
+            engine for PR and issue mentions. The CLI command covers GitHub,
+            GitLab, Bitbucket, and Azure DevOps via{" "}
+            <code className="font-mono text-xs">--forge</code>; the hosted
+            GitHub App is GitHub only. Review-and-answer only, never opens
+            PRs.
           </>
         ),
       },

@@ -29,8 +29,9 @@ export default function ConfigPage() {
       <p>
         Migrating from CodeRabbit costs nothing: leave the existing
         <code>.coderabbit.yaml</code> in place and Postil maps the overlapping
-        settings (ignore
-        patterns, severity thresholds, review toggles). Add a{" "}
+        settings (path filters to <code>ignore</code>, review{" "}
+        <code>profile</code> to <code>minConfidence</code>, the{" "}
+        <code>enabled</code> flag). Add a{" "}
         <code>.postil.yaml</code> later to use Postil-specific features; it
         wins wherever both define a value. Use{" "}
         <code>postil config</code> to print the resolved configuration with the
@@ -59,6 +60,10 @@ reviewer:
 
 review:
   onClean: skip          # skip = stay silent on clean PRs (default) | comment
+
+contentPolicy:
+  enabled: false         # opt-in prose/content review dimension; also turned
+                         # on by the presence of .postil/content-policy.md
 
 gate:
   failOn: error          # the gate fails at/above this severity
@@ -99,6 +104,18 @@ model:
 - Database migrations must be reversible.
 - No direct writes to the billing tables outside src/billing/.`}</code>
       </pre>
+
+      <h2>Content policy</h2>
+      <p>
+        Off by default. Set <code>contentPolicy.enabled: true</code>, or drop
+        a <code>.postil/content-policy.md</code> file (which turns it on by
+        itself, the same way <code>.postil/guardrails.md</code> does), to
+        review the human-readable prose in a diff — comments, docstrings,
+        Markdown, and the PR title/description — against a policy. Violations
+        surface as <code>contentPolicy</code> findings. See{" "}
+        <Link href="/docs/content-policy">content policy</Link> for the
+        built-in baseline and how to extend it.
+      </p>
 
       <h2>Environment variables</h2>
       <table>

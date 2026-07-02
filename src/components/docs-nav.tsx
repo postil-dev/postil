@@ -11,6 +11,7 @@ const DOCS_NAV = [
   { href: "/docs/gate", label: "The gate and branch protection" },
   { href: "/docs/plan", label: "postil plan (dry-run)" },
   { href: "/docs/envelope", label: "Envelope schema" },
+  { href: "/docs/content-policy", label: "Content policy" },
   { href: "/docs/gitlab", label: "GitLab" },
   { href: "/docs/self-hosted", label: "Self-hosted" },
   { href: "/docs/models", label: "Models and local inference" },
