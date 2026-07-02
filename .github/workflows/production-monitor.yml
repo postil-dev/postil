@@ -2,8 +2,10 @@ name: Production monitor
 
 on:
   schedule:
+    # Every 15 minutes: this is the only automated detector of a dead or
+    # stopped worker (postil_oldest_job_age_seconds staleness check below),
+    # so the full metrics probe runs on this cadence rather than daily.
     - cron: "*/15 * * * *"
-    - cron: "17 8 * * *"
   workflow_dispatch:
 
 permissions:
@@ -22,7 +24,6 @@ jobs:
       - name: Check public endpoints
         shell: bash
         env:
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
           METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
         run: |
           set -euo pipefail
@@ -47,71 +48,69 @@ jobs:
               "${url}"
           done
 
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${EVENT_SCHEDULE:-}" == "17 8 * * *" ]]; then
-            echo "Checking dependencies: https://postil.dev/api/health/dependencies"
-            mkdir -p .cache
-            dependency_status="$(curl \
+          echo "Checking dependencies: https://postil.dev/api/health/dependencies"
+          mkdir -p .cache
+          dependency_status="$(curl \
+            --location \
+            --silent \
+            --show-error \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --output .cache/dependencies.out \
+            --write-out '%{http_code}' \
+            "https://postil.dev/api/health/dependencies")"
+          if [[ "${dependency_status}" != 2* ]]; then
+            echo "Dependency check failed with HTTP ${dependency_status}"
+            cat .cache/dependencies.out
+            exit 1
+          fi
+
+          if [[ -n "${METRICS_API_KEY:-}" ]]; then
+            trap 'rm -f .cache/curl-metrics.conf .cache/metrics.out .cache/dependencies.out' EXIT
+            printf 'header = "Authorization: Bearer %s"\n' "${METRICS_API_KEY}" > .cache/curl-metrics.conf
+            chmod 0600 .cache/curl-metrics.conf
+            echo "Checking metrics: https://postil.dev/api/metrics"
+            metrics_status="$(curl \
               --location \
               --silent \
               --show-error \
               --connect-timeout 5 \
               --max-time 15 \
-              --output .cache/dependencies.out \
+              --config .cache/curl-metrics.conf \
+              --output .cache/metrics.out \
               --write-out '%{http_code}' \
-              "https://postil.dev/api/health/dependencies")"
-            if [[ "${dependency_status}" != 2* ]]; then
-              echo "Dependency check failed with HTTP ${dependency_status}"
-              cat .cache/dependencies.out
+              "https://postil.dev/api/metrics")"
+            if [[ "${metrics_status}" != 2* ]]; then
+              echo "Metrics check failed with HTTP ${metrics_status}"
+              cat .cache/metrics.out
+              exit 1
+            fi
+            if ! grep -E '^postil_database_up 1$' .cache/metrics.out; then
+              echo "Metrics check did not report postil_database_up 1"
+              cat .cache/metrics.out
               exit 1
             fi
 
-            if [[ -n "${METRICS_API_KEY:-}" ]]; then
-              trap 'rm -f .cache/curl-metrics.conf .cache/metrics.out .cache/dependencies.out' EXIT
-              printf 'header = "Authorization: Bearer %s"\n' "${METRICS_API_KEY}" > .cache/curl-metrics.conf
-              chmod 0600 .cache/curl-metrics.conf
-              echo "Checking metrics: https://postil.dev/api/metrics"
-              metrics_status="$(curl \
-                --location \
-                --silent \
-                --show-error \
-                --connect-timeout 5 \
-                --max-time 15 \
-                --config .cache/curl-metrics.conf \
-                --output .cache/metrics.out \
-                --write-out '%{http_code}' \
-                "https://postil.dev/api/metrics")"
-              if [[ "${metrics_status}" != 2* ]]; then
-                echo "Metrics check failed with HTTP ${metrics_status}"
-                cat .cache/metrics.out
-                exit 1
+            # A queued or running job stuck past REVIEW_DEADLINE_MS (10 min,
+            # see src/worker/review.ts) should already have completed or
+            # been swept by the watchdog. Anything still there past 30 min
+            # is not normal backlog, it's a dead worker: the process group
+            # can end up stopped after a deploy with no auto-wake (only the
+            # web group has an http health check), and the review
+            # queue/webhook receiver silently goes dark until noticed.
+            stale_threshold_seconds=1800
+            stale_found=0
+            for status in queued running; do
+              age=$(grep -E "^postil_oldest_job_age_seconds\{status=\"${status}\"\}" .cache/metrics.out \
+                | awk '{print $2}')
+              if [[ -n "${age:-}" ]] && (( $(printf '%.0f' "${age}") > stale_threshold_seconds )); then
+                echo "Oldest ${status} job is ${age}s old (over ${stale_threshold_seconds}s) - worker may be stuck or stopped"
+                stale_found=1
               fi
-              if ! grep -E '^postil_database_up 1$' .cache/metrics.out; then
-                echo "Metrics check did not report postil_database_up 1"
-                cat .cache/metrics.out
-                exit 1
-              fi
-
-              # A queued or running job stuck past REVIEW_DEADLINE_MS (10 min,
-              # see src/worker/review.ts) should already have completed or
-              # been swept by the watchdog. Anything still there past 30 min
-              # is not normal backlog, it's a dead worker: the process group
-              # can end up stopped after a deploy with no auto-wake (only the
-              # web group has an http health check), and the review
-              # queue/webhook receiver silently goes dark until noticed.
-              stale_threshold_seconds=1800
-              stale_found=0
-              for status in queued running; do
-                age=$(grep -E "^postil_oldest_job_age_seconds\{status=\"${status}\"\}" .cache/metrics.out \
-                  | awk '{print $2}')
-                if [[ -n "${age:-}" ]] && (( $(printf '%.0f' "${age}") > stale_threshold_seconds )); then
-                  echo "Oldest ${status} job is ${age}s old (over ${stale_threshold_seconds}s) - worker may be stuck or stopped"
-                  stale_found=1
-                fi
-              done
-              if [[ "${stale_found}" -eq 1 ]]; then
-                echo "Full metrics for context:"
-                cat .cache/metrics.out
-                exit 1
-              fi
+            done
+            if [[ "${stale_found}" -eq 1 ]]; then
+              echo "Full metrics for context:"
+              cat .cache/metrics.out
+              exit 1
             fi
           fi

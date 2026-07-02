@@ -29,14 +29,18 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       # Bake the pinned CLI into the image so the worker can spawn it.
       # POSTIL_CLI_TAG is a repo variable naming a postil-cli release tag;
-      # when unset the image builds web-only (Dockerfile warns).
+      # this step always runs on deploy (falling back to v0.1.1 when the
+      # variable is unset, matching the flyctl build-arg default below) so
+      # vendor/postil is always populated with a cosign-verified binary
+      # before the image is built. The Dockerfile has no fetch fallback of
+      # its own and fails the build if vendor/postil is absent, so this step
+      # is what actually authenticates the CLI binary that ships in the
+      # image.
       - name: Install cosign
-        if: ${{ vars.POSTIL_CLI_TAG != '' }}
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
       - name: Fetch pinned postil CLI
-        if: ${{ vars.POSTIL_CLI_TAG != '' }}
         env:
-          TAG: ${{ vars.POSTIL_CLI_TAG }}
+          TAG: ${{ vars.POSTIL_CLI_TAG || 'v0.1.1' }}
         run: |
           set -euo pipefail
           base="https://github.com/postil-dev/postil-cli/releases/download/${TAG}"
