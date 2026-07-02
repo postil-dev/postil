@@ -5,17 +5,19 @@ export const metadata: Metadata = {
   title: "GitLab",
   description:
     "Run Postil on GitLab.com and self-managed GitLab: CI job setup, project access tokens, merge-request review, and the gate verdict via exit code.",
-  alternates: { canonical: "/docs/gitlab" },
+  alternates: { canonical: "/docs/forges/gitlab" },
 };
 
-export default function GitLabDocsPage() {
+export default function GitLabForgePage() {
   return (
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">GitLab</h1>
       <p className="mt-4 text-lg">
-        Postil speaks GitLab through the same review engine it uses for GitHub.
-        It posts inline discussion notes on the merge request and reports the
-        gate verdict through its exit code, which a CI job fails on.
+        Postil speaks GitLab through the same review engine it uses for
+        GitHub. It posts inline discussion notes on the merge request and
+        reports the gate verdict through its exit code, which a CI job fails
+        on. The hosted app does not reach GitLab; you run the CLI in your own
+        CI with your own inference key.
       </p>
 
       <h2>1. Create a project access token</h2>
@@ -48,7 +50,8 @@ export default function GitLabDocsPage() {
       <p>
         The job runs only on merge-request pipelines. A gate-failing review exits{" "}
         <code>1</code> and fails the job; a clean review exits <code>0</code> and
-        posts nothing. To make the gate binding, mark the job{" "}
+        posts nothing — see <Link href="/docs/exit-codes">exit codes</Link>. To
+        make the gate binding, mark the job{" "}
         <strong>required to merge</strong> in the project&apos;s merge-request
         settings (or require a green pipeline).
       </p>
@@ -83,11 +86,25 @@ export GITLAB_API_URL=https://gitlab.example.com/api/v4
 postil review --forge gitlab --repo group/project --pr 88`}</code>
       </pre>
 
+      <h2>The @postil bot</h2>
+      <p>
+        GitLab covers both issues and merge requests for{" "}
+        <code>postil respond</code> — mention <code>@postil</code> on either
+        and reply with the CLI:
+      </p>
+      <pre tabIndex={0} aria-label="Code sample">
+        <code>{`postil respond --forge gitlab --repo group/project --pr 88 \\
+  --comment "@postil is this safe?"
+postil respond --forge gitlab --repo group/project --issue 12 \\
+  --comment "@postil what's the likely cause?"`}</code>
+      </pre>
+
       <h2>Parity and limits</h2>
       <ul>
         <li>
           Same gate thresholds, envelope schema, and exit codes as GitHub — see
-          the <Link href="/docs/cli">CLI reference</Link>.
+          the <Link href="/docs/cli">CLI reference</Link> and{" "}
+          <Link href="/docs/exit-codes">exit codes</Link>.
         </li>
         <li>
           Inline notes are posted on the MR diff; the gate is enforced via the CI
@@ -95,18 +112,12 @@ postil review --forge gitlab --repo group/project --pr 88`}</code>
         </li>
         <li>
           The hosted Postil app is GitHub-only today; on GitLab you run the CLI
-          in CI. The CLI&apos;s interactive bot does work on GitLab:{" "}
-          <code>postil respond</code> replies to an <code>@postil</code> mention
-          on a GitLab merge request or issue (
-          <code>--forge gitlab</code> with <code>--pr</code> or{" "}
-          <code>--issue</code>). See the{" "}
-          <Link href="/docs/cli">CLI reference</Link>.
+          in CI, including for the interactive bot.
         </li>
         <li>
-          Bitbucket and Azure DevOps are supported through the same forge
-          abstraction (<code>--forge bitbucket</code>,{" "}
-          <code>--forge azure</code>). Both are best effort: shipped, tested, and
-          configured with the same token plus base URL pattern.
+          See the <Link href="/docs/forges">forges overview</Link> for
+          Bitbucket and Azure DevOps, both supported through the same forge
+          abstraction.
         </li>
       </ul>
     </div>

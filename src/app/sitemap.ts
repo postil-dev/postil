@@ -75,8 +75,13 @@ const ROUTES: {
   { path: "/docs/envelope", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-06-13" },
   { path: "/docs/content-policy", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-07-02" },
   { path: "/docs/cli", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-18" },
-  { path: "/docs/gitlab", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-18" },
-  { path: "/docs/self-hosted", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-18" },
+  { path: "/docs/exit-codes", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-02" },
+  { path: "/docs/forges", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-02" },
+  { path: "/docs/forges/github", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-02" },
+  { path: "/docs/forges/gitlab", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-02" },
+  { path: "/docs/forges/bitbucket", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-07-02" },
+  { path: "/docs/forges/azure", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-07-02" },
+  { path: "/docs/self-hosted", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-02" },
   { path: "/docs/models", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-18" },
 ];
 

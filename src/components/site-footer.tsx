@@ -21,7 +21,7 @@ const COLUMNS = [
       { href: "/docs/quickstart", label: "Quickstart" },
       { href: "/docs/cli", label: "CLI reference" },
       { href: "/docs/config", label: "Configuration" },
-      { href: "/docs/gitlab", label: "GitLab" },
+      { href: "/docs/forges", label: "Forges" },
       { href: "/docs/self-hosted", label: "Self-hosted" },
       { href: "/docs/gate", label: "The gate" },
     ],

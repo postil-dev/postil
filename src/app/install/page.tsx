@@ -237,7 +237,7 @@ jobs:
                 GITLAB_API_URL=https://gitlab.example.com/api/v4
               </code>
               . Full walkthrough:{" "}
-              <Link href="/docs/gitlab" className="text-rust underline">
+              <Link href="/docs/forges/gitlab" className="text-rust underline">
                 GitLab guide
               </Link>
               .

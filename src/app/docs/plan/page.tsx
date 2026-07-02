@@ -35,23 +35,45 @@ export default function PlanPage() {
       </p>
 
       <h2>Usage</h2>
+      <p>
+        Store envelopes as you review, then evaluate a candidate config
+        against them. A candidate like this — a stricter{" "}
+        <code>minConfidence</code> plus an <code>ignore</code> glob for
+        generated code — is a common shape:
+      </p>
       <pre tabIndex={0} aria-label="Code sample">
-        <code>{`# store envelopes as you review, then preview a candidate config
-postil review --staged --output-json > .cache/envelopes/r1.json
-postil plan --envelopes .cache/envelopes --config .postil.candidate.yaml
+        <code>{`# .postil.candidate.yaml
+minConfidence: 0.75
+ignore:
+  - "generated/**"`}</code>
+      </pre>
+      <p>Real output from running it against three stored envelopes:</p>
+      <pre tabIndex={0} aria-label="Code sample">
+        <code>{`$ postil review --staged --output-json > .cache/envelopes/r1.json
+$ postil plan --envelopes .cache/envelopes --config .postil.candidate.yaml
 
 postil plan: replaying 3 stored review(s) under candidate config (.postil.candidate.yaml)
 
-  r1.json: 5 -> 3 finding(s); gate: passing (unchanged)
+  r1.json: 2 -> 0 finding(s); gate: passing (unchanged)
       would suppress: src/api/users.ts:88 [warn] broad except swallows errors
       would suppress: src/api/users.ts:140 [info] redundant null check
-  r2.json: 4 -> 2 finding(s); gate: FAILING -> passing
-      would suppress: src/billing/charge.ts:51 [error] retry has no upper bound
+  r2.json: 2 -> 1 finding(s); gate: failing (unchanged)
       would suppress: generated/schema.ts:12 [warn] unused import
-  r3.json: 2 -> 2 finding(s); gate: passing (unchanged)
+  r3.json: 2 -> 1 finding(s); gate: failing (unchanged)
+      would suppress: src/auth/session.ts:40 [info] unclear token expiry source
 
-Summary: 4 finding(s) would be suppressed; 1 gate outcome(s) would change.`}</code>
+Summary: 4 finding(s) would be suppressed; 0 gate outcome(s) would change.`}</code>
       </pre>
+      <p>
+        Here <code>r2.json</code> and <code>r3.json</code> keep failing the
+        gate before and after: each has an <code>error</code>-severity
+        finding the candidate config does not touch (a raised{" "}
+        <code>minConfidence</code> or a new <code>ignore</code> glob only
+        suppresses what it targets). A candidate that also raised{" "}
+        <code>gate.failOn</code> or ignored the file carrying that finding
+        would flip one of those gate outcomes — the report always states
+        plainly when a gate result would change and when it would not.
+      </p>
 
       <h2>What it answers</h2>
       <ul>

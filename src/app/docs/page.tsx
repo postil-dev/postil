@@ -24,6 +24,11 @@ const CARDS = [
     body: "Every command and flag: review, respond, plan, config, init, doctor, hook, plus environment variables and exit codes.",
   },
   {
+    href: "/docs/exit-codes",
+    title: "Exit codes",
+    body: "The precise CLI contract: 0 clean or below the gate threshold, 1 gate-failing findings, 2 operational error.",
+  },
+  {
     href: "/docs/gate",
     title: "The gate",
     body: "postil/gate semantics, fail-on thresholds, and how to require it in branch protection.",
@@ -44,14 +49,14 @@ const CARDS = [
     body: "Opt-in review of prose in the diff: fabricated claims, AI-authorship residue, and the built-in baseline.",
   },
   {
-    href: "/docs/gitlab",
-    title: "GitLab",
-    body: "Run Postil on GitLab.com and self-managed: CI job, project tokens, and merge-request review.",
+    href: "/docs/forges",
+    title: "Forges",
+    body: "GitHub, GitLab, Bitbucket, and Azure DevOps: auth per forge and what each one supports.",
   },
   {
     href: "/docs/self-hosted",
     title: "Self-hosted",
-    body: "Docker Compose quickstart in under 15 minutes, with OpenRouter, Azure, and Ollama examples.",
+    body: "Run the CLI in your own CI with your own key, or host the full web + worker control plane yourself.",
   },
   {
     href: "/docs/models",
