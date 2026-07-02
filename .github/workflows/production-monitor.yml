@@ -90,5 +90,28 @@ jobs:
                 cat .cache/metrics.out
                 exit 1
               fi
+
+              # A queued or running job stuck past REVIEW_DEADLINE_MS (10 min,
+              # see src/worker/review.ts) should already have completed or
+              # been swept by the watchdog. Anything still there past 30 min
+              # is not normal backlog, it's a dead worker: the process group
+              # can end up stopped after a deploy with no auto-wake (only the
+              # web group has an http health check), and the review
+              # queue/webhook receiver silently goes dark until noticed.
+              stale_threshold_seconds=1800
+              stale_found=0
+              for status in queued running; do
+                age=$(grep -E "^postil_oldest_job_age_seconds\{status=\"${status}\"\}" .cache/metrics.out \
+                  | awk '{print $2}')
+                if [[ -n "${age:-}" ]] && (( $(printf '%.0f' "${age}") > stale_threshold_seconds )); then
+                  echo "Oldest ${status} job is ${age}s old (over ${stale_threshold_seconds}s) - worker may be stuck or stopped"
+                  stale_found=1
+                fi
+              done
+              if [[ "${stale_found}" -eq 1 ]]; then
+                echo "Full metrics for context:"
+                cat .cache/metrics.out
+                exit 1
+              fi
             fi
           fi
