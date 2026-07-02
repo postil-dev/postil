@@ -12,7 +12,14 @@
 # Browser PostHog also needs NEXT_PUBLIC_POSTHOG_KEY as a Docker build arg.
 # The GitHub Actions deploy workflow passes it from repo variables.
 #
-# Migrations: fly ssh console -C "bun run db:migrate"
+# Migrations run automatically via [deploy].release_command below: Fly runs
+# it as a one-off machine from the new image, with the app's env/secrets
+# (including DATABASE_URL), before any existing machine is updated. A
+# non-zero exit aborts the deploy, so code that depends on a migration can
+# no longer ship ahead of it. `drizzle-kit` and the `drizzle/` migrations
+# folder ship in the runtime image (full node_modules incl. devDependencies,
+# full repo via `COPY . .` in the Dockerfile), so no image changes were
+# needed. For a one-off manual run: fly ssh console -C "bun run db:migrate"
 
 app = "postil-web"
 primary_region = "lhr"
@@ -22,6 +29,9 @@ primary_region = "lhr"
 [build.args]
 POSTIL_CLI_REV = "v0.1.1"
 NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
+
+[deploy]
+release_command = "bun run db:migrate"
 
 [processes]
 web = "bun run start"
