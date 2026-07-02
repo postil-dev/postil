@@ -30,10 +30,12 @@ export default function EnvelopePage() {
         Postil also emits SARIF 2.1.0 (<code>--sarif &lt;path&gt;</code>) for
         interop with code-scanning viewers that expect it — GitHub code
         scanning, GitLab SAST, and other SARIF-aware tooling. SARIF is a
-        results format: it has no place for a gate verdict, no confidence
-        buckets, no token usage. It answers "what did the reviewer find,"
-        not "did this PR pass." That gap is why the envelope exists as its
-        own format rather than Postil standardizing on SARIF alone.
+        results format: it has no structured gate concept (Postil tucks the
+        verdict into a SARIF properties bag, but that is a nonstandard
+        extension no consumer can rely on), no confidence buckets, no token
+        usage. It answers "what did the reviewer find," not "did this PR
+        pass." That gap is why the envelope exists as its own format rather
+        than Postil standardizing on SARIF alone.
       </p>
       <p>
         The schema below is <strong>version 1, frozen</strong>. Changes that

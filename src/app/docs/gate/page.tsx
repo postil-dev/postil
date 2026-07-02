@@ -136,13 +136,15 @@ gate:
       <p>
         Repos that prefer fail-open over a blocked merge queue during a model
         outage can set <code>gate.onError: advisory</code>. This only changes
-        behavior on <em>operational</em> errors — a provider outage, an
-        exhausted key, model output that fails validation after retry — and
-        lets the gate pass in those cases instead of failing closed. It does
-        not weaken anything else: findings the model did produce still gate
-        normally, and a review that completes successfully with an{" "}
-        <code>error</code>-severity finding still fails the gate regardless of
-        this setting. Choose <code>advisory</code> deliberately; it trades an
+        behavior on <em>provider</em> errors — a provider outage, an exhausted
+        key, a connection timeout — and lets the gate pass in those cases
+        instead of failing closed. Model output that fails validation even
+        after a retry is deliberately <em>not</em> covered: a diff can be
+        crafted to induce that class of failure, so it always fails the gate,
+        even under <code>advisory</code>. Nothing else weakens either:
+        findings the model did produce still gate normally, and a review that
+        completes successfully with an <code>error</code>-severity finding
+        still fails the gate regardless of this setting. Choose <code>advisory</code> deliberately; it trades an
         unreviewed head being treated as passing for never blocking merges on
         Postil's own availability. See{" "}
         <Link href="/docs/config">configuration</Link>.

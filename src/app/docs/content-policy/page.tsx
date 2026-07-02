@@ -140,7 +140,7 @@ export default function ContentPolicyPage() {
 
       <h2>In the envelope and check-runs</h2>
       <p>
-        Findings from this dimension carry{" "}
+        Content-policy findings carry{" "}
         <code>kind: &quot;contentPolicy&quot;</code> in the{" "}
         <Link href="/docs/envelope">envelope</Link> and are otherwise
         indistinguishable from other findings: same severity levels, same{" "}
