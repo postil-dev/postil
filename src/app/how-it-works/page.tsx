@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { ConfidenceChart } from "@/components/confidence-chart";
 import { Section } from "@/components/section";
 import { StatusIcon } from "@/components/status-icon";
 
@@ -291,15 +292,22 @@ export default function HowItWorksPage() {
               <strong>silence rate</strong> is silent ÷ 126.
             </p>
             <p className="mt-4">
-              The confidence chart above only plots the <em>non-silent</em>{" "}
-              runs: each shipped finding&apos;s confidence is sorted into the
-              envelope&apos;s <code className="font-mono text-sm">confidenceBuckets</code>{" "}
+              The chart to the right — the same one shown on the{" "}
+              <Link href="/#silence-rate" className="text-rust underline">
+                homepage
+              </Link>{" "}
+              — only plots the <em>non-silent</em> runs: each shipped
+              finding&apos;s confidence is sorted into the envelope&apos;s{" "}
+              <code className="font-mono text-sm">confidenceBuckets</code>{" "}
               (five buckets of width 0.2, 0.0–1.0), then summed across all 126
               envelopes. It is a count of findings, not PRs — one PR can
-              contribute more than one bar.
+              contribute more than one point.
             </p>
           </div>
-          <div className="card p-6">
+          <figure className="card p-6">
+            <ConfidenceChart size="sm" />
+          </figure>
+          <div className="card p-6 md:col-span-2">
             <p className="eyebrow">Per-PR envelope fields used</p>
             <ul className="mt-4 space-y-3 text-sm">
               <li className="flex items-start gap-3">
@@ -313,7 +321,7 @@ export default function HowItWorksPage() {
                 <span className="font-mono text-gate">→</span>
                 <span>
                   <code className="font-mono text-xs">confidenceBuckets</code>{" "}
-                  from every non-silent envelope, summed → the bar heights
+                  from every non-silent envelope, summed → the point values
                 </span>
               </li>
               <li className="flex items-start gap-3">

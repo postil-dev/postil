@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 
+import { ConfidenceChart } from "@/components/confidence-chart";
 import { PrMock } from "@/components/pr-mock";
 import { Section } from "@/components/section";
 import { StatusIcon } from "@/components/status-icon";
@@ -308,6 +309,7 @@ export default function HomePage() {
 
       {/* 05 — Silence dashboard teaser */}
       <Section
+        id="silence-rate"
         number="05"
         eyebrow="Provable restraint"
         title="Silence is a metric, not a hope."
@@ -339,73 +341,8 @@ export default function HomePage() {
               </span>
             </div>
             <div className="mt-8">
-              <p className="font-mono text-xs text-charcoal/70">
-                y: findings shipped · x: finding confidence
-              </p>
-              {(() => {
-                const bars = [
-                  { bucket: "0.0–0.2", count: 0 },
-                  { bucket: "0.2–0.4", count: 0 },
-                  { bucket: "0.4–0.6", count: 0 },
-                  { bucket: "0.6–0.8", count: 23 },
-                  { bucket: "0.8–1.0", count: 34 },
-                ];
-                const max = Math.max(...bars.map((b) => b.count));
-                const yTicks = [0, Math.round(max / 2), max];
-                return (
-                  <div
-                    role="img"
-                    aria-label={`Bar chart. Y axis: findings shipped, 0 to ${max}. X axis: finding confidence, buckets of 0.2 from 0.0 to 1.0. Values: ${bars
-                      .map((b) => `${b.count} findings at ${b.bucket}`)
-                      .join("; ")}. Every shipped finding was at 0.6 confidence or higher.`}
-                  >
-                    <div className="mt-3 flex gap-2">
-                      {/* y-axis ticks, high to low, matching the bar row below */}
-                      <div className="flex h-24 w-5 flex-col justify-between pb-[1px] text-right font-mono text-[10px] text-charcoal/70">
-                        {[...yTicks].reverse().map((t) => (
-                          <span key={t}>{t}</span>
-                        ))}
-                      </div>
-                      <div className="flex h-24 flex-1 items-end gap-2 border-l border-stone pl-2">
-                        {bars.map((b, i) => (
-                          <div
-                            key={b.bucket}
-                            className="flex h-full flex-1 flex-col items-center justify-end"
-                          >
-                            <span className="mb-1 font-mono text-[10px] text-charcoal/70">
-                              {b.count > 0 ? b.count : ""}
-                            </span>
-                            <div
-                              className="w-full rounded-t-[3px] bg-gate"
-                              style={{
-                                height: `${max ? (b.count / max) * 100 : 0}%`,
-                                opacity: 0.5 + i * 0.12,
-                              }}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="mt-2 ml-7 flex justify-between font-mono text-[10px] text-charcoal/70">
-                      <span>0.0</span>
-                      <span>0.2</span>
-                      <span>0.4</span>
-                      <span>0.6</span>
-                      <span>0.8</span>
-                      <span>1.0</span>
-                    </div>
-                    <p className="mt-1 ml-7 text-center font-mono text-[10px] text-charcoal/70">
-                      finding confidence
-                    </p>
-                  </div>
-                );
-              })()}
+              <ConfidenceChart size="lg" />
             </div>
-            <figcaption className="mt-4 font-mono text-[11px] text-charcoal/70">
-              57 shipped findings across 126 recently merged public pull
-              requests, June 2026 — 23 at 0.6–0.8 confidence, 34 at 0.8–1.0.
-              None below 0.6.
-            </figcaption>
           </figure>
           <div>
             <p className="text-ink-soft">
