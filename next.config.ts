@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
-// Enforced CSP. The site loads only first-party assets (verified: no
-// cross-origin requests in a full render trace), so the policy is restrictive
+// Enforced CSP. The site loads only first-party assets plus a small,
+// explicit allowlist of cross-origin fetches, so the policy is restrictive
 // by default. Next.js emits inline bootstrap scripts and the pages embed inline
 // JSON-LD, so script-src needs 'unsafe-inline' until nonces are wired through
 // middleware; inline style attributes need it on style-src.
@@ -12,7 +12,9 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self' https://eu.i.posthog.com https://us.i.posthog.com",
+  // openrouter.ai: /docs/models fetches the live model catalog client-side
+  // for pricing, never committed as static numbers.
+  "connect-src 'self' https://eu.i.posthog.com https://us.i.posthog.com https://openrouter.ai",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
