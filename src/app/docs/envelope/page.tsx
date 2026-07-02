@@ -17,6 +17,35 @@ export default function EnvelopePage() {
         frozen; the control plane stores it verbatim.
       </p>
 
+      <h2>Why an envelope, and not just SARIF</h2>
+      <p>
+        The envelope is the single JSON object <code>postil review</code>{" "}
+        emits: findings and the gate verdict, counts, confidence
+        distribution, token usage, and provenance (base/head/since SHAs,
+        model used) all travel together as one versioned unit. Consumers —
+        the hosted worker, the dashboard, <code>postil plan</code> — read one
+        object and get the whole picture of a review, not just its findings.
+      </p>
+      <p>
+        Postil also emits SARIF 2.1.0 (<code>--sarif &lt;path&gt;</code>) for
+        interop with code-scanning viewers that expect it — GitHub code
+        scanning, GitLab SAST, and other SARIF-aware tooling. SARIF is a
+        results format: it has no structured gate concept (Postil tucks the
+        verdict into a SARIF properties bag, but that is a nonstandard
+        extension no consumer can rely on), no confidence buckets, no token
+        usage. It answers "what did the reviewer find," not "did this PR
+        pass." That gap is why the envelope exists as its own format rather
+        than Postil standardizing on SARIF alone.
+      </p>
+      <p>
+        The schema below is <strong>version 1, frozen</strong>. Changes that
+        do not break existing consumers — new optional fields — ship in place
+        under <code>version: 1</code>; consumers should already tolerate
+        unknown fields. Any breaking change ships as a new{" "}
+        <code>version: 2</code> alongside version 1, never in place of it. See
+        stability, below.
+      </p>
+
       <h2>Schema (version 1)</h2>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`{
@@ -29,7 +58,7 @@ export default function EnvelopePage() {
       "kind": "risk|humanEscalation|guardrail|uncertainty|contentPolicy",
       "confidence": 0.85, "title": "short", "body": "markdown" }
   ],
-  "resolved": [ /* same shape as findings; from the baseline, now fixed */ ],
+  "resolved": [ /* same shape as findings; no longer apply as of this head */ ],
   "counts": { "info": 0, "warn": 0, "error": 0, "suppressed": 0, "ungrounded": 0 },
   "confidenceBuckets": [0, 0, 0, 0, 0],
   "gate": { "failOn": "error", "failing": false },
@@ -79,9 +108,13 @@ export default function EnvelopePage() {
           <tr>
             <td><code>resolved</code></td>
             <td>
-              Findings from the previous review's envelope (the baseline) that
-              the new diff fixes. Powers "N resolved, M open" on incremental
-              re-review.
+              Only populated on an incremental review (<code>--since-sha</code>{" "}
+              with a <code>--baseline</code> envelope from the previous review
+              of the same PR head lineage): findings from that baseline which
+              no longer apply at the new head. This is a diff against the
+              prior envelope, not conversation memory — Postil does not carry
+              chat history or retain state between PRs. Powers "N resolved, M
+              open" on incremental re-review.
             </td>
           </tr>
           <tr>

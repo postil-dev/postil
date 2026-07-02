@@ -3,7 +3,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Content policy",
-  description: "The opt-in prose/content review dimension: what it checks, how to turn it on, and the built-in baseline.",
+  description: "The opt-in content-policy review dimension: what it checks, how to turn it on, and the built-in baseline.",
   alternates: { canonical: "/docs/content-policy" },
 };
 
@@ -12,17 +12,19 @@ export default function ContentPolicyPage() {
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">Content policy</h1>
       <p className="mt-4 text-lg">
-        Off by default. Content policy reviews the human-readable prose in a
-        diff — Markdown, code comments, docstrings, user-facing or log
-        strings, and the PR title/description — never code logic,
-        identifiers, or structured data. Violations are reported as{" "}
-        <code>contentPolicy</code> findings alongside the core reviewer's
-        findings, in the same envelope.
+        Off by default. A review dimension is an additional lens the reviewer
+        applies to a diff, on top of the core correctness/security review;{" "}
+        <strong>content policy</strong> is one such dimension, and it is
+        opt-in. It reviews the human-readable prose in a diff — Markdown,
+        code comments, docstrings, user-facing or log strings, and the PR
+        title/description — never code logic, identifiers, or structured
+        data. Violations are reported as <code>contentPolicy</code> findings
+        alongside the core reviewer's findings, in the same envelope.
       </p>
 
       <h2>Turning it on</h2>
       <p>
-        Either of these activates the dimension for a repo:
+        Either of these activates content policy for a repo:
       </p>
       <ul>
         <li>
@@ -31,7 +33,7 @@ export default function ContentPolicyPage() {
         </li>
         <li>
           Drop a <code>.postil/content-policy.md</code> file in the repo. Its
-          presence turns the dimension on by itself, the same way{" "}
+          presence turns content policy on by itself, the same way{" "}
           <code>.postil/guardrails.md</code> does — no config edit required.
         </li>
       </ul>
@@ -39,7 +41,7 @@ export default function ContentPolicyPage() {
         An explicit <code>contentPolicy.enabled: false</code> wins over a{" "}
         <code>.postil/content-policy.md</code> file that happens to exist, so
         a repo can keep the file around (for reference, or mid-rollout)
-        without it silently turning the dimension on.
+        without it silently turning content policy on.
       </p>
 
       <h2>Custom policy</h2>
@@ -138,7 +140,7 @@ export default function ContentPolicyPage() {
 
       <h2>In the envelope and check-runs</h2>
       <p>
-        Findings from this dimension carry{" "}
+        Content-policy findings carry{" "}
         <code>kind: &quot;contentPolicy&quot;</code> in the{" "}
         <Link href="/docs/envelope">envelope</Link> and are otherwise
         indistinguishable from other findings: same severity levels, same{" "}
