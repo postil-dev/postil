@@ -268,6 +268,72 @@ export default function HowItWorksPage() {
         </div>
       </Section>
 
+      <Section
+        id="silence-methodology"
+        number="04"
+        eyebrow="Methodology"
+        title="How the silence rate is computed."
+      >
+        <div className="grid gap-8 md:grid-cols-2">
+          <div className="text-ink-soft">
+            <p>
+              The number on the homepage comes from replaying the released CLI
+              against a fixed sample of <strong>126</strong> recently merged
+              public pull requests — around 18 repos across JS/TS, Python, Go,
+              and Rust — and reading the envelope each review produced. Nothing
+              is hand-labeled after the fact.
+            </p>
+            <p className="mt-4">
+              A PR counts as <strong>silent</strong> when its envelope has
+              zero findings <em>and</em> the run posted zero PR comments — the
+              same condition <code className="font-mono text-sm">postil/review</code>{" "}
+              uses to decide whether to comment at all. The{" "}
+              <strong>silence rate</strong> is silent ÷ 126.
+            </p>
+            <p className="mt-4">
+              The confidence chart above only plots the <em>non-silent</em>{" "}
+              runs: each shipped finding&apos;s confidence is sorted into the
+              envelope&apos;s <code className="font-mono text-sm">confidenceBuckets</code>{" "}
+              (five buckets of width 0.2, 0.0–1.0), then summed across all 126
+              envelopes. It is a count of findings, not PRs — one PR can
+              contribute more than one bar.
+            </p>
+          </div>
+          <div className="card p-6">
+            <p className="eyebrow">Per-PR envelope fields used</p>
+            <ul className="mt-4 space-y-3 text-sm">
+              <li className="flex items-start gap-3">
+                <span className="font-mono text-gate">→</span>
+                <span>
+                  <code className="font-mono text-xs">findings.length === 0</code>{" "}
+                  and 0 comments posted → counts toward the silent numerator
+                </span>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="font-mono text-gate">→</span>
+                <span>
+                  <code className="font-mono text-xs">confidenceBuckets</code>{" "}
+                  from every non-silent envelope, summed → the bar heights
+                </span>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="font-mono text-gate">→</span>
+                <span>n = 126 is the full sample, not a subset — every PR in
+                  the run contributes to the denominator</span>
+              </li>
+            </ul>
+            <p className="mt-4 text-xs text-charcoal/50">
+              Raw envelopes and the run log are kept privately; the aggregate
+              figures on this site are not hand-tuned between runs. See{" "}
+              <Link href="/why-postil" className="text-rust underline">
+                Why Postil
+              </Link>{" "}
+              for how this compares to what incumbents publish.
+            </p>
+          </div>
+        </div>
+      </Section>
+
       <div className="mx-auto max-w-6xl px-6 pb-24">
         <div className="rule flex flex-wrap items-center justify-between gap-6 pt-8">
           <p className="serif-display text-2xl">

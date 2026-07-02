@@ -97,15 +97,12 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
   const [active, setActive] = useState(0);
   const current = cases[active] ?? cases[0]!;
   const env = current.envelope;
-  const tokens = env.usage.promptTokens + env.usage.completionTokens;
+  const tokens = env.usage ? env.usage.promptTokens + env.usage.completionTokens : null;
   const totals = useMemo(() => {
-    const tokenCounts = cases.map(
-      (c) => c.envelope.usage.promptTokens + c.envelope.usage.completionTokens,
-    );
-    const total = tokenCounts.reduce((sum, n) => sum + n, 0);
+    const real = cases.filter((c) => !c.fixture).length;
     return {
-      average: Math.round(total / Math.max(1, tokenCounts.length)),
-      max: Math.max(...tokenCounts),
+      real,
+      fixtures: cases.length - real,
       failing: cases.filter((c) => c.envelope.gate.failing).length,
     };
   }, [cases]);
@@ -119,18 +116,16 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
             <p className="ev-eyebrow">See it run</p>
             <h1 className="ev-h1">Evidence across the bugs reviewers miss.</h1>
             <p className="ev-lede">
-              Postil is tuned for merge decisions, not comment volume. These
-              representative review fixtures show where it blocks, where it
-              advises, and where it stays quiet.
+              Real catches from Postil's own repos, reviewing itself in CI —
+              not invented examples. Each card links to the public pull
+              request the finding came from, so you can check it yourself.
             </p>
           </Reveal>
         </header>
 
         <div className="ev-meta-note">
-          <span>{cases.length} review types</span>
+          <span>{totals.real} real catches, {totals.fixtures} labeled fixture</span>
           <span>model: {cases[0]?.envelope.modelUsed}</span>
-          <span>avg {totals.average.toLocaleString()} tokens/review</span>
-          <span>max {totals.max.toLocaleString()} tokens</span>
           <span>default low-noise config</span>
         </div>
 
@@ -165,6 +160,18 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
               </span>
             </div>
             <p className="ev-blurb">{current.blurb}</p>
+            {current.sourceUrl ? (
+              <a
+                className="ev-source"
+                href={current.sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                real review, source →
+              </a>
+            ) : (
+              <span className="ev-fixture-badge">seeded fixture, not a live check-run</span>
+            )}
 
             <div className="ev-grid">
               <div className="ev-col">
@@ -197,11 +204,17 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
               <span>
                 {env.findings.length} finding{env.findings.length === 1 ? "" : "s"}
               </span>
-              <span>{tokens.toLocaleString()} tokens</span>
-              <span>
-                {env.usage.promptTokens.toLocaleString()} prompt +{" "}
-                {env.usage.completionTokens.toLocaleString()} completion
-              </span>
+              {env.usage && tokens !== null ? (
+                <>
+                  <span>{tokens.toLocaleString()} tokens</span>
+                  <span>
+                    {env.usage.promptTokens.toLocaleString()} prompt +{" "}
+                    {env.usage.completionTokens.toLocaleString()} completion
+                  </span>
+                </>
+              ) : (
+                <span>token usage not exposed by the check-run API</span>
+              )}
               <span>gate failOn: {env.gate.failOn}</span>
             </div>
           </section>
@@ -210,9 +223,10 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
         <Reveal>
           <footer className="ev-foot">
             <p>
-              Current fixture set: {totals.failing} blocking reviews,{" "}
-              {cases.length - totals.failing} non-blocking reviews, and measured
-              token counts for every case.
+              {totals.real} of these {cases.length} cases are real catches from
+              public pull requests in Postil's own repos, each linked to its
+              source; {totals.failing} blocked a merge, the rest advised or
+              stayed silent.
             </p>
             <a className="ev-cta" href="/install">
               Try it on your own diff
@@ -259,6 +273,12 @@ const EV_CSS = `
 .ev-fail { color: var(--red); background: var(--del-bg); }
 .ev-pass { color: var(--green); background: var(--add-bg); }
 .ev-blurb { color: var(--ink-soft); margin: 0.75rem 0 1.25rem; line-height: 1.6; max-width: 50rem; }
+.ev-source { display: inline-block; margin: -0.5rem 0 1.25rem; color: var(--green); font-family: var(--font-ibm-plex-mono, monospace);
+  font-size: 0.78rem; text-decoration: none; border-bottom: 1px solid transparent; }
+.ev-source:hover { border-bottom-color: var(--green); }
+.ev-fixture-badge { display: inline-block; margin: -0.5rem 0 1.25rem; color: var(--ink-soft); font-family: var(--font-ibm-plex-mono, monospace);
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.15rem 0.5rem;
+  border: 1px solid var(--line); border-radius: 999px; }
 .ev-grid { display: grid; grid-template-columns: 1fr; gap: 1.25rem; }
 @media (min-width: 1024px) { .ev-grid { grid-template-columns: minmax(0, 1fr) 380px; } }
 .ev-col { min-width: 0; }
@@ -266,8 +286,15 @@ const EV_CSS = `
   font-weight: 600; color: var(--ink-soft); margin: 0 0 0.5rem; }
 .ev-diff { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
   padding: 0.85rem 0; overflow-x: auto; max-width: 100%; margin: 0; }
-.ev-diff code { display: block; font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.78rem; line-height: 1.5; }
-.ev-line { display: block; padding: 0 0.9rem; white-space: pre; }
+.ev-diff code { display: block; width: max-content; min-width: 100%;
+  font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.78rem; line-height: 1.5; }
+/* width: max-content lets each line's box (and its add/del background) grow to
+   its own text width instead of clipping at the pre's viewport width. Without
+   it, a block-level line with white-space: pre paints text past its box edge
+   but the box itself — and any background on it — stops at the container
+   width, so scrolling right reveals unhighlighted, seemingly "blank" bands
+   instead of the rest of the line. */
+.ev-line { display: block; width: max-content; min-width: 100%; padding: 0 0.9rem; white-space: pre; }
 .ev-add { background: var(--add-bg); color: var(--add-ink); }
 .ev-del { background: var(--del-bg); color: var(--del-ink); }
 .ev-meta { color: #4a555d; }
