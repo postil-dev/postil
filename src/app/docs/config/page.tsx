@@ -16,6 +16,16 @@ export default function ConfigPage() {
         <code>.postil.yml</code> or <code>.postil.json</code>). Every knob has
         a working default; an empty file is a valid file.
       </p>
+      <p>
+        <strong>
+          Postil reads an existing <code>.coderabbit.yaml</code> automatically
+        </strong>
+        , with no setup step: a repo migrating from CodeRabbit gets a sensible
+        translation of the overlapping settings on the first run, before
+        anyone writes a line of Postil-specific config. This compatibility
+        read covers CodeRabbit's config today only — see exactly what
+        translates below.
+      </p>
 
       <h2>Precedence</h2>
       <p>From strongest to weakest:</p>
@@ -27,15 +37,47 @@ export default function ConfigPage() {
         <li>Built-in defaults</li>
       </ol>
       <p>
-        Migrating from CodeRabbit costs nothing: leave the existing
-        <code>.coderabbit.yaml</code> in place and Postil maps the overlapping
-        settings (path filters to <code>ignore</code>, review{" "}
-        <code>profile</code> to <code>minConfidence</code>, the{" "}
-        <code>enabled</code> flag). Add a{" "}
-        <code>.postil.yaml</code> later to use Postil-specific features; it
-        wins wherever both define a value. Use{" "}
+        Add a <code>.postil.yaml</code> later to use Postil-specific features;
+        it wins wherever both define a value. Use{" "}
         <code>postil config</code> to print the resolved configuration with the
         provenance of every value.
+      </p>
+
+      <h2>What translates from <code>.coderabbit.yaml</code></h2>
+      <p>
+        Three settings, mapped directly:
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">CodeRabbit key</th>
+            <th scope="col">Maps to</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Path filters</td>
+            <td><code>ignore</code></td>
+          </tr>
+          <tr>
+            <td>Review <code>profile</code></td>
+            <td><code>minConfidence</code></td>
+          </tr>
+          <tr>
+            <td><code>enabled</code></td>
+            <td><code>enabled</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Everything else in a <code>.coderabbit.yaml</code> — custom
+        instructions, tool integrations, path-specific instructions beyond
+        simple filters, and any CodeRabbit-only knob not listed above — is not
+        read. Configs from Qodo, Macroscope, or other review tools are{" "}
+        <strong>not translated at all</strong>; only <code>.coderabbit.yaml</code>{" "}
+        gets a compatibility read today. This translation surface is small by
+        design and expected to grow; it is not a claim of broad config
+        compatibility across the category.
       </p>
 
       <h2>Full reference</h2>

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { OsInstallTabs } from "@/components/os-install-tabs";
 
 export const metadata: Metadata = {
   title: "Quickstart",
@@ -21,13 +22,9 @@ export default function QuickstartPage() {
         Install the binary and point it at an OpenAI-compatible endpoint. The
         default is OpenRouter.
       </p>
+      <OsInstallTabs />
       <pre tabIndex={0} aria-label="Code sample">
-        <code>{`curl -fsSL https://postil.dev/install.sh | sh
-# or build from source:
-# cargo install --git https://github.com/postil-dev/postil-cli --locked
-export OPENROUTER_API_KEY=sk-or-...
-
-# review what you are about to commit
+        <code>{`# review what you are about to commit
 postil review --staged
 
 # review a branch against main
