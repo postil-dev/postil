@@ -3,6 +3,7 @@ import { and, eq, lt, sql } from "drizzle-orm";
 import { getDb, getPool, schema } from "@/lib/db";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import type { RespondJobPayload } from "@/lib/queue";
+import { redactSecrets } from "@/lib/redact";
 import { postRespondFailureComment } from "./respond";
 import { REVIEW_DEADLINE_MS, failCheckRuns } from "./review";
 
@@ -63,7 +64,9 @@ export async function watchdogPass(now = new Date()): Promise<{ killed: number }
         message,
       );
     } catch (err) {
-      console.error(`watchdog: could not complete check-runs for review ${review.id}: ${err}`);
+      console.error(
+        `watchdog: could not complete check-runs for review ${review.id}: ${redactSecrets(err)}`,
+      );
     }
   }
 

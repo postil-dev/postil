@@ -1,4 +1,5 @@
 import { optionalEnv } from "@/lib/env";
+import { redactSecrets } from "@/lib/redact";
 
 /**
  * Startup TLS self-test: one outbound HTTPS request to exercise the system CA
@@ -85,7 +86,9 @@ export async function tlsSelfTest(
     }
     // A non-TLS network problem (DNS, refused, timeout) is not a config defect
     // we should refuse to boot over.
-    console.warn(`tls self-test inconclusive (non-TLS network error, continuing): ${message}`);
+    console.warn(
+      `tls self-test inconclusive (non-TLS network error, continuing): ${redactSecrets(message)}`,
+    );
   } finally {
     clearTimeout(timer);
   }
