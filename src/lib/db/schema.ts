@@ -46,14 +46,23 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const organizations = pgTable("organizations", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-  slug: text("slug").notNull().unique(),
-  name: text("name").notNull(),
-  githubOrgId: bigint("github_org_id", { mode: "number" }),
-  plan: text("plan").notNull().default("beta"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const organizations = pgTable(
+  "organizations",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    slug: text("slug").notNull().unique(),
+    name: text("name").notNull(),
+    githubOrgId: bigint("github_org_id", { mode: "number" }),
+    plan: text("plan").notNull().default("beta"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  // Nullable column, plain unique index: Postgres treats each NULL as
+  // distinct, so orgs with no linked GitHub org (githubOrgId is null) never
+  // collide. Without this, concurrent `installation` webhooks for the same
+  // GitHub org can both pass findOrCreateOrg's check before either insert
+  // lands, creating duplicate organization rows for one GitHub org.
+  (t) => [uniqueIndex("organizations_github_org_id_idx").on(t.githubOrgId)],
+);
 
 export const orgMembers = pgTable(
   "org_members",
@@ -67,22 +76,32 @@ export const orgMembers = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: text("role").notNull().default("member"),
   },
-  (t) => [uniqueIndex("org_members_org_user_idx").on(t.orgId, t.userId)],
+  (t) => [
+    uniqueIndex("org_members_org_user_idx").on(t.orgId, t.userId),
+    // The unique index above is orgId-leading and doesn't serve a lookup by
+    // userId alone, which is exactly what login-time membership reconciliation
+    // does for every user on every login.
+    index("org_members_user_idx").on(t.userId),
+  ],
 );
 
-export const installations = pgTable("installations", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-  githubInstallationId: bigint("github_installation_id", { mode: "number" })
-    .notNull()
-    .unique(),
-  orgId: bigint("org_id", { mode: "number" }).references(() => organizations.id, {
-    onDelete: "set null",
-  }),
-  accountLogin: text("account_login").notNull(),
-  accountType: text("account_type").notNull(),
-  suspended: boolean("suspended").notNull().default(false),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const installations = pgTable(
+  "installations",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    githubInstallationId: bigint("github_installation_id", { mode: "number" })
+      .notNull()
+      .unique(),
+    orgId: bigint("org_id", { mode: "number" }).references(() => organizations.id, {
+      onDelete: "set null",
+    }),
+    accountLogin: text("account_login").notNull(),
+    accountType: text("account_type").notNull(),
+    suspended: boolean("suspended").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("installations_org_idx").on(t.orgId)],
+);
 
 export const repositories = pgTable("repositories", {
   id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),

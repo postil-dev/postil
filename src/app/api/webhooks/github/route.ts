@@ -181,31 +181,57 @@ export async function POST(request: Request): Promise<NextResponse> {
   return NextResponse.json({ ok: true });
 }
 
-async function findOrCreateOrg(account: GithubAccount): Promise<number> {
+async function findByGithubOrgId(githubOrgId: number): Promise<number | undefined> {
   const db = getDb();
-  const existing = (
+  const row = (
     await db
       .select({ id: schema.organizations.id })
       .from(schema.organizations)
-      .where(eq(schema.organizations.githubOrgId, account.id))
+      .where(eq(schema.organizations.githubOrgId, githubOrgId))
       .limit(1)
   )[0];
-  if (existing) return existing.id;
+  return row?.id;
+}
+
+async function findOrCreateOrg(account: GithubAccount): Promise<number> {
+  const db = getDb();
+  // Fast path: avoid a write (and burning an identity sequence value) on the
+  // overwhelmingly common case where the org already exists.
+  const existing = await findByGithubOrgId(account.id);
+  if (existing) return existing;
+
   const slugBase = account.login.toLowerCase();
+  // No conflict target: suppress a violation on EITHER unique constraint this
+  // row can hit - a slug collision with a different GitHub account (the
+  // original case this handled), or a githubOrgId collision from a
+  // concurrent webhook for this same account racing the check above. A
+  // targeted onConflictDoNothing would only swallow one of the two and throw
+  // on the other, so both must fall through to the same re-check below.
   const inserted = await db
     .insert(schema.organizations)
     .values({ slug: slugBase, name: account.login, githubOrgId: account.id })
-    .onConflictDoNothing({ target: schema.organizations.slug })
+    .onConflictDoNothing()
     .returning({ id: schema.organizations.id });
   if (inserted[0]) return inserted[0].id;
-  // Slug collision with a different GitHub account: disambiguate.
+
+  // githubOrgId is the true identity: if a concurrent request already
+  // inserted it, use that row instead of assuming a slug-only collision.
+  const afterConflict = await findByGithubOrgId(account.id);
+  if (afterConflict) return afterConflict;
+
+  // githubOrgId still doesn't exist, so the conflict above was the slug
+  // colliding with a different GitHub account: disambiguate and retry, still
+  // conflict-safe against a second concurrent request for this same account.
   const fallback = await db
     .insert(schema.organizations)
     .values({ slug: `${slugBase}-${account.id}`, name: account.login, githubOrgId: account.id })
+    .onConflictDoNothing()
     .returning({ id: schema.organizations.id });
-  const row = fallback[0];
-  if (!row) throw new Error("organization insert returned no row");
-  return row.id;
+  if (fallback[0]) return fallback[0].id;
+
+  const afterFallback = await findByGithubOrgId(account.id);
+  if (!afterFallback) throw new Error("organization insert returned no row");
+  return afterFallback;
 }
 
 async function upsertRepositories(installationId: number, repos: RepoSummary[]): Promise<void> {

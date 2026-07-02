@@ -8,6 +8,13 @@
       "when": 1781134011458,
       "tag": "0000_goofy_blob",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782963269500,
+      "tag": "0001_org_indexes_and_constraints",
+      "breakpoints": true
     }
   ]
 }
