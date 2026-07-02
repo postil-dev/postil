@@ -87,9 +87,9 @@ postil doctor            # verify endpoint, key, and model
 postil review --staged
 
 # CI (GitHub Actions) — @v1 resolves after the first tagged release
-- uses: postil-dev/postil-action@0d92d604e753fd6831baeeff85e3f2ff4a84bd6c
+- uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # main
   with:
-    cli-ref: 0d92d604e753fd6831baeeff85e3f2ff4a84bd6c
+    cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5 # postil-cli v0.1.1
 
 # hosted
 Install the GitHub App; reviews start on the next PR.`}</code>

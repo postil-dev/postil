@@ -66,16 +66,17 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: postil-dev/postil-action@0d92d604e753fd6831baeeff85e3f2ff4a84bd6c # main, @v1 resolves after the first tagged release
+      - uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # main, @v1 resolves after the first tagged release
         with:
-          cli-ref: 0d92d604e753fd6831baeeff85e3f2ff4a84bd6c
+          cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5 # postil-cli v0.1.1
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}</code>
       </pre>
       <p>
-        Both SHAs above are the current heads of their respective{" "}
-        <code>main</code> branches; check the{" "}
+        The action SHA above is the current head of its <code>main</code>{" "}
+        branch, and <code>cli-ref</code> pins the postil-cli v0.1.1 release
+        commit; check the{" "}
         <a
           href="https://github.com/postil-dev/postil-action"
           rel="noopener"
