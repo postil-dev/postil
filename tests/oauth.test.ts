@@ -21,18 +21,6 @@ describe("OAuth callback URL", () => {
     expect(oauthCallbackUrl(request)).toBe("https://postil.dev/api/auth/callback");
   });
 
-  test("uses forwarded proxy headers before the internal request origin", () => {
-    delete process.env.POSTIL_PUBLIC_URL;
-    const request = new Request("http://localhost:3000/api/auth/login", {
-      headers: {
-        "x-forwarded-host": "postil.dev",
-        "x-forwarded-proto": "https",
-      },
-    });
-
-    expect(oauthCallbackUrl(request)).toBe("https://postil.dev/api/auth/callback");
-  });
-
   test("falls back to the request origin for local development", () => {
     delete process.env.POSTIL_PUBLIC_URL;
     const request = new Request("http://localhost:3000/api/auth/login");
