@@ -111,6 +111,10 @@ docker compose exec web bun run db:migrate`}</code>
           <code>openssl rand -hex 32</code>.
         </li>
         <li>
+          <code>POSTIL_PUBLIC_URL</code>: public origin for absolute auth
+          URLs, for example <code>https://your-host</code>.
+        </li>
+        <li>
           <code>GITHUB_WEBHOOK_SECRET</code>: verifies webhook signatures;
           must match the secret on the GitHub App.{" "}
           <code>openssl rand -hex 32</code>.
