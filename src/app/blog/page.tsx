@@ -37,7 +37,7 @@ const POSTS = [
     title:
       "Self-hosted AI code review without the 500-seat enterprise gate",
     description:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size, BYO key, no markup.",
+      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size, BYO key supported.",
   },
   {
     href: "/blog/ai-code-review-benchmarks",

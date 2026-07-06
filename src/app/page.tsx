@@ -444,8 +444,8 @@ export default function HomePage() {
             <p className="serif-display text-2xl">$10 / dev / mo</p>
             <p className="mt-2 text-sm text-ink-soft">
               Bring your own OpenRouter, Anthropic, Azure, or Bedrock key, or
-              use managed inference with transparent pass-through markup. Hosted
-              beta is currently free.
+              use managed OpenRouter inference on the same invoice. Hosted beta
+              is currently free.
             </p>
           </div>
           <div className="card p-6">

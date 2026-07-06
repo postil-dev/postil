@@ -472,8 +472,8 @@ export default function BestToolsArticle() {
           dashboard is the silence rate, the share of PRs where Postil said
           nothing, alongside the confidence distribution of every finding it
           shipped. Pricing keeps orchestration flat and gives teams either BYOK
-          at zero markup or managed inference with transparent pass-through
-          markup (the hosted beta is currently free). Self-hosting is free via{" "}
+          or managed OpenRouter inference on the same invoice (the hosted beta
+          is currently free). Self-hosting is free via{" "}
           <Link href="/docs/self-hosted">Docker Compose</Link>, same product as
           hosted, with Ollama support. The hosted app is GitHub-only today; the
           CLI covers GitHub and GitLab, with Bitbucket and Azure DevOps support

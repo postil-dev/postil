@@ -165,7 +165,7 @@ const wedges: Wedge[] = [
         <p className="mt-3">
           Postil keeps orchestration flat and makes inference explicit: bring
           your own OpenRouter, Anthropic, Azure, or Bedrock key at provider
-          rates, or use managed inference with transparent pass-through markup.
+          rates, or use managed OpenRouter inference on the same invoice.
           As of June 2026, the closest comparable model we
           found is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">

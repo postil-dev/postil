@@ -6,7 +6,7 @@ import { PricingCalculator } from "@/components/pricing-calculator";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Free on public repos. Hosted teams can bring their own inference key or use managed inference with transparent pass-through markup. Self-hosted is free forever.",
+    "Free on public repos. Hosted teams can bring their own inference key or use managed OpenRouter billing. Self-hosted is free forever.",
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
@@ -20,11 +20,11 @@ export const metadata: Metadata = {
 const FAQ = [
   {
     q: "What is my worst-case monthly cost?",
-    a: "Your orchestration cost is flat by seat. Inference is either paid directly to your provider with BYOK or billed as managed pass-through with a visible markup. There are no hidden credits or per-review orchestration overages.",
+    a: "Your orchestration cost is flat by seat. Model spend is either paid directly to your provider with BYOK or included on the Postil invoice with managed billing. There are no hidden credits or per-review orchestration overages.",
   },
   {
     q: "Do I have to bring my own key?",
-    a: "No. BYOK remains available for teams that already have OpenRouter, Anthropic, Azure OpenAI, Bedrock, vLLM, or Ollama set up. Managed inference is the easier path: Postil holds the provider key and bills model cost with a transparent 0.5% to 5.0% markup.",
+    a: "No. BYOK remains available for teams that already have OpenRouter, Anthropic, Azure OpenAI, Bedrock, vLLM, or Ollama set up. Managed inference is the easier path: Postil holds the provider key and includes model spend on the same invoice.",
   },
   {
     q: "What does the hosted beta cost today?",
@@ -36,7 +36,7 @@ const FAQ = [
   },
   {
     q: "What happens at 10x PR volume?",
-    a: "Your Postil bill does not change. Flat orchestration was chosen specifically because agentic workflows can push hundreds of PRs per developer per month — one publicly documented developer hit 571 in 30 days — where per-review pricing produces bills in the hundreds of dollars per developer.",
+    a: "Your Postil orchestration bill does not change. Flat orchestration was chosen specifically because agentic workflows can push hundreds of PRs per developer per month, including one publicly documented developer who hit 571 in 30 days, where per-review pricing produces bills in the hundreds of dollars per developer.",
   },
   {
     q: "Do you offer annual billing or invoicing?",
@@ -87,8 +87,8 @@ export default function PricingPage() {
           </p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Private repositories, unlimited reviews</li>
-            <li>BYO inference key at zero markup</li>
-            <li>Managed inference with transparent 0.5% to 5.0% markup</li>
+            <li>BYO inference key at provider rates</li>
+            <li>Managed OpenRouter inference on the same invoice</li>
             <li>postil/gate for branch protection</li>
             <li>Silence-rate and confidence dashboards</li>
             <li>Incremental re-review on every push</li>
@@ -135,12 +135,13 @@ export default function PricingPage() {
           <p className="mt-3 max-w-2xl text-ink-soft">
             Compared against CodeRabbit Pro at its published $24/user/mo annual
             rate and Greptile&apos;s metered model ($30/seat plus per-review
-            overage past the included allowance). Pick a model to calculate
-            inference from prompt and completion tokens instead of guessing a
-            cents-per-review number.
+            overage past the included allowance). The default uses recorded
+            mean cost per review from Postil&apos;s fixture benchmark; switch to
+            custom tokens only when you want to stress-test unusually large
+            diffs.
           </p>
           <p className="mt-2 max-w-2xl text-sm text-charcoal/70">
-            Model prices are read from the public{" "}
+            Model token prices come from the public{" "}
             <a
               href="https://openrouter.ai/api/v1/models"
               className="text-rust underline"
@@ -148,6 +149,10 @@ export default function PricingPage() {
             >
               OpenRouter model catalog
             </a>
+            ; measured benchmark costs are published in{" "}
+            <Link href="/docs/models" className="text-rust underline">
+              Models
+            </Link>
             .
           </p>
         </div>

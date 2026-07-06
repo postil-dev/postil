@@ -105,10 +105,10 @@ export default function VsGreptilePage() {
             public backlash
           </a>
           . A developer pushing several hundred agent-driven PRs in a month can
-          owe hundreds of dollars. Postil charges a flat $10 per developer per month
-          and routes inference through your own key at provider rates with zero
-          markup, so your worst-case bill is seats times ten — independent of PR
-          count. Compare on the <Link href="/pricing">cost calculator</Link>.
+          owe hundreds of dollars. Postil charges a flat $10 per developer per
+          month and can route inference through your own key at provider rates,
+          so orchestration stays independent of PR count. Compare on the{" "}
+          <Link href="/pricing">cost calculator</Link>.
         </p>
 
         <h2>A gate you can require, not just comments to read</h2>

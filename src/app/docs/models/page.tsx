@@ -34,11 +34,13 @@ export default function ModelsPage() {
           Model catalog
         </h2>
         <p className="prose-postil mt-2">
-          Prices are fetched live from the{" "}
+          This table fetches prices live from the{" "}
           <a href="https://openrouter.ai/models" rel="noopener" className="text-rust underline">
             OpenRouter catalog
           </a>
-          , never committed as static numbers. <code>default</code> marks
+          . The pricing calculator also refreshes catalog prices in the browser
+          and falls back to a committed snapshot if the catalog is unavailable.
+          <code>default</code> marks
           the models Postil recommends out of the box; the rest are a
           curated set spanning cost and locally-runnable open-weights
           options. Re-check before committing to a procurement number; the
@@ -63,8 +65,8 @@ export default function ModelsPage() {
         </pre>
         <p>
           Multiply against the live price in the table above for a rough
-          per-review number before any managed-inference markup. Larger
-          diffs, consensus mode, or multiple model retries increase it.
+          per-review number. Larger diffs, consensus mode, or multiple model
+          retries increase it.
         </p>
       </div>
 

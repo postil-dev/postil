@@ -163,9 +163,9 @@ export default function VsCopilotPage() {
             automatic PR review
           </a>
           . Postil charges a flat $10 per developer per month and routes
-          inference through your own key at provider list rates with zero
-          markup, so the bill is known before the month starts. Run your
-          numbers on the <Link href="/pricing">cost calculator</Link>.
+          inference through your own key at provider list rates, so the
+          orchestration bill is known before the month starts. Run your numbers
+          on the <Link href="/pricing">cost calculator</Link>.
         </p>
 
         <h2>Silence as a product metric, not a blog post</h2>
