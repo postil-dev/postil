@@ -59,6 +59,17 @@ const nextConfig: NextConfig = {
         destination: "/docs/forges/gitlab",
         permanent: true,
       },
+      {
+        // Retired marketing route; keep crawlers and old links on the public story.
+        source: "/about",
+        destination: "/why-postil",
+        permanent: true,
+      },
+      {
+        source: "/index.html",
+        destination: "/",
+        permanent: true,
+      },
     ];
   },
 };

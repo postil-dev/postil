@@ -14,7 +14,10 @@ import { getDb, schema } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { saveOrgSettings, toggleRepository } from "./actions";
 
-export const metadata: Metadata = { title: "Organization" };
+export const metadata: Metadata = {
+  title: "Organization",
+  robots: { index: false, follow: false },
+};
 export const dynamic = "force-dynamic";
 
 const BUCKET_LABELS = ["0–.2", ".2–.4", ".4–.6", ".6–.8", ".8–1"] as const;
