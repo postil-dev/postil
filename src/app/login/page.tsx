@@ -5,6 +5,7 @@ export const metadata: Metadata = {
   title: "Sign in",
   description: "Sign in to Postil with GitHub.",
   alternates: { canonical: "/login" },
+  robots: { index: false, follow: false },
 };
 
 const ERROR_MESSAGES: Record<string, string> = {

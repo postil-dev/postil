@@ -19,7 +19,7 @@ jobs:
   smoke:
     name: Smoke check production
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
       - name: Check public endpoints
         shell: bash
@@ -27,10 +27,14 @@ jobs:
           METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
         run: |
           set -euo pipefail
+          mkdir -p .cache
+          trap 'rm -f .cache/curl-metrics.conf .cache/dependencies.out .cache/metrics.out .cache/headers.out .cache/robots.out' EXIT
 
           public_endpoints=(
             "site https://postil.dev/"
             "liveness https://postil.dev/api/health"
+            "sitemap https://postil.dev/sitemap.xml"
+            "favicon https://postil.dev/favicon.ico"
           )
 
           for endpoint in "${public_endpoints[@]}"; do
@@ -48,8 +52,75 @@ jobs:
               "${url}"
           done
 
+          echo "Checking robots: https://postil.dev/robots.txt"
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --header "Cache-Control: no-cache" \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --output .cache/robots.out \
+            "https://postil.dev/robots.txt"
+          if grep -E '^Disallow:' .cache/robots.out; then
+            echo "robots.txt should not block crawlable noindex surfaces."
+            cat .cache/robots.out
+            exit 1
+          fi
+          grep -Fx "User-Agent: *" .cache/robots.out
+          grep -Fx "Allow: /" .cache/robots.out
+          grep -Fx "Sitemap: https://postil.dev/sitemap.xml" .cache/robots.out
+
+          echo "Checking canonical redirects"
+          about_redirect="$(curl \
+            --silent \
+            --show-error \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --output /dev/null \
+            --write-out '%{http_code} %{redirect_url}' \
+            "https://postil.dev/about")"
+          if [[ "${about_redirect}" != "308 https://postil.dev/why-postil" ]]; then
+            echo "Unexpected /about redirect: ${about_redirect}"
+            exit 1
+          fi
+
+          www_redirect="$(curl \
+            --silent \
+            --show-error \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --output /dev/null \
+            --write-out '%{http_code} %{redirect_url}' \
+            "https://www.postil.dev/docs?utm_source=monitor")"
+          if [[ "${www_redirect}" != "308 https://postil.dev/docs?utm_source=monitor" ]]; then
+            echo "Unexpected www redirect: ${www_redirect}"
+            exit 1
+          fi
+
+          for endpoint in \
+            "login https://postil.dev/login" \
+            "api-health https://postil.dev/api/health"; do
+            name="${endpoint%% *}"
+            url="${endpoint#* }"
+            echo "Checking noindex header for ${name}: ${url}"
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 5 \
+              --max-time 15 \
+              --dump-header .cache/headers.out \
+              --output /dev/null \
+              "${url}"
+            if ! grep -iq '^x-robots-tag: noindex, nofollow' .cache/headers.out; then
+              echo "Missing X-Robots-Tag on ${url}"
+              cat .cache/headers.out
+              exit 1
+            fi
+          done
+
           echo "Checking dependencies: https://postil.dev/api/health/dependencies"
-          mkdir -p .cache
           dependency_status="$(curl \
             --location \
             --silent \
@@ -66,7 +137,6 @@ jobs:
           fi
 
           if [[ -n "${METRICS_API_KEY:-}" ]]; then
-            trap 'rm -f .cache/curl-metrics.conf .cache/metrics.out .cache/dependencies.out' EXIT
             printf 'header = "Authorization: Bearer %s"\n' "${METRICS_API_KEY}" > .cache/curl-metrics.conf
             chmod 0600 .cache/curl-metrics.conf
             echo "Checking metrics: https://postil.dev/api/metrics"

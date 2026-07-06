@@ -13,6 +13,14 @@ import {
  * session row itself is checked in the page, which redirects on expiry.
  */
 export async function middleware(request: NextRequest, event: NextFetchEvent) {
+  if (isWwwHost(request)) {
+    const canonicalUrl = request.nextUrl.clone();
+    canonicalUrl.protocol = "https:";
+    canonicalUrl.hostname = "postil.dev";
+    canonicalUrl.port = "";
+    return NextResponse.redirect(canonicalUrl, 308);
+  }
+
   const protectedRoute = isProtectedRoute(request.nextUrl.pathname);
   let response = NextResponse.next();
 
@@ -20,18 +28,20 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     const token = request.cookies.get(SESSION_COOKIE)?.value;
     const secret = process.env.POSTIL_SESSION_SECRET;
     const sessionId = secret ? await verifySessionToken(token, secret) : null;
-    if (sessionId) return responseWithTelemetry(request, event, response);
+    if (sessionId) {
+      return responseWithTelemetry(request, event, responseWithCrawlerHeaders(request, response));
+    }
 
     const login = new URL("/login", request.url);
     login.searchParams.set("next", request.nextUrl.pathname);
     response = NextResponse.redirect(login);
   }
 
-  return responseWithTelemetry(request, event, response);
+  return responseWithTelemetry(request, event, responseWithCrawlerHeaders(request, response));
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|apple-icon.png|icon.png|opengraph-image).*)"],
+  matcher: ["/((?!_next/static|_next/image).*)"],
 };
 
 function responseWithTelemetry(
@@ -45,8 +55,31 @@ function responseWithTelemetry(
   return response;
 }
 
+function responseWithCrawlerHeaders(request: NextRequest, response: NextResponse): NextResponse {
+  if (isNoindexRoute(request.nextUrl.pathname)) {
+    response.headers.set("X-Robots-Tag", "noindex, nofollow");
+  }
+  return response;
+}
+
 function isProtectedRoute(pathname: string): boolean {
   return pathname === "/reports" || pathname.startsWith("/reports/") || pathname.startsWith("/orgs/");
+}
+
+function isWwwHost(request: NextRequest): boolean {
+  const headerHost = request.headers.get("host")?.split(":")[0]?.toLowerCase();
+  return headerHost === "www.postil.dev" || request.nextUrl.hostname === "www.postil.dev";
+}
+
+function isNoindexRoute(pathname: string): boolean {
+  return (
+    pathname === "/login" ||
+    pathname.startsWith("/login/") ||
+    pathname === "/reports" ||
+    pathname.startsWith("/reports/") ||
+    pathname.startsWith("/orgs/") ||
+    pathname.startsWith("/api/")
+  );
 }
 
 function shouldCaptureTraffic(request: NextRequest): boolean {

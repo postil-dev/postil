@@ -12,7 +12,10 @@ import {
 import { getDb, schema } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 
-export const metadata: Metadata = { title: "Reports" };
+export const metadata: Metadata = {
+  title: "Reports",
+  robots: { index: false, follow: false },
+};
 export const dynamic = "force-dynamic";
 
 export default async function ReportsPage() {

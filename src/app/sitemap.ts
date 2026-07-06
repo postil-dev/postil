@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 const SITE_URL = "https://postil.dev";
 
-// Public, indexable marketing and documentation routes only. App/dashboard
-// surfaces are session-gated and excluded in robots.ts.
+// Public, indexable marketing and documentation routes only. Private and API
+// surfaces stay out of the index through page metadata and X-Robots-Tag headers.
 //
 // lastModified is a fixed per-route content date (bump it when a page's
 // content meaningfully changes). A request-time `new Date()` made every URL
