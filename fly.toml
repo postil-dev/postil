@@ -39,6 +39,7 @@ worker = "bun run worker"
 
 [env]
 NODE_ENV = "production"
+POSTIL_PUBLIC_URL = "https://postil.dev"
 POSTIL_BIN = "/usr/local/bin/postil"
 POSTIL_DB_POOL_MAX = "2"
 POSTIL_WEBHOOK_DRAIN_ENABLED = "1"

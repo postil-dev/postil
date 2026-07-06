@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getDb, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
-import { OAUTH_STATE_COOKIE } from "@/lib/oauth";
+import { oauthCallbackUrl, OAUTH_STATE_COOKIE } from "@/lib/oauth";
 import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
 import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/lib/session";
 
@@ -84,7 +84,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       client_id: requireEnv("GITHUB_OAUTH_CLIENT_ID"),
       client_secret: requireEnv("GITHUB_OAUTH_CLIENT_SECRET"),
       code,
-      redirect_uri: `${url.origin}/api/auth/callback`,
+      redirect_uri: oauthCallbackUrl(request),
     }),
   });
   if (!tokenRes.ok) {
