@@ -124,11 +124,11 @@ export default function VsQodoPage() {
           </a>{" "}
           as of June 2026, roughly double its earlier Teams pricing. The free
           tier is credit-limited; Qodo&apos;s docs and pricing page describe its
-          limits differently, so verify both before relying on it. Postil charges a flat $10 per developer per month and
-          routes inference through your own key at provider rates with zero
-          markup, so the bill does not move with model choice or review
-          volume. Run the numbers on the <Link href="/pricing">cost
-          calculator</Link>.
+          limits differently, so verify both before relying on it. Postil charges
+          a flat $10 per developer per month and can route inference through
+          your own key at provider rates, so the orchestration bill does not
+          move with model choice or review volume. Run the numbers on the{" "}
+          <Link href="/pricing">cost calculator</Link>.
         </p>
 
         <h2>A gate you can require</h2>

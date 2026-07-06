@@ -261,10 +261,10 @@ jobs:
               <code className="font-mono text-sm">postil/gate</code> in branch
               protection when you are ready to make it binding. No keys leave
               your control unless you choose managed inference: configure your
-              own key per organization or let Postil bill provider cost with a
-              transparent markup. The App also answers{" "}
+              own key per organization or let Postil include model spend on the
+              same invoice. The App also answers{" "}
               <code className="font-mono text-sm">@postil</code> mentions on PRs
-              and issues — review and answer only, it never opens PRs or pushes
+              and issues; review and answer only, it never opens PRs or pushes
               commits.
             </p>
             <p className="mt-3 text-sm text-ink-soft">

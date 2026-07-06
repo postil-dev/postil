@@ -128,7 +128,7 @@ export default function VsCodeRabbitPage() {
           </a>{" "}
           as of June 2026. Postil keeps orchestration flat and makes inference
           explicit: bring your own key at provider rates or use managed
-          inference with transparent pass-through markup. Run the numbers on the{" "}
+          OpenRouter inference on the same invoice. Run the numbers on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 

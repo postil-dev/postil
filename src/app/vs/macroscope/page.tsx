@@ -129,7 +129,7 @@ export default function VsMacroscopePage() {
           caps and $100 of credit for new workspaces, but the structure still
           charges you more for bigger changes and more PRs. Postil keeps
           orchestration flat and makes inference explicit: BYOK at provider
-          rates, or managed inference with transparent pass-through markup.
+          rates, or managed OpenRouter inference on the same invoice.
           Compare on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>

@@ -32,7 +32,7 @@ export const MODELS: CatalogModel[] = [
     paramClass: ">200B",
     locallyRunnable: false,
     recommended: true,
-    tested: false,
+    tested: true,
   },
   {
     id: "moonshotai/kimi-k2.6",
@@ -43,7 +43,7 @@ export const MODELS: CatalogModel[] = [
     paramClass: ">200B",
     locallyRunnable: false,
     recommended: true,
-    tested: false,
+    tested: true,
   },
   {
     id: "deepseek/deepseek-v4-flash",
@@ -65,7 +65,7 @@ export const MODELS: CatalogModel[] = [
     paramClass: "<40B",
     locallyRunnable: true,
     recommended: false,
-    tested: false,
+    tested: true,
   },
   {
     id: "mistralai/mistral-small-3.2-24b-instruct",
@@ -76,7 +76,7 @@ export const MODELS: CatalogModel[] = [
     paramClass: "<40B",
     locallyRunnable: true,
     recommended: false,
-    tested: false,
+    tested: true,
   },
   {
     id: "google/gemma-3-27b-it",
@@ -87,6 +87,6 @@ export const MODELS: CatalogModel[] = [
     paramClass: "<40B",
     locallyRunnable: true,
     recommended: false,
-    tested: false,
+    tested: true,
   },
 ];

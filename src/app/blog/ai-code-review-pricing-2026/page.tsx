@@ -350,9 +350,9 @@ export default function PricingArticle() {
           Our row. 20 developers × $10 flat = <strong>$200 per month</strong>{" "}
           for orchestration, at any PR volume; the number does not change in
           the agent-heavy scenario. Inference is either billed on your own API
-          key at zero markup or billed by Postil as managed pass-through with
-          transparent markup, so the metered part of the cost remains visible
-          and tied to the model you choose. Hosted reviews on public
+          key or included by Postil as managed model spend, so the metered part
+          of the cost remains visible and tied to the model you choose. Hosted
+          reviews on public
           repositories are free, the self-hosted stack is free with no seat
           limit, and while the GitHub App is in beta, hosted orchestration is
           free as well.
@@ -468,7 +468,7 @@ export default function PricingArticle() {
           position follows from that: Postil charges flat for the part we
           control (orchestration, $10 per developer) and passes through the
           part we do not (inference, on your key, at your provider&apos;s
-          list rates with no markup). You still pay for usage; you pay it to
+          list rates). You still pay for usage; you pay it to
           your model provider at published prices, and we have no lever to
           profit from your volume. That is a structural choice, not a
           discount, and you can check both halves of it on{" "}

@@ -233,10 +233,9 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
           <code>POST {"{base}"}/chat/completions</code>. The same binary points
           at Ollama, vLLM, LiteLLM, TGI, Azure OpenAI, or OpenRouter by changing
           one base URL. In self-hosted and BYOK modes there is no proxy in the
-          middle and no per-review Postil markup: your inference goes to your
-          endpoint at your provider&apos;s rates. Hosted teams can also use managed
-          inference, where Postil bills provider cost with a transparent
-          pass-through markup.
+          middle: your inference goes to your endpoint at your provider&apos;s
+          rates. Hosted teams can also use managed inference, where Postil
+          includes model spend on the same invoice.
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`# OpenRouter (default)
