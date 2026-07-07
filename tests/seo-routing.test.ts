@@ -9,7 +9,9 @@ const event = {
   waitUntil: () => undefined,
 } as unknown as NextFetchEvent;
 
-function request(url: string, init?: RequestInit): NextRequest {
+type NextRequestInit = ConstructorParameters<typeof NextRequest>[1];
+
+function request(url: string, init?: NextRequestInit): NextRequest {
   return new NextRequest(url, init);
 }
 
