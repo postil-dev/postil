@@ -88,14 +88,13 @@ docker compose exec web bun run db:migrate`}</code>
         replacements for the hosted control plane.
       </p>
       <p>
-        For a free-tier managed Postgres, use either Neon Free or Supabase Free
-        with the low-idle queue profile in <code>.env.example</code>. Webhooks
-        kick a bounded web-process queue drain, while the worker stays as a
-        slow fallback. On Neon Free, set <code>WORKER_CONCURRENCY=1</code> and{" "}
-        <code>WORKER_IDLE_POLL_MAX_MS=900000</code> and{" "}
-        <code>WORKER_WATCHDOG_INTERVAL_MS=900000</code> so the database gets
-        real scale-to-zero windows instead of a query every few seconds
-        forever.
+        For a free-tier managed Postgres, Supabase Free works with the
+        low-idle queue profile in <code>.env.example</code>. Webhooks kick a
+        bounded web-process queue drain, while the worker stays as a slow
+        fallback. Set <code>WORKER_CONCURRENCY=1</code>,{" "}
+        <code>WORKER_IDLE_POLL_MAX_MS=900000</code>, and{" "}
+        <code>WORKER_WATCHDOG_INTERVAL_MS=900000</code> so idle periods stay
+        quiet instead of issuing database checks every few seconds forever.
       </p>
 
       <h3>Required configuration</h3>
