@@ -101,9 +101,8 @@ export default function PrivacyPage() {
             plane and the review worker.
           </li>
           <li>
-            <strong>Managed PostgreSQL</strong> — Neon or another Postgres
-            provider: stores accounts,
-            installations, and review envelopes.
+            <strong>Supabase Postgres</strong> — managed PostgreSQL storage for
+            accounts, installations, and review envelopes.
           </li>
           <li>
             <strong>PostHog</strong> — privacy-scoped analytics: stores

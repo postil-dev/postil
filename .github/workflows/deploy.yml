@@ -63,15 +63,27 @@ jobs:
           tar -xzf "${tmp}/${art}" -C "$tmp" postil
           install -m 0755 "${tmp}/postil" vendor/postil
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.4
-      - name: Stage observability runtime secrets
+      - name: Stage runtime secrets
         run: |
           set -euo pipefail
+          mkdir -p .cache
+          secrets_file=".cache/fly-runtime-secrets.env"
+          : > "${secrets_file}"
+          chmod 0600 "${secrets_file}"
+          trap 'rm -f "${secrets_file}"' EXIT
           token="${POSTHOG_PROJECT_TOKEN:-${NEXT_PUBLIC_POSTHOG_KEY:-}}"
           if [[ -n "${token}" ]]; then
-            printf 'POSTHOG_PROJECT_TOKEN=%s\n' "${token}" | flyctl secrets import --stage
+            printf 'POSTHOG_PROJECT_TOKEN=%s\n' "${token}" >> "${secrets_file}"
+          fi
+          if [[ -n "${DATABASE_URL}" ]]; then
+            printf 'DATABASE_URL=%s\n' "${DATABASE_URL}" >> "${secrets_file}"
+          fi
+          if [[ -s "${secrets_file}" ]]; then
+            flyctl secrets import --stage < "${secrets_file}"
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
       - run: |

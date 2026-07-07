@@ -11,7 +11,7 @@
 
 ## Database
 
-Postil is PostgreSQL-native. The hosted control plane uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Neon Free and Supabase Free are viable because they preserve PostgreSQL compatibility. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
+Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
 
 The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling. Webhook intake enqueues work and can trigger a bounded web-process drain. The worker remains a fallback with configurable idle backoff.
 
