@@ -42,7 +42,7 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: ">200B",
     locallyRunnable: false,
-    recommended: true,
+    recommended: false,
     tested: true,
   },
   {
