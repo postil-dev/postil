@@ -92,9 +92,9 @@ export function SiteFooter() {
         </div>
         <div className="rule mt-10 pt-6 text-xs text-charcoal/75">
           <p>
-            Postil. CLI and Action are Apache-2.0. Hosted beta is free while in
-            beta. No code is persisted by the control plane; review envelopes
-            only.
+            Postil. CLI and Action are Apache-2.0. Hosted reviews are included
+            on Team. No code is persisted by the control plane; review
+            envelopes only.
           </p>
         </div>
       </div>

@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/blog/ai-code-review-benchmarks" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-07-25T00:00:00.000Z",
+    publishedTime: "2026-07-08T00:00:00.000Z",
     title: "Every AI code review benchmark has the same winner: its author",
     description:
       "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
@@ -24,7 +24,7 @@ const articleJsonLd = {
   description:
     "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
   url: "https://postil.dev/blog/ai-code-review-benchmarks",
-  datePublished: "2026-07-25",
+  datePublished: "2026-07-08",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -337,7 +337,7 @@ export default function BenchmarkAuthorArticle() {
               Greptile benchmark
             </a>{" "}
             (82% catch rate, false positives explicitly unscored; 50 reverted
-            bug-fix PRs, July 2025; fetched 2026-06-13)
+            bug-fix PRs)
           </li>
           <li>
             <a
@@ -346,8 +346,7 @@ export default function BenchmarkAuthorArticle() {
             >
               DeepSource: every AI code review vendor benchmarks itself, and wins
             </a>{" "}
-            (Greptile 82% vs 45% on Augment&apos;s re-run; last updated Feb 26,
-            2026; fetched 2026-06-13)
+            (Greptile 82% vs 45% on Augment&apos;s re-run)
           </li>
           <li>
             <a
@@ -356,7 +355,7 @@ export default function BenchmarkAuthorArticle() {
             >
               Augment: we benchmarked 7 AI code review tools
             </a>{" "}
-            (F1 59%, Augment ranks first; fetched 2026-06-13)
+            (F1 59%, Augment ranks first)
           </li>
           <li>
             <a
@@ -365,8 +364,7 @@ export default function BenchmarkAuthorArticle() {
             >
               Qodo: how we built a real-world benchmark
             </a>{" "}
-            (F1 60.1%, Qodo ranks first; 580 LLM-injected bugs; Feb 4, 2026;
-            fetched 2026-06-13)
+            (F1 60.1%, Qodo ranks first; 580 LLM-injected bugs)
           </li>
           <li>
             <a
@@ -376,14 +374,14 @@ export default function BenchmarkAuthorArticle() {
               Independent 4-tool parallel study, 146 PRs, 679 findings
             </a>{" "}
             (93.4% caught by exactly one tool, zero by all four; author at
-            Sentry, COI disclosed; May 12, 2026; fetched 2026-06-13)
+            Sentry, COI disclosed)
           </li>
           <li>
             <a href="https://arxiv.org/abs/2509.01494" rel="noopener">
               SWR-Bench (arXiv)
             </a>{" "}
             (1,000 PRs, 500 clean / 500 change, false positives scored by
-            definition; fetched 2026-06-13)
+            definition)
           </li>
         </ul>
       </div>

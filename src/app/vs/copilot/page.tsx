@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs GitHub Copilot code review",
   description:
-    "Postil is a Copilot code review alternative with a blocking merge gate (Copilot reviews are comment-only), transparent inference billing instead of AI Credits, and free self-hosting.",
+    "Postil is a Copilot code review alternative with a blocking merge gate (Copilot reviews are comment-only), flat pricing with hosted reviews included, and free self-hosting.",
   alternates: { canonical: "/vs/copilot" },
   openGraph: {
     title: "Postil vs GitHub Copilot code review",
     description:
-      "A blocking merge gate where Copilot is comment-only, transparent inference billing instead of AI Credits, and free self-hosting. The honest comparison.",
+      "A blocking merge gate where Copilot is comment-only, flat pricing with hosted reviews included, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/copilot",
     images: ["/opengraph-image"],
   },
@@ -43,7 +43,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
+      { kind: "text", note: "Flat Team price; hosted reviews included" },
       {
         kind: "text",
         note: "Paid Copilot plan + AI Credits + Actions minutes per review",
@@ -99,7 +99,7 @@ export default function VsCopilotPage() {
           caption="Postil compared with GitHub Copilot code review across merge gate, silence metric, pricing, cost predictability, model choice, self-hosting, and platforms."
         />
         <p className="mt-3 font-mono text-xs text-charcoal/70">
-          Compiled from vendor pricing and documentation as of June 2026.
+          Sources: vendor pricing and documentation.
         </p>
       </div>
 
@@ -162,10 +162,9 @@ export default function VsCopilotPage() {
             one who burned an entire month&apos;s included credits on a single
             automatic PR review
           </a>
-          . Postil charges a flat $10 per developer per month and routes
-          inference through your own key at provider list rates, so the
-          orchestration bill is known before the month starts. Run your numbers
-          on the <Link href="/pricing">cost calculator</Link>.
+          . Postil charges a flat $10 per developer per month with hosted
+          reviews included, so the bill is known before the month starts. Run
+          your numbers on the <Link href="/pricing">cost calculator</Link>.
         </p>
 
         <h2>Silence as a product metric, not a blog post</h2>
@@ -195,10 +194,11 @@ export default function VsCopilotPage() {
             policy since April 2025
           </a>
           ); Business and Enterprise plans are excluded. There is no model
-          choice and no BYO key on any tier. With Postil, code goes to the
-          inference provider you chose under your own key and your own DPA, and
-          the self-hosted deployment keeps it inside your network entirely. The
-          control plane stores review envelopes, never code.
+          choice and no BYO key on any tier. With Postil, hosted BYO reviews go
+          through the worker to the provider you configured, hosted default
+          reviews use Postil&apos;s configured provider path, and self-hosted keeps
+          inference inside your network. The control plane stores review
+          envelopes, never code.
         </p>
 
         <h2>Where Copilot is ahead</h2>

@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Greptile",
   description:
-    "Postil is a Greptile alternative with transparent inference billing instead of per-review overage, a hard merge gate, a published silence metric, and free self-hosting.",
+    "Postil is a Greptile alternative with flat pricing and hosted reviews included instead of per-review overage, a hard merge gate, a published silence metric, and free self-hosting.",
   alternates: { canonical: "/vs/greptile" },
   openGraph: {
     title: "Postil vs Greptile",
     description:
-      "Transparent inference billing instead of per-review overage, a hard merge gate, and a published silence metric. The honest comparison.",
+      "Flat pricing with hosted reviews included instead of per-review overage, a hard merge gate, and a published silence metric. The honest comparison.",
     url: "https://postil.dev/vs/greptile",
     images: ["/opengraph-image"],
   },
@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
+      { kind: "text", note: "Flat Team price; hosted reviews included" },
       { kind: "text", note: "~$30/seat + ~$1 per review past 50" },
     ],
   },
@@ -89,7 +89,7 @@ export default function VsGreptilePage() {
           caption="Postil compared with Greptile across merge gate, silence metric, pricing, cost at high PR volume, self-hosting, and platforms."
         />
         <p className="mt-3 font-mono text-xs text-charcoal/70">
-          Compiled from vendor pricing and documentation as of June 2026.
+          Sources: vendor pricing and documentation.
         </p>
       </div>
 
@@ -106,8 +106,8 @@ export default function VsGreptilePage() {
           </a>
           . A developer pushing several hundred agent-driven PRs in a month can
           owe hundreds of dollars. Postil charges a flat $10 per developer per
-          month and can route inference through your own key at provider rates,
-          so orchestration stays independent of PR count. Compare on the{" "}
+          month with hosted reviews included, so the bill stays independent of
+          PR count. Compare on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 
@@ -146,8 +146,8 @@ export default function VsGreptilePage() {
         <div>
           <h2 className="serif-display text-2xl">No meter anxiety.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Flat orchestration, BYO key or managed inference. Install the CLI
-            and try it on your next diff.
+            Flat Team pricing, hosted reviews included. Install the CLI and
+            try it on your next diff.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

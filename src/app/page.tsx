@@ -107,7 +107,7 @@ export default function HomePage() {
           assumed.
         </p>
         <p className="mt-6 max-w-3xl font-mono text-[13px] leading-relaxed text-charcoal/75">
-          Figures as of June 2026. Sources: the 28-PR audit is{" "}
+          Sources: the 28-PR audit is{" "}
           <a
             href="https://lycheeorg.dev/2025-09-13-code-rabbit/"
             className="text-rust underline"
@@ -431,7 +431,7 @@ export default function HomePage() {
       <Section
         number="07"
         eyebrow="Pricing without meter anxiety"
-        title="Flat orchestration. BYO key or managed inference."
+        title="Flat price. Default reviews included."
       >
         <div className="grid gap-8 md:grid-cols-3">
           <div className="card p-6">
@@ -443,9 +443,9 @@ export default function HomePage() {
           <div className="card border-gate p-6">
             <p className="serif-display text-2xl">$10 / dev / mo</p>
             <p className="mt-2 text-sm text-ink-soft">
-              Bring your own OpenRouter, Anthropic, Azure, or Bedrock key, or
-              use managed OpenRouter inference on the same invoice. Hosted beta
-              is currently free.
+              Hosted Team is $10 per developer with reviews included. BYO key
+              support remains available for organizations with a specific policy
+              requirement.
             </p>
           </div>
           <div className="card p-6">
@@ -458,9 +458,9 @@ export default function HomePage() {
         </div>
         <p className="mt-8 max-w-2xl text-ink-soft">
           Your worst-case monthly bill is your seat count times ten dollars.
-          Your LLM spend is visible in your provider's dashboard, not hidden in
-          ours. No per-review surcharges, no credits, no billing shock at 10x
-          PR volume.
+          Hosted reviews are included by default, and BYO key remains an
+          optional policy control. No per-review surcharges, no credits, no
+          billing shock at 10x PR volume.
         </p>
         <p className="mt-6">
           <Link href="/pricing" className="link-arrow">

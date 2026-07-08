@@ -18,13 +18,15 @@ export default function SelfHostedPage() {
 
       <h2>Most self-hosting is just the CLI</h2>
       <p>
-        Postil is one binary. Run it in your own CI with your own inference
-        key and nothing ever leaves infrastructure you control — no hosted
-        app, no dashboard, no dependency on postil.dev at all:
+        Postil is one binary. Run it in your own CI with the inference endpoint
+        you choose. Nothing goes to postil.dev; diffs go only to the model
+        endpoint you configure. Use a local Ollama, vLLM, SGLang, or LiteLLM
+        endpoint when diffs must stay inside infrastructure you control:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`curl -fsSL https://postil.dev/install.sh | sh
-export OPENROUTER_API_KEY=...   # or POSTIL_API_KEY with any OpenAI-compatible endpoint
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 postil review --repo owner/name --pr 123`}</code>
       </pre>
       <p>
@@ -151,23 +153,28 @@ docker compose exec web bun run db:migrate`}</code>
 
       <h3>Pointing it at a model</h3>
       <p>
-        These are worker variables. <code>POSTIL_API_KEY</code> falls back to{" "}
-        <code>OPENROUTER_API_KEY</code> if it is unset.{" "}
+        These are worker variables. <code>MODEL_API_KEY</code> is preferred;{" "}
+        <code>POSTIL_API_KEY</code> and <code>OPENROUTER_API_KEY</code> remain
+        accepted aliases. Set <code>POSTIL_API_KEY</code> to the same value in
+        self-hosted <code>.env</code> files so direct pinned CLI commands such as{" "}
+        <code>postil doctor</code> keep working.{" "}
         <code>REVIEW_MODEL_CASCADE</code> is an optional comma-separated list of
         fallback models tried in order on provider errors.
       </p>
       <h4>OpenRouter (default)</h4>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=https://openrouter.ai/api/v1
+MODEL_API_KEY=sk-or-v1-...
 POSTIL_API_KEY=sk-or-v1-...
 REVIEW_MODEL=deepseek/deepseek-v4-pro
 REVIEW_MODEL_CASCADE=qwen/qwen3-coder`}</code>
       </pre>
       <h4>Azure OpenAI</h4>
       <pre tabIndex={0} aria-label="Code sample">
-        <code>{`POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
-POSTIL_API_KEY=<azure-api-key>
-REVIEW_MODEL=<deployment-name>`}</code>
+        <code>{`POSTIL_API_BASE=https://azure-resource.openai.azure.com/openai/v1
+MODEL_API_KEY=azure-api-key
+POSTIL_API_KEY=azure-api-key
+REVIEW_MODEL=my-deployment`}</code>
       </pre>
       <h4>Ollama (local, no API key)</h4>
       <p>
@@ -183,7 +190,8 @@ docker compose exec ollama ollama pull qwen3-coder:30b`}</code>
       <p>Then point the worker at it on the compose network:</p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=http://ollama:11434/v1
-POSTIL_API_KEY=ollama        # any non-empty value
+MODEL_API_KEY=ollama        # any non-empty value
+POSTIL_API_KEY=ollama       # same value for direct postil doctor
 REVIEW_MODEL=qwen3-coder:30b`}</code>
       </pre>
       <p>
@@ -204,9 +212,9 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
         Before opening a test PR, run the doctor inside the worker container.
         It resolves the config, checks the git work tree, the API key, a live
         probe of the model endpoint, and any forge tokens. Inside the worker it
-        reads <code>REVIEW_MODEL</code>, <code>POSTIL_API_BASE</code>, and{" "}
-        <code>POSTIL_API_KEY</code> from the container env, so set those in{" "}
-        <code>.env</code> before running it:
+        reads <code>REVIEW_MODEL</code>, <code>POSTIL_API_BASE</code>,{" "}
+        <code>MODEL_API_KEY</code>, and <code>POSTIL_API_KEY</code> from the
+        container env, so set those in <code>.env</code> before running it:
       </p>
       {/* Illustrative demo output: the five checks, their order, and the
           [ok  ]/[FAIL] format match the CLI (src/doctor.rs print_report); the
@@ -216,7 +224,7 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
 
 [ok  ] config           loaded from defaults (model: qwen3-coder:30b, gate failOn: error, minConfidence: 0.6)
 [FAIL] git              not a git repository (local modes --staged/--base need one)
-[ok  ] api key          POSTIL_API_KEY or OPENROUTER_API_KEY is set (value not shown)
+[ok  ] api key          MODEL_API_KEY, POSTIL_API_KEY, or OPENROUTER_API_KEY is set (value not shown)
 [ok  ] model endpoint   http://ollama:11434/v1 answered for model qwen3-coder:30b
 [ok  ] forge tokens     GITHUB_TOKEN unset, GITLAB_TOKEN unset (only needed for remote review)
 

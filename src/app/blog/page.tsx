@@ -29,7 +29,7 @@ const POSTS = [
     title:
       "Where does your code actually go? A data-flow audit of AI code review tools",
     description:
-      "AI reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class audit of retention, training, and inference location, every fact dated and sourced.",
+      "AI reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class audit of retention, training, and inference location.",
   },
   {
     href: "/blog/self-hosted-ai-code-review",
@@ -49,26 +49,26 @@ const POSTS = [
   },
   {
     href: "/blog/why-copilot-cant-block-your-merge",
-    date: "August 2026",
+    date: "July 2026",
     title:
       "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
     description:
-      "Branch protection blocks on required status checks that conclude failure, not on review comments or neutral checks. Copilot posts a Comment, Claude Code review and Macroscope conclude neutral. The mechanic, and how a real two-check gate works.",
+      "Branch protection blocks on required status checks that conclude failure, not on review comments or neutral checks. Copilot posts a Comment, Claude Code review concludes neutral, and Macroscope defaults neutral unless configured to fail.",
   },
   {
     href: "/blog/ai-code-review-pricing-2026",
-    date: "August 2026",
+    date: "July 2026",
     title:
       "AI code review pricing in 2026: what a 20-developer team actually pays",
     description:
-      "Four vendors changed pricing models in ninety days. We run the same 20-developer team through seven tools, assumptions stated, arithmetic shown, every price dated and sourced.",
+      "Four vendors changed pricing models in ninety days. We run the same 20-developer team through seven tools, assumptions stated, arithmetic shown, every price sourced.",
   },
   {
     href: "/blog/best-ai-code-review-tools-2026",
-    date: "September 2026",
+    date: "July 2026",
     title: "Best AI code review tools in 2026: an evidence-first comparison",
     description:
-      "CodeRabbit, Qodo, Macroscope, Greptile, Copilot, Bugbot, and Postil, compared on noise, merge gating, self-hosting, data handling, and a pricing landscape that changed four times in ninety days. Every claim dated and sourced.",
+      "CodeRabbit, Qodo, Macroscope, Greptile, Copilot, Bugbot, and Postil, compared on noise, merge gating, self-hosting, data handling, and a pricing landscape that changed four times in ninety days. Every claim sourced.",
   },
 ] as const;
 

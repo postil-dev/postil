@@ -1,12 +1,13 @@
-// Curated model list for /docs/models. Facts only — no prices. Prices are
-// fetched live from the OpenRouter catalog client-side (see model-catalog.tsx)
-// so this file never goes stale against what OpenRouter actually bills.
-//
-// contextLength and vision are asserted here from a point-in-time check of
-// https://openrouter.ai/api/v1/models and cross-checked live at render time;
-// if the catalog disagrees, the live fetch is what renders.
+// Curated model list for /docs/models. Facts and public price snapshots are
+// maintained in this repo so public docs do not depend on a third-party request
+// at render time.
 
 export type ParamClass = "unknown" | "<40B" | "40B-200B" | ">200B";
+
+export interface ModelPrice {
+  input: number;
+  output: number;
+}
 
 export interface CatalogModel {
   id: string;
@@ -20,6 +21,8 @@ export interface CatalogModel {
   recommended: boolean;
   /** True once bench-results.json has a scored entry for this id. */
   tested: boolean;
+  /** Public OpenRouter price per token for docs display. */
+  pricePerToken: ModelPrice;
 }
 
 export const MODELS: CatalogModel[] = [
@@ -33,6 +36,7 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: false,
     recommended: true,
     tested: true,
+    pricePerToken: { input: 0.000000435, output: 0.00000087 },
   },
   {
     id: "moonshotai/kimi-k2.6",
@@ -44,6 +48,7 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: false,
     recommended: true,
     tested: true,
+    pricePerToken: { input: 0.00000065, output: 0.00000341 },
   },
   {
     id: "deepseek/deepseek-v4-flash",
@@ -55,6 +60,7 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: false,
     recommended: false,
     tested: true,
+    pricePerToken: { input: 0.00000009, output: 0.00000018 },
   },
   {
     id: "qwen/qwen3-32b",
@@ -66,6 +72,7 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: true,
     recommended: false,
     tested: true,
+    pricePerToken: { input: 0.00000008, output: 0.00000028 },
   },
   {
     id: "mistralai/mistral-small-3.2-24b-instruct",
@@ -77,6 +84,7 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: true,
     recommended: false,
     tested: true,
+    pricePerToken: { input: 0.000000075, output: 0.0000002 },
   },
   {
     id: "google/gemma-3-27b-it",
@@ -88,5 +96,6 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: true,
     recommended: false,
     tested: true,
+    pricePerToken: { input: 0.00000008, output: 0.00000016 },
   },
 ];

@@ -44,9 +44,8 @@ postil review --base main`}</code>
       <h2>2. GitHub Actions</h2>
       <p>
         The composite action installs a CLI pinned to a full 40-character
-        commit SHA and runs the same review in CI. The action itself has no
-        tagged releases yet, so pin it to a commit SHA too —{" "}
-        <code>@v1</code> will resolve once the first tag ships:
+        commit SHA and runs the same review in CI. Pin the action itself to a
+        commit SHA as well:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`name: review
@@ -63,17 +62,18 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # main, @v1 resolves after the first tagged release
+      - uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # example tested SHA
         with:
-          cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5 # postil-cli v0.1.1
+          cli-ref: 3776f251db771dd74615305d7c2b0bc21b9fb2df # postil-cli v0.1.2
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}</code>
+          MODEL_API_KEY: \${{ secrets.MODEL_API_KEY }}
+          POSTIL_API_KEY: \${{ secrets.MODEL_API_KEY }}`}</code>
       </pre>
       <p>
-        The action SHA above is the current head of its <code>main</code>{" "}
-        branch, and <code>cli-ref</code> pins the postil-cli v0.1.1 release
-        commit; check the{" "}
+        The action SHA above is an example full commit SHA, and{" "}
+        <code>cli-ref</code> pins the postil-cli release commit. Pick full SHAs
+        you have verified from the{" "}
         <a
           href="https://github.com/postil-dev/postil-action"
           rel="noopener"
@@ -87,7 +87,7 @@ jobs:
         >
           postil-cli repository
         </a>{" "}
-        for the latest. The action refuses anything but a full 40-character
+        before updating. The action refuses anything but a full 40-character
         commit SHA for <code>cli-ref</code> — tags move, SHAs do not.
       </p>
 

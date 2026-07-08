@@ -6,12 +6,12 @@ import { PricingCalculator } from "@/components/pricing-calculator";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Free on public repos. Hosted teams can bring their own inference key or use managed OpenRouter billing. Self-hosted is free forever.",
+    "Free on public repos. Hosted teams get unlimited hosted reviews in a flat $10/developer plan. Self-hosted is free forever.",
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
     description:
-      "BYO key or managed inference, transparent model pricing, free self-hosting, and no per-review orchestration meter.",
+      "Unlimited hosted reviews, free self-hosting, and no per-review meter.",
     url: "https://postil.dev/pricing",
     images: ["/opengraph-image"],
   },
@@ -20,27 +20,23 @@ export const metadata: Metadata = {
 const FAQ = [
   {
     q: "What is my worst-case monthly cost?",
-    a: "Your orchestration cost is flat by seat. Model spend is either paid directly to your provider with BYOK or included on the Postil invoice with managed billing. There are no hidden credits or per-review orchestration overages.",
+    a: "For the hosted Team plan, the customer-facing price is flat by developer. The public calculator compares published customer-facing prices only.",
   },
   {
     q: "Do I have to bring my own key?",
-    a: "No. BYOK remains available for teams that already have OpenRouter, Anthropic, Azure OpenAI, Bedrock, vLLM, or Ollama set up. Managed inference is the easier path: Postil holds the provider key and includes model spend on the same invoice.",
+    a: "No. The hosted app includes reviews by default. Bring-your-own-key remains available for teams with a specific policy requirement.",
   },
   {
-    q: "What does the hosted beta cost today?",
-    a: "Nothing. While the GitHub App is in beta, Team-plan orchestration is free and your account carries a beta badge. The $10 flat rate applies when the beta ends; you will be told well in advance and can leave with your data.",
+    q: "What does hosted Team cost?",
+    a: "Hosted Team is $10 per developer per month with hosted reviews included. Public repositories, the local CLI, and the self-hosted stack remain free.",
   },
   {
     q: "Is the free tier actually free forever?",
     a: "Yes. The CLI and GitHub Action are Apache-2.0 and run locally or in your CI forever. Hosted reviews on public repositories are free, and the self-hosted stack (web, worker, Postgres) is free with no seat limit.",
   },
   {
-    q: "What happens at 10x PR volume?",
-    a: "Your Postil orchestration bill does not change. Flat orchestration was chosen specifically because agentic workflows can push hundreds of PRs per developer per month, including one publicly documented developer who hit 571 in 30 days, where per-review pricing produces bills in the hundreds of dollars per developer.",
-  },
-  {
     q: "Do you offer annual billing or invoicing?",
-    a: "During the beta, no payment is collected at all. Annual invoicing for the Team plan will be available at general availability.",
+    a: "Contact us for annual billing or invoicing. The public calculator uses monthly list prices so comparisons stay simple.",
   },
 ] as const;
 
@@ -49,12 +45,13 @@ export default function PricingPage() {
     <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
       <p className="eyebrow">Pricing</p>
       <h1 className="serif-display mt-4 max-w-3xl text-4xl md:text-5xl">
-        Flat orchestration. BYO key or managed inference.
+        Flat price. Default reviews included.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         Pricing in this category fails in one of two ways: per-review meters
-        that punish fast teams, or opaque bundles that hide the model bill.
-        Postil does neither: seats are predictable, model cost is explicit.
+        that punish fast teams, or opaque bundles that make a forecast hard.
+        Postil keeps the invoice boring: seats are predictable, and hosted
+        reviews are included.
       </p>
 
       {/* Tiers */}
@@ -78,7 +75,7 @@ export default function PricingPage() {
           <div className="flex items-center justify-between">
             <p className="eyebrow">Team</p>
             <span className="rounded-full border border-gate px-2.5 py-0.5 font-mono text-[11px] text-gate">
-              hosted beta: free
+              reviews included
             </span>
           </div>
           <p className="serif-display mt-3 text-4xl">$10</p>
@@ -87,8 +84,8 @@ export default function PricingPage() {
           </p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Private repositories, unlimited reviews</li>
-            <li>BYO inference key at provider rates</li>
-            <li>Managed OpenRouter inference on the same invoice</li>
+            <li>Unlimited hosted reviews included</li>
+            <li>BYO key support for custom policy requirements</li>
             <li>postil/gate for branch protection</li>
             <li>Silence-rate and confidence dashboards</li>
             <li>Incremental re-review on every push</li>
@@ -97,15 +94,14 @@ export default function PricingPage() {
             Install the App
           </Link>
           <p className="mt-4 text-xs text-charcoal/70">
-            Over 50 seats, or have procurement, invoicing, or DPA questions?{" "}
+            Procurement, invoicing, SSO, or DPA requirements?{" "}
             <a
               href="mailto:hello@postil.dev"
               className="text-rust underline"
             >
               Talk to us
             </a>
-            . SSO/SAML and a formal DPA are on the roadmap; contact us to
-            discuss requirements.
+            .
           </p>
         </div>
 
@@ -117,7 +113,7 @@ export default function PricingPage() {
             <li>Docker Compose: Postgres, web, worker</li>
             <li>Startup validation with actionable errors</li>
             <li>OpenRouter, Azure OpenAI, Ollama, vLLM, and LiteLLM documented</li>
-            <li>postil doctor verifies endpoint, key, and model</li>
+            <li>postil doctor verifies endpoint, key, and reviewer config</li>
           </ul>
           <Link href="/docs/self-hosted" className="btn-secondary mt-8 text-center">
             Self-host guide
@@ -133,27 +129,11 @@ export default function PricingPage() {
             What does your team actually pay?
           </h2>
           <p className="mt-3 max-w-2xl text-ink-soft">
-            Compared against CodeRabbit Pro at its published $24/user/mo annual
-            rate and Greptile&apos;s metered model ($30/seat plus per-review
-            overage past the included allowance). The default uses recorded
-            mean cost per review from Postil&apos;s fixture benchmark; switch to
-            custom tokens only when you want to stress-test unusually large
-            diffs.
-          </p>
-          <p className="mt-2 max-w-2xl text-sm text-charcoal/70">
-            Model token prices come from the public{" "}
-            <a
-              href="https://openrouter.ai/api/v1/models"
-              className="text-rust underline"
-              rel="noopener"
-            >
-              OpenRouter model catalog
-            </a>
-            ; measured benchmark costs are published in{" "}
-            <Link href="/docs/models" className="text-rust underline">
-              Models
-            </Link>
-            .
+            Compared against published customer-facing prices for CodeRabbit
+            Pro, Greptile, Qodo Pro Team, Macroscope, and Copilot Business.
+            Where a competitor uses usage pricing or unpublished review
+            consumption, the calculator shows a range or a floor instead of
+            inventing a precise total.
           </p>
         </div>
         <div className="mt-8">

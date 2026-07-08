@@ -95,8 +95,9 @@ export default function ExitCodesPage() {
       <ul>
         <li>Invalid CLI arguments or an unparseable config file.</li>
         <li>
-          Missing required input — no <code>POSTIL_API_KEY</code>/
-          <code>OPENROUTER_API_KEY</code>, no <code>--repo</code> or{" "}
+          Missing required input: no <code>MODEL_API_KEY</code>,{" "}
+          <code>POSTIL_API_KEY</code>, or <code>OPENROUTER_API_KEY</code>; no{" "}
+          <code>--repo</code> or{" "}
           <code>--pr</code> for remote review, no <code>--staged</code>/
           <code>--base</code>/<code>--diff-file</code> for local review.
         </li>

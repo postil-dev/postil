@@ -4,15 +4,15 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "AI code review pricing in 2026: what a 20-developer team actually pays",
   description:
-    "Four AI code review vendors changed pricing models in roughly ninety days. We run the same 20-developer team through CodeRabbit, Qodo, Greptile, Macroscope, Copilot, Bugbot, and Postil, with every assumption stated and every price dated and sourced.",
+    "Four AI code review vendors changed pricing models in roughly ninety days. We run the same 20-developer team through CodeRabbit, Qodo, Greptile, Macroscope, Copilot, Bugbot, and Postil, with every assumption stated and every price sourced.",
   alternates: { canonical: "/blog/ai-code-review-pricing-2026" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-08-22T00:00:00.000Z",
+    publishedTime: "2026-07-08T00:00:00.000Z",
     title:
       "AI code review pricing in 2026: what a 20-developer team actually pays",
     description:
-      "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price dated and sourced.",
+      "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
     url: "https://postil.dev/blog/ai-code-review-pricing-2026",
     images: ["/opengraph-image"],
   },
@@ -24,9 +24,9 @@ const articleJsonLd = {
   headline:
     "AI code review pricing in 2026: what a 20-developer team actually pays",
   description:
-    "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price dated and sourced.",
+    "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
   url: "https://postil.dev/blog/ai-code-review-pricing-2026",
-  datePublished: "2026-08-22",
+  datePublished: "2026-07-08",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -47,7 +47,7 @@ export default function PricingArticle() {
         AI code review pricing in 2026: what a 20-developer team actually pays
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
-        August 2026 · Postil team
+        July 2026 · Postil team
       </p>
 
       <div className="prose-postil blog-prose mt-10">
@@ -60,7 +60,9 @@ export default function PricingArticle() {
           internet predate at least one of those changes. This article prices
           one concrete team, 20 developers with a stated PR volume, through
           every major tool, with the arithmetic shown and every number traced
-          to a vendor page or announcement as of June 12, 2026.
+          to a vendor page or announcement. Qodo pricing uses the public
+          credit-pack prices; the other listed prices use public vendor
+          sources.
         </p>
         <p>
           Disclosure first: we build Postil, one of the seven tools below. This
@@ -108,10 +110,10 @@ export default function PricingArticle() {
             <a href="https://docs.macroscope.com/pricing" rel="noopener">
               usage pricing: $0.05 per KB of diff with a 10 KB minimum
             </a>
-            , which Macroscope says works out to roughly $0.95 to $1.50 for a
-            typical PR. Spend caps are available, and new workspaces get $100
-            of free usage. Two pricing models in six months is worth noting
-            when you forecast next year&apos;s bill.
+            . Macroscope says most reviews are under the minimum and cost
+            $0.50, with a 30 KB medium feature costing $1.50. Spend caps are
+            available. Two pricing models in six months is worth noting when
+            you forecast next year&apos;s bill.
           </li>
           <li>
             <strong>Cursor Bugbot (announced May 11, 2026).</strong> Dropped
@@ -164,13 +166,12 @@ export default function PricingArticle() {
             </a>
           </li>
           <li>
-            <strong>Qodo.</strong> Teams pricing rose from the widely cited $19
-            per user in 2025 to{" "}
+            <strong>Qodo.</strong> Pro Team pricing is now credit-pack based:{" "}
             <a href="https://www.qodo.ai/pricing/" rel="noopener">
-              $30 per user per month annual, $38 monthly
+              $0.012 per credit, a $30 starting point, and self-serve designed
+              for up to 30 users
             </a>
-            , with a credit system layered on top (2,500 credits per user;
-            premium models consume 5 credits per request).
+            .
           </li>
           <li>
             <strong>CodeRabbit.</strong> Still seat-based:{" "}
@@ -235,25 +236,24 @@ export default function PricingArticle() {
           changes linked above. Source:{" "}
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             coderabbit.ai/pricing
-          </a>{" "}
-          (June 12, 2026).
+          </a>
         </p>
 
-        <h3>Qodo: $600/month</h3>
+        <h3>Qodo: credit-pack billing</h3>
         <p>
-          20 seats × $30 (Teams, annual) = <strong>$600 per month</strong>, or
-          $760 on monthly billing. Each user gets 2,500 credits, and premium
-          models consume 5 credits per request, so heavy premium-model usage
-          can add credit purchases on top; we have not modeled that because the
-          docs and pricing page{" "}
-          <a href="https://docs.qodo.ai/subscription-plans" rel="noopener">
-            describe the limits differently
-          </a>
-          . Sources:{" "}
+          Qodo Pro Team starts at <strong>$30 per month</strong> with pooled
+          credits at $0.012 per credit. The pricing page frames Pro Team as
+          self-serve for up to 30 users, while the usage docs describe shared
+          workspace credits and overage caps. Because review consumption
+          depends on credit-pack choice and usage, the table treats Qodo as a
+          starting floor rather than a 20-seat total. Sources:{" "}
           <a href="https://www.qodo.ai/pricing/" rel="noopener">
             qodo.ai/pricing
           </a>{" "}
-          (June 12, 2026).
+          and{" "}
+          <a href="https://docs.qodo.ai/pricing-and-usage" rel="noopener">
+            docs.qodo.ai/pricing-and-usage
+          </a>
         </p>
 
         <h3>Greptile: $600/month, until volume moves</h3>
@@ -268,25 +268,23 @@ export default function PricingArticle() {
           Source:{" "}
           <a href="https://www.greptile.com/pricing" rel="noopener">
             greptile.com/pricing
-          </a>{" "}
-          (June 12, 2026).
+          </a>
         </p>
 
-        <h3>Macroscope: roughly $152 to $240/month</h3>
+        <h3>Macroscope: roughly $80 to $240/month</h3>
         <p>
-          No seats at all. Using Macroscope&apos;s own typical-PR range of
-          $0.95 to $1.50, 160 PRs cost{" "}
-          <strong>roughly $152 to $240 per month</strong>. At this volume it
+          No seats at all. Using Macroscope&apos;s own examples of $0.50 for
+          most under-minimum reviews and $1.50 for a 30 KB medium feature, 160
+          PRs cost <strong>roughly $80 to $240 per month</strong>. At this volume it
           is the cheapest paid option in the table, and spend caps bound the
           downside. In the agent-heavy scenario (600 PRs), the same range
-          gives roughly $570 to $900. The caveats: actual cost depends on your
+          gives roughly $300 to $900. The caveats: actual cost depends on your
           diff sizes, not PR counts ($0.05 per KB, 10 KB minimum), it is
           GitHub Cloud only, and the pricing model has changed twice in six
           months. Source:{" "}
           <a href="https://docs.macroscope.com/pricing" rel="noopener">
             docs.macroscope.com/pricing
-          </a>{" "}
-          (June 12, 2026).
+          </a>
         </p>
 
         <h3>Copilot code review: $380/month plus an amount we cannot compute</h3>
@@ -303,9 +301,8 @@ export default function PricingArticle() {
           >
             vary widely
           </a>
-          . That non-answer is itself the finding: as of June 2026, a team
-          cannot compute its Copilot code review bill from list prices in
-          advance. Sources:{" "}
+          . That non-answer is itself the finding: a team cannot compute its
+          Copilot code review bill from list prices in advance. Sources:{" "}
           <a
             href="https://github.blog/news-insights/company-news/github-copilot-is-moving-to-usage-based-billing/"
             rel="noopener"
@@ -341,29 +338,25 @@ export default function PricingArticle() {
           and{" "}
           <a href="https://cursor.com/docs/bugbot" rel="noopener">
             cursor.com/docs/bugbot
-          </a>{" "}
-          (June 12, 2026).
+          </a>
         </p>
 
-        <h3>Postil: $200/month plus your own inference bill</h3>
+        <h3>Postil: $200/month with hosted reviews included</h3>
         <p>
           Our row. 20 developers × $10 flat = <strong>$200 per month</strong>{" "}
-          for orchestration, at any PR volume; the number does not change in
-          the agent-heavy scenario. Inference is either billed on your own API
-          key or included by Postil as managed model spend, so the metered part
-          of the cost remains visible and tied to the model you choose. Hosted
-          reviews on public
-          repositories are free, the self-hosted stack is free with no seat
-          limit, and while the GitHub App is in beta, hosted orchestration is
-          free as well.
+          for the Team plan, at any PR volume; the number does not change in
+          the agent-heavy scenario. Hosted reviews on public repositories are
+          free, hosted Team reviews are included by default, and the
+          self-hosted stack is free with no seat limit.
           Source: <Link href="/pricing">postil.dev/pricing</Link>.
         </p>
 
         <h2>The comparison table</h2>
         <p>
           Base scenario: 20 developers, 160 PRs and 400 review runs per month,
-          annual billing. All list prices as of June 12, 2026; this category
-          re-prices often, so verify before buying.
+          annual billing. Prices use vendor list pages and linked
+          announcements. This category re-prices often, so verify before
+          buying.
         </p>
         <table>
           <thead>
@@ -384,10 +377,10 @@ export default function PricingArticle() {
               <td>Seats only</td>
             </tr>
             <tr>
-              <td>Qodo Teams</td>
-              <td className="hidden sm:table-cell">Per seat + credits</td>
-              <td>$600 ($760 monthly billing)</td>
-              <td>Seats, premium-model credits</td>
+              <td>Qodo Pro Team</td>
+              <td className="hidden sm:table-cell">Credit packs</td>
+              <td>From $30/mo credit pack</td>
+              <td>Credits, enterprise above 30 users</td>
             </tr>
             <tr>
               <td>Greptile</td>
@@ -398,7 +391,7 @@ export default function PricingArticle() {
             <tr>
               <td>Macroscope</td>
               <td className="hidden sm:table-cell">Per KB of diff</td>
-              <td>~$152–$240 (~$570–$900 agent-heavy)</td>
+              <td>~$80–$240 (~$300–$900 agent-heavy)</td>
               <td>Diff volume</td>
             </tr>
             <tr>
@@ -415,15 +408,15 @@ export default function PricingArticle() {
             </tr>
             <tr>
               <td>Postil</td>
-              <td className="hidden sm:table-cell">Flat per dev + BYO key</td>
-              <td>$200 + your API spend (beta: $0)</td>
-              <td>Your provider&apos;s inference rates</td>
+              <td className="hidden sm:table-cell">Flat per developer</td>
+              <td>$200</td>
+              <td>Seats; BYO key is optional for policy</td>
             </tr>
           </tbody>
         </table>
         <p>
           Two readings of the same table. If your volume is low and steady,
-          usage pricing is genuinely cheap: Macroscope at $152 to $240
+          usage pricing is genuinely cheap: Macroscope at $80 to $240
           undercuts every seat plan here. If your volume is high or growing,
           the metered rows are the ones that tripled between the two
           scenarios while the seat rows did not move.
@@ -465,13 +458,12 @@ export default function PricingArticle() {
           you can forecast within a few percent is worth something even when
           a metered bill might be lower, because budget surprises have
           organizational costs that unit prices do not capture. Our own
-          position follows from that: Postil charges flat for the part we
-          control (orchestration, $10 per developer) and passes through the
-          part we do not (inference, on your key, at your provider&apos;s
-          list rates). You still pay for usage; you pay it to
-          your model provider at published prices, and we have no lever to
-          profit from your volume. That is a structural choice, not a
-          discount, and you can check both halves of it on{" "}
+          position follows from that: Postil charges flat for Team seats
+          ($10 per developer) with hosted reviews included, while BYO key
+          support remains available for teams that require provider-controlled
+          inference. When you choose BYO key, provider usage stays in your
+          account and Postil has no lever to profit from your volume. That is a
+          structural choice, not a discount, and you can check it on{" "}
           <Link href="/pricing">our pricing page</Link>.
         </p>
         <p>
@@ -484,7 +476,7 @@ export default function PricingArticle() {
         <h2>Sources</h2>
         <ul>
           <li>
-            Vendor pricing pages (fetched June 12, 2026):{" "}
+            Vendor pricing pages:{" "}
             <a href="https://www.coderabbit.ai/pricing" rel="noopener">
               coderabbit.ai/pricing
             </a>
@@ -493,8 +485,8 @@ export default function PricingArticle() {
               qodo.ai/pricing
             </a>
             ,{" "}
-            <a href="https://docs.qodo.ai/subscription-plans" rel="noopener">
-              docs.qodo.ai/subscription-plans
+            <a href="https://docs.qodo.ai/pricing-and-usage" rel="noopener">
+              docs.qodo.ai/pricing-and-usage
             </a>
             ,{" "}
             <a href="https://www.greptile.com/pricing" rel="noopener">
@@ -582,9 +574,8 @@ export default function PricingArticle() {
             Run the math on your own numbers.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Postil is $10 per developer, flat, with inference on your own key
-            at provider rates. The calculator on the pricing page does the
-            rest.
+            Postil is $10 per developer, flat, with hosted reviews included.
+            The calculator on the pricing page does the rest.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

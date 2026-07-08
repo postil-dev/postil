@@ -14,17 +14,18 @@ export default function PrivacyPage() {
         <h1 className="serif-display mt-3 text-4xl text-charcoal">
           What we store, and what we refuse to.
         </h1>
-        <p className="mt-4 text-sm text-charcoal/50">Last updated June 2026.</p>
 
         <h2>Source code is never persisted</h2>
         <p>
-          The hosted control plane does not store your code. When a review
-          runs, the CLI fetches the pull-request diff with a short-lived
-          installation token, sends it to the model endpoint configured for
-          your organization, and exits. The diff lives in process memory for
-          the duration of the review and is gone with the process. There is no
-          code cache, no embedding index, and no repository clone on our
-          infrastructure.
+          The hosted control plane does not store your code. When a hosted
+          review runs, the worker fetches the pull-request diff with a
+          short-lived installation token, sends it through either Postil&apos;s
+          configured provider path or the BYO provider path configured for your
+          organization, and exits. CLI and self-hosted reviews send diffs
+          directly to the endpoint you configure. The diff lives in process
+          memory for the duration of the review and is gone with the process.
+          There is no code cache, no embedding index, and no repository clone on
+          our infrastructure.
         </p>
 
         <h2>What is stored</h2>
@@ -45,7 +46,8 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Usage events</strong>: prompt and completion token counts
-            per review, for the dashboard and (post-beta) billing.
+            per review, for dashboards, operations, abuse prevention, and
+            internal cost monitoring.
           </li>
           <li>
             <strong>Webhook delivery ids</strong>, kept for deduplication.
@@ -87,12 +89,14 @@ export default function PrivacyPage() {
             check-runs, review comments, sign-in.
           </li>
           <li>
-            <strong>Your configured model provider</strong> — receives the diff
-            for the duration of a model call. With a BYO key this is your own
-            provider relationship under your own data terms. The default for orgs
-            without a key is <strong>OpenRouter</strong>, which is a router: it
-            forwards the request to a downstream model provider, so the diff
-            transits OpenRouter and then that provider. For sensitive code we
+            <strong>Model providers</strong> — receive the diff for the duration
+            of a model call. Hosted BYO reviews route through the Postil worker
+            to your configured provider under your own provider relationship.
+            Hosted reviews without BYO settings use Postil&apos;s configured
+            OpenRouter-compatible provider path; the default is{" "}
+            <strong>OpenRouter</strong>, which forwards the request to a
+            downstream model provider. CLI and self-hosted deployments send
+            diffs directly to the endpoint you configure. For sensitive code we
             recommend a BYO key pointed directly at your chosen provider, or
             self-hosting (below).
           </li>
@@ -130,9 +134,12 @@ export default function PrivacyPage() {
           London region (<code>lhr</code>) and the managed database runs in a
           European region, so your account data and review envelopes are
           processed and stored in the UK/EU. PostHog analytics should use EU
-          Cloud for the hosted service. Two things sit outside that
-          boundary by design: when your org uses a BYO model key, diffs go to
-          whatever provider and region you configure; and a self-hosted
+          Cloud for the hosted service. Review inference is separate from that
+          account-data boundary: hosted reviews without BYO model settings send
+          diffs from the worker to Postil&apos;s configured OpenRouter-compatible
+          provider path and downstream model providers, so inference has no
+          fixed UK/EU residency guarantee. When your org uses a BYO model key,
+          diffs go to whatever provider and region you configure. A self-hosted
           deployment keeps all data on your own infrastructure, wherever you run
           it. We make no SOC 2 or ISO certification claim.
         </p>

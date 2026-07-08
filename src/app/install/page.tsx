@@ -93,7 +93,8 @@ export default function InstallPage() {
 
             <Terminal title="first run">
               <code>
-                <span className="t-dim">$</span> export OPENROUTER_API_KEY=sk-or-...{"\n"}
+                <span className="t-dim">$</span> export MODEL_API_KEY=sk-or-...{"\n"}
+                <span className="t-dim">$</span> export POSTIL_API_KEY="$MODEL_API_KEY"{"\n"}
                 <span className="t-dim">$</span> postil doctor{"\n"}
               </code>
             </Terminal>
@@ -116,7 +117,7 @@ export default function InstallPage() {
                 <span className="t-green">[ok  ]</span>
                 {" git              inside a git work tree\n"}
                 <span className="t-green">[ok  ]</span>
-                {" api key          POSTIL_API_KEY or OPENROUTER_API_KEY is set (value not shown)\n"}
+                {" api key          MODEL_API_KEY, POSTIL_API_KEY, or OPENROUTER_API_KEY is set (value not shown)\n"}
                 <span className="t-green">[ok  ]</span>
                 {" model endpoint   https://openrouter.ai/api/v1 answered for model deepseek/deepseek-v4-pro\n"}
                 <span className="t-green">[ok  ]</span>
@@ -166,20 +167,21 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: postil-dev/postil-action@v1
+      - uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024
         with:
           cli-ref: `}
-                <span className="t-rust">87f4bf08b63712d3600030a7c458f0b790cfc0d5</span>
+                <span className="t-rust">3776f251db771dd74615305d7c2b0bc21b9fb2df</span>
                 {`
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`}
+          MODEL_API_KEY: \${{ secrets.MODEL_API_KEY }}
+          POSTIL_API_KEY: \${{ secrets.MODEL_API_KEY }}`}
               </code>
             </Terminal>
             <p className="text-sm text-ink-soft">
               The action refuses anything but a full 40-character commit SHA for{" "}
               <code className="font-mono text-xs">cli-ref</code> — tags move, SHAs
-              do not. The SHA above is the current blessed CLI ref; check the{" "}
+              do not. Pick the full SHA you have tested from the{" "}
               <a
                 href="https://github.com/postil-dev/postil-cli"
                 className="text-rust underline"
@@ -187,7 +189,7 @@ jobs:
               >
                 postil-cli repository
               </a>{" "}
-              for the latest blessed SHA.
+              when you update.
             </p>
           </div>
         </section>
@@ -220,15 +222,12 @@ jobs:
     - curl -fsSL https://postil.dev/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
   script:
+    - export POSTIL_API_KEY="$MODEL_API_KEY"
     - postil review
         --forge gitlab
         --repo $CI_PROJECT_PATH
         --pr `}
                 <span className="t-rust">$CI_MERGE_REQUEST_IID</span>
-                {`
-  variables:
-    GITLAB_TOKEN: $GITLAB_TOKEN   # project access token
-    OPENROUTER_API_KEY: $OPENROUTER_API_KEY`}
               </code>
             </Terminal>
             <p className="text-sm text-ink-soft">
@@ -251,7 +250,7 @@ jobs:
             <p className="font-mono text-sm text-charcoal/70">04</p>
             <h2 className="serif-display mt-1 text-2xl">Hosted GitHub App</h2>
             <p className="mt-2 text-sm text-ink-soft">
-              Zero-config reviews on every PR. Free during beta.
+              Zero-config reviews on every PR. Hosted Team reviews included.
             </p>
           </div>
           <div className="min-w-0">
@@ -259,23 +258,23 @@ jobs:
               The App installs in a click: pick repositories, open a pull
               request, and two check-runs appear; require{" "}
               <code className="font-mono text-sm">postil/gate</code> in branch
-              protection when you are ready to make it binding. No keys leave
-              your control unless you choose managed inference: configure your
-              own key per organization or let Postil include model spend on the
-              same invoice. The App also answers{" "}
+              protection when you are ready to make it binding. Hosted
+              reviews are included by default, and BYO key support remains
+              available for organizations with a specific policy requirement.
+              The App also answers{" "}
               <code className="font-mono text-sm">@postil</code> mentions on PRs
               and issues; review and answer only, it never opens PRs or pushes
               commits.
             </p>
             <p className="mt-3 text-sm text-ink-soft">
-              Hosted access is rolling out as a best-effort beta. The CLI,
-              GitHub Action, and self-hosted stack use the same review engine.
+              Hosted access uses the same review engine as the CLI, GitHub
+              Action, and self-hosted stack.
             </p>
             <div className="mt-5 flex flex-wrap items-center gap-4">
               <Link href="/docs/self-hosted" className="btn-primary">
                 Run it yourself
               </Link>
-              <span className="font-mono text-xs text-charcoal/70">GitHub App beta</span>
+              <span className="font-mono text-xs text-charcoal/70">GitHub App</span>
             </div>
             <p className="mt-4 text-sm text-ink-soft">
               Permissions requested: contents (read), pull requests (write),
