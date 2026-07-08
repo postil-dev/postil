@@ -279,8 +279,9 @@ export default function BestToolsArticle() {
           >
             listed with a 500-user minimum on AWS Marketplace
           </a>
-          . Findings ship as comments; pre-merge checks require the $48 Pro
-          Plus tier.
+          . Its pricing page lists built-in pre-merge checks on Pro and custom
+          pre-merge checks on Pro Plus; compare carefully if you need a
+          dedicated fail-closed gate separate from advisory review.
         </p>
 
         <h2>Qodo</h2>

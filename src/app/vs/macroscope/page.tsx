@@ -41,7 +41,10 @@ const ROWS: ComparisonRow[] = [
     feature: "Pricing",
     cells: [
       { kind: "text", note: "Flat Team price; hosted reviews included" },
-      { kind: "text", note: "$0.05/KB of diff ($0.50 min, ~$1.50 medium PR)" },
+      {
+        kind: "text",
+        note: "$0.05/KB of diff ($0.50 floor; $1.50 for a 30 KB medium feature)",
+      },
     ],
   },
   {

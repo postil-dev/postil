@@ -24,10 +24,13 @@ const COLUMNS = ["Postil", "CodeRabbit"];
 
 const ROWS: ComparisonRow[] = [
   {
-    feature: "Hard merge gate (separate blocking check)",
+    feature: "Dedicated fail-closed merge gate",
     cells: [
       { kind: "yes", note: "postil/gate, fail-closed" },
-      { kind: "no", note: "comments only" },
+      {
+        kind: "partial",
+        note: "built-in checks; custom checks on Pro Plus",
+      },
     ],
   },
   {
@@ -96,12 +99,12 @@ export default function VsCodeRabbitPage() {
       <div className="prose-postil mt-14 max-w-none">
         <h2>The merge gate is the difference that matters</h2>
         <p>
-          CodeRabbit posts blocking-severity and style-level findings as
-          equivalent PR comments. Teams that want &quot;block on critical, ignore
-          nits&quot; rebuild that logic by hand from raw check statuses. Postil
-          ships it: <code>postil/gate</code> fails only at or above your
-          configured severity and is safe to require in branch protection, while{" "}
-          <code>postil/review</code> carries everything advisory. On operational
+          CodeRabbit&apos;s pricing page lists built-in pre-merge checks on Pro
+          and custom pre-merge checks on Pro Plus, so it is not a comments-only
+          tool. The difference is structure. Postil ships a dedicated gate:
+          <code>postil/gate</code> fails only at or above your configured
+          severity and is safe to require in branch protection, while{" "}
+          <code>postil/review</code> carries advisory findings. On operational
           errors the gate fails closed by default; repos can opt into{" "}
           <code>gate.onError: advisory</code>, which fails open on provider
           outages only.

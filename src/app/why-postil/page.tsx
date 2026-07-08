@@ -32,7 +32,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
     feature: "Hard merge gate (separate blocking check)",
     cells: [
       { kind: "yes", note: "postil/gate, fail-closed" },
-      { kind: "no", note: "comments only" },
+      { kind: "partial", note: "built-in checks; custom checks on Pro Plus" },
       { kind: "no", note: "comments only" },
       { kind: "partial", note: "neutral check, not blocking" },
     ],
