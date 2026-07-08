@@ -41,7 +41,7 @@ export default function ModelsPage() {
           . The pricing calculator also refreshes catalog prices in the browser
           and falls back to a committed snapshot if the catalog is unavailable.
           <code>default</code> marks
-          the models Postil recommends out of the box; the rest are a
+          the model Postil uses out of the box; the rest are a
           curated set spanning cost and locally-runnable open-weights
           options. Re-check before committing to a procurement number; the
           calculator on <Link href="/pricing" className="text-rust underline">pricing</Link>{" "}
