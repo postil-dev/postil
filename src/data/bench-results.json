@@ -1,46 +1,60 @@
 {
-  "generatedAt": "2026-07-02T17:27:54.422Z",
+  "generatedAt": "2026-07-08T14:11:46.599Z",
   "cliVersion": "postil 0.1.2",
   "models": [
     {
       "id": "deepseek/deepseek-v4-pro",
-      "detectionRate": 0.96,
+      "detectionRate": 0.9696969696969697,
+      "falsePositives": 2,
+      "casesRun": 40,
+      "meanCostUsdPerReview": 0.0011501400000000002,
+      "meanDurationMs": 19931.55,
+      "totalCostUsd": 0.0460056
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "detectionRate": 0.9696969696969697,
       "falsePositives": 0,
-      "casesRun": 30,
-      "meanCostUsdPerReview": 0.001105,
-      "meanDurationMs": 18820.433333
+      "casesRun": 40,
+      "meanCostUsdPerReview": 0.00018279225,
+      "meanDurationMs": 8184.35,
+      "totalCostUsd": 0.00731169
     },
     {
       "id": "moonshotai/kimi-k2.6",
-      "detectionRate": 0.8,
+      "detectionRate": 0.8181818181818182,
       "falsePositives": 0,
-      "casesRun": 30,
-      "meanCostUsdPerReview": 0.007331,
-      "meanDurationMs": 14152.8
+      "casesRun": 40,
+      "meanCostUsdPerReview": 0.006485671000000001,
+      "meanDurationMs": 22497.5,
+      "totalCostUsd": 0.25942684
     },
     {
       "id": "qwen/qwen3-32b",
-      "detectionRate": 0.96,
-      "falsePositives": 0,
-      "casesRun": 30,
-      "meanCostUsdPerReview": 0.000204,
-      "meanDurationMs": 2782.1
+      "detectionRate": 1,
+      "falsePositives": 1,
+      "casesRun": 40,
+      "meanCostUsdPerReview": 0.00021296200000000005,
+      "meanDurationMs": 3256.6,
+      "totalCostUsd": 0.00851848
     },
     {
       "id": "mistralai/mistral-small-3.2-24b-instruct",
       "detectionRate": 1,
-      "falsePositives": 0,
-      "casesRun": 30,
-      "meanCostUsdPerReview": 0.000102,
-      "meanDurationMs": 3698.5
+      "falsePositives": 2,
+      "casesRun": 40,
+      "meanCostUsdPerReview": 0.000096990625,
+      "meanDurationMs": 8827.075,
+      "totalCostUsd": 0.003879625
     },
     {
       "id": "google/gemma-3-27b-it",
-      "detectionRate": 1,
-      "falsePositives": 0,
-      "casesRun": 30,
-      "meanCostUsdPerReview": 8.9e-05,
-      "meanDurationMs": 6161.6
+      "detectionRate": 0.9393939393939394,
+      "falsePositives": 3,
+      "casesRun": 40,
+      "meanCostUsdPerReview": 0.00009116400000000001,
+      "meanDurationMs": 7556.025,
+      "totalCostUsd": 0.00364656
     }
   ]
 }

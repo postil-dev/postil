@@ -6,6 +6,7 @@ interface BenchModelResult {
   falsePositives: number;
   casesRun: number;
   meanCostUsdPerReview: number;
+  totalCostUsd?: number;
   meanDurationMs: number;
 }
 
@@ -34,11 +35,15 @@ function formatDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
+function totalCost(m: BenchModelResult): number {
+  return m.totalCostUsd ?? m.meanCostUsdPerReview * m.casesRun;
+}
+
 export function BenchResultsSection() {
   if (data.models.length === 0) {
     return (
       <p className="text-charcoal/70">
-        First measured sweep pending — the bench harness run publishes here.
+        First measured sweep pending. The bench harness run publishes here.
       </p>
     );
   }
@@ -57,6 +62,9 @@ export function BenchResultsSection() {
               </th>
               <th scope="col" className="border-b border-charcoal py-2 pr-3 text-left font-semibold text-charcoal">
                 Cost / review
+              </th>
+              <th scope="col" className="border-b border-charcoal py-2 pr-3 text-left font-semibold text-charcoal">
+                Total cost
               </th>
               <th scope="col" className="border-b border-charcoal py-2 pr-3 text-left font-semibold text-charcoal">
                 Detection rate
@@ -80,6 +88,9 @@ export function BenchResultsSection() {
                 </td>
                 <td className="border-b border-stone py-3 pr-3 align-top font-mono font-medium">
                   {formatCost(m.meanCostUsdPerReview)}
+                </td>
+                <td className="border-b border-stone py-3 pr-3 align-top font-mono">
+                  {formatCost(totalCost(m))}
                 </td>
                 <td className="border-b border-stone py-3 pr-3 align-top font-mono">
                   {formatPercent(m.detectionRate)}

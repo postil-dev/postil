@@ -23,7 +23,7 @@ export default function ModelsPage() {
         </p>
         <p>
           Every model does the same job: read a diff, decide what is worth
-          flagging. The difference is capability and price, not use case — so
+          flagging. The difference is capability and price, not use case, so
           the table below leads with facts (context, vision, weights,
           parameter class) instead of per-model recommendations.
         </p>
@@ -76,7 +76,7 @@ export default function ModelsPage() {
           Local inference is best for sensitive repositories and for teams
           that already operate GPU capacity. The catalog above marks
           open-weights models under 40B parameters as{" "}
-          <code>locally runnable</code> — start there. Postil fails closed
+          <code>locally runnable</code>. Start there. Postil fails closed
           when a model cannot produce a valid review envelope, so pick a
           coder-tuned model that follows JSON schema reliably.
         </p>
@@ -84,14 +84,14 @@ export default function ModelsPage() {
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`ollama pull qwen3:32b
 POSTIL_API_BASE=http://localhost:11434/v1 \\
-POSTIL_API_KEY=ollama \\
+MODEL_API_KEY=ollama \\
 REVIEW_MODEL=qwen3:32b \\
 postil doctor`}</code>
         </pre>
         <h3>vLLM or LiteLLM</h3>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`POSTIL_API_BASE=http://localhost:8000/v1
-POSTIL_API_KEY=local
+MODEL_API_KEY=local
 REVIEW_MODEL=<served-model-name>
 postil review --staged --output-json`}</code>
         </pre>
@@ -104,16 +104,16 @@ postil review --staged --output-json`}</code>
         <p className="prose-postil mt-2">
           Method: seeded-defect fixtures run through a mock forge against the
           real model, scored against ground truth. Mean cost per review is
-          the headline column — it reflects actual reviews produced, ahead of
+          the headline column because it reflects actual reviews produced, ahead of
           catalog list price.
         </p>
         <p className="prose-postil mt-2">
-          Read detection rate as a floor, not a ranking: the current fixture
-          set seeds clear, unambiguous defects, and capable models saturate
-          it. It tells you a model handles the review pipeline and obvious
-          bugs at the stated cost — a harder, non-public fixture set for
-          separating frontier models is planned and its results will be
-          published the same way.
+          Read detection rate as a floor, not a ranking: the checked-in live
+          report below uses 40 fixtures, with 33 seeded defects and 7 clean
+          PRs where the correct review is silence. These fixtures seed clear,
+          unambiguous defects, and capable models can saturate them. They show
+          that a model handles the review pipeline and obvious bugs at the
+          stated cost.
         </p>
         <div className="mt-4">
           <BenchResultsSection />
@@ -129,16 +129,14 @@ postil review --staged --output-json`}</code>
           prints the API key.
         </p>
         <pre tabIndex={0} aria-label="Code sample">
-          <code>{`cd postil-cli
-cargo build --quiet --release
-cd bench
-POSTIL_API_KEY=... REVIEW_MODEL=deepseek/deepseek-v4-pro AGENT=1 bun run bench:live -- --json
-POSTIL_API_KEY=... REVIEW_MODEL=moonshotai/kimi-k2.6 AGENT=1 bun run bench:live -- --json
-POSTIL_API_KEY=... REVIEW_MODEL=qwen/qwen3-32b AGENT=1 bun run bench:live -- --json`}</code>
+          <code>{`cd postil-cli/bench
+MODEL_API_KEY=... \\
+POSTIL_BENCH_MODELS=deepseek/deepseek-v4-pro,deepseek/deepseek-v4-flash,moonshotai/kimi-k2.6 \\
+bun run bench:live-models -- --json-out .runs/live-models.json`}</code>
         </pre>
         <p>
           Promote the cheapest model that preserves detection rate and
-          silence on clean PRs for your own codebase — the numbers above are
+          silence on clean PRs for your own codebase. The numbers above are
           a starting point, not a substitute for running it on your diffs.
         </p>
       </div>

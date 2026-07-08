@@ -54,7 +54,7 @@ export const MODELS: CatalogModel[] = [
     paramClass: "40B-200B",
     locallyRunnable: false,
     recommended: false,
-    tested: false,
+    tested: true,
   },
   {
     id: "qwen/qwen3-32b",
