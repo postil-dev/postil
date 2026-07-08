@@ -26,7 +26,7 @@ export default function GitLabForgePage() {
         <code>api</code> scope and at least <strong>Developer</strong> role so it
         can read the MR diff and post discussion notes. Store it as a masked CI/CD
         variable named <code>GITLAB_TOKEN</code>. Add your inference key
-        (for example <code>OPENROUTER_API_KEY</code>) the same way.
+        (<code>MODEL_API_KEY</code>) the same way.
       </p>
 
       <h2>2. Add the CI job</h2>
@@ -40,12 +40,10 @@ export default function GitLabForgePage() {
     - curl -fsSL https://postil.dev/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
   script:
+    - export POSTIL_API_KEY="$MODEL_API_KEY"
     - postil review --forge gitlab
         --repo $CI_PROJECT_PATH
-        --pr $CI_MERGE_REQUEST_IID
-  variables:
-    GITLAB_TOKEN: $GITLAB_TOKEN
-    OPENROUTER_API_KEY: $OPENROUTER_API_KEY`}</code>
+        --pr $CI_MERGE_REQUEST_IID`}</code>
       </pre>
       <p>
         The job runs only on merge-request pipelines. A gate-failing review exits{" "}
@@ -63,6 +61,8 @@ export default function GitLabForgePage() {
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`export GITLAB_TOKEN=glpat-...
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 export GITLAB_API_URL=https://gitlab.example.com/api/v4
 postil review --forge gitlab \\
   --repo $CI_PROJECT_PATH --pr $CI_MERGE_REQUEST_IID`}</code>
@@ -80,6 +80,8 @@ postil review --forge gitlab \\
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`export GITLAB_TOKEN=glpat-...
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 postil review --forge gitlab --repo group/project --pr 88
 # self-managed:
 export GITLAB_API_URL=https://gitlab.example.com/api/v4

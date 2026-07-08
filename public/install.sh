@@ -2,7 +2,7 @@
 # Postil CLI installer. Downloads a prebuilt, checksum-verified release binary.
 #
 #   curl -fsSL https://postil.dev/install.sh | sh
-#   curl -fsSL https://postil.dev/install.sh | sh -s -- --version v0.1.0 --bin-dir ~/.local/bin
+#   curl -fsSL https://postil.dev/install.sh | sh -s -- --version v0.1.2 --bin-dir ~/.local/bin
 #
 # Verification: the archive's SHA-256 is checked against the published checksum
 # (transit integrity), and when cosign is installed the Sigstore keyless
@@ -146,4 +146,7 @@ case ":$PATH:" in
     *) echo "Add ${BIN_DIR} to your PATH to run 'postil' directly." ;;
 esac
 "${BIN_DIR}/postil" --version || true
-echo "Next: export your key (POSTIL_API_KEY=...) and run 'postil doctor'."
+echo "Next:"
+echo "  export MODEL_API_KEY=..."
+echo "  export POSTIL_API_KEY=\"\$MODEL_API_KEY\""
+echo "  postil doctor"

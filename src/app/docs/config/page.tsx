@@ -169,9 +169,10 @@ model:
         </thead>
         <tbody>
           <tr>
-            <td><code>POSTIL_API_KEY</code></td>
+            <td><code>MODEL_API_KEY</code></td>
             <td>
-              LLM API key; falls back to <code>OPENROUTER_API_KEY</code>
+              LLM API key; falls back to <code>POSTIL_API_KEY</code>, then{" "}
+              <code>OPENROUTER_API_KEY</code>
             </td>
           </tr>
           <tr>

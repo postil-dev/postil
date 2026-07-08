@@ -58,11 +58,11 @@ const DOCS_SHA_DIFF = `diff --git a/src/app/docs/quickstart/page.tsx b/src/app/d
 @@ -66,9 +66,9 @@ jobs:
      steps:
        - uses: actions/checkout@v4
--      - uses: postil-dev/postil-action@v1
-+      - uses: postil-dev/postil-action@0d92d604e753fd6831baeeff85e3f2ff4a84bd6c
+-      - uses: postil-dev/postil-action@main
++      - uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024
          with:
--          cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5
-+          cli-ref: 0d92d604e753fd6831baeeff85e3f2ff4a84bd6c
+-          cli-ref: v0.1.2
++          cli-ref: 3776f251db771dd74615305d7c2b0bc21b9fb2df
          env:
            GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}`;
 
@@ -145,7 +145,7 @@ const FLY_MIGRATE_DIFF = `diff --git a/fly.toml b/fly.toml
 --- a/fly.toml
 +++ b/fly.toml
 @@ -23,6 +23,9 @@ primary_region = "lhr"
- POSTIL_CLI_REV = "v0.1.1"
+ POSTIL_CLI_REV = "v0.1.2"
  NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 
 +[deploy]

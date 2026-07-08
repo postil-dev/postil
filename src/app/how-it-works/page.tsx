@@ -222,8 +222,10 @@ export default function HowItWorksPage() {
               The control plane persists exactly one artifact per review: the
               envelope — a JSON document with the summary, findings (path,
               line, severity, confidence), token usage, and gate verdict. Your
-              diff is fetched by the CLI at review time, sent to the model
-              endpoint you configured, and discarded with the process.
+              diff is fetched at review time, sent through either Postil&apos;s
+              configured provider path or your BYO provider path, and discarded
+              with the process. CLI and self-hosted reviews send diffs directly
+              to the endpoint you configure.
             </p>
             <p className="mt-4">
               Bring-your-own API keys are sealed with AES-256-GCM before they

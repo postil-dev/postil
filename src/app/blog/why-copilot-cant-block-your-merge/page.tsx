@@ -5,11 +5,11 @@ export const metadata: Metadata = {
   title:
     "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
   description:
-    "GitHub branch protection blocks on required status checks, not on review comments. Copilot code review posts a Comment, Claude Code review and Macroscope conclude neutral, so none of them can gate a merge. Here is the mechanic, and how a real check-run gate works.",
+    "GitHub branch protection blocks on required status checks, not on review comments. Copilot code review posts a Comment, Claude Code review concludes neutral, and Macroscope defaults to neutral checks unless configured to fail.",
   alternates: { canonical: "/blog/why-copilot-cant-block-your-merge" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-08-08T00:00:00.000Z",
+    publishedTime: "2026-07-08T00:00:00.000Z",
     title:
       "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
     description:
@@ -25,9 +25,9 @@ const articleJsonLd = {
   headline:
     "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
   description:
-    "GitHub branch protection blocks on required status checks, not review comments. Copilot code review posts a Comment, Claude Code review and Macroscope conclude neutral, so none of them can gate a merge. Here is the mechanic, and how a real check-run gate works.",
+    "GitHub branch protection blocks on required status checks, not review comments. Copilot code review posts a Comment, Claude Code review concludes neutral, and Macroscope defaults to neutral checks unless configured to fail.",
   url: "https://postil.dev/blog/why-copilot-cant-block-your-merge",
-  datePublished: "2026-08-08",
+  datePublished: "2026-07-08",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -49,7 +49,7 @@ export default function CopilotMergeGateArticle() {
         gate works)
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
-        August 2026 · Postil team
+        July 2026 · Postil team
       </p>
 
       <div className="prose-postil blog-prose mt-10">
@@ -140,21 +140,28 @@ export default function CopilotMergeGateArticle() {
         </p>
         <p>
           <strong>
-            Claude Code review and Macroscope conclude neutral.
+            Claude Code review concludes neutral; Macroscope defaults neutral.
           </strong>{" "}
-          Both publish a status check rather than a comment, which looks like the
+          Both publish status checks rather than comments, which looks like the
           enforcement path. But{" "}
           <a href="https://code.claude.com/docs/en/code-review" rel="noopener">
             Claude Code review&apos;s documentation
           </a>{" "}
-          states its check completes with a neutral conclusion, and{" "}
-          <a href="https://docs.macroscope.com/changelog" rel="noopener">
-            Macroscope&apos;s check runs are likewise neutral
+          states its check completes with a neutral conclusion.{" "}
+          <a
+            href="https://docs.macroscope.com/check-run-agents"
+            rel="noopener"
+          >
+            Macroscope Check Run Agents
           </a>
-          . A neutral conclusion is the grey square that reads as &quot;didn&apos;t
-          fail.&quot; You can mark either as required in branch protection and it
-          will still never hold a merge, because neutral is not a failing
-          conclusion. The check exists; the gate does not.
+          default to a neutral ceiling, while{" "}
+          <a href="https://docs.macroscope.com/approvability" rel="noopener">
+            Macroscope Approvability
+          </a>{" "}
+          documents how to configure a failure conclusion as a required status
+          check. So Macroscope is configurable: left at its neutral default, the
+          check exists and the gate does not; configured to fail, it can block a
+          merge.
         </p>
         <p>
           <strong>
@@ -245,7 +252,7 @@ export default function CopilotMergeGateArticle() {
           shipping code, not a slide. The gate check is only ever{" "}
           <code>success</code> or <code>failure</code>. It is structurally not
           allowed to take the neutral conclusion that makes Claude Code review
-          and Macroscope checks non-blocking. The conclusion is computed
+          and default-neutral checks non-blocking. The conclusion is computed
           straight from the gate outcome:
         </p>
         <pre tabIndex={0} aria-label="Code sample">
@@ -323,11 +330,11 @@ Summary: 6 finding(s) would be suppressed; 2 gate outcome(s) would change.`}</co
         <p>
           GitHub blocks merges on required status checks that conclude failure,
           not on review comments and not on neutral checks. A reviewer that posts
-          a Comment (Copilot) or concludes neutral (Claude Code review,
-          Macroscope) has chosen, by design, a signal that branch protection
-          will not enforce. A real gate is one check run that is willing to
-          conclude failure, marked required, kept separate from the advisory
-          chatter, and failing closed on error. You can{" "}
+          a Comment (Copilot) or concludes neutral (Claude Code review, or any
+          default-neutral check) has chosen, by design, a signal that branch
+          protection will not enforce. A real gate is one check run that is
+          willing to conclude failure, marked required, kept separate from the
+          advisory chatter, and failing closed on error. You can{" "}
           <Link href="/docs/gate">read how the gate is configured</Link>, dry-run
           it with <code>postil plan</code> before arming it, or{" "}
           <Link href="/evidence">see a review run</Link> end to end first.
@@ -358,8 +365,18 @@ Summary: 6 finding(s) would be suppressed; 2 gate outcome(s) would change.`}</co
             </a>
           </li>
           <li>
-            <a href="https://docs.macroscope.com/changelog" rel="noopener">
-              Macroscope changelog (check runs are neutral)
+            <a
+              href="https://docs.macroscope.com/check-run-agents"
+              rel="noopener"
+            >
+              Macroscope Check Run Agents docs (neutral by default, configurable
+              to failure)
+            </a>
+          </li>
+          <li>
+            <a href="https://docs.macroscope.com/approvability" rel="noopener">
+              Macroscope Approvability docs (required failing status-check
+              configuration)
             </a>
           </li>
           <li>

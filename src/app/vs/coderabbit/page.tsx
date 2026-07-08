@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs CodeRabbit",
   description:
-    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, transparent inference billing, and free self-hosting.",
+    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, flat pricing with hosted reviews included, and free self-hosting.",
   alternates: { canonical: "/vs/coderabbit" },
   openGraph: {
     title: "Postil vs CodeRabbit",
     description:
-      "A hard merge gate, a published silence metric, transparent inference billing, and free self-hosting. The honest comparison.",
+      "A hard merge gate, a published silence metric, flat pricing with hosted reviews included, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/coderabbit",
     images: ["/opengraph-image"],
   },
@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
+      { kind: "text", note: "Flat Team price; hosted reviews included" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
     ],
   },
@@ -89,7 +89,7 @@ export default function VsCodeRabbitPage() {
           caption="Postil compared with CodeRabbit across merge gate, silence metric, pricing, self-hosting, platforms, and config compatibility."
         />
         <p className="mt-3 font-mono text-xs text-charcoal/70">
-          Compiled from vendor pricing and documentation as of June 2026.
+          Sources: vendor pricing and documentation.
         </p>
       </div>
 
@@ -125,10 +125,10 @@ export default function VsCodeRabbitPage() {
           CodeRabbit Pro is{" "}
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             $24 per seat per month on the annual plan
-          </a>{" "}
-          as of June 2026. Postil keeps orchestration flat and makes inference
-          explicit: bring your own key at provider rates or use managed
-          OpenRouter inference on the same invoice. Run the numbers on the{" "}
+          </a>
+          . Postil Team is $10 per developer with hosted
+          reviews included, and BYO key support remains available for policy
+          requirements. Run the numbers on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 

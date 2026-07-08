@@ -73,9 +73,17 @@ const ENV_SPECS: EnvVarSpec[] = [
     scope: ["web", "worker"],
   },
   {
+    name: "MODEL_API_KEY",
+    purpose:
+      "Default model provider API key for hosted reviews when an org has no BYO key",
+    example: "sk-or-v1-...",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
     name: "POSTIL_API_KEY",
     purpose:
-      "Default LLM API key for hosted reviews when an org has no BYO key (falls back to OPENROUTER_API_KEY)",
+      "Legacy model provider API key alias; MODEL_API_KEY is preferred and OPENROUTER_API_KEY remains accepted",
     example: "sk-or-v1-...",
     scope: ["worker"],
     optional: true,

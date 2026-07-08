@@ -236,11 +236,13 @@ export default function SecurityPage() {
           <p>
             The control plane persists one artifact per review: the envelope — a
             JSON document with the summary, findings, token usage, and gate
-            verdict. The diff is fetched by the CLI at review time, sent to the
-            model endpoint you configured, and discarded with the process. There
-            is no code cache, embedding index, or repository clone on our
-            infrastructure. Self-hosted deployments send nothing to us: no
-            telemetry, no license pings, no update checks.
+            verdict. The diff is fetched at review time, sent to the applicable
+            model endpoint, and discarded with the process. Hosted BYO reviews
+            route through the worker to your configured provider, hosted default
+            reviews use Postil&apos;s configured provider path, and self-hosted
+            deployments send nothing to us: no telemetry, no license pings, no
+            update checks. There is no code cache, embedding index, or
+            repository clone on our infrastructure.
           </p>
           <p className="mt-4">
             Full detail in the{" "}

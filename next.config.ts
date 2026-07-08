@@ -12,9 +12,7 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
-  // openrouter.ai: /docs/models fetches the live model catalog client-side
-  // for pricing, never committed as static numbers.
-  "connect-src 'self' https://eu.i.posthog.com https://us.i.posthog.com https://openrouter.ai",
+  "connect-src 'self' https://eu.i.posthog.com https://us.i.posthog.com",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

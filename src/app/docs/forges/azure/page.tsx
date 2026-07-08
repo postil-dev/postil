@@ -25,7 +25,7 @@ export default function AzureForgePage() {
         Create a PAT scoped to <strong>Code (Read &amp; Write)</strong> so it
         can read the PR diff and post thread comments. Store it as a secret
         pipeline variable named <code>AZURE_DEVOPS_TOKEN</code>. Add your
-        inference key (for example <code>OPENROUTER_API_KEY</code>) the same
+        inference key (<code>MODEL_API_KEY</code>) the same
         way.
       </p>
 
@@ -43,12 +43,14 @@ steps:
   - script: |
       curl -fsSL https://postil.dev/install.sh | sh
       export PATH="$HOME/.local/bin:$PATH"
+      org="$(basename "\${SYSTEM_COLLECTIONURI%/}")"
       postil review --forge azure \\
-        --repo $(System.TeamProject)/$(Build.Repository.Name) \\
-        --pr $(System.PullRequest.PullRequestId)
+        --repo "$org/$SYSTEM_TEAMPROJECT/$BUILD_REPOSITORY_NAME" \\
+        --pr "$SYSTEM_PULLREQUEST_PULLREQUESTID"
     env:
       AZURE_DEVOPS_TOKEN: $(AZURE_DEVOPS_TOKEN)
-      OPENROUTER_API_KEY: $(OPENROUTER_API_KEY)`}</code>
+      MODEL_API_KEY: $(MODEL_API_KEY)
+      POSTIL_API_KEY: $(MODEL_API_KEY)`}</code>
       </pre>
       <p>
         The repository for <code>--repo</code> is{" "}
@@ -67,6 +69,8 @@ steps:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`export AZURE_DEVOPS_TOKEN=...
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 export AZURE_DEVOPS_API_URL=https://azuredevops.example.com
 postil review --forge azure --repo organization/project/repository --pr 7`}</code>
       </pre>
@@ -74,6 +78,8 @@ postil review --forge azure --repo organization/project/repository --pr 7`}</cod
       <h2>Local review against an Azure DevOps PR</h2>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`export AZURE_DEVOPS_TOKEN=...
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 postil review --forge azure --repo organization/project/repository --pr 7`}</code>
       </pre>
 

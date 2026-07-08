@@ -91,10 +91,10 @@ curl -fsSL https://postil.dev/install.sh | sh
 postil doctor            # verify endpoint, key, and model
 postil review --staged
 
-# CI (GitHub Actions) — @v1 resolves after the first tagged release
-- uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # main
+# CI (GitHub Actions)
+- uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # example tested SHA
   with:
-    cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5 # postil-cli v0.1.1
+    cli-ref: 3776f251db771dd74615305d7c2b0bc21b9fb2df # postil-cli v0.1.2
 
 # hosted
 Install the GitHub App; reviews start on the next PR.`}</code>

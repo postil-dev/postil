@@ -34,7 +34,7 @@ services:
         # whatever binary is at vendor/postil (see the header comment).
         # Override alongside a new vendor/postil binary to upgrade the
         # reviewer version.
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.1}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.2}
         NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     env_file: .env
@@ -46,7 +46,7 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      # bun is the only runtime guaranteed in the image; curl is not in oven/bun.
+      # Use the app runtime for the health probe to avoid an extra dependency.
       test: ["CMD-SHELL", "bun -e 'const r=await fetch(\"http://localhost:3000/api/health\");if(!r.ok)process.exit(1)' || exit 1"]
       interval: 15s
       timeout: 5s
@@ -56,7 +56,7 @@ services:
     build:
       context: .
       args:
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.1}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.1.2}
         NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     command: ["bun", "run", "worker"]

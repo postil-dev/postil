@@ -14,17 +14,20 @@ const COMMANDS: Record<OsId, string> = {
   linux: `curl -fsSL https://postil.dev/install.sh | sh
 # or build from source:
 # cargo install --git https://github.com/postil-dev/postil-cli --locked
-export OPENROUTER_API_KEY=sk-or-...`,
+export MODEL_API_KEY=sk-or-...
+export POSTIL_API_KEY="$MODEL_API_KEY"`,
   macos: `curl -fsSL https://postil.dev/install.sh | sh
 # or build from source:
 # cargo install --git https://github.com/postil-dev/postil-cli --locked
-export OPENROUTER_API_KEY=sk-or-...`,
+export MODEL_API_KEY=sk-or-...
+export POSTIL_API_KEY="$MODEL_API_KEY"`,
   windows: `# No native Windows build yet — install.sh covers Linux and macOS only.
 # Easiest path today: WSL, then follow the Linux tab above.
 
 # Without WSL, build from source with a Rust toolchain:
 cargo install --git https://github.com/postil-dev/postil-cli --locked
-$env:OPENROUTER_API_KEY = "sk-or-..."`,
+$env:MODEL_API_KEY = "sk-or-..."
+$env:POSTIL_API_KEY = $env:MODEL_API_KEY`,
 };
 
 /**

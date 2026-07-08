@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Qodo",
   description:
-    "Postil is a Qodo alternative with transparent inference billing instead of seats plus credits, a hard merge gate, and self-hosting of the full product, not a separate open-source tool.",
+    "Postil is a Qodo alternative with flat pricing and hosted reviews included instead of credit-pack billing, a hard merge gate, and self-hosting of the full product, not a separate open-source tool.",
   alternates: { canonical: "/vs/qodo" },
   openGraph: {
     title: "Postil vs Qodo",
     description:
-      "Transparent inference billing instead of seats plus credits, a hard merge gate, and a published silence metric. The honest comparison.",
+      "Flat pricing with hosted reviews included instead of credit-pack billing, a hard merge gate, and a published silence metric. The honest comparison.",
     url: "https://postil.dev/vs/qodo",
     images: ["/opengraph-image"],
   },
@@ -37,15 +37,15 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
-      { kind: "text", note: "Teams $30/user annual ($38 monthly) + credits" },
+      { kind: "text", note: "Flat Team price; hosted reviews included" },
+      { kind: "text", note: "Credit packs; $0.012/credit, $30 start" },
     ],
   },
   {
     feature: "Self-host without enterprise sales",
     cells: [
       { kind: "yes", note: "free, Docker Compose; same product as hosted" },
-      { kind: "yes", note: "via open-source PR-Agent (AGPL)" },
+      { kind: "yes", note: "via open-source PR-Agent (Apache-2.0)" },
     ],
   },
   {
@@ -81,7 +81,7 @@ export default function VsQodoPage() {
         Qodo (formerly Codium) is the one major competitor with a genuine
         self-hosting story, through its open-source PR-Agent. Postil is a Qodo
         alternative for teams who want the self-hostable thing to be the whole
-        product, priced flat instead of through seats and a credit meter, with
+        product, priced flat instead of through pooled credit packs, with
         a merge gate you can require in branch protection.
       </p>
 
@@ -92,7 +92,7 @@ export default function VsQodoPage() {
           caption="Postil compared with Qodo across merge gate, silence metric, pricing, self-hosting, BYO key, and platforms."
         />
         <p className="mt-3 font-mono text-xs text-charcoal/70">
-          Compiled from vendor pricing and documentation as of June 2026.
+          Sources: Qodo public pricing and usage docs, plus vendor public docs.
         </p>
       </div>
 
@@ -102,32 +102,33 @@ export default function VsQodoPage() {
           <a href="https://github.com/qodo-ai/pr-agent" rel="noopener">
             PR-Agent
           </a>{" "}
-          is open source (AGPL), runs with your own key, and supports local
-          models through Ollama, including air-gapped setups. Among the major
-          vendors it is the credible answer for teams that cannot send code to
-          an external API, and we say so plainly. The difference is what you
-          get: PR-Agent is a separate open-source tool, while Qodo&apos;s
-          hosted Teams product is its own thing with its own credit system.
+          is open source (Apache-2.0), runs with your own key, and supports
+          local models through Ollama, including air-gapped setups. Among the
+          major vendors it is the credible answer for teams that cannot send
+          code to an external API, and we say so plainly. The difference is what
+          you get: PR-Agent is a separate open-source tool, while Qodo Pro Team
+          is its hosted product with its own credit system.
           Self-hosted Postil is the same product as hosted Postil, gate,
           silence metric, dashboard and all, via{" "}
           <Link href="/docs/self-hosted">Docker Compose</Link> with OpenRouter,
           Azure, and Ollama examples.
         </p>
 
-        <h2>Seats plus credits is two meters</h2>
+        <h2>Credit packs are still a usage meter</h2>
         <p>
-          Qodo Teams costs{" "}
+          Qodo Pro Team is credit-pack based: public pricing shows a{" "}
           <a href="https://www.qodo.ai/pricing/" rel="noopener">
-            $30 per user per month annual, $38 monthly, and meters usage in
-            credits on top, with premium models consuming five credits per
-            request
+            $30 starting point, pooled credits at $0.012 per credit, and
+            self-serve designed for up to 30 users.
           </a>{" "}
-          as of June 2026, roughly double its earlier Teams pricing. The free
-          tier is credit-limited; Qodo&apos;s docs and pricing page describe its
-          limits differently, so verify both before relying on it. Postil charges
-          a flat $10 per developer per month and can route inference through
-          your own key at provider rates, so the orchestration bill does not
-          move with model choice or review volume. Run the numbers on the{" "}
+          Its{" "}
+          <a href="https://docs.qodo.ai/pricing-and-usage" rel="noopener">
+            usage docs
+          </a>{" "}
+          describe shared workspace credits and overage caps. Postil charges a
+          flat $10 per developer per month with hosted reviews included, so the
+          bill does not move with model choice or review volume. Run the numbers
+          on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 
@@ -139,9 +140,9 @@ export default function VsQodoPage() {
           carries everything advisory. On operational errors the gate fails
           closed by default; repos can opt into{" "}
           <code>gate.onError: advisory</code>, which fails open on provider
-          outages only. We did not find a documented equivalent of a separable
-          blocking check in Qodo&apos;s materials as of June 2026; if that
-          changes, this page will too.
+          outages only. Qodo&apos;s public materials describe review automation
+          but do not document a separate branch-protection check equivalent to
+          Postil&apos;s gate.
         </p>
 
         <h2>Noise is measured, not promised</h2>
@@ -182,10 +183,11 @@ export default function VsQodoPage() {
 
       <div className="rounded-card shadow-card mt-12 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="serif-display text-2xl">One product, one price.</h2>
+          <h2 className="serif-display text-2xl">One product, clear pricing.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Self-hosted or hosted, it is the same gate and the same flat $10.
-            Install the CLI and try it on your next diff.
+            Hosted Team is $10/dev/mo with reviews included. Self-hosted stays
+            free with the same gate and dashboard. Install the CLI and try it on
+            your next diff.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

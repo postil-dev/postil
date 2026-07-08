@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import { BenchResultsSection } from "@/components/bench-results";
 import { ModelCatalog } from "@/components/model-catalog";
@@ -7,7 +6,7 @@ import { ModelCatalog } from "@/components/model-catalog";
 export const metadata: Metadata = {
   title: "Models",
   description:
-    "Recommended models for Postil, live OpenRouter pricing, capability badges, local inference setup, and measured bench results.",
+    "Recommended models for Postil, public OpenRouter price snapshots, capability badges, local inference setup, and measured bench results.",
   alternates: { canonical: "/docs/models" },
 };
 
@@ -34,18 +33,14 @@ export default function ModelsPage() {
           Model catalog
         </h2>
         <p className="prose-postil mt-2">
-          This table fetches prices live from the{" "}
-          <a href="https://openrouter.ai/models" rel="noopener" className="text-rust underline">
+          This table uses committed public price snapshots from the{" "}
+          <a href="https://openrouter.ai/models" rel="noopener noreferrer" className="text-rust underline">
             OpenRouter catalog
           </a>
-          . The pricing calculator also refreshes catalog prices in the browser
-          and falls back to a committed snapshot if the catalog is unavailable.
-          <code>default</code> marks
-          the model Postil uses out of the box; the rest are a
-          curated set spanning cost and locally-runnable open-weights
-          options. Re-check before committing to a procurement number; the
-          calculator on <Link href="/pricing" className="text-rust underline">pricing</Link>{" "}
-          uses the same model ids.
+          . <code>default</code> marks the model Postil uses out of the box;
+          the rest are a curated set spanning cost and locally-runnable
+          open-weights options. Re-check live provider pricing before
+          committing to a procurement number.
         </p>
         <div className="mt-4">
           <ModelCatalog />
@@ -64,7 +59,7 @@ export default function ModelsPage() {
   completion_tokens * output_price_per_token`}</code>
         </pre>
         <p>
-          Multiply against the live price in the table above for a rough
+          Multiply against the snapshot price in the table above for a rough
           per-review number. Larger diffs, consensus mode, or multiple model
           retries increase it.
         </p>
@@ -85,14 +80,16 @@ export default function ModelsPage() {
           <code>{`ollama pull qwen3:32b
 POSTIL_API_BASE=http://localhost:11434/v1 \\
 MODEL_API_KEY=ollama \\
+POSTIL_API_KEY=ollama \\
 REVIEW_MODEL=qwen3:32b \\
 postil doctor`}</code>
         </pre>
         <h3>vLLM or LiteLLM</h3>
         <pre tabIndex={0} aria-label="Code sample">
-          <code>{`POSTIL_API_BASE=http://localhost:8000/v1
-MODEL_API_KEY=local
-REVIEW_MODEL=<served-model-name>
+          <code>{`export POSTIL_API_BASE=http://localhost:8000/v1
+export MODEL_API_KEY=local
+export POSTIL_API_KEY="$MODEL_API_KEY"
+export REVIEW_MODEL=served-model-name
 postil review --staged --output-json`}</code>
         </pre>
       </div>
@@ -103,9 +100,9 @@ postil review --staged --output-json`}</code>
         </h2>
         <p className="prose-postil mt-2">
           Method: seeded-defect fixtures run through a mock forge against the
-          real model, scored against ground truth. Mean cost per review is
-          the headline column because it reflects actual reviews produced, ahead of
-          catalog list price.
+          real model, scored against ground truth. Mean cost per review is the
+          headline column; total cost shows aggregate spend for the checked-in
+          run.
         </p>
         <p className="prose-postil mt-2">
           Read detection rate as a floor, not a ranking: the checked-in live
@@ -130,8 +127,9 @@ postil review --staged --output-json`}</code>
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`cd postil-cli/bench
-MODEL_API_KEY=... \\
-POSTIL_BENCH_MODELS=deepseek/deepseek-v4-pro,deepseek/deepseek-v4-flash,moonshotai/kimi-k2.6 \\
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
+export POSTIL_BENCH_MODELS=deepseek/deepseek-v4-pro,deepseek/deepseek-v4-flash,moonshotai/kimi-k2.6
 bun run bench:live-models -- --json-out .runs/live-models.json`}</code>
         </pre>
         <p>
