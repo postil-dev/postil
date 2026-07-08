@@ -26,8 +26,8 @@ export default function BitbucketForgePage() {
         or workspace access tokens work directly; if you are using an app
         password instead, also set <code>BITBUCKET_USER</code> so the token is
         sent as basic auth rather than a bearer token. Add your inference key
-        (for example <code>OPENROUTER_API_KEY</code>) as a repository
-        variable too.
+        as <code>MODEL_API_KEY</code> and mirror it to{" "}
+        <code>POSTIL_API_KEY</code> for pinned CLI compatibility.
       </p>
 
       <h2>2. Add the pipeline step</h2>
@@ -42,6 +42,7 @@ export default function BitbucketForgePage() {
             - apt-get update && apt-get install -y curl ca-certificates
             - curl -fsSL https://postil.dev/install.sh | sh
             - export PATH="$HOME/.local/bin:$PATH"
+            - export POSTIL_API_KEY="$MODEL_API_KEY"
             - postil review --forge bitbucket
                 --repo $BITBUCKET_WORKSPACE/$BITBUCKET_REPO_SLUG
                 --pr $BITBUCKET_PR_ID`}</code>
@@ -61,6 +62,8 @@ export default function BitbucketForgePage() {
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`export BITBUCKET_TOKEN=...
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 export BITBUCKET_API_URL=https://bitbucket.example.com/rest/api/1.0
 postil review --forge bitbucket --repo project/repo --pr 7`}</code>
       </pre>
@@ -68,6 +71,8 @@ postil review --forge bitbucket --repo project/repo --pr 7`}</code>
       <h2>Local review against a Bitbucket PR</h2>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`export BITBUCKET_TOKEN=...          # set BITBUCKET_USER too for an app password
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 postil review --forge bitbucket --repo workspace/repo --pr 7`}</code>
       </pre>
 

@@ -4,7 +4,7 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Where does your code actually go? A data-flow audit of AI code review tools",
   description:
-    "AI code reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class data-flow audit: retention, training, and where inference runs, each fact dated and sourced.",
+    "AI code reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class data-flow audit: retention, training, and where inference runs.",
   alternates: { canonical: "/blog/where-does-your-code-go" },
   openGraph: {
     type: "article",
@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     title:
       "Where does your code actually go? A data-flow audit of AI code review tools",
     description:
-      "Retention, training, and where inference runs: a class-by-class data-flow audit of AI code review tools, each fact dated and sourced.",
+      "Retention, training, and where inference runs: a class-by-class data-flow audit of AI code review tools.",
     url: "https://postil.dev/blog/where-does-your-code-go",
     images: ["/opengraph-image"],
   },
@@ -24,7 +24,7 @@ const articleJsonLd = {
   headline:
     "Where does your code actually go? A data-flow audit of AI code review tools",
   description:
-    "AI code reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class data-flow audit: retention, training, and where inference runs, each fact dated and sourced.",
+    "AI code reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class data-flow audit: retention, training, and where inference runs.",
   url: "https://postil.dev/blog/where-does-your-code-go",
   datePublished: "2026-06-27",
   image: "https://postil.dev/opengraph-image",
@@ -65,8 +65,8 @@ export default function WhereDoesYourCodeGoArticle() {
         <p>
           This is a comparative explainer, not a scorecard. It groups the tools
           by how they handle code rather than ranking them, states each
-          vendor&apos;s posture with the source and the date we read it, and
-          ends with the questions to put to any vendor, including us. For
+          vendor&apos;s posture with source links, and ends with the questions to
+          put to any vendor, including us. For
           Postil&apos;s own controls, structural detail lives on the{" "}
           <Link href="/security">security page</Link>; this piece is about the
           category, so we keep our part short and point there.
@@ -100,9 +100,8 @@ export default function WhereDoesYourCodeGoArticle() {
           </a>
           ). CodeRabbit reported the issue fixed; the durable lesson is not about
           one vendor but about blast radius. The same incident drove a search
-          pattern still live in Google autocomplete as of June 12, 2026:{" "}
-          <em>is coderabbit safe</em>. People are asking, and the honest answer
-          requires reading the data-flow, not the marketing page.
+          pattern around whether CodeRabbit is safe. People are asking, and the
+          honest answer requires reading the data-flow, not the marketing page.
         </p>
 
         <h2>Three questions that decide everything</h2>
@@ -139,11 +138,11 @@ export default function WhereDoesYourCodeGoArticle() {
 
         <h2>The hosted majors, by stated posture</h2>
         <p>
-          What follows is each vendor&apos;s own published position for its
-          default hosted product, as read on the dates given. Postures change;
-          re-verify against the linked page and, for anything that matters, the
-          contract rather than the marketing copy. Enterprise tiers often differ
-          from defaults, which is exactly why the default is worth stating.
+          What follows is each vendor&apos;s own published position for its default
+          hosted product. Postures change; re-verify against the linked page
+          and, for anything that matters, the contract rather than the marketing
+          copy. Enterprise tiers often differ from defaults, which is exactly
+          why the default is worth stating.
         </p>
         <table>
           <thead>
@@ -197,8 +196,8 @@ export default function WhereDoesYourCodeGoArticle() {
                 Stores the review envelope only; source code never persisted
               </td>
               <td className="hidden sm:table-cell">
-                Inference runs on the model endpoint you configure, under your
-                key
+                Hosted default uses Postil&apos;s provider path; hosted BYO routes
+                through the worker to your provider
               </td>
             </tr>
           </tbody>
@@ -211,7 +210,7 @@ export default function WhereDoesYourCodeGoArticle() {
           describes ephemeral review environments, and states it does not train
           on your code (
           <a href="https://www.coderabbit.ai/trust-center" rel="noopener">
-            trust center, read June 12, 2026
+            trust center
           </a>
           ). The August 2025 RCE is a separate matter from its data-retention
           policy; both belong in an audit.
@@ -224,7 +223,7 @@ export default function WhereDoesYourCodeGoArticle() {
             href="https://www.qodo.ai/blog/qodo-security-our-commitment-to-data-privacy-and-security/"
             rel="noopener"
           >
-            Qodo security post, read June 12, 2026
+            Qodo security post
           </a>
           ). Its open-source PR-Agent is a separate path you run yourself, which
           changes the inference-location answer entirely.
@@ -235,9 +234,9 @@ export default function WhereDoesYourCodeGoArticle() {
           <a href="https://www.greptile.com/security" rel="noopener">
             states
           </a>{" "}
-          (read June 12, 2026) that it stores code and embeddings on its servers
-          until you revoke access, and that it may use anonymized customer data
-          for AI improvement unless you opt out. Both store-by-default and
+          that it stores code and embeddings on its servers until you revoke
+          access, and that it may use anonymized customer data for AI
+          improvement unless you opt out. Both store-by-default and
           train-by-default are present; both are reversible, but the default is
           the opposite of zero-retention. Greptile also offers a self-hosted,
           air-gapped enterprise deployment that sidesteps this entirely, so the
@@ -271,47 +270,50 @@ export default function WhereDoesYourCodeGoArticle() {
         </p>
         <p>
           The other shape is bring-your-own-key, where the tool sends the diff
-          to a model endpoint you configure, authenticated with your key, under
-          your data-processing agreement with that provider, or to a model you
-          host. Among the majors this is mostly an enterprise or open-source
+          to a provider endpoint selected by the customer, authenticated with
+          the customer&apos;s key, under that customer&apos;s data-processing agreement
+          with the provider, or to a model the customer hosts. Among the majors
+          this is mostly an enterprise or open-source
           path: CodeRabbit allows a BYO key only when self-hosted, and
           Qodo&apos;s PR-Agent supports any key, including a local Ollama
           endpoint, because you run it yourself (
           <a href="https://github.com/qodo-ai/pr-agent" rel="noopener">
-            PR-Agent, read June 12, 2026
+            PR-Agent
           </a>
           ). Macroscope, hosted Copilot, and Cursor Bugbot do not offer BYO key
-          or model selection in their hosted products (vendor docs, read June 12,
-          2026). The reason inference location matters is that it determines
-          which contract governs your code in the one place it is most exposed:
-          in transit to, and being processed by, a large language model.
+          or model selection in their hosted products. The reason inference
+          location matters is that it determines which contract governs your
+          code in the one place it is most exposed: in transit to, and being
+          processed by, a large language model.
         </p>
 
         <h2>Where Postil sits, stated plainly</h2>
         <p>
           Postil is one option on this map, and here is its data-flow without
-          adjectives. It is BYO-key by construction: the CLI sends your diff
-          directly to the OpenAI-compatible endpoint you configure, OpenRouter,
-          Azure OpenAI, vLLM, LiteLLM, or a local Ollama, authenticated with your
-          key. The hosted control plane never proxies inference; the request to
-          the model goes from the worker to your endpoint, not through a Postil
-          inference service. The relevant line in the open-source CLI is blunt
-          about it: when no key is set, it errors with &quot;Postil never proxies
-          your inference; bring your own key.&quot; Because the diff goes to the
-          provider you chose, it is your data-processing agreement with that
-          provider, not ours, that governs it.
+          adjectives. CLI and self-hosted deployments send your diff directly to
+          the OpenAI-compatible endpoint you configure, OpenRouter, Azure
+          OpenAI, vLLM, LiteLLM, or a local Ollama, authenticated with your key.
+          Hosted organizations can use the same BYO model settings; in that
+          case, the worker sends the diff to your configured provider and
+          region under your provider relationship. Hosted organizations without
+          BYO model settings use Postil&apos;s configured provider credentials, with
+          diffs sent from the worker to Postil&apos;s OpenRouter-compatible provider
+          path and downstream model providers under Postil&apos;s provider
+          relationship.
         </p>
         <p>
           On retention, the hosted control plane persists exactly one artifact
           per review: the envelope, a JSON document with the summary, the
           findings (path, line, severity, confidence, and the finding text),
           token usage, and the gate verdict. The diff is fetched at review time,
-          sent to your model endpoint, and discarded with the process. There is
-          no code cache, no embedding index, and no repository clone on our
-          infrastructure, and a self-hosted deployment sends us nothing at all,
-          no telemetry, no license pings, no update checks. When a BYO key is
-          stored for the hosted product, it is sealed with AES-256-GCM before it
-          touches the database and the settings form is write-only: a stored key
+          sent through the worker to either Postil&apos;s configured provider path or
+          the provider your org configures for BYO, and discarded with the
+          process. There is no code cache, no embedding index, and no repository
+          clone on our infrastructure, and a self-hosted deployment sends us
+          nothing at all, no telemetry, no license pings, no update checks. When
+          a BYO key is stored for the hosted product, it is sealed with
+          AES-256-GCM before it touches the database and the settings form is
+          write-only: a stored key
           can be replaced or removed, never read back out.
         </p>
         <p>
@@ -397,8 +399,7 @@ export default function WhereDoesYourCodeGoArticle() {
             <a href="https://www.coderabbit.ai/trust-center" rel="noopener">
               CodeRabbit trust center
             </a>{" "}
-            (read Jun 12, 2026): SOC 2 Type II, ephemeral reviews, no training on
-            code
+            (SOC 2 Type II, ephemeral reviews, no training on code)
           </li>
           <li>
             <a
@@ -407,14 +408,14 @@ export default function WhereDoesYourCodeGoArticle() {
             >
               Qodo security post
             </a>{" "}
-            (read Jun 12, 2026): zero-retention, 48-hour troubleshooting deletion
+            (zero-retention, 48-hour troubleshooting deletion)
           </li>
           <li>
             <a href="https://www.greptile.com/security" rel="noopener">
               Greptile security page
             </a>{" "}
-            (read Jun 12, 2026): stores code and embeddings until access revoked;
-            anonymized data used for AI improvement unless opted out
+            (stores code and embeddings until access revoked; anonymized data
+            used for AI improvement unless opted out)
           </li>
           <li>
             <a
@@ -430,7 +431,7 @@ export default function WhereDoesYourCodeGoArticle() {
             <a href="https://github.com/qodo-ai/pr-agent" rel="noopener">
               Qodo PR-Agent
             </a>{" "}
-            (read Jun 12, 2026): open-source, BYO key including Ollama
+            (open-source, BYO key including Ollama)
           </li>
           <li>
             <a
@@ -465,8 +466,9 @@ export default function WhereDoesYourCodeGoArticle() {
             Audit our data-flow, not our adjectives.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Postil stores the review, not the code, and never proxies your
-            inference. The full posture is on the security page.
+            Postil stores the review, not the code. Hosted inference routing
+            depends on provider settings; the full posture is on the security
+            page.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

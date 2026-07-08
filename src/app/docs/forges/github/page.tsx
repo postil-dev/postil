@@ -38,7 +38,8 @@ export default function GitHubForgePage() {
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`export GITHUB_TOKEN=...            # repo scope, or a fine-grained token with
                                     # pull requests: write, checks: write
-export OPENROUTER_API_KEY=...
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 
 postil review --repo owner/name --pr 123   # posts inline comments + both check-runs`}</code>
       </pre>

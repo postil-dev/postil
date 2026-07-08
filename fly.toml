@@ -6,8 +6,8 @@
 #   fly secrets set DATABASE_URL=... POSTIL_SESSION_SECRET=... \
 #     GITHUB_WEBHOOK_SECRET=... GITHUB_OAUTH_CLIENT_ID=... \
 #     GITHUB_OAUTH_CLIENT_SECRET=... POSTIL_SEALING_KEY=... \
-#     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... OPENROUTER_API_KEY=... \
-#     METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=...
+#     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... MODEL_API_KEY=... \
+#     POSTIL_API_KEY=... METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=...
 #
 # Browser PostHog also needs NEXT_PUBLIC_POSTHOG_KEY as a Docker build arg.
 # The GitHub Actions deploy workflow passes it from repo variables.

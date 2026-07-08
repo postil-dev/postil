@@ -33,11 +33,31 @@ interface CliEnvConfig {
   modelCascade: string | undefined;
 }
 
+export function buildCliEnv(
+  llm: CliEnvConfig,
+  baseEnv: Record<string, string> = {},
+): Record<string, string> {
+  const cliEnv: Record<string, string> = {
+    ...baseEnv,
+    POSTIL_API_BASE: llm.apiBase,
+  };
+  if (llm.apiKey) {
+    cliEnv.MODEL_API_KEY = llm.apiKey;
+    cliEnv.POSTIL_API_KEY = llm.apiKey;
+  }
+  if (llm.model) cliEnv.REVIEW_MODEL = llm.model;
+  if (llm.modelCascade) cliEnv.REVIEW_MODEL_CASCADE = llm.modelCascade;
+  return cliEnv;
+}
+
 /** Resolve LLM config: org BYO settings win, env defaults otherwise. */
 export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConfig> {
   const defaults: CliEnvConfig = {
     apiBase: optionalEnv("POSTIL_API_BASE", "https://openrouter.ai/api/v1") as string,
-    apiKey: optionalEnv("POSTIL_API_KEY") ?? optionalEnv("OPENROUTER_API_KEY"),
+    apiKey:
+      optionalEnv("MODEL_API_KEY") ??
+      optionalEnv("POSTIL_API_KEY") ??
+      optionalEnv("OPENROUTER_API_KEY"),
     model: optionalEnv("REVIEW_MODEL"),
     modelCascade: optionalEnv("REVIEW_MODEL_CASCADE"),
   };
@@ -50,10 +70,8 @@ export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConf
     .limit(1);
   const settings = rows[0];
   if (!settings) return defaults;
-  let apiKey = defaults.apiKey;
-  if (settings.apiKeyCiphertext) {
-    apiKey = unseal(Buffer.from(settings.apiKeyCiphertext), getSealingKey());
-  }
+  if (!settings.apiKeyCiphertext) return defaults;
+  const apiKey = unseal(Buffer.from(settings.apiKeyCiphertext), getSealingKey());
   // Internal-network guard at the worker boundary: rows predating write-time
   // validation must not reach the spawned CLI as POSTIL_API_BASE.
   if (settings.apiBase) await validateApiBase(settings.apiBase);
@@ -263,13 +281,7 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
 
     const llm = await resolveLlmConfig(installation.orgId);
     sensitiveValues = [token, llm.apiKey].filter((value): value is string => Boolean(value));
-    const cliEnv: Record<string, string> = {
-      GITHUB_TOKEN: token,
-      POSTIL_API_BASE: llm.apiBase,
-    };
-    if (llm.apiKey) cliEnv.POSTIL_API_KEY = llm.apiKey;
-    if (llm.model) cliEnv.REVIEW_MODEL = llm.model;
-    if (llm.modelCascade) cliEnv.REVIEW_MODEL_CASCADE = llm.modelCascade;
+    const cliEnv = buildCliEnv(llm, { GITHUB_TOKEN: token });
 
     const result = await runCli(args, cliEnv, workDir);
 

@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs CodeRabbit",
   description:
-    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, transparent inference billing, and free self-hosting.",
+    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, flat pricing with hosted reviews included, and free self-hosting.",
   alternates: { canonical: "/vs/coderabbit" },
   openGraph: {
     title: "Postil vs CodeRabbit",
     description:
-      "A hard merge gate, a published silence metric, transparent inference billing, and free self-hosting. The honest comparison.",
+      "A hard merge gate, a published silence metric, flat pricing with hosted reviews included, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/coderabbit",
     images: ["/opengraph-image"],
   },
@@ -24,10 +24,13 @@ const COLUMNS = ["Postil", "CodeRabbit"];
 
 const ROWS: ComparisonRow[] = [
   {
-    feature: "Hard merge gate (separate blocking check)",
+    feature: "Dedicated fail-closed merge gate",
     cells: [
       { kind: "yes", note: "postil/gate, fail-closed" },
-      { kind: "no", note: "comments only" },
+      {
+        kind: "partial",
+        note: "built-in checks; custom checks on Pro Plus",
+      },
     ],
   },
   {
@@ -37,7 +40,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
+      { kind: "text", note: "Flat Team price; hosted reviews included" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
     ],
   },
@@ -89,19 +92,19 @@ export default function VsCodeRabbitPage() {
           caption="Postil compared with CodeRabbit across merge gate, silence metric, pricing, self-hosting, platforms, and config compatibility."
         />
         <p className="mt-3 font-mono text-xs text-charcoal/70">
-          Compiled from vendor pricing and documentation as of June 2026.
+          Sources: vendor pricing and documentation.
         </p>
       </div>
 
       <div className="prose-postil mt-14 max-w-none">
         <h2>The merge gate is the difference that matters</h2>
         <p>
-          CodeRabbit posts blocking-severity and style-level findings as
-          equivalent PR comments. Teams that want &quot;block on critical, ignore
-          nits&quot; rebuild that logic by hand from raw check statuses. Postil
-          ships it: <code>postil/gate</code> fails only at or above your
-          configured severity and is safe to require in branch protection, while{" "}
-          <code>postil/review</code> carries everything advisory. On operational
+          CodeRabbit&apos;s pricing page lists built-in pre-merge checks on Pro
+          and custom pre-merge checks on Pro Plus, so it is not a comments-only
+          tool. The difference is structure. Postil ships a dedicated gate:
+          <code>postil/gate</code> fails only at or above your configured
+          severity and is safe to require in branch protection, while{" "}
+          <code>postil/review</code> carries advisory findings. On operational
           errors the gate fails closed by default; repos can opt into{" "}
           <code>gate.onError: advisory</code>, which fails open on provider
           outages only.
@@ -125,10 +128,10 @@ export default function VsCodeRabbitPage() {
           CodeRabbit Pro is{" "}
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             $24 per seat per month on the annual plan
-          </a>{" "}
-          as of June 2026. Postil keeps orchestration flat and makes inference
-          explicit: bring your own key at provider rates or use managed
-          OpenRouter inference on the same invoice. Run the numbers on the{" "}
+          </a>
+          . Postil Team is $10 per developer with hosted
+          reviews included, and BYO key support remains available for policy
+          requirements. Run the numbers on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 

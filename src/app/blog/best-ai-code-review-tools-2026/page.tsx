@@ -4,14 +4,14 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Best AI code review tools in 2026: an evidence-first comparison",
   description:
-    "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim dated and sourced, as of June 2026.",
+    "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and source-linked pricing.",
   alternates: { canonical: "/blog/best-ai-code-review-tools-2026" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-09-05T00:00:00.000Z",
+    publishedTime: "2026-07-08T00:00:00.000Z",
     title: "Best AI code review tools in 2026: an evidence-first comparison",
     description:
-      "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim dated and sourced.",
+      "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim sourced.",
     url: "https://postil.dev/blog/best-ai-code-review-tools-2026",
     images: ["/opengraph-image"],
   },
@@ -22,9 +22,9 @@ const articleJsonLd = {
   "@type": "BlogPosting",
   headline: "Best AI code review tools in 2026: an evidence-first comparison",
   description:
-    "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim dated and sourced, as of June 2026.",
+    "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and source-linked pricing.",
   url: "https://postil.dev/blog/best-ai-code-review-tools-2026",
-  datePublished: "2026-09-05",
+  datePublished: "2026-07-08",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -45,7 +45,7 @@ export default function BestToolsArticle() {
         Best AI code review tools in 2026: an evidence-first comparison
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
-        September 2026 · Postil team
+        July 2026 · Postil team
       </p>
 
       <div className="prose-postil blog-prose mt-10">
@@ -74,8 +74,8 @@ export default function BestToolsArticle() {
           quantified claim that Postil finds more bugs or fewer false positives
           than anyone. Where we describe our own product, treat it the way you
           should treat every vendor&apos;s self-description: as a claim to
-          verify. Everything else is sourced inline, with pricing stated as of
-          June 2026.
+          verify. Everything else is sourced inline from vendor pages and
+          public documentation.
         </p>
 
         <h2>How to evaluate an AI code reviewer</h2>
@@ -150,15 +150,15 @@ export default function BestToolsArticle() {
 
         <h2>Pricing at a glance</h2>
         <p>
-          All prices from vendor pages as of June 2026. This category changes
-          pricing often; verify before buying.
+          Prices are vendor list prices from public pages. This category
+          changes pricing often; verify before buying.
         </p>
         <table>
           <thead>
             <tr>
               <th scope="col">Tool</th>
               <th scope="col" className="hidden sm:table-cell">Model</th>
-              <th scope="col">List price (as of June 2026)</th>
+              <th scope="col">List price</th>
               <th scope="col">Recent change</th>
             </tr>
           </thead>
@@ -171,9 +171,9 @@ export default function BestToolsArticle() {
             </tr>
             <tr>
               <td>Qodo</td>
-              <td className="hidden sm:table-cell">Per seat + credits</td>
-              <td>Teams $30/user/mo annual, $38 monthly</td>
-              <td>Up from the widely cited $19 (2025)</td>
+              <td className="hidden sm:table-cell">Credit packs</td>
+              <td>Pro Team starts at $30; $0.012/credit</td>
+              <td>Self-serve up to 30 users</td>
             </tr>
             <tr>
               <td>Greptile</td>
@@ -184,7 +184,10 @@ export default function BestToolsArticle() {
             <tr>
               <td>Macroscope</td>
               <td className="hidden sm:table-cell">Usage (per KB)</td>
-              <td>$0.05/KB of diff, 10 KB min ($0.50 floor, ~$1.50/PR)</td>
+              <td>
+                $0.05/KB of diff, 10 KB min ($0.50 floor; $1.50 for a 30 KB
+                medium feature)
+              </td>
               <td>Replaced $30/dev seats March 2026</td>
             </tr>
             <tr>
@@ -202,8 +205,8 @@ export default function BestToolsArticle() {
             <tr>
               <td>Postil</td>
               <td className="hidden sm:table-cell">Flat per dev</td>
-              <td>$10/dev/mo + your own API key at provider rates</td>
-              <td>Unchanged; hosted beta currently free</td>
+              <td>$10/dev/mo, hosted reviews included</td>
+              <td>Team price published; hosted reviews included</td>
             </tr>
           </tbody>
         </table>
@@ -271,13 +274,14 @@ export default function BestToolsArticle() {
           GitHub App private key; CodeRabbit remediated and the writeup is
           public. Self-hosting exists but is enterprise-only and{" "}
           <a
-            href="https://docs.coderabbit.ai/self-hosted/github"
+            href="https://aws.amazon.com/marketplace/pp/prodview-wkkkre4fgelwq"
             rel="noopener"
           >
-            gated at 500+ seats
+            listed with a 500-user minimum on AWS Marketplace
           </a>
-          . Findings ship as comments; pre-merge checks require the $48 Pro
-          Plus tier.
+          . Its pricing page lists built-in pre-merge checks on Pro and custom
+          pre-merge checks on Pro Plus; compare carefully if you need a
+          dedicated fail-closed gate separate from advisory review.
         </p>
 
         <h2>Qodo</h2>
@@ -286,24 +290,24 @@ export default function BestToolsArticle() {
           <a href="https://github.com/qodo-ai/pr-agent" rel="noopener">
             PR-Agent
           </a>
-          , the open-source (AGPL) reviewer that remains the default answer for
-          self-hosting, BYO key, and local models via Ollama, including
-          air-gapped setups. It raised a{" "}
+          , the open-source (Apache-2.0) reviewer that remains the default
+          answer for self-hosting, BYO key, and local models via Ollama,
+          including air-gapped setups. It raised a{" "}
           <a
             href="https://techcrunch.com/2026/03/30/qodo-bets-on-code-verification-as-ai-coding-scales-raises-70m/"
             rel="noopener"
           >
             $70M Series B in March 2026
           </a>{" "}
-          and holds SOC 2 Type II with a zero-retention posture. Caveats: Teams
-          pricing roughly doubled from the widely cited $19 (2025) to{" "}
+          and holds SOC 2 Type II with a zero-retention posture. Caveats: Pro
+          Team pricing is credit-pack based, with{" "}
           <a href="https://www.qodo.ai/pricing/" rel="noopener">
-            $30 annual / $38 monthly
+            a $30 starting point, $0.012/credit, and self-serve designed for
+            up to 30 users
           </a>{" "}
-          with a credit system on top (premium models burn five credits per
-          request), the free tier&apos;s limits are described inconsistently
-          between its docs and pricing page, and years of renaming (Codium,
-          Qodo Merge, Gen, Command) make the product line hard to follow. Our
+          ; trial and user-limit details are described across multiple docs,
+          and years of renaming (Codium, Qodo Merge, Gen, Command) make the
+          product line hard to follow. Our
           detailed comparison: <Link href="/vs/qodo">Postil vs Qodo</Link>.
         </p>
 
@@ -328,12 +332,15 @@ export default function BestToolsArticle() {
           </a>{" "}
           in a category where self-published benchmarks have a perfect home-win
           record. Constraints: GitHub Cloud only, no self-hosting, no BYO key,
-          check runs complete with a{" "}
-          <a href="https://docs.macroscope.com/changelog" rel="noopener">
-            neutral conclusion
-          </a>{" "}
-          (so branch protection cannot block on them), and it changed pricing
-          models twice in six months, landing on{" "}
+          default{" "}
+          <a
+            href="https://docs.macroscope.com/check-run-agents"
+            rel="noopener"
+          >
+            check-run agents conclude neutral unless configured to fail
+          </a>
+          , Approvability can be wired as a required failing status check, and
+          it changed pricing models twice in six months, landing on{" "}
           <a href="https://docs.macroscope.com/pricing" rel="noopener">
             $0.05 per KB of diff
           </a>{" "}
@@ -471,9 +478,9 @@ export default function BestToolsArticle() {
           restraint is reported, not promised: the first number on the
           dashboard is the silence rate, the share of PRs where Postil said
           nothing, alongside the confidence distribution of every finding it
-          shipped. Pricing keeps orchestration flat and gives teams either BYOK
-          or managed OpenRouter inference on the same invoice (the hosted beta
-          is currently free). Self-hosting is free via{" "}
+          shipped. Pricing is flat by developer with hosted reviews included,
+          and BYO key support remains available for policy requirements.
+          Self-hosting is free via{" "}
           <Link href="/docs/self-hosted">Docker Compose</Link>, same product as
           hosted, with Ollama support. The hosted app is GitHub-only today; the
           CLI covers GitHub and GitLab, with Bitbucket and Azure DevOps support
@@ -531,7 +538,7 @@ export default function BestToolsArticle() {
         <h2>Sources</h2>
         <ul>
           <li>
-            Vendor pricing and docs (fetched June 2026):{" "}
+            Vendor pricing and docs:{" "}
             <a href="https://www.coderabbit.ai/pricing" rel="noopener">
               coderabbit.ai/pricing
             </a>

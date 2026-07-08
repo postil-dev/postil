@@ -120,8 +120,12 @@ const COMMANDS = [
 
 const ENV = [
   [
+    "MODEL_API_KEY",
+    "LLM API key for any OpenAI-compatible endpoint; falls back to POSTIL_API_KEY, then OPENROUTER_API_KEY.",
+  ],
+  [
     "POSTIL_API_KEY",
-    "LLM API key for any OpenAI-compatible endpoint; falls back to OPENROUTER_API_KEY.",
+    "Legacy alias for MODEL_API_KEY.",
   ],
   [
     "OPENROUTER_API_KEY",
@@ -211,8 +215,8 @@ export default function CliReferencePage() {
       <p>
         Postil talks to any OpenAI-compatible endpoint through{" "}
         <code>POSTIL_API_BASE</code>; there are no provider-specific key
-        variables beyond <code>POSTIL_API_KEY</code> /{" "}
-        <code>OPENROUTER_API_KEY</code>.
+        variables beyond <code>MODEL_API_KEY</code>,{" "}
+        <code>POSTIL_API_KEY</code>, and <code>OPENROUTER_API_KEY</code>.
       </p>
 
       <h2>Exit codes</h2>

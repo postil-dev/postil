@@ -10,7 +10,7 @@ import { postIssueComment } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
 import type { RespondJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
-import { resolveLlmConfig, runCli } from "./review";
+import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
 
 /**
  * Run one interactive bot reply: an @postil mention on a PR or issue.
@@ -80,14 +80,10 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
     : payload.comment;
 
   const llm = await resolveLlmConfig(installation.orgId);
-  const cliEnv: Record<string, string> = {
+  const cliEnv = buildCliEnv(llm, {
     GITHUB_TOKEN: token,
     POSTIL_COMMENT: comment,
-    POSTIL_API_BASE: llm.apiBase,
-  };
-  if (llm.apiKey) cliEnv.POSTIL_API_KEY = llm.apiKey;
-  if (llm.model) cliEnv.REVIEW_MODEL = llm.model;
-  if (llm.modelCascade) cliEnv.REVIEW_MODEL_CASCADE = llm.modelCascade;
+  });
 
   // Same repo-config materialization as review jobs, so replies honor the
   // repo's tone/guardrails/content-policy settings. See lib/github/contents.ts.

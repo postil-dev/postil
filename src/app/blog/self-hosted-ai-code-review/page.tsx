@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/blog/self-hosted-ai-code-review" },
   openGraph: {
     type: "article",
-    publishedTime: "2026-07-11T00:00:00.000Z",
+    publishedTime: "2026-07-08T00:00:00.000Z",
     title: "Self-hosted AI code review without the 500-seat enterprise gate",
     description:
       "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes.",
@@ -24,7 +24,7 @@ const articleJsonLd = {
   description:
     "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size.",
   url: "https://postil.dev/blog/self-hosted-ai-code-review",
-  datePublished: "2026-07-11",
+  datePublished: "2026-07-08",
   image: "https://postil.dev/opengraph-image",
   author: {
     "@type": "Organization",
@@ -54,26 +54,27 @@ export default function SelfHostedAiCodeReviewArticle() {
           short, frustrating answer for you. Self-hosting exists, but for a
           small or regulated team it is usually either an enterprise sales
           motion with a seat minimum, or one open-source project you assemble
-          yourself. The sharpest example is CodeRabbit: its own documentation
-          states that{" "}
+          yourself. The sharpest example is CodeRabbit: its public AWS
+          Marketplace listing describes self-hosted delivery with list pricing
+          for 500 users, and its usage instructions set a 500-user minimum for
+          developer seats.{" "}
           <a
-            href="https://docs.coderabbit.ai/self-hosted/github"
+            href="https://aws.amazon.com/marketplace/pp/prodview-wkkkre4fgelwq"
             rel="noopener"
           >
-            &quot;The self-hosted option is only available for CodeRabbit
-            Enterprise customers with 500 user seats or more.&quot;
+            The gate is a seat count, not a capability.
           </a>{" "}
-          The gate is a seat count, not a capability. This piece walks through
-          who actually lets you self-host and on what terms, and then runs the
-          concrete path to a working local review with Postil and Ollama in
-          about 15 minutes, at any team size, with no sales call.
+          This piece walks through who actually lets you self-host and on what
+          terms, and then runs the concrete path to a working local review with
+          Postil and Ollama in about 15 minutes, at any team size, with no sales
+          call.
         </p>
 
         <h2>Who actually lets you self-host, and the fine print</h2>
         <p>
           Self-hosting is real in this category, but the terms vary widely. The
-          table below is the honest landscape as of June 2026; vendor policies
-          change often, so verify before you commit.
+          table below is the honest landscape; vendor policies change often,
+          so verify before you commit.
         </p>
         <table>
           <thead>
@@ -90,7 +91,7 @@ export default function SelfHostedAiCodeReviewArticle() {
               <td>CodeRabbit</td>
               <td>Yes</td>
               <td className="hidden sm:table-cell">
-                Enterprise only, 500+ seats (per its docs)
+                Enterprise self-hosted listing, 500-user minimum
               </td>
             </tr>
             <tr>
@@ -205,7 +206,8 @@ docker compose exec web bun run db:migrate`}</code>
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`POSTIL_API_BASE=http://ollama:11434/v1
-POSTIL_API_KEY=ollama        # any non-empty value
+MODEL_API_KEY=ollama        # any non-empty value
+POSTIL_API_KEY=ollama
 REVIEW_MODEL=qwen3-coder:30b`}</code>
         </pre>
         <p>
@@ -227,23 +229,26 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
 
         <h2>Why &quot;OpenAI-compatible&quot; is the whole trick</h2>
         <p>
-          The structural reason there is no seat gate is that there is no hosted
-          inference to meter. The Postil worker speaks plain OpenAI-compatible
-          chat completions, against{" "}
+          The structural reason there is no seat gate is that there is no
+          customer-facing inference meter. The Postil worker speaks plain
+          OpenAI-compatible chat completions, against{" "}
           <code>POST {"{base}"}/chat/completions</code>. The same binary points
           at Ollama, vLLM, LiteLLM, TGI, Azure OpenAI, or OpenRouter by changing
-          one base URL. In self-hosted and BYOK modes there is no proxy in the
-          middle: your inference goes to your endpoint at your provider&apos;s
-          rates. Hosted teams can also use managed inference, where Postil
-          includes model spend on the same invoice.
+          one base URL. In CLI and self-hosted modes there is no proxy in the
+          middle: inference goes to your endpoint under your provider account.
+          Hosted BYO routes through the worker to your configured provider, and
+          hosted Team reviews are included by default.
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`# OpenRouter (default)
 POSTIL_API_BASE=https://openrouter.ai/api/v1
+MODEL_API_KEY=sk-or-v1-...
 POSTIL_API_KEY=sk-or-v1-...
 
 # Azure OpenAI
-POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
+POSTIL_API_BASE=https://azure-resource.openai.azure.com/openai/v1
+MODEL_API_KEY=azure-api-key
+POSTIL_API_KEY=azure-api-key
 
 # Ollama, vLLM, LiteLLM, TGI: same shape, different base URL`}</code>
         </pre>
@@ -252,12 +257,13 @@ POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
         <p>
           Start with one cheap model and one stronger model, then promote the
           cheapest one that preserves detection rate and silence on clean PRs.
-          On OpenRouter today, the practical shortlist is DeepSeek V4 Flash for
-          low-cost volume, DeepSeek V4 Pro as the balanced default, Qwen3.7 Plus
-          for fast coding reviews, and Kimi K2.7 Code or GLM 5.2 for larger
-          engineering diffs. Locally, use the largest coder model your hardware
-          can serve reliably and verify it with{" "}
-          <code>postil doctor</code> plus the live benchmark harness.
+          On OpenRouter, try DeepSeek V4 Pro or Kimi K2.6 as stronger
+          defaults, and Qwen3 32B, Mistral Small 3.2 24B, or Gemma 3 27B for
+          lower-cost or local-friendly runs. The maintained shortlist lives in
+          the <Link href="/docs/models" className="text-rust underline">model catalog</Link>.
+          Locally, use the largest coder model your hardware can serve reliably
+          and verify it with <code>postil doctor</code> plus the live benchmark
+          harness.
         </p>
         <p>
           The maintained model table and live benchmark commands are in the{" "}
@@ -284,12 +290,12 @@ POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
 
         <h2>Air-gapped and regulated</h2>
         <p>
-          Self-hosted plus Ollama means code never leaves your network. If you
-          run in hosted or CLI mode with your own key instead, it goes only to
-          the provider you chose, under your own data processing agreement, with
-          no Postil-operated hop in between. Either way you control the data
-          flow, which is the property procurement actually screens for. The
-          forge coverage matters here too, because regulated buyers tend to run
+          Self-hosted plus Ollama means code never leaves your network. CLI mode
+          with your own key sends code directly to the provider you chose, under
+          your own data processing agreement. Hosted BYO sends the diff through
+          the Postil worker to your configured provider, and hosted default uses
+          Postil&apos;s configured provider path. The forge coverage matters here
+          too, because regulated buyers tend to run
           self-managed Git: GitHub including GitHub Enterprise Server, GitLab
           including self-managed, Bitbucket including Data Center, and Azure
           DevOps including Server, each reached through a base-URL environment
@@ -331,18 +337,18 @@ POSTIL_API_BASE=https://<resource>.openai.azure.com/openai/v1
         <ul>
           <li>
             <a
-              href="https://docs.coderabbit.ai/self-hosted/github"
+              href="https://aws.amazon.com/marketplace/pp/prodview-wkkkre4fgelwq"
               rel="noopener"
             >
-              CodeRabbit self-hosted docs
+              CodeRabbit AWS Marketplace listing
             </a>{" "}
-            (500-seat Enterprise gate, verbatim; fetched June 13, 2026)
+            (self-hosted delivery, 500-user list price and minimum)
           </li>
           <li>
             <a href="https://github.com/qodo-ai/pr-agent" rel="noopener">
               Qodo PR-Agent (GitHub)
             </a>{" "}
-            (Apache-2.0, ~11.6k stars, multi-model; fetched June 13, 2026)
+            (Apache-2.0, multi-model)
           </li>
           <li>
             <a

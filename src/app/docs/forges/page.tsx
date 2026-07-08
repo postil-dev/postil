@@ -94,8 +94,8 @@ export default function ForgesIndexPage() {
         </tbody>
       </table>
       <p>
-        Every forge also needs an inference key —{" "}
-        <code>OPENROUTER_API_KEY</code> or <code>POSTIL_API_KEY</code> for any
+        Every forge also needs an inference key:{" "}
+        <code>MODEL_API_KEY</code> for any
         OpenAI-compatible endpoint. See the{" "}
         <Link href="/docs/cli">CLI reference</Link> for the full environment
         variable list.
@@ -166,14 +166,20 @@ export default function ForgesIndexPage() {
 postil review --repo owner/name --pr 123
 
 # GitLab (gitlab.com or self-managed)
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 export GITLAB_TOKEN=... GITLAB_API_URL=https://gitlab.example.com/api/v4
 postil review --forge gitlab --repo group/project --pr 42
 
 # Bitbucket (Cloud, or Data Center via BITBUCKET_API_URL)
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 export BITBUCKET_TOKEN=...            # set BITBUCKET_USER too for an app password
 postil review --forge bitbucket --repo workspace/repo --pr 7
 
 # Azure DevOps Services (or Server via AZURE_DEVOPS_API_URL)
+export MODEL_API_KEY=...
+export POSTIL_API_KEY="$MODEL_API_KEY"
 export AZURE_DEVOPS_TOKEN=...         # a PAT
 postil review --forge azure --repo organization/project/repository --pr 7`}</code>
       </pre>

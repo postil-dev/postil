@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Why Postil",
   description:
-    "Postil as a CodeRabbit alternative: where it differs from CodeRabbit, Greptile, Copilot, and the rest — silence rate, transparent inference billing, a hard merge gate, and self-hosting that works.",
+    "Postil as a CodeRabbit alternative: where it differs from CodeRabbit, Greptile, Copilot, and the rest: silence rate, flat pricing with hosted reviews included, a hard merge gate, and self-hosting that works.",
   alternates: { canonical: "/why-postil" },
   openGraph: {
-    title: "Why Postil — the honest comparison",
+    title: "Why Postil: the honest comparison",
     description:
-      "Hard merge gate, a published silence metric, transparent inference billing, real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
+      "Hard merge gate, a published silence metric, flat pricing with hosted reviews included, real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
     url: "https://postil.dev/why-postil",
     images: ["/opengraph-image"],
   },
@@ -32,7 +32,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
     feature: "Hard merge gate (separate blocking check)",
     cells: [
       { kind: "yes", note: "postil/gate, fail-closed" },
-      { kind: "no", note: "comments only" },
+      { kind: "partial", note: "built-in checks; custom checks on Pro Plus" },
       { kind: "no", note: "comments only" },
       { kind: "partial", note: "neutral check, not blocking" },
     ],
@@ -49,7 +49,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
   {
     feature: "Pricing model",
     cells: [
-      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
+      { kind: "text", note: "Flat Team price; hosted reviews included" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
       { kind: "text", note: "Per-seat + per-review overage" },
       { kind: "text", note: "AI Credits + Actions minutes (Jun 2026)" },
@@ -124,15 +124,15 @@ const wedges: Wedge[] = [
   },
   {
     number: "02",
-    title: "Flat orchestration, BYO key or managed inference",
+    title: "Flat price, hosted reviews included",
     body: (
       <>
         <p>
           CodeRabbit Pro is{" "}
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             $24 per seat per month on the annual plan
-          </a>{" "}
-          as of June 2026. Greptile's{" "}
+          </a>
+          . Greptile's{" "}
           <a href="https://www.greptile.com/blog/greptile-v4" rel="noopener">
             March 2026 move
           </a>{" "}
@@ -163,10 +163,9 @@ const wedges: Wedge[] = [
           burned in two hours.
         </p>
         <p className="mt-3">
-          Postil keeps orchestration flat and makes inference explicit: bring
-          your own OpenRouter, Anthropic, Azure, or Bedrock key at provider
-          rates, or use managed OpenRouter inference on the same invoice.
-          As of June 2026, the closest comparable model we
+          Postil keeps hosted billing flat: Team is $10 per developer with
+          reviews included. BYO key support remains available for organizations
+          that require provider-controlled inference. The closest comparable model we
           found is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">
             Kodus
@@ -326,7 +325,7 @@ export default function WhyPostilPage() {
       </h1>
       <p className="mt-6 max-w-3xl text-lg text-ink-soft">
         Every claim below links to its source: vendor pricing pages, public
-        post-mortems, and independent audits as of June 2026. Where a
+        post-mortems, and independent audits. Where a
         competitor is better, we say so: CodeRabbit's platform coverage is more
         battle-tested today, and Greptile's cross-file recall is genuinely
         strong. Here is where Postil is different.
@@ -337,7 +336,7 @@ export default function WhyPostilPage() {
         <p className="eyebrow">At a glance</p>
         <h2 className="serif-display mt-2 text-2xl">How the category lines up.</h2>
         <p className="mt-3 max-w-2xl text-[15px] text-ink-soft">
-          Compiled from vendor pricing and documentation as of June 2026.
+          Sources: vendor pricing and documentation.
           Competitor capabilities change; the sourced detail behind each row is
           in the wedges below.
         </p>
@@ -414,8 +413,8 @@ export default function WhyPostilPage() {
             it catches everything.
           </li>
           <li>
-            The hosted app is in beta. The CLI and self-hosted stack are the
-            stable surface.
+            The hosted app, CLI, and self-hosted stack use the same review
+            engine.
           </li>
         </ul>
         <p className="mt-6">

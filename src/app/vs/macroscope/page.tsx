@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Macroscope",
   description:
-    "Postil is a Macroscope alternative with transparent inference billing instead of per-kilobyte usage billing, a blocking merge gate instead of neutral checks, and free self-hosting.",
+    "Postil is a Macroscope alternative with flat pricing and hosted reviews included instead of per-kilobyte usage billing, a dedicated fail-closed merge gate, and free self-hosting.",
   alternates: { canonical: "/vs/macroscope" },
   openGraph: {
     title: "Postil vs Macroscope",
     description:
-      "Transparent inference billing instead of per-kilobyte billing, a blocking merge gate instead of neutral checks, and free self-hosting. The honest comparison.",
+      "Flat pricing with hosted reviews included instead of per-kilobyte billing, a dedicated fail-closed merge gate, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/macroscope",
     images: ["/opengraph-image"],
   },
@@ -24,10 +24,13 @@ const COLUMNS = ["Postil", "Macroscope"];
 
 const ROWS: ComparisonRow[] = [
   {
-    feature: "Hard merge gate (separate blocking check)",
+    feature: "Dedicated fail-closed merge gate",
     cells: [
       { kind: "yes", note: "postil/gate, fail-closed" },
-      { kind: "no", note: "check runs complete neutral" },
+      {
+        kind: "text",
+        note: "defaults neutral; can configure failure checks",
+      },
     ],
   },
   {
@@ -37,8 +40,11 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat orchestration; BYOK or managed inference" },
-      { kind: "text", note: "$0.05/KB of diff ($0.50 min, ~$1.50 medium PR)" },
+      { kind: "text", note: "Flat Team price; hosted reviews included" },
+      {
+        kind: "text",
+        note: "$0.05/KB of diff ($0.50 floor; $1.50 for a 30 KB medium feature)",
+      },
     ],
   },
   {
@@ -77,7 +83,7 @@ export default function VsMacroscopePage() {
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         Macroscope ships fast and takes precision seriously. Postil is a
         Macroscope alternative for teams who need three things it does not
-        offer: a check that can actually block a merge, a bill that does not
+        put first: a dedicated fail-closed merge gate, a bill that does not
         scale with diff size, and a deployment that runs anywhere other than
         GitHub Cloud.
       </p>
@@ -89,23 +95,31 @@ export default function VsMacroscopePage() {
           caption="Postil compared with Macroscope across merge gate, silence metric, pricing, cost at high PR volume, self-hosting, and platforms."
         />
         <p className="mt-3 font-mono text-xs text-charcoal/70">
-          Compiled from vendor pricing and documentation as of June 2026.
+          Sources: vendor pricing and documentation.
         </p>
       </div>
 
       <div className="prose-postil mt-14 max-w-none">
-        <h2>A neutral check cannot protect a branch</h2>
+        <h2>A neutral default is advisory until configured</h2>
         <p>
-          Macroscope&apos;s check runs complete with a neutral conclusion (
-          <a href="https://docs.macroscope.com/changelog" rel="noopener">
-            per its docs
-          </a>
-          ), and GitHub branch protection cannot block on a neutral check. That
-          makes its findings advisory by construction, whatever severity they
-          carry. Postil completes <code>postil/gate</code> as a real pass/fail
-          check you can require in branch protection, separate from advisory{" "}
-          <code>postil/review</code> commentary. On operational errors the gate
-          fails closed by default; repos can opt into{" "}
+          Macroscope{" "}
+          <a
+            href="https://docs.macroscope.com/check-run-agents"
+            rel="noopener"
+          >
+            Check Run Agents
+          </a>{" "}
+          default to a neutral conclusion ceiling, and GitHub branch protection
+          cannot block on a neutral check. Macroscope{" "}
+          <a href="https://docs.macroscope.com/approvability" rel="noopener">
+            Approvability
+          </a>{" "}
+          can also be configured to conclude failure as a required status check,
+          so the product can gate merges when a team opts into that mode. Postil
+          makes the gate a separate pass/fail check from the start: require{" "}
+          <code>postil/gate</code> in branch protection while{" "}
+          <code>postil/review</code> stays advisory. On operational errors the
+          gate fails closed by default; repos can opt into{" "}
           <code>gate.onError: advisory</code>, which fails open on provider
           outages only.
         </p>
@@ -124,13 +138,13 @@ export default function VsMacroscopePage() {
           <a href="https://docs.macroscope.com/pricing" rel="noopener">
             $0.05 per kilobyte of diff
           </a>{" "}
-          with a 10 KB minimum, around $0.95 to $1.50 for a typical PR. Two
-          pricing models in six months. To its credit, Macroscope offers spend
-          caps and $100 of credit for new workspaces, but the structure still
-          charges you more for bigger changes and more PRs. Postil keeps
-          orchestration flat and makes inference explicit: BYOK at provider
-          rates, or managed OpenRouter inference on the same invoice.
-          Compare on the{" "}
+          with a 10 KB minimum. Its docs describe most reviews as under the
+          minimum, or $0.50, with a 30 KB medium feature at $1.50. Two pricing
+          models in six months. To its credit, Macroscope offers spend caps, but
+          the structure still charges you more for bigger changes and more PRs.
+          Postil keeps
+          hosted Team pricing flat with reviews included, while BYO key support
+          remains available for policy requirements. Compare on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 
