@@ -66,20 +66,17 @@ jobs:
       - name: Stage runtime secrets
         run: |
           set -euo pipefail
-          mkdir -p .cache
-          secrets_file=".cache/fly-runtime-secrets.env"
-          : > "${secrets_file}"
-          chmod 0600 "${secrets_file}"
-          trap 'rm -f "${secrets_file}"' EXIT
+          # Secrets are piped straight to flyctl; they never touch disk.
+          staged=""
           token="${POSTHOG_PROJECT_TOKEN:-${NEXT_PUBLIC_POSTHOG_KEY:-}}"
           if [[ -n "${token}" ]]; then
-            printf 'POSTHOG_PROJECT_TOKEN=%s\n' "${token}" >> "${secrets_file}"
+            staged+="POSTHOG_PROJECT_TOKEN=${token}"$'\n'
           fi
           if [[ -n "${DATABASE_URL}" ]]; then
-            printf 'DATABASE_URL=%s\n' "${DATABASE_URL}" >> "${secrets_file}"
+            staged+="DATABASE_URL=${DATABASE_URL}"$'\n'
           fi
-          if [[ -s "${secrets_file}" ]]; then
-            flyctl secrets import --stage < "${secrets_file}"
+          if [[ -n "${staged}" ]]; then
+            printf '%s' "${staged}" | flyctl secrets import --stage
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

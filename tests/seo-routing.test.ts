@@ -73,6 +73,23 @@ describe("crawler routing", () => {
     expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
 
+  test("login redirect targets the public origin, not the proxy-internal one", async () => {
+    const previousPublicUrl = process.env.POSTIL_PUBLIC_URL;
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+
+    try {
+      const response = await middleware(request("http://localhost:3000/reports"), event);
+
+      expect(response.status).toBe(307);
+      expect(response.headers.get("location")).toBe(
+        "https://postil.dev/login?next=%2Freports",
+      );
+    } finally {
+      if (previousPublicUrl === undefined) delete process.env.POSTIL_PUBLIC_URL;
+      else process.env.POSTIL_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
   test("keeps authenticated dashboard responses out of the index", async () => {
     const secret = "session-secret-for-seo-routing-tests";
     const previousSecret = process.env.POSTIL_SESSION_SECRET;
