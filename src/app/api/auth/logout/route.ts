@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { publicOrigin } from "@/lib/oauth";
 import { destroySessionByToken, SESSION_COOKIE } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -13,7 +14,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (k === SESSION_COOKIE) token = decodeURIComponent(rest.join("="));
   }
   await destroySessionByToken(token);
-  const response = NextResponse.redirect(new URL("/", new URL(request.url).origin), 303);
+  const response = NextResponse.redirect(new URL("/", publicOrigin(request)), 303);
   response.cookies.delete(SESSION_COOKIE);
   return response;
 }

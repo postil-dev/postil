@@ -5,7 +5,13 @@ export function oauthCallbackUrl(request: Request): string {
   return `${publicOrigin(request)}${OAUTH_CALLBACK_PATH}`;
 }
 
-function publicOrigin(request: Request): string {
+/**
+ * Origin to use in URLs handed to the browser or to GitHub. Behind the Fly
+ * proxy `request.url` reports the machine-internal origin (localhost:3000),
+ * so production must set POSTIL_PUBLIC_URL; the request origin is only a
+ * fallback for local development.
+ */
+export function publicOrigin(request: Request): string {
   const configuredOrigin = process.env.POSTIL_PUBLIC_URL?.trim();
   if (configuredOrigin) return normalizeOrigin(configuredOrigin, "POSTIL_PUBLIC_URL");
 
