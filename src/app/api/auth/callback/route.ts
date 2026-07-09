@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getDb, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
-import { oauthCallbackUrl, OAUTH_STATE_COOKIE } from "@/lib/oauth";
+import { oauthCallbackUrl, OAUTH_STATE_COOKIE, publicOrigin } from "@/lib/oauth";
 import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
 import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/lib/session";
 
@@ -69,11 +69,12 @@ function getCookie(request: Request, name: string): string | undefined {
 
 export async function GET(request: Request): Promise<NextResponse> {
   const url = new URL(request.url);
+  const origin = publicOrigin(request);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const expectedState = getCookie(request, OAUTH_STATE_COOKIE);
   if (!code || !state || !expectedState || state !== expectedState) {
-    return NextResponse.redirect(new URL("/login?error=oauth_state", url.origin));
+    return NextResponse.redirect(new URL("/login?error=oauth_state", origin));
   }
 
   // Exchange the code for a user access token.
@@ -88,12 +89,12 @@ export async function GET(request: Request): Promise<NextResponse> {
     }),
   });
   if (!tokenRes.ok) {
-    return NextResponse.redirect(new URL("/login?error=token_exchange", url.origin));
+    return NextResponse.redirect(new URL("/login?error=token_exchange", origin));
   }
   const tokenData = (await tokenRes.json()) as { access_token?: string };
   const accessToken = tokenData.access_token;
   if (!accessToken) {
-    return NextResponse.redirect(new URL("/login?error=token_exchange", url.origin));
+    return NextResponse.redirect(new URL("/login?error=token_exchange", origin));
   }
 
   const ghHeaders = {
@@ -103,7 +104,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   };
   const userRes = await fetch("https://api.github.com/user", { headers: ghHeaders });
   if (!userRes.ok) {
-    return NextResponse.redirect(new URL("/login?error=profile", url.origin));
+    return NextResponse.redirect(new URL("/login?error=profile", origin));
   }
   const ghUser = (await userRes.json()) as GithubUser;
 
@@ -129,7 +130,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     .returning({ id: schema.users.id });
   const userId = upserted[0]?.id;
   if (userId === undefined) {
-    return NextResponse.redirect(new URL("/login?error=profile", url.origin));
+    return NextResponse.redirect(new URL("/login?error=profile", origin));
   }
 
   // Map the user onto organizations we know about: their GitHub orgs plus
@@ -159,7 +160,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const sessionToken = await createSession(userId);
-  const response = NextResponse.redirect(new URL("/reports", url.origin));
+  const response = NextResponse.redirect(new URL("/reports", origin));
   response.cookies.set(SESSION_COOKIE, sessionToken, {
     httpOnly: true,
     sameSite: "lax",
