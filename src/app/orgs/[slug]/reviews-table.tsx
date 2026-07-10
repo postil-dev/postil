@@ -13,8 +13,8 @@ const CLOCK_INTERVAL_MS = 1_000;
 const FILTERS = ["all", "running", "failed", "gate-failing"] as const;
 type QuickFilter = (typeof FILTERS)[number];
 
-function runHref(orgSlug: string, review: Pick<OrgReviewRow, "id">): string {
-  return `/orgs/${orgSlug}/runs/${review.id}`;
+function runHref(orgSlug: string, review: Pick<OrgReviewRow, "publicId">): string {
+  return `/orgs/${orgSlug}/runs/${review.publicId}`;
 }
 
 function isActive(review: OrgReviewRow): boolean {

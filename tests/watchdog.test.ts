@@ -100,8 +100,10 @@ describeDb("watchdog stuck-review kill", () => {
     return Number(repo.rows[0]!.id);
   }
 
-  async function seedStuckReview(repositoryId: number): Promise<number> {
-    const startedAt = new Date(Date.now() - 20 * 60 * 1000); // 20 min ago, past the 10-min deadline
+  async function seedStuckReview(
+    repositoryId: number,
+    startedAt = new Date(Date.now() - 20 * 60 * 1000),
+  ): Promise<number> {
     const row = await pool.query<{ id: string }>(
       `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status, started_at)
        VALUES ($1, 1, 'head', 'base', 'running', $2) RETURNING id`,
@@ -119,14 +121,24 @@ describeDb("watchdog stuck-review kill", () => {
 
   test("kills a review stuck past the deadline and completes its check-runs once", async () => {
     const repositoryId = await seedRepo();
-    const reviewId = await seedStuckReview(repositoryId);
+    const now = new Date("2026-07-10T12:20:00.000Z");
+    const startedAt = new Date("2026-07-10T12:00:00.000Z");
+    const reviewId = await seedStuckReview(repositoryId, startedAt);
 
-    const result = await watchdogPass();
+    const result = await watchdogPass(now);
 
     expect(result.killed).toBe(1);
     expect(await reviewStatus(reviewId)).toBe("failed");
     expect(tokenCalls).toBe(1);
     expect(failCheckRunsCalls).toBe(1);
+    const timestamps = await pool.query<{
+      started_at: Date;
+      finished_at: Date;
+      error_message: string;
+    }>("SELECT started_at, finished_at, error_message FROM reviews WHERE id = $1", [reviewId]);
+    expect(timestamps.rows[0]!.started_at).toEqual(startedAt);
+    expect(timestamps.rows[0]!.finished_at).toEqual(now);
+    expect(timestamps.rows[0]!.error_message).toContain("after 20m 0s of worker runtime");
   });
 
   test("does not touch a review that is no longer running", async () => {

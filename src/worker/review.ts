@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
@@ -113,10 +113,99 @@ interface CliResult {
   timedOut: boolean;
 }
 
+interface CliObservers {
+  onStderrLine?: (line: string) => void;
+}
+
+const REVIEW_LOG_FLUSH_MS = 1_000;
+const REVIEW_LOG_BATCH_SIZE = 50;
+export const REVIEW_LOG_MAX_LINES = 2_000;
+const REVIEW_LOG_LINE_MAX_CHARS = 10_000;
+
+/** Buffered per-review writer. Storage failures never fail the review itself. */
+export class ReviewLogWriter {
+  private readonly pending: Array<typeof schema.reviewLogs.$inferInsert> = [];
+  private readonly timer: ReturnType<typeof setInterval>;
+  private writeChain: Promise<void> = Promise.resolve();
+  private nextSeq = 1;
+  private stopped = false;
+  private sensitiveValues: string[] = [];
+
+  constructor(private readonly reviewId: number) {
+    this.timer = setInterval(() => void this.flush(), REVIEW_LOG_FLUSH_MS);
+    this.timer.unref?.();
+  }
+
+  setSensitiveValues(values: string[]): void {
+    this.sensitiveValues = values;
+  }
+
+  line(value: unknown): void {
+    if (this.stopped) return;
+    let line: string;
+    if (this.nextSeq === REVIEW_LOG_MAX_LINES) {
+      line = `[log truncated after ${REVIEW_LOG_MAX_LINES - 1} lines]`;
+      this.stopped = true;
+    } else {
+      line = redactAndTruncate(String(value), REVIEW_LOG_LINE_MAX_CHARS, this.sensitiveValues);
+    }
+    this.pending.push({
+      reviewId: this.reviewId,
+      seq: this.nextSeq,
+      at: new Date(),
+      line,
+    });
+    this.nextSeq += 1;
+    if (this.pending.length >= REVIEW_LOG_BATCH_SIZE) void this.flush();
+  }
+
+  async flush(): Promise<void> {
+    const batch = this.pending.splice(0, this.pending.length);
+    if (batch.length > 0) {
+      this.writeChain = this.writeChain.then(async () => {
+        try {
+          await getDb().insert(schema.reviewLogs).values(batch);
+        } catch (err) {
+          console.error(
+            `review ${this.reviewId}: could not persist log batch: ${redactSecrets(err, this.sensitiveValues)}`,
+          );
+        }
+      });
+    }
+    await this.writeChain;
+  }
+
+  async close(): Promise<void> {
+    clearInterval(this.timer);
+    await this.flush();
+  }
+}
+
+function createLineObserver(onLine: ((line: string) => void) | undefined) {
+  let remainder = "";
+  const decoder = new TextDecoder();
+  return {
+    push(chunk: Buffer) {
+      if (!onLine) return;
+      const text = remainder + decoder.decode(chunk, { stream: true });
+      const parts = text.split("\n");
+      remainder = parts.pop() ?? "";
+      for (const part of parts) onLine(part.endsWith("\r") ? part.slice(0, -1) : part);
+    },
+    end() {
+      if (!onLine) return;
+      remainder += decoder.decode();
+      if (remainder.length > 0) onLine(remainder.endsWith("\r") ? remainder.slice(0, -1) : remainder);
+      remainder = "";
+    },
+  };
+}
+
 export function runCli(
   args: string[],
   env: Record<string, string>,
   cwd?: string,
+  observers: CliObservers = {},
 ): Promise<CliResult> {
   const bin = optionalEnv("POSTIL_BIN", "postil") as string;
   return new Promise((resolvePromise, reject) => {
@@ -128,12 +217,16 @@ export function runCli(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    const stderrLines = createLineObserver(observers.onStderrLine);
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
     }, REVIEW_DEADLINE_MS);
     child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
-    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+      stderrLines.push(chunk);
+    });
     child.on("error", (err) => {
       clearTimeout(timer);
       reject(
@@ -144,6 +237,7 @@ export function runCli(
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      stderrLines.end();
       resolvePromise({ exitCode: code, stdout, stderr, timedOut });
     });
   });
@@ -157,7 +251,13 @@ export function runCli(
  * store the envelope, and mark the check-runs failed on crash/timeout. All
  * review logic lives in the CLI.
  */
-export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
+export async function runReviewJob(
+  payload: ReviewJobPayload,
+  timing: { queuedAt: Date; startedAt: Date } = {
+    queuedAt: new Date(),
+    startedAt: new Date(),
+  },
+): Promise<void> {
   const db = getDb();
 
   const installation = (
@@ -199,19 +299,6 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
     return;
   }
 
-  // This attempt supersedes any still-pending review of the PR: older heads
-  // (a newer push landed) and orphans of crashed earlier attempts alike.
-  await db
-    .update(schema.reviews)
-    .set({ status: "stale", finishedAt: new Date() })
-    .where(
-      and(
-        eq(schema.reviews.repositoryId, repository.id),
-        eq(schema.reviews.prNumber, payload.prNumber),
-        inArray(schema.reviews.status, ["queued", "running"]),
-      ),
-    );
-
   // Incremental re-review: baseline = last completed review of this PR.
   const baseline = (
     await db
@@ -238,11 +325,18 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
       baseSha: payload.baseSha,
       sinceSha: baseline?.headSha ?? null,
       status: "running",
-      startedAt: new Date(),
+      queuedAt: timing.queuedAt,
+      startedAt: timing.startedAt,
     })
-    .returning({ id: schema.reviews.id });
+    .returning({ id: schema.reviews.id, publicId: schema.reviews.publicId });
   const reviewId = inserted[0]?.id;
-  if (reviewId === undefined) throw new Error("review insert returned no row");
+  const publicId = inserted[0]?.publicId;
+  if (reviewId === undefined || !publicId) throw new Error("review insert returned no row");
+
+  const reviewLog = new ReviewLogWriter(reviewId);
+  reviewLog.line(
+    `review queued at ${timing.queuedAt.toISOString()} -> worker claimed at ${timing.startedAt.toISOString()}`,
+  );
 
   let token: string | undefined;
   let advisoryCheckRunId: number | undefined;
@@ -253,6 +347,18 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
 
   try {
     token = await getInstallationToken(payload.installationId);
+    sensitiveValues = [token];
+    reviewLog.setSensitiveValues(sensitiveValues);
+    const superseded = await supersedeActiveReviews({
+      repositoryId: repository.id,
+      prNumber: payload.prNumber,
+      newHeadSha: payload.headSha,
+      repoFullName: payload.repoFullName,
+      token,
+      excludeReviewId: reviewId,
+    });
+    if (superseded > 0) reviewLog.line(`superseded ${superseded} earlier active review(s)`);
+
     advisoryCheckRunId = await createCheckRun(
       token,
       payload.repoFullName,
@@ -269,6 +375,7 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
       .update(schema.reviews)
       .set({ advisoryCheckRunId, gateCheckRunId })
       .where(eq(schema.reviews.id, reviewId));
+    reviewLog.line("forge check-runs created");
 
     const args = [
       "review",
@@ -324,14 +431,18 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
       );
     }
     const configFiles = [...repoConfigFiles, ...orgConfigFiles];
+    reviewLog.line(
+      `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
+    );
 
     const llm = await resolveLlmConfig(installation.orgId);
     sensitiveValues = [token, llm.apiKey].filter((value): value is string => Boolean(value));
+    reviewLog.setSensitiveValues(sensitiveValues);
     const publicOrigin = configuredPublicOrigin();
     const detailsUrl =
       publicOrigin && installation.orgSlug
         ? new URL(
-            `/orgs/${encodeURIComponent(installation.orgSlug)}/runs/${reviewId}`,
+            `/orgs/${encodeURIComponent(installation.orgSlug)}/runs/${publicId}`,
             publicOrigin,
           ).toString()
         : undefined;
@@ -340,7 +451,13 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
       ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
     });
 
-    const result = await runCli(args, cliEnv, workDir);
+    reviewLog.line("postil CLI spawned");
+    const result = await runCli(args, cliEnv, workDir, {
+      onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
+    });
+    reviewLog.line(
+      `postil CLI exited with code ${result.exitCode}${result.timedOut ? " after timeout" : ""}`,
+    );
 
     if (result.timedOut) {
       throw new OperationalError(`review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline`);
@@ -355,16 +472,14 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
     }
 
     const ingested = ingestEnvelope(result.stdout);
+    reviewLog.line(
+      `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
+    );
+    reviewLog.line("forge check-runs updated by the CLI");
 
-    // The watchdog's cutoff clock starts at insert (before the token mint
-    // and check-run creates above), while the CLI's own kill-timer starts
-    // later at spawn, so a review can legitimately still be completing here
-    // after the watchdog has already marked it `failed` and completed its
-    // check-runs. Guard on status so a late completion can't flap the row
-    // back to `completed` or attribute usage to a review the system already
-    // recorded as failed. The CLI itself owns the check-runs on this path
-    // (they were created with the CLI's own token, not completed here), so
-    // there is no matching duplicate GitHub call to suppress in this file.
+    // Guard on status so a completion racing a superseding push or watchdog
+    // cannot flap the row back to completed or attribute usage to a run that
+    // no longer owns the result. The CLI owns the success-path check-runs.
     const completedRows = await db
       .update(schema.reviews)
       .set({
@@ -388,10 +503,31 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
         modelUsed: ingested.modelUsed,
       });
     } else {
-      console.warn(`review ${reviewId} completed after the watchdog already marked it failed`);
+      const terminal = (
+        await db
+          .select({ status: schema.reviews.status })
+          .from(schema.reviews)
+          .where(eq(schema.reviews.id, reviewId))
+          .limit(1)
+      )[0];
+      if (terminal?.status === "stale") {
+        // A superseding webhook may have neutralized the checks while this
+        // CLI was still running. The CLI can PATCH them afterward, so make
+        // neutral the final forge state once the old process exits.
+        await neutralizeSupersededCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? null,
+          gateCheckRunId ?? null,
+          "superseded by a newer review",
+        );
+        reviewLog.line("forge check-runs restored to neutral after supersession");
+      }
+      console.warn(`review ${reviewId} completed after it was already superseded or failed`);
     }
   } catch (err) {
     const message = redactSecrets(err, sensitiveValues);
+    reviewLog.line(`review failed: ${message}`);
     const failedRows = await db
       .update(schema.reviews)
       .set({
@@ -406,11 +542,112 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
     // already claimed this review and completed them itself (0 rows above).
     if (token && failedRows.length > 0) {
       await failCheckRuns(token, payload.repoFullName, advisoryCheckRunId, gateCheckRunId, message);
+      reviewLog.line("forge check-runs updated for review failure");
     }
     throw err;
   } finally {
     if (baselinePath) await rm(baselinePath, { force: true }).catch(() => undefined);
     if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+    await reviewLog.close();
+  }
+}
+
+interface SupersedeActiveReviewsInput {
+  repositoryId: number;
+  prNumber: number;
+  newHeadSha: string;
+  repoFullName: string;
+  excludeReviewId?: number;
+  onlyDifferentHead?: boolean;
+  token?: string;
+  githubInstallationId?: number;
+}
+
+/** Mark active reviews stale and neutralize every recorded forge check-run. */
+export async function supersedeActiveReviews(
+  input: SupersedeActiveReviewsInput,
+): Promise<number> {
+  const db = getDb();
+  const active = await db
+    .select({
+      id: schema.reviews.id,
+      advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
+      gateCheckRunId: schema.reviews.gateCheckRunId,
+    })
+    .from(schema.reviews)
+    .where(
+      and(
+        eq(schema.reviews.repositoryId, input.repositoryId),
+        eq(schema.reviews.prNumber, input.prNumber),
+        inArray(schema.reviews.status, ["queued", "running"]),
+        input.excludeReviewId === undefined
+          ? undefined
+          : ne(schema.reviews.id, input.excludeReviewId),
+        input.onlyDifferentHead ? ne(schema.reviews.headSha, input.newHeadSha) : undefined,
+      ),
+    );
+  if (active.length === 0) return 0;
+
+  let token = input.token;
+  if (
+    !token &&
+    active.some((review) => review.advisoryCheckRunId != null || review.gateCheckRunId != null)
+  ) {
+    if (input.githubInstallationId === undefined) {
+      throw new Error("cannot complete superseded check-runs without an installation id");
+    }
+    token = await getInstallationToken(input.githubInstallationId);
+  }
+
+  const message = `superseded by a newer review of ${input.newHeadSha}`;
+  let superseded = 0;
+  for (const review of active) {
+    const changed = await db
+      .update(schema.reviews)
+      .set({ status: "stale", finishedAt: new Date() })
+      .where(
+        and(
+          eq(schema.reviews.id, review.id),
+          inArray(schema.reviews.status, ["queued", "running"]),
+        ),
+      )
+      .returning({ id: schema.reviews.id });
+    if (changed.length === 0) continue;
+    superseded += 1;
+    if (token) {
+      await neutralizeSupersededCheckRuns(
+        token,
+        input.repoFullName,
+        review.advisoryCheckRunId,
+        review.gateCheckRunId,
+        message,
+      );
+    }
+  }
+  return superseded;
+}
+
+async function neutralizeSupersededCheckRuns(
+  token: string,
+  repoFullName: string,
+  advisoryCheckRunId: number | null,
+  gateCheckRunId: number | null,
+  message: string,
+): Promise<void> {
+  for (const checkRunId of [gateCheckRunId, advisoryCheckRunId]) {
+    if (checkRunId == null) continue;
+    await completeCheckRun(
+      token,
+      repoFullName,
+      checkRunId,
+      "neutral",
+      "Review superseded",
+      message,
+    ).catch((err) =>
+      console.error(
+        `failed to complete superseded check-run ${checkRunId}: ${redactSecrets(err, [token])}`,
+      ),
+    );
   }
 }
 

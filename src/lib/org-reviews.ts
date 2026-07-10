@@ -7,6 +7,7 @@ export type OrgReviewStatus = "queued" | "running" | "completed" | "failed" | "s
 
 export interface OrgReviewRow {
   id: number;
+  publicId: string;
   prNumber: number;
   status: OrgReviewStatus;
   silent: boolean | null;
@@ -31,6 +32,7 @@ export async function getOrgReviewRows(
   const rows = await db
     .select({
       id: schema.reviews.id,
+      publicId: schema.reviews.publicId,
       prNumber: schema.reviews.prNumber,
       status: schema.reviews.status,
       silent: schema.reviews.silent,
