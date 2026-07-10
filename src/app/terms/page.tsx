@@ -75,7 +75,7 @@ export default function TermsPage() {
           </li>
           <li>
             You are responsible for API keys you configure and any charges your
-            model provider bills against them. Hosted Team remains flat; BYO
+            model provider bills against them. Hosted Team remains flat; BYOK
             provider usage is billed by your provider outside Postil.
           </li>
           <li>

@@ -58,7 +58,7 @@ const ROWS: ComparisonRow[] = [
     ],
   },
   {
-    feature: "BYO key / model choice",
+    feature: "BYOK / model choice",
     cells: [{ kind: "yes" }, { kind: "no" }],
   },
   {
@@ -194,7 +194,7 @@ export default function VsCopilotPage() {
             policy since April 2025
           </a>
           ); Business and Enterprise plans are excluded. There is no model
-          choice and no BYO key on any tier. With Postil, hosted BYO reviews go
+          choice and no BYOK on any tier. With Postil, hosted BYOK reviews go
           through the worker to the provider you configured, hosted default
           reviews use Postil&apos;s configured provider path, and self-hosted keeps
           inference inside your network. The control plane stores review

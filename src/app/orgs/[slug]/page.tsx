@@ -3,16 +3,12 @@ import Link from "next/link";
 
 import { and, desc, eq, sql } from "drizzle-orm";
 
-import {
-  formatDuration,
-  formatMs,
-  GateBadge,
-  ReviewStatusBadge,
-} from "@/components/review-status";
+import { formatMs } from "@/components/review-status";
 import { schema } from "@/lib/db";
-import { githubPrUrl } from "@/lib/github-links";
 import { requireOrgMembership } from "@/lib/org-access";
+import { getOrgReviewRows } from "@/lib/org-reviews";
 import { toggleRepository } from "./actions";
+import { ReviewsTable } from "./reviews-table";
 import { SettingsForm } from "./settings-form";
 
 export const metadata: Metadata = {
@@ -131,27 +127,7 @@ export default async function OrgDashboardPage({
   const ungroundedRate =
     ungrounded + shipped > 0 ? Math.round((ungrounded / (ungrounded + shipped)) * 100) : null;
 
-  const recentReviews = await db
-    .select({
-      id: schema.reviews.id,
-      prNumber: schema.reviews.prNumber,
-      status: schema.reviews.status,
-      silent: schema.reviews.silent,
-      gateFailing: schema.reviews.gateFailing,
-      envelope: schema.reviews.envelope,
-      startedAt: schema.reviews.startedAt,
-      finishedAt: schema.reviews.finishedAt,
-      repoFullName: schema.repositories.fullName,
-    })
-    .from(schema.reviews)
-    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
-    .innerJoin(
-      schema.installations,
-      eq(schema.installations.id, schema.repositories.installationId),
-    )
-    .where(eq(schema.installations.orgId, org.id))
-    .orderBy(desc(schema.reviews.queuedAt))
-    .limit(30);
+  const recentReviews = await getOrgReviewRows(db, org.id, 50);
 
   const repos = await db
     .select({
@@ -310,87 +286,6 @@ export default async function OrgDashboardPage({
             A model-quality signal: the share of model findings discarded for not
             citing a changed line, before anything reached a pull request.
           </p>
-        </div>
-      </div>
-
-      {/* Reviews table */}
-      <div className="mt-10">
-        <p className="eyebrow">Recent reviews</p>
-        <div className="card mt-3 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/50">
-                <th className="px-4 py-3 font-normal">repository</th>
-                <th className="px-4 py-3 font-normal">PR</th>
-                <th className="px-4 py-3 font-normal">status</th>
-                <th className="px-4 py-3 font-normal">gate</th>
-                <th className="px-4 py-3 font-normal">findings</th>
-                <th className="px-4 py-3 font-normal">model</th>
-                <th className="px-4 py-3 font-normal">duration</th>
-                <th className="px-4 py-3 font-normal">report</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentReviews.map((r) => (
-                <tr
-                  key={r.id}
-                  className="border-b border-stone/60 last:border-0 hover:bg-stone/20"
-                >
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    <Link
-                      href={`/orgs/${org.slug}/runs/${r.id}`}
-                      className="hover:text-rust hover:underline"
-                    >
-                      {r.repoFullName}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    <a
-                      href={githubPrUrl(r.repoFullName, r.prNumber)}
-                      rel="noopener"
-                      className="text-rust hover:underline"
-                    >
-                      #{r.prNumber}
-                    </a>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <ReviewStatusBadge status={r.status} gateFailing={r.gateFailing} />
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <GateBadge gateFailing={r.gateFailing} status={r.status} />
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    {r.silent ? (
-                      <span className="text-gate">silent</span>
-                    ) : (
-                      (r.envelope?.findings.length ?? "—")
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs text-charcoal/70">
-                    {r.envelope?.modelUsed ?? "—"}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    {formatDuration(r.startedAt, r.finishedAt)}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    <Link
-                      href={`/orgs/${org.slug}/runs/${r.id}`}
-                      className="text-rust hover:underline"
-                    >
-                      view run
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-              {recentReviews.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-sm text-charcoal/50">
-                    No reviews yet. Open a pull request on an enabled repository.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
         </div>
       </div>
 
@@ -562,6 +457,8 @@ export default async function OrgDashboardPage({
           view everything on this page.
         </p>
       </div>
+
+      <ReviewsTable orgSlug={org.slug} initialReviews={recentReviews} />
     </div>
   );
 }

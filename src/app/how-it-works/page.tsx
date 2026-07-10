@@ -223,7 +223,7 @@ export default function HowItWorksPage() {
               envelope, a JSON document with the summary, findings (path,
               line, severity, confidence), token usage, and gate verdict. Your
               diff is fetched at review time, sent through either Postil&apos;s
-              configured provider path or your BYO provider path, and discarded
+              configured provider path or your BYOK provider path, and discarded
               with the process. CLI and self-hosted reviews send diffs directly
               to the endpoint you configure.
             </p>

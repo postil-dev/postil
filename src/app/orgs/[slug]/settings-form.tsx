@@ -86,7 +86,7 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
         )}
         <p className="text-xs text-charcoal/50">
           Keys are sealed with AES-256-GCM before storage and can never be read back from
-          this form. BYO-key review calls use this key under your provider account; leave
+          this form. BYOK review calls use this key under your provider account; leave
           it unset to use the hosted default.
         </p>
       </div>

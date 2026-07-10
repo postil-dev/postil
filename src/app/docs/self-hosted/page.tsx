@@ -128,8 +128,8 @@ docker compose exec web bun run db:migrate`}</code>
           (see below). The web container exits at boot if either is empty.
         </li>
         <li>
-          <code>POSTIL_SEALING_KEY</code>: AES-256-GCM key sealing org BYO API
-          keys at rest; required for both web and worker.{" "}
+          <code>POSTIL_SEALING_KEY</code>: AES-256-GCM key sealing org BYOK
+          credentials at rest; required for both web and worker.{" "}
           <code>openssl rand -hex 32</code>.
         </li>
       </ul>

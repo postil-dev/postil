@@ -292,7 +292,7 @@ export default function BestToolsArticle() {
             PR-Agent
           </a>
           , the open-source (Apache-2.0) reviewer that remains the default
-          answer for self-hosting, BYO key, and local models via Ollama,
+          answer for self-hosting, BYOK, and local models via Ollama,
           including air-gapped setups. It raised a{" "}
           <a
             href="https://techcrunch.com/2026/03/30/qodo-bets-on-code-verification-as-ai-coding-scales-raises-70m/"
@@ -332,7 +332,7 @@ export default function BestToolsArticle() {
             self-published benchmark
           </a>{" "}
           and, like the other three vendors surveyed here, ranks its own product
-          first. Constraints: GitHub Cloud only, no self-hosting, no BYO key,
+          first. Constraints: GitHub Cloud only, no self-hosting, no BYOK,
           default{" "}
           <a
             href="https://docs.macroscope.com/check-run-agents"
@@ -354,7 +354,7 @@ export default function BestToolsArticle() {
         <p>
           Strong cross-file, whole-repository reasoning and one of only two
           real self-hosting options here (Docker Compose, Kubernetes,
-          air-gapped, BYO LLM endpoint), though{" "}
+          air-gapped, BYOK LLM endpoint), though{" "}
           <a
             href="https://www.greptile.com/docs/security/selfhost"
             rel="noopener"
@@ -444,7 +444,7 @@ export default function BestToolsArticle() {
           </a>
           ). It supports GitHub (cloud and GHES) and GitLab including
           self-hosted instances, with hierarchical rules and an incremental
-          review mode. Caveats: it runs only in Cursor&apos;s cloud with no BYO
+          review mode. Caveats: it runs only in Cursor&apos;s cloud with no BYOK
           key and no Bitbucket support, and its{" "}
           <a href="https://cursor.com/blog/may-2026-bugbot-changes" rel="noopener">
             May 2026 switch
@@ -481,7 +481,7 @@ export default function BestToolsArticle() {
           dashboard is the silence rate, the share of PRs where Postil said
           nothing, alongside the confidence distribution of every finding it
           shipped. Pricing is flat by developer with hosted reviews included,
-          and BYO key support remains available for policy requirements.
+          and BYOK support remains available for policy requirements.
           Self-hosting is free via{" "}
           <Link href="/docs/self-hosted">Docker Compose</Link>, same product as
           hosted, with Ollama support. The hosted app is GitHub-only today; the

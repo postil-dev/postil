@@ -27,7 +27,7 @@ noindexed:
   reviews across all of them.
 - `/orgs/[slug]` is the organization dashboard: silence rate, confidence
   distribution, engine telemetry, recent reviews, repository review coverage
-  toggles, LLM settings (model, API base, cascade, sealed BYO key), and the
+  toggles, LLM settings (model, API base, cascade, sealed BYOK credential), and the
   member list with roles. A banner surfaces suspended installations.
 - `/orgs/[slug]/reviews/[id]` renders one review from its stored envelope:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file

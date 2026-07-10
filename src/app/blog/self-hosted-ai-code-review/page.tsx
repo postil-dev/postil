@@ -98,14 +98,14 @@ export default function SelfHostedAiCodeReviewArticle() {
               <td>Greptile</td>
               <td>Yes</td>
               <td className="hidden sm:table-cell">
-                Docker/K8s, air-gapped, BYO LLM endpoint, Enterprise tier
+                Docker/K8s, air-gapped, BYOK LLM endpoint, Enterprise tier
               </td>
             </tr>
             <tr>
               <td>Qodo PR-Agent</td>
               <td>Yes</td>
               <td className="hidden sm:table-cell">
-                Open source (Apache-2.0), BYO key, Ollama supported
+                Open source (Apache-2.0), BYOK, Ollama supported
               </td>
             </tr>
             <tr>
@@ -129,7 +129,7 @@ export default function SelfHostedAiCodeReviewArticle() {
               <td>Postil</td>
               <td>Yes</td>
               <td className="hidden sm:table-cell">
-                Apache-2.0, no seat fees or license cost, BYO key
+                Apache-2.0, no seat fees or license cost, BYOK
               </td>
             </tr>
           </tbody>
@@ -228,7 +228,7 @@ postil doctor: ready.`}</code>
           at Ollama, vLLM, LiteLLM, TGI, Azure OpenAI, or OpenRouter by changing
           one base URL. In CLI and self-hosted modes there is no proxy in the
           middle: inference goes to your endpoint under your provider account.
-          Hosted BYO routes through the worker to your configured provider, and
+          Hosted BYOK routes through the worker to your configured provider, and
           hosted Team reviews are included by default.
         </p>
         <pre tabIndex={0} aria-label="Code sample">
@@ -284,7 +284,7 @@ POSTIL_API_KEY=azure-api-key
         <p>
           Self-hosted plus Ollama means code never leaves your network. CLI mode
           with your own key sends code directly to the provider you chose, under
-          your own data processing agreement. Hosted BYO sends the diff through
+          your own data processing agreement. Hosted BYOK sends the diff through
           the Postil worker to your configured provider, and hosted default uses
           Postil&apos;s configured provider path. The forge coverage matters here
           too, because regulated buyers tend to run
@@ -364,7 +364,7 @@ POSTIL_API_KEY=azure-api-key
         <div>
           <h2 className="serif-display text-2xl">Run it on your own hardware.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Apache-2.0, no seat fees or license cost, BYO key, with a scripted
+            Apache-2.0, no seat fees or license cost, BYOK, with a scripted
             Compose path for Ollama.
           </p>
         </div>
