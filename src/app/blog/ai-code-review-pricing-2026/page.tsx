@@ -410,7 +410,7 @@ export default function PricingArticle() {
               <td>Postil</td>
               <td className="hidden sm:table-cell">Flat per developer</td>
               <td>$200</td>
-              <td>Seats; BYO key is optional for policy</td>
+              <td>Seats; BYOK is optional for policy</td>
             </tr>
           </tbody>
         </table>
@@ -459,9 +459,9 @@ export default function PricingArticle() {
           a metered bill might be lower, because budget surprises have
           organizational costs that unit prices do not capture. Our own
           position follows from that: Postil charges flat for Team seats
-          ($10 per developer) with hosted reviews included, while BYO key
+          ($10 per developer) with hosted reviews included, while BYOK
           support remains available for teams that require provider-controlled
-          inference. When you choose BYO key, provider usage stays in your
+          inference. When you choose BYOK, provider usage stays in your
           account and Postil has no lever to profit from your volume. That
           property comes from the pricing structure itself, and you can check
           it on{" "}

@@ -20,7 +20,7 @@ export default function PrivacyPage() {
           The hosted control plane does not store your code. When a hosted
           review runs, the worker fetches the pull-request diff with a
           short-lived installation token, sends it through either Postil&apos;s
-          configured provider path or the BYO provider path configured for your
+          configured provider path or the BYOK provider path configured for your
           organization, and exits. CLI and self-hosted reviews send diffs
           directly to the endpoint you configure. The diff lives in process
           memory for the duration of the review and is gone with the process.
@@ -90,14 +90,14 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Model providers</strong> receive the diff for the duration
-            of a model call. Hosted BYO reviews route through the Postil worker
+            of a model call. Hosted BYOK reviews route through the Postil worker
             to your configured provider under your own provider relationship.
-            Hosted reviews without BYO settings use Postil&apos;s configured
+            Hosted reviews without BYOK settings use Postil&apos;s configured
             OpenRouter-compatible provider path; the default is{" "}
             <strong>OpenRouter</strong>, which forwards the request to a
             downstream model provider. CLI and self-hosted deployments send
             diffs directly to the endpoint you configure. For sensitive code we
-            recommend a BYO key pointed directly at your chosen provider, or
+            recommend BYOK pointed directly at your chosen provider, or
             self-hosting (below).
           </li>
           <li>
@@ -135,10 +135,10 @@ export default function PrivacyPage() {
           European region, so your account data and review envelopes are
           processed and stored in the UK/EU. PostHog analytics should use EU
           Cloud for the hosted service. Review inference is separate from that
-          account-data boundary: hosted reviews without BYO model settings send
+          account-data boundary: hosted reviews without BYOK model settings send
           diffs from the worker to Postil&apos;s configured OpenRouter-compatible
           provider path and downstream model providers, so inference has no
-          fixed UK/EU residency guarantee. When your org uses a BYO model key,
+          fixed UK/EU residency guarantee. When your org uses BYOK,
           diffs go to whatever provider and region you configure. A self-hosted
           deployment keeps all data on your own infrastructure, wherever you run
           it. We make no SOC 2 or ISO certification claim.

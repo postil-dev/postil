@@ -85,7 +85,7 @@ export default function PricingPage() {
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Private repositories, unlimited reviews</li>
             <li>Unlimited hosted reviews included</li>
-            <li>BYO key support for custom policy requirements</li>
+            <li>BYOK support for custom policy requirements</li>
             <li>postil/gate for branch protection</li>
             <li>Silence-rate and confidence dashboards</li>
             <li>Incremental re-review on every push</li>

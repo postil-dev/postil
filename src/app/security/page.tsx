@@ -195,7 +195,7 @@ export default function SecurityPage() {
             <p className="eyebrow">Credential lifetimes</p>
             <dl className="mt-4 space-y-3 text-sm text-ink-soft">
               <div className="flex justify-between gap-4">
-                <dt>BYO inference key</dt>
+                <dt>BYOK inference</dt>
                 <dd className="text-right font-mono text-xs">
                   AES-256-GCM at rest, write-only
                 </dd>
@@ -237,7 +237,7 @@ export default function SecurityPage() {
             The control plane persists one artifact per review: the envelope, a
             JSON document with the summary, findings, token usage, and gate
             verdict. The diff is fetched at review time, sent to the applicable
-            model endpoint, and discarded with the process. Hosted BYO reviews
+            model endpoint, and discarded with the process. Hosted BYOK reviews
             route through the worker to your configured provider, hosted default
             reviews use Postil&apos;s configured provider path, and self-hosted
             deployments send nothing to us: no telemetry, no license pings, no

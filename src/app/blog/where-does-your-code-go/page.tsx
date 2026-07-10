@@ -196,7 +196,7 @@ export default function WhereDoesYourCodeGoArticle() {
                 Stores the review envelope only; source code never persisted
               </td>
               <td className="hidden sm:table-cell">
-                Hosted default uses Postil&apos;s provider path; hosted BYO routes
+                Hosted default uses Postil&apos;s provider path; hosted BYOK routes
                 through the worker to your provider
               </td>
             </tr>
@@ -274,13 +274,13 @@ export default function WhereDoesYourCodeGoArticle() {
           the customer&apos;s key, under that customer&apos;s data-processing agreement
           with the provider, or to a model the customer hosts. Among the majors
           this is mostly an enterprise or open-source
-          path: CodeRabbit allows a BYO key only when self-hosted, and
+          path: CodeRabbit allows BYOK only when self-hosted, and
           Qodo&apos;s PR-Agent supports any key, including a local Ollama
           endpoint, because you run it yourself (
           <a href="https://github.com/qodo-ai/pr-agent" rel="noopener">
             PR-Agent
           </a>
-          ). Macroscope, hosted Copilot, and Cursor Bugbot do not offer BYO key
+          ). Macroscope, hosted Copilot, and Cursor Bugbot do not offer BYOK
           or model selection in their hosted products. The reason inference
           location matters is that it determines which contract governs your
           code in the one place it is most exposed: in transit to, and being
@@ -293,10 +293,10 @@ export default function WhereDoesYourCodeGoArticle() {
           adjectives. CLI and self-hosted deployments send your diff directly to
           the OpenAI-compatible endpoint you configure, OpenRouter, Azure
           OpenAI, vLLM, LiteLLM, or a local Ollama, authenticated with your key.
-          Hosted organizations can use the same BYO model settings; in that
+          Hosted organizations can use the same BYOK model settings; in that
           case, the worker sends the diff to your configured provider and
           region under your provider relationship. Hosted organizations without
-          BYO model settings use Postil&apos;s configured provider credentials, with
+          BYOK model settings use Postil&apos;s configured provider credentials, with
           diffs sent from the worker to Postil&apos;s OpenRouter-compatible provider
           path and downstream model providers under Postil&apos;s provider
           relationship.
@@ -307,11 +307,11 @@ export default function WhereDoesYourCodeGoArticle() {
           findings (path, line, severity, confidence, and the finding text),
           token usage, and the gate verdict. The diff is fetched at review time,
           sent through the worker to either Postil&apos;s configured provider path or
-          the provider your org configures for BYO, and discarded with the
+          the provider your org configures for BYOK, and discarded with the
           process. There is no code cache, no embedding index, and no repository
           clone on our infrastructure, and a self-hosted deployment sends us
           nothing at all, no telemetry, no license pings, no update checks. When
-          a BYO key is stored for the hosted product, it is sealed with
+          a BYOK credential is stored for the hosted product, it is sealed with
           AES-256-GCM before it touches the database and the settings form is
           write-only: a stored key
           can be replaced or removed, never read back out.
@@ -431,7 +431,7 @@ export default function WhereDoesYourCodeGoArticle() {
             <a href="https://github.com/qodo-ai/pr-agent" rel="noopener">
               Qodo PR-Agent
             </a>{" "}
-            (open-source, BYO key including Ollama)
+            (open-source, BYOK including Ollama)
           </li>
           <li>
             <a

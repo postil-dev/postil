@@ -55,7 +55,7 @@ const ROWS: ComparisonRow[] = [
     ],
   },
   {
-    feature: "Self-host / BYO key",
+    feature: "Self-host / BYOK",
     cells: [
       { kind: "yes", note: "free, Docker Compose, incl. Ollama" },
       { kind: "no" },
@@ -143,7 +143,7 @@ export default function VsMacroscopePage() {
           models in six months. To its credit, Macroscope offers spend caps, but
           the structure still charges you more for bigger changes and more PRs.
           Postil keeps
-          hosted Team pricing flat with reviews included, while BYO key support
+          hosted Team pricing flat with reviews included, while BYOK support
           remains available for policy requirements. Compare on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
