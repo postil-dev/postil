@@ -14,6 +14,40 @@ import { closeDb, getDb, schema } from "@/lib/db";
 import type { Envelope, Finding } from "@/lib/envelope";
 import { signSessionToken } from "@/lib/session-token";
 
+function assertLocalSeedTarget(): void {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("seed: refusing to run with NODE_ENV=production");
+  }
+
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("seed: DATABASE_URL is required and must target a local development database");
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch {
+    throw new Error("seed: DATABASE_URL is invalid; refusing to open a database connection");
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  const socketHost = parsed.searchParams.get("host");
+  const localHost =
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname.endsWith(".internal");
+  const localSocket = hostname === "" && socketHost?.startsWith("/") === true;
+
+  if (!localHost && !localSocket) {
+    throw new Error(
+      "seed: refusing non-local DATABASE_URL; use localhost, 127.0.0.1, a .internal host, or a local Unix socket",
+    );
+  }
+}
+
+assertLocalSeedTarget();
+
 function buckets(findings: Finding[]): [number, number, number, number, number] {
   const out: [number, number, number, number, number] = [0, 0, 0, 0, 0];
   for (const f of findings) {

@@ -49,9 +49,9 @@ export default function HomePage() {
               block a merge.
             </h1>
             <p className="mt-6 max-w-xl text-lg text-ink-soft">
-              Postil reviews every pull request as a real CI check. It comments
-              only when a finding could change the merge decision, and it stays
-              silent on clean PRs.
+              Postil reviews every non-draft pull request in repositories you
+              enable as a real CI check. It comments only when a finding could
+              change the merge decision, and it stays silent on clean PRs.
             </p>
             <div className="mt-8 flex flex-wrap gap-4">
               <a href={githubAppInstallUrl()} className="btn-primary">
@@ -62,7 +62,7 @@ export default function HomePage() {
               </Link>
             </div>
             <p className="mt-6 font-mono text-xs text-charcoal/75">
-              Apache-2.0 CLI · free on public repos · self-hosted forever
+              Apache-2.0 CLI · free on public repos · no self-host license cost
             </p>
           </div>
         </div>
@@ -72,7 +72,7 @@ export default function HomePage() {
       <Section
         number="01"
         eyebrow="The noise problem"
-        title="Most AI reviewers comment too much to be trusted."
+        title="Review noise makes trust harder."
       >
         <div className="grid gap-8 md:grid-cols-3">
           <div className="card p-6">
@@ -86,9 +86,8 @@ export default function HomePage() {
           <div className="card p-6">
             <p className="serif-display text-4xl text-rust">30%</p>
             <p className="mt-3 text-sm text-ink-soft">
-              of a leading reviewer&apos;s comments were addressed by developers
-              before it retuned its defaults, by its own published numbers.
-              Most AI review comments change nothing.
+              of Greptile&apos;s comments were addressed by developers before it
+              retuned its defaults, according to Greptile&apos;s published numbers.
             </p>
           </div>
           <div className="card p-6">
@@ -193,8 +192,12 @@ export default function HomePage() {
               separately from advisory commentary.
             </p>
             <p className="mt-4 text-ink-soft">
-              No other mainstream reviewer ships this separation; teams rebuild
-              it by hand from raw check statuses.
+              None of the reviewers on our{" "}
+              <Link href="/why-postil" className="text-rust underline">
+                comparison pages
+              </Link>{" "}
+              ships this exact separation; teams otherwise rebuild it from raw
+              check statuses.
             </p>
             <p className="mt-6">
               <Link href="/docs/gate" className="link-arrow">
@@ -249,33 +252,32 @@ export default function HomePage() {
         title="The same binary runs locally, in CI, and behind the hosted app."
       >
         <div className="grid gap-8 lg:grid-cols-[3fr_2fr]">
-          <Terminal title="postil review --staged">
-            <code>
-              <span className="t-dim">$</span> postil review --staged{"\n"}
-              {"\n"}
-              <span className="t-dim">reviewing 4 files, 212 added lines</span>
-              {"\n"}
-              <span className="t-dim">(model: deepseek/deepseek-v4-pro)</span>
-              {"\n"}
-              {"\n"}
-              <span className="t-red">error</span>{"  "}src/billing/invoice.ts:84{"\n"}
-              {"  "}Refund path skips idempotency key;{"\n"}
-              {"  "}a retried webhook double-credits the{"\n"}
-              {"  "}customer. (confidence 0.91, kind: risk){"\n"}
-              {"\n"}
-              <span className="t-rust">warn</span>{"   "}src/api/export.ts:31{"\n"}
-              {"  "}Unbounded query feeds the CSV stream;{"\n"}
-              {"  "}the new endpoint has no pagination or{"\n"}
-              {"  "}row cap. (confidence 0.78, kind: risk){"\n"}
-              {"\n"}
-              <span className="t-dim">2 findings</span>
-              {"\n"}
-              <span className="t-dim">5 suppressed below confidence 0.6</span>
-              {"\n"}
-              <span className="t-red">gate: failing (fail-on: error)</span>{"\n"}
-              <span className="t-dim">exit 1</span>
-            </code>
-          </Terminal>
+          <div>
+            <Terminal title="postil/review · postil#275">
+              <code>
+                <span className="t-dim">repository</span>{"  "}postil-dev/postil{"\n"}
+                <span className="t-dim">pull request</span>{"  "}#275{"\n"}
+                <span className="t-dim">commit</span>{"       "}4d08309409e3{"\n"}
+                <span className="t-dim">changes</span>{"      "}10 files, 1,438 added lines{"\n"}
+                <span className="t-dim">model</span>{"        "}moonshotai/kimi-k2.6{"\n"}
+                {"\n"}
+                <span className="t-red">error</span>{"  "}drizzle/0001_org_indexes_and_constraints.sql:3{"\n"}
+                {"  "}Add deduplication before unique index migration{"\n"}
+                {"\n"}
+                <span className="t-dim">1 finding</span>{"\n"}
+                <span className="t-red">gate: failing (failOn: error)</span>
+              </code>
+            </Terminal>
+            <p className="mt-3 font-mono text-xs text-charcoal/70">
+              <a
+                href="https://github.com/postil-dev/postil/runs/84687183194"
+                className="text-rust underline"
+                rel="noopener"
+              >
+                Source: GitHub check-run 84687183194
+              </a>
+            </p>
+          </div>
           <div>
             <p className="text-ink-soft">
               <code className="font-mono text-sm">postil review</code> works on
@@ -352,9 +354,16 @@ export default function HomePage() {
               we did ship.
             </p>
             <p className="mt-4 text-ink-soft">
-              If the bot is drifting noisy, you see it in a chart before your
-              engineers feel it in their notifications. No other reviewer
-              publishes this number.
+              <a
+                href="https://github.blog/ai-and-ml/github-copilot/60-million-copilot-code-reviews-and-counting/"
+                className="text-rust underline"
+                rel="noopener"
+              >
+                GitHub published
+              </a>{" "}
+              a one-off category figure: Copilot code review stayed silent on
+              roughly 29% of reviews. Postil makes this an ongoing
+              per-organization dashboard metric.
             </p>
             <p className="mt-6 flex flex-wrap gap-x-6 gap-y-2">
               <Link href="/how-it-works#silence-methodology" className="link-arrow">
@@ -434,7 +443,7 @@ export default function HomePage() {
           <div className="card p-6">
             <p className="serif-display text-2xl">Free</p>
             <p className="mt-2 text-sm text-ink-soft">
-              Public repos and the local CLI, forever. Apache-2.0.
+              Free for public repositories. The local CLI is Apache-2.0.
             </p>
           </div>
           <div className="card border-gate p-6">
@@ -448,8 +457,8 @@ export default function HomePage() {
           <div className="card p-6">
             <p className="serif-display text-2xl">Self-hosted</p>
             <p className="mt-2 text-sm text-ink-soft">
-              Free forever. Docker Compose that works on the first run,
-              including with Ollama.
+              Apache-2.0 with no seat fees or license cost. One Compose file,
+              with named-field configuration errors at startup.
             </p>
           </div>
         </div>

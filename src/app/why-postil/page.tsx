@@ -38,12 +38,12 @@ const COMPARISON_ROWS: ComparisonRow[] = [
     ],
   },
   {
-    feature: "Published silence / quiet-rate metric",
+    feature: "Ongoing organization silence / quiet-rate metric",
     cells: [
       { kind: "yes", note: "headline dashboard number" },
       { kind: "no" },
       { kind: "no" },
-      { kind: "no" },
+      { kind: "partial", note: "one-off ~29% category figure" },
     ],
   },
   {
@@ -58,7 +58,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
   {
     feature: "Self-host (no enterprise gate)",
     cells: [
-      { kind: "yes", note: "free, Docker Compose" },
+      { kind: "yes", note: "Apache-2.0, Docker Compose" },
       { kind: "partial", note: "enterprise sales" },
       { kind: "no" },
       { kind: "no" },
@@ -120,7 +120,7 @@ const wedges: Wedge[] = [
         </p>
       </>
     ),
-    status: <span className="font-mono text-xs text-gate">no incumbent surfaces this metric</span>,
+    status: <span className="font-mono text-xs text-gate">ongoing per-organization metric</span>,
   },
   {
     number: "02",
@@ -174,7 +174,7 @@ const wedges: Wedge[] = [
         </p>
       </>
     ),
-    status: <span className="font-mono text-xs text-gate">survives 10x PR volume by construction</span>,
+    status: <span className="font-mono text-xs text-gate">price does not scale with PR count</span>,
   },
   {
     number: "03",
@@ -182,14 +182,15 @@ const wedges: Wedge[] = [
     body: (
       <>
         <p>
-          Every major tool posts blocking-severity and style-level findings as
-          equivalent PR comments. GitHub Copilot's review completes as a
-          neutral grey check that reads as "didn't fail". Teams that want
-          "block on critical, ignore nits" build it by hand from raw check
-          statuses.
+          Several reviewers we compare put blocking-severity and style-level
+          findings into the same review stream. GitHub Copilot&apos;s review
+          completes as a neutral grey check that reads as "didn&apos;t fail".
+          Teams that want "block on critical, ignore nits" build it by hand
+          from raw check statuses.
         </p>
         <p className="mt-3">
-          Postil completes two named check-runs on every PR:{" "}
+          Postil completes two named check-runs on every non-draft PR in an
+          enabled repository:{" "}
           <code>postil/gate</code> fails only at or above your configured
           severity and is safe to require in branch protection;{" "}
           <code>postil/review</code> carries everything advisory. On
@@ -199,7 +200,7 @@ const wedges: Wedge[] = [
         </p>
       </>
     ),
-    status: <span className="font-mono text-xs text-gate">a category-first CI primitive</span>,
+    status: <span className="font-mono text-xs text-gate">separate gate and advisory checks</span>,
   },
   {
     number: "04",
@@ -231,7 +232,7 @@ const wedges: Wedge[] = [
   },
   {
     number: "05",
-    title: "Self-hosted that works on the first run (including Ollama)",
+    title: "One Compose file, with startup validation",
     body: (
       <>
         <p>
@@ -261,11 +262,12 @@ const wedges: Wedge[] = [
           actionable error message, and documents working configs for
           OpenRouter, Azure OpenAI, and local Ollama.{" "}
           <code>postil doctor</code> verifies your endpoint, key, and model
-          before the first review. Free forever.
+          before the first review. The stack is Apache-2.0 with no seat fees or
+          license cost; you supply inference and infrastructure.
         </p>
       </>
     ),
-    status: <span className="font-mono text-xs text-gate">&lt;15 minutes from clone to first review</span>,
+    status: <span className="font-mono text-xs text-gate">clone, configure, compose up, review</span>,
   },
   {
     number: "06",
@@ -300,9 +302,9 @@ const wedges: Wedge[] = [
     body: (
       <>
         <p>
-          No incumbent shows you what a config change would have done before
-          you deploy it. Teams tune review settings by trial and error against
-          live PRs, for weeks.
+          None of the reviewers on our comparison pages documents a replay that
+          shows what a config change would have done before deployment. Teams
+          otherwise tune review settings against live PRs.
         </p>
         <p className="mt-3">
           <code>postil plan</code> re-applies a candidate config to your stored
@@ -312,7 +314,7 @@ const wedges: Wedge[] = [
         </p>
       </>
     ),
-    status: <span className="font-mono text-xs text-gate">a category first</span>,
+    status: <span className="font-mono text-xs text-gate">deterministic config replay</span>,
   },
 ];
 

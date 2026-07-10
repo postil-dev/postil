@@ -1,6 +1,6 @@
 # Postil
 
-Postil is a local-first, low-noise review gate for agent-speed development. It focuses on merge-relevant correctness, security, infrastructure risk, human escalation, and repeated feedback that should become guardrails. It completes two CI check-runs per pull request: postil/gate (blocking, safe to require in branch protection) and postil/review (advisory), and stays completely silent on clean PRs.
+Postil is a local-first, low-noise review gate for agent-speed development. It focuses on merge-relevant correctness, security, infrastructure risk, human escalation, and repeated feedback that should become guardrails. In enabled repositories, it completes two CI check-runs per non-draft pull request: postil/gate (blocking, safe to require in branch protection) and postil/review (advisory), and stays completely silent on clean PRs.
 
 ## Website
 

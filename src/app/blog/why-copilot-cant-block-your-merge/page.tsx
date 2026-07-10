@@ -310,14 +310,11 @@ export default function CopilotMergeGateArticle() {
           stored past reviews under a candidate configuration and reports what
           would change, without posting anything or blocking anything:
         </p>
-        <pre tabIndex={0} aria-label="Code sample">
-          <code>{`postil plan: replaying N stored review(s) under candidate config
-  pr-123: 4 -> 2 finding(s); gate: FAILING -> passing
-  pr-128: 1 -> 1 finding(s); gate: passing -> FAILING
-Summary: 6 finding(s) would be suppressed; 2 gate outcome(s) would change.`}</code>
-        </pre>
         <p>
-          You see the gate flips before you arm the gate. The recommended
+          The command reports before and after finding counts for each stored
+          envelope, which findings the candidate config would suppress, and
+          every gate outcome that would change. You see the gate flips before
+          you arm the gate. The recommended
           adoption path is the one the integration guides describe: run{" "}
           <code>postil/gate</code> advisory for a couple of weeks, use{" "}
           <code>postil plan</code> to tune <code>failOn</code> until the gate

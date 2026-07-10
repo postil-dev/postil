@@ -68,9 +68,9 @@ const softwareApplicationJsonLd = {
   name: "Postil",
   url: "https://postil.dev",
   applicationCategory: "DeveloperApplication",
-  operatingSystem: "Linux, macOS, Windows",
+  operatingSystem: "Linux, macOS",
   description:
-    "Postil is a low-noise pull-request review gate. It reviews every pull request, comments only when it can affect the merge, and stays silent on clean PRs.",
+    "Postil is a low-noise pull-request review gate. It reviews every non-draft pull request in enabled repositories, comments only when it can affect the merge, and stays silent on clean PRs.",
   offers: [
     {
       "@type": "Offer",

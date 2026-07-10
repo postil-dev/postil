@@ -34,13 +34,26 @@ function FindingBody({ body }: { body: string }) {
   );
 }
 
+function checkSummaryMessages(summary: string): string[] {
+  return summary
+    .split(/\n\n+/)
+    .map((part) => part.replace(/<img\b[^>]*>\s*/g, "").trim())
+    .filter(
+      (part) => part && !part.startsWith("- ") && !part.startsWith("Model:"),
+    );
+}
+
 function DiffBlock({ diff }: { diff: string }) {
   return (
     <pre className="ev-diff" aria-label="reviewed diff" tabIndex={0}>
       <code>
         {diff.split("\n").map((line, i) => {
           let cls = "ev-line";
-          if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff "))
+          if (
+            line.startsWith("+++") ||
+            line.startsWith("---") ||
+            line.startsWith("diff ")
+          )
             cls = "ev-line ev-meta";
           else if (line.startsWith("@@")) cls = "ev-line ev-hunk";
           else if (line.startsWith("+")) cls = "ev-line ev-add";
@@ -66,13 +79,20 @@ function Finding({ f }: { f: EvidenceFinding }) {
   return (
     <div className={`ev-finding ev-sev-${f.severity}`}>
       <div className="ev-finding-head">
-        <span className="ev-badge" aria-label={`severity: ${SEV_LABEL[f.severity]}`}>
+        <span
+          className="ev-badge"
+          aria-label={`severity: ${SEV_LABEL[f.severity]}`}
+        >
           {f.severity}
         </span>
         <span className="ev-loc">
           {f.path}:{f.line}
         </span>
-        <span className="ev-conf">{Math.round(f.confidence * 100)}% confidence</span>
+        {f.confidence !== undefined ? (
+          <span className="ev-conf">
+            {Math.round(f.confidence * 100)}% confidence
+          </span>
+        ) : null}
       </div>
       <h3 className="ev-finding-title">{f.title}</h3>
       <FindingBody body={f.body} />
@@ -85,9 +105,18 @@ function Finding({ f }: { f: EvidenceFinding }) {
  * always visible without JavaScript and ends visible even if a paint races
  * scroll position. Never gates visibility on an IntersectionObserver.
  */
-function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) {
+function Reveal({
+  children,
+  delay = 0,
+}: {
+  children: React.ReactNode;
+  delay?: number;
+}) {
   return (
-    <div className="ev-reveal" style={delay ? { animationDelay: `${delay}ms` } : undefined}>
+    <div
+      className="ev-reveal"
+      style={delay ? { animationDelay: `${delay}ms` } : undefined}
+    >
       {children}
     </div>
   );
@@ -97,15 +126,24 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
   const [active, setActive] = useState(0);
   const current = cases[active] ?? cases[0]!;
   const env = current.envelope;
-  const tokens = env.usage ? env.usage.promptTokens + env.usage.completionTokens : null;
+  const tokens = env.usage
+    ? env.usage.promptTokens + env.usage.completionTokens
+    : null;
   const totals = useMemo(() => {
-    const real = cases.filter((c) => !c.fixture).length;
     return {
-      real,
-      fixtures: cases.length - real,
+      catches: cases.filter((c) => c.envelope.findings.length > 0).length,
+      clean: cases.filter((c) => c.envelope.silent).length,
       failing: cases.filter((c) => c.envelope.gate.failing).length,
     };
   }, [cases]);
+  const repoUrl = current.checkRunUrl.replace(/\/runs\/\d+$/, "");
+  const commitUrl = `${repoUrl}/commit/${current.commitSha}`;
+  const summaryMessages = checkSummaryMessages(env.summary);
+  const diffLabel = current.diffCommitSha
+    ? "The complete resolving commit diff"
+    : current.diffIsExcerpt
+      ? "Excerpt of the reviewed commit diff"
+      : "The complete reviewed commit diff";
 
   return (
     <div className="ev-root">
@@ -116,15 +154,17 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
             <p className="ev-eyebrow">See it run</p>
             <h1 className="ev-h1">Evidence across the bugs reviewers miss.</h1>
             <p className="ev-lede">
-              Real catches from Postil's own repos, reviewing itself in CI —
-              not invented examples. Each card links to the public pull
-              request the finding came from, so you can check it yourself.
+              Real review output from Postil&apos;s own repositories. Every card
+              links to the exact check-run and reviewed commit, with the pull
+              request retained for context.
             </p>
           </Reveal>
         </header>
 
         <div className="ev-meta-note">
-          <span>{totals.real} real catches, {totals.fixtures} labeled fixture</span>
+          <span>
+            {totals.catches} real catches, {totals.clean} real silent re-review
+          </span>
           <span>model: {cases[0]?.envelope.modelUsed}</span>
           <span>default low-noise config</span>
         </div>
@@ -142,7 +182,13 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
                 onClick={() => setActive(idx)}
               >
                 <span>{c.category}</span>
-                <small>{c.envelope.gate.failing ? "blocks" : c.envelope.silent ? "silent" : "advises"}</small>
+                <small>
+                  {c.envelope.gate.failing
+                    ? "blocks"
+                    : c.envelope.silent
+                      ? "silent"
+                      : "advises"}
+                </small>
               </button>
             ))}
           </div>
@@ -155,27 +201,57 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
                 <p className="ev-case-category">{current.category}</p>
                 <h2 className="ev-case-title">{current.title}</h2>
               </div>
-              <span className={`ev-verdict ${env.gate.failing ? "ev-fail" : "ev-pass"}`}>
+              <span
+                className={`ev-verdict ${env.gate.failing ? "ev-fail" : "ev-pass"}`}
+              >
                 {env.gate.failing ? "gate failing" : "gate passing"}
               </span>
             </div>
             <p className="ev-blurb">{current.blurb}</p>
-            {current.sourceUrl ? (
+            <div className="ev-links">
+              <a
+                className="ev-source ev-source-primary"
+                href={current.checkRunUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                view the exact check-run →
+              </a>
+              <a
+                className="ev-source"
+                href={current.gateCheckRunUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                gate check-run
+              </a>
+              <a
+                className="ev-source"
+                href={commitUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                reviewed commit {current.commitSha.slice(0, 8)}
+              </a>
               <a
                 className="ev-source"
                 href={current.sourceUrl}
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                real review, source →
+                pull request
               </a>
-            ) : (
-              <span className="ev-fixture-badge">seeded fixture, not a live check-run</span>
-            )}
+            </div>
 
             <div className="ev-grid">
               <div className="ev-col">
-                <p className="ev-col-label">The diff under review</p>
+                <p className="ev-col-label">{diffLabel}</p>
+                {current.diffCommitSha ? (
+                  <p className="ev-diff-note">
+                    Resolving commit {current.diffCommitSha.slice(0, 8)} on
+                    reviewed head {current.commitSha.slice(0, 8)}
+                  </p>
+                ) : null}
                 <DiffBlock diff={current.diff} />
               </div>
               <div className="ev-col">
@@ -183,15 +259,20 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
                 {env.silent ? (
                   <div className="ev-silent">
                     <span className="ev-silent-check">✓</span>
-                    <p className="ev-silent-title">No blocking finding.</p>
-                    <p className="ev-silent-sub">
-                      It reviewed the change and found nothing that affects the merge
-                      decision. The check goes green and no advisory comment is posted.
-                    </p>
+                    <p className="ev-silent-title">{env.checkRunTitle}</p>
+                    {summaryMessages.map((message) => (
+                      <p className="ev-silent-sub" key={message}>
+                        {renderInline(message)}
+                      </p>
+                    ))}
                   </div>
                 ) : (
                   <>
-                    {env.summary ? <p className="ev-summary">{env.summary}</p> : null}
+                    {summaryMessages.map((message) => (
+                      <p className="ev-summary" key={message}>
+                        {renderInline(message)}
+                      </p>
+                    ))}
                     {env.findings.map((f, i) => (
                       <Finding key={i} f={f} />
                     ))}
@@ -202,7 +283,8 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
 
             <div className="ev-stats">
               <span>
-                {env.findings.length} finding{env.findings.length === 1 ? "" : "s"}
+                {env.findings.length} finding
+                {env.findings.length === 1 ? "" : "s"}
               </span>
               {env.usage && tokens !== null ? (
                 <>
@@ -223,10 +305,10 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
         <Reveal>
           <footer className="ev-foot">
             <p>
-              {totals.real} of these {cases.length} cases are real catches from
-              public pull requests in Postil's own repos, each linked to its
-              source; {totals.failing} blocked a merge, the rest advised or
-              stayed silent.
+              All {cases.length} cases link to public, immutable check-runs and
+              reviewed commits in Postil&apos;s repositories. {totals.failing}{" "}
+              gate checks failed, and the remaining reviews advised or passed
+              silently.
             </p>
             <a className="ev-cta" href="/install">
               Try it on your own diff
@@ -273,17 +355,17 @@ const EV_CSS = `
 .ev-fail { color: var(--red); background: var(--del-bg); }
 .ev-pass { color: var(--green); background: var(--add-bg); }
 .ev-blurb { color: var(--ink-soft); margin: 0.75rem 0 1.25rem; line-height: 1.6; max-width: 50rem; }
-.ev-source { display: inline-block; margin: -0.5rem 0 1.25rem; color: var(--green); font-family: var(--font-ibm-plex-mono, monospace);
+.ev-links { display: flex; flex-wrap: wrap; gap: 0.45rem 1rem; margin: -0.5rem 0 1.25rem; }
+.ev-source { display: inline-block; color: var(--ink-soft); font-family: var(--font-ibm-plex-mono, monospace);
   font-size: 0.78rem; text-decoration: none; border-bottom: 1px solid transparent; }
 .ev-source:hover { border-bottom-color: var(--green); }
-.ev-fixture-badge { display: inline-block; margin: -0.5rem 0 1.25rem; color: var(--ink-soft); font-family: var(--font-ibm-plex-mono, monospace);
-  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.15rem 0.5rem;
-  border: 1px solid var(--line); border-radius: 999px; }
+.ev-source-primary { color: var(--green); font-weight: 600; }
 .ev-grid { display: grid; grid-template-columns: 1fr; gap: 1.25rem; }
 @media (min-width: 1024px) { .ev-grid { grid-template-columns: minmax(0, 1fr) 380px; } }
 .ev-col { min-width: 0; }
 .ev-col-label { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.7rem;
   font-weight: 600; color: var(--ink-soft); margin: 0 0 0.5rem; }
+.ev-diff-note { margin: -0.15rem 0 0.55rem; color: var(--ink-soft); font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.7rem; }
 .ev-diff { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
   padding: 0.85rem 0; overflow-x: auto; max-width: 100%; margin: 0; }
 .ev-diff code { display: block; width: max-content; min-width: 100%;
@@ -319,7 +401,7 @@ const EV_CSS = `
 .ev-silent { text-align: center; padding: 1.75rem 1rem; background: var(--add-bg); border-radius: 8px; }
 .ev-silent-check { display: inline-block; font-size: 1.75rem; color: var(--green); }
 .ev-silent-title { font-weight: 600; margin: 0.5rem 0 0.4rem; color: var(--ink); }
-.ev-silent-sub { color: var(--ink-soft); font-size: 0.9rem; line-height: 1.6; margin: 0 auto; max-width: 30rem; }
+.ev-silent-sub { color: var(--ink-soft); font-size: 0.9rem; line-height: 1.6; margin: 0.4rem auto 0; max-width: 30rem; }
 .ev-stats { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin-top: 1.1rem; padding-top: 0.9rem;
   border-top: 1px solid var(--line); font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.74rem; color: var(--ink-soft); }
 .ev-foot { margin-top: 2.5rem; text-align: center; }

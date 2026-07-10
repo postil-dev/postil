@@ -50,8 +50,8 @@ export default function ModelsPage() {
       <div className="prose-postil mt-14">
         <h2>Cost per review</h2>
         <p>
-          The evidence fixtures on this site average 978 prompt tokens and 544
-          completion tokens. The formula is straightforward:
+          Review cost depends on the observed prompt and completion token counts
+          and the provider&apos;s per-token prices. The formula is straightforward:
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`review_cost =

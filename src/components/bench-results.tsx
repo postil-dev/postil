@@ -13,6 +13,7 @@ interface BenchModelResult {
 interface BenchResults {
   generatedAt: string;
   cliVersion: string;
+  sourceRun?: string;
   models: BenchModelResult[];
 }
 
@@ -52,6 +53,15 @@ export function BenchResultsSection() {
     <div>
       <p className="text-sm text-charcoal/70">
         Generated {data.generatedAt} with postil-cli {data.cliVersion}.
+        {data.sourceRun ? (
+          <>
+            {" "}
+            <a href={data.sourceRun} className="underline" target="_blank" rel="noreferrer">
+              Workflow run and artifact
+            </a>
+            .
+          </>
+        ) : null}
       </p>
       <div className="mt-3 overflow-x-auto">
         <table className="w-full border-collapse text-sm">

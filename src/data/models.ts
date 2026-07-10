@@ -1,6 +1,6 @@
 // Curated model list for /docs/models. Facts and public price snapshots are
 // maintained in this repo so public docs do not depend on a third-party request
-// at render time.
+// at render time. Prices captured from OpenRouter on 2026-07-10.
 
 export type ParamClass = "unknown" | "<40B" | "40B-200B" | ">200B";
 
@@ -48,7 +48,7 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: false,
     recommended: false,
     tested: true,
-    pricePerToken: { input: 0.00000065, output: 0.00000341 },
+    pricePerToken: { input: 0.00000066, output: 0.00000341 },
   },
   {
     id: "deepseek/deepseek-v4-flash",
