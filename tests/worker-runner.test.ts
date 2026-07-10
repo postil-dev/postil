@@ -10,6 +10,7 @@ const failed: Array<{ id: number; error: string }> = [];
 let claimCalls = 0;
 let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
+let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
 
 mock.module("@/lib/db", () => ({
   getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
@@ -34,7 +35,11 @@ mock.module("@/worker/watchdog", () => ({
 }));
 
 mock.module("@/worker/review", () => ({
-  runReviewJob: async () => {
+  runReviewJob: async (
+    _payload: unknown,
+    timing: { queuedAt: Date; startedAt: Date },
+  ) => {
+    reviewTiming = timing;
     await reviewRun?.();
   },
 }));
@@ -61,6 +66,8 @@ function reviewJob(id: number): ClaimedJob {
     },
     attempts: 1,
     maxAttempts: 3,
+    createdAt: new Date("2026-07-10T12:00:00.000Z"),
+    lockedAt: new Date("2026-07-10T12:00:05.000Z"),
     lockedBy: "test",
   };
 }
@@ -73,6 +80,7 @@ beforeEach(() => {
   claimCalls = 0;
   reviewRun = async () => undefined;
   respondRun = async () => undefined;
+  reviewTiming = undefined;
 });
 
 afterEach(() => {
@@ -91,6 +99,10 @@ describe("drainQueueOnce", () => {
     expect(drained).toBe(1);
     expect(completed).toEqual([1]);
     expect(jobs.map((job) => job.id)).toEqual([2]);
+    expect(reviewTiming).toEqual({
+      queuedAt: new Date("2026-07-10T12:00:00.000Z"),
+      startedAt: new Date("2026-07-10T12:00:05.000Z"),
+    });
   });
 
   test("redacts secret-looking tokens from the error handed to failJob and the log", async () => {

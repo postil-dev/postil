@@ -20,6 +20,8 @@ export interface ClaimedJob {
   payload: Record<string, unknown>;
   attempts: number;
   maxAttempts: number;
+  createdAt: Date;
+  lockedAt: Date;
   /**
    * The worker id this claim was locked under. failJob/completeJob scope their
    * UPDATEs by this value so a stalled-then-re-claimed job (watchdog requeue +
@@ -76,8 +78,9 @@ export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob
       payload: Record<string, unknown>;
       attempts: number;
       max_attempts: number;
+      created_at: Date;
     }>(
-      `SELECT id, kind, payload, attempts, max_attempts
+      `SELECT id, kind, payload, attempts, max_attempts, created_at
        FROM jobs
        WHERE status = 'queued' AND run_after <= now()
        ORDER BY id
@@ -89,12 +92,15 @@ export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob
       await client.query("COMMIT");
       return null;
     }
-    await client.query(
+    const claimed = await client.query<{ locked_at: Date }>(
       `UPDATE jobs
        SET status = 'running', attempts = attempts + 1, locked_at = now(), locked_by = $2
-       WHERE id = $1`,
+       WHERE id = $1
+       RETURNING locked_at`,
       [row.id, workerId],
     );
+    const lockedAt = claimed.rows[0]?.locked_at;
+    if (!lockedAt) throw new Error("claimed job returned no lock timestamp");
     await client.query("COMMIT");
     return {
       id: Number(row.id),
@@ -102,6 +108,8 @@ export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob
       payload: row.payload,
       attempts: row.attempts + 1,
       maxAttempts: row.max_attempts,
+      createdAt: row.created_at,
+      lockedAt,
       lockedBy: workerId,
     };
   } catch (err) {

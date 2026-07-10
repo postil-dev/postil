@@ -26,6 +26,7 @@ export async function watchdogPass(now = new Date()): Promise<{ killed: number }
   const stuck = await db
     .select({
       id: schema.reviews.id,
+      startedAt: schema.reviews.startedAt,
       advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
       gateCheckRunId: schema.reviews.gateCheckRunId,
       repoFullName: schema.repositories.fullName,
@@ -39,21 +40,20 @@ export async function watchdogPass(now = new Date()): Promise<{ killed: number }
     )
     .where(and(eq(schema.reviews.status, "running"), lt(schema.reviews.startedAt, cutoff)));
 
+  let killed = 0;
   for (const review of stuck) {
-    const message = `${WATCHDOG_ERROR_PREFIX} review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline`;
-    // The row's `startedAt` clock starts before the CLI subprocess's own
-    // kill-timer does (token mint + two check-run creates happen first), so
-    // there's a real window where this pass's cutoff test is true for a
-    // review that is in fact about to complete normally. `returning()` turns
-    // the update into the compare-and-swap that decides the race: if the
-    // worker's own completion already flipped the status away from
-    // `running`, this affects 0 rows and we must not touch its check-runs.
+    const elapsedMs = review.startedAt ? Math.max(0, now.getTime() - review.startedAt.getTime()) : 0;
+    const message = `${WATCHDOG_ERROR_PREFIX} review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline after ${formatElapsed(elapsedMs)} of worker runtime`;
+    // `returning()` turns the update into the compare-and-swap that decides
+    // the race. A normal completion or superseding push that wins first means
+    // this pass must not touch the check-runs.
     const claimed = await db
       .update(schema.reviews)
       .set({ status: "failed", errorMessage: message, finishedAt: now })
       .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")))
       .returning({ id: schema.reviews.id });
     if (claimed.length === 0) continue;
+    killed += 1;
     try {
       const token = await getInstallationToken(review.githubInstallationId);
       await failCheckRuns(
@@ -91,7 +91,14 @@ export async function watchdogPass(now = new Date()): Promise<{ killed: number }
     }
   }
 
-  return { killed: stuck.length };
+  return { killed };
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
 }
 
 /** Total watchdog kills, derived from review error messages (cross-process safe). */

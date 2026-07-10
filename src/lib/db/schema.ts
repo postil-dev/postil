@@ -10,6 +10,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 import type { Envelope } from "@/lib/envelope";
@@ -119,6 +120,7 @@ export const reviews = pgTable(
   "reviews",
   {
     id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    publicId: uuid("public_id").notNull().defaultRandom(),
     repositoryId: bigint("repository_id", { mode: "number" })
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
@@ -139,9 +141,24 @@ export const reviews = pgTable(
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
   (t) => [
+    uniqueIndex("reviews_public_id_idx").on(t.publicId),
     index("reviews_repo_pr_idx").on(t.repositoryId, t.prNumber),
     index("reviews_status_idx").on(t.status),
   ],
+);
+
+export const reviewLogs = pgTable(
+  "review_logs",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    reviewId: bigint("review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    line: text("line").notNull(),
+  },
+  (t) => [uniqueIndex("review_logs_review_seq_idx").on(t.reviewId, t.seq)],
 );
 
 export const usageEvents = pgTable("usage_events", {

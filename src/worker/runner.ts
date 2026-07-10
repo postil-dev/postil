@@ -24,16 +24,19 @@ const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
 
 let backgroundDrain: Promise<void> | undefined;
 
-async function handleJob(kind: string, payload: Record<string, unknown>): Promise<void> {
-  switch (kind) {
+async function handleJob(job: ClaimedJob): Promise<void> {
+  switch (job.kind) {
     case "review":
-      await runReviewJob(payload as ReviewJobPayload);
+      await runReviewJob(job.payload as ReviewJobPayload, {
+        queuedAt: job.createdAt,
+        startedAt: job.lockedAt,
+      });
       break;
     case "respond":
-      await runRespondJob(payload as RespondJobPayload);
+      await runRespondJob(job.payload as RespondJobPayload);
       break;
     default:
-      throw new Error(`unknown job kind: ${kind}`);
+      throw new Error(`unknown job kind: ${job.kind}`);
   }
 }
 
@@ -41,7 +44,7 @@ export async function runClaimedJob(job: ClaimedJob, label: string): Promise<voi
   const started = Date.now();
   console.log(`[${label}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
   try {
-    await handleJob(job.kind, job.payload);
+    await handleJob(job);
     await completeJob(getPool(), job);
     console.log(`[${label}] job ${job.id} done in ${Date.now() - started}ms`);
   } catch (err) {

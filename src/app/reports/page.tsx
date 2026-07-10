@@ -69,6 +69,7 @@ export default async function ReportsPage() {
       : await db
           .select({
             id: schema.reviews.id,
+            publicId: schema.reviews.publicId,
             prNumber: schema.reviews.prNumber,
             status: schema.reviews.status,
             silent: schema.reviews.silent,
@@ -208,7 +209,7 @@ export default async function ReportsPage() {
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs">
                     <Link
-                      href={`/orgs/${r.orgSlug}/runs/${r.id}`}
+                      href={`/orgs/${r.orgSlug}/runs/${r.publicId}`}
                       className="text-rust hover:underline"
                     >
                       view

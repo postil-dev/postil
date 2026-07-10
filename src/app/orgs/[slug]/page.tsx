@@ -134,6 +134,7 @@ export default async function OrgDashboardPage({
   const recentReviews = await db
     .select({
       id: schema.reviews.id,
+      publicId: schema.reviews.publicId,
       prNumber: schema.reviews.prNumber,
       status: schema.reviews.status,
       silent: schema.reviews.silent,
@@ -338,7 +339,7 @@ export default async function OrgDashboardPage({
                 >
                   <td className="px-4 py-2.5 font-mono text-xs">
                     <Link
-                      href={`/orgs/${org.slug}/runs/${r.id}`}
+                      href={`/orgs/${org.slug}/runs/${r.publicId}`}
                       className="hover:text-rust hover:underline"
                     >
                       {r.repoFullName}
@@ -374,7 +375,7 @@ export default async function OrgDashboardPage({
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs">
                     <Link
-                      href={`/orgs/${org.slug}/runs/${r.id}`}
+                      href={`/orgs/${org.slug}/runs/${r.publicId}`}
                       className="text-rust hover:underline"
                     >
                       view run
