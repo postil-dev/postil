@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 
 import {
   formatDuration,
@@ -11,6 +11,7 @@ import {
 } from "@/components/review-status";
 import { getDb, schema } from "@/lib/db";
 import { githubAppInstallUrl } from "@/lib/github-app";
+import { githubPrUrl } from "@/lib/github-links";
 import { getSessionUser } from "@/lib/session";
 
 export const metadata: Metadata = {
@@ -36,6 +37,32 @@ export default async function ReportsPage() {
     .where(eq(schema.orgMembers.userId, user.id));
 
   const orgIds = memberships.map((m) => m.orgId);
+
+  // Per-org headline stats for the org cards; one grouped pass over reviews.
+  const orgStats =
+    orgIds.length === 0
+      ? []
+      : await db
+          .select({
+            orgId: schema.installations.orgId,
+            completed: sql<number>`count(*) FILTER (WHERE ${schema.reviews.status} = 'completed')::int`,
+            silent: sql<number>`count(*) FILTER (WHERE ${schema.reviews.status} = 'completed' AND ${schema.reviews.silent})::int`,
+            gateFailing: sql<number>`count(*) FILTER (WHERE ${schema.reviews.gateFailing})::int`,
+            last30Days: sql<number>`count(*) FILTER (WHERE ${schema.reviews.queuedAt} > now() - interval '30 days')::int`,
+          })
+          .from(schema.reviews)
+          .innerJoin(
+            schema.repositories,
+            eq(schema.repositories.id, schema.reviews.repositoryId),
+          )
+          .innerJoin(
+            schema.installations,
+            eq(schema.installations.id, schema.repositories.installationId),
+          )
+          .where(inArray(schema.installations.orgId, orgIds))
+          .groupBy(schema.installations.orgId);
+  const statsByOrg = new Map(orgStats.map((s) => [s.orgId, s]));
+
   const reviews =
     orgIds.length === 0
       ? []
@@ -81,17 +108,36 @@ export default async function ReportsPage() {
         </div>
       </div>
 
-      <div className="mt-8 flex flex-wrap gap-3">
-        {memberships.map((m) => (
-          <Link
-            key={m.orgId}
-            href={`/orgs/${m.slug}`}
-            className="card px-4 py-2.5 text-sm transition-colors hover:border-gate"
-          >
-            <span className="font-medium">{m.name}</span>
-            <span className="ml-2 font-mono text-xs text-gate">{m.plan}</span>
-          </Link>
-        ))}
+      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {memberships.map((m) => {
+          const stats = statsByOrg.get(m.orgId);
+          const silenceRate =
+            stats && stats.completed > 0
+              ? Math.round((stats.silent / stats.completed) * 100)
+              : null;
+          return (
+            <Link
+              key={m.orgId}
+              href={`/orgs/${m.slug}`}
+              className="card p-5 transition-colors hover:border-gate"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-medium">{m.name}</span>
+                <span className="font-mono text-xs text-gate">{m.plan}</span>
+              </div>
+              <div className="mt-4 flex items-end gap-2">
+                <span className="serif-display text-3xl">
+                  {silenceRate === null ? "—" : `${silenceRate}%`}
+                </span>
+                <span className="pb-1 text-xs text-charcoal/60">silent</span>
+              </div>
+              <p className="mt-2 font-mono text-[11px] text-charcoal/60">
+                {stats?.last30Days ?? 0} reviews in 30 days · {stats?.gateFailing ?? 0} gate
+                fail{(stats?.gateFailing ?? 0) === 1 ? "" : "s"} all-time
+              </p>
+            </Link>
+          );
+        })}
         {memberships.length === 0 && (
           <div className="card w-full p-8 text-center">
             <p className="serif-display text-xl">No organizations yet.</p>
@@ -123,13 +169,22 @@ export default async function ReportsPage() {
                 <th className="px-4 py-3 font-normal">findings</th>
                 <th className="px-4 py-3 font-normal">duration</th>
                 <th className="px-4 py-3 font-normal">org</th>
+                <th className="px-4 py-3 font-normal">report</th>
               </tr>
             </thead>
             <tbody>
               {reviews.map((r) => (
                 <tr key={r.id} className="border-b border-stone/60 last:border-0">
                   <td className="px-4 py-2.5 font-mono text-xs">{r.repoFullName}</td>
-                  <td className="px-4 py-2.5 font-mono text-xs">#{r.prNumber}</td>
+                  <td className="px-4 py-2.5 font-mono text-xs">
+                    <a
+                      href={githubPrUrl(r.repoFullName, r.prNumber)}
+                      rel="noopener"
+                      className="text-rust hover:underline"
+                    >
+                      #{r.prNumber}
+                    </a>
+                  </td>
                   <td className="px-4 py-2.5">
                     <ReviewStatusBadge status={r.status} gateFailing={r.gateFailing} />
                   </td>
@@ -149,6 +204,14 @@ export default async function ReportsPage() {
                   <td className="px-4 py-2.5">
                     <Link href={`/orgs/${r.orgSlug}`} className="text-rust hover:underline">
                       {r.orgSlug}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-2.5 font-mono text-xs">
+                    <Link
+                      href={`/orgs/${r.orgSlug}/reviews/${r.id}`}
+                      className="text-rust hover:underline"
+                    >
+                      view
                     </Link>
                   </td>
                 </tr>

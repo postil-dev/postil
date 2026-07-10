@@ -11,6 +11,7 @@ import {
   ReviewStatusBadge,
 } from "@/components/review-status";
 import { getDb, schema } from "@/lib/db";
+import { githubPrUrl } from "@/lib/github-links";
 import { getSessionUser } from "@/lib/session";
 import { saveOrgSettings, toggleRepository } from "./actions";
 
@@ -41,12 +42,32 @@ export default async function OrgDashboardPage({
   )[0];
   if (!org) notFound();
 
-  const membership = await db
-    .select({ id: schema.orgMembers.id })
+  const membership = (
+    await db
+      .select({ id: schema.orgMembers.id, role: schema.orgMembers.role })
+      .from(schema.orgMembers)
+      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
+      .limit(1)
+  )[0];
+  if (!membership) notFound();
+  const isAdmin = membership.role === "admin";
+
+  const suspendedInstallations = await db
+    .select({ accountLogin: schema.installations.accountLogin })
+    .from(schema.installations)
+    .where(and(eq(schema.installations.orgId, org.id), eq(schema.installations.suspended, true)));
+
+  const members = await db
+    .select({
+      id: schema.orgMembers.id,
+      role: schema.orgMembers.role,
+      login: schema.users.login,
+      name: schema.users.name,
+    })
     .from(schema.orgMembers)
-    .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
-    .limit(1);
-  if (membership.length === 0) notFound();
+    .innerJoin(schema.users, eq(schema.users.id, schema.orgMembers.userId))
+    .where(eq(schema.orgMembers.orgId, org.id))
+    .orderBy(schema.users.login);
 
   // Silence rate across completed reviews.
   const silenceAgg = (
@@ -197,6 +218,22 @@ export default async function OrgDashboardPage({
         </span>
       </div>
 
+      {suspendedInstallations.length > 0 && (
+        <div className="card mt-6 border-rust p-5">
+          <p className="text-sm">
+            <span className="font-medium text-rust">
+              Installation{suspendedInstallations.length === 1 ? "" : "s"} suspended.
+            </span>{" "}
+            The GitHub App installation on{" "}
+            <span className="font-mono text-xs">
+              {suspendedInstallations.map((i) => i.accountLogin).join(", ")}
+            </span>{" "}
+            is suspended, so no reviews run for it. Unsuspend it in GitHub under
+            organization Settings → GitHub Apps.
+          </p>
+        </div>
+      )}
+
       {/* Metrics */}
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         <div className="card p-8">
@@ -286,13 +323,22 @@ export default async function OrgDashboardPage({
                 <th className="px-4 py-3 font-normal">findings</th>
                 <th className="px-4 py-3 font-normal">model</th>
                 <th className="px-4 py-3 font-normal">duration</th>
+                <th className="px-4 py-3 font-normal">report</th>
               </tr>
             </thead>
             <tbody>
               {recentReviews.map((r) => (
                 <tr key={r.id} className="border-b border-stone/60 last:border-0">
                   <td className="px-4 py-2.5 font-mono text-xs">{r.repoFullName}</td>
-                  <td className="px-4 py-2.5 font-mono text-xs">#{r.prNumber}</td>
+                  <td className="px-4 py-2.5 font-mono text-xs">
+                    <a
+                      href={githubPrUrl(r.repoFullName, r.prNumber)}
+                      rel="noopener"
+                      className="text-rust hover:underline"
+                    >
+                      #{r.prNumber}
+                    </a>
+                  </td>
                   <td className="px-4 py-2.5">
                     <ReviewStatusBadge status={r.status} gateFailing={r.gateFailing} />
                   </td>
@@ -312,11 +358,19 @@ export default async function OrgDashboardPage({
                   <td className="px-4 py-2.5 font-mono text-xs">
                     {formatDuration(r.startedAt, r.finishedAt)}
                   </td>
+                  <td className="px-4 py-2.5 font-mono text-xs">
+                    <Link
+                      href={`/orgs/${org.slug}/reviews/${r.id}`}
+                      className="text-rust hover:underline"
+                    >
+                      view
+                    </Link>
+                  </td>
                 </tr>
               ))}
               {recentReviews.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-charcoal/50">
+                  <td colSpan={8} className="px-4 py-8 text-center text-sm text-charcoal/50">
                     No reviews yet. Open a pull request on an enabled repository.
                   </td>
                 </tr>
@@ -339,21 +393,33 @@ export default async function OrgDashboardPage({
                     {repo.private ? "private" : "public"}
                   </p>
                 </div>
-                <form action={toggleRepository}>
-                  <input type="hidden" name="slug" value={org.slug} />
-                  <input type="hidden" name="repositoryId" value={repo.id} />
-                  <input type="hidden" name="enable" value={repo.enabled ? "false" : "true"} />
-                  <button
-                    type="submit"
+                {isAdmin ? (
+                  <form action={toggleRepository}>
+                    <input type="hidden" name="slug" value={org.slug} />
+                    <input type="hidden" name="repositoryId" value={repo.id} />
+                    <input type="hidden" name="enable" value={repo.enabled ? "false" : "true"} />
+                    <button
+                      type="submit"
+                      className={
+                        repo.enabled
+                          ? "rounded-card border border-gate px-3 py-1 font-mono text-xs text-gate hover:bg-gate hover:text-ivory"
+                          : "rounded-card border border-stone px-3 py-1 font-mono text-xs text-charcoal/50 hover:border-charcoal hover:text-charcoal"
+                      }
+                    >
+                      {repo.enabled ? "enabled" : "disabled"}
+                    </button>
+                  </form>
+                ) : (
+                  <span
                     className={
                       repo.enabled
-                        ? "rounded-card border border-gate px-3 py-1 font-mono text-xs text-gate hover:bg-gate hover:text-ivory"
-                        : "rounded-card border border-stone px-3 py-1 font-mono text-xs text-charcoal/50 hover:border-charcoal hover:text-charcoal"
+                        ? "rounded-card border border-gate px-3 py-1 font-mono text-xs text-gate"
+                        : "rounded-card border border-stone px-3 py-1 font-mono text-xs text-charcoal/50"
                     }
                   >
                     {repo.enabled ? "enabled" : "disabled"}
-                  </button>
-                </form>
+                  </span>
+                )}
               </div>
             ))}
             {repos.length === 0 && (
@@ -367,45 +433,69 @@ export default async function OrgDashboardPage({
         {/* BYO settings */}
         <div>
           <p className="eyebrow">LLM settings (BYO key)</p>
-          <form action={saveOrgSettings} className="card mt-3 space-y-4 p-5">
-            <input type="hidden" name="slug" value={org.slug} />
-            <label className="block text-sm">
-              <span className="font-medium">API base</span>
-              <input
-                type="url"
-                name="apiBase"
-                defaultValue={settings?.apiBase ?? ""}
-                placeholder="https://openrouter.ai/api/v1"
-                className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="font-medium">Model</span>
-              <input
-                type="text"
-                name="model"
-                defaultValue={settings?.model ?? ""}
-                placeholder="deepseek/deepseek-v4-pro"
-                className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="font-medium">Model cascade</span>
-              <input
-                type="text"
-                name="modelCascade"
-                defaultValue={settings?.modelCascade ?? ""}
-                placeholder="qwen/qwen3-coder"
-                className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="flex items-center justify-between font-medium">
-                <span>API key</span>
-                {settings?.hasKey && (
-                  <span className="font-mono text-[11px] text-gate">
-                    a key is stored (write-only)
-                  </span>
+          {!isAdmin && (
+            <div className="card mt-3 space-y-2 p-5 text-sm">
+              <p className="font-mono text-xs text-charcoal/70">
+                API base <span className="text-charcoal">{settings?.apiBase ?? "hosted default"}</span>
+              </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                Model <span className="text-charcoal">{settings?.model ?? "hosted default"}</span>
+              </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                Model cascade{" "}
+                <span className="text-charcoal">{settings?.modelCascade ?? "none"}</span>
+              </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                API key{" "}
+                <span className="text-charcoal">
+                  {settings?.hasKey ? "stored (write-only)" : "hosted default"}
+                </span>
+              </p>
+              <p className="pt-2 text-xs text-charcoal/50">
+                Changing these settings requires the organization admin role.
+              </p>
+            </div>
+          )}
+          {isAdmin && (
+            <form action={saveOrgSettings} className="card mt-3 space-y-4 p-5">
+              <input type="hidden" name="slug" value={org.slug} />
+              <label className="block text-sm">
+                <span className="font-medium">API base</span>
+                <input
+                  type="url"
+                  name="apiBase"
+                  defaultValue={settings?.apiBase ?? ""}
+                  placeholder="https://openrouter.ai/api/v1"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="font-medium">Model</span>
+                <input
+                  type="text"
+                  name="model"
+                  defaultValue={settings?.model ?? ""}
+                  placeholder="deepseek/deepseek-v4-pro"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="font-medium">Model cascade</span>
+                <input
+                  type="text"
+                  name="modelCascade"
+                  defaultValue={settings?.modelCascade ?? ""}
+                  placeholder="qwen/qwen3-coder"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="flex items-center justify-between font-medium">
+                  <span>API key</span>
+                  {settings?.hasKey && (
+                    <span className="font-mono text-[11px] text-gate">
+                      a key is stored (write-only)
+                    </span>
                 )}
               </span>
               <input
@@ -431,7 +521,37 @@ export default async function OrgDashboardPage({
               Save settings
             </button>
           </form>
+          )}
         </div>
+      </div>
+
+      {/* Members */}
+      <div className="mt-10">
+        <p className="eyebrow">Members</p>
+        <div className="card mt-3 divide-y divide-stone/60">
+          {members.map((m) => (
+            <div key={m.id} className="flex items-center justify-between px-4 py-3">
+              <div>
+                <p className="font-mono text-sm">{m.login}</p>
+                {m.name && <p className="text-[11px] text-charcoal/70">{m.name}</p>}
+              </div>
+              <span
+                className={
+                  m.role === "admin"
+                    ? "rounded-full border border-gate px-2.5 py-0.5 font-mono text-[11px] text-gate"
+                    : "rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/60"
+                }
+              >
+                {m.role}
+              </span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-charcoal/50">
+          Membership and roles mirror GitHub and refresh each time a member signs
+          in. Admins can change settings and repository coverage; members can
+          view everything on this page.
+        </p>
       </div>
     </div>
   );
