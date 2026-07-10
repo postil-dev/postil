@@ -8,7 +8,7 @@ interface TerminalProps {
 export function Terminal({ title = "postil", children, className }: TerminalProps) {
   return (
     <div className={`terminal max-w-full ${className ?? ""}`}>
-      <div className="flex items-center gap-2 border-b border-[#2c363d] px-4 py-2.5">
+      <div className="terminal-titlebar flex items-center gap-2 border-b border-[#2c363d] px-4 py-2.5">
         <span className="h-2.5 w-2.5 rounded-full bg-[#3d464d]" />
         <span className="h-2.5 w-2.5 rounded-full bg-[#3d464d]" />
         <span className="h-2.5 w-2.5 rounded-full bg-[#3d464d]" />
