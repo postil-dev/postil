@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 
 import { getDb, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
+import {
+  type AccountRef,
+  syncInstallationsFromGithub,
+} from "@/lib/github/installation-sync";
 import { oauthCallbackUrl, OAUTH_STATE_COOKIE, publicOrigin } from "@/lib/oauth";
 import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
 import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/lib/session";
@@ -20,7 +24,7 @@ interface GithubUser {
 interface GithubOrgMembership {
   role?: string;
   state?: string;
-  organization?: { id?: number };
+  organization?: { id?: number; login?: string };
 }
 
 /**
@@ -145,6 +149,25 @@ export async function GET(request: Request): Promise<NextResponse> {
   // truncated page, so we keep the user's last-known memberships rather than
   // revoke from an incomplete set.
   const memberships = await fetchAllOrgMemberships(ghHeaders);
+
+  // Bring installation rows in line with GitHub before linking memberships:
+  // an installation that predates this database (or whose webhooks were
+  // missed) would otherwise never materialize as an organization, and the
+  // dashboard would greet an installed, signed-in user with "no
+  // organizations". Best-effort by design; login never fails on it.
+  const syncAccounts: AccountRef[] = [
+    { githubId: ghUser.id, login: ghUser.login, type: "User" },
+  ];
+  if (memberships) {
+    for (const m of memberships) {
+      const org = m.organization;
+      if (typeof org?.id === "number" && typeof org.login === "string") {
+        syncAccounts.push({ githubId: org.id, login: org.login, type: "Organization" });
+      }
+    }
+  }
+  await syncInstallationsFromGithub(syncAccounts);
+
   if (memberships) {
     // The user owns their personal account; user-scoped installations are
     // always administered by the account holder.

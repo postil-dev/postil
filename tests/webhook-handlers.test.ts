@@ -29,11 +29,14 @@ const describeDb = TEST_URL ? describe : describe.skip;
 const WEBHOOK_SECRET = "test-webhook-secret-for-handlers";
 
 // Record check-run completions the removal path drives, and hand back a fake
-// installation token so no real GitHub App credentials are needed.
+// installation token so no real GitHub App credentials are needed. Spread the
+// real module: other importers use its remaining exports, and a bare override
+// object would break their import chains.
 const completedCheckRuns: Array<{ repoFullName: string; conclusion: string }> = [];
+const realAppAuth = await import("@/lib/github/app-auth");
 mock.module("@/lib/github/app-auth", () => ({
+  ...realAppAuth,
   getInstallationToken: async () => "fake-installation-token",
-  apiBase: () => "https://api.github.com",
 }));
 mock.module("@/lib/github/checks", () => ({
   ADVISORY_CHECK_NAME: "postil/review",
