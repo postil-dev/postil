@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 
 export const runtime = "edge";
-export const alt = "Postil — Trust the merge, not the speed.";
+export const alt = "Postil — AI review that can block a merge.";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -85,11 +85,11 @@ export default function OpengraphImage() {
               letterSpacing: -2,
             }}
           >
-            <span>Trust the merge,</span>
-            <span>not the speed.</span>
+            <span>AI review that</span>
+            <span>can block a merge.</span>
           </div>
           <div style={{ fontSize: 30, color: GATE, fontFamily: "Helvetica, sans-serif" }}>
-            We say less. What we say is right.
+            Silent on clean PRs. A hard gate on what matters.
           </div>
         </div>
 

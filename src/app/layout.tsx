@@ -28,14 +28,14 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://postil.dev"),
   title: {
-    default: "Postil — Trust the merge, not the speed.",
+    default: "Postil — AI review that can block a merge.",
     template: "%s — Postil",
   },
   description:
-    "Postil is a low-noise pull-request review gate. We say less. What we say is right.",
+    "Postil is a low-noise pull-request review gate: silent on clean PRs, a hard CI gate on findings that matter.",
   openGraph: {
     type: "website",
-    title: "Postil — Trust the merge, not the speed.",
+    title: "Postil — AI review that can block a merge.",
     description:
       "A low-noise review gate for teams shipping at agent speed. Silent on clean PRs, hard gate on what matters.",
     url: "https://postil.dev",

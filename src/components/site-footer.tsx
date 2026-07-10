@@ -62,7 +62,7 @@ export function SiteFooter() {
               loading="eager"
             />
             <p className="serif-display mt-4 text-lg">
-              Trust the merge, not the speed.
+              AI review that can block a merge.
             </p>
             <p className="mt-2 text-sm text-charcoal/70">
               A low-noise review gate for teams shipping at agent speed.
