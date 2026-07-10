@@ -97,7 +97,7 @@ postil review --staged
 # CI (GitHub Actions)
 - uses: postil-dev/postil-action@7451c6380dba0da92758f7ddcdf383d1501e57b2 # example tested SHA
   with:
-    cli-ref: 7083fe6dbfd1602bc8b28c05f108bc85a5849238 # postil-cli v0.2.0`}</code>
+    cli-ref: 3f3c48b85019e9a0d7fbcde9cb0d63c186ca8401 # postil-cli v0.2.1`}</code>
         </pre>
         <p>
           Exit codes: <code>0</code> clean or below the gate threshold,{" "}
