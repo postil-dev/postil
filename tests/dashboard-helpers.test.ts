@@ -29,6 +29,15 @@ describe("GitHub links", () => {
       "https://github.com/o/r/blob/abc123/src/dir%20with%20space/f%231.ts#L7",
     );
   });
+
+  test("uses a range anchor for multi-line findings and ignores a degenerate range", () => {
+    expect(githubFileUrl("o/r", "abc", "a.ts", 7, 12)).toBe(
+      "https://github.com/o/r/blob/abc/a.ts#L7-L12",
+    );
+    expect(githubFileUrl("o/r", "abc", "a.ts", 7, 7)).toBe(
+      "https://github.com/o/r/blob/abc/a.ts#L7",
+    );
+  });
 });
 
 describe("Finding display order", () => {

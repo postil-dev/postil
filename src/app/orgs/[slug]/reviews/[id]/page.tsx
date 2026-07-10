@@ -11,7 +11,7 @@ import {
   ReviewStatusBadge,
 } from "@/components/review-status";
 import { getDb, schema } from "@/lib/db";
-import type { Finding } from "@/lib/envelope";
+import { envelopeSchema, type Finding } from "@/lib/envelope";
 import { sortFindingsForDisplay } from "@/lib/findings";
 import { githubFileUrl, githubPrUrl } from "@/lib/github-links";
 import { getSessionUser } from "@/lib/session";
@@ -50,12 +50,12 @@ function FindingCard({
           confidence {finding.confidence.toFixed(2)}
         </span>
         <a
-          href={githubFileUrl(repoFullName, headSha, finding.path, finding.line)}
+          href={githubFileUrl(repoFullName, headSha, finding.path, finding.line, finding.endLine)}
           rel="noopener"
           className="font-mono text-[11px] text-rust hover:underline"
         >
           {finding.path}:{finding.line}
-          {finding.endLine && finding.endLine !== finding.line ? `-${finding.endLine}` : ""}
+          {finding.endLine && finding.endLine > finding.line ? `-${finding.endLine}` : ""}
         </a>
       </div>
       <p className="mt-2 font-medium">{finding.title}</p>
@@ -86,12 +86,14 @@ export default async function ReviewDetailPage({
   )[0];
   if (!org) notFound();
 
-  const membership = await db
-    .select({ id: schema.orgMembers.id })
-    .from(schema.orgMembers)
-    .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
-    .limit(1);
-  if (membership.length === 0) notFound();
+  const membership = (
+    await db
+      .select({ id: schema.orgMembers.id })
+      .from(schema.orgMembers)
+      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
+      .limit(1)
+  )[0];
+  if (!membership) notFound();
 
   // The org filter is part of the lookup: a review id from another org's
   // repository must 404, not leak.
@@ -124,9 +126,16 @@ export default async function ReviewDetailPage({
   )[0];
   if (!review) notFound();
 
-  const envelope = review.envelope;
+  // The jsonb column's type is a compile-time cast; re-validate before deep
+  // rendering so a legacy or malformed envelope degrades to a notice instead
+  // of throwing mid-render.
+  const parsedEnvelope = review.envelope ? envelopeSchema.safeParse(review.envelope) : null;
+  const envelope = parsedEnvelope?.success ? parsedEnvelope.data : null;
+  const envelopeInvalid = parsedEnvelope !== null && !parsedEnvelope.success;
   const findings = envelope ? sortFindingsForDisplay(envelope.findings) : [];
   const resolved = envelope ? sortFindingsForDisplay(envelope.resolved) : [];
+  // Defensive render cap; counts always reflect the full envelope.
+  const MAX_RENDERED_FINDINGS = 200;
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-14">
@@ -223,7 +232,7 @@ export default async function ReviewDetailPage({
               threshold · {envelope.counts.ungrounded} dropped ungrounded
             </p>
             <div className="card mt-3 divide-y divide-stone/60">
-              {findings.map((f, i) => (
+              {findings.slice(0, MAX_RENDERED_FINDINGS).map((f, i) => (
                 <FindingCard
                   key={i}
                   finding={f}
@@ -231,6 +240,11 @@ export default async function ReviewDetailPage({
                   headSha={review.headSha}
                 />
               ))}
+              {findings.length > MAX_RENDERED_FINDINGS && (
+                <p className="px-5 py-4 text-center text-sm text-charcoal/50">
+                  and {findings.length - MAX_RENDERED_FINDINGS} more findings not shown
+                </p>
+              )}
               {findings.length === 0 && (
                 <p className="px-5 py-8 text-center text-sm text-charcoal/50">
                   No findings shipped on this review.
@@ -243,7 +257,7 @@ export default async function ReviewDetailPage({
             <div className="mt-8">
               <p className="eyebrow">Resolved since the previous review ({resolved.length})</p>
               <div className="card mt-3 divide-y divide-stone/60 opacity-70">
-                {resolved.map((f, i) => (
+                {resolved.slice(0, MAX_RENDERED_FINDINGS).map((f, i) => (
                   <FindingCard
                     key={i}
                     finding={f}
@@ -251,15 +265,29 @@ export default async function ReviewDetailPage({
                     headSha={review.headSha}
                   />
                 ))}
+                {resolved.length > MAX_RENDERED_FINDINGS && (
+                  <p className="px-5 py-4 text-center text-sm text-charcoal/50">
+                    and {resolved.length - MAX_RENDERED_FINDINGS} more not shown
+                  </p>
+                )}
               </div>
             </div>
           )}
         </>
       )}
 
-      {!envelope && !review.errorMessage && (
+      {envelopeInvalid && (
         <p className="card mt-8 p-8 text-center text-sm text-charcoal/50">
-          No envelope stored yet; the review has not completed.
+          The stored envelope does not match the current envelope contract and
+          cannot be displayed.
+        </p>
+      )}
+
+      {!envelope && !envelopeInvalid && !review.errorMessage && (
+        <p className="card mt-8 p-8 text-center text-sm text-charcoal/50">
+          {review.status === "stale"
+            ? "Superseded by a later push to the pull request; this review never completed."
+            : "No envelope stored yet; the review has not completed."}
         </p>
       )}
     </div>

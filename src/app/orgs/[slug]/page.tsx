@@ -221,7 +221,9 @@ export default async function OrgDashboardPage({
       {suspendedInstallations.length > 0 && (
         <div className="card mt-6 border-rust p-5">
           <p className="text-sm">
-            <span className="font-medium text-rust">Installation suspended.</span>{" "}
+            <span className="font-medium text-rust">
+              Installation{suspendedInstallations.length === 1 ? "" : "s"} suspended.
+            </span>{" "}
             The GitHub App installation on{" "}
             <span className="font-mono text-xs">
               {suspendedInstallations.map((i) => i.accountLogin).join(", ")}
@@ -455,45 +457,45 @@ export default async function OrgDashboardPage({
             </div>
           )}
           {isAdmin && (
-          <form action={saveOrgSettings} className="card mt-3 space-y-4 p-5">
-            <input type="hidden" name="slug" value={org.slug} />
-            <label className="block text-sm">
-              <span className="font-medium">API base</span>
-              <input
-                type="url"
-                name="apiBase"
-                defaultValue={settings?.apiBase ?? ""}
-                placeholder="https://openrouter.ai/api/v1"
-                className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="font-medium">Model</span>
-              <input
-                type="text"
-                name="model"
-                defaultValue={settings?.model ?? ""}
-                placeholder="deepseek/deepseek-v4-pro"
-                className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="font-medium">Model cascade</span>
-              <input
-                type="text"
-                name="modelCascade"
-                defaultValue={settings?.modelCascade ?? ""}
-                placeholder="qwen/qwen3-coder"
-                className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="flex items-center justify-between font-medium">
-                <span>API key</span>
-                {settings?.hasKey && (
-                  <span className="font-mono text-[11px] text-gate">
-                    a key is stored (write-only)
-                  </span>
+            <form action={saveOrgSettings} className="card mt-3 space-y-4 p-5">
+              <input type="hidden" name="slug" value={org.slug} />
+              <label className="block text-sm">
+                <span className="font-medium">API base</span>
+                <input
+                  type="url"
+                  name="apiBase"
+                  defaultValue={settings?.apiBase ?? ""}
+                  placeholder="https://openrouter.ai/api/v1"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="font-medium">Model</span>
+                <input
+                  type="text"
+                  name="model"
+                  defaultValue={settings?.model ?? ""}
+                  placeholder="deepseek/deepseek-v4-pro"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="font-medium">Model cascade</span>
+                <input
+                  type="text"
+                  name="modelCascade"
+                  defaultValue={settings?.modelCascade ?? ""}
+                  placeholder="qwen/qwen3-coder"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="flex items-center justify-between font-medium">
+                  <span>API key</span>
+                  {settings?.hasKey && (
+                    <span className="font-mono text-[11px] text-gate">
+                      a key is stored (write-only)
+                    </span>
                 )}
               </span>
               <input
