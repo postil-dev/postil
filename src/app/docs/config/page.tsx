@@ -104,8 +104,7 @@ review:
   onClean: skip          # skip = stay silent on clean PRs (default) | comment
 
 contentPolicy:
-  enabled: false         # opt-in prose/content review dimension; also turned
-                         # on by the presence of .postil/content-policy.md
+  enabled: true          # built-in prose/content baseline; false opts out
 
 gate:
   failOn: error          # the gate fails at/above this severity
@@ -149,14 +148,14 @@ model:
 
       <h2>Content policy</h2>
       <p>
-        Off by default. Set <code>contentPolicy.enabled: true</code>, or drop
-        a <code>.postil/content-policy.md</code> file (which turns it on by
-        itself, the same way <code>.postil/guardrails.md</code> does), to
-        review the human-readable prose in a diff (comments, docstrings,
-        Markdown, and the PR title/description) against a policy. Violations
-        surface as <code>contentPolicy</code> findings. See{" "}
+        On by default, content policy reviews the human-readable prose in a
+        diff (comments, docstrings, Markdown, and the PR title/description)
+        against the built-in baseline. A <code>.postil/content-policy.md</code>{" "}
+        file appends repo-specific rules to that baseline. Set{" "}
+        <code>contentPolicy.enabled: false</code> to opt out entirely.
+        Violations surface as <code>contentPolicy</code> findings. See{" "}
         <Link href="/docs/content-policy">content policy</Link> for the
-        built-in baseline and how to extend it.
+        baseline, extensions, and opt-out behavior.
       </p>
 
       <h2>Environment variables</h2>

@@ -3,7 +3,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Content policy",
-  description: "The opt-in content-policy review dimension: what it checks, how to turn it on, and the built-in baseline.",
+  description: "The default-on content-policy review dimension: its built-in baseline, repo extensions, and explicit opt-out.",
   alternates: { canonical: "/docs/content-policy" },
 };
 
@@ -12,36 +12,37 @@ export default function ContentPolicyPage() {
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">Content policy</h1>
       <p className="mt-4 text-lg">
-        Off by default. A review dimension is an additional lens the reviewer
-        applies to a diff, on top of the core correctness/security review;{" "}
-        <strong>content policy</strong> is one such dimension, and it is
-        opt-in. It reviews the human-readable prose in a diff (Markdown,
+        On by default. A review dimension is an additional lens the reviewer
+        applies to a diff, on top of the core correctness/security review. The{" "}
+        <strong>content policy</strong> dimension applies the built-in baseline
+        below to the human-readable prose in a diff (Markdown,
         code comments, docstrings, user-facing or log strings, and the PR
         title/description), never code logic, identifiers, or structured
         data. Violations are reported as <code>contentPolicy</code> findings
         alongside the core reviewer's findings, in the same envelope.
       </p>
 
-      <h2>Turning it on</h2>
+      <h2>Configuration and opt-out</h2>
       <p>
-        Either of these activates content policy for a repo:
+        Content policy needs no repo configuration. The built-in baseline runs
+        unless the repo explicitly disables it. A repo can customize that
+        behavior in two ways:
       </p>
       <ul>
         <li>
-          Set <code>contentPolicy.enabled: true</code> in{" "}
-          <Link href="/docs/config"><code>.postil.yaml</code></Link>.
+          Add <code>.postil/content-policy.md</code> to append repo-specific
+          rules to the built-in baseline.
         </li>
         <li>
-          Drop a <code>.postil/content-policy.md</code> file in the repo. Its
-          presence turns content policy on by itself, the same way{" "}
-          <code>.postil/guardrails.md</code> does: no config edit required.
+          Set <code>contentPolicy.enabled: false</code> in{" "}
+          <Link href="/docs/config"><code>.postil.yaml</code></Link> to opt out
+          of content-policy review entirely.
         </li>
       </ul>
       <p>
-        An explicit <code>contentPolicy.enabled: false</code> wins over a{" "}
-        <code>.postil/content-policy.md</code> file that happens to exist, so
-        a repo can keep the file around (for reference, or mid-rollout)
-        without it silently turning content policy on.
+        An explicit <code>contentPolicy.enabled: false</code> also disables any
+        rules in <code>.postil/content-policy.md</code>. The file can remain in
+        the repo without overriding the opt-out.
       </p>
 
       <h2>Custom policy</h2>

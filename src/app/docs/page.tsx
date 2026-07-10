@@ -46,7 +46,7 @@ const CARDS = [
   {
     href: "/docs/content-policy",
     title: "Content policy",
-    body: "Opt-in review of prose in the diff: fabricated claims, AI-authorship residue, and the built-in baseline.",
+    body: "Default-on review of prose with a built-in baseline, repo-specific extensions, and an explicit opt-out.",
   },
   {
     href: "/docs/forges",
