@@ -44,7 +44,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Cost at high PR volume",
     cells: [
-      { kind: "yes", note: "flat — seats × $10" },
+      { kind: "yes", note: "flat: seats × $10" },
       { kind: "no", note: "scales with review count" },
     ],
   },
@@ -77,7 +77,7 @@ export default function VsGreptilePage() {
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         Greptile&apos;s cross-file reasoning is genuinely strong. Postil is a
         Greptile alternative for teams who hit the limits of its commercial model
-        and merge contract: per-review overage pricing gets punishing at
+        and merge contract: per-review overage pricing scales sharply at
         agent-team volume, and findings ship as comments rather than a separable,
         enforceable gate.
       </p>
@@ -111,7 +111,7 @@ export default function VsGreptilePage() {
           <Link href="/pricing">cost calculator</Link>.
         </p>
 
-        <h2>A gate you can require, not just comments to read</h2>
+        <h2>A gate that can block a merge</h2>
         <p>
           Greptile posts findings as PR comments. Postil completes{" "}
           <code>postil/gate</code> as a real, separable check you can require in
@@ -127,7 +127,7 @@ export default function VsGreptilePage() {
           <a href="https://www.greptile.com/blog/greptile-v4" rel="noopener">
             Greptile&apos;s own v4 release notes
           </a>{" "}
-          show comments-addressed rising from 30% to 43% between versions —
+          show comments-addressed rising from 30% to 43% between versions,
           evidence that defaults trend noisy. Postil reports its silence rate and the
           confidence distribution of shipped findings as the headline metrics, so
           drift toward noise is visible in a chart before engineers feel it in
@@ -144,7 +144,7 @@ export default function VsGreptilePage() {
 
       <div className="rounded-card shadow-card mt-12 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="serif-display text-2xl">No meter anxiety.</h2>
+          <h2 className="serif-display text-2xl">Flat pricing, no per-review meter.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
             Flat Team pricing, hosted reviews included. Install the CLI and
             try it on your next diff.

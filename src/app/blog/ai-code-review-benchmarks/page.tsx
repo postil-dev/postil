@@ -50,7 +50,7 @@ export default function BenchmarkAuthorArticle() {
 
       <div className="prose-postil blog-prose mt-10">
         <p>
-          There is a pattern in this category that nobody really disputes. Every
+          There is a pattern in this category that nobody disputes. Every
           vendor that publishes a benchmark for AI code review wins it. Not most
           of them. Every one. The chart always has the publisher&apos;s logo on
           top, and the gap to second place is always comfortable. That is not a

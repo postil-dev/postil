@@ -56,7 +56,7 @@ steps:
         The repository for <code>--repo</code> is{" "}
         <code>organization/project/repository</code>. A gate-failing review
         exits <code>1</code> and fails the step; a clean review exits{" "}
-        <code>0</code> and posts nothing — see{" "}
+        <code>0</code> and posts nothing; see{" "}
         <Link href="/docs/exit-codes">exit codes</Link>. Mark the pipeline{" "}
         <strong>required</strong> in the branch policy to make the gate
         binding.
@@ -87,14 +87,14 @@ postil review --forge azure --repo organization/project/repository --pr 7`}</cod
       <ul>
         <li>
           Same gate thresholds, envelope schema, and exit codes as every other
-          forge — see the <Link href="/docs/cli">CLI reference</Link> and{" "}
+          forge; see the <Link href="/docs/cli">CLI reference</Link> and{" "}
           <Link href="/docs/exit-codes">exit codes</Link>.
         </li>
         <li>
           <code>postil respond</code> (the <code>@postil</code> interactive
           bot) supports <code>--pr</code> only. Azure Boards work items use a
           different API base and version than the pull-request endpoints
-          Postil talks to — pointing <code>respond</code> at{" "}
+          Postil talks to; pointing <code>respond</code> at{" "}
           <code>--issue</code> on Azure DevOps returns an error rather than
           silently doing nothing.
         </li>

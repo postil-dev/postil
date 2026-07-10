@@ -145,7 +145,7 @@ export default function VsQodoPage() {
           Postil&apos;s gate.
         </p>
 
-        <h2>Noise is measured, not promised</h2>
+        <h2>Practitioner-reported noise, and Postil's own numbers</h2>
         <p>
           Practitioner sentiment has bundled Qodo into the category&apos;s
           noise complaints: one founder reported CodeRabbit and Qodo{" "}

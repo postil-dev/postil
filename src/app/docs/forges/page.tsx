@@ -22,12 +22,12 @@ const FORGES = [
   {
     href: "/docs/forges/bitbucket",
     title: "Bitbucket",
-    body: "Cloud and Data Center. Pull requests only — no issue tracker support.",
+    body: "Cloud and Data Center. Pull requests only, no issue tracker support.",
   },
   {
     href: "/docs/forges/azure",
     title: "Azure DevOps",
-    body: "Services and Server. Pull requests only — no work item support.",
+    body: "Services and Server. Pull requests only, no work item support.",
   },
 ] as const;
 
@@ -38,8 +38,8 @@ export default function ForgesIndexPage() {
       <p className="mt-4 text-lg">
         Postil is one review engine behind a <code>Forge</code> trait: fetch
         the diff, post inline comments, complete two check-runs, reply to a
-        mention. Four code hosts implement it — GitHub, GitLab, Bitbucket,
-        and Azure DevOps — each covering its self-managed or server variant
+        mention. Four code hosts implement it (GitHub, GitLab, Bitbucket,
+        and Azure DevOps), each covering its self-managed or server variant
         through a base-URL environment variable. Pick a forge with{" "}
         <code>--forge</code>; it defaults to <code>github</code> when{" "}
         <code>--repo</code> is set.
@@ -147,8 +147,8 @@ export default function ForgesIndexPage() {
       </table>
       <p>
         Stated plainly: GitHub and GitLab cover issues and PRs/MRs for the
-        interactive bot; Bitbucket and Azure DevOps cover pull requests only —
-        their issue tracker and work-item APIs use a different shape Postil
+        interactive bot; Bitbucket and Azure DevOps cover pull requests only.
+        Their issue tracker and work-item APIs use a different shape Postil
         does not talk to yet. The hosted app at{" "}
         <Link href="/">postil.dev</Link> is GitHub-only today; every other
         forge runs the same binary in your own CI with your own inference
@@ -184,7 +184,7 @@ export AZURE_DEVOPS_TOKEN=...         # a PAT
 postil review --forge azure --repo organization/project/repository --pr 7`}</code>
       </pre>
       <p>
-        Same gate thresholds, envelope schema, and exit codes everywhere — see
+        Same gate thresholds, envelope schema, and exit codes everywhere; see
         the <Link href="/docs/cli">CLI reference</Link> and{" "}
         <Link href="/docs/exit-codes">exit codes</Link>.
       </p>

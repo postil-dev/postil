@@ -14,8 +14,8 @@ export default function ExitCodesPage() {
       <h1 className="serif-display text-4xl text-charcoal">Exit codes</h1>
       <p className="mt-4 text-lg">
         <code>postil review</code> and <code>postil doctor</code> use three
-        exit codes. A CI job that gates on the wrong signal — or catches
-        everything as one bucket — either blocks merges it should not or lets
+        exit codes. A CI job that gates on the wrong signal (or catches
+        everything as one bucket) either blocks merges it should not or lets
         through ones it should have stopped. This page is the precise
         contract.
       </p>
@@ -45,7 +45,7 @@ export default function ExitCodesPage() {
             </td>
             <td>
               Fail the job. This is the signal branch protection should
-              require — see <Link href="/docs/gate">the gate</Link>.
+              require; see <Link href="/docs/gate">the gate</Link>.
             </td>
           </tr>
           <tr>
@@ -65,9 +65,9 @@ export default function ExitCodesPage() {
         </tbody>
       </table>
 
-      <h2>0 vs 1: the gate, not the finding count</h2>
+      <h2>0 vs 1: what the gate threshold means</h2>
       <p>
-        Exit <code>0</code> does not mean zero findings — it means nothing
+        Exit <code>0</code> does not mean zero findings: it means nothing
         crossed the gate threshold. A repo with{" "}
         <code>gate.failOn: error</code> can post several <code>warn</code> and{" "}
         <code>info</code> findings on <code>postil/review</code> and still
@@ -83,7 +83,7 @@ export default function ExitCodesPage() {
       <p>
         Exit <code>1</code> is a successful review that found something. The
         model ran, findings were produced and filtered, and at least one
-        cleared the gate threshold. This is working as intended — the same
+        cleared the gate threshold. This is working as intended: the same
         exit code a linter uses for "found issues," not for "could not run."
       </p>
 
@@ -102,7 +102,7 @@ export default function ExitCodesPage() {
           <code>--base</code>/<code>--diff-file</code> for local review.
         </li>
         <li>
-          A pre-review forge call that failed outright — fetching PR
+          A pre-review forge call that failed outright: fetching PR
           metadata or the diff itself (auth failure, repository not found,
           network error) before any review content existed.
         </li>
@@ -118,32 +118,32 @@ export default function ExitCodesPage() {
       <h2>The error-path advisory nuance</h2>
       <p>
         For remote reviews, a pre-review fetch failure both exits{" "}
-        <code>2</code> at the process level <em>and</em> — best effort — posts
-        a synthetic error envelope to the forge&apos;s check-runs before the
+        <code>2</code> at the process level <em>and</em>, on a best-effort
+        basis, posts a synthetic error envelope to the forge&apos;s check-runs before the
         process exits, so the PR page reflects the failure even though the
         CLI invocation itself reports an operational error. That check-run
         outcome depends on <code>gate.onError</code>:
       </p>
       <ul>
         <li>
-          <code>gate.onError: block</code> (default) — <code>postil/gate</code>{" "}
+          <code>gate.onError: block</code> (default): <code>postil/gate</code>{" "}
           completes as failing on the forge, matching the process exit code.
         </li>
         <li>
-          <code>gate.onError: advisory</code> — <code>postil/gate</code>{" "}
+          <code>gate.onError: advisory</code>: <code>postil/gate</code>{" "}
           completes as passing on the forge (a provider outage should not
           freeze a merge queue), but <code>postil/review</code> still shows{" "}
           <code>neutral</code> with the error, and the CLI process itself
           still exits <code>2</code>. <code>gate.onError</code> only changes
           what the forge check-run reports; it never changes the CLI exit
-          code, and it never applies to unusable model output — only to
+          code, and it never applies to unusable model output, only to
           provider-class failures (timeouts, outages, unreachable
           endpoints).
         </li>
       </ul>
       <p>
         Once a review actually runs and the model returns output that cannot
-        be validated, that is not an operational error — it is a gate-failing
+        be validated, that is not an operational error: it is a gate-failing
         finding at <code>.postil/model-output:1</code> (exit <code>1</code>),
         because a malicious diff can otherwise induce unusable output through
         prompt injection and must never be rewarded with a silent pass. Fail
@@ -158,7 +158,7 @@ export default function ExitCodesPage() {
         fails (its report format is documented in{" "}
         <Link href="/docs/self-hosted">self-hosted</Link>). Exit{" "}
         <code>2</code> still applies to operational errors that happen before
-        the checks can run — a config file that fails to parse exits{" "}
+        the checks can run: a config file that fails to parse exits{" "}
         <code>2</code> with a <code>postil: error</code> line, exactly like
         any other command.
       </p>

@@ -17,18 +17,18 @@ export default function EnvelopePage() {
         frozen; the control plane stores it verbatim.
       </p>
 
-      <h2>Why an envelope, and not just SARIF</h2>
+      <h2>Why the envelope exists alongside SARIF</h2>
       <p>
         The envelope is the single JSON object <code>postil review</code>{" "}
         emits: findings and the gate verdict, counts, confidence
         distribution, token usage, and provenance (base/head/since SHAs,
-        model used) all travel together as one versioned unit. Consumers —
-        the hosted worker, the dashboard, <code>postil plan</code> — read one
+        model used) all travel together as one versioned unit. Consumers
+        (the hosted worker, the dashboard, <code>postil plan</code>) read one
         object and get the whole picture of a review, not just its findings.
       </p>
       <p>
         Postil also emits SARIF 2.1.0 (<code>--sarif &lt;path&gt;</code>) for
-        interop with code-scanning viewers that expect it — GitHub code
+        interop with code-scanning viewers that expect it: GitHub code
         scanning, GitLab SAST, and other SARIF-aware tooling. SARIF is a
         results format: it has no structured gate concept (Postil tucks the
         verdict into a SARIF properties bag, but that is a nonstandard
@@ -39,7 +39,7 @@ export default function EnvelopePage() {
       </p>
       <p>
         The schema below is <strong>version 1, frozen</strong>. Changes that
-        do not break existing consumers — new optional fields — ship in place
+        do not break existing consumers (new optional fields) ship in place
         under <code>version: 1</code>; consumers should already tolerate
         unknown fields. Any breaking change ships as a new{" "}
         <code>version: 2</code> alongside version 1, never in place of it. See
@@ -94,7 +94,7 @@ export default function EnvelopePage() {
               a rule stated in <code>.postil/guardrails.md</code>; the finding
               quotes the rule it breaks), <code>uncertainty</code> (the
               model flags its own doubt), <code>contentPolicy</code> (opt-in
-              review of prose in the diff — see{" "}
+              review of prose in the diff; see{" "}
               <Link href="/docs/content-policy">content policy</Link>).
             </td>
           </tr>
@@ -112,7 +112,7 @@ export default function EnvelopePage() {
               with a <code>--baseline</code> envelope from the previous review
               of the same PR head lineage): findings from that baseline which
               no longer apply at the new head. This is a diff against the
-              prior envelope, not conversation memory — Postil does not carry
+              prior envelope, not conversation memory. Postil does not carry
               chat history or retain state between PRs. Powers "N resolved, M
               open" on incremental re-review.
             </td>

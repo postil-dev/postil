@@ -34,7 +34,7 @@ postil review --repo owner/name --pr 123`}</code>
         walks through for local runs and GitHub Actions, and what the{" "}
         <Link href="/docs/forges">forges</Link> pages cover for GitLab CI,
         Bitbucket Pipelines, and Azure Pipelines. There is no server to run,
-        nothing to keep patched, and no seat limit — it is a CLI invocation
+        nothing to keep patched, and no seat limit: it is a CLI invocation
         in a job you already have. If that is what you came here for, stop
         here and go set it up.
       </p>
@@ -42,13 +42,13 @@ postil review --repo owner/name --pr 123`}</code>
       <h2>Hosting the control plane</h2>
       <p>
         The rest of this page is for organizations that also want the bot
-        experience — inline PR comments posted automatically, the{" "}
-        <code>@postil</code> mention bot, a dashboard, webhook-driven reviews
-        — running on their own infrastructure instead of postil.dev. That
+        experience (inline PR comments posted automatically, the{" "}
+        <code>@postil</code> mention bot, a dashboard, webhook-driven reviews)
+        running on their own infrastructure instead of postil.dev. That
         means standing up the same stack we run hosted: Postgres, the web
         app, and the worker. Free forever, no seat limit. Budget under 15
         minutes from clone to a reviewed test PR. The marketing site at
-        postil.dev is irrelevant to this path — you are replacing it, not
+        postil.dev is irrelevant to this path: you are replacing it, not
         depending on it.
       </p>
 
@@ -77,7 +77,7 @@ docker compose exec web bun run db:migrate`}</code>
       <p>
         Both web and worker validate their configuration at boot. A missing or
         malformed variable stops the process with the variable name, what it
-        is for, and an example value — not a stack trace from the first
+        is for, and an example value, not a stack trace from the first
         request that happened to need it.
       </p>
 
@@ -295,15 +295,15 @@ postil doctor: ready.`}</code>
       </p>
       <ul>
         <li>
-          <code>/api/health</code> — cheap web-process liveness, suitable for
+          <code>/api/health</code>: cheap web-process liveness, suitable for
           container and proxy health checks.
         </li>
         <li>
-          <code>/api/health/dependencies</code> — dependency readiness check
+          <code>/api/health/dependencies</code>: dependency readiness check
           that returns 503 when Postgres is unavailable.
         </li>
         <li>
-          <code>/api/metrics</code> — Prometheus text (queue depth, reviews by
+          <code>/api/metrics</code>: Prometheus text (queue depth, reviews by
           status, 24-hour activity, jobs, sessions, installations, database-up
           signal),
           bearer-protected by <code>METRICS_TOKEN</code>.
@@ -327,7 +327,7 @@ postil doctor: ready.`}</code>
         <li>
           The worker's watchdog fails any review running longer than 10
           minutes and completes its check-runs as failed, so a stuck review
-          can never hold a PR hostage as eternally in-progress.
+          never leaves a PR stuck in progress indefinitely.
         </li>
         <li>
           The CLI binary is baked into the worker image at a pinned commit;

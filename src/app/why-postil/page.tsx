@@ -100,12 +100,12 @@ const wedges: Wedge[] = [
           <a href="https://www.greptile.com/blog/greptile-v4" rel="noopener">
             Greptile's own v4 release notes
           </a>{" "}
-          show comments-addressed rising from 30% to 43% between versions —
-          defaults in this category trend noisy.
+          show comments-addressed rising from 30% to 43% between versions,
+          evidence that defaults in this category trend noisy.
         </p>
         <p className="mt-3">
           Postil ships with a high confidence threshold by default and reports
-          its silence rate — the share of PRs where it said nothing — as the
+          its silence rate (the share of PRs where it said nothing) as the
           first number on your dashboard, with the confidence distribution of
           every finding it did ship.{" "}
           <a
@@ -193,7 +193,7 @@ const wedges: Wedge[] = [
           <code>postil/gate</code> fails only at or above your configured
           severity and is safe to require in branch protection;{" "}
           <code>postil/review</code> carries everything advisory. On
-          operational errors the gate fails closed by default — never neutral.
+          operational errors the gate fails closed by default, never neutral.
           Repos can opt into <code>gate.onError: advisory</code>, which fails
           open on provider outages only.
         </p>
@@ -212,9 +212,9 @@ const wedges: Wedge[] = [
           platform support and review quality.
         </p>
         <p className="mt-3">
-          Postil's CLI speaks GitHub, GitLab, Bitbucket, and Azure DevOps —
-          each including its self-managed/server variant via a base-URL
-          environment variable — through the same forge interface. Bitbucket
+          Postil's CLI speaks GitHub, GitLab, Bitbucket, and Azure DevOps
+          (each including its self-managed/server variant via a base-URL
+          environment variable) through the same forge interface. Bitbucket
           and Azure DevOps support follows the same best-effort contract:
           shipped, covered by tests, and driven by customer feedback where
           platform edge cases differ. The CLI's interactive{" "}
@@ -231,7 +231,7 @@ const wedges: Wedge[] = [
   },
   {
     number: "05",
-    title: "Self-hosted that works on the first run — including Ollama",
+    title: "Self-hosted that works on the first run (including Ollama)",
     body: (
       <>
         <p>
@@ -306,7 +306,7 @@ const wedges: Wedge[] = [
         </p>
         <p className="mt-3">
           <code>postil plan</code> re-applies a candidate config to your stored
-          envelopes — no model calls, no API spend — and shows exactly which
+          envelopes (no model calls, no API spend) and shows exactly which
           findings would have shipped, been suppressed, or failed the gate on
           your recent PRs. Terraform-plan semantics for review configuration.
         </p>
@@ -409,8 +409,8 @@ export default function WhyPostilPage() {
             <a href="https://arxiv.org/abs/2509.01494" rel="noopener">
               substantially underperform on real pull requests
             </a>
-            . Postil optimizes the precision of what it says, not the claim that
-            it catches everything.
+            . Postil optimizes for precision in what it says rather than
+            claiming to catch everything.
           </li>
           <li>
             The hosted app, CLI, and self-hosted stack use the same review

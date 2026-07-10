@@ -12,7 +12,7 @@ export default function PrivacyPage() {
       <div className="prose-postil mx-auto">
         <p className="eyebrow">Privacy</p>
         <h1 className="serif-display mt-3 text-4xl text-charcoal">
-          What we store, and what we refuse to.
+          What we store, and what we don&apos;t.
         </h1>
 
         <h2>Source code is never persisted</h2>
@@ -31,8 +31,8 @@ export default function PrivacyPage() {
         <h2>What is stored</h2>
         <ul>
           <li>
-            <strong>Review envelopes</strong>: the JSON verdict of each review
-            — summary, findings (file path, line number, severity, confidence,
+            <strong>Review envelopes</strong>: the JSON verdict of each review,
+            covering summary, findings (file path, line number, severity, confidence,
             title, body), token counts, model id, and commit SHAs. Findings
             quote at most the few words needed to identify the issue.
           </li>
@@ -85,11 +85,11 @@ export default function PrivacyPage() {
         <h2>Subprocessors</h2>
         <ul>
           <li>
-            <strong>GitHub</strong> — source forge and OAuth identity: webhooks,
+            <strong>GitHub</strong> (source forge and OAuth identity): webhooks,
             check-runs, review comments, sign-in.
           </li>
           <li>
-            <strong>Model providers</strong> — receive the diff for the duration
+            <strong>Model providers</strong> receive the diff for the duration
             of a model call. Hosted BYO reviews route through the Postil worker
             to your configured provider under your own provider relationship.
             Hosted reviews without BYO settings use Postil&apos;s configured
@@ -101,16 +101,16 @@ export default function PrivacyPage() {
             self-hosting (below).
           </li>
           <li>
-            <strong>Fly.io</strong> — application hosting: runs the web control
+            <strong>Fly.io</strong> (application hosting): runs the web control
             plane and the review worker.
           </li>
           <li>
-            <strong>Supabase Postgres</strong> — managed PostgreSQL storage for
-            accounts, installations, and review envelopes.
+            <strong>Supabase Postgres</strong> provides managed PostgreSQL
+            storage for accounts, installations, and review envelopes.
           </li>
           <li>
-            <strong>PostHog</strong> — privacy-scoped analytics: stores
-            aggregate pageview and request telemetry so we can understand
+            <strong>PostHog</strong> provides privacy-scoped analytics: it
+            stores aggregate pageview and request telemetry so we can understand
             traffic sources, documentation usage, and likely bot or automation
             traffic.
           </li>

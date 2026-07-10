@@ -15,9 +15,9 @@ export default function ContentPolicyPage() {
         Off by default. A review dimension is an additional lens the reviewer
         applies to a diff, on top of the core correctness/security review;{" "}
         <strong>content policy</strong> is one such dimension, and it is
-        opt-in. It reviews the human-readable prose in a diff — Markdown,
+        opt-in. It reviews the human-readable prose in a diff (Markdown,
         code comments, docstrings, user-facing or log strings, and the PR
-        title/description — never code logic, identifiers, or structured
+        title/description), never code logic, identifiers, or structured
         data. Violations are reported as <code>contentPolicy</code> findings
         alongside the core reviewer's findings, in the same envelope.
       </p>
@@ -34,7 +34,7 @@ export default function ContentPolicyPage() {
         <li>
           Drop a <code>.postil/content-policy.md</code> file in the repo. Its
           presence turns content policy on by itself, the same way{" "}
-          <code>.postil/guardrails.md</code> does — no config edit required.
+          <code>.postil/guardrails.md</code> does: no config edit required.
         </li>
       </ul>
       <p>
@@ -49,7 +49,7 @@ export default function ContentPolicyPage() {
         <code>.postil/content-policy.md</code> is plain Markdown, one rule
         per bullet or heading, in the same register as{" "}
         <code>.postil/guardrails.md</code>. Its rules are appended to the
-        built-in baseline below, not a replacement for it — repo-specific
+        built-in baseline below, not a replacement for it. Repo-specific
         additions layer on top of the defaults rather than overriding them.
       </p>
       <pre tabIndex={0} aria-label="Code sample">
@@ -80,7 +80,7 @@ export default function ContentPolicyPage() {
               code/config/files in the diff or repo, or describes a command,
               flag, path, env var, or behavior that does not exist. A
               plausible description is not flagged merely for being
-              unproven — only claims the model can show are false.
+              unproven: only claims the model can show are false.
             </td>
           </tr>
           <tr>
@@ -115,7 +115,7 @@ export default function ContentPolicyPage() {
             <td>Stale temporal and TODO residue</td>
             <td><code>info</code></td>
             <td>
-              Reference documentation that reads as genuinely stale —
+              Reference documentation that reads as genuinely stale:
               dangling TODO/FIXME with no owner, "currently"/"for now"
               phrasing describing an already-completed transition. Dated
               changelog entries and explicit roadmap sections are exempt.
@@ -147,7 +147,7 @@ export default function ContentPolicyPage() {
         <code>confidence</code> and suppression rules, same inline comments on{" "}
         <code>postil/review</code>. An <code>error</code>-severity{" "}
         <code>contentPolicy</code> finding gates the PR exactly like any other
-        error finding — see <Link href="/docs/gate">the gate</Link>.
+        error finding; see <Link href="/docs/gate">the gate</Link>.
       </p>
 
       <h2>Hosted reviews</h2>

@@ -45,13 +45,13 @@ export default function PricingPage() {
     <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
       <p className="eyebrow">Pricing</p>
       <h1 className="serif-display mt-4 max-w-3xl text-4xl md:text-5xl">
-        Flat price. Default reviews included.
+        Flat pricing, reviews included.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        Pricing in this category fails in one of two ways: per-review meters
-        that punish fast teams, or opaque bundles that make a forecast hard.
-        Postil keeps the invoice boring: seats are predictable, and hosted
-        reviews are included.
+        Pricing in this category usually takes one of two forms: per-review
+        meters that scale cost with usage, or bundles that make a forecast
+        hard. Postil charges a flat per-developer seat price with hosted
+        reviews included.
       </p>
 
       {/* Tiers */}

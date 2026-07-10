@@ -18,10 +18,10 @@ export default function GatePage() {
         different jobs and must never be conflated.
       </p>
 
-      <h2>Why two checks, not one</h2>
+      <h2>Why the gate is a separate check</h2>
       <p>
         A single check-run cannot do both jobs well. <code>postil/review</code>{" "}
-        always completes — even on an operational error — so findings and
+        always completes (even on an operational error), so findings and
         inline comments are visible on every PR, including ones nobody has
         required. <code>postil/gate</code> is the one context you put in
         branch protection: its name is stable, it exists on every reviewed
@@ -91,21 +91,21 @@ export default function GatePage() {
         </li>
         <li>
           Search for and add <code>postil/gate</code> to the required checks.
-          Do <strong>not</strong> add <code>postil/review</code> — advisory
+          Do <strong>not</strong> add <code>postil/review</code>: advisory
           findings should inform, not block.
         </li>
         <li>Save the rule.</li>
       </ol>
       <p>
         <code>postil/gate</code> only appears in that search box after it has
-        run at least once on the repository — open one PR first, then come
+        run at least once on the repository. Open one PR first, then come
         back and require it.
       </p>
       <p>
         With this in place, a PR with an <code>error</code>-severity finding
         cannot merge until the finding is fixed (the next push re-reviews
         incrementally and resolves it) or the threshold is deliberately
-        changed in config — a reviewable, auditable act.
+        changed in config, a reviewable, auditable act.
       </p>
 
       <h2>Choosing a threshold</h2>
@@ -129,15 +129,16 @@ gate:
         If the review crashes, times out (10-minute watchdog), or the model
         returns garbage, <code>postil/gate</code> completes as{" "}
         <code>failure</code> with the operational error in the summary. It is
-        never left in-progress and never marked neutral. An unreviewed head is
-        not a passing head; pushing again or re-requesting the check re-runs
-        the review. This is the default, <code>gate.onError: block</code>.
+        never left in-progress and never marked neutral. The gate never marks
+        an unreviewed head as passing; pushing again or re-requesting the
+        check re-runs the review. This is the default,{" "}
+        <code>gate.onError: block</code>.
       </p>
       <p>
         Repos that prefer fail-open over a blocked merge queue during a model
         outage can set <code>gate.onError: advisory</code>. This only changes
-        behavior on <em>provider</em> errors — a provider outage, an exhausted
-        key, a connection timeout — and lets the gate pass in those cases
+        behavior on <em>provider</em> errors (a provider outage, an exhausted
+        key, a connection timeout) and lets the gate pass in those cases
         instead of failing closed. Model output that fails validation even
         after a retry is deliberately <em>not</em> covered: a diff can be
         crafted to induce that class of failure, so it always fails the gate,

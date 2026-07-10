@@ -47,8 +47,8 @@ postil review --repo owner/name --pr 123   # posts inline comments + both check-
         A gate-failing review exits <code>1</code>; a clean review exits{" "}
         <code>0</code> and posts nothing. See{" "}
         <Link href="/docs/exit-codes">exit codes</Link> for what CI should do
-        with each. Mark <code>postil/gate</code> required in branch protection
-        — see <Link href="/docs/gate">the gate</Link>.
+        with each. Mark <code>postil/gate</code> required in branch protection;
+        see <Link href="/docs/gate">the gate</Link>.
       </p>
 
       <h2>GitHub Enterprise Server</h2>
@@ -78,7 +78,7 @@ postil respond --repo owner/name --issue 45 --comment "@postil what's the likely
 POSTIL_COMMENT="@postil is this safe?" postil respond --repo owner/name --pr 123`}</code>
       </pre>
       <p>
-        GitHub covers both issues and pull requests for <code>respond</code> —
+        GitHub covers both issues and pull requests for <code>respond</code>:
         its issues API handles both, so <code>--pr</code> and{" "}
         <code>--issue</code> both work. Postil reviews and answers only; it
         never opens PRs or pushes commits.

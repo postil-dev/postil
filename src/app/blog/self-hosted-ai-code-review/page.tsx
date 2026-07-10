@@ -62,7 +62,8 @@ export default function SelfHostedAiCodeReviewArticle() {
             href="https://aws.amazon.com/marketplace/pp/prodview-wkkkre4fgelwq"
             rel="noopener"
           >
-            The gate is a seat count, not a capability.
+            The AWS Marketplace listing sets the self-hosted minimum at 500
+            seats.
           </a>{" "}
           This piece walks through who actually lets you self-host and on what
           terms, and then runs the concrete path to a working local review with
@@ -141,7 +142,7 @@ export default function SelfHostedAiCodeReviewArticle() {
           code to an external API is the same as not offering it. Second, the
           tools that abolished seats in favor of usage pricing did so for their
           cloud product; running the model on your own hardware is a different
-          axis, and for several of them it simply is not on offer. The Bugbot
+          axis, and for several of them it is not on offer. The Bugbot
           nuance is the one most likely to be mis-stated elsewhere: it can
           review pull requests on a self-hosted forge, but the reviewer itself
           executes in Cursor&apos;s cloud, so your diff still leaves your
@@ -170,8 +171,8 @@ export default function SelfHostedAiCodeReviewArticle() {
         </p>
         <p>
           The trade-off is the one any self-assembled stack carries: you own the
-          integration. The honest framing is not that PR-Agent is bad; it is
-          that &quot;self-host with a local model&quot; means budgeting for the
+          integration. PR-Agent itself is not the problem;
+          &quot;self-host with a local model&quot; means budgeting for the
           glue, the model wiring, and the day a request silently goes to the
           wrong endpoint. That last failure mode is exactly what the rest of
           this article is about avoiding.
@@ -310,8 +311,8 @@ POSTIL_API_KEY=azure-api-key
           <code>/api/metrics</code> emits Prometheus text, including the silence
           rate and database-up signal, protected by a <code>METRICS_TOKEN</code>{" "}
           bearer. The worker&apos;s watchdog fails any review running longer than 10 minutes
-          and completes its check runs as failed, so a stuck review cannot hold
-          a PR hostage as eternally in progress. And the CLI binary is baked
+          and completes its check runs as failed, so a stuck review never
+          leaves a PR stuck in progress indefinitely. And the CLI binary is baked
           into the worker image at a pinned commit, so upgrading the reviewer is
           an image upgrade, not a runtime download from a network you may have
           deliberately cut off.
@@ -325,8 +326,8 @@ POSTIL_API_KEY=azure-api-key
           with bring-your-own-key inference and a doctor that catches the
           misconfiguration that would otherwise make a local reviewer silently
           useless. No claim here that Postil detects more or better than
-          CodeRabbit, Greptile, or PR-Agent; there is no comparative data and we
-          will not pretend there is. The claim is about availability and the
+          CodeRabbit, Greptile, or PR-Agent: there is no comparative data to
+          support one. The claim is about availability and the
           deployment model: a full AI code reviewer you can run on your own
           hardware, first review in about 15 minutes, no 500-seat gate, no sales
           call. The detailed how-to lives on the{" "}

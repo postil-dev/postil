@@ -462,8 +462,9 @@ export default function PricingArticle() {
           ($10 per developer) with hosted reviews included, while BYO key
           support remains available for teams that require provider-controlled
           inference. When you choose BYO key, provider usage stays in your
-          account and Postil has no lever to profit from your volume. That is a
-          structural choice, not a discount, and you can check it on{" "}
+          account and Postil has no lever to profit from your volume. That
+          property comes from the pricing structure itself, and you can check
+          it on{" "}
           <Link href="/pricing">our pricing page</Link>.
         </p>
         <p>
