@@ -275,6 +275,108 @@ body {
   padding: 0;
   font-size: inherit;
 }
+
+/* Copy controls are siblings of pre so code remains the only copied content. */
+.code-copy-wrapper {
+  position: relative;
+  min-width: 0;
+}
+.prose-postil .code-copy-wrapper {
+  margin: 1rem 0;
+}
+.code-copy-wrapper > pre {
+  box-sizing: border-box;
+  margin: 0;
+}
+.code-copy-wrapper--bare::before {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  height: 2.25rem;
+  border-bottom: 1px solid rgb(167 177 184 / 32%);
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: rgb(0 0 0 / 8%);
+  content: "";
+  pointer-events: none;
+}
+.code-copy-wrapper--bare > pre {
+  padding-top: 3.25rem;
+}
+.terminal-titlebar {
+  position: relative;
+  padding-right: 3.5rem;
+}
+.code-copy-button {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 1px solid rgb(247 245 241 / 20%);
+  border-radius: 4px;
+  background: rgb(27 35 41 / 90%);
+  color: var(--color-ivory);
+  cursor: pointer;
+  opacity: 0.42;
+  transition:
+    opacity 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+.code-copy-wrapper--bare > .code-copy-button {
+  top: 0.125rem;
+  right: 0.5rem;
+}
+.terminal-titlebar > .code-copy-button {
+  top: 50%;
+  right: 0.5rem;
+  transform: translateY(-50%);
+}
+.code-copy-wrapper:hover .code-copy-button,
+.code-copy-wrapper:focus-within .code-copy-button,
+.terminal:hover > .terminal-titlebar > .code-copy-button,
+.terminal:focus-within > .terminal-titlebar > .code-copy-button,
+.code-copy-button:focus-visible {
+  opacity: 1;
+}
+.code-copy-button:hover {
+  border-color: rgb(247 245 241 / 55%);
+}
+.code-copy-button[data-copied="true"] {
+  border-color: var(--color-gate);
+  color: #cbdac1;
+  opacity: 1;
+}
+.code-copy-icon {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+.code-copy-icon-success {
+  display: none;
+}
+.code-copy-button[data-copied="true"] .code-copy-icon-default {
+  display: none;
+}
+.code-copy-button[data-copied="true"] .code-copy-icon-success {
+  display: block;
+}
+.code-copy-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .prose-postil a {
   color: var(--color-rust);
   text-decoration: underline;

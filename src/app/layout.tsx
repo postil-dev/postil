@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Inter, Source_Serif_4 } from "next/font/google";
 
+import { CodeCopyEnhancer } from "@/components/code-copy-enhancer";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 
@@ -115,6 +116,7 @@ export default function RootLayout({
         <main id="main-content" tabIndex={-1} className="flex-1">
           {children}
         </main>
+        <CodeCopyEnhancer />
         <SiteFooter />
       </body>
     </html>

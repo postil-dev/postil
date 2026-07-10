@@ -235,11 +235,13 @@ export default function HowItWorksPage() {
           </div>
           <div className="card p-6">
             <p className="eyebrow">Stored per review</p>
-            <pre
-              className="mt-4 overflow-x-auto font-mono text-xs leading-relaxed text-ink-soft"
-              tabIndex={0}
-              aria-label="Code sample"
-            >{`{
+            <div className="mt-4">
+              <pre
+                className="overflow-x-auto font-mono text-xs leading-relaxed text-ink-soft"
+                tabIndex={0}
+                aria-label="Code sample"
+              >
+                <code>{`{
   "summary": "Refund path missing idempotency key.",
   "silent": false,
   "findings": [
@@ -256,7 +258,9 @@ export default function HowItWorksPage() {
   "counts": { "info": 0, "warn": 0, "error": 1, "suppressed": 5 },
   "gate": { "failOn": "error", "failing": true },
   "usage": { "promptTokens": 8421, "completionTokens": 612 }
-}`}</pre>
+}`}</code>
+              </pre>
+            </div>
             <p className="mt-2 font-mono text-[10px] text-charcoal/70">
               Illustrative envelope.
             </p>
