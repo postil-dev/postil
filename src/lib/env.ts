@@ -68,14 +68,14 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "POSTIL_SEALING_KEY",
-    purpose: "AES-256-GCM key (32 bytes, hex or base64) sealing org BYO API keys",
+    purpose: "AES-256-GCM key (32 bytes, hex or base64) sealing org BYOK credentials",
     example: "openssl rand -hex 32",
     scope: ["web", "worker"],
   },
   {
     name: "MODEL_API_KEY",
     purpose:
-      "Default model provider API key for hosted reviews when an org has no BYO key",
+      "Default model provider API key for hosted reviews when an org has no BYOK credential",
     example: "sk-or-v1-...",
     scope: ["worker"],
     optional: true,

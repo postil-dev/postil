@@ -130,7 +130,7 @@ export default function VsCodeRabbitPage() {
             $24 per seat per month on the annual plan
           </a>
           . Postil Team is $10 per developer with hosted
-          reviews included, and BYO key support remains available for policy
+          reviews included, and BYOK support remains available for policy
           requirements. Run the numbers on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
