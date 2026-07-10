@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
-const schema = { orgSettings: { orgId: "org_id" } };
+const schema = {
+  orgSettings: {
+    orgId: "org_id",
+    configYaml: "config_yaml",
+    guardrailsMd: "guardrails_md",
+    contentPolicyMd: "content_policy_md",
+  },
+};
 let orgSettingsRows: unknown[] = [];
 
 function fakeDb() {
@@ -35,7 +42,9 @@ mock.module("@/lib/crypto/seal", () => ({
   unseal: (sealed: Buffer) => sealed.toString("utf8"),
 }));
 
-const { buildCliEnv, resolveLlmConfig } = await import("@/worker/review");
+const { buildCliEnv, resolveLlmConfig, resolveOrgReviewConfig } = await import(
+  "@/worker/review"
+);
 
 const KEY_NAMES = [
   "MODEL_API_KEY",
@@ -166,5 +175,28 @@ describe("buildCliEnv", () => {
       REVIEW_MODEL: "deepseek/deepseek-v4-pro",
       REVIEW_MODEL_CASCADE: "qwen/qwen3-coder",
     });
+  });
+});
+
+describe("resolveOrgReviewConfig", () => {
+  test("loads hosted review config even when the org has no BYO API key", async () => {
+    orgSettingsRows = [
+      {
+        configYaml: "enabled: true\n",
+        guardrailsMd: "Guardrail.\n",
+        contentPolicyMd: null,
+      },
+    ];
+
+    await expect(resolveOrgReviewConfig(123)).resolves.toEqual({
+      configYaml: "enabled: true\n",
+      guardrailsMd: "Guardrail.\n",
+      contentPolicyMd: null,
+    });
+  });
+
+  test("returns null without an organization or settings row", async () => {
+    await expect(resolveOrgReviewConfig(null)).resolves.toBeNull();
+    await expect(resolveOrgReviewConfig(123)).resolves.toBeNull();
   });
 });

@@ -28,6 +28,12 @@ const CONFIG_FILE_CANDIDATES = [".postil.yaml", ".postil.yml", ".postil.json"];
 
 const PROSE_FILES = [".postil/guardrails.md", ".postil/content-policy.md"];
 
+export interface OrgReviewConfig {
+  configYaml: string | null;
+  guardrailsMd: string | null;
+  contentPolicyMd: string | null;
+}
+
 /**
  * Fetch one file from the repo's default branch. Returns null when the file
  * does not exist or exceeds the size cap; throws on other API failures.
@@ -106,6 +112,44 @@ export async function materializeRepoConfig(
       console.warn(
         `repo config fetch failed for ${repoFullName}:${path}, continuing without it: ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+  }
+
+  return written;
+}
+
+/**
+ * Fill config slots that the repository did not provide from organization
+ * settings. Repo files are materialized first and always win per slot. The
+ * returned paths carry an `org:` prefix so review history preserves their
+ * source without changing the existing text-array column.
+ */
+export async function materializeOrgConfig(
+  dir: string,
+  repoFiles: readonly string[],
+  config: OrgReviewConfig | null,
+): Promise<string[]> {
+  if (!config) return [];
+
+  const written: string[] = [];
+  await mkdir(join(dir, ".postil"), { recursive: true });
+
+  if (
+    config.configYaml !== null &&
+    !CONFIG_FILE_CANDIDATES.some((candidate) => repoFiles.includes(candidate))
+  ) {
+    await writeFile(join(dir, ".postil.yaml"), config.configYaml);
+    written.push("org:.postil.yaml");
+  }
+
+  const proseConfig = [
+    [".postil/guardrails.md", config.guardrailsMd],
+    [".postil/content-policy.md", config.contentPolicyMd],
+  ] as const;
+  for (const [path, body] of proseConfig) {
+    if (body !== null && !repoFiles.includes(path)) {
+      await writeFile(join(dir, path), body);
+      written.push(`org:${path}`);
     }
   }
 

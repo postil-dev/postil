@@ -12,7 +12,8 @@ import {
 import { schema } from "@/lib/db";
 import { githubPrUrl } from "@/lib/github-links";
 import { requireOrgMembership } from "@/lib/org-access";
-import { saveOrgSettings, toggleRepository } from "./actions";
+import { toggleRepository } from "./actions";
+import { SettingsForm } from "./settings-form";
 
 export const metadata: Metadata = {
   title: "Organization",
@@ -194,6 +195,9 @@ export default async function OrgDashboardPage({
         apiBase: schema.orgSettings.apiBase,
         model: schema.orgSettings.model,
         modelCascade: schema.orgSettings.modelCascade,
+        configYaml: schema.orgSettings.configYaml,
+        guardrailsMd: schema.orgSettings.guardrailsMd,
+        contentPolicyMd: schema.orgSettings.contentPolicyMd,
         hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
       })
       .from(schema.orgSettings)
@@ -421,8 +425,14 @@ export default async function OrgDashboardPage({
                     return (
                       <p className="mt-1 font-mono text-[11px] text-charcoal/50">
                         {latestReview.configFiles.length > 0
-                          ? `overrides: ${latestReview.configFiles.join(", ")}`
-                          : "no repo overrides seen in the last review"}
+                          ? `overrides: ${latestReview.configFiles
+                              .map((file) =>
+                                file.startsWith("org:")
+                                  ? `organization ${file.slice(4)}`
+                                  : `repository ${file}`,
+                              )
+                              .join(", ")}`
+                          : "no configuration overrides used in the last review"}
                       </p>
                     );
                   })()}
@@ -464,21 +474,19 @@ export default async function OrgDashboardPage({
           </div>
         </div>
 
-        {/* BYO settings */}
+        {/* Organization settings */}
         <div>
-          <p className="eyebrow">LLM settings (BYO key)</p>
+          <p className="eyebrow">Organization settings</p>
           <div className="mt-3 space-y-2 text-sm text-ink-soft">
             <p>
               See the <Link href="/docs/models">model guide</Link> and{" "}
               <Link href="/docs/config">configuration reference</Link>.
             </p>
             <p className="text-xs text-charcoal/70">
-              At review time, Postil reads configuration from the repository&apos;s default
-              branch. The first available of <code>.postil.yaml</code>,{" "}
-              <code>.postil.yml</code>, or <code>.postil.json</code>, plus{" "}
-              <code>.postil/guardrails.md</code> and{" "}
-              <code>.postil/content-policy.md</code>, overrides these organization settings
-              for that repository&apos;s review.
+              Review configuration precedence is repository config from the default
+              branch, then hosted organization config, then Postil defaults. Each
+              artifact is resolved independently, and pull request head changes never
+              supply configuration.
             </p>
           </div>
           {!isAdmin && (
@@ -499,77 +507,30 @@ export default async function OrgDashboardPage({
                   {settings?.hasKey ? "stored (write-only)" : "hosted default"}
                 </span>
               </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                Hosted .postil.yaml{" "}
+                <span className="text-charcoal">
+                  {settings?.configYaml ? "configured" : "not configured"}
+                </span>
+              </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                Hosted guardrails{" "}
+                <span className="text-charcoal">
+                  {settings?.guardrailsMd ? "configured" : "not configured"}
+                </span>
+              </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                Hosted content policy{" "}
+                <span className="text-charcoal">
+                  {settings?.contentPolicyMd ? "configured" : "not configured"}
+                </span>
+              </p>
               <p className="pt-2 text-xs text-charcoal/50">
                 Changing these settings requires the organization admin role.
               </p>
             </div>
           )}
-          {isAdmin && (
-            <form action={saveOrgSettings} className="card mt-3 space-y-4 p-5">
-              <input type="hidden" name="slug" value={org.slug} />
-              <label className="block text-sm">
-                <span className="font-medium">API base</span>
-                <input
-                  type="url"
-                  name="apiBase"
-                  defaultValue={settings?.apiBase ?? ""}
-                  placeholder="https://openrouter.ai/api/v1"
-                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="font-medium">Model</span>
-                <input
-                  type="text"
-                  name="model"
-                  defaultValue={settings?.model ?? ""}
-                  placeholder="deepseek/deepseek-v4-pro"
-                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="font-medium">Model cascade</span>
-                <input
-                  type="text"
-                  name="modelCascade"
-                  defaultValue={settings?.modelCascade ?? ""}
-                  placeholder="qwen/qwen3-coder"
-                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="flex items-center justify-between font-medium">
-                  <span>API key</span>
-                  {settings?.hasKey && (
-                    <span className="font-mono text-[11px] text-gate">
-                      a key is stored (write-only)
-                    </span>
-                )}
-              </span>
-              <input
-                type="password"
-                name="apiKey"
-                autoComplete="off"
-                placeholder={settings?.hasKey ? "leave blank to keep current key" : "sk-..."}
-                className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-              />
-            </label>
-            {settings?.hasKey && (
-              <label className="flex items-center gap-2 text-sm text-ink-soft">
-                <input type="checkbox" name="removeKey" className="accent-[#C24A2A]" />
-                Remove the stored key (fall back to the hosted default)
-              </label>
-            )}
-            <p className="text-xs text-charcoal/50">
-              Keys are sealed with AES-256-GCM before storage and can never be
-              read back from this form. BYO-key review calls use this key under
-              your provider account; leave it unset to use the hosted default.
-            </p>
-            <button type="submit" className="btn-primary text-sm">
-              Save settings
-            </button>
-          </form>
-          )}
+          {isAdmin && <SettingsForm slug={org.slug} settings={settings} />}
         </div>
       </div>
 
