@@ -11,7 +11,7 @@ const CARDS = [
   {
     href: "/docs/quickstart",
     title: "Quickstart",
-    body: "Install the CLI, review your first staged diff, and wire up the GitHub App or Action.",
+    body: "Install the hosted GitHub App for immediate reviews with no configuration, then add local and CI workflows if you need them.",
   },
   {
     href: "/docs/config",
@@ -70,9 +70,9 @@ export default function DocsIndexPage() {
     <div>
       <h1 className="serif-display text-4xl">Documentation</h1>
       <p className="prose-postil mt-4 text-lg">
-        Postil is one Rust binary (<code>postil</code>) and a thin control
-        plane around it. These pages cover everything from the first local
-        review to running the whole stack on your own hardware.
+        Install the hosted GitHub App to review new pull requests immediately.
+        These pages also cover the open-source CLI, CI merge gating,
+        configuration, and running the whole stack on your own hardware.
       </p>
       <div className="mt-10 grid gap-5 sm:grid-cols-2">
         {CARDS.map((card) => (
@@ -85,7 +85,10 @@ export default function DocsIndexPage() {
       <div className="prose-postil mt-12">
         <h2>The short version</h2>
         <pre tabIndex={0} aria-label="Code sample">
-          <code>{`# local
+          <code>{`# hosted: install the GitHub App and choose repositories
+# every new non-draft PR is reviewed with no configuration
+
+# local
 curl -fsSL https://postil.dev/install.sh | sh
 # or: cargo install --git https://github.com/postil-dev/postil-cli --locked
 postil doctor            # verify endpoint, key, and model
@@ -94,10 +97,7 @@ postil review --staged
 # CI (GitHub Actions)
 - uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # example tested SHA
   with:
-    cli-ref: 3776f251db771dd74615305d7c2b0bc21b9fb2df # postil-cli v0.1.2
-
-# hosted
-Install the GitHub App; reviews start on the next PR.`}</code>
+    cli-ref: 3776f251db771dd74615305d7c2b0bc21b9fb2df # postil-cli v0.1.2`}</code>
         </pre>
         <p>
           Exit codes: <code>0</code> clean or below the gate threshold,{" "}
