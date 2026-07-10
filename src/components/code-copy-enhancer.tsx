@@ -28,11 +28,52 @@ async function copyText(text: string): Promise<boolean> {
 
 export function CodeCopyEnhancer() {
   useEffect(() => {
+    let disposed = false;
     const feedbackTimers = new Map<HTMLButtonElement, number>();
+    type Enhancement = {
+      pre: HTMLPreElement;
+      mode: "bare" | "terminal";
+      button: HTMLButtonElement;
+      buttonParent: HTMLElement;
+      status: HTMLSpanElement;
+      statusParent: HTMLElement;
+      onClick: () => Promise<void>;
+    };
+    const enhancements = new Set<Enhancement>();
+
+    const cleanupEnhancement = (enhancement: Enhancement) => {
+      const {
+        pre,
+        mode,
+        button,
+        buttonParent,
+        status,
+        statusParent,
+        onClick,
+      } = enhancement;
+      button.removeEventListener("click", onClick);
+
+      const timer = feedbackTimers.get(button);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        feedbackTimers.delete(button);
+      }
+      if (button.parentNode === buttonParent) {
+        buttonParent.removeChild(button);
+      }
+      if (status.parentNode === statusParent) {
+        statusParent.removeChild(status);
+      }
+      if (pre.isConnected && pre.dataset.copyEnhanced === mode) {
+        delete pre.dataset.copyEnhanced;
+      }
+
+      enhancements.delete(enhancement);
+    };
 
     const enhance = (pre: HTMLPreElement) => {
       if (
-        pre.dataset.copyEnhanced === "true" ||
+        pre.hasAttribute("data-copy-enhanced") ||
         pre.classList.contains("ev-diff")
       ) {
         return;
@@ -41,7 +82,7 @@ export function CodeCopyEnhancer() {
       const code = Array.from(pre.children).find(
         (child): child is HTMLElement => child.tagName === "CODE",
       );
-      if (!code || !pre.parentNode) return;
+      if (!code) return;
 
       const terminalTitlebar = pre.previousElementSibling;
       const hasTerminalTitlebar =
@@ -49,10 +90,7 @@ export function CodeCopyEnhancer() {
         terminalTitlebar instanceof HTMLElement &&
         terminalTitlebar.classList.contains("terminal-titlebar");
 
-      const wrapper = document.createElement("div");
-      wrapper.className = `code-copy-wrapper code-copy-wrapper--${
-        hasTerminalTitlebar ? "terminal" : "bare"
-      }`;
+      const mode = hasTerminalTitlebar ? "terminal" : "bare";
 
       const button = document.createElement("button");
       button.type = "button";
@@ -73,8 +111,10 @@ export function CodeCopyEnhancer() {
       status.setAttribute("aria-live", "polite");
       status.setAttribute("aria-atomic", "true");
 
-      button.addEventListener("click", async () => {
+      const onClick = async () => {
         const copied = await copyText(code.textContent ?? "");
+        if (disposed || !button.isConnected) return;
+
         button.focus({ preventScroll: true });
 
         if (!copied) {
@@ -93,17 +133,27 @@ export function CodeCopyEnhancer() {
           feedbackTimers.delete(button);
         }, COPIED_FEEDBACK_MS);
         feedbackTimers.set(button, timer);
-      });
+      };
+      button.addEventListener("click", onClick);
 
-      pre.dataset.copyEnhanced = "true";
-      pre.parentNode.insertBefore(wrapper, pre);
-      wrapper.append(pre, status);
+      pre.dataset.copyEnhanced = mode;
 
       if (hasTerminalTitlebar) {
-        terminalTitlebar.append(button);
+        terminalTitlebar.append(status, button);
       } else {
-        wrapper.append(button);
+        pre.append(status, button);
       }
+
+      const parent = hasTerminalTitlebar ? terminalTitlebar : pre;
+      enhancements.add({
+        pre,
+        mode,
+        button,
+        buttonParent: parent,
+        status,
+        statusParent: parent,
+        onClick,
+      });
     };
 
     const enhanceWithin = (root: ParentNode) => {
@@ -119,27 +169,19 @@ export function CodeCopyEnhancer() {
           if (node instanceof Element) enhanceWithin(node);
         });
       });
+
+      Array.from(enhancements)
+        .filter(({ pre }) => !pre.isConnected)
+        .forEach(cleanupEnhancement);
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
     return () => {
+      disposed = true;
       observer.disconnect();
       feedbackTimers.forEach((timer) => window.clearTimeout(timer));
-      document
-        .querySelectorAll<HTMLElement>(".code-copy-wrapper")
-        .forEach((wrapper) => {
-          const pre = wrapper.querySelector<HTMLPreElement>(":scope > pre");
-          if (!pre || !wrapper.parentNode) return;
-
-          if (wrapper.classList.contains("code-copy-wrapper--terminal")) {
-            wrapper.previousElementSibling
-              ?.querySelector<HTMLElement>(":scope > .code-copy-button")
-              ?.remove();
-          }
-
-          delete pre.dataset.copyEnhanced;
-          wrapper.parentNode.replaceChild(pre, wrapper);
-        });
+      feedbackTimers.clear();
+      Array.from(enhancements).forEach(cleanupEnhancement);
     };
   }, []);
 
