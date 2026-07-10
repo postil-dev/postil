@@ -107,22 +107,9 @@ export default function InstallPage() {
               is:
             </p>
 
-            {/* Illustrative demo output: the five checks, their order, and the
-                [ok  ]/[FAIL] format match the CLI; the endpoint detail is from a
-                real reachable run, but the exact strings are example values. */}
             <Terminal title="postil doctor">
               <code>
                 <span className="t-dim">$</span> postil doctor{"\n"}
-                <span className="t-green">[ok  ]</span>
-                {" config           loaded from .postil.yaml (model: deepseek/deepseek-v4-pro, gate failOn: error, minConfidence: 0.6)\n"}
-                <span className="t-green">[ok  ]</span>
-                {" git              inside a git work tree\n"}
-                <span className="t-green">[ok  ]</span>
-                {" api key          MODEL_API_KEY, POSTIL_API_KEY, or OPENROUTER_API_KEY is set (value not shown)\n"}
-                <span className="t-green">[ok  ]</span>
-                {" model endpoint   https://openrouter.ai/api/v1 answered for model deepseek/deepseek-v4-pro\n"}
-                <span className="t-green">[ok  ]</span>
-                {" forge tokens     GITHUB_TOKEN set, GITLAB_TOKEN unset (only needed for remote review)\n"}
                 {"\n"}
                 <span className="t-dim">postil doctor: ready.</span>
               </code>
@@ -251,7 +238,8 @@ jobs:
             <p className="font-mono text-sm text-charcoal/70">04</p>
             <h2 className="serif-display mt-1 text-2xl">Hosted GitHub App</h2>
             <p className="mt-2 text-sm text-ink-soft">
-              Zero-config reviews on every PR. Hosted Team reviews included.
+              Zero-config reviews on every non-draft PR in repositories you
+              enable. Hosted Team reviews included.
             </p>
           </div>
           <div className="min-w-0">

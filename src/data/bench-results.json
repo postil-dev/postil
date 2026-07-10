@@ -1,60 +1,61 @@
 {
-  "generatedAt": "2026-07-08T14:11:46.599Z",
+  "generatedAt": "2026-07-10T11:00:12.292Z",
   "cliVersion": "postil 0.1.2",
+  "sourceRun": "https://github.com/postil-dev/postil-cli/actions/runs/29087470897",
   "models": [
     {
       "id": "deepseek/deepseek-v4-pro",
       "detectionRate": 0.9696969696969697,
-      "falsePositives": 2,
+      "falsePositives": 0,
       "casesRun": 40,
-      "meanCostUsdPerReview": 0.0011501400000000002,
-      "meanDurationMs": 19931.55,
-      "totalCostUsd": 0.0460056
+      "meanCostUsdPerReview": 0.0009161208749999998,
+      "meanDurationMs": 6479.275,
+      "totalCostUsd": 0.036644834999999994
     },
     {
       "id": "deepseek/deepseek-v4-flash",
-      "detectionRate": 0.9696969696969697,
-      "falsePositives": 0,
+      "detectionRate": 0.9090909090909091,
+      "falsePositives": 1,
       "casesRun": 40,
-      "meanCostUsdPerReview": 0.00018279225,
-      "meanDurationMs": 8184.35,
-      "totalCostUsd": 0.00731169
+      "meanCostUsdPerReview": 0.000164934,
+      "meanDurationMs": 7363.175,
+      "totalCostUsd": 0.00659736
     },
     {
       "id": "moonshotai/kimi-k2.6",
-      "detectionRate": 0.8181818181818182,
+      "detectionRate": 0.8484848484848485,
       "falsePositives": 0,
       "casesRun": 40,
-      "meanCostUsdPerReview": 0.006485671000000001,
-      "meanDurationMs": 22497.5,
-      "totalCostUsd": 0.25942684
+      "meanCostUsdPerReview": 0.006907768999999999,
+      "meanDurationMs": 34350.475,
+      "totalCostUsd": 0.27631076
     },
     {
       "id": "qwen/qwen3-32b",
-      "detectionRate": 1,
-      "falsePositives": 1,
+      "detectionRate": 0.9393939393939394,
+      "falsePositives": 3,
       "casesRun": 40,
-      "meanCostUsdPerReview": 0.00021296200000000005,
-      "meanDurationMs": 3256.6,
-      "totalCostUsd": 0.00851848
+      "meanCostUsdPerReview": 0.00020167099999999997,
+      "meanDurationMs": 2387.125,
+      "totalCostUsd": 0.008066839999999999
     },
     {
       "id": "mistralai/mistral-small-3.2-24b-instruct",
       "detectionRate": 1,
-      "falsePositives": 2,
+      "falsePositives": 0,
       "casesRun": 40,
-      "meanCostUsdPerReview": 0.000096990625,
-      "meanDurationMs": 8827.075,
-      "totalCostUsd": 0.003879625
+      "meanCostUsdPerReview": 0.00009437562500000003,
+      "meanDurationMs": 5631.3,
+      "totalCostUsd": 0.003775025000000001
     },
     {
       "id": "google/gemma-3-27b-it",
-      "detectionRate": 0.9393939393939394,
-      "falsePositives": 3,
+      "detectionRate": 0.9696969696969697,
+      "falsePositives": 1,
       "casesRun": 40,
-      "meanCostUsdPerReview": 0.00009116400000000001,
-      "meanDurationMs": 7556.025,
-      "totalCostUsd": 0.00364656
+      "meanCostUsdPerReview": 0.00008865400000000002,
+      "meanDurationMs": 2915.25,
+      "totalCostUsd": 0.003546160000000001
     }
   ]
 }

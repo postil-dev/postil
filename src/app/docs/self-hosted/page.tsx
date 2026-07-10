@@ -46,10 +46,11 @@ postil review --repo owner/name --pr 123`}</code>
         <code>@postil</code> mention bot, a dashboard, webhook-driven reviews)
         running on their own infrastructure instead of postil.dev. That
         means standing up the same stack we run hosted: Postgres, the web
-        app, and the worker. Free forever, no seat limit. Budget under 15
-        minutes from clone to a reviewed test PR. The marketing site at
-        postil.dev is irrelevant to this path: you are replacing it, not
-        depending on it.
+        app, and the worker. The stack is Apache-2.0 with no seat fees or
+        license cost; you supply inference and infrastructure. The path is
+        scripted: clone, configure the required secrets, start Compose, and
+        open a test PR. The marketing site at postil.dev is irrelevant to this
+        path: you are replacing it, not depending on it.
       </p>
 
       <h3>Quickstart</h3>
@@ -96,7 +97,7 @@ docker compose exec web bun run db:migrate`}</code>
         fallback. Set <code>WORKER_CONCURRENCY=1</code>,{" "}
         <code>WORKER_IDLE_POLL_MAX_MS=900000</code>, and{" "}
         <code>WORKER_WATCHDOG_INTERVAL_MS=900000</code> so idle periods stay
-        quiet instead of issuing database checks every few seconds forever.
+        quiet instead of issuing database checks every few seconds indefinitely.
       </p>
 
       <h3>Required configuration</h3>
@@ -216,28 +217,16 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
         <code>MODEL_API_KEY</code>, and <code>POSTIL_API_KEY</code> from the
         container env, so set those in <code>.env</code> before running it:
       </p>
-      {/* Illustrative demo output: the five checks, their order, and the
-          [ok  ]/[FAIL] format match the CLI (src/doctor.rs print_report); the
-          detail strings are example values from a reachable Ollama run. */}
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`docker compose exec worker postil doctor
-
-[ok  ] config           loaded from defaults (model: qwen3-coder:30b, gate failOn: error, minConfidence: 0.6)
-[FAIL] git              not a git repository (local modes --staged/--base need one)
-[ok  ] api key          MODEL_API_KEY, POSTIL_API_KEY, or OPENROUTER_API_KEY is set (value not shown)
-[ok  ] model endpoint   http://ollama:11434/v1 answered for model qwen3-coder:30b
-[ok  ] forge tokens     GITHUB_TOKEN unset, GITLAB_TOKEN unset (only needed for remote review)
 
 postil doctor: ready.`}</code>
       </pre>
       <p>
-        The <code>git</code> check reports FAIL inside the worker container
-        because <code>/app</code> is not a work tree; that is expected and does
-        not block PR reviews, which run against a fetched diff. The line that
-        matters for setup is <code>model endpoint</code>: it must say your base
-        answered for your model. Every failure prints the failing layer and a
-        suggested fix. The documented anti-goal: a reviewer that silently falls
-        back to a provider you did not configure.
+        Doctor reports each check separately, including config resolution, git
+        work-tree state, API-key presence, model-endpoint reachability, model
+        readiness, and forge tokens. Every failure names the failing layer and
+        suggests a fix. The final line above is the fixed success string.
       </p>
 
       <h3>GitHub setup</h3>

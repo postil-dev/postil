@@ -58,7 +58,7 @@ const RELEASES: Release[] = [
         label: "Added",
         text: (
           <>
-            Two named check-runs on every PR:{" "}
+            Two named check-runs on every non-draft PR in enabled repositories:{" "}
             <code className="font-mono text-xs">postil/gate</code> (blocking) and{" "}
             <code className="font-mono text-xs">postil/review</code> (advisory),
             with documented{" "}

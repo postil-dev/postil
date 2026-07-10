@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "The silence rate: the AI code review metric nobody publishes",
+  title: "The silence rate: an ongoing AI code review metric",
   description:
-    "Developers stop reading AI reviewers above roughly 30% false positives. The metric that predicts it is the one no vendor benchmark reports: how often the tool correctly says nothing.",
+    "GitHub published a one-off Copilot silence figure. Postil makes silence rate an ongoing per-organization metric: how often the tool correctly says nothing.",
   alternates: { canonical: "/blog/silence-rate" },
   openGraph: {
     type: "article",
     publishedTime: "2026-06-13T00:00:00.000Z",
-    title: "The silence rate: the AI code review metric nobody publishes",
+    title: "The silence rate: an ongoing AI code review metric",
     description:
       "Developers stop reading AI reviewers above roughly 30% false positives. The metric that predicts it: how often the tool correctly says nothing.",
     url: "https://postil.dev/blog/silence-rate",
@@ -20,9 +20,9 @@ export const metadata: Metadata = {
 const articleJsonLd = {
   "@context": "https://schema.org",
   "@type": "BlogPosting",
-  headline: "The silence rate: the AI code review metric nobody publishes",
+  headline: "The silence rate: an ongoing AI code review metric",
   description:
-    "Developers stop reading AI reviewers above roughly 30% false positives. The metric that predicts it is the one no vendor benchmark reports: how often the tool correctly says nothing.",
+    "GitHub published a one-off Copilot silence figure. Postil makes silence rate an ongoing per-organization metric: how often the tool correctly says nothing.",
   url: "https://postil.dev/blog/silence-rate",
   datePublished: "2026-06-13",
   image: "https://postil.dev/opengraph-image",
@@ -42,7 +42,7 @@ export default function SilenceRateArticle() {
       />
       <p className="eyebrow">Blog</p>
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        The silence rate: the AI code review metric nobody publishes
+        The silence rate: an ongoing AI code review metric
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
         June 2026 · Postil team
@@ -55,8 +55,8 @@ export default function SilenceRateArticle() {
           bugs.&quot; Noise. The tool commented too much, was wrong too often,
           and the team stopped reading it, which means it also stopped reading
           the correct findings. This piece is about the number that predicts
-          that outcome, why no vendor reports it, and why we decided to make it
-          the first thing on Postil&apos;s dashboard.
+          that outcome, why one-off category data is not enough, and why Postil
+          makes it an ongoing per-organization dashboard metric.
         </p>
 
         <h2>The 30% threshold</h2>
@@ -148,7 +148,8 @@ export default function SilenceRateArticle() {
           >
             DeepSource documented
           </a>{" "}
-          that every vendor benchmark in the category ranks its own product
+          that all four vendors surveyed here that publish a benchmark
+          (Greptile, Qodo, Augment, and Macroscope) rank their own product
           first, including that{" "}
           <a
             href="https://deepsource.com/blog/ai-code-review-benchmarks"
@@ -206,21 +207,19 @@ export default function SilenceRateArticle() {
           many were acted on rather than dismissed? A reviewer with a high
           silence rate and a high act-on rate is doing the job senior engineers
           do: most PRs are fine, say so by saying nothing, and when you do
-          speak, be right. The only public number close to this from a major
-          vendor is GitHub&apos;s, mentioned in passing in a{" "}
+          speak, be right. GitHub has published a related category figure in a{" "}
           <a
             href="https://github.blog/ai-and-ml/github-copilot/60-million-copilot-code-reviews-and-counting/"
             rel="noopener"
           >
             blog post
           </a>
-          : Copilot code review stays silent on roughly 29% of reviews. It is
-          a real disclosure and GitHub deserves credit for it, but it is a
-          one-off marketing statistic, not a number you can check on your own
-          repositories this month.
+          : Copilot code review stays silent on roughly 29% of reviews. It is a
+          real one-off disclosure, not a number an organization can check on
+          its own repositories this month.
         </p>
 
-        <h2>Why Postil reports it first</h2>
+        <h2>Why Postil reports it continuously</h2>
         <p>
           Postil&apos;s dashboard leads with the silence rate: the share of
           your PRs where it said nothing, alongside the confidence distribution

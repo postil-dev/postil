@@ -19,9 +19,9 @@ const POSTS = [
   {
     href: "/blog/silence-rate",
     date: "June 2026",
-    title: "The silence rate: the AI code review metric nobody publishes",
+    title: "The silence rate: an ongoing AI code review metric",
     description:
-      "Developers stop reading AI reviewers that are wrong a third of the time. The metric that predicts it is the one no vendor benchmark reports: how often the tool says nothing.",
+      "GitHub published a one-off Copilot silence figure. Postil makes silence rate an ongoing per-organization metric: how often the tool says nothing.",
   },
   {
     href: "/blog/where-does-your-code-go",
@@ -37,13 +37,13 @@ const POSTS = [
     title:
       "Self-hosted AI code review without the 500-seat enterprise gate",
     description:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size, BYO key supported.",
+      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 reviewer locally with Ollama, with no seat fees or license cost.",
   },
   {
     href: "/blog/ai-code-review-benchmarks",
     date: "July 2026",
     title:
-      "Every AI code review benchmark has the same winner: its author",
+      "Four AI code review benchmarks, four home-team winners",
     description:
       "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks can't be trusted at face value, and a five-point test for spotting a rigged one.",
   },

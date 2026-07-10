@@ -61,9 +61,10 @@ export default function BestToolsArticle() {
             href="https://deepsource.com/blog/ai-code-review-benchmarks"
             rel="noopener"
           >
-            every vendor benchmark ranks its own product first, and when Augment
-            re-ran Greptile&apos;s own evaluation dataset, Greptile scored 45%
-            against its self-reported 82%
+            all four vendors surveyed here that publish a benchmark (Greptile,
+            Qodo, Augment, and Macroscope) rank their own product first, and
+            when Augment re-ran Greptile&apos;s evaluation dataset, Greptile
+            scored 45% against its self-reported 82%
           </a>
           .
         </p>
@@ -330,8 +331,8 @@ export default function BestToolsArticle() {
           >
             self-published benchmark
           </a>{" "}
-          in a category where self-published benchmarks have a perfect home-win
-          record. Constraints: GitHub Cloud only, no self-hosting, no BYO key,
+          and, like the other three vendors surveyed here, ranks its own product
+          first. Constraints: GitHub Cloud only, no self-hosting, no BYO key,
           default{" "}
           <a
             href="https://docs.macroscope.com/check-run-agents"
@@ -340,7 +341,8 @@ export default function BestToolsArticle() {
             check-run agents conclude neutral unless configured to fail
           </a>
           , Approvability can be wired as a required failing status check, and
-          it changed pricing models twice in six months, landing on{" "}
+          it used two pricing models within six months, switching once from
+          seats to usage and landing on{" "}
           <a href="https://docs.macroscope.com/pricing" rel="noopener">
             $0.05 per KB of diff
           </a>{" "}

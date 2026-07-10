@@ -4,14 +4,14 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Self-hosted AI code review without the 500-seat enterprise gate",
   description:
-    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size.",
+    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama, with no seat fees or license cost.",
   alternates: { canonical: "/blog/self-hosted-ai-code-review" },
   openGraph: {
     type: "article",
     publishedTime: "2026-07-08T00:00:00.000Z",
     title: "Self-hosted AI code review without the 500-seat enterprise gate",
     description:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes.",
+      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama.",
     url: "https://postil.dev/blog/self-hosted-ai-code-review",
     images: ["/opengraph-image"],
   },
@@ -22,7 +22,7 @@ const articleJsonLd = {
   "@type": "BlogPosting",
   headline: "Self-hosted AI code review without the 500-seat enterprise gate",
   description:
-    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run a full AI code reviewer locally with Ollama in about 15 minutes, free, at any team size.",
+    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama, with no seat fees or license cost.",
   url: "https://postil.dev/blog/self-hosted-ai-code-review",
   datePublished: "2026-07-08",
   image: "https://postil.dev/opengraph-image",
@@ -66,9 +66,8 @@ export default function SelfHostedAiCodeReviewArticle() {
             seats.
           </a>{" "}
           This piece walks through who actually lets you self-host and on what
-          terms, and then runs the concrete path to a working local review with
-          Postil and Ollama in about 15 minutes, at any team size, with no sales
-          call.
+          terms, then follows Postil&apos;s scripted path from clone to a local
+          review with Ollama, at any team size, with no sales call.
         </p>
 
         <h2>Who actually lets you self-host, and the fine print</h2>
@@ -130,7 +129,7 @@ export default function SelfHostedAiCodeReviewArticle() {
               <td>Postil</td>
               <td>Yes</td>
               <td className="hidden sm:table-cell">
-                Free, no seat limit, BYO key, Ollama supported
+                Apache-2.0, no seat fees or license cost, BYO key
               </td>
             </tr>
           </tbody>
@@ -178,11 +177,12 @@ export default function SelfHostedAiCodeReviewArticle() {
           this article is about avoiding.
         </p>
 
-        <h2>The 15-minute path with Postil and Ollama</h2>
+        <h2>The Compose path with Postil and Ollama</h2>
         <p>
           Postil self-hosts the same stack we run hosted: Postgres, the web app,
-          and the worker, via Docker Compose. It is free forever with no seat
-          limit. The concrete path:
+          and the worker, through one Docker Compose file. The stack is
+          Apache-2.0 with no seat fees or license cost; you pay for your own
+          inference and infrastructure. The concrete path:
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`git clone https://github.com/postil-dev/postil
@@ -196,14 +196,11 @@ docker compose up -d
 docker compose exec web bun run db:migrate`}</code>
         </pre>
         <p>
-          Two things make the 15-minute budget realistic rather than
-          aspirational. First, both the web app and the worker validate their
-          configuration at boot: a missing or malformed variable stops the
-          process with the variable name, what it is for, and an example value,
-          not a stack trace from the first request that happened to need it.
-          Second, before you ever open a test PR, <code>postil doctor</code>{" "}
-          runs a live probe that proves the whole chain in one shot. Point it at
-          Ollama with a one-line block:
+          Both the web app and the worker validate their configuration at boot:
+          a missing or malformed variable stops the process with the variable
+          name, what it is for, and an example value. Before you open a test PR,
+          <code>postil doctor</code> checks the configured chain. Point it at
+          Ollama with this block:
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`POSTIL_API_BASE=http://ollama:11434/v1
@@ -212,21 +209,15 @@ POSTIL_API_KEY=ollama
 REVIEW_MODEL=qwen3-coder:30b`}</code>
         </pre>
         <p>
-          Then run the doctor inside the worker container. The output shape:
+          Then run the doctor inside the worker container. It checks endpoint
+          reachability separately from whether the configured model is ready to
+          answer a request. A successful run ends with the fixed line shown here:
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`docker compose exec worker postil doctor
 
-  endpoint  http://ollama:11434/v1 ... ok (142ms)
-  auth      key accepted ............ ok
-  model     qwen3-coder:30b ......... ok (1.2s first token)`}</code>
+postil doctor: ready.`}</code>
         </pre>
-        <p>
-          One caveat carried over from our docs page: those latencies are
-          illustrative example values, not a captured benchmark. The checks and
-          their pass/fail behavior are real; the millisecond numbers are there
-          to show the shape of the output.
-        </p>
 
         <h2>Why &quot;OpenAI-compatible&quot; is the whole trick</h2>
         <p>
@@ -322,15 +313,16 @@ POSTIL_API_KEY=azure-api-key
         <p>
           The wedge is simple. Self-hosting in this category is real but mostly
           locked behind an enterprise contract with a seat minimum, or left to a
-          DIY open-source project. Postil self-hosts for free, at any team size,
-          with bring-your-own-key inference and a doctor that catches the
+          DIY open-source project. Postil&apos;s self-hosted stack is Apache-2.0
+          with no seat fees or license cost, at any team size, with
+          bring-your-own-key inference and a doctor that catches the
           misconfiguration that would otherwise make a local reviewer silently
           useless. No claim here that Postil detects more or better than
           CodeRabbit, Greptile, or PR-Agent: there is no comparative data to
           support one. The claim is about availability and the
           deployment model: a full AI code reviewer you can run on your own
-          hardware, first review in about 15 minutes, no 500-seat gate, no sales
-          call. The detailed how-to lives on the{" "}
+          hardware through a scripted Compose path, with no 500-seat gate or
+          sales call. The detailed how-to lives on the{" "}
           <Link href="/docs/self-hosted">self-hosted docs page</Link>.
         </p>
 
@@ -372,8 +364,8 @@ POSTIL_API_KEY=azure-api-key
         <div>
           <h2 className="serif-display text-2xl">Run it on your own hardware.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Self-hosted is free, no seat limit, BYO key. First review in about
-            15 minutes with Ollama.
+            Apache-2.0, no seat fees or license cost, BYO key, with a scripted
+            Compose path for Ollama.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

@@ -6,7 +6,7 @@ import { PricingCalculator } from "@/components/pricing-calculator";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Free on public repos. Hosted teams get unlimited hosted reviews in a flat $10/developer plan. Self-hosted is free forever.",
+    "Free on public repos. Hosted teams get unlimited hosted reviews in a flat $10/developer plan. Self-hosted is Apache-2.0 with no license cost.",
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
@@ -28,11 +28,11 @@ const FAQ = [
   },
   {
     q: "What does hosted Team cost?",
-    a: "Hosted Team is $10 per developer per month with hosted reviews included. Public repositories, the local CLI, and the self-hosted stack remain free.",
+    a: "Hosted Team is $10 per developer per month with hosted reviews included. Hosted public-repository reviews are free; the CLI and self-hosted stack are Apache-2.0 with no license cost.",
   },
   {
-    q: "Is the free tier actually free forever?",
-    a: "Yes. The CLI and GitHub Action are Apache-2.0 and run locally or in your CI forever. Hosted reviews on public repositories are free, and the self-hosted stack (web, worker, Postgres) is free with no seat limit.",
+    q: "What is included at no charge?",
+    a: "Hosted reviews on public repositories are free. The CLI, GitHub Action, and self-hosted stack are Apache-2.0 with no license cost; self-hosters pay for their own inference and infrastructure.",
   },
   {
     q: "Do you offer annual billing or invoicing?",
@@ -59,7 +59,7 @@ export default function PricingPage() {
         <div className="card flex flex-col p-7">
           <p className="eyebrow">Free</p>
           <p className="serif-display mt-3 text-4xl">$0</p>
-          <p className="mt-1 text-sm text-charcoal/70">forever</p>
+          <p className="mt-1 text-sm text-charcoal/70">public repositories</p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Hosted reviews on public repositories</li>
             <li>The full CLI, locally and in CI (Apache-2.0)</li>
@@ -108,7 +108,7 @@ export default function PricingPage() {
         <div className="card flex flex-col p-7">
           <p className="eyebrow">Self-hosted</p>
           <p className="serif-display mt-3 text-4xl">Free</p>
-          <p className="mt-1 text-sm text-charcoal/70">forever, no seat limit</p>
+          <p className="mt-1 text-sm text-charcoal/70">Apache-2.0, no license cost</p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Docker Compose: Postgres, web, worker</li>
             <li>Startup validation with actionable errors</li>

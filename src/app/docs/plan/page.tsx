@@ -47,32 +47,27 @@ minConfidence: 0.75
 ignore:
   - "generated/**"`}</code>
       </pre>
-      <p>Real output from running it against three stored envelopes:</p>
+      <p>
+        The command accepts a directory of stored envelopes and reports the
+        before and after finding counts, suppressions, and gate outcome for
+        each one. Its output has this shape:
+      </p>
       <pre tabIndex={0} aria-label="Code sample">
-        <code>{`$ postil review --staged --output-json > .cache/envelopes/r1.json
-$ postil plan --envelopes .cache/envelopes --config .postil.candidate.yaml
+        <code>{`$ postil review --staged --output-json > <envelope-directory>/<envelope.json>
+$ postil plan --envelopes <envelope-directory> --config <candidate-config.yaml>
 
-postil plan: replaying 3 stored review(s) under candidate config (.postil.candidate.yaml)
+postil plan: replaying <review-count> stored review(s) under candidate config (<candidate-config.yaml>)
 
-  r1.json: 2 -> 0 finding(s); gate: passing (unchanged)
-      would suppress: src/api/users.ts:88 [warn] broad except swallows errors
-      would suppress: src/api/users.ts:140 [info] redundant null check
-  r2.json: 2 -> 1 finding(s); gate: failing (unchanged)
-      would suppress: generated/schema.ts:12 [warn] unused import
-  r3.json: 2 -> 1 finding(s); gate: failing (unchanged)
-      would suppress: src/auth/session.ts:40 [info] unclear token expiry source
+  <envelope.json>: <before-count> -> <after-count> finding(s); gate: <before-state> -> <after-state>
+      would suppress: <path>:<line> [<severity>] <finding-title>
 
-Summary: 4 finding(s) would be suppressed; 0 gate outcome(s) would change.`}</code>
+Summary: <suppressed-count> finding(s) would be suppressed; <gate-change-count> gate outcome(s) would change.`}</code>
       </pre>
       <p>
-        Here <code>r2.json</code> and <code>r3.json</code> keep failing the
-        gate before and after: each has an <code>error</code>-severity
-        finding the candidate config does not touch (a raised{" "}
-        <code>minConfidence</code> or a new <code>ignore</code> glob only
-        suppresses what it targets). A candidate that also raised{" "}
-        <code>gate.failOn</code> or ignored the file carrying that finding
-        would flip one of those gate outcomes. The report always states
-        plainly when a gate result would change and when it would not.
+        Each envelope row identifies the input file, finding count before and
+        after filtering, and gate state before and after. Suppression rows name
+        the affected path, line, severity, and finding title. The summary
+        aggregates suppressed findings and changed gate outcomes.
       </p>
 
       <h2>What it answers</h2>

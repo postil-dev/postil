@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Every AI code review benchmark has the same winner: its author",
+  title: "Four AI code review benchmarks, four home-team winners",
   description:
     "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
   alternates: { canonical: "/blog/ai-code-review-benchmarks" },
   openGraph: {
     type: "article",
     publishedTime: "2026-07-08T00:00:00.000Z",
-    title: "Every AI code review benchmark has the same winner: its author",
+    title: "Four AI code review benchmarks, four home-team winners",
     description:
       "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
     url: "https://postil.dev/blog/ai-code-review-benchmarks",
@@ -20,7 +20,7 @@ export const metadata: Metadata = {
 const articleJsonLd = {
   "@context": "https://schema.org",
   "@type": "BlogPosting",
-  headline: "Every AI code review benchmark has the same winner: its author",
+  headline: "Four AI code review benchmarks, four home-team winners",
   description:
     "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
   url: "https://postil.dev/blog/ai-code-review-benchmarks",
@@ -42,7 +42,7 @@ export default function BenchmarkAuthorArticle() {
       />
       <p className="eyebrow">Blog</p>
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        Every AI code review benchmark has the same winner: its author
+        Four AI code review benchmarks, four home-team winners
       </h1>
       <p className="mt-4 font-mono text-sm text-charcoal/70">
         July 2026 · Postil team
@@ -50,16 +50,14 @@ export default function BenchmarkAuthorArticle() {
 
       <div className="prose-postil blog-prose mt-10">
         <p>
-          There is a pattern in this category that nobody disputes. Every
-          vendor that publishes a benchmark for AI code review wins it. Not most
-          of them. Every one. The chart always has the publisher&apos;s logo on
-          top, and the gap to second place is always comfortable. That is not a
-          coincidence and it is not fraud. It is the predictable result of a
-          design choice: when you build the test, pick the metric, and assemble
-          the dataset, you control the answer before anyone runs anything. This
-          piece walks through the public evidence for that claim and then gives
-          you a five-point test you can apply to any benchmark in your tabs,
-          including ours.
+          All four vendors surveyed here that publish an AI code review
+          benchmark (Greptile, Qodo, Augment, and Macroscope) win their own
+          benchmark. Each chart puts the publisher&apos;s logo on top. That is
+          the predictable result of a design choice: when you build the test,
+          pick the metric, and assemble the dataset, you influence the answer
+          before anyone runs anything. This piece walks through the public
+          evidence for that claim and gives you a five-point test for any
+          benchmark in your tabs, including ours.
         </p>
 
         <h2>Exhibit A: the same dataset, two scores</h2>
@@ -81,8 +79,8 @@ export default function BenchmarkAuthorArticle() {
           </a>
           , Greptile scored 45% in that run, not 82%. Same repos, same tool,
           roughly half the score, the only thing that changed was who held the
-          stopwatch. DeepSource&apos;s own summary of the category is the title
-          of the piece: every AI code review vendor benchmarks itself, and wins.
+          stopwatch. Across the four benchmark publishers surveyed here, the
+          publisher ranks itself first.
         </p>
 
         <h2>Why catch rate alone is a rigged frame</h2>
@@ -293,28 +291,19 @@ export default function BenchmarkAuthorArticle() {
 
         <h2>Where Postil stands</h2>
         <p>
-          We are not exempt from this critique, so we will be specific about what
-          we do and do not claim. Postil publishes methodology, not a
-          leaderboard. We report our own silence rate, the share of PRs where we
-          said nothing, and our confirmed-finding rate, on public open-source
-          PRs, with the raw{" "}
-          <Link href="/docs/envelope">review envelopes</Link> attached so anyone
-          can inspect what the tool actually emitted. We report those numbers
-          even where they are unflattering, because the alternative is the
-          pattern this entire piece is about. It follows from the product
-          doctrine: silence is a feature, findings without a citation are
+          We are not exempt from this critique, so we are specific about what we
+          do and do not claim. Postil publishes methodology, not a leaderboard.
+          The <Link href="/evidence">evidence page</Link> links real GitHub
+          check-runs so each published catch can be inspected at its source. We
+          report no Postil score against a competitor. The product doctrine is
+          narrower: silence is a feature, findings without a citation are
           discarded, and the system fails closed rather than guessing loudly.
         </p>
         <p>
-          What we are explicitly not doing: we have not run a peer benchmark, and
-          we publish no Postil score against any competitor. We have not put a
-          rival tool on our fixtures, and we will not show you a chart with our
-          logo on top of theirs, because we would be the author of that chart and
-          this article is about why you should distrust exactly that. When we do
-          publish detection numbers, they will be Postil&apos;s own numbers, on a
-          test that includes clean PRs and counts false positives, with the
-          artifacts published. Hold us to the same five-point checklist as
-          everyone else.
+          We have not run a peer benchmark or put a rival tool on our fixtures.
+          A chart authored by Postil with the Postil logo above competitors would
+          have the same conflict described throughout this article. Apply the
+          same five-point checklist to our published evidence.
         </p>
 
         <h2>Run the test yourself</h2>
@@ -323,11 +312,9 @@ export default function BenchmarkAuthorArticle() {
           page, do not argue with the number. Apply the checklist. Are there
           clean PRs in the set? Are false positives counted? Is precision next to
           recall? Are the artifacts published so you could re-run it? Is the
-          author the only vendor in the chart? Most vendor benchmarks fail three
-          or more of those on the first read, and that failure is more
-          informative than any catch-rate figure they print. Point the same five
-          questions at us when our numbers ship. If a benchmark cannot survive
-          the test, the score it reports was never the thing you needed to know.
+          author the only vendor in the chart? The answers expose what each
+          score measures and omits more clearly than the leaderboard does. Point
+          the same five questions at Postil&apos;s published evidence.
         </p>
 
         <h2>Sources</h2>
@@ -344,7 +331,7 @@ export default function BenchmarkAuthorArticle() {
               href="https://deepsource.com/blog/ai-code-review-benchmarks"
               rel="noopener"
             >
-              DeepSource: every AI code review vendor benchmarks itself, and wins
+              DeepSource benchmark survey
             </a>{" "}
             (Greptile 82% vs 45% on Augment&apos;s re-run)
           </li>
@@ -392,8 +379,8 @@ export default function BenchmarkAuthorArticle() {
             Methodology, not a leaderboard.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            See Postil&apos;s silence rate and confirmed findings on real diffs,
-            with the raw envelope behind every one.
+            See Postil&apos;s real catches on public pull requests, with the
+            exact check-run behind every one.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">
