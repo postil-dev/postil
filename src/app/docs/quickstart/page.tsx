@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { OsInstallTabs } from "@/components/os-install-tabs";
+import { githubAppInstallUrl } from "@/lib/github-app";
 
 export const metadata: Metadata = {
   title: "Quickstart",
-  description: "From zero to a first Postil review in a few minutes: CLI, Action, or hosted App.",
+  description:
+    "Install the hosted GitHub App for zero-configuration reviews, then add the CLI and Action when your team needs them.",
   alternates: { canonical: "/docs/quickstart" },
 };
 
@@ -13,11 +15,39 @@ export default function QuickstartPage() {
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">Quickstart</h1>
       <p className="mt-4 text-lg">
-        Three ways in, one engine. Pick the one that matches where you want the
-        review to happen.
+        Start with the hosted GitHub App. It reviews new non-draft pull requests
+        immediately with no repository configuration. Add the CLI and GitHub
+        Action when you want local reviews and merge blocking.
       </p>
 
-      <h2>1. Local CLI</h2>
+      <h2>1. Hosted GitHub App</h2>
+      <p>
+        Install the App, select all repositories or a chosen set, and Postil
+        reviews every new non-draft pull request in those repositories from
+        then on. No configuration or model key is required.
+      </p>
+      <p>
+        Draft pull requests are skipped until marked ready. Existing open pull
+        requests are not reviewed retroactively unless a review is requested
+        again. You can disable individual repositories from the organization
+        dashboard.
+      </p>
+      <p>
+        <a
+          href={githubAppInstallUrl()}
+          className="not-prose btn-primary inline-block"
+        >
+          Install the GitHub App
+        </a>
+      </p>
+      <p>
+        The hosted app also answers <code>@postil</code> mentions: reply to one
+        of its review comments, mention it in a PR or issue comment, and it
+        responds in thread. It reviews and answers only: it never opens PRs or
+        pushes commits. GitHub only today.
+      </p>
+
+      <h2>2. Local CLI</h2>
       <p>
         Install the binary and point it at an OpenAI-compatible endpoint. The
         default is OpenRouter.
@@ -41,7 +71,7 @@ postil review --base main`}</code>
         reports exactly what is wrong if anything is.
       </p>
 
-      <h2>2. GitHub Actions</h2>
+      <h2>3. GitHub Actions</h2>
       <p>
         The composite action installs a CLI pinned to a full 40-character
         commit SHA and runs the same review in CI. Pin the action itself to a
@@ -90,29 +120,16 @@ jobs:
         before updating. The action refuses anything but a full 40-character
         commit SHA for <code>cli-ref</code>: tags move, SHAs do not.
       </p>
-
-      <h2>3. Hosted GitHub App</h2>
       <p>
-        Install the App from the <Link href="/install">install page</Link>,
-        select repositories, and open a pull request. Postil creates two
-        check-runs (<code>postil/review</code> and <code>postil/gate</code>)
-        and reviews the diff. Drafts are skipped until marked ready.
-      </p>
-      <p>
-        The hosted app also answers <code>@postil</code> mentions: reply to one
-        of its review comments, mention it in a PR or issue comment, and it
-        responds in thread. It reviews and answers only: it never opens PRs or
-        pushes commits. GitHub only today.
-      </p>
-      <p>
-        To make the gate binding, require <code>postil/gate</code> in branch
-        protection. See <Link href="/docs/gate">the gate</Link>.
+        As a recommended bonus, make review failures block merges by requiring{" "}
+        <code>postil/gate</code> in branch protection. See{" "}
+        <Link href="/docs/gate">the gate</Link>.
       </p>
 
       <h2>Next steps</h2>
       <ul>
         <li>
-          Tune thresholds and ignores in{" "}
+          Optionally tune thresholds and ignores in{" "}
           <Link href="/docs/config">.postil.yaml</Link>, or keep your existing{" "}
           <code>.coderabbit.yaml</code>; Postil reads it.
         </li>
