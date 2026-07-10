@@ -118,7 +118,7 @@ export function MobileNav({ items }: { items: readonly NavItem[] }) {
                 onClick={() => setOpen(false)}
                 className="btn-primary flex-1 text-center text-sm"
               >
-                Install the CLI
+                Install the App
               </Link>
             </div>
           </nav>
