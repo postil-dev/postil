@@ -27,7 +27,7 @@ primary_region = "lhr"
 [build]
 
 [build.args]
-POSTIL_CLI_REV = "v0.1.2"
+POSTIL_CLI_REV = "v0.2.0"
 NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 
 [deploy]

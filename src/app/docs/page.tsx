@@ -95,9 +95,9 @@ postil doctor            # verify endpoint, key, and model
 postil review --staged
 
 # CI (GitHub Actions)
-- uses: postil-dev/postil-action@468923c378eacf9541a689f7d8c316ba4d5c6024 # example tested SHA
+- uses: postil-dev/postil-action@7451c6380dba0da92758f7ddcdf383d1501e57b2 # example tested SHA
   with:
-    cli-ref: 3776f251db771dd74615305d7c2b0bc21b9fb2df # postil-cli v0.1.2`}</code>
+    cli-ref: 7083fe6dbfd1602bc8b28c05f108bc85a5849238 # postil-cli v0.2.0`}</code>
         </pre>
         <p>
           Exit codes: <code>0</code> clean or below the gate threshold,{" "}
