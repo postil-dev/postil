@@ -7,6 +7,12 @@ import { getDb, getPool, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { ADVISORY_CHECK_NAME, GATE_CHECK_NAME } from "@/lib/github/checks";
+import {
+  type GithubAccount,
+  type RepoSummary,
+  upsertInstallation,
+  upsertRepositories,
+} from "@/lib/github/installation-sync";
 import { mentionsPostil } from "@/lib/mentions";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
@@ -24,12 +30,6 @@ export const dynamic = "force-dynamic";
  * insert-or-skip; only then is the event dispatched.
  */
 
-interface GithubAccount {
-  id: number;
-  login: string;
-  type?: string;
-}
-
 interface InstallationEventPayload {
   action?: string;
   installation?: {
@@ -40,12 +40,6 @@ interface InstallationEventPayload {
   repositories?: RepoSummary[];
   repositories_added?: RepoSummary[];
   repositories_removed?: RepoSummary[];
-}
-
-interface RepoSummary {
-  id: number;
-  full_name: string;
-  private: boolean;
 }
 
 interface PullRequestEventPayload {
@@ -234,77 +228,6 @@ export async function POST(request: Request): Promise<NextResponse> {
   return NextResponse.json({ ok: true });
 }
 
-async function findByGithubOrgId(githubOrgId: number): Promise<number | undefined> {
-  const db = getDb();
-  const row = (
-    await db
-      .select({ id: schema.organizations.id })
-      .from(schema.organizations)
-      .where(eq(schema.organizations.githubOrgId, githubOrgId))
-      .limit(1)
-  )[0];
-  return row?.id;
-}
-
-async function findOrCreateOrg(account: GithubAccount): Promise<number> {
-  const db = getDb();
-  // Fast path: avoid a write (and burning an identity sequence value) on the
-  // overwhelmingly common case where the org already exists.
-  const existing = await findByGithubOrgId(account.id);
-  if (existing) return existing;
-
-  const slugBase = account.login.toLowerCase();
-  // No conflict target: suppress a violation on EITHER unique constraint this
-  // row can hit - a slug collision with a different GitHub account (the
-  // original case this handled), or a githubOrgId collision from a
-  // concurrent webhook for this same account racing the check above. A
-  // targeted onConflictDoNothing would only swallow one of the two and throw
-  // on the other, so both must fall through to the same re-check below.
-  const inserted = await db
-    .insert(schema.organizations)
-    .values({ slug: slugBase, name: account.login, githubOrgId: account.id })
-    .onConflictDoNothing()
-    .returning({ id: schema.organizations.id });
-  if (inserted[0]) return inserted[0].id;
-
-  // githubOrgId is the true identity: if a concurrent request already
-  // inserted it, use that row instead of assuming a slug-only collision.
-  const afterConflict = await findByGithubOrgId(account.id);
-  if (afterConflict) return afterConflict;
-
-  // githubOrgId still doesn't exist, so the conflict above was the slug
-  // colliding with a different GitHub account: disambiguate and retry, still
-  // conflict-safe against a second concurrent request for this same account.
-  const fallback = await db
-    .insert(schema.organizations)
-    .values({ slug: `${slugBase}-${account.id}`, name: account.login, githubOrgId: account.id })
-    .onConflictDoNothing()
-    .returning({ id: schema.organizations.id });
-  if (fallback[0]) return fallback[0].id;
-
-  const afterFallback = await findByGithubOrgId(account.id);
-  if (!afterFallback) throw new Error("organization insert returned no row");
-  return afterFallback;
-}
-
-async function upsertRepositories(installationId: number, repos: RepoSummary[]): Promise<void> {
-  const db = getDb();
-  for (const repo of repos) {
-    await db
-      .insert(schema.repositories)
-      .values({
-        installationId,
-        githubRepoId: repo.id,
-        fullName: repo.full_name,
-        private: repo.private,
-      })
-      .onConflictDoUpdate({
-        target: schema.repositories.githubRepoId,
-        set: { fullName: repo.full_name, private: repo.private, installationId },
-      });
-  }
-}
-
 async function handleInstallation(payload: InstallationEventPayload): Promise<void> {
   const db = getDb();
   const installation = payload.installation;
@@ -312,22 +235,10 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
 
   switch (payload.action) {
     case "created": {
-      const orgId = await findOrCreateOrg(installation.account);
-      const upserted = await db
-        .insert(schema.installations)
-        .values({
-          githubInstallationId: installation.id,
-          orgId,
-          accountLogin: installation.account.login,
-          accountType: installation.account.type ?? "User",
-          suspended: false,
-        })
-        .onConflictDoUpdate({
-          target: schema.installations.githubInstallationId,
-          set: { orgId, accountLogin: installation.account.login, suspended: false },
-        })
-        .returning({ id: schema.installations.id });
-      const installationRowId = upserted[0]?.id;
+      const installationRowId = await upsertInstallation(
+        { id: installation.id, suspended: Boolean(installation.suspended_at) },
+        installation.account,
+      );
       if (installationRowId !== undefined && payload.repositories) {
         await upsertRepositories(installationRowId, payload.repositories);
       }

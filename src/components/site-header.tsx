@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 
+import { AuthNav } from "@/components/auth-nav";
 import { MobileNav, type NavItem } from "@/components/mobile-nav";
 
 const NAV: readonly NavItem[] = [
@@ -41,12 +42,7 @@ export function SiteHeader() {
           ))}
         </nav>
         <div className="flex items-center gap-4">
-          <Link
-            href="/login"
-            className="hidden text-[15px] text-charcoal/80 hover:text-charcoal lg:inline-block"
-          >
-            Sign in
-          </Link>
+          <AuthNav />
           <Link
             href="/install"
             className="btn-primary hidden text-sm sm:inline-block"

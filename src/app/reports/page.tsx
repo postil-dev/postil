@@ -10,6 +10,7 @@ import {
   ReviewStatusBadge,
 } from "@/components/review-status";
 import { getDb, schema } from "@/lib/db";
+import { githubAppInstallUrl } from "@/lib/github-app";
 import { getSessionUser } from "@/lib/session";
 
 export const metadata: Metadata = {
@@ -78,11 +79,6 @@ export default async function ReportsPage() {
             Recent reviews, {user.login}
           </h1>
         </div>
-        <form action="/api/auth/logout" method="post">
-          <button type="submit" className="text-sm text-charcoal/70 underline hover:text-charcoal">
-            Sign out
-          </button>
-        </form>
       </div>
 
       <div className="mt-8 flex flex-wrap gap-3">
@@ -101,11 +97,16 @@ export default async function ReportsPage() {
             <p className="serif-display text-xl">No organizations yet.</p>
             <p className="mx-auto mt-2 max-w-md text-sm text-ink-soft">
               Install the GitHub App on an organization or your personal
-              account, then sign in again so we can link your membership.
+              account and it appears here on your next sign-in.
             </p>
-            <Link href="/install" className="btn-primary mt-6 inline-block">
-              Install the App
-            </Link>
+            <div className="mt-6 flex flex-wrap justify-center gap-3">
+              <a href={githubAppInstallUrl()} className="btn-primary inline-block">
+                Install the GitHub App
+              </a>
+              <Link href="/api/auth/login" className="btn-secondary inline-block">
+                Already installed? Re-link my account
+              </Link>
+            </div>
           </div>
         )}
       </div>

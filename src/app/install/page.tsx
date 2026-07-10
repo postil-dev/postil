@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Terminal } from "@/components/terminal";
+import { githubAppInstallUrl } from "@/lib/github-app";
 
 export const metadata: Metadata = {
   title: "Install",
@@ -271,10 +272,12 @@ jobs:
               Action, and self-hosted stack.
             </p>
             <div className="mt-5 flex flex-wrap items-center gap-4">
-              <Link href="/docs/self-hosted" className="btn-primary">
-                Run it yourself
+              <a href={githubAppInstallUrl()} className="btn-primary">
+                Install the GitHub App
+              </a>
+              <Link href="/docs/self-hosted" className="btn-secondary">
+                Self-host instead
               </Link>
-              <span className="font-mono text-xs text-charcoal/70">GitHub App</span>
             </div>
             <p className="mt-4 text-sm text-ink-soft">
               Permissions requested: contents (read), pull requests (write),
