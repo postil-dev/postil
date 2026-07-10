@@ -59,8 +59,8 @@ export default function HowItWorksPage() {
           jobs, run the CLI, and store the result. Everything that decides what
           to say about your code is in the open-source binary. The same pipeline
           answers <code className="font-mono text-base">@postil</code> mentions
-          on PRs and issues (GitHub only) — review and answer only; it never
-          opens PRs or pushes commits.
+          on PRs and issues (GitHub only): it reviews and answers only, and
+          never opens PRs or pushes commits.
         </p>
       </div>
 
@@ -107,7 +107,7 @@ export default function HowItWorksPage() {
               synthetic <code className="font-mono text-sm">error</code>{" "}
               finding and fails the gate. When the hosted worker crashes or a
               review exceeds its ten-minute deadline, the watchdog completes
-              the gate check-run as <strong>failure</strong> — not neutral.
+              the gate check-run as <strong>failure</strong>, never neutral.
             </p>
             <p>
               A neutral grey check that looks like success is how unreviewed
@@ -144,7 +144,7 @@ export default function HowItWorksPage() {
       <Section
         number="02"
         eyebrow="Permissions"
-        title="Read your code. Write your checks. Nothing else."
+        title="Minimal permissions: read your code, write your checks."
       >
         <div className="grid gap-8 md:grid-cols-2">
           <div>
@@ -214,13 +214,13 @@ export default function HowItWorksPage() {
         id="data"
         number="03"
         eyebrow="Data"
-        title="We store the review, not the code."
+        title="Only the review envelope is retained."
       >
         <div className="grid gap-8 md:grid-cols-2">
           <div className="text-ink-soft">
             <p>
               The control plane persists exactly one artifact per review: the
-              envelope — a JSON document with the summary, findings (path,
+              envelope, a JSON document with the summary, findings (path,
               line, severity, confidence), token usage, and gate verdict. Your
               diff is fetched at review time, sent through either Postil&apos;s
               configured provider path or your BYO provider path, and discarded
@@ -282,27 +282,27 @@ export default function HowItWorksPage() {
             <p>
               The number on the homepage comes from replaying the released CLI
               against a fixed sample of <strong>126</strong> recently merged
-              public pull requests — around 18 repos across JS/TS, Python, Go,
-              and Rust — and reading the envelope each review produced. Nothing
+              public pull requests (around 18 repos across JS/TS, Python, Go,
+              and Rust) and reading the envelope each review produced. Nothing
               is hand-labeled after the fact.
             </p>
             <p className="mt-4">
               A PR counts as <strong>silent</strong> when its envelope has
-              zero findings <em>and</em> the run posted zero PR comments — the
+              zero findings <em>and</em> the run posted zero PR comments (the
               same condition <code className="font-mono text-sm">postil/review</code>{" "}
-              uses to decide whether to comment at all. The{" "}
+              uses to decide whether to comment at all). The{" "}
               <strong>silence rate</strong> is silent ÷ 126.
             </p>
             <p className="mt-4">
-              The chart to the right — the same one shown on the{" "}
+              The chart to the right (the same one shown on the{" "}
               <Link href="/#silence-rate" className="text-rust underline">
                 homepage
-              </Link>{" "}
-              — only plots the <em>non-silent</em> runs: each shipped
+              </Link>
+              ) only plots the <em>non-silent</em> runs: each shipped
               finding&apos;s confidence is sorted into the envelope&apos;s{" "}
               <code className="font-mono text-sm">confidenceBuckets</code>{" "}
               (five buckets of width 0.2, 0.0–1.0), then summed across all 126
-              envelopes. It is a count of findings, not PRs — one PR can
+              envelopes. It is a count of findings, not PRs: one PR can
               contribute more than one point.
             </p>
           </div>
@@ -328,7 +328,7 @@ export default function HowItWorksPage() {
               </li>
               <li className="flex items-start gap-3">
                 <span className="font-mono text-gate">→</span>
-                <span>n = 126 is the full sample, not a subset — every PR in
+                <span>n = 126 is the full sample: every PR in
                   the run contributes to the denominator</span>
               </li>
             </ul>
@@ -347,7 +347,7 @@ export default function HowItWorksPage() {
       <div className="mx-auto max-w-6xl px-6 pb-24">
         <div className="rule flex flex-wrap items-center justify-between gap-6 pt-8">
           <p className="serif-display text-2xl">
-            Four steps in, one envelope out.
+            Four pipeline steps produce one stored envelope.
           </p>
           <div className="flex gap-4">
             <Link href="/install" className="btn-primary">

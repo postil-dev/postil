@@ -81,8 +81,8 @@ export default function VsCodeRabbitPage() {
         CodeRabbit is the most widely deployed AI reviewer and has the broadest
         platform coverage today. Postil is a CodeRabbit alternative built around
         restraint and structure: a hard merge gate separate from advisory
-        comments, a published silence rate, and flat pricing that does not punish
-        high PR volume.
+        comments, a published silence rate, and flat pricing that does not scale
+        with PR volume.
       </p>
 
       <div className="mt-12">
@@ -110,7 +110,7 @@ export default function VsCodeRabbitPage() {
           outages only.
         </p>
 
-        <h2>Noise is a measured number, not a vibe</h2>
+        <h2>CodeRabbit's noise rate, measured directly</h2>
         <p>
           An{" "}
           <a href="https://lycheeorg.dev/2025-09-13-code-rabbit/" rel="noopener">
@@ -118,7 +118,7 @@ export default function VsCodeRabbitPage() {
           </a>{" "}
           rated 15% of its comments useless and another 21% nitpicking. Postil
           ships with a high confidence threshold by default and reports its
-          silence rate — the share of PRs where it said nothing — as the first
+          silence rate (the share of PRs where it said nothing) as the first
           number on the dashboard, with the confidence distribution of every
           finding it did ship.
         </p>

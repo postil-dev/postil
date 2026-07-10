@@ -12,7 +12,7 @@ const COMMANDS = [
   {
     name: "postil review",
     summary:
-      "Review a diff — a PR/MR on a forge, or local changes — and emit findings, comments, and a gate verdict.",
+      "Review a diff (a PR/MR on a forge, or local changes) and emit findings, comments, and a gate verdict.",
     flags: [
       ["--staged", "Review staged changes (git diff --cached)."],
       ["--base <ref>", "Review changes since a base ref (git diff base...HEAD)."],

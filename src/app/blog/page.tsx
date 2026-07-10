@@ -45,7 +45,7 @@ const POSTS = [
     title:
       "Every AI code review benchmark has the same winner: its author",
     description:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
+      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks can't be trusted at face value, and a five-point test for spotting a rigged one.",
   },
   {
     href: "/blog/why-copilot-cant-block-your-merge",
@@ -81,8 +81,8 @@ export default function BlogIndexPage() {
       </h1>
       <p className="mt-6 text-lg text-ink-soft">
         Writing about AI code review the way we build it: claims dated, sources
-        linked, competitors compared on the record. We say less. What we say is
-        right.
+        linked, competitors compared on the record, publishing fewer claims and
+        keeping them accurate.
       </p>
 
       <div className="mt-14 space-y-6">

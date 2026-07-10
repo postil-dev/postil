@@ -167,7 +167,7 @@ export default function VsCopilotPage() {
           your numbers on the <Link href="/pricing">cost calculator</Link>.
         </p>
 
-        <h2>Silence as a product metric, not a blog post</h2>
+        <h2>A silence rate tracked continuously, on your PRs</h2>
         <p>
           To GitHub&apos;s credit, it has published the closest thing to a
           silence number from any major vendor:{" "}

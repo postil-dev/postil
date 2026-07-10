@@ -43,7 +43,7 @@ export default function SecurityPage() {
         </h1>
         <p className="mt-6 max-w-2xl text-lg text-ink-soft">
           Postil&apos;s design assumes the review pipeline is a high-value target.
-          The principles below are structural, not policy: the App cannot push
+          The principles below are enforced in code: the App cannot push
           code because it never holds write-to-code credentials, and the gate
           cannot silently pass because failure is the default.
         </p>
@@ -52,7 +52,7 @@ export default function SecurityPage() {
       <Section
         number="01"
         eyebrow="Least privilege"
-        title="Read your code. Write your checks. Nothing else."
+        title="Minimal permissions: read your code, write your checks."
       >
         <div className="grid gap-8 md:grid-cols-2">
           <div>
@@ -104,8 +104,8 @@ export default function SecurityPage() {
               customer repositories.
             </p>
             <p className="mt-4">
-              The mitigation is not a patch, it is an architecture: hold the
-              smallest credential set that does the job. Even a full compromise
+              The mitigation is architectural: hold the smallest credential set
+              that does the job. Even a full compromise
               of a Postil installation token cannot push a commit, open a PR, or
               alter a workflow, because the App never holds that authority.
             </p>
@@ -116,7 +116,7 @@ export default function SecurityPage() {
       <Section
         number="02"
         eyebrow="Fail closed"
-        title="An unreviewed head is not a passing head."
+        title="The gate never marks an unreviewed head as passing."
       >
         <div className="grid gap-8 md:grid-cols-2">
           <div className="space-y-4 text-ink-soft">
@@ -127,7 +127,7 @@ export default function SecurityPage() {
               the gate. When the worker crashes or a review exceeds its
               ten-minute deadline, a watchdog completes{" "}
               <code className="font-mono text-sm">postil/gate</code> as{" "}
-              <strong>failure</strong> — never neutral.
+              <strong>failure</strong>, never neutral.
             </p>
             <p>
               The worker owns the check-run ids from the moment the job starts,
@@ -230,11 +230,11 @@ export default function SecurityPage() {
       <Section
         number="04"
         eyebrow="Data handling"
-        title="We store the review, not the code."
+        title="Only the review envelope persists."
       >
         <div className="max-w-2xl text-ink-soft">
           <p>
-            The control plane persists one artifact per review: the envelope — a
+            The control plane persists one artifact per review: the envelope, a
             JSON document with the summary, findings, token usage, and gate
             verdict. The diff is fetched at review time, sent to the applicable
             model endpoint, and discarded with the process. Hosted BYO reviews
@@ -342,8 +342,8 @@ export default function SecurityPage() {
             The one-line installer downloads the prebuilt binary over HTTPS and
             verifies it against a SHA-256 checksum fetched over HTTPS from the
             same GitHub release. The checksum alone protects against a corrupted
-            or in-transit-tampered download, not against a compromised release —
-            so release artifacts are additionally signed with Sigstore keyless
+            or in-transit-tampered download, not against a compromised release.
+            Release artifacts are additionally signed with Sigstore keyless
             signing (cosign) via GitHub OIDC in release CI.
           </p>
           <p className="mt-4">

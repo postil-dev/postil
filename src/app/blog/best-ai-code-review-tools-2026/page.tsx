@@ -475,7 +475,7 @@ export default function BestToolsArticle() {
           branch protection, failing only at or above your configured severity
           and failing closed on operational errors, while{" "}
           <code>postil/review</code> carries advisory findings. Second,
-          restraint is reported, not promised: the first number on the
+          restraint is measured and reported: the first number on the
           dashboard is the silence rate, the share of PRs where Postil said
           nothing, alongside the confidence distribution of every finding it
           shipped. Pricing is flat by developer with hosted reviews included,
@@ -529,8 +529,8 @@ export default function BestToolsArticle() {
           Whatever you pick, run it advisory for a couple of weeks and measure
           the dismissal rate before you make anything required. If more than
           about 30% of its comments get ignored, the tool will train your team
-          to ignore all of it. That metric, not any vendor benchmark, is the
-          one that predicts whether the tool survives on your repos. We wrote
+          to ignore all of it. That metric predicts whether the tool survives
+          on your repos more reliably than any vendor benchmark. We wrote
           more about it in{" "}
           <Link href="/blog/silence-rate">The silence rate</Link>.
         </p>

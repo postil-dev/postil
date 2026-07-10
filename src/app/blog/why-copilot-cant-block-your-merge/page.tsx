@@ -273,7 +273,7 @@ export default function CopilotMergeGateArticle() {
           separately.
         </p>
 
-        <h2>Fail closed, not fail quiet</h2>
+        <h2>The gate fails closed on error</h2>
         <p>
           The dangerous failure mode for a merge gate is the silent pass: the
           reviewer errors out, reports nothing alarming, and the merge proceeds
@@ -425,7 +425,7 @@ Summary: 6 finding(s) would be suppressed; 2 gate outcome(s) would change.`}</co
 
       <div className="rounded-card shadow-card mt-14 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="serif-display text-2xl">A gate, not a comment.</h2>
+          <h2 className="serif-display text-2xl">A required check that can fail.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
             postil/gate is a required check that concludes failure on
             gate-level findings and fails closed on error. Dry-run it with

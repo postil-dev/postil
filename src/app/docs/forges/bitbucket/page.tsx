@@ -49,7 +49,7 @@ export default function BitbucketForgePage() {
       </pre>
       <p>
         A gate-failing review exits <code>1</code> and fails the step; a
-        clean review exits <code>0</code> and posts nothing — see{" "}
+        clean review exits <code>0</code> and posts nothing; see{" "}
         <Link href="/docs/exit-codes">exit codes</Link>. Mark the step{" "}
         <strong>required</strong> in the repository&apos;s branch restrictions
         to make the gate binding.
@@ -80,14 +80,14 @@ postil review --forge bitbucket --repo workspace/repo --pr 7`}</code>
       <ul>
         <li>
           Same gate thresholds, envelope schema, and exit codes as every other
-          forge — see the <Link href="/docs/cli">CLI reference</Link> and{" "}
+          forge; see the <Link href="/docs/cli">CLI reference</Link> and{" "}
           <Link href="/docs/exit-codes">exit codes</Link>.
         </li>
         <li>
           <code>postil respond</code> (the <code>@postil</code> interactive
           bot) supports <code>--pr</code> only. Bitbucket&apos;s issue
           tracker is a separate, often-disabled product with a different API
-          shape Postil does not talk to yet — pointing <code>respond</code> at{" "}
+          shape Postil does not talk to yet; pointing <code>respond</code> at{" "}
           <code>--issue</code> on Bitbucket returns an error rather than
           silently doing nothing.
         </li>

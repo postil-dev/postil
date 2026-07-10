@@ -23,7 +23,7 @@ export default function ConfigPage() {
         , with no setup step: a repo migrating from CodeRabbit gets a sensible
         translation of the overlapping settings on the first run, before
         anyone writes a line of Postil-specific config. This compatibility
-        read covers CodeRabbit's config today only — see exactly what
+        read covers CodeRabbit's config today only; see exactly what
         translates below.
       </p>
 
@@ -70,9 +70,9 @@ export default function ConfigPage() {
         </tbody>
       </table>
       <p>
-        Everything else in a <code>.coderabbit.yaml</code> — custom
+        Everything else in a <code>.coderabbit.yaml</code> (custom
         instructions, tool integrations, path-specific instructions beyond
-        simple filters, and any CodeRabbit-only knob not listed above — is not
+        simple filters, and any CodeRabbit-only knob not listed above) is not
         read. Configs from Qodo, Macroscope, or other review tools are{" "}
         <strong>not translated at all</strong>; only <code>.coderabbit.yaml</code>{" "}
         gets a compatibility read today. This translation surface is small by
@@ -124,9 +124,9 @@ model:
       <h2>Gate behavior on operational errors</h2>
       <p>
         <code>gate.onError</code> controls what happens when a review cannot
-        complete — a provider outage, an exhausted key, model output that fails
-        validation. The default, <code>block</code>, fails the gate: an
-        unreviewed head is not a passing head. Setting it to{" "}
+        complete: a provider outage, an exhausted key, model output that fails
+        validation. The default, <code>block</code>, fails the gate; the gate
+        never marks an unreviewed head as passing. Setting it to{" "}
         <code>advisory</code> lets the gate pass on provider outages only, for
         repos that prefer fail-open over a blocked merge queue when the model
         endpoint is down. Findings the model did produce still gate normally.
@@ -137,7 +137,7 @@ model:
         Drop repo-specific merge rules in <code>.postil/guardrails.md</code>{" "}
         (plain Markdown, one rule per bullet or heading) and Postil injects
         them into the review prompt. A change that violates one is reported as
-        a <code>guardrail</code> finding that quotes the rule it breaks — see
+        a <code>guardrail</code> finding that quotes the rule it breaks; see
         the <Link href="/docs/envelope">envelope schema</Link>.
       </p>
       <pre tabIndex={0} aria-label="Code sample">
@@ -152,8 +152,8 @@ model:
         Off by default. Set <code>contentPolicy.enabled: true</code>, or drop
         a <code>.postil/content-policy.md</code> file (which turns it on by
         itself, the same way <code>.postil/guardrails.md</code> does), to
-        review the human-readable prose in a diff — comments, docstrings,
-        Markdown, and the PR title/description — against a policy. Violations
+        review the human-readable prose in a diff (comments, docstrings,
+        Markdown, and the PR title/description) against a policy. Violations
         surface as <code>contentPolicy</code> findings. See{" "}
         <Link href="/docs/content-policy">content policy</Link> for the
         built-in baseline and how to extend it.

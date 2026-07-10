@@ -124,7 +124,7 @@ export default function VsMacroscopePage() {
           outages only.
         </p>
 
-        <h2>Per-kilobyte billing puts a meter on your diff</h2>
+        <h2>Per-kilobyte billing charges by diff size</h2>
         <p>
           Macroscope{" "}
           <a
@@ -168,8 +168,8 @@ export default function VsMacroscopePage() {
           ). We make no counter-claim about whose findings are more precise.
           The difference is the reporting: Postil publishes its silence rate,
           the share of PRs where it said nothing, as a standing dashboard
-          number on your own traffic, not a one-time benchmark result, so you
-          can audit restraint continuously instead of trusting a launch post.
+          number on your own traffic, so you can audit restraint continuously
+          rather than relying on a single launch-post benchmark.
         </p>
 
         <h2>Where Macroscope is ahead</h2>
@@ -191,7 +191,7 @@ export default function VsMacroscopePage() {
       <div className="rounded-card shadow-card mt-12 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="serif-display text-2xl">
-            A gate, not a suggestion.
+            A merge gate that actually blocks.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
             Require postil/gate in branch protection and keep the bill flat.

@@ -25,9 +25,9 @@ export default function PlanPage() {
         Every completed review leaves an envelope: the full set of findings
         the model produced, including ones suppressed by your current
         thresholds. <code>postil plan</code> re-applies the candidate config's
-        filters — <code>severityThreshold</code>, <code>minConfidence</code>,{" "}
+        filters (<code>severityThreshold</code>, <code>minConfidence</code>,{" "}
         <code>ignore</code> globs, <code>maxFindings</code>,{" "}
-        <code>gate.failOn</code> — to those stored envelopes.
+        <code>gate.failOn</code>) to those stored envelopes.
       </p>
       <p>
         No model calls are made. The plan is exact for filtering changes, free
@@ -37,9 +37,9 @@ export default function PlanPage() {
       <h2>Usage</h2>
       <p>
         Store envelopes as you review, then evaluate a candidate config
-        against them. A candidate like this — a stricter{" "}
+        against them. A candidate like this (a stricter{" "}
         <code>minConfidence</code> plus an <code>ignore</code> glob for
-        generated code — is a common shape:
+        generated code) is a common shape:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`# .postil.candidate.yaml
@@ -71,7 +71,7 @@ Summary: 4 finding(s) would be suppressed; 0 gate outcome(s) would change.`}</co
         <code>minConfidence</code> or a new <code>ignore</code> glob only
         suppresses what it targets). A candidate that also raised{" "}
         <code>gate.failOn</code> or ignored the file carrying that finding
-        would flip one of those gate outcomes — the report always states
+        would flip one of those gate outcomes. The report always states
         plainly when a gate result would change and when it would not.
       </p>
 
@@ -79,7 +79,7 @@ Summary: 4 finding(s) would be suppressed; 0 gate outcome(s) would change.`}</co
       <ul>
         <li>
           "If we raise <code>minConfidence</code> to 0.75, how many of last
-          month's comments disappear — and were any of them ones we acted on?"
+          month's comments disappear, and were any of them ones we acted on?"
         </li>
         <li>
           "If the gate also fails on <code>warn</code>, how many merged PRs
@@ -95,7 +95,7 @@ Summary: 4 finding(s) would be suppressed; 0 gate outcome(s) would change.`}</co
       <p>
         <code>postil plan</code> re-filters what the model already said. It
         cannot predict findings a different <code>reviewer.focus</code> or
-        model would have produced — those change the model call itself. For
+        model would have produced; those change the model call itself. For
         filter and threshold changes (the overwhelming majority of config
         churn) the preview is exact; for model changes it tells you so instead
         of guessing.

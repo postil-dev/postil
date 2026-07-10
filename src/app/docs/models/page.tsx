@@ -22,8 +22,8 @@ export default function ModelsPage() {
         </p>
         <p>
           Every model does the same job: read a diff, decide what is worth
-          flagging. The difference is capability and price, not use case, so
-          the table below leads with facts (context, vision, weights,
+          flagging. Capability and price vary across models; use case matters
+          less, so the table below leads with facts (context, vision, weights,
           parameter class) instead of per-model recommendations.
         </p>
       </div>
@@ -105,12 +105,13 @@ postil review --staged --output-json`}</code>
           run.
         </p>
         <p className="prose-postil mt-2">
-          Read detection rate as a floor, not a ranking: the checked-in live
-          report below uses 40 fixtures, with 33 seeded defects and 7 clean
-          PRs where the correct review is silence. These fixtures seed clear,
-          unambiguous defects, and capable models can saturate them. They show
-          that a model handles the review pipeline and obvious bugs at the
-          stated cost.
+          Detection rate here is a floor for what a model catches on seeded,
+          unambiguous defects; it is not a ranking across models. The
+          checked-in live report below uses 40 fixtures, with 33 seeded
+          defects and 7 clean PRs where the correct review is silence.
+          Capable models can saturate this suite, which shows only that a
+          model handles the review pipeline and obvious bugs at the stated
+          cost.
         </p>
         <div className="mt-4">
           <BenchResultsSection />

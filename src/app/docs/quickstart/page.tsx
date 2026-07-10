@@ -88,20 +88,20 @@ jobs:
           postil-cli repository
         </a>{" "}
         before updating. The action refuses anything but a full 40-character
-        commit SHA for <code>cli-ref</code> — tags move, SHAs do not.
+        commit SHA for <code>cli-ref</code>: tags move, SHAs do not.
       </p>
 
       <h2>3. Hosted GitHub App</h2>
       <p>
         Install the App from the <Link href="/install">install page</Link>,
         select repositories, and open a pull request. Postil creates two
-        check-runs — <code>postil/review</code> and <code>postil/gate</code> —
+        check-runs (<code>postil/review</code> and <code>postil/gate</code>)
         and reviews the diff. Drafts are skipped until marked ready.
       </p>
       <p>
         The hosted app also answers <code>@postil</code> mentions: reply to one
         of its review comments, mention it in a PR or issue comment, and it
-        responds in thread. It reviews and answers only — it never opens PRs or
+        responds in thread. It reviews and answers only: it never opens PRs or
         pushes commits. GitHub only today.
       </p>
       <p>
@@ -113,7 +113,7 @@ jobs:
       <ul>
         <li>
           Tune thresholds and ignores in{" "}
-          <Link href="/docs/config">.postil.yaml</Link> — or keep your existing{" "}
+          <Link href="/docs/config">.postil.yaml</Link>, or keep your existing{" "}
           <code>.coderabbit.yaml</code>; Postil reads it.
         </li>
         <li>

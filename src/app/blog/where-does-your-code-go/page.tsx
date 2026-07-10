@@ -74,7 +74,7 @@ export default function WhereDoesYourCodeGoArticle() {
 
         <h2>Why this is the question procurement asks first</h2>
         <p>
-          Security is a gate, not a tiebreaker. As one CTO checklist circulating
+          Security functions as a procurement gate. As one CTO checklist circulating
           in 2026 puts it, &quot;a tool scoring 0 or 1 on security will not
           survive procurement regardless of its capabilities elsewhere&quot; (
           <a
@@ -463,10 +463,10 @@ export default function WhereDoesYourCodeGoArticle() {
       <div className="rounded-card shadow-card mt-14 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="serif-display text-2xl">
-            Audit our data-flow, not our adjectives.
+            Audit our data-flow yourself.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Postil stores the review, not the code. Hosted inference routing
+            Only the review envelope is retained. Hosted inference routing
             depends on provider settings; the full posture is on the security
             page.
           </p>

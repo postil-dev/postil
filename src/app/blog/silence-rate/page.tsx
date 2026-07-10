@@ -166,7 +166,8 @@ export default function SilenceRateArticle() {
             &quot;Company creates a benchmark. Same company is best in that
             benchmark. Story as old as time.&quot;
           </a>{" "}
-          Catch-rate theater is easy; precision accounting is not.
+          Publishing a high catch rate is easy; measuring precision honestly
+          is not.
         </p>
         <p>
           The independent evidence is thinner but more interesting. A

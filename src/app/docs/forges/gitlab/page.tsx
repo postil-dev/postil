@@ -48,7 +48,7 @@ export default function GitLabForgePage() {
       <p>
         The job runs only on merge-request pipelines. A gate-failing review exits{" "}
         <code>1</code> and fails the job; a clean review exits <code>0</code> and
-        posts nothing — see <Link href="/docs/exit-codes">exit codes</Link>. To
+        posts nothing; see <Link href="/docs/exit-codes">exit codes</Link>. To
         make the gate binding, mark the job{" "}
         <strong>required to merge</strong> in the project&apos;s merge-request
         settings (or require a green pipeline).
@@ -91,7 +91,7 @@ postil review --forge gitlab --repo group/project --pr 88`}</code>
       <h2>The @postil bot</h2>
       <p>
         GitLab covers both issues and merge requests for{" "}
-        <code>postil respond</code> — mention <code>@postil</code> on either
+        <code>postil respond</code>: mention <code>@postil</code> on either
         and reply with the CLI:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
@@ -104,7 +104,7 @@ postil respond --forge gitlab --repo group/project --issue 12 \\
       <h2>Parity and limits</h2>
       <ul>
         <li>
-          Same gate thresholds, envelope schema, and exit codes as GitHub — see
+          Same gate thresholds, envelope schema, and exit codes as GitHub; see
           the <Link href="/docs/cli">CLI reference</Link> and{" "}
           <Link href="/docs/exit-codes">exit codes</Link>.
         </li>
