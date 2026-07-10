@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { EvidenceCase, EvidenceFinding } from "@/data/evidence";
 
@@ -124,6 +124,19 @@ function Reveal({
 
 export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
   const [active, setActive] = useState(0);
+
+  useEffect(() => {
+    const selectHashCase = () => {
+      const id = window.location.hash.slice(1);
+      const index = cases.findIndex((c) => c.id === id);
+      if (index !== -1) setActive(index);
+    };
+
+    selectHashCase();
+    window.addEventListener("hashchange", selectHashCase);
+    return () => window.removeEventListener("hashchange", selectHashCase);
+  }, [cases]);
+
   const current = cases[active] ?? cases[0]!;
   const env = current.envelope;
   const tokens = env.usage
@@ -163,7 +176,7 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
 
         <div className="ev-meta-note">
           <span>
-            {totals.catches} real catches, {totals.clean} real silent re-review
+            {totals.catches} real catches, {totals.clean} real silent review
           </span>
           <span>model: {cases[0]?.envelope.modelUsed}</span>
           <span>default low-noise config</span>
@@ -174,12 +187,16 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
             {cases.map((c, idx) => (
               <button
                 key={c.id}
+                id={`tab-${c.id}`}
                 type="button"
                 role="tab"
                 aria-selected={idx === active}
                 aria-controls="evidence-panel"
                 className={idx === active ? "ev-tab ev-tab-active" : "ev-tab"}
-                onClick={() => setActive(idx)}
+                onClick={() => {
+                  setActive(idx);
+                  window.history.replaceState(null, "", `#${c.id}`);
+                }}
               >
                 <span>{c.category}</span>
                 <small>
@@ -195,7 +212,12 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
         </Reveal>
 
         <Reveal key={current.id} delay={60}>
-          <section className="ev-case" id="evidence-panel" role="tabpanel">
+          <section
+            className="ev-case"
+            id="evidence-panel"
+            role="tabpanel"
+            aria-labelledby={`tab-${current.id}`}
+          >
             <div className="ev-case-head">
               <div>
                 <p className="ev-case-category">{current.category}</p>
@@ -233,14 +255,25 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
               >
                 reviewed commit {current.commitSha.slice(0, 8)}
               </a>
-              <a
-                className="ev-source"
-                href={current.sourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                pull request
-              </a>
+              {current.reviewUrl ? (
+                <a
+                  className="ev-source"
+                  href={current.reviewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  review on the pull request
+                </a>
+              ) : (
+                <a
+                  className="ev-source"
+                  href={current.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  pull request (no visible review)
+                </a>
+              )}
             </div>
 
             <div className="ev-grid">

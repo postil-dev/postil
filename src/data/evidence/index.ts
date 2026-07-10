@@ -2,8 +2,10 @@
 // and bodies are copied byte-for-byte from check-run annotations. Review and
 // gate titles and summaries are copied byte-for-byte from their check-runs. A
 // single trailing newline is removed when present. Each card links to the exact
-// check-runs, reviewed commit, and pull request. Token usage is not exposed by
-// the GitHub check-run API, so these cases omit it.
+// check-runs, reviewed commit, pull request, and, for non-silent reviews, the
+// exact visible review on the PR. The silent case links a pull request that has
+// no visible postil comments at all. Token usage is not exposed by the GitHub
+// check-run API, so these cases omit it.
 
 export interface EvidenceFinding {
   path: string;
@@ -42,6 +44,8 @@ export interface EvidenceCase {
   sourceUrl: string;
   checkRunUrl: string;
   gateCheckRunUrl: string;
+  /** Permalink to the visible postil review on the PR. Absent when the review is silent (no visible comment). */
+  reviewUrl?: string;
   /** The exact head commit reviewed by checkRunUrl. */
   commitSha: string;
   /** Set when the displayed resolving commit differs from the reviewed head. */
@@ -421,59 +425,109 @@ const MIGRATION_ORDERING_ESCALATION_DIFF = `diff --git a/fly.toml b/fly.toml
  web = "bun run start"
  worker = "bun run worker"`;
 
-const CLEAN_FIX_DIFF = `diff --git a/src/diff.rs b/src/diff.rs
---- a/src/diff.rs
-+++ b/src/diff.rs
-@@ -122,18 +122,15 @@ pub fn cap_raw_diff(text: &str, max_bytes: usize) -> (&str, bool) {
-     if text.len() <= max_bytes {
-         return (text, false);
-     }
-+    // The cap can land inside a multi-byte character; back up to a char
-+    // boundary before slicing, or the index below panics on non-ASCII input.
-+    let mut b = max_bytes;
-+    while b > 0 && !text.is_char_boundary(b) {
-+        b -= 1;
-+    }
-     // Cut at the last newline at or before the cap so the final retained hunk
--    // line stays intact; if there is none, hard-cut at a char boundary.
--    let cut = text[..max_bytes]
--        .rfind('\\n')
--        .map(|i| i + 1)
--        .unwrap_or_else(|| {
--            let mut b = max_bytes;
--            while b > 0 && !text.is_char_boundary(b) {
--                b -= 1;
--            }
--            b
--        });
-+    // line stays intact; if there is none, hard-cut at the char boundary.
-+    let cut = text[..b].rfind('\\n').map(|i| i + 1).unwrap_or(b);
-     (&text[..cut], true)
- }
+const SILENT_CUTOVER_DIFF = `diff --git a/.env.example b/.env.example
+--- a/.env.example
++++ b/.env.example
+@@ -72,11 +72,11 @@ POSTIL_BIN=/usr/local/bin/postil
+ WORKER_CONCURRENCY=4
+ # Initial idle poll interval (default 1000).
+ WORKER_POLL_INTERVAL_MS=1000
+-# Maximum idle poll interval. For Neon Free, use 900000 (15 minutes) with
+-# WORKER_CONCURRENCY=1 so the database has real scale-to-zero windows.
++# Maximum idle poll interval. On free-tier managed Postgres, use 900000
++# (15 minutes) with WORKER_CONCURRENCY=1 so idle periods stay quiet.
+ WORKER_IDLE_POLL_MAX_MS=900000
+ # Watchdog cadence. Keep it aligned with the idle max poll for free-tier
+-# serverless Postgres; lower values intentionally keep the database warmer.
++# managed Postgres; lower values intentionally keep the database warmer.
+ WORKER_WATCHDOG_INTERVAL_MS=900000
+ # Directory for transient baseline files (default .cache).
+ POSTIL_CACHE_DIR=.cache
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -63,15 +63,27 @@ jobs:
+           tar -xzf "\${tmp}/\${art}" -C "$tmp" postil
+           install -m 0755 "\${tmp}/postil" vendor/postil
+       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.4
+-      - name: Stage observability runtime secrets
++      - name: Stage runtime secrets
+         run: |
+           set -euo pipefail
++          mkdir -p .cache
++          secrets_file=".cache/fly-runtime-secrets.env"
++          : > "\${secrets_file}"
++          chmod 0600 "\${secrets_file}"
++          trap 'rm -f "\${secrets_file}"' EXIT
+           token="\${POSTHOG_PROJECT_TOKEN:-\${NEXT_PUBLIC_POSTHOG_KEY:-}}"
+           if [[ -n "\${token}" ]]; then
+-            printf 'POSTHOG_PROJECT_TOKEN=%s\\n' "\${token}" | flyctl secrets import --stage
++            printf 'POSTHOG_PROJECT_TOKEN=%s\\n' "\${token}" >> "\${secrets_file}"
++          fi
++          if [[ -n "\${DATABASE_URL}" ]]; then
++            printf 'DATABASE_URL=%s\\n' "\${DATABASE_URL}" >> "\${secrets_file}"
++          fi
++          if [[ -s "\${secrets_file}" ]]; then
++            flyctl secrets import --stage < "\${secrets_file}"
+           fi
+         env:
+           FLY_API_TOKEN: \${{ secrets.FLY_API_TOKEN }}
++          DATABASE_URL: \${{ secrets.DATABASE_URL }}
+           POSTHOG_PROJECT_TOKEN: \${{ secrets.POSTHOG_PROJECT_TOKEN }}
+           NEXT_PUBLIC_POSTHOG_KEY: \${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+       - run: |
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -11,7 +11,7 @@
 \x20
-@@ -457,6 +454,22 @@ Binary files a/img.png and b/img.png differ
-         assert_eq!(same, "small\\n");
-     }
+ ## Database
 \x20
-+    #[test]
-+    fn raw_diff_cap_handles_multibyte_at_the_boundary() {
-+        // No newline anywhere, and the cap lands mid-character: the cut must
-+        // back up to a char boundary instead of panicking.
-+        let s = "é".repeat(100); // 2 bytes per char, 200 bytes total
-+        let (capped, truncated) = cap_raw_diff(&s, 99);
-+        assert!(truncated);
-+        assert_eq!(capped.len(), 98);
-+        assert!(capped.chars().all(|c| c == 'é'));
-+        // Newline present before a mid-character cap: still cuts on the line.
-+        let s2 = format!("line one\\n{}", "é".repeat(100));
-+        let (capped2, truncated2) = cap_raw_diff(&s2, 15);
-+        assert!(truncated2);
-+        assert_eq!(capped2, "line one\\n");
-+    }
-+
-     #[test]
-     fn content_policy_ranges_are_separate_from_diff_ranges() {
-         let d = parse(SAMPLE);`;
+-Postil is PostgreSQL-native. The hosted control plane uses enums, \`jsonb\`, \`bytea\`, identity columns, and row-lock queue claims. Neon Free and Supabase Free are viable because they preserve PostgreSQL compatibility. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
++Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, \`jsonb\`, \`bytea\`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
+\x20
+ The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling. Webhook intake enqueues work and can trigger a bounded web-process drain. The worker remains a fallback with configurable idle backoff.
+\x20
+diff --git a/src/app/docs/self-hosted/page.tsx b/src/app/docs/self-hosted/page.tsx
+--- a/src/app/docs/self-hosted/page.tsx
++++ b/src/app/docs/self-hosted/page.tsx
+@@ -88,14 +88,13 @@ docker compose exec web bun run db:migrate\`}</code>
+         replacements for the hosted control plane.
+       </p>
+       <p>
+-        For a free-tier managed Postgres, use either Neon Free or Supabase Free
+-        with the low-idle queue profile in <code>.env.example</code>. Webhooks
+-        kick a bounded web-process queue drain, while the worker stays as a
+-        slow fallback. On Neon Free, set <code>WORKER_CONCURRENCY=1</code> and{" "}
+-        <code>WORKER_IDLE_POLL_MAX_MS=900000</code> and{" "}
+-        <code>WORKER_WATCHDOG_INTERVAL_MS=900000</code> so the database gets
+-        real scale-to-zero windows instead of a query every few seconds
+-        forever.
++        For a free-tier managed Postgres, Supabase Free works with the
++        low-idle queue profile in <code>.env.example</code>. Webhooks kick a
++        bounded web-process queue drain, while the worker stays as a slow
++        fallback. Set <code>WORKER_CONCURRENCY=1</code>,{" "}
++        <code>WORKER_IDLE_POLL_MAX_MS=900000</code>, and{" "}
++        <code>WORKER_WATCHDOG_INTERVAL_MS=900000</code> so idle periods stay
++        quiet instead of issuing database checks every few seconds forever.
+       </p>
+\x20
+       <h3>Required configuration</h3>
+diff --git a/src/app/privacy/page.tsx b/src/app/privacy/page.tsx
+--- a/src/app/privacy/page.tsx
++++ b/src/app/privacy/page.tsx
+@@ -101,9 +101,8 @@ export default function PrivacyPage() {
+             plane and the review worker.
+           </li>
+           <li>
+-            <strong>Managed PostgreSQL</strong> — Neon or another Postgres
+-            provider: stores accounts,
+-            installations, and review envelopes.
++            <strong>Supabase Postgres</strong> — managed PostgreSQL storage for
++            accounts, installations, and review envelopes.
+           </li>
+           <li>
+             <strong>PostHog</strong> — privacy-scoped analytics: stores`;
 
 export const EVIDENCE_CASES: EvidenceCase[] = [
   {
@@ -485,6 +539,8 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     diff: MIGRATION_DEDUP_DIFF,
     diffIsExcerpt: true,
     sourceUrl: "https://github.com/postil-dev/postil/pull/275",
+    reviewUrl:
+      "https://github.com/postil-dev/postil/pull/275#pullrequestreview-4614383953",
     checkRunUrl: "https://github.com/postil-dev/postil/runs/84687183194",
     gateCheckRunUrl: "https://github.com/postil-dev/postil/runs/84687183816",
     commitSha: "4d08309409e3b250cca5db5f53527e39a3a71ef9",
@@ -524,6 +580,8 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     diff: SWAPPED_SHAS_DIFF,
     diffIsExcerpt: true,
     sourceUrl: "https://github.com/postil-dev/postil/pull/280",
+    reviewUrl:
+      "https://github.com/postil-dev/postil/pull/280#pullrequestreview-4617737950",
     checkRunUrl: "https://github.com/postil-dev/postil/runs/84779432874",
     gateCheckRunUrl: "https://github.com/postil-dev/postil/runs/84779434442",
     commitSha: "e625962b8890569c3eed4b48f893f7a5de43b60b",
@@ -573,6 +631,8 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     diff: UTF8_PANIC_DIFF,
     diffIsExcerpt: true,
     sourceUrl: "https://github.com/postil-dev/postil-cli/pull/25",
+    reviewUrl:
+      "https://github.com/postil-dev/postil-cli/pull/25#pullrequestreview-4617891804",
     checkRunUrl: "https://github.com/postil-dev/postil-cli/runs/84783338711",
     gateCheckRunUrl:
       "https://github.com/postil-dev/postil-cli/runs/84783340480",
@@ -613,6 +673,8 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     diff: YQ_NOT_INSTALLED_DIFF,
     diffIsExcerpt: false,
     sourceUrl: "https://github.com/postil-dev/postil-action/pull/4",
+    reviewUrl:
+      "https://github.com/postil-dev/postil-action/pull/4#pullrequestreview-4617538183",
     checkRunUrl: "https://github.com/postil-dev/postil-action/runs/84774720207",
     gateCheckRunUrl:
       "https://github.com/postil-dev/postil-action/runs/84774721985",
@@ -653,6 +715,8 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     diff: MIGRATION_ORDERING_ESCALATION_DIFF,
     diffIsExcerpt: false,
     sourceUrl: "https://github.com/postil-dev/postil/pull/279",
+    reviewUrl:
+      "https://github.com/postil-dev/postil/pull/279#pullrequestreview-4617700162",
     checkRunUrl: "https://github.com/postil-dev/postil/runs/84778576695",
     gateCheckRunUrl: "https://github.com/postil-dev/postil/runs/84778578169",
     commitSha: "c46a13f8056821ea96fe852afb8f8a43fbe03ad4",
@@ -683,23 +747,21 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     },
   },
   {
-    id: "clean-fix",
+    id: "silent-cutover",
     category: "Clean",
-    title: "The UTF-8 finding resolved, then a silent re-review",
+    title: "A production database cutover, passed in silence",
     blurb:
-      "Commit fd8f53d1 fixes the UTF-8 boundary bug in src/diff.rs. On pull request head a2698f28, postil/review reported no merge-relevant findings, confirmed that one previous finding was resolved, and postil/gate passed at failOn: error.",
-    diff: CLEAN_FIX_DIFF,
+      "The hosted control plane's Postgres moves to Supabase: deploy-workflow secret staging, worker profile docs, architecture, and the privacy page. postil/review ran on the head commit and posted nothing: the pull request has no postil comment or review at all. A finding-free review leaves no noise on the PR; the check-run is the only trace.",
+    diff: SILENT_CUTOVER_DIFF,
     diffIsExcerpt: false,
-    sourceUrl: "https://github.com/postil-dev/postil-cli/pull/25",
-    checkRunUrl: "https://github.com/postil-dev/postil-cli/runs/84789722885",
-    gateCheckRunUrl:
-      "https://github.com/postil-dev/postil-cli/runs/84789724415",
-    commitSha: "a2698f2890add265f19cd3a19387a581fa56f75f",
-    diffCommitSha: "fd8f53d18f8b88abfc5bcb3f4b18ab85f2fd1f37",
+    sourceUrl: "https://github.com/postil-dev/postil/pull/295",
+    checkRunUrl: "https://github.com/postil-dev/postil/runs/85632156582",
+    gateCheckRunUrl: "https://github.com/postil-dev/postil/runs/85632158370",
+    commitSha: "5976fccf72ef93dbf5b175482fac1c79cb9890f2",
     envelope: {
       checkRunTitle: "No merge-relevant findings",
       summary:
-        '<img src="https://postil.dev/status/pass.svg" width="14" height="14" alt="pass" align="text-bottom"> Postil reviewed this change and found nothing that affects the merge decision.\n\n<img src="https://postil.dev/status/pass.svg" width="14" height="14" alt="pass" align="text-bottom"> 1 finding(s) from the previous review resolved.\n\nModel: moonshotai/kimi-k2.6',
+        '<img src="https://postil.dev/status/pass.svg" width="14" height="14" alt="pass" align="text-bottom"> Postil reviewed this change and found nothing that affects the merge decision.\n\nModel: moonshotai/kimi-k2.6',
       silent: true,
       findings: [],
       gate: {
