@@ -16,7 +16,7 @@ import {
 import { mentionsPostil } from "@/lib/mentions";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
-import { failCheckRuns } from "@/worker/review";
+import { failCheckRuns, supersedeActiveReviews } from "@/worker/review";
 import { readPositiveIntEnv, triggerQueueDrain } from "@/worker/runner";
 
 export const runtime = "nodejs";
@@ -400,8 +400,17 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
       // so reviews would silently skip.
       set: { fullName: repo.full_name, private: repo.private, installationId: installation.id },
     })
-    .returning({ enabled: schema.repositories.enabled });
+    .returning({ id: schema.repositories.id, enabled: schema.repositories.enabled });
   if (!repoRow[0]?.enabled) return;
+
+  await supersedeActiveReviews({
+    repositoryId: repoRow[0].id,
+    prNumber: pr.number,
+    newHeadSha: headSha,
+    repoFullName: repo.full_name,
+    githubInstallationId: installationId,
+    onlyDifferentHead: true,
+  });
 
   await enqueueReviewJob({
     installationId,

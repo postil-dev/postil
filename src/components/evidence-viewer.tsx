@@ -149,14 +149,10 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
       failing: cases.filter((c) => c.envelope.gate.failing).length,
     };
   }, [cases]);
-  const repoUrl = current.checkRunUrl.replace(/\/runs\/\d+$/, "");
-  const commitUrl = `${repoUrl}/commit/${current.commitSha}`;
   const summaryMessages = checkSummaryMessages(env.summary);
-  const diffLabel = current.diffCommitSha
-    ? "The complete resolving commit diff"
-    : current.diffIsExcerpt
-      ? "Excerpt of the reviewed commit diff"
-      : "The complete reviewed commit diff";
+  const diffLabel = current.diffIsExcerpt
+    ? "Excerpt of the reviewed commit diff"
+    : "The complete reviewed commit diff";
 
   return (
     <div className="ev-root">
@@ -168,8 +164,7 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
             <h1 className="ev-h1">Evidence across the bugs reviewers miss.</h1>
             <p className="ev-lede">
               Real review output from Postil&apos;s own repositories. Every card
-              links to the exact check-run and reviewed commit, with the pull
-              request retained for context.
+              links to the public pull request it came from.
             </p>
           </Reveal>
         </header>
@@ -233,58 +228,17 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
             <div className="ev-links">
               <a
                 className="ev-source ev-source-primary"
-                href={current.checkRunUrl}
+                href={current.reviewUrl ?? current.sourceUrl}
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                view the exact check-run →
+                link to pull request
               </a>
-              <a
-                className="ev-source"
-                href={current.gateCheckRunUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                gate check-run
-              </a>
-              <a
-                className="ev-source"
-                href={commitUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                reviewed commit {current.commitSha.slice(0, 8)}
-              </a>
-              {current.reviewUrl ? (
-                <a
-                  className="ev-source"
-                  href={current.reviewUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  review on the pull request
-                </a>
-              ) : (
-                <a
-                  className="ev-source"
-                  href={current.sourceUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  pull request (no visible review)
-                </a>
-              )}
             </div>
 
             <div className="ev-grid">
               <div className="ev-col">
                 <p className="ev-col-label">{diffLabel}</p>
-                {current.diffCommitSha ? (
-                  <p className="ev-diff-note">
-                    Resolving commit {current.diffCommitSha.slice(0, 8)} on
-                    reviewed head {current.commitSha.slice(0, 8)}
-                  </p>
-                ) : null}
                 <DiffBlock diff={current.diff} />
               </div>
               <div className="ev-col">
@@ -338,10 +292,9 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
         <Reveal>
           <footer className="ev-foot">
             <p>
-              All {cases.length} cases link to public, immutable check-runs and
-              reviewed commits in Postil&apos;s repositories. {totals.failing}{" "}
-              gate checks failed, and the remaining reviews advised or passed
-              silently.
+              All {cases.length} cases link to public pull requests in
+              Postil&apos;s repositories. {totals.failing} gate checks failed,
+              and the remaining reviews advised or passed silently.
             </p>
             <a className="ev-cta" href="/install">
               Try it on your own diff
@@ -398,9 +351,8 @@ const EV_CSS = `
 .ev-col { min-width: 0; }
 .ev-col-label { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.7rem;
   font-weight: 600; color: var(--ink-soft); margin: 0 0 0.5rem; }
-.ev-diff-note { margin: -0.15rem 0 0.55rem; color: var(--ink-soft); font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.7rem; }
 .ev-diff { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
-  padding: 0.85rem 0; overflow-x: auto; max-width: 100%; margin: 0; }
+  padding: 0.85rem 0; overflow-x: auto; overflow-y: auto; max-width: 100%; max-height: 26rem; margin: 0; }
 .ev-diff code { display: block; width: max-content; min-width: 100%;
   font-family: var(--font-ibm-plex-mono, monospace); font-size: 0.78rem; line-height: 1.5; }
 /* width: max-content lets each line's box (and its add/del background) grow to

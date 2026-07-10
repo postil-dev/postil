@@ -15,6 +15,27 @@
       "when": 1782963269500,
       "tag": "0001_org_indexes_and_constraints",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783694224079,
+      "tag": "0002_add_review_config_files",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783695869742,
+      "tag": "0003_add_org_review_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783699581983,
+      "tag": "0004_public_review_ids_and_logs",
+      "breakpoints": true
     }
   ]
 }

@@ -449,7 +449,7 @@ export default function HomePage() {
           <div className="card border-gate p-6">
             <p className="serif-display text-2xl">$10 / dev / mo</p>
             <p className="mt-2 text-sm text-ink-soft">
-              Hosted Team is $10 per developer with reviews included. BYO key
+              Hosted Team is $10 per developer with reviews included. BYOK
               support remains available for organizations with a specific policy
               requirement.
             </p>
@@ -465,7 +465,7 @@ export default function HomePage() {
         <p className="mt-8 max-w-2xl text-ink-soft">
           Your worst-case monthly bill is your seat count times ten dollars:
           no per-review surcharges, no credits, no metered overage when PR
-          volume grows. Hosted reviews are included by default, and BYO key
+          volume grows. Hosted reviews are included by default, and BYOK
           remains an optional policy control.
         </p>
         <p className="mt-6">

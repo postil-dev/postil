@@ -7,7 +7,13 @@ import { and, eq } from "drizzle-orm";
 import { validateApiBase } from "@/lib/api-base";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
+import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { getSessionUser } from "@/lib/session";
+
+export interface OrgSettingsActionState {
+  status: "error" | "success";
+  message: string;
+}
 
 /**
  * Resolve org by slug and load the current user's membership row, returning
@@ -40,10 +46,11 @@ async function requireMembership(slug: string): Promise<{ orgId: number; role: s
 
 /**
  * Resolve org by slug and assert the current user is an admin of it. Gates the
- * write actions (settings save, repository toggle): the BYO LLM API key and
- * per-repo review coverage are org-wide controls, so a plain member must not
- * be able to overwrite or clear them. Roles are sourced from GitHub org
- * membership at login (admin/member); personal accounts are always admin.
+ * write actions (settings save, repository toggle): hosted review config, the
+ * BYO LLM API key, and per-repo review coverage are org-wide controls, so a
+ * plain member must not be able to overwrite or clear them. Roles are sourced
+ * from GitHub org membership at login (admin/member); personal accounts are
+ * always admin.
  */
 async function requireAdmin(slug: string): Promise<{ orgId: number }> {
   const { orgId, role } = await requireMembership(slug);
@@ -81,7 +88,10 @@ export async function toggleRepository(formData: FormData): Promise<void> {
   revalidatePath(`/orgs/${slug}`);
 }
 
-export async function saveOrgSettings(formData: FormData): Promise<void> {
+export async function saveOrgSettings(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
   const slug = String(formData.get("slug") ?? "");
   const { orgId } = await requireAdmin(slug);
 
@@ -93,9 +103,35 @@ export async function saveOrgSettings(formData: FormData): Promise<void> {
   const modelCascade = String(formData.get("modelCascade") ?? "").trim() || null;
   const apiKey = String(formData.get("apiKey") ?? "").trim();
   const removeKey = formData.get("removeKey") === "on";
+  const configYamlBody = String(formData.get("configYaml") ?? "");
+  const configYaml = configYamlBody.trim().length > 0 ? configYamlBody : null;
+  const guardrailsBody = String(formData.get("guardrailsMd") ?? "");
+  const guardrailsMd = guardrailsBody.trim().length > 0 ? guardrailsBody : null;
+  const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
+  const contentPolicyMd =
+    contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
+
+  if (configYaml) {
+    try {
+      validateOrgConfigYaml(configYaml);
+    } catch (error) {
+      return {
+        status: "error",
+        message: error instanceof Error ? error.message : "Config YAML is invalid.",
+      };
+    }
+  }
 
   const db = getDb();
-  const base = { apiBase, model, modelCascade, updatedAt: new Date() };
+  const base = {
+    apiBase,
+    model,
+    modelCascade,
+    configYaml,
+    guardrailsMd,
+    contentPolicyMd,
+    updatedAt: new Date(),
+  };
 
   // The key is write-only: set when provided, cleared when requested,
   // otherwise left untouched. It is never read back to the form.
@@ -118,4 +154,5 @@ export async function saveOrgSettings(formData: FormData): Promise<void> {
       set: { ...base, ...keyUpdate },
     });
   revalidatePath(`/orgs/${slug}`);
+  return { status: "success", message: "Organization settings saved." };
 }

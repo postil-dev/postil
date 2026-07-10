@@ -164,7 +164,7 @@ const wedges: Wedge[] = [
         </p>
         <p className="mt-3">
           Postil keeps hosted billing flat: Team is $10 per developer with
-          reviews included. BYO key support remains available for organizations
+          reviews included. BYOK support remains available for organizations
           that require provider-controlled inference. The closest comparable model we
           found is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">

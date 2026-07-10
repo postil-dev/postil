@@ -10,6 +10,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 import type { Envelope } from "@/lib/envelope";
@@ -119,6 +120,7 @@ export const reviews = pgTable(
   "reviews",
   {
     id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    publicId: uuid("public_id").notNull().defaultRandom(),
     repositoryId: bigint("repository_id", { mode: "number" })
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
@@ -128,6 +130,7 @@ export const reviews = pgTable(
     sinceSha: text("since_sha"),
     status: reviewStatus("status").notNull().default("queued"),
     envelope: jsonb("envelope").$type<Envelope>(),
+    configFiles: text("config_files").array(),
     silent: boolean("silent"),
     gateFailing: boolean("gate_failing"),
     errorMessage: text("error_message"),
@@ -138,9 +141,24 @@ export const reviews = pgTable(
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
   (t) => [
+    uniqueIndex("reviews_public_id_idx").on(t.publicId),
     index("reviews_repo_pr_idx").on(t.repositoryId, t.prNumber),
     index("reviews_status_idx").on(t.status),
   ],
+);
+
+export const reviewLogs = pgTable(
+  "review_logs",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    reviewId: bigint("review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    line: text("line").notNull(),
+  },
+  (t) => [uniqueIndex("review_logs_review_seq_idx").on(t.reviewId, t.seq)],
 );
 
 export const usageEvents = pgTable("usage_events", {
@@ -199,7 +217,7 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-/** Per-org BYO LLM settings. The API key is sealed with AES-256-GCM and never read back out via the UI. */
+/** Per-org hosted review configuration and BYO LLM settings. */
 export const orgSettings = pgTable("org_settings", {
   orgId: bigint("org_id", { mode: "number" })
     .primaryKey()
@@ -208,5 +226,8 @@ export const orgSettings = pgTable("org_settings", {
   apiKeyCiphertext: bytea("api_key_ciphertext"),
   model: text("model"),
   modelCascade: text("model_cascade"),
+  configYaml: text("config_yaml"),
+  guardrailsMd: text("guardrails_md"),
+  contentPolicyMd: text("content_policy_md"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

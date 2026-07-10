@@ -1,9 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { fetchRepoFile, materializeRepoConfig } from "@/lib/github/contents";
+import {
+  fetchRepoFile,
+  materializeOrgConfig,
+  materializeRepoConfig,
+} from "@/lib/github/contents";
+import { validateOrgConfigYaml } from "@/lib/org-review-config";
 
 /**
  * Serves a fake GitHub contents API so the helpers are exercised over real
@@ -125,5 +130,77 @@ describe("materializeRepoConfig", () => {
 
     // The failed fetches are skipped with a warning; the healthy one lands.
     expect(written).toEqual([".postil/content-policy.md"]);
+  });
+});
+
+describe("materializeOrgConfig", () => {
+  test("writes every configured organization artifact when the repo has none", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "postil-org-config-"));
+
+    const written = await materializeOrgConfig(dir, [], {
+      configYaml: "review:\n  minConfidence: 0.7\n",
+      guardrailsMd: "No new dependencies.\n",
+      contentPolicyMd: "Avoid superlatives.\n",
+    });
+
+    expect(written).toEqual([
+      "org:.postil.yaml",
+      "org:.postil/guardrails.md",
+      "org:.postil/content-policy.md",
+    ]);
+    expect(await readFile(join(dir, ".postil.yaml"), "utf8")).toContain(
+      "minConfidence: 0.7",
+    );
+    expect(await readFile(join(dir, ".postil", "guardrails.md"), "utf8")).toBe(
+      "No new dependencies.\n",
+    );
+  });
+
+  test("repo files win independently for root config and prose slots", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "postil-org-config-"));
+    await mkdir(join(dir, ".postil"));
+    await writeFile(join(dir, ".postil.json"), '{"enabled":true}');
+    await writeFile(join(dir, ".postil", "guardrails.md"), "Repo guardrail.\n");
+
+    const written = await materializeOrgConfig(
+      dir,
+      [".postil.json", ".postil/guardrails.md"],
+      {
+        configYaml: "enabled: false\n",
+        guardrailsMd: "Organization guardrail.\n",
+        contentPolicyMd: "Organization content policy.\n",
+      },
+    );
+
+    expect(written).toEqual(["org:.postil/content-policy.md"]);
+    expect(await readdir(dir)).not.toContain(".postil.yaml");
+    expect(await readFile(join(dir, ".postil.json"), "utf8")).toBe('{"enabled":true}');
+    expect(await readFile(join(dir, ".postil", "guardrails.md"), "utf8")).toBe(
+      "Repo guardrail.\n",
+    );
+    expect(await readFile(join(dir, ".postil", "content-policy.md"), "utf8")).toBe(
+      "Organization content policy.\n",
+    );
+  });
+
+  test("null organization artifacts write nothing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "postil-org-config-"));
+
+    expect(
+      await materializeOrgConfig(dir, [], {
+        configYaml: null,
+        guardrailsMd: null,
+        contentPolicyMd: null,
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("validateOrgConfigYaml", () => {
+  test("accepts valid YAML and rejects malformed YAML with a clear error", () => {
+    expect(() => validateOrgConfigYaml("review:\n  minConfidence: 0.8\n")).not.toThrow();
+    expect(() => validateOrgConfigYaml("review: [broken\n")).toThrow(
+      /Config YAML is invalid:/,
+    );
   });
 });

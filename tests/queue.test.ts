@@ -63,13 +63,18 @@ describeDb("postgres job queue", () => {
     expect(job?.kind).toBe("review");
     expect(job?.payload).toEqual({ prNumber: 1 });
     expect(job?.attempts).toBe(1);
+    expect(job?.createdAt).toBeInstanceOf(Date);
+    expect(job?.lockedAt).toBeInstanceOf(Date);
+    expect(job!.lockedAt.getTime()).toBeGreaterThanOrEqual(job!.createdAt.getTime());
 
     const row = await pool.query(
-      "SELECT status, locked_by FROM jobs WHERE id = $1",
+      "SELECT status, locked_by, created_at, locked_at FROM jobs WHERE id = $1",
       [id],
     );
     expect(row.rows[0].status).toBe("running");
     expect(row.rows[0].locked_by).toBe("worker-a");
+    expect(job?.createdAt).toEqual(row.rows[0].created_at);
+    expect(job?.lockedAt).toEqual(row.rows[0].locked_at);
   });
 
   test("a locked row is skipped, not waited on (SKIP LOCKED)", async () => {

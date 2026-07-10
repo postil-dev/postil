@@ -1,0 +1,55 @@
+import { and, eq } from "drizzle-orm";
+import { notFound, redirect } from "next/navigation";
+
+import { getDb, schema } from "@/lib/db";
+import { getSessionUser } from "@/lib/session";
+
+export type OrgAccessResult =
+  | {
+      ok: true;
+      db: ReturnType<typeof getDb>;
+      org: typeof schema.organizations.$inferSelect;
+      membership: { id: number; role: string };
+    }
+  | { ok: false; reason: "unauthenticated" | "not_found" };
+
+/** Resolve organization access without invoking Next.js page control flow. */
+export async function getOrgMembership(slug: string): Promise<OrgAccessResult> {
+  const user = await getSessionUser();
+  if (!user) return { ok: false, reason: "unauthenticated" };
+
+  const db = getDb();
+  const org = (
+    await db
+      .select()
+      .from(schema.organizations)
+      .where(eq(schema.organizations.slug, slug))
+      .limit(1)
+  )[0];
+  if (!org) return { ok: false, reason: "not_found" };
+
+  const membership = (
+    await db
+      .select({ id: schema.orgMembers.id, role: schema.orgMembers.role })
+      .from(schema.orgMembers)
+      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
+      .limit(1)
+  )[0];
+  if (!membership) return { ok: false, reason: "not_found" };
+
+  return { ok: true, db, org, membership };
+}
+
+/**
+ * Require an authenticated member of the organization identified by `slug`.
+ * Missing organizations and non-members both return 404 so organization
+ * existence is not disclosed across accounts.
+ */
+export async function requireOrgMembership(slug: string) {
+  const access = await getOrgMembership(slug);
+  if (!access.ok) {
+    if (access.reason === "unauthenticated") redirect("/login");
+    notFound();
+  }
+  return access;
+}

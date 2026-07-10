@@ -11,6 +11,8 @@ import { signWebhookBody } from "@/lib/crypto/webhook";
  *
  *  - a repo transferred between installations is re-pinned to the new
  *    installation on the pull_request upsert (otherwise reviews skip),
+ *  - a new pull request head stales the active review and neutralizes both
+ *    of its check-runs before queueing the replacement,
  *  - removing repos from an installation completes any in-flight review's
  *    check-runs before the delete cascades them away,
  *  - respond jobs are rate-limited per installation per hour, and
@@ -90,7 +92,7 @@ describeDb("webhook handler behaviour", () => {
           await pool.query(trimmed);
         } catch (err) {
           const code = (err as { code?: string }).code;
-          if (code !== "42P07" && code !== "42710") throw err;
+          if (code !== "42P07" && code !== "42710" && code !== "42701") throw err;
         }
       }
     }
@@ -171,6 +173,53 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM jobs WHERE kind = 'review'",
     );
     expect(jobs.rows[0]!.c).toBe(1);
+  });
+
+  test("pull_request synchronize neutralizes superseded review check-runs", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 250);
+    const repoId = await seedRepo(inst, 7878, "octo/repo");
+    const old = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status,
+          advisory_check_run_id, gate_check_run_id, queued_at, started_at)
+       VALUES ($1, 7, 'old-head', 'base', 'running', 11, 22,
+               now() - interval '1 minute', now() - interval '50 seconds')
+       RETURNING id`,
+      [repoId],
+    );
+
+    const res = await post(
+      "pull_request",
+      {
+        action: "synchronize",
+        installation: { id: 250 },
+        repository: { id: 7878, full_name: "octo/repo", private: false },
+        pull_request: {
+          number: 7,
+          head: { sha: "new-head" },
+          base: { sha: "base" },
+        },
+      },
+      "delivery-synchronize-1",
+    );
+
+    expect(res.status).toBe(200);
+    const review = await pool.query<{ status: string; finished_at: Date | null }>(
+      "SELECT status, finished_at FROM reviews WHERE id = $1",
+      [old.rows[0]!.id],
+    );
+    expect(review.rows[0]!.status).toBe("stale");
+    expect(review.rows[0]!.finished_at).toBeInstanceOf(Date);
+    expect(completedCheckRuns).toEqual([
+      { repoFullName: "octo/repo", conclusion: "neutral" },
+      { repoFullName: "octo/repo", conclusion: "neutral" },
+    ]);
+    const jobs = await pool.query<{ payload: { headSha: string } }>(
+      "SELECT payload FROM jobs WHERE kind = 'review'",
+    );
+    expect(jobs.rows).toHaveLength(1);
+    expect(jobs.rows[0]!.payload.headSha).toBe("new-head");
   });
 
   test("installation_repositories removed completes in-flight review check-runs then deletes", async () => {

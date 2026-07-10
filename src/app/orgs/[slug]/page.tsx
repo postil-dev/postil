@@ -1,19 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
 
 import { and, desc, eq, sql } from "drizzle-orm";
 
-import {
-  formatDuration,
-  formatMs,
-  GateBadge,
-  ReviewStatusBadge,
-} from "@/components/review-status";
-import { getDb, schema } from "@/lib/db";
-import { githubPrUrl } from "@/lib/github-links";
-import { getSessionUser } from "@/lib/session";
-import { saveOrgSettings, toggleRepository } from "./actions";
+import { formatMs } from "@/components/review-status";
+import { schema } from "@/lib/db";
+import { requireOrgMembership } from "@/lib/org-access";
+import { getOrgReviewRows } from "@/lib/org-reviews";
+import { toggleRepository } from "./actions";
+import { ReviewsTable } from "./reviews-table";
+import { SettingsForm } from "./settings-form";
 
 export const metadata: Metadata = {
   title: "Organization",
@@ -29,27 +25,7 @@ export default async function OrgDashboardPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const user = await getSessionUser();
-  if (!user) redirect("/login");
-
-  const db = getDb();
-  const org = (
-    await db
-      .select()
-      .from(schema.organizations)
-      .where(eq(schema.organizations.slug, slug))
-      .limit(1)
-  )[0];
-  if (!org) notFound();
-
-  const membership = (
-    await db
-      .select({ id: schema.orgMembers.id, role: schema.orgMembers.role })
-      .from(schema.orgMembers)
-      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
-      .limit(1)
-  )[0];
-  if (!membership) notFound();
+  const { db, org, membership } = await requireOrgMembership(slug);
   const isAdmin = membership.role === "admin";
 
   const suspendedInstallations = await db
@@ -151,27 +127,7 @@ export default async function OrgDashboardPage({
   const ungroundedRate =
     ungrounded + shipped > 0 ? Math.round((ungrounded / (ungrounded + shipped)) * 100) : null;
 
-  const recentReviews = await db
-    .select({
-      id: schema.reviews.id,
-      prNumber: schema.reviews.prNumber,
-      status: schema.reviews.status,
-      silent: schema.reviews.silent,
-      gateFailing: schema.reviews.gateFailing,
-      envelope: schema.reviews.envelope,
-      startedAt: schema.reviews.startedAt,
-      finishedAt: schema.reviews.finishedAt,
-      repoFullName: schema.repositories.fullName,
-    })
-    .from(schema.reviews)
-    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
-    .innerJoin(
-      schema.installations,
-      eq(schema.installations.id, schema.repositories.installationId),
-    )
-    .where(eq(schema.installations.orgId, org.id))
-    .orderBy(desc(schema.reviews.queuedAt))
-    .limit(30);
+  const recentReviews = await getOrgReviewRows(db, org.id, 50);
 
   const repos = await db
     .select({
@@ -188,12 +144,36 @@ export default async function OrgDashboardPage({
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
 
+  const latestRepoReviews = await db
+    .selectDistinctOn([schema.reviews.repositoryId], {
+      repositoryId: schema.reviews.repositoryId,
+      configFiles: schema.reviews.configFiles,
+    })
+    .from(schema.reviews)
+    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+    .innerJoin(
+      schema.installations,
+      eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .where(and(eq(schema.installations.orgId, org.id), eq(schema.reviews.status, "completed")))
+    .orderBy(
+      schema.reviews.repositoryId,
+      desc(schema.reviews.finishedAt),
+      desc(schema.reviews.id),
+    );
+  const latestRepoReviewByRepositoryId = new Map(
+    latestRepoReviews.map((review) => [review.repositoryId, review]),
+  );
+
   const settings = (
     await db
       .select({
         apiBase: schema.orgSettings.apiBase,
         model: schema.orgSettings.model,
         modelCascade: schema.orgSettings.modelCascade,
+        configYaml: schema.orgSettings.configYaml,
+        guardrailsMd: schema.orgSettings.guardrailsMd,
+        contentPolicyMd: schema.orgSettings.contentPolicyMd,
         hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
       })
       .from(schema.orgSettings)
@@ -213,9 +193,9 @@ export default async function OrgDashboardPage({
           </p>
           <h1 className="serif-display mt-2 text-3xl">{org.name}</h1>
         </div>
-        <span className="rounded-full border border-gate px-3 py-1 font-mono text-xs text-gate">
-          plan: {org.plan}
-        </span>
+        <Link href="/pricing" className="btn-primary text-xs">
+          plan: {org.plan} · upgrade
+        </Link>
       </div>
 
       {suspendedInstallations.length > 0 && (
@@ -309,77 +289,6 @@ export default async function OrgDashboardPage({
         </div>
       </div>
 
-      {/* Reviews table */}
-      <div className="mt-10">
-        <p className="eyebrow">Recent reviews</p>
-        <div className="card mt-3 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/50">
-                <th className="px-4 py-3 font-normal">repository</th>
-                <th className="px-4 py-3 font-normal">PR</th>
-                <th className="px-4 py-3 font-normal">status</th>
-                <th className="px-4 py-3 font-normal">gate</th>
-                <th className="px-4 py-3 font-normal">findings</th>
-                <th className="px-4 py-3 font-normal">model</th>
-                <th className="px-4 py-3 font-normal">duration</th>
-                <th className="px-4 py-3 font-normal">report</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentReviews.map((r) => (
-                <tr key={r.id} className="border-b border-stone/60 last:border-0">
-                  <td className="px-4 py-2.5 font-mono text-xs">{r.repoFullName}</td>
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    <a
-                      href={githubPrUrl(r.repoFullName, r.prNumber)}
-                      rel="noopener"
-                      className="text-rust hover:underline"
-                    >
-                      #{r.prNumber}
-                    </a>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <ReviewStatusBadge status={r.status} gateFailing={r.gateFailing} />
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <GateBadge gateFailing={r.gateFailing} status={r.status} />
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    {r.silent ? (
-                      <span className="text-gate">silent</span>
-                    ) : (
-                      (r.envelope?.findings.length ?? "—")
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs text-charcoal/70">
-                    {r.envelope?.modelUsed ?? "—"}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    {formatDuration(r.startedAt, r.finishedAt)}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">
-                    <Link
-                      href={`/orgs/${org.slug}/reviews/${r.id}`}
-                      className="text-rust hover:underline"
-                    >
-                      view
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-              {recentReviews.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-sm text-charcoal/50">
-                    No reviews yet. Open a pull request on an enabled repository.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
       <div className="mt-10 grid gap-8 lg:grid-cols-2">
         {/* Repositories */}
         <div>
@@ -392,6 +301,36 @@ export default async function OrgDashboardPage({
                   <p className="font-mono text-[11px] text-charcoal/70">
                     {repo.private ? "private" : "public"}
                   </p>
+                  {(() => {
+                    const latestReview = latestRepoReviewByRepositoryId.get(repo.id);
+                    if (!latestReview) {
+                      return (
+                        <p className="mt-1 font-mono text-[11px] text-charcoal/50">
+                          no completed review yet
+                        </p>
+                      );
+                    }
+                    if (latestReview.configFiles === null) {
+                      return (
+                        <p className="mt-1 font-mono text-[11px] text-charcoal/50">
+                          overrides: unknown for the last review
+                        </p>
+                      );
+                    }
+                    return (
+                      <p className="mt-1 font-mono text-[11px] text-charcoal/50">
+                        {latestReview.configFiles.length > 0
+                          ? `overrides: ${latestReview.configFiles
+                              .map((file) =>
+                                file.startsWith("org:")
+                                  ? `organization ${file.slice(4)}`
+                                  : `repository ${file}`,
+                              )
+                              .join(", ")}`
+                          : "no configuration overrides used in the last review"}
+                      </p>
+                    );
+                  })()}
                 </div>
                 {isAdmin ? (
                   <form action={toggleRepository}>
@@ -430,9 +369,21 @@ export default async function OrgDashboardPage({
           </div>
         </div>
 
-        {/* BYO settings */}
+        {/* Organization settings */}
         <div>
-          <p className="eyebrow">LLM settings (BYO key)</p>
+          <p className="eyebrow">Organization settings</p>
+          <div className="mt-3 space-y-2 text-sm text-ink-soft">
+            <p>
+              See the <Link href="/docs/models">model guide</Link> and{" "}
+              <Link href="/docs/config">configuration reference</Link>.
+            </p>
+            <p className="text-xs text-charcoal/70">
+              Review configuration precedence is repository config from the default
+              branch, then hosted organization config, then Postil defaults. Each
+              artifact is resolved independently, and pull request head changes never
+              supply configuration.
+            </p>
+          </div>
           {!isAdmin && (
             <div className="card mt-3 space-y-2 p-5 text-sm">
               <p className="font-mono text-xs text-charcoal/70">
@@ -451,77 +402,30 @@ export default async function OrgDashboardPage({
                   {settings?.hasKey ? "stored (write-only)" : "hosted default"}
                 </span>
               </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                Hosted .postil.yaml{" "}
+                <span className="text-charcoal">
+                  {settings?.configYaml ? "configured" : "not configured"}
+                </span>
+              </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                Hosted guardrails{" "}
+                <span className="text-charcoal">
+                  {settings?.guardrailsMd ? "configured" : "not configured"}
+                </span>
+              </p>
+              <p className="font-mono text-xs text-charcoal/70">
+                Hosted content policy{" "}
+                <span className="text-charcoal">
+                  {settings?.contentPolicyMd ? "configured" : "not configured"}
+                </span>
+              </p>
               <p className="pt-2 text-xs text-charcoal/50">
                 Changing these settings requires the organization admin role.
               </p>
             </div>
           )}
-          {isAdmin && (
-            <form action={saveOrgSettings} className="card mt-3 space-y-4 p-5">
-              <input type="hidden" name="slug" value={org.slug} />
-              <label className="block text-sm">
-                <span className="font-medium">API base</span>
-                <input
-                  type="url"
-                  name="apiBase"
-                  defaultValue={settings?.apiBase ?? ""}
-                  placeholder="https://openrouter.ai/api/v1"
-                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="font-medium">Model</span>
-                <input
-                  type="text"
-                  name="model"
-                  defaultValue={settings?.model ?? ""}
-                  placeholder="deepseek/deepseek-v4-pro"
-                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="font-medium">Model cascade</span>
-                <input
-                  type="text"
-                  name="modelCascade"
-                  defaultValue={settings?.modelCascade ?? ""}
-                  placeholder="qwen/qwen3-coder"
-                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="flex items-center justify-between font-medium">
-                  <span>API key</span>
-                  {settings?.hasKey && (
-                    <span className="font-mono text-[11px] text-gate">
-                      a key is stored (write-only)
-                    </span>
-                )}
-              </span>
-              <input
-                type="password"
-                name="apiKey"
-                autoComplete="off"
-                placeholder={settings?.hasKey ? "leave blank to keep current key" : "sk-..."}
-                className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-              />
-            </label>
-            {settings?.hasKey && (
-              <label className="flex items-center gap-2 text-sm text-ink-soft">
-                <input type="checkbox" name="removeKey" className="accent-[#C24A2A]" />
-                Remove the stored key (fall back to the hosted default)
-              </label>
-            )}
-            <p className="text-xs text-charcoal/50">
-              Keys are sealed with AES-256-GCM before storage and can never be
-              read back from this form. BYO-key review calls use this key under
-              your provider account; leave it unset to use the hosted default.
-            </p>
-            <button type="submit" className="btn-primary text-sm">
-              Save settings
-            </button>
-          </form>
-          )}
+          {isAdmin && <SettingsForm slug={org.slug} settings={settings} />}
         </div>
       </div>
 
@@ -553,6 +457,8 @@ export default async function OrgDashboardPage({
           view everything on this page.
         </p>
       </div>
+
+      <ReviewsTable orgSlug={org.slug} initialReviews={recentReviews} />
     </div>
   );
 }

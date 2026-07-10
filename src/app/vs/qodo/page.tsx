@@ -49,7 +49,7 @@ const ROWS: ComparisonRow[] = [
     ],
   },
   {
-    feature: "BYO key and local models (Ollama)",
+    feature: "BYOK and local models (Ollama)",
     cells: [
       { kind: "yes", note: "every deployment mode" },
       { kind: "partial", note: "via open-source PR-Agent" },
@@ -89,7 +89,7 @@ export default function VsQodoPage() {
         <ComparisonTable
           columns={COLUMNS}
           rows={ROWS}
-          caption="Postil compared with Qodo across merge gate, silence metric, pricing, self-hosting, BYO key, and platforms."
+          caption="Postil compared with Qodo across merge gate, silence metric, pricing, self-hosting, BYOK, and platforms."
         />
         <p className="mt-3 font-mono text-xs text-charcoal/70">
           Sources: Qodo public pricing and usage docs, plus vendor public docs.
