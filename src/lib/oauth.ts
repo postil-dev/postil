@@ -12,10 +12,16 @@ export function oauthCallbackUrl(request: Request): string {
  * fallback for local development.
  */
 export function publicOrigin(request: Request): string {
-  const configuredOrigin = process.env.POSTIL_PUBLIC_URL?.trim();
-  if (configuredOrigin) return normalizeOrigin(configuredOrigin, "POSTIL_PUBLIC_URL");
+  const configuredOrigin = configuredPublicOrigin();
+  if (configuredOrigin) return configuredOrigin;
 
   return new URL(request.url).origin;
+}
+
+export function configuredPublicOrigin(): string | undefined {
+  const configuredOrigin = process.env.POSTIL_PUBLIC_URL?.trim();
+  if (!configuredOrigin) return undefined;
+  return normalizeOrigin(configuredOrigin, "POSTIL_PUBLIC_URL");
 }
 
 function normalizeOrigin(value: string, source: string): string {

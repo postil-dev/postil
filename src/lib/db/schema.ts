@@ -128,6 +128,7 @@ export const reviews = pgTable(
     sinceSha: text("since_sha"),
     status: reviewStatus("status").notNull().default("queued"),
     envelope: jsonb("envelope").$type<Envelope>(),
+    configFiles: text("config_files").array(),
     silent: boolean("silent"),
     gateFailing: boolean("gate_failing"),
     errorMessage: text("error_message"),

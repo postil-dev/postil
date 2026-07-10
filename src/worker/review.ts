@@ -17,6 +17,7 @@ import {
   createCheckRun,
 } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
+import { configuredPublicOrigin } from "@/lib/oauth";
 import type { ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 
@@ -139,8 +140,14 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
 
   const installation = (
     await db
-      .select()
+      .select({
+        id: schema.installations.id,
+        orgId: schema.installations.orgId,
+        orgSlug: schema.organizations.slug,
+        suspended: schema.installations.suspended,
+      })
       .from(schema.installations)
+      .leftJoin(schema.organizations, eq(schema.installations.orgId, schema.organizations.id))
       .where(eq(schema.installations.githubInstallationId, payload.installationId))
       .limit(1)
   )[0];
@@ -281,7 +288,18 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
 
     const llm = await resolveLlmConfig(installation.orgId);
     sensitiveValues = [token, llm.apiKey].filter((value): value is string => Boolean(value));
-    const cliEnv = buildCliEnv(llm, { GITHUB_TOKEN: token });
+    const publicOrigin = configuredPublicOrigin();
+    const detailsUrl =
+      publicOrigin && installation.orgSlug
+        ? new URL(
+            `/orgs/${encodeURIComponent(installation.orgSlug)}/runs/${reviewId}`,
+            publicOrigin,
+          ).toString()
+        : undefined;
+    const cliEnv = buildCliEnv(llm, {
+      GITHUB_TOKEN: token,
+      ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
+    });
 
     const result = await runCli(args, cliEnv, workDir);
 
@@ -313,6 +331,7 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
       .set({
         status: "completed",
         envelope: ingested.envelope,
+        configFiles,
         silent: ingested.silent,
         gateFailing: ingested.gateFailing,
         finishedAt: new Date(),
