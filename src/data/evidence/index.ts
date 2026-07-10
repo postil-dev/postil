@@ -1,11 +1,13 @@
 // Real, verifiable reviews from Postil’s public repositories. Finding titles
 // and bodies are copied byte-for-byte from check-run annotations. Review and
 // gate titles and summaries are copied byte-for-byte from their check-runs. A
-// single trailing newline is removed when present. Each card links to the exact
-// check-runs, reviewed commit, pull request, and, for non-silent reviews, the
-// exact visible review on the PR. The silent case links a pull request that has
-// no visible postil comments at all. Token usage is not exposed by the GitHub
-// check-run API, so these cases omit it.
+// single trailing newline is removed when present. Each card links to the public
+// pull request it came from. Check-run IDs and the reviewed head SHA are retained
+// in this file as the verification record. Commit and check-run URLs on merged
+// PRs expire from GitHub's UI after a retention window, so the UI links only the
+// PR. The silent case links a pull request that has no visible postil comments at
+// all. Token usage is not exposed by the GitHub check-run API, so these cases
+// omit it.
 
 export interface EvidenceFinding {
   path: string;
@@ -48,8 +50,6 @@ export interface EvidenceCase {
   reviewUrl?: string;
   /** The exact head commit reviewed by checkRunUrl. */
   commitSha: string;
-  /** Set when the displayed resolving commit differs from the reviewed head. */
-  diffCommitSha?: string;
 }
 
 const MIGRATION_DEDUP_DIFF = `diff --git a/drizzle/0001_org_indexes_and_constraints.sql b/drizzle/0001_org_indexes_and_constraints.sql
