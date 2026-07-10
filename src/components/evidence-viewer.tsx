@@ -122,6 +122,41 @@ function Reveal({
   );
 }
 
+interface BreadcrumbLinks {
+  repo: string;
+  prFilesAtCommit: string;
+}
+
+/**
+ * Extract repo and PR number from the pull request URL, then construct
+ * breadcrumb links to the repository and PR files at the specific commit.
+ */
+function extractBreadcrumbs(
+  sourceUrl: string,
+  commitSha: string
+): BreadcrumbLinks {
+  // Parse sourceUrl like https://github.com/postil-dev/postil/pull/275
+  const match = sourceUrl.match(
+    /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:#.*)?$/
+  );
+  if (!match) {
+    // Fallback if URL structure doesn't match
+    return {
+      repo: sourceUrl.replace(/\/pull\/\d+.*$/, ""),
+      prFilesAtCommit: `${sourceUrl}/files?sha=${commitSha}`,
+    };
+  }
+
+  const owner = match[1];
+  const repo = match[2];
+  const prNumber = match[3];
+
+  return {
+    repo: `https://github.com/${owner}/${repo}`,
+    prFilesAtCommit: `https://github.com/${owner}/${repo}/pull/${prNumber}/files?sha=${commitSha}`,
+  };
+}
+
 export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
   const [active, setActive] = useState(0);
 
@@ -153,6 +188,8 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
   const diffLabel = current.diffIsExcerpt
     ? "Excerpt of the reviewed commit diff"
     : "The complete reviewed commit diff";
+
+  const breadcrumbs = extractBreadcrumbs(current.sourceUrl, current.commitSha);
 
   return (
     <div className="ev-root">
@@ -228,11 +265,19 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
             <div className="ev-links">
               <a
                 className="ev-source ev-source-primary"
-                href={current.reviewUrl ?? current.sourceUrl}
+                href={breadcrumbs.repo}
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                link to pull request
+                repository
+              </a>
+              <a
+                className="ev-source"
+                href={breadcrumbs.prFilesAtCommit}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                pull request at commit
               </a>
             </div>
 
