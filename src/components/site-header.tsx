@@ -29,13 +29,13 @@ export function SiteHeader() {
         </Link>
         <nav
           aria-label="Primary"
-          className="hidden items-center gap-6 text-[15px] lg:flex xl:gap-7"
+          className="hidden items-center gap-4 text-[15px] lg:flex xl:gap-7"
         >
           {NAV.map((item) => (
             <Link
               key={item.href}
               href={item.href}
-              className="text-charcoal/80 transition-colors hover:text-charcoal"
+              className="whitespace-nowrap text-charcoal/80 transition-colors hover:text-charcoal"
             >
               {item.label}
             </Link>
@@ -45,9 +45,9 @@ export function SiteHeader() {
           <AuthNav />
           <Link
             href="/install"
-            className="btn-primary hidden text-sm sm:inline-block"
+            className="btn-primary hidden whitespace-nowrap text-sm sm:inline-block"
           >
-            Install the CLI
+            Install the App
           </Link>
           <MobileNav items={NAV} />
         </div>

@@ -93,7 +93,7 @@ export default function EnvelopePage() {
               an accountable human), <code>guardrail</code> (the change violates
               a rule stated in <code>.postil/guardrails.md</code>; the finding
               quotes the rule it breaks), <code>uncertainty</code> (the
-              model flags its own doubt), <code>contentPolicy</code> (opt-in
+              model flags its own doubt), <code>contentPolicy</code> (default-on
               review of prose in the diff; see{" "}
               <Link href="/docs/content-policy">content policy</Link>).
             </td>

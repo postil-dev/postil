@@ -27,33 +27,33 @@ export function AuthNav() {
     };
   }, []);
 
-  if (login === null) {
-    return (
-      <Link
-        href="/login"
-        className="hidden text-[15px] text-charcoal/80 hover:text-charcoal lg:inline-block"
-      >
-        Sign in
-      </Link>
-    );
-  }
-
   return (
-    <span className="hidden items-center gap-5 lg:flex">
-      <Link
-        href="/reports"
-        className="text-[15px] text-charcoal/80 hover:text-charcoal"
-      >
-        Reports
-      </Link>
-      <form action="/api/auth/logout" method="post">
-        <button
-          type="submit"
+    <div className="hidden shrink-0 items-center justify-end gap-5 whitespace-nowrap lg:flex lg:w-36">
+      {login === null ? (
+        <Link
+          href="/login"
           className="text-[15px] text-charcoal/80 hover:text-charcoal"
         >
-          Sign out
-        </button>
-      </form>
-    </span>
+          Sign in
+        </Link>
+      ) : (
+        <>
+          <Link
+            href="/reports"
+            className="text-[15px] text-charcoal/80 hover:text-charcoal"
+          >
+            Reports
+          </Link>
+          <form action="/api/auth/logout" method="post">
+            <button
+              type="submit"
+              className="text-[15px] text-charcoal/80 hover:text-charcoal"
+            >
+              Sign out
+            </button>
+          </form>
+        </>
+      )}
+    </div>
   );
 }
