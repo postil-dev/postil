@@ -208,7 +208,7 @@ export default async function ReportsPage() {
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs">
                     <Link
-                      href={`/orgs/${r.orgSlug}/reviews/${r.id}`}
+                      href={`/orgs/${r.orgSlug}/runs/${r.id}`}
                       className="text-rust hover:underline"
                     >
                       view

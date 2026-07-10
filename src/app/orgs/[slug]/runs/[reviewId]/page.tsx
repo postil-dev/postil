@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 
 import { and, eq } from "drizzle-orm";
 
@@ -10,14 +10,14 @@ import {
   GateBadge,
   ReviewStatusBadge,
 } from "@/components/review-status";
-import { getDb, schema } from "@/lib/db";
+import { schema } from "@/lib/db";
 import { envelopeSchema, type Finding } from "@/lib/envelope";
 import { sortFindingsForDisplay } from "@/lib/findings";
 import { githubFileUrl, githubPrUrl } from "@/lib/github-links";
-import { getSessionUser } from "@/lib/session";
+import { requireOrgMembership } from "@/lib/org-access";
 
 export const metadata: Metadata = {
-  title: "Review",
+  title: "Review run",
   robots: { index: false, follow: false },
 };
 export const dynamic = "force-dynamic";
@@ -64,36 +64,16 @@ function FindingCard({
   );
 }
 
-export default async function ReviewDetailPage({
+export default async function RunDetailPage({
   params,
 }: {
-  params: Promise<{ slug: string; id: string }>;
+  params: Promise<{ slug: string; reviewId: string }>;
 }) {
-  const { slug, id } = await params;
-  const reviewId = Number(id);
+  const { slug, reviewId: reviewIdParam } = await params;
+  const reviewId = Number(reviewIdParam);
   if (!Number.isInteger(reviewId) || reviewId <= 0) notFound();
 
-  const user = await getSessionUser();
-  if (!user) redirect("/login");
-
-  const db = getDb();
-  const org = (
-    await db
-      .select({ id: schema.organizations.id, slug: schema.organizations.slug })
-      .from(schema.organizations)
-      .where(eq(schema.organizations.slug, slug))
-      .limit(1)
-  )[0];
-  if (!org) notFound();
-
-  const membership = (
-    await db
-      .select({ id: schema.orgMembers.id })
-      .from(schema.orgMembers)
-      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
-      .limit(1)
-  )[0];
-  if (!membership) notFound();
+  const { db, org } = await requireOrgMembership(slug);
 
   // The org filter is part of the lookup: a review id from another org's
   // repository must 404, not leak.
@@ -107,9 +87,12 @@ export default async function ReviewDetailPage({
         sinceSha: schema.reviews.sinceSha,
         status: schema.reviews.status,
         envelope: schema.reviews.envelope,
+        configFiles: schema.reviews.configFiles,
         silent: schema.reviews.silent,
         gateFailing: schema.reviews.gateFailing,
         errorMessage: schema.reviews.errorMessage,
+        advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
+        gateCheckRunId: schema.reviews.gateCheckRunId,
         queuedAt: schema.reviews.queuedAt,
         startedAt: schema.reviews.startedAt,
         finishedAt: schema.reviews.finishedAt,
@@ -125,6 +108,18 @@ export default async function ReviewDetailPage({
       .limit(1)
   )[0];
   if (!review) notFound();
+
+  const usageEvents = await db
+    .select({
+      id: schema.usageEvents.id,
+      promptTokens: schema.usageEvents.promptTokens,
+      completionTokens: schema.usageEvents.completionTokens,
+      modelUsed: schema.usageEvents.modelUsed,
+      createdAt: schema.usageEvents.createdAt,
+    })
+    .from(schema.usageEvents)
+    .where(eq(schema.usageEvents.reviewId, review.id))
+    .orderBy(schema.usageEvents.createdAt, schema.usageEvents.id);
 
   // The jsonb column's type is a compile-time cast; re-validate before deep
   // rendering so a legacy or malformed envelope degrades to a notice instead
@@ -147,7 +142,7 @@ export default async function ReviewDetailPage({
         <Link href={`/orgs/${org.slug}`} className="hover:underline">
           {org.slug}
         </Link>{" "}
-        / review #{review.id}
+        / run #{review.id}
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-4">
         <h1 className="serif-display text-3xl">
@@ -166,6 +161,25 @@ export default async function ReviewDetailPage({
 
       {/* Run facts */}
       <div className="card mt-6 grid gap-x-8 gap-y-2 p-5 sm:grid-cols-2">
+        <p className="font-mono text-xs text-charcoal/70">
+          status <span className="text-charcoal">{review.status}</span>
+        </p>
+        <p className="font-mono text-xs text-charcoal/70">
+          gate{" "}
+          <span className="text-charcoal">
+            {review.status === "completed" && review.gateFailing !== null
+              ? review.gateFailing
+                ? "failing"
+                : "passing"
+              : "—"}
+          </span>
+        </p>
+        <p className="font-mono text-xs text-charcoal/70">
+          silent{" "}
+          <span className="text-charcoal">
+            {review.silent === null ? "—" : review.silent ? "yes" : "no"}
+          </span>
+        </p>
         <p className="font-mono text-xs text-charcoal/70">
           model <span className="text-charcoal">{envelope?.modelUsed ?? "—"}</span>
         </p>
@@ -188,24 +202,47 @@ export default async function ReviewDetailPage({
         <p className="font-mono text-xs text-charcoal/70">
           gate fails on <span className="text-charcoal">{envelope?.gate.failOn ?? "—"}</span>
         </p>
-        <p className="font-mono text-xs text-charcoal/70">
-          head <span className="text-charcoal">{review.headSha.slice(0, 12)}</span>
+        <p className="font-mono text-xs text-charcoal/70 sm:col-span-2">
+          head <span className="break-all text-charcoal">{review.headSha}</span>
         </p>
-        <p className="font-mono text-xs text-charcoal/70">
-          base{" "}
-          <span className="text-charcoal">
-            {review.baseSha.slice(0, 12)}
-            {review.sinceSha ? ` (incremental since ${review.sinceSha.slice(0, 12)})` : ""}
-          </span>
+        <p className="font-mono text-xs text-charcoal/70 sm:col-span-2">
+          base <span className="break-all text-charcoal">{review.baseSha}</span>
+        </p>
+        <p className="font-mono text-xs text-charcoal/70 sm:col-span-2">
+          incremental since{" "}
+          <span className="break-all text-charcoal">{review.sinceSha ?? "—"}</span>
         </p>
         <p className="font-mono text-xs text-charcoal/70">
           queued{" "}
           <span className="text-charcoal">{review.queuedAt.toISOString()}</span>
         </p>
         <p className="font-mono text-xs text-charcoal/70">
+          started{" "}
+          <span className="text-charcoal">
+            {review.startedAt ? review.startedAt.toISOString() : "—"}
+          </span>
+        </p>
+        <p className="font-mono text-xs text-charcoal/70">
           finished{" "}
           <span className="text-charcoal">
             {review.finishedAt ? review.finishedAt.toISOString() : "—"}
+          </span>
+        </p>
+        <p className="font-mono text-xs text-charcoal/70">
+          advisory check run{" "}
+          <span className="text-charcoal">{review.advisoryCheckRunId ?? "—"}</span>
+        </p>
+        <p className="font-mono text-xs text-charcoal/70">
+          gate check run <span className="text-charcoal">{review.gateCheckRunId ?? "—"}</span>
+        </p>
+        <p className="font-mono text-xs text-charcoal/70 sm:col-span-2">
+          repository config{" "}
+          <span className="text-charcoal">
+            {review.configFiles === null
+              ? "unknown"
+              : review.configFiles.length > 0
+                ? review.configFiles.join(", ")
+                : "none"}
           </span>
         </p>
       </div>
@@ -274,6 +311,46 @@ export default async function ReviewDetailPage({
             </div>
           )}
         </>
+      )}
+
+      {usageEvents.length > 0 && (
+        <div className="mt-8">
+          <p className="eyebrow">Usage events</p>
+          <div className="card mt-3 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/50">
+                  <th className="px-4 py-3 font-normal">model</th>
+                  <th className="px-4 py-3 font-normal">prompt tokens</th>
+                  <th className="px-4 py-3 font-normal">completion tokens</th>
+                  <th className="px-4 py-3 font-normal">total tokens</th>
+                  <th className="px-4 py-3 font-normal">recorded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usageEvents.map((event) => (
+                  <tr key={event.id} className="border-b border-stone/60 last:border-0">
+                    <td className="px-4 py-2.5 font-mono text-xs">
+                      {event.modelUsed ?? "—"}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs">
+                      {event.promptTokens.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs">
+                      {event.completionTokens.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs">
+                      {(event.promptTokens + event.completionTokens).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs">
+                      {event.createdAt.toISOString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
 
       {envelopeInvalid && (

@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
 
 import { and, desc, eq, sql } from "drizzle-orm";
 
@@ -10,9 +9,9 @@ import {
   GateBadge,
   ReviewStatusBadge,
 } from "@/components/review-status";
-import { getDb, schema } from "@/lib/db";
+import { schema } from "@/lib/db";
 import { githubPrUrl } from "@/lib/github-links";
-import { getSessionUser } from "@/lib/session";
+import { requireOrgMembership } from "@/lib/org-access";
 import { saveOrgSettings, toggleRepository } from "./actions";
 
 export const metadata: Metadata = {
@@ -29,27 +28,7 @@ export default async function OrgDashboardPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const user = await getSessionUser();
-  if (!user) redirect("/login");
-
-  const db = getDb();
-  const org = (
-    await db
-      .select()
-      .from(schema.organizations)
-      .where(eq(schema.organizations.slug, slug))
-      .limit(1)
-  )[0];
-  if (!org) notFound();
-
-  const membership = (
-    await db
-      .select({ id: schema.orgMembers.id, role: schema.orgMembers.role })
-      .from(schema.orgMembers)
-      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
-      .limit(1)
-  )[0];
-  if (!membership) notFound();
+  const { db, org, membership } = await requireOrgMembership(slug);
   const isAdmin = membership.role === "admin";
 
   const suspendedInstallations = await db
@@ -188,6 +167,27 @@ export default async function OrgDashboardPage({
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
 
+  const latestRepoReviews = await db
+    .selectDistinctOn([schema.reviews.repositoryId], {
+      repositoryId: schema.reviews.repositoryId,
+      configFiles: schema.reviews.configFiles,
+    })
+    .from(schema.reviews)
+    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+    .innerJoin(
+      schema.installations,
+      eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .where(and(eq(schema.installations.orgId, org.id), eq(schema.reviews.status, "completed")))
+    .orderBy(
+      schema.reviews.repositoryId,
+      desc(schema.reviews.finishedAt),
+      desc(schema.reviews.id),
+    );
+  const latestRepoReviewByRepositoryId = new Map(
+    latestRepoReviews.map((review) => [review.repositoryId, review]),
+  );
+
   const settings = (
     await db
       .select({
@@ -213,9 +213,9 @@ export default async function OrgDashboardPage({
           </p>
           <h1 className="serif-display mt-2 text-3xl">{org.name}</h1>
         </div>
-        <span className="rounded-full border border-gate px-3 py-1 font-mono text-xs text-gate">
-          plan: {org.plan}
-        </span>
+        <Link href="/pricing" className="btn-primary text-xs">
+          plan: {org.plan} · upgrade
+        </Link>
       </div>
 
       {suspendedInstallations.length > 0 && (
@@ -328,8 +328,18 @@ export default async function OrgDashboardPage({
             </thead>
             <tbody>
               {recentReviews.map((r) => (
-                <tr key={r.id} className="border-b border-stone/60 last:border-0">
-                  <td className="px-4 py-2.5 font-mono text-xs">{r.repoFullName}</td>
+                <tr
+                  key={r.id}
+                  className="border-b border-stone/60 last:border-0 hover:bg-stone/20"
+                >
+                  <td className="px-4 py-2.5 font-mono text-xs">
+                    <Link
+                      href={`/orgs/${org.slug}/runs/${r.id}`}
+                      className="hover:text-rust hover:underline"
+                    >
+                      {r.repoFullName}
+                    </Link>
+                  </td>
                   <td className="px-4 py-2.5 font-mono text-xs">
                     <a
                       href={githubPrUrl(r.repoFullName, r.prNumber)}
@@ -360,10 +370,10 @@ export default async function OrgDashboardPage({
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs">
                     <Link
-                      href={`/orgs/${org.slug}/reviews/${r.id}`}
+                      href={`/orgs/${org.slug}/runs/${r.id}`}
                       className="text-rust hover:underline"
                     >
-                      view
+                      view run
                     </Link>
                   </td>
                 </tr>
@@ -392,6 +402,30 @@ export default async function OrgDashboardPage({
                   <p className="font-mono text-[11px] text-charcoal/70">
                     {repo.private ? "private" : "public"}
                   </p>
+                  {(() => {
+                    const latestReview = latestRepoReviewByRepositoryId.get(repo.id);
+                    if (!latestReview) {
+                      return (
+                        <p className="mt-1 font-mono text-[11px] text-charcoal/50">
+                          no completed review yet
+                        </p>
+                      );
+                    }
+                    if (latestReview.configFiles === null) {
+                      return (
+                        <p className="mt-1 font-mono text-[11px] text-charcoal/50">
+                          overrides: unknown for the last review
+                        </p>
+                      );
+                    }
+                    return (
+                      <p className="mt-1 font-mono text-[11px] text-charcoal/50">
+                        {latestReview.configFiles.length > 0
+                          ? `overrides: ${latestReview.configFiles.join(", ")}`
+                          : "no repo overrides seen in the last review"}
+                      </p>
+                    );
+                  })()}
                 </div>
                 {isAdmin ? (
                   <form action={toggleRepository}>
@@ -433,6 +467,20 @@ export default async function OrgDashboardPage({
         {/* BYO settings */}
         <div>
           <p className="eyebrow">LLM settings (BYO key)</p>
+          <div className="mt-3 space-y-2 text-sm text-ink-soft">
+            <p>
+              See the <Link href="/docs/models">model guide</Link> and{" "}
+              <Link href="/docs/config">configuration reference</Link>.
+            </p>
+            <p className="text-xs text-charcoal/70">
+              At review time, Postil reads configuration from the repository&apos;s default
+              branch. The first available of <code>.postil.yaml</code>,{" "}
+              <code>.postil.yml</code>, or <code>.postil.json</code>, plus{" "}
+              <code>.postil/guardrails.md</code> and{" "}
+              <code>.postil/content-policy.md</code>, overrides these organization settings
+              for that repository&apos;s review.
+            </p>
+          </div>
           {!isAdmin && (
             <div className="card mt-3 space-y-2 p-5 text-sm">
               <p className="font-mono text-xs text-charcoal/70">
