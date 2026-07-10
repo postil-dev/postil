@@ -200,7 +200,7 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-/** Per-org BYO LLM settings. The API key is sealed with AES-256-GCM and never read back out via the UI. */
+/** Per-org hosted review configuration and BYO LLM settings. */
 export const orgSettings = pgTable("org_settings", {
   orgId: bigint("org_id", { mode: "number" })
     .primaryKey()
@@ -209,5 +209,8 @@ export const orgSettings = pgTable("org_settings", {
   apiKeyCiphertext: bytea("api_key_ciphertext"),
   model: text("model"),
   modelCascade: text("model_cascade"),
+  configYaml: text("config_yaml"),
+  guardrailsMd: text("guardrails_md"),
+  contentPolicyMd: text("content_policy_md"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

@@ -22,6 +22,13 @@
       "when": 1783694224079,
       "tag": "0002_add_review_config_files",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783695869742,
+      "tag": "0003_add_org_review_config",
+      "breakpoints": true
     }
   ]
 }

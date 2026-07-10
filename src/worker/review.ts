@@ -16,7 +16,11 @@ import {
   completeCheckRun,
   createCheckRun,
 } from "@/lib/github/checks";
-import { materializeRepoConfig } from "@/lib/github/contents";
+import {
+  materializeOrgConfig,
+  materializeRepoConfig,
+  type OrgReviewConfig,
+} from "@/lib/github/contents";
 import { configuredPublicOrigin } from "@/lib/oauth";
 import type { ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
@@ -82,6 +86,24 @@ export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConf
     model: settings.model ?? defaults.model,
     modelCascade: settings.modelCascade ?? defaults.modelCascade,
   };
+}
+
+/** Load hosted review artifacts independently of the organization's BYO key. */
+export async function resolveOrgReviewConfig(
+  orgId: number | null,
+): Promise<OrgReviewConfig | null> {
+  if (orgId == null) return null;
+  const db = getDb();
+  const rows = await db
+    .select({
+      configYaml: schema.orgSettings.configYaml,
+      guardrailsMd: schema.orgSettings.guardrailsMd,
+      contentPolicyMd: schema.orgSettings.contentPolicyMd,
+    })
+    .from(schema.orgSettings)
+    .where(eq(schema.orgSettings.orgId, orgId))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 interface CliResult {
@@ -279,12 +301,29 @@ export async function runReviewJob(payload: ReviewJobPayload): Promise<void> {
     // trust model (default branch only, never the PR head).
     workDir = resolve(CACHE_DIR, "workdirs", `review-${reviewId}`);
     await mkdir(workDir, { recursive: true });
-    const configFiles = await materializeRepoConfig(token, payload.repoFullName, workDir);
-    if (configFiles.length > 0) {
+    const repoConfigFiles = await materializeRepoConfig(
+      token,
+      payload.repoFullName,
+      workDir,
+    );
+    if (repoConfigFiles.length > 0) {
       console.log(
-        `review ${reviewId}: using repo config from ${payload.repoFullName} (${configFiles.join(", ")})`,
+        `review ${reviewId}: using repo config from ${payload.repoFullName} (${repoConfigFiles.join(", ")})`,
       );
     }
+    const orgConfigFiles = await materializeOrgConfig(
+      workDir,
+      repoConfigFiles,
+      await resolveOrgReviewConfig(installation.orgId),
+    );
+    if (orgConfigFiles.length > 0) {
+      console.log(
+        `review ${reviewId}: using hosted organization config (${orgConfigFiles
+          .map((file) => file.slice(4))
+          .join(", ")})`,
+      );
+    }
+    const configFiles = [...repoConfigFiles, ...orgConfigFiles];
 
     const llm = await resolveLlmConfig(installation.orgId);
     sensitiveValues = [token, llm.apiKey].filter((value): value is string => Boolean(value));

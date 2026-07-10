@@ -236,12 +236,18 @@ export default async function RunDetailPage({
           gate check run <span className="text-charcoal">{review.gateCheckRunId ?? "—"}</span>
         </p>
         <p className="font-mono text-xs text-charcoal/70 sm:col-span-2">
-          repository config{" "}
+          configuration{" "}
           <span className="text-charcoal">
             {review.configFiles === null
               ? "unknown"
               : review.configFiles.length > 0
-                ? review.configFiles.join(", ")
+                ? review.configFiles
+                    .map((file) =>
+                      file.startsWith("org:")
+                        ? `organization: ${file.slice(4)}`
+                        : `repository: ${file}`,
+                    )
+                    .join(", ")
                 : "none"}
           </span>
         </p>
