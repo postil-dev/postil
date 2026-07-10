@@ -92,7 +92,7 @@ describeDb("webhook handler behaviour", () => {
           await pool.query(trimmed);
         } catch (err) {
           const code = (err as { code?: string }).code;
-          if (code !== "42P07" && code !== "42710") throw err;
+          if (code !== "42P07" && code !== "42710" && code !== "42701") throw err;
         }
       }
     }

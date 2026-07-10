@@ -201,7 +201,9 @@ export function RunLogPane() {
           pinnedToBottom.current =
             element.scrollHeight - element.scrollTop - element.clientHeight < 32;
         }}
-        className="mt-3 h-96 overflow-auto rounded-md border border-charcoal/80 bg-[#171815] p-4 shadow-card"
+        className={`mt-3 overflow-auto rounded-md border border-charcoal/80 bg-[#171815] p-4 shadow-card ${
+          lines.length === 0 && !isActive(status) ? "" : "h-96"
+        }`}
         role="log"
         aria-live={isActive(status) ? "polite" : "off"}
       >
