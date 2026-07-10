@@ -1,18 +1,18 @@
 import type { NextConfig } from "next";
 
 // Enforced CSP. The site loads only first-party assets plus a small,
-// explicit allowlist of cross-origin fetches, so the policy is restrictive
-// by default. Next.js emits inline bootstrap scripts and the pages embed inline
-// JSON-LD, so script-src needs 'unsafe-inline' until nonces are wired through
-// middleware; inline style attributes need it on style-src.
+// explicit allowlist of PostHog scripts and cross-origin fetches, so the policy
+// is restrictive by default. Next.js emits inline bootstrap scripts and the
+// pages embed inline JSON-LD, so script-src needs 'unsafe-inline' until nonces
+// are wired through middleware; inline style attributes need it on style-src.
 const csp = [
   "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'",
+      "script-src 'self' 'unsafe-inline' https://eu-assets.i.posthog.com https://us-assets.i.posthog.com",
       "script-src-attr 'none'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self' https://eu.i.posthog.com https://us.i.posthog.com",
+  "connect-src 'self' https://eu.i.posthog.com https://us.i.posthog.com https://eu-assets.i.posthog.com https://us-assets.i.posthog.com",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
