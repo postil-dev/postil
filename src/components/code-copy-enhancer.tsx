@@ -64,7 +64,10 @@ export function CodeCopyEnhancer() {
       if (status.parentNode === statusParent) {
         statusParent.removeChild(status);
       }
-      if (pre.isConnected && pre.dataset.copyEnhanced === mode) {
+      // Always drop the marker, connected or not: a disconnected <pre> that
+      // React later re-inserts must not carry a stale marker that blocks
+      // re-enhancement.
+      if (pre.dataset.copyEnhanced === mode) {
         delete pre.dataset.copyEnhanced;
       }
 
@@ -170,9 +173,19 @@ export function CodeCopyEnhancer() {
         });
       });
 
+      // A re-render can strip the injected controls while keeping the marked
+      // <pre> in place; treat a missing button or status like a removed block
+      // and re-enhance the survivor.
       Array.from(enhancements)
-        .filter(({ pre }) => !pre.isConnected)
-        .forEach(cleanupEnhancement);
+        .filter(
+          ({ pre, button, status }) =>
+            !pre.isConnected || !button.isConnected || !status.isConnected,
+        )
+        .forEach((enhancement) => {
+          const { pre } = enhancement;
+          cleanupEnhancement(enhancement);
+          if (pre.isConnected) enhance(pre);
+        });
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
