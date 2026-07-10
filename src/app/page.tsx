@@ -7,6 +7,7 @@ import { PrMock } from "@/components/pr-mock";
 import { Section } from "@/components/section";
 import { StatusIcon } from "@/components/status-icon";
 import { Terminal } from "@/components/terminal";
+import { githubAppInstallUrl } from "@/lib/github-app";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/" },
@@ -43,22 +44,21 @@ export default function HomePage() {
               A review gate for agent-speed development
             </p>
             <h1 className="serif-display mt-4 text-4xl md:text-[56px]">
-              Trust the merge,
+              AI review that can
               <br />
-              not the speed.
+              block a merge.
             </h1>
             <p className="mt-6 max-w-xl text-lg text-ink-soft">
-              AI code review that blocks bad merges. Postil reviews every pull
-              request, comments only when it can affect the merge, and stays
-              completely silent on clean PRs. We say less. What we say is
-              right.
+              Postil reviews every pull request as a real CI check. It comments
+              only when a finding could change the merge decision, and it stays
+              silent on clean PRs.
             </p>
             <div className="mt-8 flex flex-wrap gap-4">
-              <Link href="/install" className="btn-primary">
+              <a href={githubAppInstallUrl()} className="btn-primary">
+                Install the GitHub App
+              </a>
+              <Link href="/install" className="btn-secondary">
                 Install the CLI
-              </Link>
-              <Link href="/docs" className="btn-secondary">
-                Read the docs
               </Link>
             </div>
             <p className="mt-6 font-mono text-xs text-charcoal/75">
@@ -72,14 +72,14 @@ export default function HomePage() {
       <Section
         number="01"
         eyebrow="The noise problem"
-        title="AI review tools have a trust problem before they have a quality problem."
+        title="Most AI reviewers comment too much to be trusted."
       >
         <div className="grid gap-8 md:grid-cols-3">
           <div className="card p-6">
             <p className="serif-display text-4xl text-rust">36%</p>
             <p className="mt-3 text-sm text-ink-soft">
               of comments in an independent 28-PR audit of the category leader
-              were noise or nitpicking — 15% rated useless, another 21% pure
+              were noise or nitpicking: 15% rated useless, another 21% pure
               style nits.
             </p>
           </div>
@@ -87,7 +87,7 @@ export default function HomePage() {
             <p className="serif-display text-4xl text-rust">30%</p>
             <p className="mt-3 text-sm text-ink-soft">
               of a leading reviewer&apos;s comments were addressed by developers
-              before it retuned its defaults — by its own published numbers.
+              before it retuned its defaults, by its own published numbers.
               Most AI review comments change nothing.
             </p>
           </div>
@@ -101,10 +101,10 @@ export default function HomePage() {
           </div>
         </div>
         <p className="mt-8 max-w-2xl text-ink-soft">
-          Postil inverts the default. A finding ships only when it cites a diff
-          location, clears a confidence threshold, and could change the merge
-          decision. Everything else is silence — and silence is measured, not
-          assumed.
+          A Postil finding ships only when it cites a diff location, clears a
+          confidence threshold, and could change the merge decision. Everything
+          below that bar stays silent, and the silence rate itself is measured
+          and published on every dashboard.
         </p>
         <p className="mt-6 max-w-3xl font-mono text-[13px] leading-relaxed text-charcoal/75">
           Sources: the 28-PR audit is{" "}
@@ -143,7 +143,7 @@ export default function HomePage() {
       <Section
         number="02"
         eyebrow="The gate"
-        title="Two check-runs. One blocks, one advises. Never conflated."
+        title="Two check-runs: one blocks, one advises."
       >
         <div className="grid gap-8 lg:grid-cols-2">
           <div className="space-y-4">
@@ -155,8 +155,9 @@ export default function HomePage() {
                   Fails only on gate-level findings (default: severity{" "}
                   <code className="font-mono text-xs">error</code>). Require it
                   in branch protection and nothing below the threshold can
-                  block a merge. Fails closed on operational errors by default —
-                  an unreviewed head is not a passing head. Repos can opt into{" "}
+                  block a merge. Fails closed on operational errors by default:
+                  the gate never marks an unreviewed head as passing. Repos can
+                  opt into{" "}
                   <code className="font-mono text-xs">gate.onError: advisory</code>{" "}
                   to fail open on provider outages only.
                 </p>
@@ -178,23 +179,22 @@ export default function HomePage() {
               <div>
                 <p className="font-mono text-sm font-semibold">clean PR</p>
                 <p className="mt-1 text-sm text-ink-soft">
-                  Both checks complete green. No comment, no summary poem, no
-                  "LGTM" filler. The check-run is the entire conversation.
+                  Both checks complete green. No comment, no summary, no LGTM
+                  filler. The check-run is the entire conversation.
                 </p>
               </div>
             </div>
           </div>
           <div>
             <p className="text-ink-soft">
-              A grey, neutral check that "reads as didn't fail" is how a
-              critical finding gets merged on a Friday. Postil's gate is a real
-              CI check with real semantics: it fails on what matters and passes
-              on what doesn't, separately from advisory commentary.
+              A neutral grey check reads as not-failed, and critical findings
+              merge right past it. Postil's gate is a real CI check with real
+              semantics: it fails on what matters and passes on what doesn't,
+              separately from advisory commentary.
             </p>
             <p className="mt-4 text-ink-soft">
-              No other mainstream reviewer ships this separation. Teams
-              currently rebuild it by hand out of raw check statuses — or merge
-              past advisory comments they have learned to ignore.
+              No other mainstream reviewer ships this separation; teams rebuild
+              it by hand from raw check statuses.
             </p>
             <p className="mt-6">
               <Link href="/docs/gate" className="link-arrow">
@@ -217,8 +217,8 @@ export default function HomePage() {
             <p className="text-ink-soft">
               On GitHub, Postil shows up as exactly two check-runs plus, when
               warranted, batched inline comments. The gate fails on a finding it
-              can stand behind — here a missing idempotency key on a refund path
-              — while advisory commentary stays out of the blocking lane.
+              can stand behind (here a missing idempotency key on a refund
+              path) while advisory commentary stays out of the blocking lane.
             </p>
             <ul className="mt-6 space-y-3 text-sm text-ink-soft">
               <li className="flex gap-3">
@@ -281,7 +281,7 @@ export default function HomePage() {
               <code className="font-mono text-sm">postil review</code> works on
               your staged changes, against any base ref, on a saved diff, or on
               a remote PR. The GitHub Action and the hosted worker shell out to
-              the same pinned binary — there is no second review engine to
+              the same pinned binary, so there is no second review engine to
               drift.
             </p>
             <ul className="mt-6 space-y-3 text-sm text-ink-soft">
@@ -312,7 +312,7 @@ export default function HomePage() {
         id="silence-rate"
         number="05"
         eyebrow="Provable restraint"
-        title="Silence is a metric, not a hope."
+        title="We measure how often we say nothing."
       >
         <div className="grid items-center gap-10 lg:grid-cols-2">
           {/*
@@ -353,15 +353,15 @@ export default function HomePage() {
             </p>
             <p className="mt-4 text-ink-soft">
               If the bot is drifting noisy, you see it in a chart before your
-              engineers feel it in their notifications. No incumbent surfaces
-              this number; most would rather you didn't ask.
+              engineers feel it in their notifications. No other reviewer
+              publishes this number.
             </p>
             <p className="mt-6 flex flex-wrap gap-x-6 gap-y-2">
               <Link href="/how-it-works#silence-methodology" className="link-arrow">
                 How the silence metric is computed
               </Link>
               <Link href="/why-postil" className="link-arrow">
-                Why no incumbent shows it
+                How other tools compare
               </Link>
             </p>
           </div>
@@ -371,8 +371,8 @@ export default function HomePage() {
       {/* 06 — Limits, stated plainly */}
       <Section
         number="06"
-        eyebrow="Limits, stated plainly"
-        title="What Postil cannot do, and what we did about the rest."
+        eyebrow="Known limits"
+        title="What Postil cannot do."
       >
         <div className="grid gap-6 md:grid-cols-2">
           <div className="card p-6">
@@ -380,10 +380,10 @@ export default function HomePage() {
               It reasons about your diff, not your repository.
             </p>
             <p className="mt-2 text-sm text-ink-soft">
-              The CLI reviews the changed lines and the context around them —
-              not a full checkout, not your test suite, not runtime behavior.
-              A bug that only manifests three call sites away, outside the
-              diff, can be missed.
+              The CLI reviews the changed lines and the context around them,
+              not a full checkout, your test suite, or runtime behavior. A bug
+              that only manifests three call sites away, outside the diff, can
+              be missed.
             </p>
           </div>
           <div className="card p-6">
@@ -391,9 +391,9 @@ export default function HomePage() {
               It does not execute code.
             </p>
             <p className="mt-2 text-sm text-ink-soft">
-              Findings come from reading the diff, not from running it. Pair
-              the gate with your test suite and type checker; it is a review
-              layer, not a replacement for either.
+              Findings come from reading the diff; nothing is compiled or run.
+              Pair the gate with your test suite and type checker: it is a
+              review layer on top of them, and it replaces neither.
             </p>
           </div>
           <div className="card p-6">
@@ -401,27 +401,24 @@ export default function HomePage() {
               An LLM can be talked into a plausible clean review.
             </p>
             <p className="mt-2 text-sm text-ink-soft">
-              A sufficiently convincing diff — or a PR description written to
-              steer the model — can produce a false pass. Confidence
-              thresholds and the gate/advisory split reduce how often that
-              matters, but they do not make the model unpersuadable. This is
-              a model-family limit, not a Postil-specific bug, and we are not
-              going to pretend otherwise.
+              A sufficiently convincing diff, or a PR description written to
+              steer the model, can produce a false pass. Confidence thresholds
+              and the gate/advisory split reduce how often that matters, but
+              they do not make the model unpersuadable. This limit belongs to
+              the model family and applies to every LLM reviewer.
             </p>
           </div>
           <div className="card p-6">
             <p className="font-mono text-sm font-semibold text-charcoal">
-              Fixed: findings that couldn&apos;t cite a diff line used to
-              vanish silently.
+              Ungrounded findings fail closed.
             </p>
             <p className="mt-2 text-sm text-ink-soft">
               Every finding must ground to a real diff location or it is
-              dropped before you see it — including, previously, legitimate
-              findings about the PR title or description, which have no diff
-              line of their own. Those now ground against a reserved
-              synthetic anchor instead of being discarded, and an
-              all-findings-dropped run fails closed rather than reading as a
-              silent pass.
+              dropped before you see it. Findings about the PR title or
+              description, which have no diff line of their own, ground
+              against a reserved synthetic anchor, and a run whose findings
+              were all dropped fails closed rather than reading as a silent
+              pass.
             </p>
           </div>
         </div>
@@ -430,8 +427,8 @@ export default function HomePage() {
       {/* 07 — Pricing teaser */}
       <Section
         number="07"
-        eyebrow="Pricing without meter anxiety"
-        title="Flat price. Default reviews included."
+        eyebrow="Pricing"
+        title="Flat per-developer pricing, reviews included."
       >
         <div className="grid gap-8 md:grid-cols-3">
           <div className="card p-6">
@@ -457,10 +454,10 @@ export default function HomePage() {
           </div>
         </div>
         <p className="mt-8 max-w-2xl text-ink-soft">
-          Your worst-case monthly bill is your seat count times ten dollars.
-          Hosted reviews are included by default, and BYO key remains an
-          optional policy control. No per-review surcharges, no credits, no
-          billing shock at 10x PR volume.
+          Your worst-case monthly bill is your seat count times ten dollars:
+          no per-review surcharges, no credits, no metered overage when PR
+          volume grows. Hosted reviews are included by default, and BYO key
+          remains an optional policy control.
         </p>
         <p className="mt-6">
           <Link href="/pricing" className="link-arrow">
@@ -474,7 +471,7 @@ export default function HomePage() {
         <div className="rounded-card shadow-card flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="serif-display text-3xl">
-              Review by default. Trust by evidence.
+              Put a real gate on your next PR.
             </h2>
             <p className="mt-2 max-w-xl text-sm text-ivory/70">
               Install the GitHub App or run the CLI on your next diff. If we
@@ -482,9 +479,9 @@ export default function HomePage() {
             </p>
           </div>
           <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">
-            <Link href="/install" className="btn-primary text-center">
-              Install the CLI
-            </Link>
+            <a href={githubAppInstallUrl()} className="btn-primary text-center">
+              Install the GitHub App
+            </a>
             <Link
               href="/docs"
               className="inline-block rounded-card border border-ivory/40 px-5 py-2.5 text-center text-[15px] font-medium text-ivory transition-colors hover:bg-ivory/10"
