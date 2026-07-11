@@ -8,6 +8,8 @@
  * checks the sessions table.
  */
 
+const SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/;
+
 function toBase64url(bytes: Uint8Array): string {
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
@@ -40,6 +42,11 @@ export async function signSessionToken(sessionId: string, secret: string): Promi
   const key = await importKey(secret);
   const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(sessionId));
   return `${sessionId}.${toBase64url(new Uint8Array(mac))}`;
+}
+
+/** Returns true for session cookies with this app's minted token shape. */
+export function isSessionTokenFormat(token: string | undefined): token is string {
+  return typeof token === "string" && SESSION_TOKEN_PATTERN.test(token);
 }
 
 /** Returns the sessionId when the signature is valid, otherwise null. */
