@@ -60,6 +60,7 @@ try {
 
   fixtureClient = new Client({ connectionString: databaseUrl.toString() });
   await fixtureClient.connect();
+  await seedMorgaesisBillingFixture(fixtureClient);
   const reviewResult = await fixtureClient.query<{ public_id: string; full_name: string }>(`
     SELECT reviews.public_id, repositories.full_name
     FROM reviews
@@ -72,6 +73,37 @@ try {
   if (!review) throw new Error("seed did not create a completed review with findings");
   await fixtureClient.end();
   fixtureClient = undefined;
+
+  const grantOutput = await run(
+    [
+      "bun",
+      "run",
+      "billing:grant-credit",
+      "--",
+      "--org",
+      "morgaesis",
+      "--confirm-org",
+      "morgaesis",
+      "--amount",
+      "200",
+      "--reason",
+      "Owner launch credit",
+      "--actor",
+      "dashboard-verification",
+      "--idempotency-key",
+      "morgaesis-2026-07-owner-credit",
+      "--applies-at",
+      "2026-07-01T00:00:00.000Z",
+    ],
+    appEnv,
+    true,
+  );
+  assertContains(grantOutput, "Billing credit grant applied.");
+  assertContains(grantOutput, "grant_amount=$200.00");
+  assertContains(grantOutput, "usage_charged=$1.31");
+  assertContains(grantOutput, "remaining=$198.69");
+  assertContains(grantOutput, "charged_usage_events=1");
+  console.log("morgaesis billing credit grant: $200.00 granted, $1.31 charged, $198.69 remaining");
 
   await mkdir(stateDir, { recursive: true });
   await writeFile(
@@ -97,7 +129,7 @@ try {
   await verifyJson(`${origin}/api/auth/session`, headers, {
     authenticated: true,
     login: "demo-dev",
-    dashboardHref: "/orgs/acme",
+    dashboardHref: "/reports",
   });
   await verifyPage(`${origin}/orgs/acme`, headers, [
     "Acme Robotics",
@@ -109,6 +141,15 @@ try {
     "Config files",
   ]);
   await verifyPage(`${origin}/orgs/acme/billing`, headers, ["Organization billing"]);
+  await verifyPage(`${origin}/orgs/morgaesis/billing`, headers, [
+    "Credit balance",
+    "$198.69",
+    "$200.00",
+    "$1.31",
+    "charged across",
+    "Owner launch credit",
+    "morgaesis-2026-07-owner-credit",
+  ]);
   await verifyPage(`${origin}/reports`, headers, ["Recent reviews", "demo-dev", "Acme Robotics"]);
   await verifyPage(`${origin}/orgs/acme/runs/${review.public_id}`, headers, [
     review.full_name,
@@ -163,6 +204,109 @@ async function run(
     throw new Error(`${command.join(" ")} failed (${exitCode})\n${stderr || stdout}`);
   }
   return stdout;
+}
+
+async function seedMorgaesisBillingFixture(client: Client): Promise<void> {
+  await client.query(`
+    WITH owner AS (
+      SELECT id FROM users WHERE login = 'demo-dev' LIMIT 1
+    ),
+    org AS (
+      INSERT INTO organizations (slug, name, github_org_id, plan)
+      VALUES ('morgaesis', 'Morgaesis', 9999200, 'beta')
+      ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+      RETURNING id
+    ),
+    membership AS (
+      INSERT INTO org_members (org_id, user_id, role)
+      SELECT org.id, owner.id, 'admin'
+      FROM org, owner
+      ON CONFLICT DO NOTHING
+      RETURNING id
+    ),
+    installation AS (
+      INSERT INTO installations (github_installation_id, org_id, account_login, account_type)
+      SELECT 555002, org.id, 'morgaesis', 'Organization'
+      FROM org
+      ON CONFLICT (github_installation_id) DO UPDATE SET org_id = EXCLUDED.org_id
+      RETURNING id, org_id
+    ),
+    repository AS (
+      INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+      SELECT installation.id, 778000, 'morgaesis/postil', true, true
+      FROM installation
+      ON CONFLICT (github_repo_id) DO UPDATE SET installation_id = EXCLUDED.installation_id
+      RETURNING id, github_repo_id, full_name, private
+    ),
+    enablement AS (
+      INSERT INTO repository_enablement_events (
+        org_id,
+        repository_id,
+        github_repo_id,
+        repository_full_name,
+        repository_private,
+        action,
+        source,
+        occurred_at
+      )
+      SELECT
+        installation.org_id,
+        repository.id,
+        repository.github_repo_id,
+        repository.full_name,
+        repository.private,
+        'enable',
+        'migration_baseline',
+        '2026-07-01T00:00:00.000Z'::timestamptz
+      FROM installation, repository
+      RETURNING id
+    ),
+    review AS (
+      INSERT INTO reviews (
+        repository_id,
+        pr_number,
+        head_sha,
+        base_sha,
+        status,
+        silent,
+        gate_failing,
+        queued_at,
+        started_at,
+        finished_at
+      )
+      SELECT
+        repository.id,
+        200,
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        'completed',
+        true,
+        false,
+        '2026-07-11T11:00:00.000Z'::timestamptz,
+        '2026-07-11T11:00:05.000Z'::timestamptz,
+        '2026-07-11T11:00:30.000Z'::timestamptz
+      FROM repository
+      RETURNING id, repository_id
+    )
+    INSERT INTO usage_events (
+      org_id,
+      repository_id,
+      review_id,
+      prompt_tokens,
+      completion_tokens,
+      model_used,
+      created_at
+    )
+    SELECT
+      installation.org_id,
+      review.repository_id,
+      review.id,
+      2000000,
+      500000,
+      'deepseek/deepseek-v4-pro',
+      '2026-07-11T12:00:00.000Z'::timestamptz
+    FROM installation, review;
+  `);
 }
 
 async function waitForServer(
@@ -240,6 +384,12 @@ async function verifyJsonShape(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function assertContains(value: string, expected: string): void {
+  if (!value.includes(expected)) {
+    throw new Error(`expected command output to contain ${JSON.stringify(expected)}; got ${value}`);
+  }
 }
 
 function assertLocalDatabase(value: string): void {

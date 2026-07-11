@@ -1,0 +1,77 @@
+import { describe, expect, test } from "bun:test";
+
+import {
+  calculateBillingCreditBalance,
+  formatCurrencyCents,
+  parseUsdToCents,
+  usageEventCostCents,
+} from "@/lib/billing-credits";
+
+describe("billing credit calculations", () => {
+  test("prices usage events in whole cents from the model catalog", () => {
+    expect(
+      usageEventCostCents({
+        id: 1,
+        promptTokens: 2_000_000,
+        completionTokens: 500_000,
+        modelUsed: "deepseek/deepseek-v4-pro",
+        createdAt: new Date("2026-07-11T12:00:00.000Z"),
+      }),
+    ).toBe(131);
+  });
+
+  test("deducts post-grant usage from applied credit grants", () => {
+    const balance = calculateBillingCreditBalance(
+      [
+        {
+          amountCents: 20_000,
+          appliesAt: new Date("2026-07-01T00:00:00.000Z"),
+        },
+        {
+          amountCents: 10_000,
+          appliesAt: new Date("2026-08-01T00:00:00.000Z"),
+        },
+      ],
+      [
+        {
+          id: 1,
+          promptTokens: 10_000_000,
+          completionTokens: 0,
+          modelUsed: "deepseek/deepseek-v4-pro",
+          createdAt: new Date("2026-06-30T23:59:00.000Z"),
+        },
+        {
+          id: 2,
+          promptTokens: 2_000_000,
+          completionTokens: 500_000,
+          modelUsed: "deepseek/deepseek-v4-pro",
+          createdAt: new Date("2026-07-11T12:00:00.000Z"),
+        },
+        {
+          id: 3,
+          promptTokens: 1,
+          completionTokens: 1,
+          modelUsed: "unknown/model",
+          createdAt: new Date("2026-07-11T12:01:00.000Z"),
+        },
+      ],
+      { asOf: new Date("2026-07-11T13:00:00.000Z") },
+    );
+
+    expect(balance).toEqual({
+      creditStartsAt: new Date("2026-07-01T00:00:00.000Z"),
+      totalGrantedCents: 20_000,
+      usageCostCents: 131,
+      remainingCents: 19_869,
+      chargedUsageEvents: 1,
+      unpricedUsageEvents: 1,
+    });
+  });
+
+  test("parses and formats USD cents", () => {
+    expect(parseUsdToCents("200")).toBe(20_000);
+    expect(parseUsdToCents("200.50")).toBe(20_050);
+    expect(() => parseUsdToCents("200.500")).toThrow("amount must be a positive USD value");
+    expect(formatCurrencyCents(19_869)).toBe("$198.69");
+  });
+});

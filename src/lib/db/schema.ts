@@ -261,6 +261,38 @@ export const usageEvents = pgTable("usage_events", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const billingCreditGrants = pgTable(
+  "billing_credit_grants",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    amountCents: integer("amount_cents").notNull(),
+    reason: text("reason").notNull(),
+    actor: text("actor").notNull(),
+    source: text("source").notNull().default("admin_script"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    appliesAt: timestamp("applies_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("billing_credit_grants_org_created_idx").on(t.orgId, t.createdAt, t.id),
+    uniqueIndex("billing_credit_grants_org_idempotency_idx").on(
+      t.orgId,
+      t.idempotencyKey,
+    ),
+    check("billing_credit_grants_amount_cents_positive", sql`${t.amountCents} > 0`),
+    check("billing_credit_grants_reason_nonempty", sql`length(btrim(${t.reason})) > 0`),
+    check("billing_credit_grants_actor_nonempty", sql`length(btrim(${t.actor})) > 0`),
+    check("billing_credit_grants_source_nonempty", sql`length(btrim(${t.source})) > 0`),
+    check(
+      "billing_credit_grants_idempotency_key_nonempty",
+      sql`length(btrim(${t.idempotencyKey})) > 0`,
+    ),
+  ],
+);
+
 /** Webhook delivery dedupe: insert-or-skip keyed by X-GitHub-Delivery. */
 export const webhookDeliveries = pgTable("webhook_deliveries", {
   deliveryId: text("delivery_id").primaryKey(),

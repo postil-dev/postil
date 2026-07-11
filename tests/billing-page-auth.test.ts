@@ -73,6 +73,27 @@ const currentRepoRows = [
   { id: 31, fullName: "acme/private-now", private: true },
   { id: 32, fullName: "acme/disabled", private: false },
 ];
+const creditGrantRows = [
+  {
+    id: 70,
+    amountCents: 20_000,
+    reason: "Owner credit grant",
+    actor: "billing-admin",
+    source: "admin_script",
+    idempotencyKey: "acme-2026-07-owner-credit",
+    appliesAt: new Date("2026-07-11T00:00:00.000Z"),
+    createdAt: new Date("2026-07-11T01:00:00.000Z"),
+  },
+];
+const usageRows = [
+  {
+    id: 80,
+    promptTokens: 10_000_000,
+    completionTokens: 1_000_000,
+    modelUsed: "deepseek/deepseek-v4-pro",
+    createdAt: new Date("2026-07-11T12:00:00.000Z"),
+  },
+];
 
 mock.module("@/lib/billing-usage", () => ({
   ...billingUsage,
@@ -112,6 +133,11 @@ describe("organization billing page auth", () => {
     expect(markup).toContain("17.5");
     expect(markup).toContain("enabled repo-days");
     expect(markup).toContain("billing-active now");
+    expect(markup).toContain("$194.78");
+    expect(markup).toContain("remaining from $200.00 granted");
+    expect(markup).toContain("$5.22 charged across");
+    expect(markup).toContain("Owner credit grant");
+    expect(markup).toContain("acme-2026-07-owner-credit");
     expect(markup).toContain("acme/public");
     expect(markup).toContain("acme/private-now");
     expect(markup).toContain("acme/disabled");
@@ -125,8 +151,22 @@ describe("organization billing page auth", () => {
 function fakeDb(): any {
   return {
     select(selection: Record<string, unknown>) {
-      const isEventQuery = "source" in selection;
-      const rows = isEventQuery ? eventRows : currentRepoRows;
+      const kind =
+        "repositoryFullName" in selection
+          ? "events"
+          : "amountCents" in selection
+            ? "credits"
+            : "promptTokens" in selection
+              ? "usage"
+              : "repositories";
+      const rows =
+        kind === "events"
+          ? eventRows
+          : kind === "credits"
+            ? creditGrantRows
+            : kind === "usage"
+              ? usageRows
+              : currentRepoRows;
       const chain = {
         from() {
           return chain;
@@ -135,7 +175,7 @@ function fakeDb(): any {
           return chain;
         },
         where() {
-          return isEventQuery ? chain : Promise.resolve(rows);
+          return kind === "repositories" ? Promise.resolve(rows) : chain;
         },
         orderBy() {
           return Promise.resolve(rows);
