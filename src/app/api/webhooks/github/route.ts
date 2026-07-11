@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { verifyWebhookSignature } from "@/lib/crypto/webhook";
-import { getDb, getPool, schema } from "@/lib/db";
+import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { ADVISORY_CHECK_NAME, GATE_CHECK_NAME } from "@/lib/github/checks";
@@ -11,11 +11,16 @@ import {
   type GithubAccount,
   type RepoSummary,
   upsertInstallation,
+  upsertRepository,
   upsertRepositories,
 } from "@/lib/github/installation-sync";
 import { mentionsPostil } from "@/lib/mentions";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
+import {
+  recordRepositoryEnablementEvent,
+  type RepositoryEnablementSource,
+} from "@/lib/repository-enablement";
 import { failCheckRuns, supersedeActiveReviews } from "@/worker/review";
 import { readPositiveIntEnv, triggerQueueDrain } from "@/worker/runner";
 
@@ -250,9 +255,12 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
       // in_progress. Unlike repositories_removed, the installation's token is
       // revoked the moment it is uninstalled, so there is no way to complete
       // those check-runs from here; just delete.
-      await db
-        .delete(schema.installations)
-        .where(eq(schema.installations.githubInstallationId, installation.id));
+      await db.transaction(async (tx) => {
+        await recordEnabledRepositoryRemovals(tx, installation.id, "github_uninstall");
+        await tx
+          .delete(schema.installations)
+          .where(eq(schema.installations.githubInstallationId, installation.id));
+      });
       break;
     case "suspend":
       await db
@@ -297,11 +305,61 @@ async function handleInstallationRepositories(
     // don't hang in_progress forever in the branch-protection UI. Best-effort:
     // a failure to complete must not block the removal.
     await completeRunningReviewsForRemovedRepos(installation.id, removed);
-    for (const repo of removed) {
-      await db
-        .delete(schema.repositories)
-        .where(eq(schema.repositories.githubRepoId, repo.id));
-    }
+    await db.transaction(async (tx) => {
+      await recordEnabledRepositoryRemovals(
+        tx,
+        installation.id,
+        "github_installation",
+        removed.map((repo) => repo.id),
+      );
+      for (const repo of removed) {
+        await tx
+          .delete(schema.repositories)
+          .where(eq(schema.repositories.githubRepoId, repo.id));
+      }
+    });
+  }
+}
+
+async function recordEnabledRepositoryRemovals(
+  db: Pick<Database, "select" | "insert">,
+  githubInstallationId: number,
+  source: RepositoryEnablementSource,
+  githubRepoIds?: number[],
+): Promise<void> {
+  const filters = [
+    eq(schema.installations.githubInstallationId, githubInstallationId),
+    eq(schema.repositories.enabled, true),
+  ];
+  if (githubRepoIds && githubRepoIds.length > 0) {
+    filters.push(inArray(schema.repositories.githubRepoId, githubRepoIds));
+  }
+  const repos = await db
+    .select({
+      orgId: schema.installations.orgId,
+      repositoryId: schema.repositories.id,
+      githubRepoId: schema.repositories.githubRepoId,
+      fullName: schema.repositories.fullName,
+      private: schema.repositories.private,
+    })
+    .from(schema.repositories)
+    .innerJoin(
+      schema.installations,
+      eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .where(and(...filters));
+
+  for (const repo of repos) {
+    if (repo.orgId === null) continue;
+    await recordRepositoryEnablementEvent(db, {
+      orgId: repo.orgId,
+      repositoryId: repo.repositoryId,
+      githubRepoId: repo.githubRepoId,
+      repositoryFullName: repo.fullName,
+      repositoryPrivate: repo.private,
+      action: "disable",
+      source,
+    });
   }
 }
 
@@ -377,34 +435,21 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
   const db = getDb();
   const installation = (
     await db
-      .select({ id: schema.installations.id, suspended: schema.installations.suspended })
+      .select({
+        id: schema.installations.id,
+        suspended: schema.installations.suspended,
+      })
       .from(schema.installations)
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
   if (!installation || installation.suspended) return;
 
-  const repoRow = await db
-    .insert(schema.repositories)
-    .values({
-      installationId: installation.id,
-      githubRepoId: repo.id,
-      fullName: repo.full_name,
-      private: repo.private,
-    })
-    .onConflictDoUpdate({
-      target: schema.repositories.githubRepoId,
-      // Re-pin installationId on conflict, matching upsertRepositories: a repo
-      // transferred between installations would otherwise stay bound to the old
-      // installation, and every review path joins the repo by installationId,
-      // so reviews would silently skip.
-      set: { fullName: repo.full_name, private: repo.private, installationId: installation.id },
-    })
-    .returning({ id: schema.repositories.id, enabled: schema.repositories.enabled });
-  if (!repoRow[0]?.enabled) return;
+  const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
+  if (!repoRow?.enabled) return;
 
   await supersedeActiveReviews({
-    repositoryId: repoRow[0].id,
+    repositoryId: repoRow.id,
     prNumber: pr.number,
     newHeadSha: headSha,
     repoFullName: repo.full_name,

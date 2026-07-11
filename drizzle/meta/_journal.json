@@ -36,6 +36,20 @@
       "when": 1783699581983,
       "tag": "0004_public_review_ids_and_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783774973215,
+      "tag": "0005_repository_enablement_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783775765167,
+      "tag": "0006_repository_enablement_event_checks",
+      "breakpoints": true
     }
   ]
 }

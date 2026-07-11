@@ -102,9 +102,14 @@ export default async function OrgSettingsPage({
           </p>
           <h1 className="serif-display mt-2 text-3xl">{org.name} settings</h1>
         </div>
-        <Link href={`/orgs/${org.slug}`} className="btn-secondary text-xs">
-          Back to dashboard
-        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link href={`/orgs/${org.slug}/billing`} className="btn-secondary text-xs">
+            Billing
+          </Link>
+          <Link href={`/orgs/${org.slug}`} className="btn-secondary text-xs">
+            Back to dashboard
+          </Link>
+        </div>
       </div>
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
@@ -180,4 +185,3 @@ export default async function OrgSettingsPage({
     </div>
   );
 }
-

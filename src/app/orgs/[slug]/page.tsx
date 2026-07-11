@@ -158,9 +158,14 @@ export default async function OrgDashboardPage({
         </div>
         <div className="flex flex-wrap items-center gap-3">
           {isAdmin && (
-            <Link href={`/orgs/${org.slug}/settings`} className="btn-secondary text-xs">
-              Settings
-            </Link>
+            <>
+              <Link href={`/orgs/${org.slug}/billing`} className="btn-secondary text-xs">
+                Billing
+              </Link>
+              <Link href={`/orgs/${org.slug}/settings`} className="btn-secondary text-xs">
+                Settings
+              </Link>
+            </>
           )}
           <Link href="/pricing" className="btn-primary text-xs">
             plan: {org.plan} · upgrade
