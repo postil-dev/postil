@@ -13,6 +13,29 @@ export function mentionsPostil(text: string | undefined | null): boolean {
   return /(^|[^a-z0-9_-])@postil($|[^a-z0-9_-])/i.test(prose);
 }
 
+export type PostilApproveCommand =
+  | { ok: true; findingId: string; rationale: string }
+  | { ok: false; error: string };
+
+export function parsePostilApproveCommand(
+  text: string | undefined | null,
+): PostilApproveCommand | null {
+  if (!text) return null;
+  const prose = stripCode(text).trim();
+  if (!/^@postil(?:\s|$)/i.test(prose)) return null;
+  if (!/^@postil\s+approve(?:\s|$)/i.test(prose)) return null;
+
+  const match = prose.match(/^@postil\s+approve\s+(\S+)\s+--\s*([\s\S]*)$/i);
+  if (!match) {
+    return { ok: false, error: "Use `@postil approve <finding-id> -- <reason>`." };
+  }
+  const findingId = match[1]?.trim();
+  const rationale = match[2]?.trim();
+  if (!findingId) return { ok: false, error: "Approval requires a finding id." };
+  if (!rationale) return { ok: false, error: "Approval requires a non-empty rationale." };
+  return { ok: true, findingId, rationale };
+}
+
 /** Remove fenced code blocks (```...``` / ~~~...~~~) and inline `code` spans. */
 function stripCode(text: string): string {
   return text

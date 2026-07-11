@@ -6,7 +6,13 @@ import { verifyWebhookSignature } from "@/lib/crypto/webhook";
 import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { ADVISORY_CHECK_NAME, GATE_CHECK_NAME } from "@/lib/github/checks";
+import {
+  ADVISORY_CHECK_NAME,
+  completeCheckRun,
+  GATE_CHECK_NAME,
+  getPullRequestHeadSha,
+  postIssueComment,
+} from "@/lib/github/checks";
 import {
   type GithubAccount,
   type RepoSummary,
@@ -14,7 +20,19 @@ import {
   upsertRepository,
   upsertRepositories,
 } from "@/lib/github/installation-sync";
-import { mentionsPostil } from "@/lib/mentions";
+import {
+  deleteApprovalById,
+  findKindBlockingState,
+  formatRemainingGateBlockers,
+  getReviewApprovalState,
+  hasNewerCompletedReviewForHead,
+  insertFindingApproval,
+  loadLatestCompletedReviewForPr,
+  updateStoredEffectiveGate,
+  type ApprovalActor,
+  type ReviewForApproval,
+} from "@/lib/finding-approvals";
+import { mentionsPostil, parsePostilApproveCommand } from "@/lib/mentions";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import {
@@ -109,6 +127,7 @@ interface CheckSuiteEventPayload {
 const OWN_CHECK_NAMES = new Set<string>([ADVISORY_CHECK_NAME, GATE_CHECK_NAME]);
 
 interface GithubUser {
+  id?: number;
   login?: string;
   type?: string;
 }
@@ -119,6 +138,8 @@ interface CommentEventPayload {
   repository?: RepoSummary;
   sender?: GithubUser;
   comment?: {
+    id?: number;
+    html_url?: string;
     body?: string;
     user?: GithubUser;
     author_association?: string;
@@ -737,6 +758,7 @@ async function enqueueRespond(payload: RespondJobPayload): Promise<void> {
 async function handleIssueComment(payload: CommentEventPayload): Promise<void> {
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
+  if (await handleApproveCommand(payload)) return;
   if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
@@ -755,6 +777,7 @@ async function handleIssueComment(payload: CommentEventPayload): Promise<void> {
 async function handleReviewComment(payload: CommentEventPayload): Promise<void> {
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
+  if (await handleApproveCommand(payload)) return;
   if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
@@ -773,6 +796,195 @@ async function handleReviewComment(payload: CommentEventPayload): Promise<void> 
     comment: body!,
     commentAnchor: anchor,
   });
+}
+
+async function handleApproveCommand(payload: CommentEventPayload): Promise<boolean> {
+  const command = parsePostilApproveCommand(payload.comment?.body);
+  if (!command) return false;
+
+  const repo = payload.repository;
+  const installationId = payload.installation?.id;
+  const prNumber = payload.issue?.pull_request
+    ? payload.issue.number
+    : payload.pull_request?.number;
+  if (!repo || !installationId || !prNumber) {
+    await replyToApprovalCommand(payload, "Approval commands only work on pull request comments.");
+    return true;
+  }
+
+  if (!command.ok) {
+    await replyToApprovalCommand(payload, command.error);
+    return true;
+  }
+
+  const token = await getInstallationToken(installationId);
+  const db = getDb();
+  const review = await loadLatestCompletedReviewForPr(db, installationId, repo.id, prNumber);
+  if (!review) {
+    await replyToApprovalCommand(payload, "No completed Postil review was found for this pull request.");
+    return true;
+  }
+
+  const currentHeadSha = await getPullRequestHeadSha(token, repo.full_name, prNumber);
+  if (currentHeadSha !== review.headSha) {
+    await replyToApprovalCommand(
+      payload,
+      `Approval rejected: the pull request head is ${currentHeadSha.slice(0, 12)}, but the latest completed review is for ${review.headSha.slice(0, 12)}.`,
+    );
+    return true;
+  }
+
+  if (await hasNewerCompletedReviewForHead(db, review)) {
+    await replyToApprovalCommand(payload, "Approval rejected: a newer completed review exists for this commit.");
+    return true;
+  }
+
+  const actor = await loadApprovalActor(review, payload.comment?.user);
+  if (!actor) {
+    await replyToApprovalCommand(
+      payload,
+      "Approval rejected: this GitHub account could not be verified as a logged-in organization admin.",
+    );
+    return true;
+  }
+  if (actor.role !== "admin") {
+    await replyToApprovalCommand(payload, "Approval rejected: approving this finding requires an organization admin.");
+    return true;
+  }
+
+  let approvalId: string | null = null;
+  let effectiveFailing: boolean | null = null;
+  let remainingBlockers = "";
+  try {
+    const state = await getReviewApprovalState(db, review);
+    const finding = findKindBlockingState(state, command.findingId);
+    if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
+      await replyToApprovalCommand(
+        payload,
+        "Approval rejected: that finding is absent, already approved, revoked, or no longer kind-blocking.",
+      );
+      return true;
+    }
+    if (finding.severityBlocking) {
+      await replyToApprovalCommand(
+        payload,
+        "Approval rejected: this finding is also severity-blocking, and approvals only clear kind-based blocks.",
+      );
+      return true;
+    }
+
+    await db.transaction(async (tx) => {
+      approvalId = await insertFindingApproval(tx, {
+        reviewId: review.id,
+        findingId: command.findingId,
+        actor,
+        rationale: command.rationale,
+        source: "github",
+        sourceCommentId: null,
+        sourceUrl: payload.comment?.html_url ?? null,
+      });
+      const nextState = await getReviewApprovalState(tx, review);
+      effectiveFailing = nextState.effectiveGate.failing;
+      remainingBlockers = formatRemainingGateBlockers(nextState.effectiveGate);
+      await updateStoredEffectiveGate(tx, review.id, effectiveFailing);
+    });
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      await replyToApprovalCommand(
+        payload,
+        "Approval rejected: this finding already has an active approval.",
+      );
+      return true;
+    }
+    await replyToApprovalCommand(
+      payload,
+      `Approval rejected: ${err instanceof Error ? err.message : "approval state could not be updated"}.`,
+    );
+    return true;
+  }
+
+  try {
+    await patchGateCheckRun(token, review, effectiveFailing ?? true, remainingBlockers);
+  } catch (err) {
+    if (approvalId) {
+      await deleteApprovalById(db, approvalId);
+      const reverted = await getReviewApprovalState(db, review);
+      await updateStoredEffectiveGate(db, review.id, reverted.effectiveGate.failing);
+    }
+    await replyToApprovalCommand(
+      payload,
+      `Approval rejected: the gate check-run could not be patched (${err instanceof Error ? err.message : "unknown error"}).`,
+    );
+    return true;
+  }
+
+  await replyToApprovalCommand(
+    payload,
+    `Approved by @${actor.login}: finding ${command.findingId} on commit ${review.headSha}. Gate is ${effectiveFailing ? "still failing" : "passing"}.`,
+  );
+  return true;
+}
+
+async function loadApprovalActor(
+  review: ReviewForApproval,
+  user: GithubUser | undefined,
+): Promise<ApprovalActor | null> {
+  if (!user?.id || !user.login || review.orgId == null) return null;
+  const row = (
+    await getDb()
+      .select({
+        userId: schema.users.id,
+        githubId: schema.users.githubId,
+        login: schema.users.login,
+        role: schema.orgMembers.role,
+      })
+      .from(schema.users)
+      .innerJoin(schema.orgMembers, eq(schema.orgMembers.userId, schema.users.id))
+      .where(and(eq(schema.users.githubId, user.id), eq(schema.orgMembers.orgId, review.orgId)))
+      .limit(1)
+  )[0];
+  if (!row || (row.role !== "member" && row.role !== "admin")) return null;
+  return {
+    userId: row.userId,
+    githubId: String(row.githubId),
+    login: user.login,
+    role: row.role,
+  };
+}
+
+async function patchGateCheckRun(
+  token: string,
+  review: ReviewForApproval,
+  failing: boolean,
+  remainingBlockers: string,
+): Promise<void> {
+  if (!review.gateCheckRunId) throw new Error("review has no gate check-run id");
+  await completeCheckRun(
+    token,
+    review.repoFullName,
+    review.gateCheckRunId,
+    failing ? "failure" : "success",
+    failing ? "Postil gate still failing" : "Postil gate approved",
+    failing
+      ? `One or more blocking findings remain after approval.\n\n${remainingBlockers}`
+      : "All kind-based blocking findings for this reviewed commit have active admin approvals.",
+  );
+}
+
+async function replyToApprovalCommand(
+  payload: CommentEventPayload,
+  body: string,
+): Promise<void> {
+  const repo = payload.repository;
+  const installationId = payload.installation?.id;
+  const number = payload.issue?.number ?? payload.pull_request?.number;
+  if (!repo || !installationId || !number) return;
+  const token = await getInstallationToken(installationId);
+  await postIssueComment(token, repo.full_name, number, body);
+}
+
+function isUniqueConstraintError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === "23505";
 }
 
 async function handleIssues(payload: IssuesEventPayload): Promise<void> {

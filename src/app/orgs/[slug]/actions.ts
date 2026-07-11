@@ -10,6 +10,21 @@ import { getDb, schema } from "@/lib/db";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
 import { getSessionUser } from "@/lib/session";
+import {
+  deleteApprovalById,
+  findKindBlockingState,
+  formatRemainingGateBlockers,
+  getReviewApprovalState,
+  hasNewerCompletedReviewForHead,
+  insertFindingApproval,
+  loadReviewForApprovalByPublicId,
+  restoreRevokedApprovalById,
+  revokeFindingApproval,
+  updateStoredEffectiveGate,
+  type ReviewForApproval,
+} from "@/lib/finding-approvals";
+import { getInstallationToken } from "@/lib/github/app-auth";
+import { completeCheckRun, getPullRequestHeadSha } from "@/lib/github/checks";
 
 export interface OrgSettingsActionState {
   status: "error" | "success";
@@ -199,4 +214,67 @@ export async function saveOrgSettings(
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);
   return { status: "success", message: "Organization settings saved." };
+}
+
+
+async function assertDashboardReviewApprovable(review: ReviewForApproval): Promise<void> {
+  if (review.status !== "completed") throw new Error("review must be completed");
+  if (!review.envelope) throw new Error("review must have an envelope");
+}
+
+export async function approveFinding(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "");
+  const publicId = String(formData.get("publicId") ?? "");
+  const findingId = String(formData.get("findingId") ?? "").trim();
+  const rationale = String(formData.get("rationale") ?? "");
+  const { orgId, userId } = await requireAdmin(slug);
+  const db = getDb();
+  const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
+  if (!review) throw new Error("review not found in this organization");
+  await assertDashboardReviewApprovable(review);
+  const state = await getReviewApprovalState(db, review);
+  const finding = findKindBlockingState(state, findingId);
+  if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
+    throw new Error("that finding is absent, already approved, revoked, or no longer kind-blocking");
+  }
+  if (finding.severityBlocking) {
+    throw new Error("this finding is also severity-blocking, and approvals only clear kind-based blocks");
+  }
+  const user = await getSessionUser();
+  if (!user?.githubId) throw new Error("user has no github id");
+  await db.transaction(async (tx) => {
+    await insertFindingApproval(tx, {
+      reviewId: review.id,
+      findingId,
+      actor: {
+        userId,
+        githubId: String(user.githubId),
+        login: user.login,
+        role: "admin",
+      },
+      rationale,
+      source: "dashboard",
+    });
+    const nextState = await getReviewApprovalState(tx, review);
+    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing);
+  });
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
+}
+
+export async function revokeFinding(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "");
+  const publicId = String(formData.get("publicId") ?? "");
+  const findingId = String(formData.get("findingId") ?? "").trim();
+  const { orgId, userId } = await requireAdmin(slug);
+  const db = getDb();
+  const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
+  if (!review) throw new Error("review not found in this organization");
+  await db.transaction(async (tx) => {
+    await revokeFindingApproval(tx, review.id, findingId, userId);
+    const nextState = await getReviewApprovalState(tx, review);
+    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing);
+  });
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
 }

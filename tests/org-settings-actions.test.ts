@@ -35,7 +35,7 @@ mock.module("@/lib/db", () => ({
   schema,
 }));
 
-const { saveOrgSettings } = await import("@/app/orgs/[slug]/actions");
+const { approveFinding, saveOrgSettings } = await import("@/app/orgs/[slug]/actions");
 
 function fakeDb() {
   return {
@@ -86,6 +86,15 @@ function settingsForm(overrides: Record<string, string> = {}): FormData {
   return form;
 }
 
+function approvalForm(): FormData {
+  const form = new FormData();
+  form.set("slug", "acme");
+  form.set("publicId", "11111111-1111-4111-8111-111111111111");
+  form.set("findingId", "finding");
+  form.set("rationale", "reviewed");
+  return form;
+}
+
 beforeEach(() => {
   process.env.POSTIL_SEALING_KEY =
     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
@@ -102,6 +111,15 @@ describe("saveOrgSettings", () => {
     memberRows = [{ role: "member" }];
 
     await expect(saveOrgSettings(null, settingsForm())).rejects.toThrow(
+      "this action requires an organization admin",
+    );
+    expect(insertCount).toBe(0);
+  });
+
+  test("rejects non-admin finding approvals before storing approval state", async () => {
+    memberRows = [{ role: "member" }];
+
+    await expect(approveFinding(approvalForm())).rejects.toThrow(
       "this action requires an organization admin",
     );
     expect(insertCount).toBe(0);

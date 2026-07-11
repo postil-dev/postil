@@ -487,6 +487,7 @@ export async function runReviewJob(
         envelope: ingested.envelope,
         configFiles,
         silent: ingested.silent,
+        engineGateFailing: ingested.gateFailing,
         gateFailing: ingested.gateFailing,
         finishedAt: new Date(),
       })

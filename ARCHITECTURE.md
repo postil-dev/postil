@@ -53,10 +53,10 @@ noindexed:
   distribution, engine telemetry, recent reviews, repository review coverage
   toggles, LLM settings (model, API base, cascade, sealed BYOK credential), and the
   member list with roles. A banner surfaces suspended installations.
-- `/orgs/[slug]/reviews/[id]` renders one review from its stored envelope:
+- `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file
   links), resolved findings, suppressed/ungrounded counts, gate verdict,
-  model, token usage, and timing.
+  model, token usage, timing, and kind-blocking approval state.
 
 Authorization is uniform: every page and server action re-derives access from
 the session. An `org_members` row grants read access; the `admin` role gates
@@ -69,8 +69,11 @@ installations whose webhooks predate the database
 (`src/lib/github/installation-sync.ts`).
 
 Aggregates (silence rate, gate failures) read the denormalized `silent` and
-`gate_failing` columns; per-review detail reads the stored envelope `jsonb`
-verbatim. The envelope is the CLI's frozen v1 output contract
+`gate_failing` columns; `engine_gate_failing` stores the immutable CLI gate
+result. Active rows in `finding_approvals` clear kind-based blockers for the
+same review and head SHA, while severity blockers remain governed by the
+configured severity threshold. Per-review detail reads the stored envelope
+`jsonb` verbatim. The envelope is the CLI's frozen v1 output contract
 (`src/lib/envelope.ts`); the dashboard renders it and never reshapes it.
 
 ## Observability

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { ingestEnvelope, type Envelope } from "@/lib/envelope";
+import { computeEffectiveGate, ingestEnvelope, type Envelope } from "@/lib/envelope";
 
 function validEnvelope(overrides: Partial<Envelope> = {}): Envelope {
   return {
@@ -22,7 +22,7 @@ function validEnvelope(overrides: Partial<Envelope> = {}): Envelope {
     resolved: [],
     counts: { info: 0, warn: 0, error: 1, suppressed: 2, ungrounded: 0 },
     confidenceBuckets: [0, 0, 0, 0, 1],
-    gate: { failOn: "error", failing: true },
+    gate: { failOn: "error", failing: true, blockOnKinds: [] },
     modelUsed: "deepseek/deepseek-v4-pro",
     usage: { promptTokens: 4200, completionTokens: 310 },
     durationMs: 6100,
@@ -53,7 +53,7 @@ describe("envelope ingestion", () => {
       findings: [],
       counts: { info: 0, warn: 0, error: 0, suppressed: 0, ungrounded: 0 },
       confidenceBuckets: [0, 0, 0, 0, 0],
-      gate: { failOn: "error", failing: false },
+      gate: { failOn: "error", failing: false, blockOnKinds: [] },
     });
     const ingested = ingestEnvelope(JSON.stringify(silent));
     expect(ingested.silent).toBe(true);
@@ -86,7 +86,7 @@ describe("envelope ingestion", () => {
         },
       ],
       counts: { info: 0, warn: 1, error: 0, suppressed: 0, ungrounded: 0 },
-      gate: { failOn: "error", failing: false },
+      gate: { failOn: "error", failing: false, blockOnKinds: [] },
     });
     const ingested = ingestEnvelope(JSON.stringify(withPolicy));
     expect(ingested.findingCount).toBe(1);
@@ -116,5 +116,156 @@ describe("envelope ingestion", () => {
     delete (env.findings[0] as { endLine?: number }).endLine;
     const ingested = ingestEnvelope(JSON.stringify(env));
     expect(ingested.findingCount).toBe(1);
+  });
+
+  test("rejects duplicate stable finding ids", () => {
+    const env = validEnvelope({
+      findings: [
+        {
+          id: "duplicate-id",
+          path: "src/app.ts",
+          line: 10,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.9,
+          title: "First escalation",
+          body: "Needs review.",
+        },
+        {
+          id: "duplicate-id",
+          path: "src/db.ts",
+          line: 20,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.9,
+          title: "Second escalation",
+          body: "Needs review too.",
+        },
+      ],
+      counts: { info: 0, warn: 2, error: 0, suppressed: 0, ungrounded: 0 },
+    });
+
+    expect(() => ingestEnvelope(JSON.stringify(env))).toThrow("duplicate finding id");
+  });
+});
+
+describe("effective gate recomputation", () => {
+  test("does not fail when the engine gate did not fail", () => {
+    const env = validEnvelope({
+      gate: { failOn: "error", failing: false, blockOnKinds: ["humanEscalation"] },
+      findings: [
+        {
+          id: "kind-only",
+          path: "src/app.ts",
+          line: 1,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.8,
+          title: "Needs human approval",
+          body: "Escalated by policy.",
+        },
+      ],
+    });
+
+    expect(computeEffectiveGate(env, new Set(), false).failing).toBe(false);
+  });
+
+  test("active approval clears kind-only blockers", () => {
+    const env = validEnvelope({
+      gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },
+      findings: [
+        {
+          id: "kind-only",
+          path: "src/app.ts",
+          line: 1,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.8,
+          title: "Needs human approval",
+          body: "Escalated by policy.",
+        },
+      ],
+      counts: { info: 0, warn: 1, error: 0, suppressed: 0, ungrounded: 0 },
+    });
+
+    expect(computeEffectiveGate(env, new Set()).failing).toBe(true);
+    expect(computeEffectiveGate(env, new Set(["kind-only"])).failing).toBe(false);
+  });
+
+  test("active approval clears kind-only blockers from CLI v0.3 block_on_kinds", () => {
+    const env = validEnvelope({
+      gate: { failOn: "error", failing: true, block_on_kinds: ["humanEscalation"] },
+      findings: [
+        {
+          id: "kind-only",
+          path: "src/app.ts",
+          line: 1,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.8,
+          title: "Needs human approval",
+          body: "Escalated by policy.",
+        },
+      ],
+      counts: { info: 0, warn: 1, error: 0, suppressed: 0, ungrounded: 0 },
+    });
+
+    expect(computeEffectiveGate(env, new Set()).kindBlockers).toHaveLength(1);
+    expect(computeEffectiveGate(env, new Set(["kind-only"])).failing).toBe(false);
+  });
+
+  test("approval does not clear severity blockers on the same finding", () => {
+    const env = validEnvelope({
+      gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },
+      findings: [
+        {
+          id: "kind-and-severity",
+          path: "src/app.ts",
+          line: 1,
+          severity: "error",
+          kind: "humanEscalation",
+          confidence: 0.8,
+          title: "Needs human approval",
+          body: "Escalated by policy.",
+        },
+      ],
+    });
+
+    const state = computeEffectiveGate(env, new Set(["kind-and-severity"]));
+    expect(state.failing).toBe(true);
+    expect(state.blockers[0]?.severityBlocking).toBe(true);
+  });
+
+  test("all blockers must clear before the effective gate passes", () => {
+    const env = validEnvelope({
+      gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },
+      findings: [
+        {
+          id: "kind-only",
+          path: "src/app.ts",
+          line: 1,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.8,
+          title: "Needs human approval",
+          body: "Escalated by policy.",
+        },
+        {
+          id: "severity-only",
+          path: "src/db.ts",
+          line: 2,
+          severity: "error",
+          kind: "risk",
+          confidence: 0.9,
+          title: "Breaks writes",
+          body: "Severity still blocks.",
+        },
+      ],
+      counts: { info: 0, warn: 1, error: 1, suppressed: 0, ungrounded: 0 },
+    });
+
+    const state = computeEffectiveGate(env, new Set(["kind-only"]));
+    expect(state.failing).toBe(true);
+    expect(state.blockers.map((blocker) => blocker.findingId)).toEqual(["severity-only"]);
   });
 });

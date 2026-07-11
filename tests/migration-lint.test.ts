@@ -137,6 +137,19 @@ describe("migration lint", () => {
       }),
     ).toEqual([]);
   });
+
+  test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
+    const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"), "utf8");
+
+    expect(migration).toContain('CREATE TABLE "finding_approvals"');
+    expect(migration).toContain('"source_comment_id" uuid');
+    expect(migration).toContain('CONSTRAINT "finding_approvals_rationale_nonempty" CHECK');
+    expect(migration).toContain('length(btrim("finding_approvals"."rationale")) > 0');
+    expect(migration).toContain('CREATE UNIQUE INDEX "finding_approvals_active_idx"');
+    expect(migration).toContain('"review_id","finding_id"');
+    expect(migration).toContain('"revoked_at" IS NULL');
+    expect(migration).not.toContain('UPDATE "reviews" SET "engine_gate_failing" = "gate_failing"');
+  });
 });
 
 async function readDrizzleMigrations(): Promise<MigrationSource[]> {

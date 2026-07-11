@@ -39,6 +39,12 @@ export const jobStatus = pgEnum("job_status", [
   "failed",
 ]);
 
+export const findingApprovalRole = pgEnum("finding_approval_role", ["member", "admin"]);
+export const findingApprovalSource = pgEnum("finding_approval_source", [
+  "github",
+  "dashboard",
+]);
+
 export const users = pgTable("users", {
   id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
   githubId: bigint("github_id", { mode: "number" }).notNull().unique(),
@@ -173,6 +179,7 @@ export const reviews = pgTable(
     envelope: jsonb("envelope").$type<Envelope>(),
     configFiles: text("config_files").array(),
     silent: boolean("silent"),
+    engineGateFailing: boolean("engine_gate_failing"),
     gateFailing: boolean("gate_failing"),
     errorMessage: text("error_message"),
     advisoryCheckRunId: bigint("advisory_check_run_id", { mode: "number" }),
@@ -185,6 +192,40 @@ export const reviews = pgTable(
     uniqueIndex("reviews_public_id_idx").on(t.publicId),
     index("reviews_repo_pr_idx").on(t.repositoryId, t.prNumber),
     index("reviews_status_idx").on(t.status),
+  ],
+);
+
+export const findingApprovals = pgTable(
+  "finding_approvals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reviewId: bigint("review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    findingId: text("finding_id").notNull(),
+    actorUserId: bigint("actor_user_id", { mode: "number" })
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    actorGithubId: text("actor_github_id").notNull(),
+    actorLoginSnapshot: text("actor_login_snapshot").notNull(),
+    actorRoleSnapshot: findingApprovalRole("actor_role_snapshot").notNull(),
+    rationale: text("rationale").notNull(),
+    source: findingApprovalSource("source").notNull(),
+    sourceCommentId: uuid("source_comment_id"),
+    sourceUrl: text("source_url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: bigint("revoked_by_user_id", { mode: "number" }).references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+  },
+  (t) => [
+    uniqueIndex("finding_approvals_active_idx")
+      .on(t.reviewId, t.findingId)
+      .where(sql`${t.revokedAt} IS NULL`),
+    index("finding_approvals_review_idx").on(t.reviewId),
+    check("finding_approvals_rationale_nonempty", sql`length(btrim(${t.rationale})) > 0`),
   ],
 );
 

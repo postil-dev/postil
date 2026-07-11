@@ -35,6 +35,9 @@ const WEBHOOK_SECRET = "test-webhook-secret-for-handlers";
 // real module: other importers use its remaining exports, and a bare override
 // object would break their import chains.
 const completedCheckRuns: Array<{ repoFullName: string; conclusion: string }> = [];
+const postedComments: Array<{ repoFullName: string; number: number; body: string }> = [];
+let pullRequestHeadSha = "head-sha";
+let checkRunPatchFails = false;
 const realAppAuth = await import("@/lib/github/app-auth");
 mock.module("@/lib/github/app-auth", () => ({
   ...realAppAuth,
@@ -50,13 +53,19 @@ mock.module("@/lib/github/checks", () => ({
     _id: number,
     conclusion: string,
   ) => {
+    if (checkRunPatchFails) throw new Error("check patch failed");
     completedCheckRuns.push({ repoFullName, conclusion });
   },
-  postIssueComment: async () => undefined,
+  getPullRequestHeadSha: async () => pullRequestHeadSha,
+  postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
+    postedComments.push({ repoFullName, number, body });
+  },
 }));
 
 // Imported after the mocks are registered so the route picks up the stubs.
 const { POST } = await import("@/app/api/webhooks/github/route");
+const { getDb } = await import("@/lib/db");
+const { hasNewerCompletedReviewForHead } = await import("@/lib/finding-approvals");
 
 function post(event: string, body: object, deliveryId: string): Promise<Response> {
   const raw = JSON.stringify(body);
@@ -100,6 +109,9 @@ describeDb("webhook handler behaviour", () => {
 
   beforeEach(async () => {
     completedCheckRuns.length = 0;
+    postedComments.length = 0;
+    pullRequestHeadSha = "head-sha";
+    checkRunPatchFails = false;
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     await pool.query("TRUNCATE jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
@@ -139,6 +151,94 @@ describeDb("webhook handler behaviour", () => {
       [installationId, githubRepoId, fullName],
     );
     return Number(repo.rows[0]!.id);
+  }
+
+  async function seedUser(
+    githubId: number,
+    login: string,
+    orgId: number,
+    role: "member" | "admin",
+  ): Promise<number> {
+    const user = await pool.query<{ id: string }>(
+      `INSERT INTO users (github_id, login) VALUES ($1, $2)
+       ON CONFLICT (github_id) DO UPDATE SET login = excluded.login
+       RETURNING id`,
+      [githubId, login],
+    );
+    const userId = Number(user.rows[0]!.id);
+    await pool.query(
+      `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)
+       ON CONFLICT (org_id, user_id) DO UPDATE SET role = excluded.role`,
+      [orgId, userId, role],
+    );
+    return userId;
+  }
+
+  function approvalEnvelope(overrides: Record<string, unknown> = {}) {
+    return {
+      version: 1,
+      summary: "Escalation requires admin approval.",
+      silent: false,
+      findings: [
+        {
+          id: "kind-blocker",
+          path: "src/app.ts",
+          line: 10,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.9,
+          title: "Manual approval required",
+          body: "The policy escalated this change.",
+        },
+      ],
+      resolved: [],
+      counts: { info: 0, warn: 1, error: 0, suppressed: 0, ungrounded: 0 },
+      confidenceBuckets: [0, 0, 0, 0, 1],
+      gate: { failOn: "error", failing: true, block_on_kinds: ["humanEscalation"] },
+      modelUsed: "deepseek/deepseek-v4-pro",
+      usage: { promptTokens: 1, completionTokens: 1 },
+      durationMs: 1,
+      baseSha: "base-sha",
+      headSha: "head-sha",
+      sinceSha: null,
+      ...overrides,
+    };
+  }
+
+  async function seedCompletedApprovalReview(
+    repoId: number,
+    envelope: Record<string, unknown> = approvalEnvelope(),
+  ): Promise<number> {
+    const row = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status, envelope, silent,
+          engine_gate_failing, gate_failing, gate_check_run_id, finished_at)
+       VALUES ($1, 9, 'head-sha', 'base-sha', 'completed', $2, false, true, true, 900, now())
+       RETURNING id`,
+      [repoId, JSON.stringify(envelope)],
+    );
+    return Number(row.rows[0]!.id);
+  }
+
+  function approvalComment(deliveryId: string, body = "@postil approve kind-blocker -- reviewed"): Promise<Response> {
+    return post(
+      "issue_comment",
+      {
+        action: "created",
+        installation: { id: 700 },
+        repository: { id: 7000, full_name: "octo/approvals", private: false },
+        sender: { id: 501, login: "admin", type: "User" },
+        comment: {
+          id: 123456,
+          html_url: "https://github.com/octo/approvals/pull/9#issuecomment-123456",
+          body,
+          user: { id: 501, login: "admin", type: "User" },
+          author_association: "MEMBER",
+        },
+        issue: { number: 9, pull_request: {} },
+      },
+      deliveryId,
+    );
   }
 
   test("pull_request upsert re-pins a repo transferred between installations", async () => {
@@ -290,6 +390,262 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM jobs WHERE kind = 'respond'",
     );
     expect(jobs.rows[0]!.c).toBe(2);
+  });
+
+  test("approval command records an active kind-block approval and clears the gate", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    const res = await approvalComment("approval-success");
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ finding_id: string; source: string; revoked_at: Date | null }>(
+      "SELECT finding_id, source, revoked_at FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows).toEqual([
+      { finding_id: "kind-blocker", source: "github", revoked_at: null },
+    ]);
+    const review = await pool.query<{ gate_failing: boolean }>(
+      "SELECT gate_failing FROM reviews WHERE id = $1",
+      [reviewId],
+    );
+    expect(review.rows[0]!.gate_failing).toBe(false);
+    expect(completedCheckRuns).toEqual([{ repoFullName: "octo/approvals", conclusion: "success" }]);
+    expect(postedComments[0]?.body).toContain("Approved by @admin");
+    expect(postedComments[0]?.body).toContain("head-sha");
+  });
+
+  test("free-form mentions continue through respond path without approvals", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedCompletedApprovalReview(repoId);
+
+    const res = await approvalComment("approval-free-form", "@postil can you explain this?");
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals",
+    );
+    const jobs = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM jobs WHERE kind = 'respond'",
+    );
+    expect(approvals.rows[0]!.c).toBe(0);
+    expect(jobs.rows[0]!.c).toBe(1);
+  });
+
+  test("approval command rejects head mismatches", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    pullRequestHeadSha = "new-head";
+
+    const res = await approvalComment("approval-head-mismatch");
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals",
+    );
+    expect(approvals.rows[0]!.c).toBe(0);
+    expect(postedComments[0]?.body).toContain("head is new-head");
+  });
+
+  test("approval command rejects missing findings", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+
+    const res = await approvalComment("approval-missing", "@postil approve no-such-id -- reviewed");
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals",
+    );
+    expect(approvals.rows[0]!.c).toBe(0);
+    expect(postedComments[0]?.body).toContain("absent");
+  });
+
+  test("approval command rejects unverified and non-admin commenters", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedCompletedApprovalReview(repoId);
+
+    expect((await approvalComment("approval-unverified")).status).toBe(200);
+    expect(postedComments.at(-1)?.body).toContain("could not be verified");
+
+    await seedUser(501, "admin", orgId, "member");
+    expect((await approvalComment("approval-member")).status).toBe(200);
+    expect(postedComments.at(-1)?.body).toContain("requires an organization admin");
+
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals",
+    );
+    expect(approvals.rows[0]!.c).toBe(0);
+  });
+
+  test("approval command rejects severity-blocking findings", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(
+      repoId,
+      approvalEnvelope({
+        findings: [
+          {
+            id: "kind-blocker",
+            path: "src/app.ts",
+            line: 10,
+            severity: "error",
+            kind: "humanEscalation",
+            confidence: 0.9,
+            title: "Manual approval required",
+            body: "The policy escalated this change.",
+          },
+        ],
+        counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      }),
+    );
+
+    const res = await approvalComment("approval-severity");
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals",
+    );
+    expect(approvals.rows[0]!.c).toBe(0);
+    expect(postedComments[0]?.body).toContain("severity-blocking");
+  });
+
+  test("approval command rejects previously revoked approvals", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const userId = await seedUser(501, "admin", orgId, "admin");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+    await pool.query(
+      `INSERT INTO finding_approvals
+         (review_id, finding_id, actor_user_id, actor_github_id, actor_login_snapshot,
+          actor_role_snapshot, rationale, source, revoked_at, revoked_by_user_id)
+       VALUES ($1, 'kind-blocker', $2, '501', 'admin', 'admin', 'revoked earlier', 'dashboard', now(), $2)`,
+      [reviewId, userId],
+    );
+
+    const res = await approvalComment("approval-revoked");
+
+    expect(res.status).toBe(200);
+    const active = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE revoked_at IS NULL",
+    );
+    expect(active.rows[0]!.c).toBe(0);
+    expect(postedComments[0]?.body).toContain("revoked");
+  });
+
+  test("approval for an old head does not carry to a new commit review", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const userId = await seedUser(501, "admin", orgId, "admin");
+    const oldReviewId = await seedCompletedApprovalReview(repoId);
+    await pool.query(
+      `INSERT INTO finding_approvals
+         (review_id, finding_id, actor_user_id, actor_github_id, actor_login_snapshot,
+          actor_role_snapshot, rationale, source)
+       VALUES ($1, 'kind-blocker', $2, '501', 'admin', 'admin', 'approved old head', 'dashboard')`,
+      [oldReviewId, userId],
+    );
+    const newReview = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status, envelope, silent,
+          engine_gate_failing, gate_failing, gate_check_run_id, finished_at)
+       VALUES ($1, 9, 'new-head', 'base-sha', 'completed', $2, false, true, true, 901, now())
+       RETURNING id`,
+      [
+        repoId,
+        JSON.stringify(
+          approvalEnvelope({
+            headSha: "new-head",
+          }),
+        ),
+      ],
+    );
+
+    const activeForNew = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1 AND revoked_at IS NULL",
+      [newReview.rows[0]!.id],
+    );
+    const newGate = await pool.query<{ gate_failing: boolean }>(
+      "SELECT gate_failing FROM reviews WHERE id = $1",
+      [newReview.rows[0]!.id],
+    );
+    expect(activeForNew.rows[0]!.c).toBe(0);
+    expect(newGate.rows[0]!.gate_failing).toBe(true);
+  });
+
+  test("newer completed review guard rejects an older review for the same head", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const older = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status, envelope, silent,
+          engine_gate_failing, gate_failing, gate_check_run_id, finished_at)
+       VALUES ($1, 9, 'head-sha', 'base-sha', 'completed', $2, false, true, true, 900, now() - interval '1 minute')
+       RETURNING id`,
+      [repoId, JSON.stringify(approvalEnvelope())],
+    );
+    await seedCompletedApprovalReview(repoId);
+
+    expect(
+      await hasNewerCompletedReviewForHead(getDb(), {
+        id: Number(older.rows[0]!.id),
+        publicId: "11111111-1111-4111-8111-111111111111",
+        repositoryId: repoId,
+        prNumber: 9,
+        headSha: "head-sha",
+        status: "completed",
+        envelope: approvalEnvelope() as never,
+        engineGateFailing: true,
+        gateFailing: true,
+        gateCheckRunId: 900,
+        repoFullName: "octo/approvals",
+        orgId,
+        githubInstallationId: 700,
+      }),
+    ).toBe(true);
+  });
+
+  test("approval command removes the inserted approval if check-run patching fails", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+    checkRunPatchFails = true;
+
+    const res = await approvalComment("approval-check-fails");
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows[0]!.c).toBe(0);
+    const review = await pool.query<{ gate_failing: boolean }>(
+      "SELECT gate_failing FROM reviews WHERE id = $1",
+      [reviewId],
+    );
+    expect(review.rows[0]!.gate_failing).toBe(true);
+    expect(postedComments[0]?.body).toContain("could not be patched");
   });
 
   function checkRunRerequestedEvent(

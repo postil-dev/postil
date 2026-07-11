@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { mentionsPostil } from "@/lib/mentions";
+import { mentionsPostil, parsePostilApproveCommand } from "@/lib/mentions";
 
 describe("mentionsPostil", () => {
   test("matches a plain mention", () => {
@@ -53,5 +53,45 @@ describe("mentionsPostil", () => {
   test("still matches prose mentions next to code", () => {
     expect(mentionsPostil("`config` @postil what does this do?")).toBe(true);
     expect(mentionsPostil("```\nsome code\n```\n@postil thoughts?")).toBe(true);
+  });
+});
+
+describe("parsePostilApproveCommand", () => {
+  test("parses the exact approval command", () => {
+    expect(parsePostilApproveCommand("@postil approve abc123 -- reviewed the escalation")).toEqual(
+      {
+        ok: true,
+        findingId: "abc123",
+        rationale: "reviewed the escalation",
+      },
+    );
+  });
+
+  test("trims multiline rationale", () => {
+    expect(parsePostilApproveCommand("@Postil approve fff --\n  admin reviewed\n")).toEqual({
+      ok: true,
+      findingId: "fff",
+      rationale: "admin reviewed",
+    });
+  });
+
+  test("returns null for free-form mentions", () => {
+    expect(parsePostilApproveCommand("@postil can you explain this?")).toBeNull();
+    expect(parsePostilApproveCommand("looks good @postil approve abc -- no")).toBeNull();
+  });
+
+  test("rejects malformed approval attempts without mutating state", () => {
+    expect(parsePostilApproveCommand("@postil approve abc123")).toEqual({
+      ok: false,
+      error: "Use `@postil approve <finding-id> -- <reason>`.",
+    });
+    expect(parsePostilApproveCommand("@postil approve abc123 --   ")).toEqual({
+      ok: false,
+      error: "Approval requires a non-empty rationale.",
+    });
+  });
+
+  test("ignores approval text inside code", () => {
+    expect(parsePostilApproveCommand("`@postil approve abc -- no`")).toBeNull();
   });
 });
