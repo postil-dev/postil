@@ -12,7 +12,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const expectedOrigin = publicOrigin(request);
 
   // Reject cross-origin form posts (CSRF protection).
-  if (origin && origin !== expectedOrigin) {
+  if (!origin || origin !== expectedOrigin) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
