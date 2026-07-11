@@ -110,6 +110,22 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
+    purpose:
+      "Maximum seconds for one spawned CLI model-provider request; worker defaults below its review watchdog",
+    example: "120",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_LLM_TOTAL_TIMEOUT_SECS",
+    purpose:
+      "Maximum seconds for all spawned CLI model-provider requests in one review; worker defaults below its review watchdog",
+    example: "480",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
     name: "POSTIL_BIN",
     purpose: "Path to the postil CLI binary the worker or webhook drain spawns",
     example: "/usr/local/bin/postil",
