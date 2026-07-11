@@ -248,7 +248,7 @@ export async function approveFinding(formData: FormData): Promise<void> {
       findingId,
       actor: {
         userId,
-        githubId: user.githubId!,
+        githubId: String(user.githubId),
         login: user.login,
         role: "admin",
       },
