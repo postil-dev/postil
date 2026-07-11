@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Client } from "pg";
@@ -8,51 +8,62 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("postil-dev model override migration", () => {
-  const schemaName = `postil_model_migration_${process.pid}_${Date.now()}`;
-  let client: Client;
+  const databaseName = `postil_model_migration_${process.pid}_${Date.now()}`;
+  let adminClient: Client | undefined;
+  let migrationClient: Client | undefined;
 
   beforeAll(async () => {
-    client = new Client({ connectionString: TEST_URL });
-    await client.connect();
-    await client.query(`CREATE SCHEMA "${schemaName}"`);
-    await client.query(`SET search_path TO "${schemaName}"`);
-    await client.query(`
-      CREATE TABLE organizations (
-        id bigint PRIMARY KEY,
-        slug text NOT NULL UNIQUE
-      );
-      CREATE TABLE org_settings (
-        org_id bigint PRIMARY KEY REFERENCES organizations(id),
-        model text,
-        model_cascade text
-      );
-    `);
+    adminClient = new Client({ connectionString: TEST_URL });
+    await adminClient.connect();
+    await adminClient.query(`CREATE DATABASE "${databaseName}"`);
+
+    const databaseUrl = new URL(TEST_URL!);
+    databaseUrl.pathname = `/${databaseName}`;
+    migrationClient = new Client({ connectionString: databaseUrl.toString() });
+    await migrationClient.connect();
+
+    const migrationsDir = join(import.meta.dir, "..", "drizzle");
+    const setupMigrations = (await readdir(migrationsDir))
+      .filter((file) => /^000[0-7]_.*\.sql$/.test(file))
+      .sort();
+    for (const file of setupMigrations) {
+      const sql = await readFile(join(migrationsDir, file), "utf8");
+      for (const statement of sql.split("--> statement-breakpoint")) {
+        if (statement.trim()) await migrationClient.query(statement);
+      }
+    }
   });
 
   afterAll(async () => {
-    if (!client) return;
-    await client.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
-    await client.end();
+    await migrationClient?.end();
+    if (adminClient) {
+      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      await adminClient.end();
+    }
   });
 
   test("clears only the postil-dev model override and is idempotent", async () => {
-    await client.query(`
-      INSERT INTO organizations (id, slug)
-      VALUES (1, 'postil-dev'), (2, 'another-org');
+    await migrationClient!.query(`
+      INSERT INTO organizations (slug, name)
+      VALUES ('postil-dev', 'Postil'), ('another-org', 'Another org');
       INSERT INTO org_settings (org_id, model, model_cascade)
-      VALUES
-        (1, 'moonshotai/kimi-k2.6', 'stale/fallback'),
-        (2, 'org/model', 'org/fallback');
+      SELECT id, 'moonshotai/kimi-k2.6', 'stale/fallback'
+      FROM organizations
+      WHERE slug = 'postil-dev';
+      INSERT INTO org_settings (org_id, model, model_cascade)
+      SELECT id, 'org/model', 'org/fallback'
+      FROM organizations
+      WHERE slug = 'another-org';
     `);
 
     const migration = await readFile(
       join(import.meta.dir, "..", "drizzle", "0008_clear_postil_dev_model_override.sql"),
       "utf8",
     );
-    await client.query(migration);
-    await client.query(migration);
+    await migrationClient!.query(migration);
+    await migrationClient!.query(migration);
 
-    const result = await client.query<{
+    const result = await migrationClient!.query<{
       slug: string;
       model: string | null;
       model_cascade: string | null;
