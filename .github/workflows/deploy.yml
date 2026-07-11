@@ -39,18 +39,30 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
       - name: Fetch pinned postil CLI
-        timeout-minutes: 5
+        # Four assets are fetched serially. Each curl can spend
+        # (1 initial attempt + 5 retries) * 60s max-time + 5 * 2s retry-delay
+        # = 370s, so 4 * 370s = 1480s worst case before verification/install.
+        # Timeout set to 30 minutes to accommodate this with headroom.
+        timeout-minutes: 30
         env:
           TAG: ${{ vars.POSTIL_CLI_TAG || 'v0.2.1' }}
         run: |
           set -euo pipefail
           base="https://github.com/postil-dev/postil-cli/releases/download/${TAG}"
           art="postil-x86_64-unknown-linux-gnu.tar.gz"
-          tmp="$(mktemp -d)"
+          tmp=""
           cleanup() {
-            rm -rf "$tmp" vendor/postil.tmp
+            if [[ -n "${tmp}" && -d "${tmp}" ]]; then
+              rm -rf "${tmp}"
+            fi
+            rm -f vendor/postil.tmp
           }
           trap cleanup EXIT INT TERM
+
+          if ! tmp="$(mktemp -d)" || [[ -z "${tmp}" || ! -d "${tmp}" ]]; then
+            echo "::error::Failed to create temporary directory for postil CLI download."
+            exit 1
+          fi
 
           fetch_asset() {
             local name="$1"
@@ -78,7 +90,12 @@ jobs:
             --certificate-identity-regexp 'https://github.com/postil-dev/postil-cli/\.github/workflows/release\.yml@refs/tags/.*' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           mkdir -p vendor
+          rm -f vendor/postil.tmp
           tar -xzf "${tmp}/${art}" -C "$tmp" postil
+          if [[ ! -x "${tmp}/postil" ]]; then
+            echo "::error::Extracted postil binary is missing or not executable."
+            exit 1
+          fi
           install -m 0755 "${tmp}/postil" vendor/postil.tmp
           mv -f vendor/postil.tmp vendor/postil
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.4
