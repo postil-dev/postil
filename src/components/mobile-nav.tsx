@@ -8,12 +8,22 @@ export interface NavItem {
   label: string;
 }
 
+interface AuthSession {
+  dashboardHref: string;
+}
+
 /**
  * Accessible disclosure menu for viewports below `lg`. Toggles with a
  * hamburger button, traps nothing but closes on Escape, outside click,
  * route change, and viewport widening.
  */
-export function MobileNav({ items }: { items: readonly NavItem[] }) {
+export function MobileNav({
+  items,
+  session,
+}: {
+  items: readonly NavItem[];
+  session: AuthSession | null;
+}) {
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -106,13 +116,37 @@ export function MobileNav({ items }: { items: readonly NavItem[] }) {
               </Link>
             ))}
             <div className="mt-3 flex items-center gap-3 pb-1">
-              <Link
-                href="/login"
-                onClick={() => setOpen(false)}
-                className="btn-secondary flex-1 text-center text-sm"
-              >
-                Sign in
-              </Link>
+              {session === null ? (
+                <Link
+                  href="/login"
+                  onClick={() => setOpen(false)}
+                  className="btn-secondary flex-1 text-center text-sm"
+                >
+                  Sign in
+                </Link>
+              ) : (
+                <>
+                  <Link
+                    href={session.dashboardHref}
+                    onClick={() => setOpen(false)}
+                    className="btn-secondary flex-1 text-center text-sm"
+                  >
+                    Dashboard
+                  </Link>
+                  <form
+                    action="/api/auth/logout"
+                    method="post"
+                    className="flex-1"
+                  >
+                    <button
+                      type="submit"
+                      className="btn-secondary w-full text-sm"
+                    >
+                      Sign out
+                    </button>
+                  </form>
+                </>
+              )}
               <Link
                 href="/install"
                 onClick={() => setOpen(false)}
