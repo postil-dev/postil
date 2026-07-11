@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveConfigArtifacts } from "@/app/orgs/[slug]/config-resolution";
+import {
+  isVisibleConfigArtifact,
+  resolveConfigArtifacts,
+} from "@/app/orgs/[slug]/config-resolution";
 
 describe("resolveConfigArtifacts", () => {
   test("reports repository root config candidates as the root config source", () => {
@@ -52,5 +55,15 @@ describe("resolveConfigArtifacts", () => {
       "unknown",
       "unknown",
     ]);
+  });
+
+  test("hides only resolved empty config artifacts from the settings list", () => {
+    expect(resolveConfigArtifacts([]).filter(isVisibleConfigArtifact)).toEqual([]);
+    expect(resolveConfigArtifacts(null).filter(isVisibleConfigArtifact)).toHaveLength(3);
+    expect(
+      resolveConfigArtifacts([".postil.yaml", "org:.postil/content-policy.md"])
+        .filter(isVisibleConfigArtifact)
+        .map((artifact) => artifact.source),
+    ).toEqual(["repository", "organization"]);
   });
 });
