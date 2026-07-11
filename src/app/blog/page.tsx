@@ -70,6 +70,20 @@ const POSTS = [
     description:
       "CodeRabbit, Qodo, Macroscope, Greptile, Copilot, Bugbot, and Postil, compared on noise, merge gating, self-hosting, data handling, and a pricing landscape that changed four times in ninety days. Every claim sourced.",
   },
+  {
+    href: "/blog/the-gate-is-separate-from-the-review",
+    date: "July 2026",
+    title: "The gate is separate from the review",
+    description:
+      "Postil keeps advisory findings and the branch-protection verdict separate: postil/review explains, while postil/gate carries the required merge decision.",
+  },
+  {
+    href: "/blog/evidence-has-to-link-back",
+    date: "July 2026",
+    title: "Evidence has to link back",
+    description:
+      "Public AI review examples should resolve to the source repository, the reviewed pull request state, and the check-run records behind the claim.",
+  },
 ] as const;
 
 export default function BlogIndexPage() {
