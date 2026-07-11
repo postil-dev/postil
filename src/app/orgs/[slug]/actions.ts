@@ -146,9 +146,11 @@ export async function saveOrgSettings(
       };
     }
     keyUpdate = { apiKeyCiphertext: seal(apiKey, getSealingKey()) };
-  } else if (apiKeyAction === "keep" && apiKey.length > 0) {
-    // If no explicit action but a key was provided, treat as implicit set/replace
-    keyUpdate = { apiKeyCiphertext: seal(apiKey, getSealingKey()) };
+  } else if (apiKeyAction !== "keep") {
+    return {
+      status: "error",
+      message: "Choose whether to update, remove, or keep the API key.",
+    };
   }
 
   await db
@@ -163,5 +165,6 @@ export async function saveOrgSettings(
       set: { ...base, ...keyUpdate },
     });
   revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/settings`);
   return { status: "success", message: "Organization settings saved." };
 }
