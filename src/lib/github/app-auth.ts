@@ -49,7 +49,10 @@ interface CachedToken {
 const tokenCache = new Map<number, CachedToken>();
 
 /** Mint (or reuse) an installation access token. In-memory cache only. */
-export async function getInstallationToken(githubInstallationId: number): Promise<string> {
+export async function getInstallationToken(
+  githubInstallationId: number,
+  signal?: AbortSignal,
+): Promise<string> {
   const cached = tokenCache.get(githubInstallationId);
   // Refresh 5 minutes before expiry.
   if (cached && cached.expiresAt - Date.now() > 5 * 60 * 1000) {
@@ -68,6 +71,7 @@ export async function getInstallationToken(githubInstallationId: number): Promis
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "postil-control-plane",
       },
+      signal,
     },
   );
   if (!res.ok) {

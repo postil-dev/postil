@@ -54,7 +54,8 @@ noindexed:
 - `/orgs/[slug]` is the organization dashboard: silence rate, confidence
   distribution, engine telemetry, recent reviews, repository review coverage
   toggles, LLM settings (model, API base, cascade, sealed BYOK credential), and the
-  member list with roles. A banner surfaces suspended installations.
+  member list with roles. Banners surface suspended installations and enabled
+  repositories that have never completed their first review.
 - `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file
   links), resolved findings, suppressed/ungrounded counts, gate verdict,
@@ -69,6 +70,15 @@ GitHub: login reconciles them (`src/lib/org-sync.ts`) and backfills
 organizations, installations, and repositories from the GitHub API for
 installations whose webhooks predate the database
 (`src/lib/github/installation-sync.ts`).
+
+Repository config status crosses the latest completed review's recorded
+`config_files` with a cached default-branch GitHub contents probe. The settings
+page refreshes missing or 15-minute-old probes with four-request concurrency;
+failed probes preserve the last successful file list and render as unverified.
+Repository health is derived from the latest enablement and review aggregates
+since that enablement. Suspended installations and repositories with any
+completed review in the active enablement window do not produce first-review
+warnings.
 
 Aggregates (silence rate, gate failures) read the denormalized `silent` and
 `gate_failing` columns; `engine_gate_failing` stores the immutable CLI gate

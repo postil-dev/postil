@@ -42,6 +42,7 @@ export async function fetchRepoFile(
   token: string,
   repoFullName: string,
   path: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const res = await fetch(`${apiBase()}/repos/${repoFullName}/contents/${path}`, {
     headers: {
@@ -50,6 +51,7 @@ export async function fetchRepoFile(
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "postil-control-plane",
     },
+    signal,
   });
   if (res.status === 404) return null;
   if (!res.ok) {

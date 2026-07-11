@@ -124,6 +124,22 @@ export const repositories = pgTable("repositories", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const repoConfigProbes = pgTable("repo_config_probes", {
+  repositoryId: bigint("repository_id", { mode: "number" })
+    .primaryKey()
+    .references(() => repositories.id, { onDelete: "cascade" }),
+  probedAt: timestamp("probed_at", { withTimezone: true }).notNull(),
+  ok: boolean("ok").notNull(),
+  files: text("files").array().notNull(),
+});
+
+export const orgConfigProbeRefreshes = pgTable("org_config_probe_refreshes", {
+  orgId: bigint("org_id", { mode: "number" })
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  refreshedAt: timestamp("refreshed_at", { withTimezone: true }).notNull(),
+});
+
 export const repositoryEnablementEvents = pgTable(
   "repository_enablement_events",
   {
