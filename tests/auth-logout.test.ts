@@ -41,22 +41,18 @@ describe("POST /api/auth/logout", () => {
     expect(await response.json()).toEqual({ error: "forbidden" });
   });
 
-  test("allows form posts without origin when fetch metadata is absent", async () => {
+  test("rejects form posts with missing origin header", async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
-    process.env.POSTIL_SESSION_SECRET = SESSION_SECRET;
-    const token = await validSessionToken();
 
     const response = await POST(
       new Request("https://postil.dev/api/auth/logout", {
         method: "POST",
-        headers: { cookie: `${SESSION_COOKIE}=${encodeURIComponent(token)}` },
+        headers: {},
       }),
     );
 
-    expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("https://postil.dev/");
-    expect(response.headers.get("set-cookie")).toContain("postil_session=");
-    expect(destroyedTokens).toEqual([token]);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "forbidden" });
   });
 
   test("allows same-origin form posts and clears the session cookie", async () => {
