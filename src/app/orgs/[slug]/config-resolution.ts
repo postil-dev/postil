@@ -20,12 +20,23 @@ export const CONFIG_ARTIFACTS = [
 ] as const;
 
 export type ConfigSource = "repository" | "organization" | "none" | "unknown";
+export type VisibleConfigSource = Exclude<ConfigSource, "none">;
 
 export interface ResolvedConfigArtifact {
   key: (typeof CONFIG_ARTIFACTS)[number]["key"];
   label: string;
   source: ConfigSource;
   file: string | null;
+}
+
+export interface VisibleConfigArtifact extends ResolvedConfigArtifact {
+  source: VisibleConfigSource;
+}
+
+export function isVisibleConfigArtifact(
+  artifact: ResolvedConfigArtifact,
+): artifact is VisibleConfigArtifact {
+  return artifact.source !== "none";
 }
 
 export function resolveConfigArtifacts(
@@ -68,4 +79,3 @@ export function resolveConfigArtifacts(
     };
   });
 }
-
