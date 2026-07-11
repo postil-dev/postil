@@ -9,6 +9,19 @@
 - Public privacy posture: `src/app/privacy/page.tsx`.
 - Self-hosting and operating guidance: `src/app/docs/self-hosted/page.tsx`.
 
+## Evaluation Data Policy
+
+The 126-PR evaluation dataset is private. It is used only for internal
+measurement aggregates, including the public silence-rate figure, and is not a
+publishable artifact. Do not add scripts, routes, workflow steps, static files,
+or release assets that export the dataset, its raw envelopes, or its run logs.
+
+Public examples are separate from the private dataset. The `/evidence` page is
+fed by `src/data/evidence/index.ts`, which contains curated cases from public
+Postil repositories with links back to the public pull requests. That file is
+the only public example-data surface and must not import, summarize, or expose
+private evaluation records.
+
 ## Database
 
 Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.

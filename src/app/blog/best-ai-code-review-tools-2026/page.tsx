@@ -70,13 +70,13 @@ export default function BestToolsArticle() {
         </p>
         <p>
           A disclosure before anything else: we build Postil, one of the seven
-          tools below. We have a benchmark of our own, but no peer has run it
-          and we have not run peers through it, so this article makes no
-          quantified claim that Postil finds more bugs or fewer false positives
-          than anyone. Where we describe our own product, treat it the way you
-          should treat every vendor&apos;s self-description: as a claim to
-          verify. Everything else is sourced inline from vendor pages and
-          public documentation.
+          tools below. We measure Postil against private evaluation data, but no
+          peer has run that data and we have not run peers through it, so this
+          article makes no quantified claim that Postil finds more bugs or fewer
+          false positives than anyone. Where we describe our own product, treat
+          it the way you should treat every vendor&apos;s self-description: as a
+          claim to verify. Everything else is sourced inline from vendor pages
+          and public documentation.
         </p>
 
         <h2>How to evaluate an AI code reviewer</h2>
@@ -489,7 +489,7 @@ export default function BestToolsArticle() {
           on a best-effort CI gate. The CLI and Action are Apache-2.0, and the
           control plane stores review envelopes, never code. We make no
           peer-run benchmark claim; you can{" "}
-          <Link href="/evidence">see it run</Link> across the evidence fixtures
+          <Link href="/evidence">see it run</Link> across public evidence cases
           and judge the output yourself.
         </p>
 
