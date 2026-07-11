@@ -87,6 +87,7 @@ export default async function OrgBillingPage({
         promptTokens: schema.usageEvents.promptTokens,
         completionTokens: schema.usageEvents.completionTokens,
         modelUsed: schema.usageEvents.modelUsed,
+        costCents: schema.usageEvents.costCents,
         createdAt: schema.usageEvents.createdAt,
       })
       .from(schema.usageEvents)

@@ -91,6 +91,7 @@ const usageRows = [
     promptTokens: 10_000_000,
     completionTokens: 1_000_000,
     modelUsed: "deepseek/deepseek-v4-pro",
+    costCents: 522,
     createdAt: new Date("2026-07-11T12:00:00.000Z"),
   },
 ];

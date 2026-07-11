@@ -295,6 +295,7 @@ async function seedMorgaesisBillingFixture(client: Client): Promise<void> {
       prompt_tokens,
       completion_tokens,
       model_used,
+      cost_cents,
       created_at
     )
     SELECT
@@ -304,6 +305,7 @@ async function seedMorgaesisBillingFixture(client: Client): Promise<void> {
       2000000,
       500000,
       'deepseek/deepseek-v4-pro',
+      131,
       '2026-07-11T12:00:00.000Z'::timestamptz
     FROM installation, review;
   `);

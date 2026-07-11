@@ -243,23 +243,33 @@ export const reviewLogs = pgTable(
   (t) => [uniqueIndex("review_logs_review_seq_idx").on(t.reviewId, t.seq)],
 );
 
-export const usageEvents = pgTable("usage_events", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-  orgId: bigint("org_id", { mode: "number" }).references(() => organizations.id, {
-    onDelete: "set null",
-  }),
-  repositoryId: bigint("repository_id", { mode: "number" }).references(
-    () => repositories.id,
-    { onDelete: "set null" },
-  ),
-  reviewId: bigint("review_id", { mode: "number" }).references(() => reviews.id, {
-    onDelete: "set null",
-  }),
-  promptTokens: integer("prompt_tokens").notNull().default(0),
-  completionTokens: integer("completion_tokens").notNull().default(0),
-  modelUsed: text("model_used"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const usageEvents = pgTable(
+  "usage_events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    orgId: bigint("org_id", { mode: "number" }).references(() => organizations.id, {
+      onDelete: "set null",
+    }),
+    repositoryId: bigint("repository_id", { mode: "number" }).references(
+      () => repositories.id,
+      { onDelete: "set null" },
+    ),
+    reviewId: bigint("review_id", { mode: "number" }).references(() => reviews.id, {
+      onDelete: "set null",
+    }),
+    promptTokens: integer("prompt_tokens").notNull().default(0),
+    completionTokens: integer("completion_tokens").notNull().default(0),
+    modelUsed: text("model_used"),
+    costCents: integer("cost_cents"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "usage_events_cost_cents_nonnegative",
+      sql`${t.costCents} IS NULL OR ${t.costCents} >= 0`,
+    ),
+  ],
+);
 
 export const billingCreditGrants = pgTable(
   "billing_credit_grants",

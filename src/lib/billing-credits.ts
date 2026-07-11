@@ -10,6 +10,7 @@ export interface UsageEventForBillingCredits {
   promptTokens: number;
   completionTokens: number;
   modelUsed: string | null;
+  costCents: number | null;
   createdAt: Date;
 }
 
@@ -36,39 +37,70 @@ export function calculateBillingCreditBalance(
     (total, grant) => total + grant.amountCents,
     0,
   );
+  const ledgerEvents = [
+    ...appliedGrants.map((grant) => ({
+      at: grant.appliesAt,
+      kind: "grant" as const,
+      amountCents: grant.amountCents,
+    })),
+    ...usageEvents
+      .filter((event) => event.createdAt <= asOf)
+      .map((event) => ({
+        at: event.createdAt,
+        kind: "usage" as const,
+        event,
+      })),
+  ].sort((left, right) => {
+    const time = left.at.getTime() - right.at.getTime();
+    if (time !== 0) return time;
+    return left.kind === right.kind ? 0 : left.kind === "grant" ? -1 : 1;
+  });
   let usageCostCents = 0;
+  let remainingCents = 0;
   let chargedUsageEvents = 0;
   let unpricedUsageEvents = 0;
 
-  if (creditStartsAt) {
-    for (const event of usageEvents) {
-      if (event.createdAt < creditStartsAt) continue;
-      const costCents = usageEventCostCents(event);
-      if (costCents === null) {
-        unpricedUsageEvents += 1;
-        continue;
-      }
-      usageCostCents += costCents;
-      chargedUsageEvents += 1;
+  for (const ledgerEvent of ledgerEvents) {
+    if (ledgerEvent.kind === "grant") {
+      remainingCents += ledgerEvent.amountCents;
+      continue;
     }
+    if (remainingCents <= 0) continue;
+    const costCents = usageEventCostCents(ledgerEvent.event);
+    if (costCents === null) {
+      unpricedUsageEvents += 1;
+      continue;
+    }
+    const appliedCostCents = Math.min(remainingCents, costCents);
+    if (appliedCostCents <= 0) continue;
+    usageCostCents += appliedCostCents;
+    remainingCents -= appliedCostCents;
+    chargedUsageEvents += 1;
   }
 
   return {
     creditStartsAt,
     totalGrantedCents,
     usageCostCents,
-    remainingCents: totalGrantedCents - usageCostCents,
+    remainingCents,
     chargedUsageEvents,
     unpricedUsageEvents,
   };
 }
 
 export function usageEventCostCents(event: UsageEventForBillingCredits): number | null {
-  if (!event.modelUsed) return null;
-  const price = MODEL_PRICES.get(event.modelUsed);
+  return event.costCents;
+}
+
+export function calculateUsageCostCentsForModel(
+  modelUsed: string | null,
+  promptTokens: number,
+  completionTokens: number,
+): number | null {
+  if (!modelUsed) return null;
+  const price = MODEL_PRICES.get(modelUsed);
   if (!price) return null;
-  const dollars =
-    event.promptTokens * price.input + event.completionTokens * price.output;
+  const dollars = promptTokens * price.input + completionTokens * price.output;
   if (dollars <= 0) return 0;
   return Math.ceil(dollars * 100 - 1e-9);
 }

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
+import { calculateUsageCostCentsForModel } from "@/lib/billing-credits";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
@@ -502,6 +503,11 @@ export async function runReviewJob(
         promptTokens: ingested.promptTokens,
         completionTokens: ingested.completionTokens,
         modelUsed: ingested.modelUsed,
+        costCents: calculateUsageCostCentsForModel(
+          ingested.modelUsed,
+          ingested.promptTokens,
+          ingested.completionTokens,
+        ),
       });
     } else {
       const terminal = (

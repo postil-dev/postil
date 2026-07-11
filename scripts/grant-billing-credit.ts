@@ -47,6 +47,9 @@ async function main(): Promise<void> {
         .select({
           id: schema.billingCreditGrants.id,
           amountCents: schema.billingCreditGrants.amountCents,
+          reason: schema.billingCreditGrants.reason,
+          actor: schema.billingCreditGrants.actor,
+          source: schema.billingCreditGrants.source,
           appliesAt: schema.billingCreditGrants.appliesAt,
           idempotencyKey: schema.billingCreditGrants.idempotencyKey,
         })
@@ -77,6 +80,9 @@ async function main(): Promise<void> {
           .returning({
             id: schema.billingCreditGrants.id,
             amountCents: schema.billingCreditGrants.amountCents,
+            reason: schema.billingCreditGrants.reason,
+            actor: schema.billingCreditGrants.actor,
+            source: schema.billingCreditGrants.source,
             appliesAt: schema.billingCreditGrants.appliesAt,
             idempotencyKey: schema.billingCreditGrants.idempotencyKey,
           })
@@ -90,6 +96,9 @@ async function main(): Promise<void> {
           .select({
             id: schema.billingCreditGrants.id,
             amountCents: schema.billingCreditGrants.amountCents,
+            reason: schema.billingCreditGrants.reason,
+            actor: schema.billingCreditGrants.actor,
+            source: schema.billingCreditGrants.source,
             appliesAt: schema.billingCreditGrants.appliesAt,
             idempotencyKey: schema.billingCreditGrants.idempotencyKey,
           })
@@ -105,11 +114,7 @@ async function main(): Promise<void> {
     }
 
     if (!grant) throw new Error("credit grant insert raced but no existing grant was found");
-    if (grant.amountCents !== amountCents) {
-      throw new Error(
-        `existing idempotent grant has amount ${formatCurrencyCents(grant.amountCents)}, not ${formatCurrencyCents(amountCents)}`,
-      );
-    }
+    assertMatchingGrant(grant, options, amountCents);
 
     const [grants, usageEvents] = await Promise.all([
       db
@@ -126,6 +131,7 @@ async function main(): Promise<void> {
           promptTokens: schema.usageEvents.promptTokens,
           completionTokens: schema.usageEvents.completionTokens,
           modelUsed: schema.usageEvents.modelUsed,
+          costCents: schema.usageEvents.costCents,
           createdAt: schema.usageEvents.createdAt,
         })
         .from(schema.usageEvents)
@@ -134,10 +140,16 @@ async function main(): Promise<void> {
     ]);
     const balance = calculateBillingCreditBalance(grants, usageEvents);
 
-    console.log(inserted ? "Billing credit grant applied." : "Billing credit grant already exists; no new row inserted.");
+    console.log(
+      inserted
+        ? "Billing credit grant applied."
+        : "Billing credit grant already exists; no new row inserted.",
+    );
     console.log(`org=${org.slug} name=${org.name}`);
     console.log(`grant_id=${grant.id} idempotency_key=${grant.idempotencyKey}`);
-    console.log(`grant_amount=${formatCurrencyCents(grant.amountCents)} applies_at=${grant.appliesAt.toISOString()}`);
+    console.log(
+      `grant_amount=${formatCurrencyCents(grant.amountCents)} applies_at=${grant.appliesAt.toISOString()}`,
+    );
     console.log(`total_granted=${formatCurrencyCents(balance.totalGrantedCents)}`);
     console.log(`usage_charged=${formatCurrencyCents(balance.usageCostCents)}`);
     console.log(`remaining=${formatCurrencyCents(balance.remainingCents)}`);
@@ -171,8 +183,7 @@ function parseArgs(args: string[]): GrantCreditOptions {
   const actor = requireArg(values, "actor").trim();
   const idempotencyKey = requireArg(values, "idempotency-key").trim();
   const source = (values.get("source") ?? "admin_script").trim();
-  const appliesAtRaw = values.get("applies-at");
-  const appliesAt = appliesAtRaw ? new Date(appliesAtRaw) : new Date();
+  const appliesAt = new Date(requireArg(values, "applies-at"));
 
   if (!reason) throw new Error("--reason must be non-empty");
   if (!actor) throw new Error("--actor must be non-empty");
@@ -183,6 +194,36 @@ function parseArgs(args: string[]): GrantCreditOptions {
   return { org, confirmOrg, amount, reason, actor, idempotencyKey, source, appliesAt };
 }
 
+function assertMatchingGrant(
+  grant: {
+    amountCents: number;
+    reason: string;
+    actor: string;
+    source: string;
+    appliesAt: Date;
+  },
+  options: GrantCreditOptions,
+  amountCents: number,
+): void {
+  const mismatches: string[] = [];
+  if (grant.amountCents !== amountCents) {
+    mismatches.push(
+      `amount ${formatCurrencyCents(grant.amountCents)} != ${formatCurrencyCents(amountCents)}`,
+    );
+  }
+  if (grant.reason !== options.reason) mismatches.push("reason differs");
+  if (grant.actor !== options.actor) mismatches.push("actor differs");
+  if (grant.source !== options.source) mismatches.push("source differs");
+  if (grant.appliesAt.getTime() !== options.appliesAt.getTime()) {
+    mismatches.push(
+      `applies_at ${grant.appliesAt.toISOString()} != ${options.appliesAt.toISOString()}`,
+    );
+  }
+  if (mismatches.length > 0) {
+    throw new Error(`existing idempotent grant payload mismatch: ${mismatches.join(", ")}`);
+  }
+}
+
 function requireArg(values: Map<string, string>, name: string): string {
   const value = values.get(name);
   if (!value) throw new Error(`--${name} is required`);
@@ -191,7 +232,14 @@ function requireArg(values: Map<string, string>, name: string): string {
 
 function printUsage(): void {
   console.log(`Usage:
-  bun run billing:grant-credit -- --org morgaesis --confirm-org morgaesis --amount 200 --reason "Owner launch credit" --actor "admin@example" --idempotency-key morgaesis-2026-07-owner-credit
+  bun run billing:grant-credit -- \\
+    --org morgaesis \\
+    --confirm-org morgaesis \\
+    --amount 200 \\
+    --reason "Owner launch credit" \\
+    --actor "admin@example" \\
+    --idempotency-key morgaesis-2026-07-owner-credit \\
+    --applies-at 2026-07-11T00:00:00.000Z
 
 Options:
   --org                 Organization slug to receive the credit.
@@ -201,7 +249,7 @@ Options:
   --actor               Operator or process granting the credit.
   --idempotency-key     Stable key that prevents duplicate grants on retries.
   --source              Optional source label, default admin_script.
-  --applies-at          Optional ISO timestamp, default now.`);
+  --applies-at          Required ISO timestamp for deterministic retries.`);
 }
 
 main().catch(async (error) => {
