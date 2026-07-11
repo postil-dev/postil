@@ -7,14 +7,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const origin = request.headers.get("origin");
   const expectedOrigin = publicOrigin(request);
 
   // Reject cross-origin form posts (CSRF protection).
-  if (
-    (origin && origin !== expectedOrigin) ||
-    (!origin && request.headers.get("sec-fetch-site") === "cross-site")
-  ) {
+  if (!isSameOriginLogoutRequest(request, expectedOrigin)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
@@ -28,4 +24,22 @@ export async function POST(request: Request): Promise<NextResponse> {
   const response = NextResponse.redirect(new URL("/", expectedOrigin), 303);
   response.cookies.delete(SESSION_COOKIE);
   return response;
+}
+
+function isSameOriginLogoutRequest(request: Request, expectedOrigin: string): boolean {
+  const origin = request.headers.get("origin");
+  if (origin) return origin === expectedOrigin;
+
+  const referer = request.headers.get("referer");
+  if (referer) return originFromUrl(referer) === expectedOrigin;
+
+  return request.headers.get("sec-fetch-site") === "same-origin";
+}
+
+function originFromUrl(value: string): string | undefined {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
 }
