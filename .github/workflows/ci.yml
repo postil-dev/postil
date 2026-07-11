@@ -30,4 +30,11 @@ jobs:
       - run: bun test tests/model-override-migration.test.ts
         env:
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      - run: bun test tests/finding-approvals-migration.test.ts
+        env:
+          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
       - run: bun run build
+      - run: bun run verify:dashboard
+        env:
+          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+          POSTIL_DASHBOARD_SERVER: start
