@@ -125,35 +125,81 @@ function Reveal({
 interface BreadcrumbLinks {
   repo: string;
   prFilesAtCommit: string;
+  reviewComment?: string;
+}
+
+interface GitHubPullRequestRef {
+  owner: string;
+  repo: string;
+  prNumber: string;
 }
 
 /**
- * Extract repo and PR number from the pull request URL, then construct
- * breadcrumb links to the repository and PR files at the specific commit.
+ * Extract repo and PR number from a GitHub pull request URL.
  */
-function extractBreadcrumbs(
-  sourceUrl: string,
-  commitSha: string
-): BreadcrumbLinks {
-  // Parse sourceUrl like https://github.com/postil-dev/postil/pull/275
-  const match = sourceUrl.match(
-    /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:#.*)?$/
-  );
-  if (!match) {
-    // Fallback if URL structure doesn't match
-    return {
-      repo: sourceUrl.replace(/\/pull\/\d+.*$/, ""),
-      prFilesAtCommit: `${sourceUrl}/files?sha=${commitSha}`,
-    };
+function parseGitHubPullRequestUrl(
+  value: string,
+  label: string,
+): GitHubPullRequestRef {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${label} must be a valid GitHub pull request URL`);
   }
 
-  const owner = match[1];
-  const repo = match[2];
-  const prNumber = match[3];
+  if (
+    url.protocol !== "https:" ||
+    url.host !== "github.com" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== ""
+  ) {
+    throw new Error(`${label} must be a GitHub pull request URL`);
+  }
+
+  const match = url.pathname.match(
+    /^\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pull\/([1-9]\d*)$/,
+  );
+  if (!match) {
+    throw new Error(`${label} must be a GitHub pull request URL`);
+  }
 
   return {
-    repo: `https://github.com/${owner}/${repo}`,
-    prFilesAtCommit: `https://github.com/${owner}/${repo}/pull/${prNumber}/files?sha=${commitSha}`,
+    owner: match[1]!,
+    repo: match[2]!,
+    prNumber: match[3]!,
+  };
+}
+
+/**
+ * Construct breadcrumb links to the repository, PR files at the specific commit,
+ * and the visible review comment when the evidence includes one.
+ */
+export function extractBreadcrumbs(
+  sourceUrl: string,
+  commitSha: string,
+  reviewUrl?: string,
+): BreadcrumbLinks {
+  const source = parseGitHubPullRequestUrl(sourceUrl, "sourceUrl");
+  let reviewComment: string | undefined;
+
+  if (reviewUrl) {
+    const review = parseGitHubPullRequestUrl(reviewUrl, "reviewUrl");
+    if (
+      review.owner !== source.owner ||
+      review.repo !== source.repo ||
+      review.prNumber !== source.prNumber
+    ) {
+      throw new Error("reviewUrl must point to the same GitHub pull request");
+    }
+    reviewComment = new URL(reviewUrl).href;
+  }
+
+  return {
+    repo: `https://github.com/${source.owner}/${source.repo}`,
+    prFilesAtCommit: `https://github.com/${source.owner}/${source.repo}/pull/${source.prNumber}/files?sha=${commitSha}`,
+    ...(reviewComment ? { reviewComment } : {}),
   };
 }
 
@@ -189,7 +235,11 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
     ? "Excerpt of the reviewed commit diff"
     : "The complete reviewed commit diff";
 
-  const breadcrumbs = extractBreadcrumbs(current.sourceUrl, current.commitSha);
+  const breadcrumbs = extractBreadcrumbs(
+    current.sourceUrl,
+    current.commitSha,
+    current.reviewUrl,
+  );
 
   return (
     <div className="ev-root">
@@ -279,6 +329,16 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
               >
                 pull request at commit
               </a>
+              {breadcrumbs.reviewComment ? (
+                <a
+                  className="ev-source"
+                  href={breadcrumbs.reviewComment}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  review comment
+                </a>
+              ) : null}
             </div>
 
             <div className="ev-grid">
