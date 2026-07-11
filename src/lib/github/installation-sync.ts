@@ -9,6 +9,7 @@ import {
   normalizePrivateKey,
 } from "@/lib/github/app-auth";
 import { redactSecrets } from "@/lib/redact";
+import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
 
 /**
  * Installation and organization persistence shared by the webhook receiver
@@ -105,21 +106,111 @@ export async function upsertRepositories(
   installationId: number,
   repos: RepoSummary[],
 ): Promise<void> {
-  const db = getDb();
   for (const repo of repos) {
-    await db
-      .insert(schema.repositories)
-      .values({
-        installationId,
-        githubRepoId: repo.id,
-        fullName: repo.full_name,
-        private: repo.private,
-      })
-      .onConflictDoUpdate({
-        target: schema.repositories.githubRepoId,
-        set: { fullName: repo.full_name, private: repo.private, installationId },
-      });
+    await upsertRepository(installationId, repo, "github_installation");
   }
+}
+
+export async function upsertRepository(
+  installationId: number,
+  repo: RepoSummary,
+  source: "github_installation" | "github_pull_request",
+): Promise<{ id: number; enabled: boolean } | undefined> {
+  const db = getDb();
+  const destination = (
+    await db
+      .select({ orgId: schema.installations.orgId })
+      .from(schema.installations)
+      .where(eq(schema.installations.id, installationId))
+      .limit(1)
+  )[0];
+  if (!destination) return undefined;
+
+  return db.transaction(async (tx) => {
+    const loadExisting = async () =>
+      (
+        await tx
+          .select({
+            id: schema.repositories.id,
+            installationId: schema.repositories.installationId,
+            fullName: schema.repositories.fullName,
+            private: schema.repositories.private,
+            enabled: schema.repositories.enabled,
+            orgId: schema.installations.orgId,
+          })
+          .from(schema.repositories)
+          .innerJoin(
+            schema.installations,
+            eq(schema.installations.id, schema.repositories.installationId),
+          )
+          .where(eq(schema.repositories.githubRepoId, repo.id))
+          .limit(1)
+      )[0];
+
+    let existing = await loadExisting();
+
+    if (!existing) {
+      const [inserted] = await tx
+        .insert(schema.repositories)
+        .values({
+          installationId,
+          githubRepoId: repo.id,
+          fullName: repo.full_name,
+          private: repo.private,
+        })
+        .onConflictDoNothing({ target: schema.repositories.githubRepoId })
+        .returning({ id: schema.repositories.id, enabled: schema.repositories.enabled });
+      if (inserted) {
+        if (destination.orgId !== null) {
+          await recordRepositoryEnablementEvent(tx, {
+            orgId: destination.orgId,
+            repositoryId: inserted.id,
+            githubRepoId: repo.id,
+            repositoryFullName: repo.full_name,
+            repositoryPrivate: repo.private,
+            action: "enable",
+            source,
+          });
+        }
+        return inserted;
+      }
+      existing = await loadExisting();
+      if (!existing) return undefined;
+    }
+
+    const orgChanged = existing.orgId !== destination.orgId;
+    if (orgChanged && existing.enabled && existing.orgId !== null) {
+      await recordRepositoryEnablementEvent(tx, {
+        orgId: existing.orgId,
+        repositoryId: existing.id,
+        githubRepoId: repo.id,
+        repositoryFullName: existing.fullName,
+        repositoryPrivate: existing.private,
+        action: "disable",
+        source: "github_transfer",
+      });
+    }
+
+    const [saved] = await tx
+      .update(schema.repositories)
+      .set({ fullName: repo.full_name, private: repo.private, installationId })
+      .where(eq(schema.repositories.id, existing.id))
+      .returning({ id: schema.repositories.id, enabled: schema.repositories.enabled });
+
+    if (orgChanged && saved?.enabled && destination.orgId !== null) {
+      await recordRepositoryEnablementEvent(tx, {
+        orgId: destination.orgId,
+        repositoryId: saved.id,
+        githubRepoId: repo.id,
+        repositoryFullName: repo.full_name,
+        repositoryPrivate: repo.private,
+        action: "enable",
+        source: "github_transfer",
+      });
+    }
+
+    return saved;
+  });
 }
 
 /** Upsert the organization + installation pair; returns the installation row id. */

@@ -8,6 +8,7 @@ import { validateApiBase } from "@/lib/api-base";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
+import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
 import { getSessionUser } from "@/lib/session";
 
 export interface OrgSettingsActionState {
@@ -21,7 +22,9 @@ export interface OrgSettingsActionState {
  * membership; write actions additionally assert the admin role via
  * requireAdmin below.
  */
-async function requireMembership(slug: string): Promise<{ orgId: number; role: string }> {
+async function requireMembership(
+  slug: string,
+): Promise<{ orgId: number; role: string; userId: number }> {
   const user = await getSessionUser();
   if (!user) throw new Error("not signed in");
   const db = getDb();
@@ -41,7 +44,7 @@ async function requireMembership(slug: string): Promise<{ orgId: number; role: s
       .limit(1)
   )[0];
   if (!member) throw new Error("not a member of this organization");
-  return { orgId: org.id, role: member.role };
+  return { orgId: org.id, role: member.role, userId: user.id };
 }
 
 /**
@@ -52,25 +55,32 @@ async function requireMembership(slug: string): Promise<{ orgId: number; role: s
  * from GitHub org membership at login (admin/member); personal accounts are
  * always admin.
  */
-async function requireAdmin(slug: string): Promise<{ orgId: number }> {
-  const { orgId, role } = await requireMembership(slug);
+async function requireAdmin(slug: string): Promise<{ orgId: number; userId: number }> {
+  const { orgId, role, userId } = await requireMembership(slug);
   if (role !== "admin") {
     throw new Error("this action requires an organization admin");
   }
-  return { orgId };
+  return { orgId, userId };
 }
 
 export async function toggleRepository(formData: FormData): Promise<void> {
   const slug = String(formData.get("slug") ?? "");
   const repositoryId = Number(formData.get("repositoryId"));
   const enable = formData.get("enable") === "true";
-  const { orgId } = await requireAdmin(slug);
+  const { orgId, userId } = await requireAdmin(slug);
 
   const db = getDb();
   // Constrain the update to repositories that actually belong to this org.
   const repo = (
     await db
-      .select({ id: schema.repositories.id })
+      .select({
+        id: schema.repositories.id,
+        installationId: schema.repositories.installationId,
+        githubRepoId: schema.repositories.githubRepoId,
+        fullName: schema.repositories.fullName,
+        private: schema.repositories.private,
+        enabled: schema.repositories.enabled,
+      })
       .from(schema.repositories)
       .innerJoin(
         schema.installations,
@@ -81,11 +91,33 @@ export async function toggleRepository(formData: FormData): Promise<void> {
   )[0];
   if (!repo) throw new Error("repository not found in this organization");
 
-  await db
-    .update(schema.repositories)
-    .set({ enabled: enable })
-    .where(eq(schema.repositories.id, repo.id));
+  await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(schema.repositories)
+      .set({ enabled: enable })
+      .where(
+        and(
+          eq(schema.repositories.id, repo.id),
+          eq(schema.repositories.installationId, repo.installationId),
+        ),
+      )
+      .returning({ id: schema.repositories.id });
+    if (!updated[0]) throw new Error("repository changed organizations; retry the toggle");
+    if (repo.enabled !== enable) {
+      await recordRepositoryEnablementEvent(tx, {
+        orgId,
+        repositoryId: repo.id,
+        githubRepoId: repo.githubRepoId,
+        repositoryFullName: repo.fullName,
+        repositoryPrivate: repo.private,
+        action: enable ? "enable" : "disable",
+        actorUserId: userId,
+        source: "dashboard",
+      });
+    }
+  });
   revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/billing`);
 }
 
 export async function saveOrgSettings(

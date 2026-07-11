@@ -1,6 +1,8 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  check,
   customType,
   index,
   integer,
@@ -115,6 +117,45 @@ export const repositories = pgTable("repositories", {
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const repositoryEnablementEvents = pgTable(
+  "repository_enablement_events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    repositoryId: bigint("repository_id", { mode: "number" }).references(
+      () => repositories.id,
+      { onDelete: "set null" },
+    ),
+    githubRepoId: bigint("github_repo_id", { mode: "number" }).notNull(),
+    repositoryFullName: text("repository_full_name").notNull(),
+    repositoryPrivate: boolean("repository_private").notNull(),
+    action: text("action").notNull(),
+    actorUserId: bigint("actor_user_id", { mode: "number" }).references(() => users.id, {
+      onDelete: "set null",
+    }),
+    source: text("source").notNull().default("dashboard"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("repository_enablement_events_org_time_idx").on(t.orgId, t.occurredAt, t.id),
+    index("repository_enablement_events_repo_time_idx").on(
+      t.repositoryId,
+      t.occurredAt,
+      t.id,
+    ),
+    check(
+      "repository_enablement_events_action_check",
+      sql`${t.action} IN ('enable', 'disable')`,
+    ),
+    check(
+      "repository_enablement_events_source_check",
+      sql`${t.source} IN ('dashboard', 'github_installation', 'github_pull_request', 'github_transfer', 'github_uninstall', 'migration_baseline')`,
+    ),
+  ],
+);
 
 export const reviews = pgTable(
   "reviews",

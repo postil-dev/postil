@@ -1,0 +1,2 @@
+ALTER TABLE "repository_enablement_events" ADD CONSTRAINT "repository_enablement_events_action_check" CHECK ("repository_enablement_events"."action" IN ('enable', 'disable'));--> statement-breakpoint
+ALTER TABLE "repository_enablement_events" ADD CONSTRAINT "repository_enablement_events_source_check" CHECK ("repository_enablement_events"."source" IN ('dashboard', 'github_installation', 'github_pull_request', 'github_transfer', 'github_uninstall', 'migration_baseline'));
