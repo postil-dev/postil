@@ -1,8 +1,8 @@
 import Image from "next/image";
 import Link from "next/link";
 
-import { AuthNav } from "@/components/auth-nav";
-import { MobileNav, type NavItem } from "@/components/mobile-nav";
+import { HeaderActions } from "@/components/auth-nav";
+import type { NavItem } from "@/components/mobile-nav";
 
 const NAV: readonly NavItem[] = [
   { href: "/why-postil", label: "Why Postil" },
@@ -42,14 +42,7 @@ export function SiteHeader() {
           ))}
         </nav>
         <div className="flex items-center gap-4">
-          <AuthNav />
-          <Link
-            href="/install"
-            className="btn-primary hidden whitespace-nowrap text-sm sm:inline-block"
-          >
-            Install the App
-          </Link>
-          <MobileNav items={NAV} />
+          <HeaderActions items={NAV} />
         </div>
       </div>
     </header>
