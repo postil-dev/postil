@@ -28,6 +28,20 @@ describe("POST /api/auth/logout", () => {
     expect(await response.json()).toEqual({ error: "forbidden" });
   });
 
+  test("rejects form posts with missing origin header", async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+
+    const response = await POST(
+      new Request("https://postil.dev/api/auth/logout", {
+        method: "POST",
+        headers: {},
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "forbidden" });
+  });
+
   test("allows same-origin form posts and clears the session cookie", async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
     process.env.POSTIL_SESSION_SECRET = "session-secret-for-logout-tests";
