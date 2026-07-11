@@ -52,11 +52,11 @@ ignore:
       <p>
         The command accepts a directory of stored envelopes and reports the
         before and after finding counts, suppressions, and gate outcome for
-        each one. This transcript replays one stored review against a candidate
-        config:
+        each one. This transcript was captured from the CLI replaying a public
+        evidence envelope against a candidate config:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
-        <code>{`$ postil plan --envelopes .cache/docs-plan --config .cache/docs-plan/.postil.candidate.yaml
+        <code>{`$ postil plan --envelopes .cache/docs-plan/envelopes --config .cache/docs-plan/.postil.candidate.yaml
 
 ${planTranscript}`}</code>
       </pre>

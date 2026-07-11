@@ -221,6 +221,12 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
 
 ${doctorTranscript}`}</code>
         </pre>
+        <p>
+          This transcript was captured from the CLI against a loopback
+          OpenAI-compatible endpoint. The URL and model name change for
+          OpenRouter, Azure OpenAI, Ollama, or another compatible server, and
+          key values are not printed.
+        </p>
 
         <h2>Why &quot;OpenAI-compatible&quot; is the whole trick</h2>
         <p>

@@ -8,8 +8,8 @@ postil doctor: ready.`;
 
 export const planTranscript = `postil plan: replaying 1 stored review(s) under candidate config (.cache/docs-plan/.postil.candidate.yaml)
 
-  prettier_prettier__19348.json: 3 -> 1 finding(s); gate: passing (unchanged)
-      would suppress: src/cli/utilities.js:49 [warn] Hash algorithm change may break caching or other features relying on stable hash values
-      would suppress: package.json:85 [warn] New dependency imurmurhash-esm at version 0.0.2 may be unstable
+  swapped-shas-public-evidence.json: 2 -> 0 finding(s); gate: FAILING -> passing
+      would suppress: src/app/docs/quickstart/page.tsx:71 [error] Fix cli-ref to use CLI repository SHA
+      would suppress: src/app/docs/page.tsx:92 [error] Fix cli-ref to use CLI repository SHA
 
-Summary: 2 finding(s) would be suppressed; 0 gate outcome(s) would change.`;
+Summary: 2 finding(s) would be suppressed; 1 gate outcome(s) would change.`;

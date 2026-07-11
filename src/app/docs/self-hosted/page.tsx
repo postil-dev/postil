@@ -217,9 +217,8 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
         probe of the model endpoint, and any forge tokens. Inside the worker it
         reads <code>REVIEW_MODEL</code>, <code>POSTIL_API_BASE</code>,{" "}
         <code>MODEL_API_KEY</code>, and <code>POSTIL_API_KEY</code> from the
-        container env, so set those in <code>.env</code> before running it.
-        This transcript is from a successful run against an OpenAI-compatible
-        probe endpoint:
+        container env, so set those in <code>.env</code> before running it. A
+        captured successful run reports:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`docker compose exec worker postil doctor
@@ -227,10 +226,12 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
 ${doctorTranscript}`}</code>
       </pre>
       <p>
-        Doctor reports each check separately, including config resolution, git
-        work-tree state, API-key presence, model-endpoint reachability, model
-        readiness, and forge tokens. Every failure names the failing layer and
-        suggests a fix.
+        This transcript was captured from the CLI against a loopback
+        OpenAI-compatible endpoint. Provider URLs and model names differ in
+        your deployment, but the same checks are reported separately: config
+        resolution, git work-tree state, API-key presence, model-endpoint
+        reachability, model readiness, and forge tokens. Every failure names
+        the failing layer and suggests a fix.
       </p>
 
       <h3>GitHub setup</h3>
