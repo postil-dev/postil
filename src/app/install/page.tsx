@@ -119,13 +119,17 @@ export default function InstallPage() {
             Always run <code className="font-mono text-xs">postil doctor</code>{" "}
             before your first review. It checks the resolved config, the git
             work tree, your API key, a live probe of the model endpoint, and
-            any forge tokens. This transcript is from a successful local
-            doctor run against an OpenAI-compatible probe endpoint:
+            any forge tokens. A captured successful run reports:
           </p>
 
           <Terminal title="postil doctor">
             <code>{`$ postil doctor\n\n${doctorTranscript}`}</code>
           </Terminal>
+          <p className="text-sm text-ink-soft">
+            This transcript was captured from the CLI against a loopback
+            OpenAI-compatible endpoint. Your provider URL and model name will
+            differ; key values are not printed.
+          </p>
           <p className="text-sm text-ink-soft">
             Then review your staged changes with{" "}
             <code className="font-mono text-xs">postil review --staged</code>.
