@@ -102,7 +102,7 @@ export async function saveOrgSettings(
   const model = String(formData.get("model") ?? "").trim() || null;
   const modelCascade = String(formData.get("modelCascade") ?? "").trim() || null;
   const apiKey = String(formData.get("apiKey") ?? "").trim();
-  const removeKey = formData.get("removeKey") === "on";
+  const apiKeyAction = String(formData.get("apiKeyAction") ?? "keep").trim();
   const configYamlBody = String(formData.get("configYaml") ?? "");
   const configYaml = configYamlBody.trim().length > 0 ? configYamlBody : null;
   const guardrailsBody = String(formData.get("guardrailsMd") ?? "");
@@ -136,9 +136,18 @@ export async function saveOrgSettings(
   // The key is write-only: set when provided, cleared when requested,
   // otherwise left untouched. It is never read back to the form.
   let keyUpdate: { apiKeyCiphertext: Buffer | null } | Record<string, never> = {};
-  if (removeKey) {
+  if (apiKeyAction === "remove") {
     keyUpdate = { apiKeyCiphertext: null };
-  } else if (apiKey.length > 0) {
+  } else if (apiKeyAction === "replace") {
+    if (apiKey.length === 0) {
+      return {
+        status: "error",
+        message: "Enter a new API key before replacing the stored key.",
+      };
+    }
+    keyUpdate = { apiKeyCiphertext: seal(apiKey, getSealingKey()) };
+  } else if (apiKeyAction === "keep" && apiKey.length > 0) {
+    // If no explicit action but a key was provided, treat as implicit set/replace
     keyUpdate = { apiKeyCiphertext: seal(apiKey, getSealingKey()) };
   }
 
