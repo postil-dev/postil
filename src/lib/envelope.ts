@@ -31,6 +31,11 @@ export const findingSchema = z.object({
   severity: severitySchema,
   kind: findingKindSchema,
   confidence: z.number().min(0).max(1),
+  generatorConfidence: z.number().min(0).max(1).optional(),
+  scorerConfidence: z.number().min(0).max(1).optional(),
+  generatorKind: findingKindSchema.optional(),
+  scorerKind: findingKindSchema.optional(),
+  scorerReason: z.string().optional(),
   title: z.string(),
   body: z.string(),
 });
@@ -65,6 +70,9 @@ export const envelopeSchema = z
       block_on_kinds: z.array(findingKindSchema).optional(),
     }),
     modelUsed: z.string(),
+    scorerModel: z.string().optional(),
+    scorerError: z.string().optional(),
+    scorerDisagreements: z.number().int().nonnegative().optional(),
     usage: z.object({
       promptTokens: z.number().int().nonnegative(),
       completionTokens: z.number().int().nonnegative(),
