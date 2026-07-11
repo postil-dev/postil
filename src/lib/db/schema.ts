@@ -14,7 +14,6 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { sql } from "drizzle-orm";
 
 import type { Envelope } from "@/lib/envelope";
 
