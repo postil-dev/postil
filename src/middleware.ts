@@ -64,7 +64,13 @@ function responseWithCrawlerHeaders(request: NextRequest, response: NextResponse
 }
 
 function isProtectedRoute(pathname: string): boolean {
-  return pathname === "/reports" || pathname.startsWith("/reports/") || pathname.startsWith("/orgs/");
+  return (
+    pathname === "/operator" ||
+    pathname.startsWith("/operator/") ||
+    pathname === "/reports" ||
+    pathname.startsWith("/reports/") ||
+    pathname.startsWith("/orgs/")
+  );
 }
 
 function isWwwHost(request: NextRequest): boolean {
@@ -76,6 +82,8 @@ function isNoindexRoute(pathname: string): boolean {
   return (
     pathname === "/login" ||
     pathname.startsWith("/login/") ||
+    pathname === "/operator" ||
+    pathname.startsWith("/operator/") ||
     pathname === "/reports" ||
     pathname.startsWith("/reports/") ||
     pathname.startsWith("/orgs/") ||

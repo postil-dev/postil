@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { isTlsError, tlsSelfTest, tlsSelfTestUrl } from "@/worker/tls-selftest";
+import "./quiet-console";
 
 /**
  * The boot-time TLS self-test exists to turn a CA-broken image into a failed

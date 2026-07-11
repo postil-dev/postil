@@ -11,7 +11,7 @@
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "seed": "bun run scripts/seed.ts",
-    "test": "AGENT=1 bun test --isolate"
+    "test": "bun test --isolate --only-failures"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

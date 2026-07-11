@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import type { ClaimedJob } from "@/lib/queue";
+import "./quiet-console";
 
 const OLD_ENV = { ...process.env };
 
