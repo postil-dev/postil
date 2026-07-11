@@ -12,6 +12,7 @@ type DocsNavItem = {
 export const DOCS_NAV: readonly DocsNavItem[] = [
   { href: "/docs", label: "Overview" },
   { href: "/docs/quickstart", label: "Quickstart" },
+  { href: "/docs/coding-agents", label: "Coding agents" },
   { href: "/docs/config", label: "Configuration (.postil.yaml)" },
   { href: "/docs/cli", label: "CLI reference" },
   { href: "/docs/exit-codes", label: "Exit codes" },

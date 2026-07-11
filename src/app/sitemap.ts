@@ -69,6 +69,7 @@ const ROUTES: {
   { path: "/terms", priority: 0.4, changeFrequency: "yearly", lastModified: "2026-07-08" },
   { path: "/docs", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/docs/quickstart", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-08" },
+  { path: "/docs/coding-agents", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-11" },
   { path: "/docs/config", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/docs/gate", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-12" },
   { path: "/docs/plan", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-06-12" },
