@@ -66,7 +66,7 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
             <span>API key</span>
             {settings?.hasKey && (
               <span className="font-mono text-[11px] text-gate">
-                a key is stored (write-only)
+                stored key cannot be read back
               </span>
             )}
           </span>
@@ -74,16 +74,72 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
             type="password"
             name="apiKey"
             autoComplete="off"
-            placeholder={settings?.hasKey ? "leave blank to keep current key" : "sk-..."}
+            placeholder={settings?.hasKey ? "new key for replacement" : "sk-..."}
             className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
           />
         </label>
-        {settings?.hasKey && (
-          <label className="flex items-center gap-2 text-sm text-ink-soft">
-            <input type="checkbox" name="removeKey" className="accent-[#C24A2A]" />
-            Remove the stored key (fall back to the hosted default)
-          </label>
-        )}
+        <fieldset className="space-y-2 rounded-card border border-stone/80 p-3">
+          <legend className="px-1 font-mono text-[11px] uppercase tracking-[0.18em] text-charcoal/60">
+            Key action
+          </legend>
+          {settings?.hasKey ? (
+            <>
+              <label className="flex items-start gap-2 text-sm text-ink-soft">
+                <input
+                  type="radio"
+                  name="apiKeyAction"
+                  value="keep"
+                  defaultChecked
+                  className="mt-1 accent-[#C24A2A]"
+                />
+                <span>
+                  Keep the stored write-only key. The password field is ignored unless
+                  replace is selected.
+                </span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-ink-soft">
+                <input
+                  type="radio"
+                  name="apiKeyAction"
+                  value="replace"
+                  className="mt-1 accent-[#C24A2A]"
+                />
+                <span>Replace the stored key with the password field above.</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-ink-soft">
+                <input
+                  type="radio"
+                  name="apiKeyAction"
+                  value="remove"
+                  className="mt-1 accent-[#C24A2A]"
+                />
+                <span>Remove the stored key and fall back to the hosted default.</span>
+              </label>
+            </>
+          ) : (
+            <>
+              <label className="flex items-start gap-2 text-sm text-ink-soft">
+                <input
+                  type="radio"
+                  name="apiKeyAction"
+                  value="keep"
+                  defaultChecked
+                  className="mt-1 accent-[#C24A2A]"
+                />
+                <span>Use the hosted default.</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-ink-soft">
+                <input
+                  type="radio"
+                  name="apiKeyAction"
+                  value="replace"
+                  className="mt-1 accent-[#C24A2A]"
+                />
+                <span>Store the password field as this organization&apos;s write-only key.</span>
+              </label>
+            </>
+          )}
+        </fieldset>
         <p className="text-xs text-charcoal/50">
           Keys are sealed with AES-256-GCM before storage and can never be read back from
           this form. BYOK review calls use this key under your provider account; leave
