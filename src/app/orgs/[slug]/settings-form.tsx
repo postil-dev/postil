@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 
 import { saveOrgSettings } from "./actions";
 
@@ -20,10 +20,27 @@ interface SettingsFormProps {
     | undefined;
 }
 
+const HOSTED_DEFAULT_MODEL_CHAIN = [
+  "mistralai/mistral-small-3.2-24b-instruct",
+  "google/gemma-3-27b-it",
+  "qwen/qwen3-32b",
+] as const;
+
+function modelChain(value: string | null | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
+
 export function SettingsForm({ slug, settings }: SettingsFormProps) {
   const [state, formAction, pending] = useActionState(saveOrgSettings, null);
+  const [bringOwnKey, setBringOwnKey] = useState(false);
   const textareaClass =
     "mt-1 min-h-36 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs leading-relaxed focus:border-gate focus:outline-none";
+  const configuredModelChain = modelChain(settings?.modelCascade);
+  const visibleModelChain =
+    configuredModelChain.length > 0 ? configuredModelChain : [...HOSTED_DEFAULT_MODEL_CHAIN];
 
   return (
     <form action={formAction} className="card mt-3 space-y-5 p-5">
@@ -41,7 +58,7 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
             className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
           />
         </label>
-        <label className="block text-sm">
+        <div className="block text-sm">
           <span className="font-medium">Model</span>
           <input
             type="text"
@@ -50,101 +67,140 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
             placeholder="deepseek/deepseek-v4-pro"
             className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
           />
-        </label>
+          <div className="mt-3 rounded-card border border-stone/80 bg-paper p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {visibleModelChain.map((model, index) => (
+                <div key={`${model}-${index}`} className="flex items-center gap-2">
+                  {index > 0 && <span className="font-mono text-xs text-charcoal/35">→</span>}
+                  <span className="rounded-card border border-stone bg-ivory px-2.5 py-1 font-mono text-[11px] text-charcoal">
+                    {model}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 inline-flex max-w-full items-start gap-2 rounded-card border border-gate/30 bg-gate/5 px-3 py-2 text-xs text-charcoal/70">
+              <span className="mt-0.5 rounded-full border border-gate px-1.5 font-mono text-[10px] text-gate">
+                info
+              </span>
+              <span>
+                Models are tried in order. A later model is only used if an earlier one
+                fails.
+              </span>
+            </div>
+            {configuredModelChain.length === 0 && (
+              <p className="mt-2 text-xs text-charcoal/55">
+                Empty uses the hosted default of {HOSTED_DEFAULT_MODEL_CHAIN.join(" → ")}.
+              </p>
+            )}
+          </div>
+        </div>
         <label className="block text-sm">
-          <span className="font-medium">Model cascade</span>
+          <span className="font-medium">Fallback models</span>
           <input
             type="text"
             name="modelCascade"
             defaultValue={settings?.modelCascade ?? ""}
-            placeholder="qwen/qwen3-coder"
+            placeholder={HOSTED_DEFAULT_MODEL_CHAIN.join(", ")}
             className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
           />
-        </label>
-        <label className="block text-sm">
-          <span className="flex items-center justify-between font-medium">
-            <span>API key</span>
-            {settings?.hasKey && (
-              <span className="font-mono text-[11px] text-gate">
-                stored key cannot be read back
-              </span>
-            )}
+          <span className="mt-1 block text-xs text-charcoal/60">
+            Comma-separated fallback chain after the primary model.
           </span>
-          <input
-            type="password"
-            name="apiKey"
-            autoComplete="off"
-            placeholder={settings?.hasKey ? "new key for replacement" : "sk-..."}
-            className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-          />
         </label>
-        <fieldset className="space-y-2 rounded-card border border-stone/80 p-3">
-          <legend className="px-1 font-mono text-[11px] uppercase tracking-[0.18em] text-charcoal/60">
-            Key action
-          </legend>
+        <div className="rounded-card border border-stone/80 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="font-medium">API key</p>
+              <p className="mt-1 text-sm text-ink-soft">
+                {settings?.hasKey
+                  ? "Using your own API key."
+                  : "Using Postil's hosted inference."}
+              </p>
+            </div>
+            <span
+              className={
+                settings?.hasKey
+                  ? "rounded-full border border-gate px-2.5 py-0.5 font-mono text-[11px] text-gate"
+                  : "rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/60"
+              }
+            >
+              {settings?.hasKey ? "BYOK" : "hosted"}
+            </span>
+          </div>
           {settings?.hasKey ? (
-            <>
-              <label className="flex items-start gap-2 text-sm text-ink-soft">
-                <input
-                  type="radio"
-                  name="apiKeyAction"
-                  value="keep"
-                  defaultChecked
-                  className="mt-1 accent-[#C24A2A]"
-                />
-                <span>
-                  Keep the stored write-only key. The password field is ignored unless
-                  replace is selected.
+            <div className="mt-4 space-y-3">
+              <label className="block text-sm">
+                <span className="flex items-center justify-between font-medium">
+                  <span>Update key</span>
+                  <span className="font-mono text-[11px] text-gate">
+                    stored key cannot be read back
+                  </span>
                 </span>
-              </label>
-              <label className="flex items-start gap-2 text-sm text-ink-soft">
                 <input
-                  type="radio"
+                  type="password"
+                  name="apiKey"
+                  autoComplete="off"
+                  placeholder="new provider key"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="submit"
                   name="apiKeyAction"
                   value="replace"
-                  className="mt-1 accent-[#C24A2A]"
-                />
-                <span>Replace the stored key with the password field above.</span>
-              </label>
-              <label className="flex items-start gap-2 text-sm text-ink-soft">
-                <input
-                  type="radio"
+                  disabled={pending}
+                  className="btn-secondary text-xs disabled:opacity-60"
+                >
+                  Update key
+                </button>
+                <button
+                  type="submit"
                   name="apiKeyAction"
                   value="remove"
-                  className="mt-1 accent-[#C24A2A]"
-                />
-                <span>Remove the stored key and fall back to the hosted default.</span>
-              </label>
-            </>
+                  disabled={pending}
+                  className="rounded-card border border-rust px-4 py-2 text-sm font-medium text-rust transition-colors hover:bg-rust hover:text-ivory disabled:opacity-60"
+                >
+                  Remove key
+                </button>
+              </div>
+            </div>
           ) : (
-            <>
-              <label className="flex items-start gap-2 text-sm text-ink-soft">
+            <div className="mt-4 space-y-3">
+              <label className="flex items-center justify-between gap-3 rounded-card border border-stone/70 px-3 py-2 text-sm">
+                <span className="font-medium">Bring your own key</span>
                 <input
-                  type="radio"
-                  name="apiKeyAction"
-                  value="keep"
-                  defaultChecked
-                  className="mt-1 accent-[#C24A2A]"
+                  type="checkbox"
+                  checked={bringOwnKey}
+                  onChange={(event) => setBringOwnKey(event.target.checked)}
+                  className="h-4 w-4 accent-[#2F6F4E]"
                 />
-                <span>Use the hosted default.</span>
               </label>
-              <label className="flex items-start gap-2 text-sm text-ink-soft">
-                <input
-                  type="radio"
-                  name="apiKeyAction"
-                  value="replace"
-                  className="mt-1 accent-[#C24A2A]"
-                />
-                <span>Store the password field as this organization&apos;s write-only key.</span>
-              </label>
-            </>
+              {bringOwnKey && (
+                <label className="block text-sm">
+                  <span className="font-medium">Provider key</span>
+                  <input
+                    type="password"
+                    name="apiKey"
+                    autoComplete="off"
+                    placeholder="sk-..."
+                    className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                  />
+                </label>
+              )}
+              <input
+                type="hidden"
+                name="apiKeyAction"
+                value={bringOwnKey ? "replace" : "keep"}
+              />
+            </div>
           )}
-        </fieldset>
-        <p className="text-xs text-charcoal/50">
-          Keys are sealed with AES-256-GCM before storage and can never be read back from
-          this form. BYOK review calls use this key under your provider account; leave
-          it unset to use the hosted default.
-        </p>
+          <p className="mt-3 text-xs text-charcoal/50">
+            Keys are sealed with AES-256-GCM before storage and can never be read
+            back from this form. BYOK review calls use this key under your provider
+            account.
+          </p>
+        </div>
       </div>
 
       <div className="border-t border-stone/60 pt-5">
@@ -206,7 +262,13 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
           {state.message}
         </p>
       )}
-      <button type="submit" disabled={pending} className="btn-primary text-sm disabled:opacity-60">
+      <button
+        type="submit"
+        name="apiKeyAction"
+        value="keep"
+        disabled={pending}
+        className="btn-primary text-sm disabled:opacity-60"
+      >
         {pending ? "Saving..." : "Save settings"}
       </button>
     </form>

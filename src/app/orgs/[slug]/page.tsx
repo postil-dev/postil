@@ -9,7 +9,6 @@ import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import { toggleRepository } from "./actions";
 import { ReviewsTable } from "./reviews-table";
-import { SettingsForm } from "./settings-form";
 
 export const metadata: Metadata = {
   title: "Organization",
@@ -88,6 +87,7 @@ export default async function OrgDashboardPage({
     }
   }
   const bucketMax = Math.max(...buckets, 1);
+  const bucketTicks = [bucketMax, Math.ceil(bucketMax / 2), 0];
 
   // Engine telemetry across completed reviews, read from stored envelopes.
   // Older envelopes lack durationMs / counts.ungrounded; COALESCE treats the
@@ -144,43 +144,6 @@ export default async function OrgDashboardPage({
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
 
-  const latestRepoReviews = await db
-    .selectDistinctOn([schema.reviews.repositoryId], {
-      repositoryId: schema.reviews.repositoryId,
-      configFiles: schema.reviews.configFiles,
-    })
-    .from(schema.reviews)
-    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
-    .innerJoin(
-      schema.installations,
-      eq(schema.installations.id, schema.repositories.installationId),
-    )
-    .where(and(eq(schema.installations.orgId, org.id), eq(schema.reviews.status, "completed")))
-    .orderBy(
-      schema.reviews.repositoryId,
-      desc(schema.reviews.finishedAt),
-      desc(schema.reviews.id),
-    );
-  const latestRepoReviewByRepositoryId = new Map(
-    latestRepoReviews.map((review) => [review.repositoryId, review]),
-  );
-
-  const settings = (
-    await db
-      .select({
-        apiBase: schema.orgSettings.apiBase,
-        model: schema.orgSettings.model,
-        modelCascade: schema.orgSettings.modelCascade,
-        configYaml: schema.orgSettings.configYaml,
-        guardrailsMd: schema.orgSettings.guardrailsMd,
-        contentPolicyMd: schema.orgSettings.contentPolicyMd,
-        hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
-      })
-      .from(schema.orgSettings)
-      .where(eq(schema.orgSettings.orgId, org.id))
-      .limit(1)
-  )[0];
-
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -193,9 +156,16 @@ export default async function OrgDashboardPage({
           </p>
           <h1 className="serif-display mt-2 text-3xl">{org.name}</h1>
         </div>
-        <Link href="/pricing" className="btn-primary text-xs">
-          plan: {org.plan} · upgrade
-        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          {isAdmin && (
+            <Link href={`/orgs/${org.slug}/settings`} className="btn-secondary text-xs">
+              Settings
+            </Link>
+          )}
+          <Link href="/pricing" className="btn-primary text-xs">
+            plan: {org.plan} · upgrade
+          </Link>
+        </div>
       </div>
 
       {suspendedInstallations.length > 0 && (
@@ -233,26 +203,33 @@ export default async function OrgDashboardPage({
         </div>
         <div className="card p-8">
           <p className="eyebrow">Confidence distribution</p>
-          <div className="mt-6 flex h-28 items-end gap-3">
-            {buckets.map((v, i) => (
-              <div key={i} className="flex flex-1 flex-col items-center gap-1">
-                <span className="font-mono text-[10px] text-charcoal/50">{v}</span>
-                <div
-                  className="w-full rounded-t-[3px] bg-gate"
-                  style={{
-                    height: `${Math.max((v / bucketMax) * 100, v > 0 ? 4 : 1)}%`,
-                    opacity: 0.45 + i * 0.13,
-                  }}
-                />
-                <span className="font-mono text-[10px] text-charcoal/70">
-                  {BUCKET_LABELS[i]}
-                </span>
-              </div>
-            ))}
+          <div className="mt-6 grid grid-cols-[2.5rem_1fr] gap-3">
+            <div className="flex h-32 flex-col justify-between border-r border-stone/80 pr-2 text-right font-mono text-[10px] text-charcoal/55">
+              {bucketTicks.map((tick, index) => (
+                <span key={`${tick}-${index}`}>{tick}</span>
+              ))}
+            </div>
+            <div className="flex h-32 items-end gap-3">
+              {buckets.map((v, i) => (
+                <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-1">
+                  <span className="font-mono text-[10px] text-charcoal/60">{v}</span>
+                  <div
+                    className="w-full rounded-t-[3px] bg-gate"
+                    style={{
+                      height: `${Math.max((v / bucketMax) * 100, v > 0 ? 4 : 1)}%`,
+                      opacity: 0.45 + i * 0.13,
+                    }}
+                  />
+                  <span className="font-mono text-[10px] text-charcoal/70">
+                    {BUCKET_LABELS[i]}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
           <p className="mt-4 text-sm text-ink-soft">
             Shipped findings by model confidence, across the last{" "}
-            {bucketRows.length} reviews.
+            {bucketRows.length} reviews. Linear scale, labeled by finding count.
           </p>
         </div>
       </div>
@@ -301,36 +278,6 @@ export default async function OrgDashboardPage({
                   <p className="font-mono text-[11px] text-charcoal/70">
                     {repo.private ? "private" : "public"}
                   </p>
-                  {(() => {
-                    const latestReview = latestRepoReviewByRepositoryId.get(repo.id);
-                    if (!latestReview) {
-                      return (
-                        <p className="mt-1 font-mono text-[11px] text-charcoal/50">
-                          no completed review yet
-                        </p>
-                      );
-                    }
-                    if (latestReview.configFiles === null) {
-                      return (
-                        <p className="mt-1 font-mono text-[11px] text-charcoal/50">
-                          overrides: unknown for the last review
-                        </p>
-                      );
-                    }
-                    return (
-                      <p className="mt-1 font-mono text-[11px] text-charcoal/50">
-                        {latestReview.configFiles.length > 0
-                          ? `overrides: ${latestReview.configFiles
-                              .map((file) =>
-                                file.startsWith("org:")
-                                  ? `organization ${file.slice(4)}`
-                                  : `repository ${file}`,
-                              )
-                              .join(", ")}`
-                          : "no configuration overrides used in the last review"}
-                      </p>
-                    );
-                  })()}
                 </div>
                 {isAdmin ? (
                   <form action={toggleRepository}>
@@ -369,63 +316,28 @@ export default async function OrgDashboardPage({
           </div>
         </div>
 
-        {/* Organization settings */}
         <div>
           <p className="eyebrow">Organization settings</p>
-          <div className="mt-3 space-y-2 text-sm text-ink-soft">
-            <p>
-              See the <Link href="/docs/models">model guide</Link> and{" "}
-              <Link href="/docs/config">configuration reference</Link>.
+          <div className="card mt-3 space-y-4 p-5 text-sm">
+            <p className="text-ink-soft">
+              Model, BYOK, and hosted review configuration live on a dedicated
+              admin page.
             </p>
             <p className="text-xs text-charcoal/70">
               Review configuration precedence is repository config from the default
               branch, then hosted organization config, then Postil defaults. Each
-              artifact is resolved independently, and pull request head changes never
-              supply configuration.
+              artifact is resolved independently.
             </p>
+            {isAdmin ? (
+              <Link href={`/orgs/${org.slug}/settings`} className="btn-primary text-xs">
+                Open settings
+              </Link>
+            ) : (
+              <p className="font-mono text-xs text-charcoal/50">
+                Changing organization settings requires the admin role.
+              </p>
+            )}
           </div>
-          {!isAdmin && (
-            <div className="card mt-3 space-y-2 p-5 text-sm">
-              <p className="font-mono text-xs text-charcoal/70">
-                API base <span className="text-charcoal">{settings?.apiBase ?? "hosted default"}</span>
-              </p>
-              <p className="font-mono text-xs text-charcoal/70">
-                Model <span className="text-charcoal">{settings?.model ?? "hosted default"}</span>
-              </p>
-              <p className="font-mono text-xs text-charcoal/70">
-                Model cascade{" "}
-                <span className="text-charcoal">{settings?.modelCascade ?? "none"}</span>
-              </p>
-              <p className="font-mono text-xs text-charcoal/70">
-                API key{" "}
-                <span className="text-charcoal">
-                  {settings?.hasKey ? "stored (write-only)" : "hosted default"}
-                </span>
-              </p>
-              <p className="font-mono text-xs text-charcoal/70">
-                Hosted .postil.yaml{" "}
-                <span className="text-charcoal">
-                  {settings?.configYaml ? "configured" : "not configured"}
-                </span>
-              </p>
-              <p className="font-mono text-xs text-charcoal/70">
-                Hosted guardrails{" "}
-                <span className="text-charcoal">
-                  {settings?.guardrailsMd ? "configured" : "not configured"}
-                </span>
-              </p>
-              <p className="font-mono text-xs text-charcoal/70">
-                Hosted content policy{" "}
-                <span className="text-charcoal">
-                  {settings?.contentPolicyMd ? "configured" : "not configured"}
-                </span>
-              </p>
-              <p className="pt-2 text-xs text-charcoal/50">
-                Changing these settings requires the organization admin role.
-              </p>
-            </div>
-          )}
-          {isAdmin && <SettingsForm slug={org.slug} settings={settings} />}
         </div>
       </div>
 

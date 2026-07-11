@@ -132,6 +132,16 @@ describe("saveOrgSettings", () => {
     expect(conflictSet).toMatchObject({ model: "org-model" });
   });
 
+  test("does not convert keep plus a typed key into an implicit replacement", async () => {
+    await saveOrgSettings(
+      null,
+      settingsForm({ apiKeyAction: "keep", apiKey: "sk-ignored-secret" }),
+    );
+
+    expect(insertedValues?.apiKeyCiphertext).toBeNull();
+    expect(conflictSet).not.toHaveProperty("apiKeyCiphertext");
+  });
+
   test("clears the stored key on explicit reset", async () => {
     await saveOrgSettings(null, settingsForm({ apiKeyAction: "remove" }));
 
@@ -162,7 +172,11 @@ describe("SettingsForm API key handling", () => {
 
     expect(source).toContain('type="password"');
     expect(source).toContain('name="apiKey"');
+    expect(source).toContain("Using Postil's hosted inference.");
+    expect(source).toContain("Using your own API key.");
+    expect(source).toContain('type="checkbox"');
     expect(source).toContain("stored key cannot be read back");
+    expect(source).not.toContain('type="radio"');
     expect(source).not.toContain("defaultValue={settings?.apiKey");
     expect(source).not.toContain("value={settings?.apiKey");
   });
