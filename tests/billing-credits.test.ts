@@ -26,6 +26,16 @@ describe("billing credit calculations", () => {
         createdAt: new Date("2026-07-11T12:00:00.000Z"),
       }),
     ).toBe(131);
+    expect(
+      usageEventCostCents({
+        id: 2,
+        promptTokens: 2_000_000,
+        completionTokens: 500_000,
+        modelUsed: "deepseek/deepseek-v4-pro",
+        costCents: null,
+        createdAt: new Date("2026-07-11T12:00:00.000Z"),
+      }),
+    ).toBe(131);
   });
 
   test("deducts post-grant usage from applied credit grants", () => {

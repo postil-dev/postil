@@ -89,7 +89,14 @@ export function calculateBillingCreditBalance(
 }
 
 export function usageEventCostCents(event: UsageEventForBillingCredits): number | null {
-  return event.costCents;
+  return (
+    event.costCents ??
+    calculateUsageCostCentsForModel(
+      event.modelUsed,
+      event.promptTokens,
+      event.completionTokens,
+    )
+  );
 }
 
 export function calculateUsageCostCentsForModel(
