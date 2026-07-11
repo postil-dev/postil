@@ -9,10 +9,16 @@ import { GateBadge } from "@/components/review-status";
 import { MODELS } from "@/data/models";
 import { schema } from "@/lib/db";
 import { envelopeSchema, type Finding } from "@/lib/envelope";
+import {
+  getReviewApprovalState,
+  type FindingApprovalState,
+  type ReviewForApproval,
+} from "@/lib/finding-approvals";
 import { sortFindingsForDisplay } from "@/lib/findings";
 import { githubFileUrl, githubPrUrl } from "@/lib/github-links";
 import { requireOrgMembership } from "@/lib/org-access";
 
+import { approveFinding, revokeFinding } from "../../actions";
 import {
   LiveDuration,
   LiveFinishedAt,
@@ -172,6 +178,132 @@ function FindingCard({
   );
 }
 
+function ApprovalStatusBadge({ state }: { state: FindingApprovalState }) {
+  const label = state.activeApproval
+    ? "Approved"
+    : state.latestApproval?.revokedAt
+      ? "Revoked"
+      : "Awaiting approval";
+  const classes = state.activeApproval
+    ? "border-brand-secondary/40 bg-brand-secondary/10 text-[#166657]"
+    : state.latestApproval?.revokedAt
+      ? "border-charcoal/20 bg-stone/40 text-charcoal/55"
+      : "border-rust/35 bg-rust/5 text-rust";
+  return (
+    <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${classes}`}>
+      {label}
+    </span>
+  );
+}
+
+function ApprovalPanel({
+  slug,
+  publicId,
+  headSha,
+  states,
+  isAdmin,
+}: {
+  slug: string;
+  publicId: string;
+  headSha: string;
+  states: FindingApprovalState[];
+  isAdmin: boolean;
+}) {
+  if (states.length === 0) return null;
+  return (
+    <section className="mt-8">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">Kind-blocking escalations</p>
+          <p className="mt-1 text-sm text-ink-soft">
+            Admin approvals apply only to commit{" "}
+            <span className="font-mono text-charcoal">{headSha.slice(0, 12)}</span>.
+          </p>
+        </div>
+        <span className="rounded-full border border-charcoal/15 px-3 py-1 font-mono text-[10px] uppercase tracking-wide text-charcoal/65">
+          Requires admin
+        </span>
+      </div>
+      <div className="card mt-3 divide-y divide-stone/60">
+        {states.map((state) => {
+          const approval = state.activeApproval ?? state.latestApproval;
+          return (
+            <article key={state.findingId} className="px-5 py-5 sm:px-6">
+              <div className="flex flex-wrap items-center gap-3">
+                <ApprovalStatusBadge state={state} />
+                <span className="font-mono text-[11px] text-charcoal/60">
+                  {state.finding.kind}
+                </span>
+                <span className="font-mono text-[11px] text-charcoal/60">
+                  {state.findingId.slice(0, 16)}
+                </span>
+                {state.severityBlocking && (
+                  <span className="font-mono text-[11px] text-rust">
+                    also severity-blocking
+                  </span>
+                )}
+              </div>
+              <h2 className="mt-3 text-base font-semibold leading-snug">{state.finding.title}</h2>
+              {approval && (
+                <dl className="mt-3 grid gap-2 text-xs text-charcoal/70 sm:grid-cols-2">
+                  <div>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Actor</dt>
+                    <dd>@{approval.actorLoginSnapshot}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Source</dt>
+                    <dd>{approval.source}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Recorded</dt>
+                    <dd>{formatTimestamp(approval.createdAt)}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Head SHA</dt>
+                    <dd className="font-mono">{headSha.slice(0, 12)}</dd>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Rationale</dt>
+                    <dd className="mt-1 whitespace-pre-wrap">{approval.rationale}</dd>
+                  </div>
+                </dl>
+              )}
+              {isAdmin && !state.activeApproval && !state.latestApproval?.revokedAt && !state.severityBlocking && (
+                <form action={approveFinding} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+                  <input type="hidden" name="slug" value={slug} />
+                  <input type="hidden" name="publicId" value={publicId} />
+                  <input type="hidden" name="findingId" value={state.findingId} />
+                  <textarea
+                    name="rationale"
+                    required
+                    minLength={1}
+                    rows={2}
+                    className="min-h-16 rounded-md border border-stone bg-ivory px-3 py-2 text-sm text-charcoal outline-none focus:border-rust"
+                    placeholder="Approval rationale"
+                  />
+                  <button className="rounded-md bg-charcoal px-4 py-2 text-sm font-semibold text-ivory hover:bg-rust">
+                    Approve
+                  </button>
+                </form>
+              )}
+              {isAdmin && state.activeApproval && (
+                <form action={revokeFinding} className="mt-4">
+                  <input type="hidden" name="slug" value={slug} />
+                  <input type="hidden" name="publicId" value={publicId} />
+                  <input type="hidden" name="findingId" value={state.findingId} />
+                  <button className="rounded-md border border-rust/40 px-4 py-2 text-sm font-semibold text-rust hover:bg-rust/5">
+                    Revoke
+                  </button>
+                </form>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export default async function RunDetailPage({
   params,
 }: {
@@ -180,7 +312,7 @@ export default async function RunDetailPage({
   const { slug, publicId } = await params;
   if (!UUID_PATTERN.test(publicId)) notFound();
 
-  const { db, org } = await requireOrgMembership(slug);
+  const { db, org, membership } = await requireOrgMembership(slug);
 
   // The org filter is part of the lookup: a public id from another org's
   // repository must 404, not leak.
@@ -193,6 +325,7 @@ export default async function RunDetailPage({
         headSha: schema.reviews.headSha,
         status: schema.reviews.status,
         envelope: schema.reviews.envelope,
+        engineGateFailing: schema.reviews.engineGateFailing,
         gateFailing: schema.reviews.gateFailing,
         errorMessage: schema.reviews.errorMessage,
         advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
@@ -201,6 +334,8 @@ export default async function RunDetailPage({
         startedAt: schema.reviews.startedAt,
         finishedAt: schema.reviews.finishedAt,
         repoFullName: schema.repositories.fullName,
+        orgId: schema.installations.orgId,
+        githubInstallationId: schema.installations.githubInstallationId,
       })
       .from(schema.reviews)
       .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
@@ -243,6 +378,22 @@ export default async function RunDetailPage({
   // of throwing mid-render.
   const parsedEnvelope = review.envelope ? envelopeSchema.safeParse(review.envelope) : null;
   const envelope = parsedEnvelope?.success ? parsedEnvelope.data : null;
+  const reviewForApproval: ReviewForApproval = {
+    id: review.id,
+    publicId: review.publicId,
+    repositoryId: 0,
+    prNumber: review.prNumber,
+    headSha: review.headSha,
+    status: review.status,
+    envelope,
+    engineGateFailing: review.engineGateFailing,
+    gateFailing: review.gateFailing,
+    gateCheckRunId: review.gateCheckRunId,
+    repoFullName: review.repoFullName,
+    orgId: review.orgId,
+    githubInstallationId: review.githubInstallationId,
+  };
+  const approvalState = envelope ? await getReviewApprovalState(db, reviewForApproval) : null;
   const envelopeInvalid = parsedEnvelope !== null && !parsedEnvelope.success;
   const findings = envelope ? sortFindingsForDisplay(envelope.findings) : [];
   const resolved = envelope ? sortFindingsForDisplay(envelope.resolved) : [];
@@ -364,6 +515,16 @@ export default async function RunDetailPage({
               <FindingMarkdown>{summary}</FindingMarkdown>
             </div>
           </section>
+        )}
+
+        {approvalState && (
+          <ApprovalPanel
+            slug={org.slug}
+            publicId={review.publicId}
+            headSha={review.headSha}
+            states={approvalState.findingStates}
+            isAdmin={membership.role === "admin"}
+          />
         )}
 
         {envelope && (

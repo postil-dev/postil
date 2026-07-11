@@ -80,7 +80,7 @@ function envelope(
     resolved: opts.resolved ?? [],
     counts,
     confidenceBuckets: buckets(findings),
-    gate: { failOn: "error", failing: opts.failing ?? counts.error > 0 },
+    gate: { failOn: "error", failing: opts.failing ?? counts.error > 0, blockOnKinds: [] },
     modelUsed: "deepseek/deepseek-v4-pro",
     usage: {
       promptTokens: 2000 + Math.floor(Math.random() * 6000),

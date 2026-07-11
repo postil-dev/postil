@@ -2,6 +2,8 @@ import { desc, eq } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
+import { computeEffectiveGate } from "@/lib/envelope";
+import { getActiveApprovalIds, parseEnvelopeForApprovals } from "@/lib/finding-approvals";
 
 export type OrgReviewStatus = "queued" | "running" | "completed" | "failed" | "stale";
 
@@ -37,6 +39,7 @@ export async function getOrgReviewRows(
       status: schema.reviews.status,
       silent: schema.reviews.silent,
       gateFailing: schema.reviews.gateFailing,
+      engineGateFailing: schema.reviews.engineGateFailing,
       envelope: schema.reviews.envelope,
       startedAt: schema.reviews.startedAt,
       finishedAt: schema.reviews.finishedAt,
@@ -55,11 +58,24 @@ export async function getOrgReviewRows(
   // The table needs only the finding count and model name; keep the full
   // envelope (finding bodies, summaries) out of the RSC payload and the
   // polling responses.
-  return rows.map(({ envelope, ...row }) => ({
-    ...row,
-    findingsCount: envelope?.findings.length ?? null,
-    modelUsed: envelope?.modelUsed ?? null,
-    startedAt: row.startedAt?.toISOString() ?? null,
-    finishedAt: row.finishedAt?.toISOString() ?? null,
-  }));
+  return Promise.all(
+    rows.map(async ({ envelope: rawEnvelope, engineGateFailing, ...row }) => {
+      const envelope = parseEnvelopeForApprovals(rawEnvelope);
+      const approvalIds = await getActiveApprovalIds(db, row.id);
+      return {
+        ...row,
+        gateFailing: envelope
+          ? computeEffectiveGate(
+              envelope,
+              approvalIds,
+              engineGateFailing ?? row.gateFailing ?? false,
+            ).failing
+          : row.gateFailing,
+        findingsCount: envelope?.findings.length ?? null,
+        modelUsed: envelope?.modelUsed ?? null,
+        startedAt: row.startedAt?.toISOString() ?? null,
+        finishedAt: row.finishedAt?.toISOString() ?? null,
+      };
+    }),
+  );
 }

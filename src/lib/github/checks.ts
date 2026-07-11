@@ -17,9 +17,9 @@ type Conclusion = "success" | "failure" | "neutral";
 
 async function githubFetch(
   token: string,
-  method: "POST" | "PATCH",
+  method: "GET" | "POST" | "PATCH",
   path: string,
-  body: unknown,
+  body?: unknown,
 ): Promise<Response> {
   const res = await fetch(`${apiBase()}${path}`, {
     method,
@@ -30,7 +30,7 @@ async function githubFetch(
       "User-Agent": "postil-control-plane",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -84,4 +84,16 @@ export async function postIssueComment(
   body: string,
 ): Promise<void> {
   await githubFetch(token, "POST", `/repos/${repoFullName}/issues/${number}/comments`, { body });
+}
+
+export async function getPullRequestHeadSha(
+  token: string,
+  repoFullName: string,
+  number: number,
+): Promise<string> {
+  const res = await githubFetch(token, "GET", `/repos/${repoFullName}/pulls/${number}`);
+  const data = (await res.json()) as { head?: { sha?: string } };
+  const headSha = data.head?.sha;
+  if (!headSha) throw new Error(`GitHub pull request ${repoFullName}#${number} has no head sha`);
+  return headSha;
 }
