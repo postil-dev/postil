@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { Finding } from "@/lib/envelope";
 import { sortFindingsForDisplay } from "@/lib/findings";
 import { githubFileUrl, githubPrUrl } from "@/lib/github-links";
+import { formatAbsoluteTimestamp, formatRelativeTime } from "@/lib/time";
 
 function finding(overrides: Partial<Finding>): Finding {
   return {
@@ -68,5 +69,22 @@ describe("Finding display order", () => {
     ];
     sortFindingsForDisplay(input);
     expect(input[0]!.severity).toBe("info");
+  });
+});
+
+describe("Review timestamps", () => {
+  const now = Date.parse("2026-07-11T14:00:00.000Z");
+
+  test("formats review start ages at useful dashboard precision", () => {
+    expect(formatRelativeTime("2026-07-11T13:59:40.000Z", now)).toBe("just now");
+    expect(formatRelativeTime("2026-07-11T13:58:00.000Z", now)).toBe("2m ago");
+    expect(formatRelativeTime("2026-07-11T11:00:00.000Z", now)).toBe("3h ago");
+    expect(formatRelativeTime("2026-07-08T14:00:00.000Z", now)).toBe("3d ago");
+  });
+
+  test("provides a stable absolute UTC timestamp for hover text", () => {
+    expect(formatAbsoluteTimestamp("2026-07-11T13:58:00.000Z")).toBe(
+      "2026-07-11 13:58:00 UTC",
+    );
   });
 });
