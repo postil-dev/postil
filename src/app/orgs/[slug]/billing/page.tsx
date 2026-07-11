@@ -1,8 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { asc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 
+import {
+  calculateBillingCreditBalance,
+  formatCurrencyCents,
+} from "@/lib/billing-credits";
 import {
   calculateBillingUsage,
   currentMonthBillingPeriod,
@@ -30,35 +34,66 @@ export default async function OrgBillingPage({
     throw new Error("this page requires an organization admin");
   }
 
-  const eventRows = await db
-    .select({
-      id: schema.repositoryEnablementEvents.id,
-      repositoryId: schema.repositoryEnablementEvents.repositoryId,
-      githubRepoId: schema.repositoryEnablementEvents.githubRepoId,
-      repositoryFullName: schema.repositoryEnablementEvents.repositoryFullName,
-      repositoryPrivate: schema.repositoryEnablementEvents.repositoryPrivate,
-      action: schema.repositoryEnablementEvents.action,
-      source: schema.repositoryEnablementEvents.source,
-      occurredAt: schema.repositoryEnablementEvents.occurredAt,
-    })
-    .from(schema.repositoryEnablementEvents)
-    .where(eq(schema.repositoryEnablementEvents.orgId, org.id))
-    .orderBy(
-      asc(schema.repositoryEnablementEvents.occurredAt),
-      asc(schema.repositoryEnablementEvents.id),
-    );
-  const currentRepoRows = await db
-    .select({
-      id: schema.repositories.id,
-      fullName: schema.repositories.fullName,
-      private: schema.repositories.private,
-    })
-    .from(schema.repositories)
-    .innerJoin(
-      schema.installations,
-      eq(schema.installations.id, schema.repositories.installationId),
-    )
-    .where(eq(schema.installations.orgId, org.id));
+  const [eventRows, currentRepoRows, creditGrantRows, usageRows] = await Promise.all([
+    db
+      .select({
+        id: schema.repositoryEnablementEvents.id,
+        repositoryId: schema.repositoryEnablementEvents.repositoryId,
+        githubRepoId: schema.repositoryEnablementEvents.githubRepoId,
+        repositoryFullName: schema.repositoryEnablementEvents.repositoryFullName,
+        repositoryPrivate: schema.repositoryEnablementEvents.repositoryPrivate,
+        action: schema.repositoryEnablementEvents.action,
+        source: schema.repositoryEnablementEvents.source,
+        occurredAt: schema.repositoryEnablementEvents.occurredAt,
+      })
+      .from(schema.repositoryEnablementEvents)
+      .where(eq(schema.repositoryEnablementEvents.orgId, org.id))
+      .orderBy(
+        asc(schema.repositoryEnablementEvents.occurredAt),
+        asc(schema.repositoryEnablementEvents.id),
+      ),
+    db
+      .select({
+        id: schema.repositories.id,
+        fullName: schema.repositories.fullName,
+        private: schema.repositories.private,
+      })
+      .from(schema.repositories)
+      .innerJoin(
+        schema.installations,
+        eq(schema.installations.id, schema.repositories.installationId),
+      )
+      .where(eq(schema.installations.orgId, org.id)),
+    db
+      .select({
+        id: schema.billingCreditGrants.id,
+        amountCents: schema.billingCreditGrants.amountCents,
+        reason: schema.billingCreditGrants.reason,
+        actor: schema.billingCreditGrants.actor,
+        source: schema.billingCreditGrants.source,
+        idempotencyKey: schema.billingCreditGrants.idempotencyKey,
+        appliesAt: schema.billingCreditGrants.appliesAt,
+        createdAt: schema.billingCreditGrants.createdAt,
+      })
+      .from(schema.billingCreditGrants)
+      .where(eq(schema.billingCreditGrants.orgId, org.id))
+      .orderBy(
+        desc(schema.billingCreditGrants.createdAt),
+        desc(schema.billingCreditGrants.id),
+      ),
+    db
+      .select({
+        id: schema.usageEvents.id,
+        promptTokens: schema.usageEvents.promptTokens,
+        completionTokens: schema.usageEvents.completionTokens,
+        modelUsed: schema.usageEvents.modelUsed,
+        costCents: schema.usageEvents.costCents,
+        createdAt: schema.usageEvents.createdAt,
+      })
+      .from(schema.usageEvents)
+      .where(eq(schema.usageEvents.orgId, org.id))
+      .orderBy(asc(schema.usageEvents.createdAt), asc(schema.usageEvents.id)),
+  ]);
   const currentRepoById = new Map(currentRepoRows.map((repo) => [repo.id, repo]));
 
   const billingEvents = eventRows
@@ -86,6 +121,7 @@ export default async function OrgBillingPage({
   const enabledPrivateCount = currentEnabledRepositories.filter(
     (repo) => repo.repositoryPrivate,
   ).length;
+  const creditBalance = calculateBillingCreditBalance(creditGrantRows, usageRows);
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -109,7 +145,7 @@ export default async function OrgBillingPage({
         </div>
       </div>
 
-      <div className="mt-8 grid gap-6 lg:grid-cols-3">
+      <div className="mt-8 grid gap-6 lg:grid-cols-4">
         <div className="card p-6">
           <p className="eyebrow">Current period</p>
           <p className="serif-display mt-3 text-5xl">
@@ -138,6 +174,19 @@ export default async function OrgBillingPage({
           </div>
         </div>
         <div className="card p-6">
+          <p className="eyebrow">Credit balance</p>
+          <p className="serif-display mt-3 text-5xl">
+            {formatCurrencyCents(creditBalance.remainingCents)}
+          </p>
+          <p className="mt-2 text-sm text-charcoal/70">
+            remaining from {formatCurrencyCents(creditBalance.totalGrantedCents)} granted
+          </p>
+          <p className="mt-4 font-mono text-[11px] text-charcoal/55">
+            {formatCurrencyCents(creditBalance.usageCostCents)} charged across{" "}
+            {creditBalance.chargedUsageEvents.toLocaleString()} usage events
+          </p>
+        </div>
+        <div className="card p-6">
           <p className="eyebrow">Ledger events</p>
           <p className="serif-display mt-3 text-5xl">{eventRows.length}</p>
           <p className="mt-2 text-sm text-charcoal/70">append-only enablement records</p>
@@ -145,6 +194,59 @@ export default async function OrgBillingPage({
             Each event stores repository identity and visibility at the time it
             was recorded.
           </p>
+        </div>
+      </div>
+
+      <div className="mt-10">
+        <p className="eyebrow">Credit grants</p>
+        <div className="card mt-3 overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-stone/70 font-mono text-[11px] uppercase tracking-[0.12em] text-charcoal/55">
+              <tr>
+                <th className="px-4 py-3">Amount</th>
+                <th className="px-4 py-3">Reason</th>
+                <th className="px-4 py-3">Actor</th>
+                <th className="px-4 py-3">Key</th>
+                <th className="px-4 py-3">Applies from</th>
+                <th className="px-4 py-3">Recorded</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone/60">
+              {creditGrantRows.map((grant) => (
+                <tr key={grant.id}>
+                  <td className="px-4 py-3 font-mono text-xs">
+                    {formatCurrencyCents(grant.amountCents)}
+                  </td>
+                  <td className="px-4 py-3 text-sm">{grant.reason}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
+                    {grant.actor} / {grant.source}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
+                    {grant.idempotencyKey}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
+                    {formatDateTime(grant.appliesAt)}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
+                    {formatDateTime(grant.createdAt)}
+                  </td>
+                </tr>
+              ))}
+              {creditGrantRows.length === 0 && (
+                <tr>
+                  <td className="px-4 py-8 text-center text-sm text-charcoal/50" colSpan={6}>
+                    No credits have been granted for this organization.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          {creditBalance.unpricedUsageEvents > 0 && (
+            <p className="border-t border-stone px-4 py-3 font-mono text-xs text-rust">
+              {creditBalance.unpricedUsageEvents.toLocaleString()} usage events have no priced model
+              and are excluded from credit charges.
+            </p>
+          )}
         </div>
       </div>
 

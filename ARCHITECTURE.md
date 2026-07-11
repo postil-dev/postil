@@ -41,6 +41,8 @@ The free-tier operating profile keeps Postgres idle-capable by avoiding permanen
 
 The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods.
 
+Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog and computes the remaining credit balance shown on `/orgs/[slug]/billing`.
+
 ## Dashboard
 
 The signed-in product surface is three pages, all server-rendered and
