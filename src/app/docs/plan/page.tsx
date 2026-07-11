@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { planTranscript } from "@/data/transcripts";
+
 export const metadata: Metadata = {
   title: "postil plan",
   description: "Dry-run a review config change against stored envelopes. Terraform-plan semantics for review configuration.",
@@ -50,18 +52,13 @@ ignore:
       <p>
         The command accepts a directory of stored envelopes and reports the
         before and after finding counts, suppressions, and gate outcome for
-        each one. Its output has this shape:
+        each one. This transcript replays one stored review against a candidate
+        config:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
-        <code>{`$ postil review --staged --output-json > <envelope-directory>/<envelope.json>
-$ postil plan --envelopes <envelope-directory> --config <candidate-config.yaml>
+        <code>{`$ postil plan --envelopes .cache/docs-plan --config .cache/docs-plan/.postil.candidate.yaml
 
-postil plan: replaying <review-count> stored review(s) under candidate config (<candidate-config.yaml>)
-
-  <envelope.json>: <before-count> -> <after-count> finding(s); gate: <before-state> -> <after-state>
-      would suppress: <path>:<line> [<severity>] <finding-title>
-
-Summary: <suppressed-count> finding(s) would be suppressed; <gate-change-count> gate outcome(s) would change.`}</code>
+${planTranscript}`}</code>
       </pre>
       <p>
         Each envelope row identifies the input file, finding count before and
