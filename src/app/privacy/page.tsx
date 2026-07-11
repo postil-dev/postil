@@ -118,14 +118,14 @@ export default function PrivacyPage() {
         <p>
           Hosted Postil uses analytics for product and traffic measurement on
           public marketing, documentation, blog, install, pricing, and
-          comparison pages. Browser analytics record pageviews, sanitized
-          referrers, and campaign parameters with session replay and
-          autocaptured clicks disabled. Server-side request telemetry records
-          sanitized path, referrer origin/public path, campaign parameters,
-          user agent, and Cloudflare bot metadata when present; it does not
-          send IP addresses, arbitrary query strings, or protected dashboard
-          paths. The site also sets one first-party session cookie after
-          sign-in.
+          comparison pages. Browser analytics record pageviews, pageleave
+          engagement metadata, sanitized referrers, and campaign parameters
+          with session replay and autocaptured clicks disabled. Server-side
+          request telemetry records sanitized path, referrer origin/public
+          path, campaign parameters, user agent, and Cloudflare bot metadata
+          when present; it does not send IP addresses, arbitrary query strings,
+          or protected dashboard paths. The site also sets one first-party
+          session cookie after sign-in.
         </p>
 
         <h2>Where data is processed (residency)</h2>

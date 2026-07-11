@@ -81,4 +81,4 @@ The app exposes three layers:
 - `/api/health/dependencies` and `/api/metrics` for dependency and product-operation metrics.
 - PostHog for traffic-source, campaign, pageview, and likely bot/automation analysis.
 
-PostHog is configured for minimal capture: browser pageviews with autocapture and session replay disabled, plus server-side request events on public pages only. Events omit IP addresses, arbitrary query strings, and protected dashboard paths.
+PostHog is configured for minimal capture: browser pageviews and pageleave engagement events with autocapture and session replay disabled, plus server-side request events on public pages only. Events omit IP addresses, arbitrary query strings, and protected dashboard paths.
