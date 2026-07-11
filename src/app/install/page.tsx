@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { ForgeInstallTabs } from "@/components/forge-install-tabs";
 import { Terminal } from "@/components/terminal";
+import { doctorTranscript } from "@/data/transcripts";
 import { githubAppInstallUrl } from "@/lib/github-app";
 
 export const metadata: Metadata = {
@@ -126,9 +127,14 @@ export default function InstallPage() {
             <code>
               <span className="t-dim">$</span> postil doctor{"\n"}
               {"\n"}
-              <span className="t-dim">postil doctor: ready.</span>
+              <span className="t-dim">{doctorTranscript}</span>
             </code>
           </Terminal>
+          <p className="text-sm text-ink-soft">
+            This transcript was captured from the CLI against a loopback
+            OpenAI-compatible endpoint. Your provider URL and model name will
+            differ; key values are not printed.
+          </p>
           <p className="text-sm text-ink-soft">
             Then review your staged changes with{" "}
             <code className="font-mono text-xs">postil review --staged</code>.

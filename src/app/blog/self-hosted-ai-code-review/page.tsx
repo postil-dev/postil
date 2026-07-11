@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { doctorTranscript } from "@/data/transcripts";
+
 export const metadata: Metadata = {
   title: "Self-hosted AI code review without the 500-seat enterprise gate",
   description:
@@ -216,8 +218,14 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`docker compose exec worker postil doctor
 
-postil doctor: ready.`}</code>
+${doctorTranscript}`}</code>
         </pre>
+        <p>
+          This transcript was captured from the CLI against a loopback
+          OpenAI-compatible endpoint. The URL and model name change for
+          OpenRouter, Azure OpenAI, Ollama, or another compatible server, and
+          key values are not printed.
+        </p>
 
         <h2>Why &quot;OpenAI-compatible&quot; is the whole trick</h2>
         <p>

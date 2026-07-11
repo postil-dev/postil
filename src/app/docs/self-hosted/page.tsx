@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { doctorTranscript } from "@/data/transcripts";
+
 export const metadata: Metadata = {
   title: "Self-hosted",
   description: "Two ways to self-host Postil: run the CLI in your own CI with your own key, or host the full web + worker control plane on your own infrastructure.",
@@ -220,13 +222,15 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`docker compose exec worker postil doctor
 
-postil doctor: ready.`}</code>
+${doctorTranscript}`}</code>
       </pre>
       <p>
-        Doctor reports each check separately, including config resolution, git
-        work-tree state, API-key presence, model-endpoint reachability, model
-        readiness, and forge tokens. Every failure names the failing layer and
-        suggests a fix. The final line above is the fixed success string.
+        This transcript was captured from the CLI against a loopback
+        OpenAI-compatible endpoint. Provider URLs and model names differ in
+        your deployment, but the same checks are reported separately: config
+        resolution, git work-tree state, API-key presence, model-endpoint
+        reachability, model readiness, and forge tokens. Every failure names
+        the failing layer and suggests a fix.
       </p>
 
       <h3>GitHub setup</h3>
