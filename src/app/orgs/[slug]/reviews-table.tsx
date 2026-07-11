@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { GateBadge, formatMs, ReviewStatusBadge } from "@/components/review-status";
 import { githubPrUrl } from "@/lib/github-links";
 import type { OrgReviewRow } from "@/lib/org-reviews";
+import { formatAbsoluteTimestamp, formatRelativeTime } from "@/lib/time";
 
 const POLL_INTERVAL_MS = 5_000;
 const CLOCK_INTERVAL_MS = 1_000;
@@ -87,14 +88,20 @@ export function ReviewsTable({
   const hasVisibleRunningReview = visibleReviews.some(
     (review) => review.status === "running" && review.startedAt !== null,
   );
+  const hasVisibleStartedReview = visibleReviews.some(
+    (review) => review.startedAt !== null,
+  );
 
   useEffect(() => {
-    if (!hasVisibleRunningReview) return;
+    if (!hasVisibleStartedReview) return;
 
     setNow(Date.now());
-    const interval = window.setInterval(() => setNow(Date.now()), CLOCK_INTERVAL_MS);
+    const interval = window.setInterval(
+      () => setNow(Date.now()),
+      hasVisibleRunningReview ? CLOCK_INTERVAL_MS : 30_000,
+    );
     return () => window.clearInterval(interval);
-  }, [hasVisibleRunningReview]);
+  }, [hasVisibleRunningReview, hasVisibleStartedReview]);
 
   useEffect(() => {
     if (!hasVisibleActiveReview) return;
@@ -173,7 +180,7 @@ export function ReviewsTable({
           </div>
         </div>
         <div className="max-h-96 overflow-auto">
-          <table className="w-full min-w-[58rem] text-sm">
+          <table className="w-full min-w-[64rem] text-sm">
             <thead className="sticky top-0 z-10 bg-paper">
               <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/50">
                 <th className="px-4 py-3 font-normal">repository</th>
@@ -182,6 +189,7 @@ export function ReviewsTable({
                 <th className="px-4 py-3 font-normal">gate</th>
                 <th className="px-4 py-3 font-normal">findings</th>
                 <th className="px-4 py-3 font-normal">model</th>
+                <th className="px-4 py-3 font-normal">started</th>
                 <th className="px-4 py-3 font-normal">duration</th>
                 <th className="px-4 py-3 font-normal">report</th>
               </tr>
@@ -227,6 +235,20 @@ export function ReviewsTable({
                     <td className="px-4 py-2.5 font-mono text-xs text-charcoal/70">
                       {review.modelUsed ?? "n/a"}
                     </td>
+                    <td className="px-4 py-2.5 font-mono text-xs whitespace-nowrap">
+                      {review.startedAt ? (
+                        <time
+                          dateTime={review.startedAt}
+                          title={formatAbsoluteTimestamp(review.startedAt)}
+                        >
+                          {now === null
+                            ? formatAbsoluteTimestamp(review.startedAt)
+                            : formatRelativeTime(review.startedAt, now)}
+                        </time>
+                      ) : (
+                        "n/a"
+                      )}
+                    </td>
                     <td className="px-4 py-2.5 font-mono text-xs">
                       {reviewDuration(review, now)}
                     </td>
@@ -240,7 +262,7 @@ export function ReviewsTable({
               })}
               {visibleReviews.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-sm text-charcoal/50">
+                  <td colSpan={9} className="px-4 py-8 text-center text-sm text-charcoal/50">
                     {reviews.length === 0
                       ? "No reviews yet. Open a pull request on an enabled repository."
                       : "No reviews match these filters."}
