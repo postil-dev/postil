@@ -41,6 +41,7 @@ const COLUMNS = [
     links: [
       { href: "https://github.com/postil-dev/postil", label: "GitHub" },
       { href: "https://github.com/postil-dev/postil-cli", label: "CLI source" },
+      { href: "/contact", label: "Contact" },
       { href: "/privacy", label: "Privacy" },
       { href: "/terms", label: "Terms" },
       { href: "/.well-known/security.txt", label: "security.txt" },

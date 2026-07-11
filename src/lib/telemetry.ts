@@ -13,6 +13,7 @@ const PUBLIC_EXACT_PATHS = new Set([
   "/",
   "/blog",
   "/changelog",
+  "/contact",
   "/docs",
   "/evidence",
   "/how-it-works",

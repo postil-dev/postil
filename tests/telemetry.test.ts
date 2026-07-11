@@ -11,6 +11,7 @@ import {
 describe("public telemetry sanitization", () => {
   test("allows public marketing, docs, and comparison paths", () => {
     expect(isPublicTelemetryPath("/")).toBe(true);
+    expect(isPublicTelemetryPath("/contact")).toBe(true);
     expect(isPublicTelemetryPath("/docs/self-hosted")).toBe(true);
     expect(isPublicTelemetryPath("/blog/best-ai-code-review-tools-2026")).toBe(true);
     expect(isPublicTelemetryPath("/vs/copilot")).toBe(true);
