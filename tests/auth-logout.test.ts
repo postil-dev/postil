@@ -41,13 +41,48 @@ describe("POST /api/auth/logout", () => {
     expect(await response.json()).toEqual({ error: "forbidden" });
   });
 
-  test("rejects form posts with missing origin header", async () => {
+  test("rejects form posts without origin when fetch metadata is cross-site", async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
 
     const response = await POST(
       new Request("https://postil.dev/api/auth/logout", {
         method: "POST",
-        headers: {},
+        headers: { "sec-fetch-site": "cross-site" },
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "forbidden" });
+  });
+
+  test("allows same-origin POST with no origin header when referer confirms origin", async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.POSTIL_SESSION_SECRET = SESSION_SECRET;
+    const token = await validSessionToken();
+
+    const response = await POST(
+      new Request("https://postil.dev/api/auth/logout", {
+        method: "POST",
+        headers: {
+          referer: "https://postil.dev/settings",
+          cookie: `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://postil.dev/");
+    expect(response.headers.get("set-cookie")).toContain("postil_session=");
+    expect(destroyedTokens).toEqual([token]);
+  });
+
+  test("rejects cross-origin POST with no origin header", async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+
+    const response = await POST(
+      new Request("https://postil.dev/api/auth/logout", {
+        method: "POST",
+        headers: { referer: "https://evil.test/account" },
       }),
     );
 
