@@ -323,11 +323,11 @@ export default function HomePage() {
             requests (~18 repos across JS/TS, Python, Go, Rust;
             deepseek-v4-pro; one run each), 2026-06-13. 79 of 126 were silent
             (62.7%, 95% Wilson CI 54-71%); the 57 findings it did ship fell in
-            confidence buckets [0,0,0,23,34]. Full methodology and raw envelopes
-            are recorded privately in measurements/ (measurements-2026-06-13.md
-            + measurements-large-2026-06-13). When a newer run supersedes this,
-            replace silenceRate and buckets together from that run's aggregate;
-            do not hand-tune.
+            confidence buckets [0,0,0,23,34]. Aggregate methodology is public;
+            raw envelopes and run logs are private measurement artifacts under
+            ignored local paths. When a newer run supersedes this, replace
+            silenceRate and buckets together from that run's aggregate; do not
+            hand-tune.
           */}
           <figure className="card p-8">
             <div className="flex items-center justify-between">

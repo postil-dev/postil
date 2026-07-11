@@ -278,9 +278,11 @@ export default function BenchmarkAuthorArticle() {
             One number without the other is half a measurement.
           </li>
           <li>
-            <strong>Raw artifacts are published so anyone can re-run.</strong>{" "}
+            <strong>Enough artifacts are published for a fair re-run.</strong>{" "}
             The Greptile 82%-to-45% gap only became visible because someone could
-            re-run the dataset. Irreproducible scores are assertions.
+            re-run the dataset. Irreproducible scores are assertions, and
+            private datasets should be treated as internal evidence rather than
+            public leaderboards.
           </li>
           <li>
             <strong>The author is not the only vendor in the chart.</strong> If
@@ -311,10 +313,11 @@ export default function BenchmarkAuthorArticle() {
           The next time you hit a &quot;we benchmarked the category and won&quot;
           page, do not argue with the number. Apply the checklist. Are there
           clean PRs in the set? Are false positives counted? Is precision next to
-          recall? Are the artifacts published so you could re-run it? Is the
-          author the only vendor in the chart? The answers expose what each
-          score measures and omits more clearly than the leaderboard does. Point
-          the same five questions at Postil&apos;s published evidence.
+          recall? Are enough artifacts public for a fair re-run, or is the
+          dataset private? Is the author the only vendor in the chart? The
+          answers expose what each score measures and omits more clearly than
+          the leaderboard does. Point the same five questions at Postil&apos;s
+          published evidence.
         </p>
 
         <h2>Sources</h2>

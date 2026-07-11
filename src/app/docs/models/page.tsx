@@ -113,6 +113,12 @@ postil review --staged --output-json`}</code>
           model handles the review pipeline and obvious bugs at the stated
           cost.
         </p>
+        <p className="prose-postil mt-2">
+          These public model-bench fixtures are separate from the private
+          126-PR silence-rate measurement dataset. The public site publishes
+          aggregate silence-rate methodology and figures, not the raw
+          measurement dataset, envelopes, or run logs.
+        </p>
         <div className="mt-4">
           <BenchResultsSection />
         </div>

@@ -7,20 +7,31 @@
 - Job execution: `src/worker/runner.ts` owns claimed-job execution shared by the long-running worker and webhook-triggered web drains.
 - Hosted runtime configuration: `fly.toml` plus secrets injected by Infisical/Fly.
 - Public privacy posture: `src/app/privacy/page.tsx`.
+- Dataset privacy policy: the 126-PR silence-rate measurement dataset is private; only aggregate methodology and summary figures are public.
 - Self-hosting and operating guidance: `src/app/docs/self-hosted/page.tsx`.
 
 ## Evaluation Data Policy
 
-The 126-PR evaluation dataset is private. It is used only for internal
-measurement aggregates, including the public silence-rate figure, and is not a
-publishable artifact. Do not add scripts, routes, workflow steps, static files,
-or release assets that export the dataset, its raw envelopes, or its run logs.
+The 126-PR evaluation dataset is private. It is the silence-rate measurement
+dataset and includes raw PR selection details, run logs, review envelopes, and
+local measurement work product behind the public silence-rate aggregate. Public
+pages may show aggregate counts, rates, confidence buckets, methodology, and
+public evidence cases, but they do not publish the raw dataset, raw envelopes,
+run logs, or a download path for local measurement artifacts.
+Do not add scripts, routes, workflow steps, static files, or release assets
+that export the dataset, its raw envelopes, or its run logs.
 
 Public examples are separate from the private dataset. The `/evidence` page is
 fed by `src/data/evidence/index.ts`, which contains curated cases from public
 Postil repositories with links back to the public pull requests. That file is
 the only public example-data surface and must not import, summarize, or expose
-private evaluation records.
+private evaluation records. Checked-in model-benchmark artifacts such as
+`src/data/bench-results.json` are separate public fixtures/results and are not
+part of the private 126-PR dataset.
+
+Dataset artifacts live outside tracked source or under ignored local paths. The
+repository has no workflow, route, script, or documentation path that packages
+or publishes the private dataset.
 
 ## Database
 
