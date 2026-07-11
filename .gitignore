@@ -19,9 +19,13 @@ test-results/
 dataset/
 datasets/
 measurements/
+measurements-*/
+measurement-*.md
 measurement-runs/
 private-datasets/
 private-data/
+*-envelopes.jsonl
+*-run-log.jsonl
 *.ndjson
 *.private.json
 *.private.jsonl
