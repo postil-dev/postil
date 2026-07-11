@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { doctorTranscript } from "@/data/transcripts";
+
 export const metadata: Metadata = {
   title: "Self-hosted AI code review without the 500-seat enterprise gate",
   description:
@@ -211,12 +213,13 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
         <p>
           Then run the doctor inside the worker container. It checks endpoint
           reachability separately from whether the configured model is ready to
-          answer a request. A successful run ends with the fixed line shown here:
+          answer a request. This successful doctor transcript shows the checks
+          it reports:
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`docker compose exec worker postil doctor
 
-postil doctor: ready.`}</code>
+${doctorTranscript}`}</code>
         </pre>
 
         <h2>Why &quot;OpenAI-compatible&quot; is the whole trick</h2>

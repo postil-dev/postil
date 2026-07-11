@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { ForgeInstallTabs } from "@/components/forge-install-tabs";
 import { Terminal } from "@/components/terminal";
+import { doctorTranscript } from "@/data/transcripts";
 import { githubAppInstallUrl } from "@/lib/github-app";
 
 export const metadata: Metadata = {
@@ -118,16 +119,12 @@ export default function InstallPage() {
             Always run <code className="font-mono text-xs">postil doctor</code>{" "}
             before your first review. It checks the resolved config, the git
             work tree, your API key, a live probe of the model endpoint, and
-            any forge tokens, and tells you exactly what is wrong if anything
-            is:
+            any forge tokens. This transcript is from a successful local
+            doctor run against an OpenAI-compatible probe endpoint:
           </p>
 
           <Terminal title="postil doctor">
-            <code>
-              <span className="t-dim">$</span> postil doctor{"\n"}
-              {"\n"}
-              <span className="t-dim">postil doctor: ready.</span>
-            </code>
+            <code>{`$ postil doctor\n\n${doctorTranscript}`}</code>
           </Terminal>
           <p className="text-sm text-ink-soft">
             Then review your staged changes with{" "}
