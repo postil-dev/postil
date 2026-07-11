@@ -138,6 +138,28 @@ describe("migration lint", () => {
     ).toEqual([]);
   });
 
+  test("keeps new migration timestamps after all historical migrations", async () => {
+    const journal = JSON.parse(
+      await readFile(join(import.meta.dir, "..", "drizzle", "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; when: number; tag: string }> };
+
+    const historicalInversions = new Map([["0007_finding_approvals", 1783774995964]]);
+    let latestTimestamp = 0;
+
+    for (const [index, entry] of journal.entries.entries()) {
+      expect(entry.idx).toBe(index);
+      const historicalTimestamp = historicalInversions.get(entry.tag);
+      if (historicalTimestamp !== undefined) {
+        expect(entry.when).toBe(historicalTimestamp);
+      } else {
+        expect(entry.when, `${entry.tag} must sort after every preceding migration`).toBeGreaterThan(
+          latestTimestamp,
+        );
+      }
+      latestTimestamp = Math.max(latestTimestamp, entry.when);
+    }
+  });
+
   test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
     const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"), "utf8");
 
