@@ -14,6 +14,11 @@ const CARDS = [
     body: "Install the hosted GitHub App for immediate reviews with no configuration, then add local and CI workflows if you need them.",
   },
   {
+    href: "/docs/coding-agents",
+    title: "Coding agents",
+    body: "Add Postil to an agent's pre-PR workflow with one local command and a ready-to-paste AGENTS.md or CLAUDE.md snippet.",
+  },
+  {
     href: "/docs/config",
     title: "Configuration",
     body: "The full .postil.yaml reference, including CodeRabbit config translation (reads .coderabbit.yaml).",
