@@ -109,12 +109,20 @@ jobs:
           if [[ -n "${DATABASE_URL}" ]]; then
             staged+="DATABASE_URL=${DATABASE_URL}"$'\n'
           fi
+          if [[ -n "${REVIEW_MODEL}" ]]; then
+            staged+="REVIEW_MODEL=${REVIEW_MODEL}"$'\n'
+          fi
+          if [[ -n "${REVIEW_MODEL_CASCADE}" ]]; then
+            staged+="REVIEW_MODEL_CASCADE=${REVIEW_MODEL_CASCADE}"$'\n'
+          fi
           if [[ -n "${staged}" ]]; then
             printf '%s' "${staged}" | flyctl secrets import --stage
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL }}
+          REVIEW_MODEL_CASCADE: ${{ vars.REVIEW_MODEL_CASCADE }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
       - id: deploy
