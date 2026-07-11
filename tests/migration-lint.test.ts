@@ -139,7 +139,7 @@ describe("migration lint", () => {
   });
 
   test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
-    const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0005_finding_approvals.sql"), "utf8");
+    const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"), "utf8");
 
     expect(migration).toContain('CREATE TABLE "finding_approvals"');
     expect(migration).toContain('"source_comment_id" uuid');

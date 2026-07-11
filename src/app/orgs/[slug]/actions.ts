@@ -7,6 +7,9 @@ import { and, eq } from "drizzle-orm";
 import { validateApiBase } from "@/lib/api-base";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
+import { validateOrgConfigYaml } from "@/lib/org-review-config";
+import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
+import { getSessionUser } from "@/lib/session";
 import {
   deleteApprovalById,
   findKindBlockingState,
@@ -18,11 +21,10 @@ import {
   restoreRevokedApprovalById,
   revokeFindingApproval,
   updateStoredEffectiveGate,
+  type ReviewForApproval,
 } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { completeCheckRun, getPullRequestHeadSha } from "@/lib/github/checks";
-import { validateOrgConfigYaml } from "@/lib/org-review-config";
-import { getSessionUser, type SessionUser } from "@/lib/session";
 
 export interface OrgSettingsActionState {
   status: "error" | "success";
@@ -37,7 +39,7 @@ export interface OrgSettingsActionState {
  */
 async function requireMembership(
   slug: string,
-): Promise<{ orgId: number; role: string; user: SessionUser }> {
+): Promise<{ orgId: number; role: string; userId: number }> {
   const user = await getSessionUser();
   if (!user) throw new Error("not signed in");
   const db = getDb();
@@ -57,7 +59,7 @@ async function requireMembership(
       .limit(1)
   )[0];
   if (!member) throw new Error("not a member of this organization");
-  return { orgId: org.id, role: member.role, user };
+  return { orgId: org.id, role: member.role, userId: user.id };
 }
 
 /**
@@ -68,25 +70,32 @@ async function requireMembership(
  * from GitHub org membership at login (admin/member); personal accounts are
  * always admin.
  */
-async function requireAdmin(slug: string): Promise<{ orgId: number; user: SessionUser; role: "admin" }> {
-  const { orgId, role, user } = await requireMembership(slug);
+async function requireAdmin(slug: string): Promise<{ orgId: number; userId: number }> {
+  const { orgId, role, userId } = await requireMembership(slug);
   if (role !== "admin") {
     throw new Error("this action requires an organization admin");
   }
-  return { orgId, user, role: "admin" };
+  return { orgId, userId };
 }
 
 export async function toggleRepository(formData: FormData): Promise<void> {
   const slug = String(formData.get("slug") ?? "");
   const repositoryId = Number(formData.get("repositoryId"));
   const enable = formData.get("enable") === "true";
-  const { orgId } = await requireAdmin(slug);
+  const { orgId, userId } = await requireAdmin(slug);
 
   const db = getDb();
   // Constrain the update to repositories that actually belong to this org.
   const repo = (
     await db
-      .select({ id: schema.repositories.id })
+      .select({
+        id: schema.repositories.id,
+        installationId: schema.repositories.installationId,
+        githubRepoId: schema.repositories.githubRepoId,
+        fullName: schema.repositories.fullName,
+        private: schema.repositories.private,
+        enabled: schema.repositories.enabled,
+      })
       .from(schema.repositories)
       .innerJoin(
         schema.installations,
@@ -97,11 +106,33 @@ export async function toggleRepository(formData: FormData): Promise<void> {
   )[0];
   if (!repo) throw new Error("repository not found in this organization");
 
-  await db
-    .update(schema.repositories)
-    .set({ enabled: enable })
-    .where(eq(schema.repositories.id, repo.id));
+  await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(schema.repositories)
+      .set({ enabled: enable })
+      .where(
+        and(
+          eq(schema.repositories.id, repo.id),
+          eq(schema.repositories.installationId, repo.installationId),
+        ),
+      )
+      .returning({ id: schema.repositories.id });
+    if (!updated[0]) throw new Error("repository changed organizations; retry the toggle");
+    if (repo.enabled !== enable) {
+      await recordRepositoryEnablementEvent(tx, {
+        orgId,
+        repositoryId: repo.id,
+        githubRepoId: repo.githubRepoId,
+        repositoryFullName: repo.fullName,
+        repositoryPrivate: repo.private,
+        action: enable ? "enable" : "disable",
+        actorUserId: userId,
+        source: "dashboard",
+      });
+    }
+  });
   revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/billing`);
 }
 
 export async function saveOrgSettings(
@@ -185,12 +216,18 @@ export async function saveOrgSettings(
   return { status: "success", message: "Organization settings saved." };
 }
 
+
+async function assertDashboardReviewApprovable(review: ReviewForApproval): Promise<void> {
+  if (review.status !== "completed") throw new Error("review must be completed");
+  if (!review.envelope) throw new Error("review must have an envelope");
+}
+
 export async function approveFinding(formData: FormData): Promise<void> {
   const slug = String(formData.get("slug") ?? "");
   const publicId = String(formData.get("publicId") ?? "");
   const findingId = String(formData.get("findingId") ?? "").trim();
   const rationale = String(formData.get("rationale") ?? "");
-  const { orgId, user, role } = await requireAdmin(slug);
+  const { orgId, userId } = await requireAdmin(slug);
   const db = getDb();
   const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
   if (!review) throw new Error("review not found in this organization");
@@ -198,114 +235,46 @@ export async function approveFinding(formData: FormData): Promise<void> {
   const state = await getReviewApprovalState(db, review);
   const finding = findKindBlockingState(state, findingId);
   if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
-    throw new Error("finding is absent, already approved, revoked, or no longer kind-blocking");
+    throw new Error("that finding is absent, already approved, revoked, or no longer kind-blocking");
   }
   if (finding.severityBlocking) {
-    throw new Error("approvals only clear kind-based blocks");
+    throw new Error("this finding is also severity-blocking, and approvals only clear kind-based blocks");
   }
-
-  const actor = {
-    userId: user.id,
-    githubId: String(user.githubId),
-    login: user.login,
-    role,
-  };
-  let approvalId: string | null = null;
-  let nextState: Awaited<ReturnType<typeof getReviewApprovalState>> | null = null;
+  const user = await getSessionUser();
+  if (!user?.githubId) throw new Error("user has no github id");
   await db.transaction(async (tx) => {
-    approvalId = await insertFindingApproval(tx, {
+    await insertFindingApproval(tx, {
       reviewId: review.id,
       findingId,
-      actor,
+      actor: {
+        userId,
+        githubId: user.githubId!,
+        login: user.login,
+        role: "admin",
+      },
       rationale,
       source: "dashboard",
     });
-    nextState = await getReviewApprovalState(tx, review);
+    const nextState = await getReviewApprovalState(tx, review);
     await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing);
   });
-  try {
-    await patchDashboardGateCheck(review, nextState!.effectiveGate);
-  } catch (err) {
-    if (approvalId) {
-      await deleteApprovalById(db, approvalId);
-      const reverted = await getReviewApprovalState(db, review);
-      await updateStoredEffectiveGate(db, review.id, reverted.effectiveGate.failing);
-    }
-    throw new Error(
-      `approval was not applied because the gate check-run could not be patched: ${
-        err instanceof Error ? err.message : "unknown error"
-      }`,
-    );
-  }
-  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
   revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
 }
 
 export async function revokeFinding(formData: FormData): Promise<void> {
   const slug = String(formData.get("slug") ?? "");
   const publicId = String(formData.get("publicId") ?? "");
   const findingId = String(formData.get("findingId") ?? "").trim();
-  const { orgId, user } = await requireAdmin(slug);
+  const { orgId, userId } = await requireAdmin(slug);
   const db = getDb();
   const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
   if (!review) throw new Error("review not found in this organization");
-  await assertDashboardReviewApprovable(review);
-  let approvalId: string | null = null;
-  let nextState: Awaited<ReturnType<typeof getReviewApprovalState>> | null = null;
   await db.transaction(async (tx) => {
-    approvalId = await revokeFindingApproval(tx, review.id, findingId, user.id);
-    if (!approvalId) throw new Error("approval is already revoked or superseded");
-    nextState = await getReviewApprovalState(tx, review);
+    await revokeFindingApproval(tx, review.id, findingId, userId);
+    const nextState = await getReviewApprovalState(tx, review);
     await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing);
   });
-  try {
-    await patchDashboardGateCheck(review, nextState!.effectiveGate);
-  } catch (err) {
-    if (approvalId) {
-      await restoreRevokedApprovalById(db, approvalId);
-      const reverted = await getReviewApprovalState(db, review);
-      await updateStoredEffectiveGate(db, review.id, reverted.effectiveGate.failing);
-    }
-    throw new Error(
-      `approval was not revoked because the gate check-run could not be patched: ${
-        err instanceof Error ? err.message : "unknown error"
-      }`,
-    );
-  }
-  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
   revalidatePath(`/orgs/${slug}`);
-}
-
-async function assertDashboardReviewApprovable(
-  review: NonNullable<Awaited<ReturnType<typeof loadReviewForApprovalByPublicId>>>,
-): Promise<void> {
-  if (review.status !== "completed" || !review.envelope) {
-    throw new Error("approvals require a completed review with a stored envelope");
-  }
-  const token = await getInstallationToken(review.githubInstallationId);
-  const currentHeadSha = await getPullRequestHeadSha(token, review.repoFullName, review.prNumber);
-  if (currentHeadSha !== review.headSha) {
-    throw new Error("approval rejected because the pull request head no longer matches this review");
-  }
-  if (await hasNewerCompletedReviewForHead(getDb(), review)) {
-    throw new Error("approval rejected because a newer completed review exists for this commit");
-  }
-}
-
-async function patchDashboardGateCheck(
-  review: NonNullable<Awaited<ReturnType<typeof loadReviewForApprovalByPublicId>>>,
-  gate: Awaited<ReturnType<typeof getReviewApprovalState>>["effectiveGate"],
-): Promise<void> {
-  if (!review.gateCheckRunId) throw new Error("review has no gate check-run id");
-  const token = await getInstallationToken(review.githubInstallationId);
-  await completeCheckRun(
-    token,
-    review.repoFullName,
-    review.gateCheckRunId,
-    gate.failing ? "failure" : "success",
-    gate.failing ? "Postil gate still failing" : "Postil gate approved",
-    gate.failing
-      ? `One or more blocking findings remain after approval changes.\n\n${formatRemainingGateBlockers(gate)}`
-      : "All kind-based blocking findings for this reviewed commit have active admin approvals.",
-  );
+  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
 }
