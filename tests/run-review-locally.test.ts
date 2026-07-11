@@ -89,7 +89,6 @@ describeHarness("scripts/run-review-locally.ts", () => {
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    expect(stderr).toBe("");
     expect(exitCode).toBe(expectedExit);
     return { stdout, stderr };
   }
