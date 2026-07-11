@@ -138,6 +138,44 @@ describe("extractBreadcrumbs", () => {
     ).toThrow("sourceUrl must be a GitHub pull request URL");
   });
 
+  test("throws when sourceUrl contains embedded username", () => {
+    expect(() =>
+      extractBreadcrumbs(
+        "https://user@github.com/postil-dev/postil/pull/275",
+        "4d08309409e3b250cca5db5f53527e39a3a71ef9",
+      ),
+    ).toThrow("sourceUrl must not contain embedded credentials");
+  });
+
+  test("throws when sourceUrl contains embedded password", () => {
+    expect(() =>
+      extractBreadcrumbs(
+        "https://user:password@github.com/postil-dev/postil/pull/275",
+        "4d08309409e3b250cca5db5f53527e39a3a71ef9",
+      ),
+    ).toThrow("sourceUrl must not contain embedded credentials");
+  });
+
+  test("throws when reviewUrl contains embedded username", () => {
+    expect(() =>
+      extractBreadcrumbs(
+        "https://github.com/postil-dev/postil/pull/275",
+        "4d08309409e3b250cca5db5f53527e39a3a71ef9",
+        "https://token@github.com/postil-dev/postil/pull/275#discussion_r123",
+      ),
+    ).toThrow("reviewUrl must not contain embedded credentials");
+  });
+
+  test("throws when reviewUrl contains embedded password", () => {
+    expect(() =>
+      extractBreadcrumbs(
+        "https://github.com/postil-dev/postil/pull/275",
+        "4d08309409e3b250cca5db5f53527e39a3a71ef9",
+        "https://user:token@github.com/postil-dev/postil/pull/275#discussion_r123",
+      ),
+    ).toThrow("reviewUrl must not contain embedded credentials");
+  });
+
   test("throws when reviewUrl points to a different pull request", () => {
     expect(() =>
       extractBreadcrumbs(
