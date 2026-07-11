@@ -11,6 +11,7 @@
  * POSTIL_DASHBOARD_KEEP_DATABASE=1 to retain the fixture and its ignored
  * tmp/dashboard-verification/session.env for manual use.
  */
+import { randomBytes } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +24,7 @@ const baseDatabaseUrl = process.env.POSTIL_TEST_DATABASE_URL;
 const keepDatabase = process.env.POSTIL_DASHBOARD_KEEP_DATABASE === "1";
 const serverMode = process.env.POSTIL_DASHBOARD_SERVER === "start" ? "start" : "dev";
 const port = positiveInteger(process.env.POSTIL_DASHBOARD_PORT, 3217);
-const sessionSecret = "local-dashboard-verification-secret-32-bytes";
+const sessionSecret = randomBytes(32).toString("base64url");
 const databaseName = `postil_dashboard_verify_${process.pid}_${Date.now()}`;
 
 if (!baseDatabaseUrl) {
