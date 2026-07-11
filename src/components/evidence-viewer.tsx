@@ -139,6 +139,10 @@ function parseGitHubPullRequestUrl(value: string, label: string) {
     throw new Error(`${label} must be a valid GitHub pull request URL`);
   }
 
+  if (url.username || url.password) {
+    throw new Error(`${label} must not contain embedded credentials`);
+  }
+
   const parts = url.pathname.split("/").filter(Boolean);
   if (
     url.protocol !== "https:" ||
