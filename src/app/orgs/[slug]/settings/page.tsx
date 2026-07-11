@@ -4,12 +4,17 @@ import Link from "next/link";
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { schema } from "@/lib/db";
+import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import { requireOrgMembership } from "@/lib/org-access";
+import { deriveRepoHealth, getRepoHealthRows, type RepoHealth } from "@/lib/repo-health";
+import { formatRelativeTime } from "@/lib/time";
 import {
   isVisibleConfigArtifact,
   resolveConfigArtifacts,
-  type VisibleConfigSource,
+  type VisibleConfigArtifact,
 } from "../config-resolution";
+import { refreshOrgConfigProbes } from "../actions";
+import { RepoHealthBanner } from "../repo-health-banner";
 import { SettingsForm } from "../settings-form";
 
 export const metadata: Metadata = {
@@ -18,18 +23,6 @@ export const metadata: Metadata = {
 };
 export const dynamic = "force-dynamic";
 
-const sourceClass: Record<VisibleConfigSource, string> = {
-  repository: "border-gate text-gate",
-  organization: "border-rust text-rust",
-  unknown: "border-stone text-charcoal/55",
-};
-
-const sourceLabel: Record<VisibleConfigSource, string> = {
-  repository: "repo",
-  organization: "org",
-  unknown: "unknown",
-};
-
 export default async function OrgSettingsPage({
   params,
 }: {
@@ -37,6 +30,7 @@ export default async function OrgSettingsPage({
 }) {
   const { slug } = await params;
   const { db, org, membership } = await requireOrgMembership(slug);
+  const now = new Date();
   if (membership.role !== "admin") {
     throw new Error("this page requires an organization admin");
   }
@@ -62,6 +56,7 @@ export default async function OrgSettingsPage({
       id: schema.repositories.id,
       fullName: schema.repositories.fullName,
       enabled: schema.repositories.enabled,
+      githubInstallationId: schema.installations.githubInstallationId,
     })
     .from(schema.repositories)
     .innerJoin(
@@ -71,10 +66,39 @@ export default async function OrgSettingsPage({
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
 
+  const enabledRepos = repos
+    .filter((repo) => repo.enabled)
+    .map((repo) => ({
+      repositoryId: repo.id,
+      githubInstallationId: repo.githubInstallationId,
+      fullName: repo.fullName,
+    }));
+  const [probes, repoHealthRows] = await Promise.all([
+    getRepoConfigProbes(db, enabledRepos, { now }),
+    getRepoHealthRows(db, org.id),
+  ]);
+  const probeByRepositoryId = new Map(
+    probes.map((probe) => [probe.repositoryId, probe]),
+  );
+  const liveConfigFilesByRepositoryId = new Map(
+    probes
+      .filter((probe) => probe.ok)
+      .map((probe) => [probe.repositoryId, probe.files]),
+  );
+  const healthByRepositoryId = new Map(
+    repoHealthRows.map((row) => [row.repositoryId, row]),
+  );
+  const liveOrgConfigFiles = [
+    settings?.configYaml ? "org:.postil.yaml" : null,
+    settings?.guardrailsMd ? "org:.postil/guardrails.md" : null,
+    settings?.contentPolicyMd ? "org:.postil/content-policy.md" : null,
+  ].filter((file): file is string => file !== null);
+
   const latestRepoReviews = await db
     .selectDistinctOn([schema.reviews.repositoryId], {
       repositoryId: schema.reviews.repositoryId,
       configFiles: schema.reviews.configFiles,
+      finishedAt: schema.reviews.finishedAt,
     })
     .from(schema.reviews)
     .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
@@ -92,15 +116,22 @@ export default async function OrgSettingsPage({
     latestRepoReviews.map((review) => [review.repositoryId, review]),
   );
   const repoConfigSummaries = repos
+    .filter((repo) => repo.enabled)
     .map((repo) => {
       const latestReview = latestRepoReviewByRepositoryId.get(repo.id);
-      const artifacts = resolveConfigArtifacts(latestReview?.configFiles).filter(
-        isVisibleConfigArtifact,
-      );
-      return { repo, latestReview, artifacts };
+      const probe = probeByRepositoryId.get(repo.id) ?? { ok: false, files: [] };
+      const artifacts = resolveConfigArtifacts(
+        latestReview?.configFiles,
+        probe,
+        liveOrgConfigFiles,
+      ).filter(isVisibleConfigArtifact);
+      const healthRow = healthByRepositoryId.get(repo.id);
+      const health = healthRow ? deriveRepoHealth(healthRow, now) : null;
+      return { repo, latestReview, artifacts, healthRow, health };
     })
     .filter((summary) => summary.artifacts.length > 0);
-  const showConfigFiles = repos.length === 0 || repoConfigSummaries.length > 0;
+  const showConfigFiles =
+    repos.length === 0 || repoConfigSummaries.length > 0 || enabledRepos.length > 0;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -124,6 +155,13 @@ export default async function OrgSettingsPage({
         </div>
       </div>
 
+      <RepoHealthBanner
+        slug={org.slug}
+        rows={repoHealthRows}
+        now={now}
+        liveConfigFilesByRepositoryId={liveConfigFilesByRepositoryId}
+      />
+
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
         <div>
           <p className="eyebrow">Organization settings</p>
@@ -132,56 +170,70 @@ export default async function OrgSettingsPage({
 
         {showConfigFiles && (
           <div>
-            <p className="eyebrow">Config files</p>
-            <div className="card mt-3 divide-y divide-stone/60">
-              {repoConfigSummaries.map(({ repo, latestReview, artifacts }) => {
-                return (
-                  <div key={repo.id} className="space-y-3 px-4 py-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <p className="font-mono text-sm">{repo.fullName}</p>
-                        <p className="font-mono text-[11px] text-charcoal/55">
-                          {repo.enabled ? "enabled" : "disabled"}
-                          {!latestReview ? " · no completed review yet" : ""}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="grid gap-2">
-                      {artifacts.map((artifact) => (
-                        <div
-                          key={artifact.key}
-                          className="grid gap-2 rounded-card border border-stone/70 px-3 py-2 sm:grid-cols-[1fr_auto]"
-                        >
-                          <div>
-                            <p className="font-mono text-[11px] text-charcoal">
-                              {artifact.label}
-                            </p>
-                            <p className="mt-0.5 text-xs text-charcoal/60">
-                              {artifact.source === "repository" &&
-                                `Repository supplies ${artifact.file}.`}
-                              {artifact.source === "organization" &&
-                                `Falls back to hosted organization ${artifact.file}.`}
-                              {artifact.source === "unknown" &&
-                                "No completed review has recorded this file yet."}
-                            </p>
-                          </div>
-                          <span
-                            className={`h-fit rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${sourceClass[artifact.source]}`}
-                          >
-                            {sourceLabel[artifact.source]}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-              {repos.length === 0 && (
-                <p className="px-4 py-8 text-center text-sm text-charcoal/50">
-                  No repositories. Install the GitHub App on this organization.
-                </p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="eyebrow">Config files</p>
+              {enabledRepos.length > 0 && (
+                <form action={refreshOrgConfigProbes}>
+                  <input type="hidden" name="slug" value={org.slug} />
+                  <button type="submit" className="btn-secondary text-xs">
+                    Re-check
+                  </button>
+                </form>
               )}
             </div>
+            {(repoConfigSummaries.length > 0 || repos.length === 0) && (
+              <div className="card mt-3 divide-y divide-stone/60">
+                {repoConfigSummaries.map(
+                  ({ repo, latestReview, artifacts, healthRow, health }) => {
+                    return (
+                      <div key={repo.id} className="space-y-3 px-4 py-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="font-mono text-sm">{repo.fullName}</p>
+                            <RepoHealthLine
+                              enabled={repo.enabled}
+                              health={health}
+                              lastEnabledAt={healthRow?.lastEnabledAt ?? null}
+                              lastCompletedAt={
+                                healthRow?.lastCompletedAt ?? latestReview?.finishedAt ?? null
+                              }
+                              now={now}
+                            />
+                          </div>
+                        </div>
+                        <div className="grid gap-2">
+                          {artifacts.map((artifact) => (
+                            <div
+                              key={artifact.key}
+                              className="grid gap-2 rounded-card border border-stone/70 px-3 py-2 sm:grid-cols-[1fr_auto]"
+                            >
+                              <div>
+                                <p className="font-mono text-[11px] text-charcoal">
+                                  {artifact.label}
+                                </p>
+                                <p className="mt-0.5 text-xs text-charcoal/60">
+                                  {configArtifactDescription(artifact)}
+                                </p>
+                              </div>
+                              <span
+                                className={`h-fit rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${configArtifactClass(artifact)}`}
+                              >
+                                {configArtifactLabel(artifact)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  },
+                )}
+                {repos.length === 0 && (
+                  <p className="px-4 py-8 text-center text-sm text-charcoal/50">
+                    No repositories. Install the GitHub App on this organization.
+                  </p>
+                )}
+              </div>
+            )}
             {repoConfigSummaries.length > 0 && (
               <p className="mt-3 text-xs text-charcoal/60">
                 Config is read from each repository&apos;s default branch. Root config
@@ -196,4 +248,102 @@ export default async function OrgSettingsPage({
       </div>
     </div>
   );
+}
+
+function RepoHealthLine({
+  enabled,
+  health,
+  lastEnabledAt,
+  lastCompletedAt,
+  now,
+}: {
+  enabled: boolean;
+  health: RepoHealth | null;
+  lastEnabledAt: Date | null;
+  lastCompletedAt: Date | null;
+  now: Date;
+}) {
+  if (!enabled) {
+    return <p className="font-mono text-[11px] text-charcoal/55">disabled</p>;
+  }
+  if (health === "awaiting-first-pr" && lastEnabledAt) {
+    return (
+      <div>
+        <p className="font-mono text-[11px] text-charcoal/55">
+          enabled {relative(lastEnabledAt, now)} · no reviews yet
+        </p>
+        <p className="mt-1 text-xs text-charcoal/60">
+          No reviews yet. The first review runs when a pull request is opened or updated.
+        </p>
+      </div>
+    );
+  }
+  if (health === "never-reviewed" && lastEnabledAt) {
+    return (
+      <p className="font-mono text-[11px] text-rust">
+        enabled {relative(lastEnabledAt, now)} · never reviewed · see warning above
+      </p>
+    );
+  }
+  if (health === "failing") {
+    return (
+      <p className="font-mono text-[11px] text-rust">
+        enabled · reviews failing · see warning above
+      </p>
+    );
+  }
+  if (lastCompletedAt) {
+    return (
+      <p className="font-mono text-[11px] text-charcoal/55">
+        enabled · last review {relative(lastCompletedAt, now)}
+      </p>
+    );
+  }
+  return <p className="font-mono text-[11px] text-charcoal/55">enabled</p>;
+}
+
+function relative(value: Date, now: Date): string {
+  return formatRelativeTime(value.toISOString(), now.getTime());
+}
+
+function configArtifactLabel(artifact: VisibleConfigArtifact): string {
+  if (artifact.state === "active") return artifact.liveSource === "repository" ? "repo" : "org";
+  return artifact.state;
+}
+
+function configArtifactClass(artifact: VisibleConfigArtifact): string {
+  if (artifact.state === "active") {
+    return artifact.liveSource === "repository"
+      ? "border-gate text-gate"
+      : "border-rust text-rust";
+  }
+  if (artifact.state === "unverified") return "border-stone text-charcoal/55";
+  return "border-rust text-rust";
+}
+
+function configArtifactDescription(artifact: VisibleConfigArtifact): string {
+  if (artifact.state === "active") {
+    return artifact.liveSource === "repository"
+      ? `Repository supplies ${artifact.file}; the latest review used repository config.`
+      : `Hosted organization ${artifact.file} is active; the latest review used it.`;
+  }
+  if (artifact.state === "pending") {
+    const source =
+      artifact.liveSource === "repository"
+        ? `Repository ${artifact.file}`
+        : `Hosted organization ${artifact.file}`;
+    return `${source} is set up but not yet exercised. It takes effect on the next review.`;
+  }
+  if (artifact.state === "removed") {
+    return `${artifact.file ?? artifact.label} is no longer present. Postil defaults apply on the next review.`;
+  }
+  if (artifact.recordedSource === "none") {
+    return artifact.lastKnownLiveFile
+      ? `Could not check GitHub just now; no completed review has recorded a config source. The last successful check found repository ${artifact.lastKnownLiveFile}.`
+      : "Could not check GitHub just now; no completed review has recorded a config source.";
+  }
+  const lastKnown = artifact.lastKnownLiveFile
+    ? ` The last successful check found repository ${artifact.lastKnownLiveFile}.`
+    : "";
+  return `Could not check GitHub just now; showing what the last review used: ${artifact.recordedSource} ${artifact.file}.${lastKnown}`;
 }

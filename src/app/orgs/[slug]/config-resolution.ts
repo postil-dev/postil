@@ -19,63 +19,104 @@ export const CONFIG_ARTIFACTS = [
   },
 ] as const;
 
-export type ConfigSource = "repository" | "organization" | "none" | "unknown";
-export type VisibleConfigSource = Exclude<ConfigSource, "none">;
+export type ConfigState = "active" | "pending" | "removed" | "absent" | "unverified";
+export type ConfigOrigin = "repository" | "organization" | "none";
+
+export interface ConfigProbeSnapshot {
+  ok: boolean;
+  files: readonly string[];
+}
 
 export interface ResolvedConfigArtifact {
   key: (typeof CONFIG_ARTIFACTS)[number]["key"];
   label: string;
-  source: ConfigSource;
+  state: ConfigState;
+  /** The source on the default branch now. Null when GitHub could not be checked. */
+  liveSource: ConfigOrigin | null;
+  /** The source consumed by the latest completed review. */
+  recordedSource: ConfigOrigin;
+  /** The live path, or the last recorded path when the live probe failed. */
   file: string | null;
+  /** Repository path from the last successful probe, only when this probe failed. */
+  lastKnownLiveFile: string | null;
 }
 
 export interface VisibleConfigArtifact extends ResolvedConfigArtifact {
-  source: VisibleConfigSource;
+  state: Exclude<ConfigState, "absent">;
 }
 
 export function isVisibleConfigArtifact(
   artifact: ResolvedConfigArtifact,
 ): artifact is VisibleConfigArtifact {
-  return artifact.source !== "none";
+  return artifact.state !== "absent";
 }
 
+/**
+ * Resolve live default-branch configuration against the latest completed
+ * review. Organization paths use the same `org:` representation stored on a
+ * review so callers can pass them without translating each artifact.
+ */
 export function resolveConfigArtifacts(
-  configFiles: readonly string[] | null | undefined,
+  recordedConfigFiles: readonly string[] | null | undefined,
+  liveProbe: ConfigProbeSnapshot,
+  liveOrgConfigFiles: readonly string[] = [],
 ): ResolvedConfigArtifact[] {
+  const hasCompletedReview = recordedConfigFiles != null;
+
   return CONFIG_ARTIFACTS.map((artifact) => {
-    if (configFiles == null) {
+    const recordedRepoFile = artifact.repoFiles.find((file) =>
+      recordedConfigFiles?.includes(file),
+    );
+    const recordedSource: ConfigOrigin = recordedRepoFile
+      ? "repository"
+      : recordedConfigFiles?.includes(artifact.orgFile)
+        ? "organization"
+        : "none";
+    const recordedFile = recordedRepoFile ??
+      (recordedSource === "organization" ? artifact.orgFile.slice(4) : null);
+
+    if (!liveProbe.ok) {
+      const lastKnownLiveFile = artifact.repoFiles.find((file) =>
+        liveProbe.files.includes(file),
+      );
       return {
         key: artifact.key,
         label: artifact.label,
-        source: "unknown",
-        file: null,
+        state: "unverified" as const,
+        liveSource: null,
+        recordedSource,
+        file: recordedFile,
+        lastKnownLiveFile: lastKnownLiveFile ?? null,
       };
     }
 
-    const repoFile = artifact.repoFiles.find((file) => configFiles.includes(file));
-    if (repoFile) {
-      return {
-        key: artifact.key,
-        label: artifact.label,
-        source: "repository",
-        file: repoFile,
-      };
-    }
+    const liveRepoFile = artifact.repoFiles.find((file) => liveProbe.files.includes(file));
+    const hasLiveOrgFile = liveOrgConfigFiles.includes(artifact.orgFile);
+    const liveSource: ConfigOrigin = liveRepoFile
+      ? "repository"
+      : hasLiveOrgFile
+        ? "organization"
+        : "none";
+    const liveFile = liveRepoFile ??
+      (liveSource === "organization" ? artifact.orgFile.slice(4) : null);
 
-    if (configFiles.includes(artifact.orgFile)) {
-      return {
-        key: artifact.key,
-        label: artifact.label,
-        source: "organization",
-        file: artifact.orgFile.slice(4),
-      };
+    let state: ConfigState;
+    if (liveSource === "none") {
+      state = recordedSource === "none" ? "absent" : "removed";
+    } else if (hasCompletedReview && liveSource === recordedSource) {
+      state = "active";
+    } else {
+      state = "pending";
     }
 
     return {
       key: artifact.key,
       label: artifact.label,
-      source: "none",
-      file: null,
+      state,
+      liveSource,
+      recordedSource,
+      file: liveFile ?? recordedFile,
+      lastKnownLiveFile: null,
     };
   });
 }

@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { formatMs } from "@/components/review-status";
 import { schema } from "@/lib/db";
 import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
+import { getRepoHealthRows } from "@/lib/repo-health";
 import { toggleRepository } from "./actions";
+import { RepoHealthBanner } from "./repo-health-banner";
 import { ReviewsTable } from "./reviews-table";
 
 export const metadata: Metadata = {
@@ -26,11 +28,32 @@ export default async function OrgDashboardPage({
   const { slug } = await params;
   const { db, org, membership } = await requireOrgMembership(slug);
   const isAdmin = membership.role === "admin";
+  const now = new Date();
 
   const suspendedInstallations = await db
     .select({ accountLogin: schema.installations.accountLogin })
     .from(schema.installations)
     .where(and(eq(schema.installations.orgId, org.id), eq(schema.installations.suspended, true)));
+
+  const repoHealthRows = await getRepoHealthRows(db, org.id);
+  const healthRepositoryIds = repoHealthRows.map((row) => row.repositoryId);
+  const liveConfigProbes = healthRepositoryIds.length > 0
+    ? await db
+        .select({
+          repositoryId: schema.repoConfigProbes.repositoryId,
+          files: schema.repoConfigProbes.files,
+        })
+        .from(schema.repoConfigProbes)
+        .where(
+          and(
+            eq(schema.repoConfigProbes.ok, true),
+            inArray(schema.repoConfigProbes.repositoryId, healthRepositoryIds),
+          ),
+        )
+    : [];
+  const liveConfigFilesByRepositoryId = new Map(
+    liveConfigProbes.map((probe) => [probe.repositoryId, probe.files]),
+  );
 
   const members = await db
     .select({
@@ -188,6 +211,13 @@ export default async function OrgDashboardPage({
           </p>
         </div>
       )}
+
+      <RepoHealthBanner
+        slug={org.slug}
+        rows={repoHealthRows}
+        now={now}
+        liveConfigFilesByRepositoryId={liveConfigFilesByRepositoryId}
+      />
 
       {/* Metrics */}
       <div className="mt-8 grid gap-6 lg:grid-cols-2">

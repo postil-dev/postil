@@ -61,6 +61,7 @@ try {
   fixtureClient = new Client({ connectionString: databaseUrl.toString() });
   await fixtureClient.connect();
   await seedMorgaesisBillingFixture(fixtureClient);
+  await seedRepositoryHealthFixture(fixtureClient);
   const reviewResult = await fixtureClient.query<{ public_id: string; full_name: string }>(`
     SELECT reviews.public_id, repositories.full_name
     FROM reviews
@@ -135,10 +136,18 @@ try {
     "Acme Robotics",
     "Confidence distribution",
     "Recent reviews",
+    "Enabled but never reviewed.",
+    "acme/unreached",
+    ".postil.yaml",
   ]);
   await verifyPage(`${origin}/orgs/acme/settings`, headers, [
     "Organization settings",
     "Config files",
+    "Enabled but never reviewed.",
+    "acme/unreached",
+    "pending",
+    "set up but not yet exercised",
+    "never reviewed",
   ]);
   await verifyPage(`${origin}/orgs/acme/billing`, headers, ["Organization billing"]);
   await verifyPage(`${origin}/orgs/morgaesis/billing`, headers, [
@@ -308,6 +317,68 @@ async function seedMorgaesisBillingFixture(client: Client): Promise<void> {
       131,
       '2026-07-11T12:00:00.000Z'::timestamptz
     FROM installation, review;
+  `);
+}
+
+async function seedRepositoryHealthFixture(client: Client): Promise<void> {
+  await client.query(`
+    WITH installation AS (
+      SELECT installations.id, installations.org_id
+      FROM installations
+      INNER JOIN organizations ON organizations.id = installations.org_id
+      WHERE organizations.slug = 'acme'
+      LIMIT 1
+    ),
+    repository AS (
+      INSERT INTO repositories (
+        installation_id,
+        github_repo_id,
+        full_name,
+        private,
+        enabled,
+        created_at
+      )
+      SELECT
+        installation.id,
+        777099,
+        'acme/unreached',
+        true,
+        true,
+        now() - interval '10 days'
+      FROM installation
+      ON CONFLICT (github_repo_id) DO UPDATE SET enabled = true
+      RETURNING id, github_repo_id, full_name, private
+    ),
+    enablement AS (
+      INSERT INTO repository_enablement_events (
+        org_id,
+        repository_id,
+        github_repo_id,
+        repository_full_name,
+        repository_private,
+        action,
+        source,
+        occurred_at
+      )
+      SELECT
+        installation.org_id,
+        repository.id,
+        repository.github_repo_id,
+        repository.full_name,
+        repository.private,
+        'enable',
+        'migration_baseline',
+        now() - interval '10 days'
+      FROM installation, repository
+      RETURNING id
+    )
+    INSERT INTO repo_config_probes (repository_id, probed_at, ok, files)
+    SELECT repository.id, now(), true, ARRAY['.postil.yaml']::text[]
+    FROM repository
+    ON CONFLICT (repository_id) DO UPDATE SET
+      probed_at = EXCLUDED.probed_at,
+      ok = EXCLUDED.ok,
+      files = EXCLUDED.files
   `);
 }
 

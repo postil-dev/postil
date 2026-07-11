@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
@@ -25,6 +25,7 @@ import {
 } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { completeCheckRun, getPullRequestHeadSha } from "@/lib/github/checks";
+import { getRepoConfigProbes } from "@/lib/github/config-probe";
 
 export interface OrgSettingsActionState {
   status: "error" | "success";
@@ -133,6 +134,44 @@ export async function toggleRepository(formData: FormData): Promise<void> {
   });
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/billing`);
+}
+
+export async function refreshOrgConfigProbes(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId } = await requireAdmin(slug);
+  const db = getDb();
+  const refreshedAt = new Date();
+
+  // The atomic conflict predicate makes this limit durable across all web
+  // processes. A separate org-scoped row is necessary because failed probes
+  // deliberately preserve each repository's last successful probedAt value.
+  const acquired = await db.execute(sql`
+    INSERT INTO "org_config_probe_refreshes" ("org_id", "refreshed_at")
+    VALUES (${orgId}, ${refreshedAt})
+    ON CONFLICT ("org_id") DO UPDATE
+      SET "refreshed_at" = EXCLUDED."refreshed_at"
+      WHERE "org_config_probe_refreshes"."refreshed_at"
+        <= EXCLUDED."refreshed_at" - interval '30 seconds'
+    RETURNING "org_id"
+  `);
+  if (acquired.rows.length === 0) return;
+
+  const repos = await db
+    .select({
+      repositoryId: schema.repositories.id,
+      githubInstallationId: schema.installations.githubInstallationId,
+      fullName: schema.repositories.fullName,
+    })
+    .from(schema.repositories)
+    .innerJoin(
+      schema.installations,
+      eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .where(
+      and(eq(schema.installations.orgId, orgId), eq(schema.repositories.enabled, true)),
+    );
+  await getRepoConfigProbes(db, repos, { force: true, now: refreshedAt });
+  revalidatePath(`/orgs/${slug}/settings`);
 }
 
 export async function saveOrgSettings(

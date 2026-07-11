@@ -5,65 +5,83 @@ import {
   resolveConfigArtifacts,
 } from "@/app/orgs/[slug]/config-resolution";
 
+function root(
+  recorded: readonly string[] | null | undefined,
+  live: { ok: boolean; files: readonly string[] },
+  org: readonly string[] = [],
+) {
+  return resolveConfigArtifacts(recorded, live, org)[0]!;
+}
+
 describe("resolveConfigArtifacts", () => {
-  test("reports repository root config candidates as the root config source", () => {
-    expect(resolveConfigArtifacts([".postil.json"])[0]).toEqual({
-      key: "root",
-      label: ".postil.yaml",
-      source: "repository",
-      file: ".postil.json",
+  test("active: live and recorded origins match", () => {
+    expect(root([".postil.json"], { ok: true, files: [".postil.yaml"] })).toMatchObject({
+      state: "active",
+      liveSource: "repository",
+      recordedSource: "repository",
+      file: ".postil.yaml",
+    });
+    expect(
+      root(["org:.postil.yaml"], { ok: true, files: [] }, ["org:.postil.yaml"]),
+    ).toMatchObject({
+      state: "active",
+      liveSource: "organization",
+      recordedSource: "organization",
     });
   });
 
-  test("resolves each config artifact independently", () => {
+  test("pending: live config has not been exercised by a completed review", () => {
+    expect(root(undefined, { ok: true, files: [".postil.yml"] })).toMatchObject({
+      state: "pending",
+      liveSource: "repository",
+      recordedSource: "none",
+      file: ".postil.yml",
+    });
     expect(
-      resolveConfigArtifacts([
-        ".postil.yaml",
-        "org:.postil/guardrails.md",
-        ".postil/content-policy.md",
-      ]),
+      root([".postil.yaml"], { ok: true, files: [] }, ["org:.postil.yaml"]),
+    ).toMatchObject({ state: "pending", liveSource: "organization" });
+  });
+
+  test("removed: recorded config is no longer live", () => {
+    expect(root(["org:.postil.yaml"], { ok: true, files: [] })).toMatchObject({
+      state: "removed",
+      liveSource: "none",
+      recordedSource: "organization",
+      file: ".postil.yaml",
+    });
+  });
+
+  test("absent: neither live state nor completed history has config", () => {
+    const artifact = root(undefined, { ok: true, files: [] });
+    expect(artifact).toMatchObject({
+      state: "absent",
+      liveSource: "none",
+      recordedSource: "none",
+    });
+    expect(isVisibleConfigArtifact(artifact)).toBeFalse();
+  });
+
+  test("unverified: failed live probe retains the last recorded source", () => {
+    expect(root([".postil.json"], { ok: false, files: [".postil.yaml"] })).toMatchObject({
+      state: "unverified",
+      liveSource: null,
+      recordedSource: "repository",
+      file: ".postil.json",
+      lastKnownLiveFile: ".postil.yaml",
+    });
+  });
+
+  test("resolves all three artifact slots independently", () => {
+    expect(
+      resolveConfigArtifacts(
+        [".postil.yaml", "org:.postil/guardrails.md"],
+        { ok: true, files: [".postil.yaml", ".postil/content-policy.md"] },
+        ["org:.postil/guardrails.md"],
+      ).map(({ state, liveSource }) => ({ state, liveSource })),
     ).toEqual([
-      {
-        key: "root",
-        label: ".postil.yaml",
-        source: "repository",
-        file: ".postil.yaml",
-      },
-      {
-        key: "guardrails",
-        label: ".postil/guardrails.md",
-        source: "organization",
-        file: ".postil/guardrails.md",
-      },
-      {
-        key: "content-policy",
-        label: ".postil/content-policy.md",
-        source: "repository",
-        file: ".postil/content-policy.md",
-      },
+      { state: "active", liveSource: "repository" },
+      { state: "active", liveSource: "organization" },
+      { state: "pending", liveSource: "repository" },
     ]);
-  });
-
-  test("distinguishes no config from unknown review history", () => {
-    expect(resolveConfigArtifacts([]).map((artifact) => artifact.source)).toEqual([
-      "none",
-      "none",
-      "none",
-    ]);
-    expect(resolveConfigArtifacts(null).map((artifact) => artifact.source)).toEqual([
-      "unknown",
-      "unknown",
-      "unknown",
-    ]);
-  });
-
-  test("hides only resolved empty config artifacts from the settings list", () => {
-    expect(resolveConfigArtifacts([]).filter(isVisibleConfigArtifact)).toEqual([]);
-    expect(resolveConfigArtifacts(null).filter(isVisibleConfigArtifact)).toHaveLength(3);
-    expect(
-      resolveConfigArtifacts([".postil.yaml", "org:.postil/content-policy.md"])
-        .filter(isVisibleConfigArtifact)
-        .map((artifact) => artifact.source),
-    ).toEqual(["repository", "organization"]);
   });
 });
