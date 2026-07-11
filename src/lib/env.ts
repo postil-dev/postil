@@ -220,6 +220,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     scope: ["web"],
     optional: true,
   },
+  {
+    name: "POSTHOG_CLIENT_CAPTURE",
+    purpose:
+      "Set to 0 to disable client-side browser analytics (no PostHog init, no analytics cookies) while keeping server-side request telemetry",
+    example: "1",
+    scope: ["web"],
+    optional: true,
+  },
 ];
 
 export function validateEnv(processKind: "web" | "worker"): void {

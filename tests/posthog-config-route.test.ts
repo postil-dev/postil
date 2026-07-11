@@ -35,4 +35,14 @@ describe("/api/analytics/posthog", () => {
       host: "https://eu.i.posthog.com",
     });
   });
+
+  test("returns 204 when POSTHOG_CLIENT_CAPTURE is 0, even with a key configured", async () => {
+    process.env.POSTHOG_CLIENT_CAPTURE = "0";
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_project_token";
+
+    const response = await route.GET();
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
 });
