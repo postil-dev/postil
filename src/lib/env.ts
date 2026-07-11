@@ -184,6 +184,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_OPERATOR_GITHUB_IDS",
+    purpose:
+      "Comma-separated GitHub numeric user ids allowed to open the cross-organization operator dashboard",
+    example: "1234567,2345678",
+    scope: ["web"],
+    optional: true,
+  },
+  {
     name: "POSTHOG_PROJECT_TOKEN",
     purpose:
       "PostHog project token for server-side request telemetry; same value as NEXT_PUBLIC_POSTHOG_KEY",

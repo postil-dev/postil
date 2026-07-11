@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import type { RespondJobPayload } from "@/lib/queue";
+import "./quiet-console";
 
 /**
  * Unit coverage for the respond-job failure reply: when a @postil mention's
