@@ -21,7 +21,6 @@ datasets/
 measurements/
 measurements-*/
 measurements-*.md
-measurement-*.md
 measurement-runs/
 private-datasets/
 private-data/
