@@ -27,6 +27,8 @@ import type { ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 
 export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
+const HOSTED_LLM_REQUEST_TIMEOUT_SECS = "120";
+const HOSTED_LLM_TOTAL_TIMEOUT_SECS = "480";
 
 const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 
@@ -46,6 +48,14 @@ export function buildCliEnv(
   const cliEnv: Record<string, string> = {
     ...baseEnv,
     POSTIL_API_BASE: llm.apiBase,
+    POSTIL_LLM_REQUEST_TIMEOUT_SECS: optionalEnv(
+      "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
+      HOSTED_LLM_REQUEST_TIMEOUT_SECS,
+    ) as string,
+    POSTIL_LLM_TOTAL_TIMEOUT_SECS: optionalEnv(
+      "POSTIL_LLM_TOTAL_TIMEOUT_SECS",
+      HOSTED_LLM_TOTAL_TIMEOUT_SECS,
+    ) as string,
   };
   if (llm.apiKey) {
     cliEnv.MODEL_API_KEY = llm.apiKey;

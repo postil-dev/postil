@@ -53,6 +53,8 @@ const KEY_NAMES = [
   "POSTIL_API_BASE",
   "REVIEW_MODEL",
   "REVIEW_MODEL_CASCADE",
+  "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
+  "POSTIL_LLM_TOTAL_TIMEOUT_SECS",
 ] as const;
 
 const originalValues = new Map(
@@ -170,10 +172,32 @@ describe("buildCliEnv", () => {
     expect(env).toMatchObject({
       GITHUB_TOKEN: "github-token",
       POSTIL_API_BASE: "https://openrouter.ai/api/v1",
+      POSTIL_LLM_REQUEST_TIMEOUT_SECS: "120",
+      POSTIL_LLM_TOTAL_TIMEOUT_SECS: "480",
       MODEL_API_KEY: "model-key",
       POSTIL_API_KEY: "model-key",
       REVIEW_MODEL: "deepseek/deepseek-v4-pro",
       REVIEW_MODEL_CASCADE: "qwen/qwen3-coder",
+    });
+  });
+
+  test("lets operators override hosted CLI LLM timeout budgets", () => {
+    process.env.POSTIL_LLM_REQUEST_TIMEOUT_SECS = "90";
+    process.env.POSTIL_LLM_TOTAL_TIMEOUT_SECS = "360";
+
+    const env = buildCliEnv(
+      {
+        apiBase: "https://openrouter.ai/api/v1",
+        apiKey: undefined,
+        model: undefined,
+        modelCascade: undefined,
+      },
+      {},
+    );
+
+    expect(env).toMatchObject({
+      POSTIL_LLM_REQUEST_TIMEOUT_SECS: "90",
+      POSTIL_LLM_TOTAL_TIMEOUT_SECS: "360",
     });
   });
 });
