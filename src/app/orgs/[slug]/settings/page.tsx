@@ -13,7 +13,7 @@ import {
   resolveConfigArtifacts,
   type VisibleConfigArtifact,
 } from "../config-resolution";
-import { refreshOrgConfigProbes } from "../actions";
+import { ConfigRecheckButton } from "../config-recheck-button";
 import { RepoHealthBanner } from "../repo-health-banner";
 import { SettingsForm } from "../settings-form";
 
@@ -176,12 +176,7 @@ export default async function OrgSettingsPage({
             <div className="flex items-center justify-between gap-3">
               <p className="eyebrow">Config files</p>
               {enabledRepos.length > 0 && (
-                <form action={refreshOrgConfigProbes}>
-                  <input type="hidden" name="slug" value={org.slug} />
-                  <button type="submit" className="btn-secondary text-xs">
-                    Re-check
-                  </button>
-                </form>
+                <ConfigRecheckButton slug={org.slug} />
               )}
             </div>
             {(repoConfigSummaries.length > 0 || repos.length === 0) && (

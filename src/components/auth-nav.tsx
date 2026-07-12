@@ -3,11 +3,16 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { MobileNav, type NavItem } from "@/components/mobile-nav";
+import {
+  MobileNav,
+  shouldShowInstallApp,
+  type NavItem,
+} from "@/components/mobile-nav";
 
 interface AuthSession {
   login: string;
   dashboardHref: string;
+  hasActiveInstallation: boolean;
 }
 
 /**
@@ -16,20 +21,31 @@ interface AuthSession {
  * dashboard destination through to both desktop and mobile navigation.
  */
 export function HeaderActions({ items }: { items: readonly NavItem[] }) {
-  const [session, setSession] = useState<AuthSession | null>(null);
+  const [session, setSession] = useState<AuthSession | null | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
     fetch("/api/auth/session", { cache: "no-store" })
       .then(async (res) => {
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (!cancelled) setSession(null);
+          return;
+        }
         const data = (await res.json()) as Partial<AuthSession>;
-        if (!cancelled && data.login && data.dashboardHref) {
-          setSession({ login: data.login, dashboardHref: data.dashboardHref });
+        if (!cancelled) {
+          setSession(
+            data.login && data.dashboardHref
+              ? {
+                  login: data.login,
+                  dashboardHref: data.dashboardHref,
+                  hasActiveInstallation: data.hasActiveInstallation === true,
+                }
+              : null,
+          );
         }
       })
       .catch(() => {
-        // Signed-out rendering is the correct fallback on any failure.
+        if (!cancelled) setSession(null);
       });
     return () => {
       cancelled = true;
@@ -39,7 +55,7 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
   return (
     <>
       <div className="hidden shrink-0 items-center justify-end gap-5 whitespace-nowrap lg:flex lg:w-40">
-        {session === null ? (
+        {session === undefined ? null : session === null ? (
           <Link
             href="/login"
             className="text-[15px] text-charcoal/80 hover:text-charcoal"
@@ -65,12 +81,14 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
           </>
         )}
       </div>
-      <Link
-        href="/install"
-        className="btn-primary hidden whitespace-nowrap text-sm sm:inline-block"
-      >
-        Install the App
-      </Link>
+      {shouldShowInstallApp(session) && (
+        <Link
+          href="/install"
+          className="btn-primary hidden whitespace-nowrap text-sm sm:inline-block"
+        >
+          Install the App
+        </Link>
+      )}
       <MobileNav items={items} session={session} />
     </>
   );

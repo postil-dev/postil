@@ -8,8 +8,15 @@ export interface NavItem {
   label: string;
 }
 
-interface AuthSession {
+export interface AuthSession {
   dashboardHref: string;
+  hasActiveInstallation: boolean;
+}
+
+export function shouldShowInstallApp(
+  session: AuthSession | null | undefined,
+): boolean {
+  return session !== undefined && !session?.hasActiveInstallation;
 }
 
 /**
@@ -22,7 +29,7 @@ export function MobileNav({
   session,
 }: {
   items: readonly NavItem[];
-  session: AuthSession | null;
+  session: AuthSession | null | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -116,7 +123,7 @@ export function MobileNav({
               </Link>
             ))}
             <div className="mt-3 flex items-center gap-3 pb-1">
-              {session === null ? (
+              {session === undefined ? null : session === null ? (
                 <Link
                   href="/login"
                   onClick={() => setOpen(false)}
@@ -147,13 +154,15 @@ export function MobileNav({
                   </form>
                 </>
               )}
-              <Link
-                href="/install"
-                onClick={() => setOpen(false)}
-                className="btn-primary flex-1 text-center text-sm"
-              >
-                Install the App
-              </Link>
+              {shouldShowInstallApp(session) && (
+                <Link
+                  href="/install"
+                  onClick={() => setOpen(false)}
+                  className="btn-primary flex-1 text-center text-sm"
+                >
+                  Install the App
+                </Link>
+              )}
             </div>
           </nav>
         </div>

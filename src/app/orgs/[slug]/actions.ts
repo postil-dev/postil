@@ -37,6 +37,24 @@ export interface OrgSettingsActionState {
   message: string;
 }
 
+export type ConfigProbeRefreshState =
+  | { status: "idle" }
+  | {
+      status: "success";
+      checkedAt: string;
+      repositoryCount: number;
+      successfulCount: number;
+      failedCount: number;
+      configFileCount: number;
+      message: string;
+    }
+  | {
+      status: "cooldown";
+      retryAfterSeconds: number;
+      message: string;
+    }
+  | { status: "error"; message: string };
+
 /**
  * Resolve org by slug and load the current user's membership row, returning
  * the org id and the user's role. Read access (dashboard viewing) only needs
@@ -141,42 +159,77 @@ export async function toggleRepository(formData: FormData): Promise<void> {
   revalidatePath(`/orgs/${slug}/billing`);
 }
 
-export async function refreshOrgConfigProbes(formData: FormData): Promise<void> {
+export async function refreshOrgConfigProbes(
+  _previousState: ConfigProbeRefreshState,
+  formData: FormData,
+): Promise<ConfigProbeRefreshState> {
   const slug = String(formData.get("slug") ?? "");
-  const { orgId } = await requireAdmin(slug);
-  const db = getDb();
-  const refreshedAt = new Date();
+  try {
+    const { orgId } = await requireAdmin(slug);
+    const db = getDb();
+    const refreshedAt = new Date();
 
-  // The atomic conflict predicate makes this limit durable across all web
-  // processes. A separate org-scoped row is necessary because failed probes
-  // deliberately preserve each repository's last successful probedAt value.
-  const acquired = await db.execute(sql`
-    INSERT INTO "org_config_probe_refreshes" ("org_id", "refreshed_at")
-    VALUES (${orgId}, ${refreshedAt})
-    ON CONFLICT ("org_id") DO UPDATE
-      SET "refreshed_at" = EXCLUDED."refreshed_at"
-      WHERE "org_config_probe_refreshes"."refreshed_at"
-        <= EXCLUDED."refreshed_at" - interval '30 seconds'
-    RETURNING "org_id"
-  `);
-  if (acquired.rows.length === 0) return;
+    // The atomic conflict predicate makes this limit durable across all web
+    // processes. A separate org-scoped row is necessary because failed probes
+    // deliberately preserve each repository's last successful probedAt value.
+    const acquired = await db.execute(sql`
+      INSERT INTO "org_config_probe_refreshes" ("org_id", "refreshed_at")
+      VALUES (${orgId}, ${refreshedAt})
+      ON CONFLICT ("org_id") DO UPDATE
+        SET "refreshed_at" = EXCLUDED."refreshed_at"
+        WHERE "org_config_probe_refreshes"."refreshed_at"
+          <= EXCLUDED."refreshed_at" - interval '30 seconds'
+      RETURNING "org_id"
+    `);
+    if (acquired.rows.length === 0) {
+      return {
+        status: "cooldown",
+        retryAfterSeconds: 30,
+        message: "Checked recently. Try again in 30 seconds.",
+      };
+    }
 
-  const repos = await db
-    .select({
-      repositoryId: schema.repositories.id,
-      githubInstallationId: schema.installations.githubInstallationId,
-      fullName: schema.repositories.fullName,
-    })
-    .from(schema.repositories)
-    .innerJoin(
-      schema.installations,
-      eq(schema.installations.id, schema.repositories.installationId),
-    )
-    .where(
-      and(eq(schema.installations.orgId, orgId), eq(schema.repositories.enabled, true)),
+    const repos = await db
+      .select({
+        repositoryId: schema.repositories.id,
+        githubInstallationId: schema.installations.githubInstallationId,
+        fullName: schema.repositories.fullName,
+      })
+      .from(schema.repositories)
+      .innerJoin(
+        schema.installations,
+        eq(schema.installations.id, schema.repositories.installationId),
+      )
+      .where(
+        and(eq(schema.installations.orgId, orgId), eq(schema.repositories.enabled, true)),
+      );
+    const probes = await getRepoConfigProbes(db, repos, { force: true, now: refreshedAt });
+    const successfulCount = probes.filter((probe) => probe.ok).length;
+    const failedCount = repos.length - successfulCount;
+    const configFileCount = probes.reduce(
+      (count, probe) => count + (probe.ok ? probe.files.length : 0),
+      0,
     );
-  await getRepoConfigProbes(db, repos, { force: true, now: refreshedAt });
-  revalidatePath(`/orgs/${slug}/settings`);
+    revalidatePath(`/orgs/${slug}/settings`);
+    return {
+      status: "success",
+      checkedAt: refreshedAt.toISOString(),
+      repositoryCount: repos.length,
+      successfulCount,
+      failedCount,
+      configFileCount,
+      message:
+        failedCount > 0
+          ? `Checked ${repos.length} repositories; ${failedCount} could not be reached.`
+          : `Checked ${repos.length} repositories and found ${configFileCount} config files.`,
+    };
+  } catch (error) {
+    console.error("organization config re-check failed", error);
+    return {
+      status: "error",
+      message: "Could not re-check config files. Try again.",
+    };
+  }
 }
 
 export async function saveOrgSettings(
