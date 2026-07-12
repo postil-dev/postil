@@ -27,8 +27,11 @@ import type { ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 
 export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
-const HOSTED_LLM_REQUEST_TIMEOUT_SECS = "120";
-const HOSTED_LLM_TOTAL_TIMEOUT_SECS = "480";
+// Match postil-cli's hosted profile: a normal slow review gets up to seven
+// minutes, the shared LLM deadline keeps two minutes available for a fallback
+// or scorer, and the worker retains one minute for process and persistence work.
+const HOSTED_LLM_REQUEST_TIMEOUT_SECS = "420";
+const HOSTED_LLM_TOTAL_TIMEOUT_SECS = "540";
 
 const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 
