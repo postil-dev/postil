@@ -51,6 +51,14 @@ export interface RespondJobPayload extends Record<string, unknown> {
   commentAnchor?: string;
 }
 
+export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
+  installationId: number;
+  repoFullName: string;
+  advisoryCheckRunId: number | null;
+  gateCheckRunId: number | null;
+  message: string;
+}
+
 export async function enqueueJob(
   pool: Pool,
   kind: string,

@@ -29,6 +29,7 @@ interface DatabaseMetrics {
   webhookDeliveries24hByEvent: Array<{ event: string; count: number }>;
   jobCounts: Array<{ kind: string; status: string; count: number }>;
   oldestJobAges: Map<string, number>;
+  oldestRunningReviewAge: number;
   usageTokens: Array<{ model: string; type: "prompt" | "completion"; tokens: number }>;
 }
 
@@ -135,6 +136,9 @@ export async function GET(request: Request): Promise<NextResponse> {
             dbMetrics.oldestJobAges.get(status) ?? 0
           }`,
       ),
+      "# HELP postil_oldest_running_review_age_seconds Age in seconds of the oldest running review.",
+      "# TYPE postil_oldest_running_review_age_seconds gauge",
+      `postil_oldest_running_review_age_seconds ${dbMetrics.oldestRunningReviewAge}`,
       "# HELP postil_usage_tokens_total LLM usage tokens by model and token type.",
       "# TYPE postil_usage_tokens_total counter",
       ...dbMetrics.usageTokens.map(
@@ -179,6 +183,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     webhooks24hByEvent,
     jobsByKindStatus,
     oldestJobs,
+    oldestRunningReview,
     usageByModel,
   ] = await Promise.all([
     pool.query<{
@@ -252,6 +257,11 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       WHERE status IN ('queued', 'running')
       GROUP BY status
     `),
+    pool.query<{ age_seconds: string | null }>(`
+      SELECT EXTRACT(EPOCH FROM now() - MIN(started_at))::int::text AS age_seconds
+      FROM reviews
+      WHERE status = 'running'
+    `),
     pool.query<{ model: string; prompt_tokens: string; completion_tokens: string }>(`
       SELECT
         COALESCE(NULLIF(model_used, ''), 'unknown') AS model,
@@ -306,6 +316,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     oldestJobAges: new Map(
       oldestJobs.rows.map((jobRow) => [jobRow.status, toNumber(jobRow.age_seconds)]),
     ),
+    oldestRunningReviewAge: toNumber(oldestRunningReview.rows[0]?.age_seconds),
     usageTokens: usageByModel.rows.flatMap((usageRow) => [
       {
         model: usageRow.model,

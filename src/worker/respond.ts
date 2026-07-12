@@ -112,6 +112,7 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
 export const RESPOND_FAILURE_COMMENT =
   "Postil could not complete this request after several attempts. " +
   "The maintainers can re-run by mentioning @postil again, or check the run logs.";
+export const RESPOND_FAILURE_COMMENT_TIMEOUT_MS = 10_000;
 
 /**
  * Post one brief, honest fallback comment after a respond job has been
@@ -127,7 +128,11 @@ export const RESPOND_FAILURE_COMMENT =
  */
 export async function postRespondFailureComment(
   payload: RespondJobPayload,
+  signal?: AbortSignal,
+  timeoutMs = RESPOND_FAILURE_COMMENT_TIMEOUT_MS,
+  throwOnError = false,
 ): Promise<void> {
+  const requestSignal = signal ?? AbortSignal.timeout(timeoutMs);
   try {
     // A malformed payload that failed every attempt may lack the routing
     // fields; there is nothing to post to.
@@ -173,8 +178,14 @@ export async function postRespondFailureComment(
       return;
     }
 
-    const token = await getInstallationToken(payload.installationId);
-    await postIssueComment(token, payload.repoFullName, payload.number, RESPOND_FAILURE_COMMENT);
+    const token = await getInstallationToken(payload.installationId, requestSignal);
+    await postIssueComment(
+      token,
+      payload.repoFullName,
+      payload.number,
+      RESPOND_FAILURE_COMMENT,
+      requestSignal,
+    );
     console.warn(
       `respond failure comment posted to ${payload.repoFullName}#${payload.number}`,
     );
@@ -184,5 +195,16 @@ export async function postRespondFailureComment(
     console.error(
       `respond failure comment could not be posted: ${redactSecrets(err)}`,
     );
+    if (throwOnError) throw err;
   }
+}
+
+/** Retryable worker job for a terminal respond-job fallback comment. */
+export async function runRespondFailureCommentJob(payload: RespondJobPayload): Promise<void> {
+  await postRespondFailureComment(
+    payload,
+    undefined,
+    RESPOND_FAILURE_COMMENT_TIMEOUT_MS,
+    true,
+  );
 }

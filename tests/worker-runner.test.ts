@@ -11,7 +11,9 @@ const failed: Array<{ id: number; error: string }> = [];
 let claimCalls = 0;
 let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
+let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let escalationRun: (() => Promise<void>) | undefined;
+let cleanupRun: (() => Promise<void>) | undefined;
 let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
 
 mock.module("@/lib/db", () => ({
@@ -37,6 +39,9 @@ mock.module("@/worker/watchdog", () => ({
 }));
 
 mock.module("@/worker/review", () => ({
+  runCheckRunCleanupJob: async () => {
+    await cleanupRun?.();
+  },
   runReviewJob: async (
     _payload: unknown,
     timing: { queuedAt: Date; startedAt: Date },
@@ -48,6 +53,9 @@ mock.module("@/worker/review", () => ({
 
 mock.module("@/worker/respond", () => ({
   postRespondFailureComment: async () => undefined,
+  runRespondFailureCommentJob: async () => {
+    await respondFailureCommentRun?.();
+  },
   runRespondJob: async () => {
     await respondRun?.();
   },
@@ -88,7 +96,9 @@ beforeEach(() => {
   claimCalls = 0;
   reviewRun = async () => undefined;
   respondRun = async () => undefined;
+  respondFailureCommentRun = async () => undefined;
   escalationRun = async () => undefined;
+  cleanupRun = async () => undefined;
   reviewTiming = undefined;
 });
 
@@ -112,6 +122,48 @@ describe("drainQueueOnce", () => {
     };
     let called = false;
     escalationRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("dispatches durable check-run cleanup jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "check-run-cleanup";
+    job.payload = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      advisoryCheckRunId: 101,
+      gateCheckRunId: 102,
+      message: "watchdog: deadline exceeded",
+    };
+    let called = false;
+    cleanupRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("dispatches durable respond failure comment jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "respond-failure-comment";
+    job.payload = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      number: 7,
+      isPr: true,
+      comment: "@postil please look",
+    };
+    let called = false;
+    respondFailureCommentRun = async () => {
       called = true;
     };
     jobs.push(job);

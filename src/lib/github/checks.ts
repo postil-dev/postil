@@ -20,6 +20,7 @@ async function githubFetch(
   method: "GET" | "POST" | "PATCH",
   path: string,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const res = await fetch(`${apiBase()}${path}`, {
     method,
@@ -31,6 +32,7 @@ async function githubFetch(
       "Content-Type": "application/json",
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     const text = await res.text();
@@ -62,13 +64,14 @@ export async function completeCheckRun(
   conclusion: Conclusion,
   title: string,
   summary: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   await githubFetch(token, "PATCH", `/repos/${repoFullName}/check-runs/${checkRunId}`, {
     status: "completed",
     completed_at: new Date().toISOString(),
     conclusion,
     output: { title, summary },
-  });
+  }, signal);
 }
 
 /**
@@ -82,8 +85,15 @@ export async function postIssueComment(
   repoFullName: string,
   number: number,
   body: string,
+  signal?: AbortSignal,
 ): Promise<void> {
-  await githubFetch(token, "POST", `/repos/${repoFullName}/issues/${number}/comments`, { body });
+  await githubFetch(
+    token,
+    "POST",
+    `/repos/${repoFullName}/issues/${number}/comments`,
+    { body },
+    signal,
+  );
 }
 
 export async function getPullRequestHeadSha(

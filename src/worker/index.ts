@@ -16,8 +16,9 @@ import { watchdogPass } from "./watchdog";
  * - N concurrent claim loops (default 4), each claiming one job at a time
  *   with FOR UPDATE SKIP LOCKED.
  * - Exponential backoff on retry, permanent failure after maxAttempts.
- * - Watchdog pass every 60s: kills reviews running past the deadline and
- *   completes their check-runs as failed; requeues jobs whose worker died.
+ * - Watchdog pass every 60s: kills reviews running past the deadline,
+ *   durably queues failed check-run completion, and requeues jobs whose
+ *   worker died.
  */
 
 const CONCURRENCY = readPositiveIntEnv("WORKER_CONCURRENCY", 4);

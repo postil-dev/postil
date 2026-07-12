@@ -6,14 +6,19 @@ import {
   claimJob,
   completeJob,
   failJob,
+  type CheckRunCleanupJobPayload,
   type ClaimedJob,
   type RespondJobPayload,
   type ReviewJobPayload,
 } from "@/lib/queue";
 import { optionalEnv } from "@/lib/env";
 import { isPermanentFailure } from "./failure-classifier";
-import { postRespondFailureComment, runRespondJob } from "./respond";
-import { runReviewJob } from "./review";
+import {
+  postRespondFailureComment,
+  runRespondFailureCommentJob,
+  runRespondJob,
+} from "./respond";
+import { runCheckRunCleanupJob, runReviewJob } from "./review";
 import {
   runEscalationNotificationJob,
   type EscalationNotificationJobPayload,
@@ -43,6 +48,12 @@ async function handleJob(job: ClaimedJob): Promise<void> {
       await runEscalationNotificationJob(
         job.payload as EscalationNotificationJobPayload,
       );
+      break;
+    case "check-run-cleanup":
+      await runCheckRunCleanupJob(job.payload as CheckRunCleanupJobPayload);
+      break;
+    case "respond-failure-comment":
+      await runRespondFailureCommentJob(job.payload as RespondJobPayload);
       break;
     default:
       throw new Error(`unknown job kind: ${job.kind}`);
