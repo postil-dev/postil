@@ -44,6 +44,7 @@ export default async function OrgSettingsPage({
         configYaml: schema.orgSettings.configYaml,
         guardrailsMd: schema.orgSettings.guardrailsMd,
         contentPolicyMd: schema.orgSettings.contentPolicyMd,
+        escalationEmail: schema.orgSettings.escalationEmail,
         hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
       })
       .from(schema.orgSettings)

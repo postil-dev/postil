@@ -369,5 +369,6 @@ export const orgSettings = pgTable("org_settings", {
   configYaml: text("config_yaml"),
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
+  escalationEmail: text("escalation_email"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

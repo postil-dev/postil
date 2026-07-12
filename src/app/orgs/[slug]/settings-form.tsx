@@ -16,6 +16,7 @@ interface SettingsFormProps {
         configYaml: string | null;
         guardrailsMd: string | null;
         contentPolicyMd: string | null;
+        escalationEmail: string | null;
       }
     | undefined;
 }
@@ -201,6 +202,25 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
             account.
           </p>
         </div>
+      </div>
+
+      <div className="border-t border-stone/60 pt-5">
+        <p className="font-medium">Human escalation notifications</p>
+        <p className="mt-1 text-xs text-charcoal/70">
+          Postil emails this organization-owned address when a new calibrated{" "}
+          <code>humanEscalation</code> finding requires human attention.
+        </p>
+        <label className="mt-3 block text-sm">
+          <span className="font-medium">Notification email</span>
+          <input
+            type="email"
+            name="escalationEmail"
+            defaultValue={settings?.escalationEmail ?? ""}
+            placeholder="code-owners@example.com"
+            autoComplete="email"
+            className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+          />
+        </label>
       </div>
 
       <div className="border-t border-stone/60 pt-5">

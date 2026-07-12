@@ -82,6 +82,7 @@ function settingsForm(overrides: Record<string, string> = {}): FormData {
   form.set("configYaml", "");
   form.set("guardrailsMd", "");
   form.set("contentPolicyMd", "");
+  form.set("escalationEmail", "");
   for (const [key, value] of Object.entries(overrides)) form.set(key, value);
   return form;
 }
@@ -180,6 +181,29 @@ describe("saveOrgSettings", () => {
     await expect(
       saveOrgSettings(null, settingsForm({ apiBase: "http://127.0.0.1/v1" })),
     ).rejects.toThrow("API base URL must use https:");
+    expect(insertCount).toBe(0);
+  });
+
+  test("stores an organization-scoped escalation recipient", async () => {
+    const result = await saveOrgSettings(
+      null,
+      settingsForm({ escalationEmail: "owners@example.com" }),
+    );
+
+    expect(result.status).toBe("success");
+    expect(conflictSet?.escalationEmail).toBe("owners@example.com");
+  });
+
+  test("rejects malformed escalation recipients", async () => {
+    const result = await saveOrgSettings(
+      null,
+      settingsForm({ escalationEmail: "not-an-email" }),
+    );
+
+    expect(result).toEqual({
+      status: "error",
+      message: "Enter a valid escalation email address.",
+    });
     expect(insertCount).toBe(0);
   });
 });

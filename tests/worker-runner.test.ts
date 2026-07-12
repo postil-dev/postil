@@ -11,6 +11,7 @@ const failed: Array<{ id: number; error: string }> = [];
 let claimCalls = 0;
 let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
+let escalationRun: (() => Promise<void>) | undefined;
 let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
 
 mock.module("@/lib/db", () => ({
@@ -52,6 +53,12 @@ mock.module("@/worker/respond", () => ({
   },
 }));
 
+mock.module("@/worker/escalation-notification", () => ({
+  runEscalationNotificationJob: async () => {
+    await escalationRun?.();
+  },
+}));
+
 const { drainQueueOnce, triggerQueueDrain } = await import("@/worker/runner");
 
 function reviewJob(id: number): ClaimedJob {
@@ -81,6 +88,7 @@ beforeEach(() => {
   claimCalls = 0;
   reviewRun = async () => undefined;
   respondRun = async () => undefined;
+  escalationRun = async () => undefined;
   reviewTiming = undefined;
 });
 
@@ -92,6 +100,27 @@ afterEach(() => {
 });
 
 describe("drainQueueOnce", () => {
+  test("dispatches durable escalation notification jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "escalation-notification";
+    job.payload = {
+      reviewId: 7,
+      reviewPublicId: "00000000-0000-0000-0000-000000000007",
+      repoFullName: "octo/repo",
+      prNumber: 7,
+      runUrl: "https://postil.dev/orgs/octo/runs/7",
+    };
+    let called = false;
+    escalationRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
   test("processes no more than maxJobs", async () => {
     jobs.push(reviewJob(1), reviewJob(2));
 

@@ -1,7 +1,11 @@
 /** Links from dashboard rows back to GitHub. */
 
-export function githubPrUrl(repoFullName: string, prNumber: number): string {
-  return `https://github.com/${repoFullName}/pull/${prNumber}`;
+export function githubPrUrl(
+  repoFullName: string,
+  prNumber: number,
+  webBase = "https://github.com",
+): string {
+  return `${webBase.replace(/\/$/, "")}/${repoFullName}/pull/${prNumber}`;
 }
 
 /**

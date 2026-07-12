@@ -15,6 +15,10 @@ concurrency:
   group: fly-deploy
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -97,6 +101,15 @@ jobs:
           install -m 0755 "${tmp}/postil" vendor/postil.tmp
           mv -f vendor/postil.tmp vendor/postil
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.4
+      - name: Load deployment secrets from Infisical
+        uses: Infisical/secrets-action@8a06c1bdcd5b8635d510c52d4b57a92c1ccef785 # v1.0.9
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /postil
       - name: Stage runtime secrets
         run: |
           set -euo pipefail
@@ -115,6 +128,15 @@ jobs:
           if [[ -n "${REVIEW_MODEL_CASCADE}" ]]; then
             staged+="REVIEW_MODEL_CASCADE=${REVIEW_MODEL_CASCADE}"$'\n'
           fi
+          if [[ -n "${BREVO_API_KEY}" ]]; then
+            staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
+          fi
+          if [[ -n "${POSTIL_ESCALATION_ORG}" ]]; then
+            staged+="POSTIL_ESCALATION_ORG=${POSTIL_ESCALATION_ORG}"$'\n'
+          fi
+          if [[ -n "${POSTIL_ESCALATION_EMAIL}" ]]; then
+            staged+="POSTIL_ESCALATION_EMAIL=${POSTIL_ESCALATION_EMAIL}"$'\n'
+          fi
           if [[ -n "${staged}" ]]; then
             printf '%s' "${staged}" | flyctl secrets import --stage
           fi
@@ -125,6 +147,8 @@ jobs:
           REVIEW_MODEL_CASCADE: ${{ vars.REVIEW_MODEL_CASCADE }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+          POSTIL_ESCALATION_ORG: ${{ vars.POSTIL_ESCALATION_ORG }}
+          POSTIL_ESCALATION_EMAIL: ${{ secrets.POSTIL_ESCALATION_EMAIL }}
       - id: deploy
         run: |
           flyctl deploy \

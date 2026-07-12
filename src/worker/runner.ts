@@ -14,6 +14,10 @@ import { optionalEnv } from "@/lib/env";
 import { isPermanentFailure } from "./failure-classifier";
 import { postRespondFailureComment, runRespondJob } from "./respond";
 import { runReviewJob } from "./review";
+import {
+  runEscalationNotificationJob,
+  type EscalationNotificationJobPayload,
+} from "./escalation-notification";
 import { watchdogPass } from "./watchdog";
 
 const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv("POSTIL_QUEUE_DRAIN_MAX_JOBS", 1);
@@ -34,6 +38,11 @@ async function handleJob(job: ClaimedJob): Promise<void> {
       break;
     case "respond":
       await runRespondJob(job.payload as RespondJobPayload);
+      break;
+    case "escalation-notification":
+      await runEscalationNotificationJob(
+        job.payload as EscalationNotificationJobPayload,
+      );
       break;
     default:
       throw new Error(`unknown job kind: ${job.kind}`);

@@ -108,6 +108,21 @@ export type Envelope = z.infer<typeof envelopeSchema>;
 
 const SEVERITY_RANK: Record<Severity, number> = { error: 0, warn: 1, info: 2 };
 
+export const HUMAN_ESCALATION_GATE_MIN_CONFIDENCE = 0.3;
+
+/**
+ * Human escalations are intentionally held to a separate, low confidence
+ * floor before they can block or notify. Confidence is the calibrated signal
+ * shared by the generator and scorer; matching prose templates would be more
+ * brittle and could suppress a terse but genuine request for human judgment.
+ */
+export function qualifiesHumanEscalation(finding: Finding): boolean {
+  return (
+    finding.kind === "humanEscalation" &&
+    finding.confidence >= HUMAN_ESCALATION_GATE_MIN_CONFIDENCE
+  );
+}
+
 export interface FindingBlockState {
   finding: Finding;
   findingId: string | null;
@@ -187,8 +202,11 @@ export function computeEffectiveGate(
   const states = envelope.findings.map((finding): FindingBlockState => {
     const findingId = findingStableId(finding);
     const approved = Boolean(findingId && activeApprovalIds.has(findingId));
-    const kindBlocking = blockOnKinds.has(finding.kind);
-    const severityBlocking = severityBlocksGate(finding.severity, envelope.gate.failOn);
+    const escalationEligible =
+      finding.kind !== "humanEscalation" || qualifiesHumanEscalation(finding);
+    const kindBlocking = escalationEligible && blockOnKinds.has(finding.kind);
+    const severityBlocking =
+      escalationEligible && severityBlocksGate(finding.severity, envelope.gate.failOn);
     return {
       finding,
       findingId,
