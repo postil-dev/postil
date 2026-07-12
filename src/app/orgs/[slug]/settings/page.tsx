@@ -39,6 +39,7 @@ export default async function OrgSettingsPage({
     await db
       .select({
         apiBase: schema.orgSettings.apiBase,
+        apiFormat: schema.orgSettings.apiFormat,
         model: schema.orgSettings.model,
         modelCascade: schema.orgSettings.modelCascade,
         configYaml: schema.orgSettings.configYaml,
@@ -46,6 +47,7 @@ export default async function OrgSettingsPage({
         contentPolicyMd: schema.orgSettings.contentPolicyMd,
         escalationEmail: schema.orgSettings.escalationEmail,
         hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
+        hasAdditionalAuth: sql<boolean>`${schema.orgSettings.apiAuthHeaderCiphertext} IS NOT NULL AND ${schema.orgSettings.apiAuthValueCiphertext} IS NOT NULL`,
       })
       .from(schema.orgSettings)
       .where(eq(schema.orgSettings.orgId, org.id))

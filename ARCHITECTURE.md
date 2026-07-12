@@ -62,8 +62,11 @@ noindexed:
   reviews across all of them.
 - `/orgs/[slug]` is the organization dashboard: silence rate, confidence
   distribution, engine telemetry, recent reviews, repository review coverage
-  toggles, LLM settings (model, API base, cascade, sealed BYOK credential), and the
-  member list with roles. Banners surface suspended installations and enabled
+  toggles, hosted review configuration, sealed BYOK provider settings, and the
+  member list with roles. Hosted inference uses operator-managed provider and
+  model settings. BYOK supports OpenAI-compatible and Anthropic interfaces, a
+  model cascade, and one constrained additional authentication header. Banners
+  surface suspended installations and enabled
   repositories that have never completed their first review.
 - `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file

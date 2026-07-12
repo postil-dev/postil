@@ -357,13 +357,16 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-/** Per-org hosted review configuration and BYO LLM settings. */
+/** Per-org review configuration and write-only BYOK provider settings. */
 export const orgSettings = pgTable("org_settings", {
   orgId: bigint("org_id", { mode: "number" })
     .primaryKey()
     .references(() => organizations.id, { onDelete: "cascade" }),
   apiBase: text("api_base"),
   apiKeyCiphertext: bytea("api_key_ciphertext"),
+  apiFormat: text("api_format").notNull().default("openai-compatible"),
+  apiAuthHeaderCiphertext: bytea("api_auth_header_ciphertext"),
+  apiAuthValueCiphertext: bytea("api_auth_value_ciphertext"),
   model: text("model"),
   modelCascade: text("model_cascade"),
   configYaml: text("config_yaml"),

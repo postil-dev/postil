@@ -5,7 +5,12 @@ import { revalidatePath } from "next/cache";
 import { and, eq, sql } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
-import { getSealingKey, seal } from "@/lib/crypto/seal";
+import {
+  parseApiFormat,
+  validateAdditionalAuthHeader,
+  validateAdditionalAuthValue,
+} from "@/lib/byok-provider";
+import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
@@ -181,14 +186,20 @@ export async function saveOrgSettings(
   const slug = String(formData.get("slug") ?? "");
   const { orgId } = await requireAdmin(slug);
 
+  const providerMode = String(formData.get("providerMode") ?? "hosted").trim();
+  if (providerMode !== "hosted" && providerMode !== "byok") {
+    return { status: "error", message: "Choose hosted inference or bring your own key." };
+  }
   const apiBase = String(formData.get("apiBase") ?? "").trim() || null;
-  // Guard against internal-network targets: the worker hands this URL to the
-  // CLI as POSTIL_API_BASE and fetches it with the worker's network identity.
-  if (apiBase) await validateApiBase(apiBase);
+  const apiFormatInput = String(formData.get("apiFormat") ?? "openai-compatible").trim();
+  const apiFormat = parseApiFormat(apiFormatInput);
   const model = String(formData.get("model") ?? "").trim() || null;
   const modelCascade = String(formData.get("modelCascade") ?? "").trim() || null;
   const apiKey = String(formData.get("apiKey") ?? "").trim();
   const apiKeyAction = String(formData.get("apiKeyAction") ?? "keep").trim();
+  const apiAuthHeader = String(formData.get("apiAuthHeader") ?? "").trim();
+  const apiAuthValue = String(formData.get("apiAuthValue") ?? "").trim();
+  const apiAuthAction = String(formData.get("apiAuthAction") ?? "keep").trim();
   const configYamlBody = String(formData.get("configYaml") ?? "");
   const configYaml = configYamlBody.trim().length > 0 ? configYamlBody : null;
   const guardrailsBody = String(formData.get("guardrailsMd") ?? "");
@@ -213,10 +224,48 @@ export async function saveOrgSettings(
   }
 
   const db = getDb();
+  const currentSettings = (
+    await db
+      .select({
+        apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
+        apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
+      })
+      .from(schema.orgSettings)
+      .where(eq(schema.orgSettings.orgId, orgId))
+      .limit(1)
+  )[0];
+
+  const removingByok = providerMode === "hosted" || apiKeyAction === "remove";
+  if (!removingByok) {
+    if (!apiFormat) {
+      return { status: "error", message: "Choose a supported API interface." };
+    }
+    if (!apiBase) {
+      return { status: "error", message: "Enter the provider API URL." };
+    }
+    // Guard against internal-network targets: the worker hands this URL to the
+    // CLI as POSTIL_API_BASE and fetches it with the worker's network identity.
+    await validateApiBase(apiBase);
+    if (!model) {
+      return { status: "error", message: "Enter the primary model." };
+    }
+    if (apiKeyAction === "keep" && !currentSettings?.apiKeyCiphertext) {
+      return { status: "error", message: "Enter a provider key to enable BYOK." };
+    }
+    if (apiAuthAction === "keep" && currentSettings?.apiAuthHeaderCiphertext) {
+      const storedHeader = unseal(
+        Buffer.from(currentSettings.apiAuthHeaderCiphertext),
+        getSealingKey(),
+      );
+      validateAdditionalAuthHeader(storedHeader, apiFormat);
+    }
+  }
+
   const base = {
-    apiBase,
-    model,
-    modelCascade,
+    apiBase: removingByok ? null : apiBase,
+    apiFormat: removingByok ? "openai-compatible" : apiFormat!,
+    model: removingByok ? null : model,
+    modelCascade: removingByok ? null : modelCascade,
     configYaml,
     guardrailsMd,
     contentPolicyMd,
@@ -227,7 +276,7 @@ export async function saveOrgSettings(
   // The key is write-only: set when provided, cleared when requested,
   // otherwise left untouched. It is never read back to the form.
   let keyUpdate: { apiKeyCiphertext: Buffer | null } | Record<string, never> = {};
-  if (apiKeyAction === "remove") {
+  if (removingByok) {
     keyUpdate = { apiKeyCiphertext: null };
   } else if (apiKeyAction === "replace") {
     if (apiKey.length === 0) {
@@ -244,16 +293,43 @@ export async function saveOrgSettings(
     };
   }
 
+  let authUpdate:
+    | { apiAuthHeaderCiphertext: Buffer | null; apiAuthValueCiphertext: Buffer | null }
+    | Record<string, never> = {};
+  if (removingByok || apiAuthAction === "remove") {
+    authUpdate = { apiAuthHeaderCiphertext: null, apiAuthValueCiphertext: null };
+  } else if (apiAuthAction === "replace") {
+    if (!apiAuthHeader || !apiAuthValue) {
+      return {
+        status: "error",
+        message: "Enter both the additional authentication header and value.",
+      };
+    }
+    validateAdditionalAuthHeader(apiAuthHeader, apiFormat!);
+    validateAdditionalAuthValue(apiAuthValue);
+    const sealingKey = getSealingKey();
+    authUpdate = {
+      apiAuthHeaderCiphertext: seal(apiAuthHeader, sealingKey),
+      apiAuthValueCiphertext: seal(apiAuthValue, sealingKey),
+    };
+  } else if (apiAuthAction !== "keep") {
+    return { status: "error", message: "Choose how to update additional authentication." };
+  }
+
   await db
     .insert(schema.orgSettings)
     .values({
       orgId,
       ...base,
       apiKeyCiphertext: "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
+      apiAuthHeaderCiphertext:
+        "apiAuthHeaderCiphertext" in authUpdate ? authUpdate.apiAuthHeaderCiphertext : null,
+      apiAuthValueCiphertext:
+        "apiAuthValueCiphertext" in authUpdate ? authUpdate.apiAuthValueCiphertext : null,
     })
     .onConflictDoUpdate({
       target: schema.orgSettings.orgId,
-      set: { ...base, ...keyUpdate },
+      set: { ...base, ...keyUpdate, ...authUpdate },
     });
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);

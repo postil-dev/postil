@@ -50,6 +50,9 @@ const KEY_NAMES = [
   "POSTIL_API_KEY",
   "OPENROUTER_API_KEY",
   "POSTIL_API_BASE",
+  "POSTIL_API_FORMAT",
+  "POSTIL_ENDPOINT_AUTH_HEADER",
+  "POSTIL_ENDPOINT_AUTH_VALUE",
   "REVIEW_MODEL",
   "REVIEW_MODEL_CASCADE",
   "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
@@ -121,15 +124,22 @@ describe("resolveLlmConfig", () => {
     orgSettingsRows = [
       {
         apiBase: "https://11.0.0.1/v1",
+        apiFormat: "anthropic",
         apiKeyCiphertext: null,
+        apiAuthHeaderCiphertext: Buffer.from("X-Ignored"),
+        apiAuthValueCiphertext: Buffer.from("ignored"),
         model: "org-model",
         modelCascade: "org-cascade",
       },
     ];
 
     await expect(resolveLlmConfig(123)).resolves.toEqual({
+      byok: false,
       apiBase: "https://openrouter.ai/api/v1",
+      apiFormat: "openai-compatible",
       apiKey: "hosted-default-key",
+      apiAuthHeader: undefined,
+      apiAuthValue: undefined,
       model: "hosted-default-model",
       modelCascade: "hosted-default-cascade",
     });
@@ -141,18 +151,66 @@ describe("resolveLlmConfig", () => {
     orgSettingsRows = [
       {
         apiBase: "https://11.0.0.1/v1",
+        apiFormat: "anthropic",
         apiKeyCiphertext: Buffer.from("org-key"),
+        apiAuthHeaderCiphertext: Buffer.from("CF-Access-Client-Secret"),
+        apiAuthValueCiphertext: Buffer.from("gateway-key"),
         model: "org-model",
         modelCascade: "org-cascade",
       },
     ];
 
     await expect(resolveLlmConfig(123)).resolves.toEqual({
+      byok: true,
       apiBase: "https://11.0.0.1/v1",
+      apiFormat: "anthropic",
       apiKey: "org-key",
+      apiAuthHeader: "CF-Access-Client-Secret",
+      apiAuthValue: "gateway-key",
       model: "org-model",
       modelCascade: "org-cascade",
     });
+  });
+
+  test("treats legacy BYOK rows without an API format as OpenAI-compatible", async () => {
+    orgSettingsRows = [
+      {
+        apiBase: "https://11.0.0.1/v1",
+        apiKeyCiphertext: Buffer.from("legacy-key"),
+        model: "legacy-model",
+        modelCascade: null,
+      },
+    ];
+
+    await expect(resolveLlmConfig(123)).resolves.toMatchObject({
+      byok: true,
+      apiFormat: "openai-compatible",
+      apiKey: "legacy-key",
+      model: "legacy-model",
+    });
+  });
+
+  test("allows Authorization endpoint auth only for stored Anthropic BYOK", async () => {
+    orgSettingsRows = [
+      {
+        apiBase: "https://11.0.0.1/v1",
+        apiFormat: "anthropic",
+        apiKeyCiphertext: Buffer.from("provider-key"),
+        apiAuthHeaderCiphertext: Buffer.from("Authorization"),
+        apiAuthValueCiphertext: Buffer.from("Bearer gateway-key"),
+        model: "claude-model",
+        modelCascade: null,
+      },
+    ];
+    await expect(resolveLlmConfig(123)).resolves.toMatchObject({
+      apiFormat: "anthropic",
+      apiAuthHeader: "Authorization",
+    });
+
+    orgSettingsRows = [{ ...(orgSettingsRows[0] as object), apiFormat: "openai-compatible" }];
+    await expect(resolveLlmConfig(123)).rejects.toThrow(
+      "conflicts with a provider or transport header",
+    );
   });
 });
 
@@ -160,8 +218,12 @@ describe("buildCliEnv", () => {
   test("passes both preferred and legacy API key names to pinned CLI processes", () => {
     const env = buildCliEnv(
       {
+        byok: true,
         apiBase: "https://openrouter.ai/api/v1",
+        apiFormat: "anthropic",
         apiKey: "model-key",
+        apiAuthHeader: "CF-Access-Client-Secret",
+        apiAuthValue: "gateway-key",
         model: "deepseek/deepseek-v4-pro",
         modelCascade: "qwen/qwen3-coder",
       },
@@ -171,6 +233,9 @@ describe("buildCliEnv", () => {
     expect(env).toMatchObject({
       GITHUB_TOKEN: "github-token",
       POSTIL_API_BASE: "https://openrouter.ai/api/v1",
+      POSTIL_API_FORMAT: "anthropic",
+      POSTIL_ENDPOINT_AUTH_HEADER: "CF-Access-Client-Secret",
+      POSTIL_ENDPOINT_AUTH_VALUE: "gateway-key",
       POSTIL_LLM_REQUEST_TIMEOUT_SECS: "420",
       POSTIL_LLM_TOTAL_TIMEOUT_SECS: "540",
       MODEL_API_KEY: "model-key",
@@ -193,8 +258,12 @@ describe("buildCliEnv", () => {
 
     const env = buildCliEnv(
       {
+        byok: false,
         apiBase: "https://openrouter.ai/api/v1",
+        apiFormat: "openai-compatible",
         apiKey: undefined,
+        apiAuthHeader: undefined,
+        apiAuthValue: undefined,
         model: undefined,
         modelCascade: undefined,
       },
@@ -204,6 +273,8 @@ describe("buildCliEnv", () => {
     expect(env).toMatchObject({
       POSTIL_LLM_REQUEST_TIMEOUT_SECS: "90",
       POSTIL_LLM_TOTAL_TIMEOUT_SECS: "360",
+      POSTIL_ENDPOINT_AUTH_HEADER: "",
+      POSTIL_ENDPOINT_AUTH_VALUE: "",
     });
   });
 });
@@ -221,6 +292,22 @@ describe("resolveOrgReviewConfig", () => {
     await expect(resolveOrgReviewConfig(123)).resolves.toEqual({
       configYaml: "enabled: true\n",
       guardrailsMd: "Guardrail.\n",
+      contentPolicyMd: null,
+    });
+  });
+
+  test("removes model selection from legacy organization fallback config", async () => {
+    orgSettingsRows = [
+      {
+        configYaml: "review:\n  minConfidence: 0.8\nmodel:\n  name: stale-model\n",
+        guardrailsMd: null,
+        contentPolicyMd: null,
+      },
+    ];
+
+    await expect(resolveOrgReviewConfig(123)).resolves.toEqual({
+      configYaml: "review:\n  minConfidence: 0.8\n",
+      guardrailsMd: null,
       contentPolicyMd: null,
     });
   });

@@ -98,7 +98,12 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
       throw new Error("respond exceeded the CLI deadline");
     }
     if (result.exitCode !== 0) {
-      const stderr = redactAndTruncate(result.stderr, 500, [token, llm.apiKey]);
+      const stderr = redactAndTruncate(result.stderr, 500, [
+        token,
+        llm.apiKey,
+        llm.apiAuthHeader,
+        llm.apiAuthValue,
+      ]);
       throw new Error(
         `postil respond exited with code ${result.exitCode}: ${stderr}`,
       );
