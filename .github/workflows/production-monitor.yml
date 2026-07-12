@@ -161,18 +161,34 @@ jobs:
               exit 1
             fi
 
-            # A queued or running job stuck past REVIEW_DEADLINE_MS (10 min,
-            # see src/worker/review.ts) should already have completed or
-            # been swept by the watchdog. Anything still there past 30 min
-            # is not normal backlog, it's a dead worker: the process group
-            # can end up stopped after a deploy with no auto-wake (only the
-            # web group has an http health check), and the review
-            # queue/webhook receiver silently goes dark until noticed.
+            # A running review or queued/running job past 30 minutes should
+            # have completed or been swept by the ten-minute watchdog. This
+            # checks both ledgers because a dead worker can leave a review
+            # running after its queue job has already reached a terminal state.
             stale_threshold_seconds=1800
             stale_found=0
+            review_age=$(grep -E '^postil_oldest_running_review_age_seconds ' .cache/metrics.out \
+              | awk '{print $2}')
+            echo "Oldest running review age: ${review_age:-missing}s"
+            if [[ -z "${review_age:-}" ]]; then
+              echo "Running-review age metric is missing"
+              stale_found=1
+            elif (( $(printf '%.0f' "${review_age}") > stale_threshold_seconds )); then
+              echo "Oldest running review is ${review_age}s old (over ${stale_threshold_seconds}s) - watchdog may be stuck or stopped"
+              stale_found=1
+            fi
+            cleanup_failures=$(awk \
+              '$1 == "postil_jobs_current{kind=\"check-run-cleanup\",status=\"failed\"}" { print $2 }' \
+              .cache/metrics.out)
+            echo "Failed check-run cleanup jobs: ${cleanup_failures:-0}"
+            if [[ -n "${cleanup_failures:-}" ]] && (( $(printf '%.0f' "${cleanup_failures}") > 0 )); then
+              echo "Check-run cleanup exhausted all retries; a GitHub check may remain in progress"
+              stale_found=1
+            fi
             for status in queued running; do
               age=$(grep -E "^postil_oldest_job_age_seconds\{status=\"${status}\"\}" .cache/metrics.out \
                 | awk '{print $2}')
+              echo "Oldest ${status} job age: ${age:-missing}s"
               if [[ -n "${age:-}" ]] && (( $(printf '%.0f' "${age}") > stale_threshold_seconds )); then
                 echo "Oldest ${status} job is ${age}s old (over ${stale_threshold_seconds}s) - worker may be stuck or stopped"
                 stale_found=1

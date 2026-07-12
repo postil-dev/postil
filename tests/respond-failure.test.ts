@@ -50,6 +50,7 @@ function fakeDb() {
 let tokenMintError: Error | undefined;
 const postedComments: Array<{ repo: string; number: number; body: string }> = [];
 let postShouldThrow = false;
+let postShouldHang = false;
 
 mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
@@ -77,8 +78,19 @@ mock.module("@/lib/github/app-auth", () => ({
 const realChecks = await import("@/lib/github/checks");
 mock.module("@/lib/github/checks", () => ({
   ...realChecks,
-  postIssueComment: async (_token: string, repo: string, number: number, body: string) => {
+  postIssueComment: async (
+    _token: string,
+    repo: string,
+    number: number,
+    body: string,
+    signal?: AbortSignal,
+  ) => {
     if (postShouldThrow) throw new Error("github 500");
+    if (postShouldHang) {
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }
     postedComments.push({ repo, number, body });
   },
 }));
@@ -105,6 +117,7 @@ beforeEach(() => {
   repositoryRows = [enabledRepository];
   tokenMintError = undefined;
   postShouldThrow = false;
+  postShouldHang = false;
   postedComments.length = 0;
 });
 
@@ -174,6 +187,21 @@ describe("postRespondFailureComment is fail-safe", () => {
     tokenMintError = new Error("mint failed");
     await expect(postRespondFailureComment(payload())).resolves.toBeUndefined();
     expect(postedComments).toHaveLength(0);
+  });
+
+  test("a hung comment POST is bounded when the caller supplies no signal", async () => {
+    postShouldHang = true;
+
+    await expect(postRespondFailureComment(payload(), undefined, 10)).resolves.toBeUndefined();
+    expect(postedComments).toHaveLength(0);
+  });
+
+  test("strict mode rejects so a durable comment job can retry", async () => {
+    postShouldThrow = true;
+
+    await expect(
+      postRespondFailureComment(payload(), undefined, 10, true),
+    ).rejects.toThrow("github 500");
   });
 });
 

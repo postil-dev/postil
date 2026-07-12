@@ -1,11 +1,7 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 
 import { getDb, getPool, schema } from "@/lib/db";
-import { getInstallationToken } from "@/lib/github/app-auth";
-import type { RespondJobPayload } from "@/lib/queue";
-import { redactSecrets } from "@/lib/redact";
-import { postRespondFailureComment } from "./respond";
-import { REVIEW_DEADLINE_MS, failCheckRuns } from "./review";
+import { REVIEW_DEADLINE_MS } from "./review";
 
 export const WATCHDOG_ERROR_PREFIX = "watchdog:";
 
@@ -13,13 +9,15 @@ export const WATCHDOG_ERROR_PREFIX = "watchdog:";
  * Watchdog pass.
  *
  * 1. Reviews `running` past the deadline are marked failed and their
- *    check-runs completed (gate: failure, advisory: neutral). A review left
- *    in_progress forever is indistinguishable from a passing one in branch
- *    protection UIs; never leave one behind.
+ *    check-run completion durably queued (gate: failure, advisory: neutral).
+ *    A review left in_progress forever is indistinguishable from a passing
+ *    one in branch protection UIs; never leave one behind.
  * 2. Jobs stuck `running` past the deadline (worker died mid-job) are
  *    requeued while attempts remain, else failed.
  */
-export async function watchdogPass(now = new Date()): Promise<{ killed: number }> {
+export async function watchdogPass(
+  now = new Date(),
+): Promise<{ killed: number }> {
   const db = getDb();
   const cutoff = new Date(now.getTime() - REVIEW_DEADLINE_MS);
 
@@ -47,49 +45,50 @@ export async function watchdogPass(now = new Date()): Promise<{ killed: number }
     // `returning()` turns the update into the compare-and-swap that decides
     // the race. A normal completion or superseding push that wins first means
     // this pass must not touch the check-runs.
-    const claimed = await db
-      .update(schema.reviews)
-      .set({ status: "failed", errorMessage: message, finishedAt: now })
-      .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")))
-      .returning({ id: schema.reviews.id });
-    if (claimed.length === 0) continue;
-    killed += 1;
-    try {
-      const token = await getInstallationToken(review.githubInstallationId);
-      await failCheckRuns(
-        token,
-        review.repoFullName,
-        review.advisoryCheckRunId,
-        review.gateCheckRunId,
-        message,
-      );
-    } catch (err) {
-      console.error(
-        `watchdog: could not complete check-runs for review ${review.id}: ${redactSecrets(err)}`,
-      );
-    }
+    const claimed = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(schema.reviews)
+        .set({ status: "failed", errorMessage: message, finishedAt: now })
+        .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")))
+        .returning({ id: schema.reviews.id });
+      if (rows.length === 0) return false;
+      await tx.insert(schema.jobs).values({
+        kind: "check-run-cleanup",
+        payload: {
+          installationId: review.githubInstallationId,
+          repoFullName: review.repoFullName,
+          advisoryCheckRunId: review.advisoryCheckRunId,
+          gateCheckRunId: review.gateCheckRunId,
+          message,
+        },
+        maxAttempts: 5,
+      });
+      return true;
+    });
+    if (claimed) killed += 1;
   }
 
-  // Requeue or fail jobs whose worker died mid-run. RETURNING tells us which
-  // rows this pass moved to `failed`, so a respond job that exhausts its
-  // retries here still gets the one user-facing reply. The conditional
+  // Requeue or fail jobs whose worker died mid-run. The data-modifying CTE
+  // durably queues the user-facing reply for any respond job that exhausts
+  // its retries here in the same statement. The conditional
   // `status = 'running'` guard means only this transition wins the row; the
   // runner's failJob would affect 0 rows and stay silent (no double-post).
   const pool = getPool();
-  const updated = await pool.query<{ kind: string; status: string; payload: RespondJobPayload }>(
-    `UPDATE jobs
-     SET status = CASE WHEN attempts < max_attempts THEN 'queued'::job_status ELSE 'failed'::job_status END,
-         locked_at = NULL, locked_by = NULL,
-         last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
-     WHERE status = 'running' AND locked_at < $1
-     RETURNING kind, status, payload`,
+  await pool.query(
+    `WITH updated AS (
+       UPDATE jobs
+       SET status = CASE WHEN attempts < max_attempts THEN 'queued'::job_status ELSE 'failed'::job_status END,
+           locked_at = NULL, locked_by = NULL,
+           last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
+       WHERE status = 'running' AND locked_at < $1
+       RETURNING kind, status, payload
+     )
+     INSERT INTO jobs (kind, payload, max_attempts)
+     SELECT 'respond-failure-comment', payload, 5
+     FROM updated
+     WHERE kind = 'respond' AND status = 'failed'`,
     [cutoff],
   );
-  for (const row of updated.rows) {
-    if (row.kind === "respond" && row.status === "failed") {
-      await postRespondFailureComment(row.payload);
-    }
-  }
 
   return { killed };
 }

@@ -94,6 +94,9 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
       ],
     };
   }
+  if (sql.includes("MIN(started_at)") && sql.includes("status = 'running'")) {
+    return { rows: [{ age_seconds: "720" }] };
+  }
   if (sql.includes("FROM usage_events")) {
     return {
       rows: [
@@ -179,6 +182,7 @@ describe("/api/metrics", () => {
     expect(text).toContain('postil_jobs_current{kind="respond",status="failed"} 1');
     expect(text).toContain('postil_oldest_job_age_seconds{status="queued"} 300');
     expect(text).toContain('postil_oldest_job_age_seconds{status="running"} 45');
+    expect(text).toContain("postil_oldest_running_review_age_seconds 720");
     expect(text).toContain(
       'postil_usage_tokens_total{model="qwen/\\"coder\\"",type="prompt"} 1000',
     );
@@ -186,7 +190,7 @@ describe("/api/metrics", () => {
       'postil_usage_tokens_total{model="qwen/\\"coder\\"",type="completion"} 250',
     );
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(8);
+    expect(queryCalls).toBe(9);
   });
 
   test("keeps the scrape successful and reports database down when DB access fails", async () => {
@@ -200,6 +204,6 @@ describe("/api/metrics", () => {
     expect(text).not.toContain("postil_database_size_bytes");
     expect(text).not.toContain("postil_queue_depth");
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(8);
+    expect(queryCalls).toBe(9);
   });
 });

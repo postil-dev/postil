@@ -24,7 +24,7 @@ import {
   type OrgReviewConfig,
 } from "@/lib/github/contents";
 import { configuredPublicOrigin } from "@/lib/oauth";
-import type { ReviewJobPayload } from "@/lib/queue";
+import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { persistReviewCompletion } from "@/lib/review-completion";
 
@@ -700,10 +700,13 @@ export async function failCheckRuns(
   advisoryCheckRunId: number | undefined | null,
   gateCheckRunId: number | undefined | null,
   message: string,
+  signal?: AbortSignal,
+  throwOnError = false,
 ): Promise<void> {
   const summary = `Postil could not complete this review: ${redactAndTruncate(message, 400, [
     token,
   ])}`;
+  const errors: unknown[] = [];
   if (gateCheckRunId != null) {
     await completeCheckRun(
       token,
@@ -712,7 +715,11 @@ export async function failCheckRuns(
       "failure",
       "Review did not complete",
       `${summary}\n\nThe gate fails closed: an unreviewed head is not a passing head. Re-run by pushing or re-requesting the check.`,
-    ).catch((e) => console.error(`failed to complete gate check-run: ${redactSecrets(e, [token])}`));
+      signal,
+    ).catch((error) => {
+      errors.push(error);
+      console.error(`failed to complete gate check-run: ${redactSecrets(error, [token])}`);
+    });
   }
   if (advisoryCheckRunId != null) {
     await completeCheckRun(
@@ -722,8 +729,36 @@ export async function failCheckRuns(
       "neutral",
       "Review did not complete",
       summary,
-    ).catch((e) =>
-      console.error(`failed to complete advisory check-run: ${redactSecrets(e, [token])}`),
+      signal,
+    ).catch((error) => {
+      errors.push(error);
+      console.error(`failed to complete advisory check-run: ${redactSecrets(error, [token])}`);
+    });
+  }
+  if (throwOnError && errors.length > 0) {
+    throw new AggregateError(errors, "could not complete failed review check-runs");
+  }
+}
+
+/** Retryable worker job that completes check-runs after a watchdog kill. */
+export async function runCheckRunCleanupJob(
+  payload: CheckRunCleanupJobPayload,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const token = await getInstallationToken(payload.installationId, controller.signal);
+    await failCheckRuns(
+      token,
+      payload.repoFullName,
+      payload.advisoryCheckRunId,
+      payload.gateCheckRunId,
+      payload.message,
+      controller.signal,
+      true,
     );
+  } finally {
+    clearTimeout(timer);
   }
 }

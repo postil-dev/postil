@@ -129,8 +129,18 @@ describeDb("watchdog stuck-review kill", () => {
 
     expect(result.killed).toBe(1);
     expect(await reviewStatus(reviewId)).toBe("failed");
-    expect(tokenCalls).toBe(1);
-    expect(failCheckRunsCalls).toBe(1);
+    expect(tokenCalls).toBe(0);
+    expect(failCheckRunsCalls).toBe(0);
+    const cleanup = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+      "SELECT kind, payload FROM jobs",
+    );
+    expect(cleanup.rows).toHaveLength(1);
+    expect(cleanup.rows[0]!.kind).toBe("check-run-cleanup");
+    expect(cleanup.rows[0]!.payload).toMatchObject({
+      installationId: 42,
+      repoFullName: "octo/repo",
+      message: expect.stringContaining("watchdog:"),
+    });
     const timestamps = await pool.query<{
       started_at: Date;
       finished_at: Date;
@@ -165,8 +175,59 @@ describeDb("watchdog stuck-review kill", () => {
     const [a, b] = await Promise.all([watchdogPass(), watchdogPass()]);
 
     expect(a.killed + b.killed).toBe(1);
-    expect(tokenCalls).toBe(1);
-    expect(failCheckRunsCalls).toBe(1);
+    expect(tokenCalls).toBe(0);
+    expect(failCheckRunsCalls).toBe(0);
+    const cleanup = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(cleanup.rows[0]!.count).toBe("1");
+  });
+
+  test("recovers every stuck row before durable check-run cleanup", async () => {
+    const repositoryId = await seedRepo();
+    const firstReviewId = await seedStuckReview(repositoryId);
+    const secondReviewId = await seedStuckReview(repositoryId);
+    const stuckJob = await pool.query<{ id: string }>(`
+      INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
+      VALUES ('review', '{}', 'running', 1, 3, now() - interval '20 minutes', 'dead-worker')
+      RETURNING id
+    `);
+    const result = await watchdogPass(new Date());
+
+    expect(result.killed).toBe(2);
+    expect(await reviewStatus(firstReviewId)).toBe("failed");
+    expect(await reviewStatus(secondReviewId)).toBe("failed");
+    const job = await pool.query<{ status: string }>("SELECT status FROM jobs WHERE id = $1", [
+      stuckJob.rows[0]!.id,
+    ]);
+    expect(job.rows[0]!.status).toBe("queued");
+    const cleanups = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(cleanups.rows[0]!.count).toBe("2");
+  });
+
+  test("durably queues an exhausted respond job comment without external I/O", async () => {
+    await pool.query(`
+      INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
+      VALUES (
+        'respond',
+        '{"installationId":42,"repoFullName":"octo/repo","number":1}',
+        'running', 3, 3, now() - interval '20 minutes', 'dead-worker'
+      )
+    `);
+    const first = await watchdogPass(new Date());
+    const second = await watchdogPass(new Date());
+
+    expect(first.killed).toBe(0);
+    expect(second.killed).toBe(0);
+    const jobs = await pool.query<{ kind: string; status: string }>(
+      "SELECT kind, status FROM jobs ORDER BY id",
+    );
+    expect(jobs.rows).toEqual([
+      { kind: "respond", status: "failed" },
+      { kind: "respond-failure-comment", status: "queued" },
+    ]);
   });
 
   test("a review within the deadline is left alone", async () => {

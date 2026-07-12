@@ -13,6 +13,7 @@ const completions: Array<{
   title: string;
   summary: string;
 }> = [];
+const failingCompletionIds = new Set<number>();
 
 function fakeDb() {
   return {
@@ -60,6 +61,7 @@ mock.module("@/lib/github/checks", () => ({
     title: string,
     summary: string,
   ) => {
+    if (failingCompletionIds.has(id)) throw new Error(`check-run ${id} unavailable`);
     completions.push({ id, conclusion, title, summary });
   },
 }));
@@ -69,6 +71,7 @@ const { failCheckRuns, supersedeActiveReviews } = await import("@/worker/review"
 beforeEach(() => {
   transitions.length = 0;
   completions.length = 0;
+  failingCompletionIds.clear();
 });
 
 describe("review terminal check-runs", () => {
@@ -113,5 +116,22 @@ describe("review terminal check-runs", () => {
       { id: 22, conclusion: "failure" },
       { id: 11, conclusion: "neutral" },
     ]);
+  });
+
+  test("strict cleanup rejects when a check-run remains incomplete", async () => {
+    failingCompletionIds.add(22);
+
+    await expect(
+      failCheckRuns(
+        "test-token",
+        "postil-dev/postil",
+        11,
+        22,
+        "watchdog deadline",
+        undefined,
+        true,
+      ),
+    ).rejects.toThrow("could not complete failed review check-runs");
+    expect(completions.map(({ id }) => id)).toEqual([11]);
   });
 });
