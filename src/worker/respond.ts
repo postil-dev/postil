@@ -9,6 +9,7 @@ import { getInstallationToken } from "@/lib/github/app-auth";
 import { postIssueComment } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
 import type { RespondJobPayload } from "@/lib/queue";
+import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
 
@@ -58,6 +59,15 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
   )[0];
   if (!repository || !repository.enabled) {
     console.warn(`respond job skipped: repository ${payload.repoFullName} missing or disabled`);
+    return;
+  }
+  if (
+    !(await canProcessPrivateRepository(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repository.private,
+    })).allowed
+  ) {
+    console.warn(`respond job skipped: private repository ${payload.repoFullName} requires billing`);
     return;
   }
 
@@ -179,6 +189,17 @@ export async function postRespondFailureComment(
     if (!repository || !repository.enabled) {
       console.warn(
         `respond failure comment skipped: repository ${payload.repoFullName} missing/disabled`,
+      );
+      return;
+    }
+    if (
+      !(await canProcessPrivateRepository(db, {
+        orgId: installation.orgId,
+        repositoryPrivate: repository.private,
+      })).allowed
+    ) {
+      console.warn(
+        `respond failure comment skipped: private repository ${payload.repoFullName} requires billing`,
       );
       return;
     }

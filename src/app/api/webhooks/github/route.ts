@@ -33,6 +33,7 @@ import {
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
 import { mentionsPostil, parsePostilApproveCommand } from "@/lib/mentions";
+import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import {
@@ -75,6 +76,7 @@ interface PullRequestEventPayload {
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    user?: GithubUser;
   };
 }
 
@@ -458,6 +460,7 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
     await db
       .select({
         id: schema.installations.id,
+        orgId: schema.installations.orgId,
         suspended: schema.installations.suspended,
       })
       .from(schema.installations)
@@ -468,6 +471,15 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
 
   const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
   if (!repoRow?.enabled) return;
+  if (
+    !(await canProcessPrivateRepository(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repo.private,
+    })).allowed
+  ) {
+    console.log(`private review skipped: ${repo.full_name} requires billing`);
+    return;
+  }
 
   await supersedeActiveReviews({
     repositoryId: repoRow.id,
@@ -482,6 +494,8 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
     installationId,
     repoFullName: repo.full_name,
     prNumber: pr.number,
+    ...(typeof pr.user?.id === "number" ? { authorGithubId: pr.user.id } : {}),
+    ...(pr.user?.login ? { authorLogin: pr.user.login } : {}),
     headSha,
     baseSha,
   });
@@ -547,7 +561,11 @@ async function enabledRepoForRerequest(
   const db = getDb();
   const installation = (
     await db
-      .select({ id: schema.installations.id, suspended: schema.installations.suspended })
+      .select({
+        id: schema.installations.id,
+        orgId: schema.installations.orgId,
+        suspended: schema.installations.suspended,
+      })
       .from(schema.installations)
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
@@ -555,7 +573,10 @@ async function enabledRepoForRerequest(
   if (!installation || installation.suspended) return false;
   const repoRow = (
     await db
-      .select({ enabled: schema.repositories.enabled })
+      .select({
+        enabled: schema.repositories.enabled,
+        private: schema.repositories.private,
+      })
       .from(schema.repositories)
       .where(
         and(
@@ -565,7 +586,13 @@ async function enabledRepoForRerequest(
       )
       .limit(1)
   )[0];
-  return Boolean(repoRow?.enabled);
+  if (!repoRow?.enabled) return false;
+  return (
+    await canProcessPrivateRepository(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repoRow.private,
+    })
+  ).allowed;
 }
 
 /**
@@ -670,7 +697,11 @@ async function enabledRepoForMention(
   const db = getDb();
   const installation = (
     await db
-      .select({ id: schema.installations.id, suspended: schema.installations.suspended })
+      .select({
+        id: schema.installations.id,
+        orgId: schema.installations.orgId,
+        suspended: schema.installations.suspended,
+      })
       .from(schema.installations)
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
@@ -684,7 +715,10 @@ async function enabledRepoForMention(
   // than relying solely on GitHub's downstream token scoping.
   const repoRow = (
     await db
-      .select({ enabled: schema.repositories.enabled })
+      .select({
+        enabled: schema.repositories.enabled,
+        private: schema.repositories.private,
+      })
       .from(schema.repositories)
       .where(
         and(
@@ -694,7 +728,13 @@ async function enabledRepoForMention(
       )
       .limit(1)
   )[0];
-  return Boolean(repoRow?.enabled);
+  if (!repoRow?.enabled) return false;
+  return (
+    await canProcessPrivateRepository(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repoRow.private,
+    })
+  ).allowed;
 }
 
 /** Skip our own comments and other bots to avoid mention loops. */

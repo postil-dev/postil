@@ -52,6 +52,26 @@ duplicate after an extended worker outage is preferred to a lost escalation.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog and computes the remaining credit balance shown on `/orgs/[slug]/billing`.
 
+Private-repository product access is organization-scoped and fail-closed.
+`organization_entitlements` records hosted or BYOK subscription mode, lifecycle
+state, trial and past-due grace boundaries, operator promotions, billing-contact
+verification, and the current-period included usage plus overage hard cap.
+`src/lib/private-repository-entitlement.ts` is the single decision point used by
+webhook intake and workers. The webhook stores delivery and repository metadata,
+then skips review/respond queue, check, and conversational comment side effects
+when a private repository is ineligible. Approval commands remain available
+because they update stored control state without code fetch or inference.
+Workers repeat the gate before token minting, code/config fetch, check creation,
+CLI spawn, or inference. Hosted subscriptions default to zero overage; only BYOK
+may omit the provider-spend cap. Public repositories bypass entitlement lookup.
+Provider credentials do not grant product access. Operators apply the
+complete entitlement state idempotently through
+`scripts/set-org-entitlement.ts`; the billing page reports the stored state and
+does not represent a payment checkout. Review rows snapshot the pull request
+author GitHub ID and login supplied by the reviewable pull-request webhook.
+Billing counts distinct GitHub author IDs on private pull requests within the
+entitlement period; bot and service identities count by the same ID rule.
+
 ## Dashboard
 
 The signed-in product surface is three pages, all server-rendered and

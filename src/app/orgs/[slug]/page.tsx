@@ -5,10 +5,12 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { formatMs } from "@/components/review-status";
 import { ReviewTimeDistribution } from "@/components/review-time-distribution";
+import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { schema } from "@/lib/db";
 import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
+import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import { toggleRepository } from "./actions";
 import { RepoHealthBanner } from "./repo-health-banner";
 import { ReviewsTable } from "./reviews-table";
@@ -181,6 +183,13 @@ export default async function OrgDashboardPage({
     )
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
+  const privateAccess =
+    isAdmin && repos.some((repo) => repo.private && repo.enabled)
+      ? await canProcessPrivateRepository(db, {
+          orgId: org.id,
+          repositoryPrivate: true,
+        })
+      : null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -245,6 +254,8 @@ export default async function OrgDashboardPage({
           </p>
         </div>
       )}
+
+      <PrivateBillingNotice orgSlug={org.slug} decision={privateAccess} />
 
       <RepoHealthBanner
         slug={org.slug}

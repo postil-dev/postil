@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 
 import {
   calculateBillingCreditBalance,
@@ -16,6 +16,7 @@ import {
 } from "@/lib/billing-usage";
 import { schema } from "@/lib/db";
 import { requireOrgMembership } from "@/lib/org-access";
+import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 
 export const metadata: Metadata = {
   title: "Organization billing",
@@ -122,6 +123,44 @@ export default async function OrgBillingPage({
     (repo) => repo.repositoryPrivate,
   ).length;
   const creditBalance = calculateBillingCreditBalance(creditGrantRows, usageRows);
+  const privateAccess = await canProcessPrivateRepository(db, {
+    orgId: org.id,
+    repositoryPrivate: true,
+  });
+  const entitlement = privateAccess.entitlement;
+  const effectiveOverageHardCapCents = entitlement
+    ? entitlement.overageHardCapCents ??
+      (entitlement.subscriptionMode === "hosted" ? 0 : null)
+    : null;
+  const hasEntitlementPeriod = Boolean(
+    entitlement?.periodStartsAt && entitlement.periodEndsAt,
+  );
+  const authorPeriodStart = hasEntitlementPeriod
+    ? entitlement!.periodStartsAt!
+    : usage.period.start;
+  const authorPeriodEnd = hasEntitlementPeriod
+    ? entitlement!.periodEndsAt!
+    : usage.period.end;
+  const activePrivateAuthorCount = (
+    await db
+      .select({
+        count: sql<number>`COUNT(DISTINCT ${schema.reviews.authorGithubId})::int`,
+      })
+      .from(schema.reviews)
+      .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+      .innerJoin(
+        schema.installations,
+        eq(schema.installations.id, schema.repositories.installationId),
+      )
+      .where(
+        and(
+          eq(schema.installations.orgId, org.id),
+          eq(schema.repositories.private, true),
+          gte(schema.reviews.queuedAt, authorPeriodStart),
+          lt(schema.reviews.queuedAt, authorPeriodEnd),
+        ),
+      )
+  )[0]?.count ?? 0;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -143,6 +182,51 @@ export default async function OrgBillingPage({
             Back to dashboard
           </Link>
         </div>
+      </div>
+
+      <div className={`card mt-8 p-6 ${privateAccess.allowed ? "border-gate" : "border-rust"}`}>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="eyebrow">Private repository access</p>
+            <p className="mt-2 text-lg font-medium">
+              {privateAccess.allowed ? "Eligible" : "Billing required"}
+            </p>
+            <p className="mt-1 max-w-2xl text-sm text-ink-soft">
+              {privateAccess.allowed
+                ? `Private repository processing is enabled through ${privateAccess.reason.replaceAll("_", " ")}.`
+                : "Postil does not review or respond in private repositories without an active entitlement. Public repositories are unaffected."}
+            </p>
+          </div>
+          <span className="rounded-full border border-stone px-3 py-1 font-mono text-[11px] text-charcoal/70">
+            {entitlement ? `${entitlement.subscriptionMode} · ${entitlement.status}` : "none"}
+          </span>
+        </div>
+        <div className="mt-4 grid gap-3 font-mono text-xs sm:grid-cols-4">
+          <p>
+            billing contact: {entitlement?.billingContactEmail ?? "not set"}
+            {entitlement?.billingContactEmail && (
+              <span className="ml-1 text-charcoal/55">
+                ({entitlement.billingContactVerifiedAt ? "verified" : "unverified"})
+              </span>
+            )}
+          </p>
+          <p>
+            included usage: {formatCurrencyCents(entitlement?.includedUsageCents ?? 0)}
+          </p>
+          <p>
+            overage hard cap:{" "}
+            {effectiveOverageHardCapCents == null
+              ? "not set"
+              : formatCurrencyCents(effectiveOverageHardCapCents)}
+          </p>
+          <p>active private PR authors: {activePrivateAuthorCount}</p>
+        </div>
+        {!entitlement && (
+          <p className="mt-4 text-xs text-charcoal/60">
+            Checkout is not available on this page. Contact Postil to activate an
+            organization subscription or promotion.
+          </p>
+        )}
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-4">

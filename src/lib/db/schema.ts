@@ -188,6 +188,8 @@ export const reviews = pgTable(
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
     prNumber: integer("pr_number").notNull(),
+    authorGithubId: bigint("author_github_id", { mode: "number" }),
+    authorLogin: text("author_login"),
     headSha: text("head_sha").notNull(),
     baseSha: text("base_sha").notNull(),
     sinceSha: text("since_sha"),
@@ -315,6 +317,54 @@ export const billingCreditGrants = pgTable(
     check(
       "billing_credit_grants_idempotency_key_nonempty",
       sql`length(btrim(${t.idempotencyKey})) > 0`,
+    ),
+  ],
+);
+
+/** Organization product entitlement. Provider credentials never grant access. */
+export const organizationEntitlements = pgTable(
+  "organization_entitlements",
+  {
+    orgId: bigint("org_id", { mode: "number" })
+      .primaryKey()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    subscriptionMode: text("subscription_mode").notNull(),
+    status: text("status").notNull(),
+    trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    pastDueGraceEndsAt: timestamp("past_due_grace_ends_at", { withTimezone: true }),
+    periodStartsAt: timestamp("period_starts_at", { withTimezone: true }),
+    periodEndsAt: timestamp("period_ends_at", { withTimezone: true }),
+    includedUsageCents: integer("included_usage_cents").notNull().default(0),
+    overageHardCapCents: integer("overage_hard_cap_cents").default(0),
+    billingContactEmail: text("billing_contact_email"),
+    billingContactVerifiedAt: timestamp("billing_contact_verified_at", {
+      withTimezone: true,
+    }),
+    promotionalEligible: boolean("promotional_eligible").notNull().default(false),
+    promotionalEndsAt: timestamp("promotional_ends_at", { withTimezone: true }),
+    updatedBy: text("updated_by").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "organization_entitlements_subscription_mode_check",
+      sql`${t.subscriptionMode} IN ('hosted', 'byok')`,
+    ),
+    check(
+      "organization_entitlements_status_check",
+      sql`${t.status} IN ('active', 'trialing', 'past_due', 'suspended')`,
+    ),
+    check(
+      "organization_entitlements_included_usage_nonnegative",
+      sql`${t.includedUsageCents} >= 0`,
+    ),
+    check(
+      "organization_entitlements_overage_cap_nonnegative",
+      sql`${t.overageHardCapCents} IS NULL OR ${t.overageHardCapCents} >= 0`,
+    ),
+    check(
+      "organization_entitlements_updated_by_nonempty",
+      sql`length(btrim(${t.updatedBy})) > 0`,
     ),
   ],
 );

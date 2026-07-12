@@ -104,6 +104,16 @@ mock.module("@/lib/billing-usage", () => ({
   }),
 }));
 
+mock.module("@/lib/private-repository-entitlement", () => ({
+  canProcessPrivateRepository: async () => ({
+    allowed: false,
+    reason: "no_entitlement",
+    entitlement: null,
+    usageCents: 0,
+    usageLimitCents: null,
+  }),
+}));
+
 mock.module("@/lib/org-access", () => ({
   requireOrgMembership: async () => ({
     db: fakeDb(),
@@ -134,6 +144,10 @@ describe("organization billing page auth", () => {
     expect(markup).toContain("17.5");
     expect(markup).toContain("enabled repo-days");
     expect(markup).toContain("billing-active now");
+    expect(markup).toContain("Private repository access");
+    expect(markup).toContain("Billing required");
+    expect(markup).toContain("Checkout is not available on this page");
+    expect(markup).toContain("active private PR authors: 3");
     expect(markup).toContain("$194.78");
     expect(markup).toContain("remaining from $200.00 granted");
     expect(markup).toContain("$5.22 charged across");
@@ -153,7 +167,9 @@ function fakeDb(): any {
   return {
     select(selection: Record<string, unknown>) {
       const kind =
-        "repositoryFullName" in selection
+        "count" in selection
+          ? "activeAuthors"
+          : "repositoryFullName" in selection
           ? "events"
           : "amountCents" in selection
             ? "credits"
@@ -161,7 +177,9 @@ function fakeDb(): any {
               ? "usage"
               : "repositories";
       const rows =
-        kind === "events"
+        kind === "activeAuthors"
+          ? [{ count: 3 }]
+          : kind === "events"
           ? eventRows
           : kind === "credits"
             ? creditGrantRows
@@ -176,7 +194,9 @@ function fakeDb(): any {
           return chain;
         },
         where() {
-          return kind === "repositories" ? Promise.resolve(rows) : chain;
+          return kind === "repositories" || kind === "activeAuthors"
+            ? Promise.resolve(rows)
+            : chain;
         },
         orderBy() {
           return Promise.resolve(rows);

@@ -12,6 +12,7 @@
     "db:migrate": "drizzle-kit migrate",
     "seed": "bun run scripts/seed.ts",
     "billing:grant-credit": "bun run scripts/grant-billing-credit.ts",
+    "billing:set-entitlement": "bun run scripts/set-org-entitlement.ts",
     "verify:dashboard": "bun run scripts/verify-dashboard.ts",
     "review:local": "bun run scripts/run-review-locally.ts",
     "test": "AGENT=1 bun test --isolate"

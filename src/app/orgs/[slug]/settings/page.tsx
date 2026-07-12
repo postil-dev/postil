@@ -4,8 +4,10 @@ import Link from "next/link";
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { schema } from "@/lib/db";
+import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import { requireOrgMembership } from "@/lib/org-access";
+import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import { deriveRepoHealth, getRepoHealthRows, type RepoHealth } from "@/lib/repo-health";
 import { formatRelativeTime } from "@/lib/time";
 import {
@@ -59,6 +61,7 @@ export default async function OrgSettingsPage({
       id: schema.repositories.id,
       fullName: schema.repositories.fullName,
       enabled: schema.repositories.enabled,
+      private: schema.repositories.private,
       githubInstallationId: schema.installations.githubInstallationId,
     })
     .from(schema.repositories)
@@ -135,6 +138,12 @@ export default async function OrgSettingsPage({
     .filter((summary) => summary.artifacts.length > 0);
   const showConfigFiles =
     repos.length === 0 || repoConfigSummaries.length > 0 || enabledRepos.length > 0;
+  const privateAccess = repos.some((repo) => repo.private && repo.enabled)
+    ? await canProcessPrivateRepository(db, {
+        orgId: org.id,
+        repositoryPrivate: true,
+      })
+    : null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -157,6 +166,8 @@ export default async function OrgSettingsPage({
           </Link>
         </div>
       </div>
+
+      <PrivateBillingNotice orgSlug={org.slug} decision={privateAccess} />
 
       <RepoHealthBanner
         slug={org.slug}

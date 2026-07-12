@@ -35,6 +35,8 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   installationId: number; // GitHub installation id
   repoFullName: string;
   prNumber: number;
+  authorGithubId?: number;
+  authorLogin?: string;
   headSha: string;
   baseSha: string;
 }

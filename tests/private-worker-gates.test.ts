@@ -1,0 +1,85 @@
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+
+describe("private repository worker defense in depth", () => {
+  test("review worker gates before review rows, GitHub tokens, checks, config fetch, or CLI spawn", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const gate = source.indexOf("await canProcessPrivateRepository", source.indexOf("runReviewJob"));
+    expect(gate).toBeGreaterThan(0);
+    expect(source.slice(gate, source.indexOf("let token", gate))).toContain(
+      "authorGithubId: payload.authorGithubId",
+    );
+    expect(source.slice(gate, source.indexOf("let token", gate))).toContain(
+      "authorLogin: payload.authorLogin",
+    );
+    for (const sideEffect of [
+      "insert(schema.reviews)",
+      "await getInstallationToken",
+      "await createCheckRun",
+      "await materializeRepoConfig",
+      "await runCli",
+    ]) {
+      expect(source.indexOf(sideEffect, source.indexOf("runReviewJob"))).toBeGreaterThan(gate);
+    }
+  });
+
+  test("respond worker gates before token mint, config fetch, inference, and failure comments", () => {
+    const source = readFileSync("src/worker/respond.ts", "utf8");
+    const respondStart = source.indexOf("runRespondJob");
+    const respondGate = source.indexOf("await canProcessPrivateRepository", respondStart);
+    expect(respondGate).toBeGreaterThan(respondStart);
+    for (const sideEffect of [
+      "await getInstallationToken",
+      "await materializeRepoConfig",
+      "await runCli",
+    ]) {
+      expect(source.indexOf(sideEffect, respondStart)).toBeGreaterThan(respondGate);
+    }
+    const failureStart = source.indexOf("postRespondFailureComment");
+    const failureGate = source.indexOf("await canProcessPrivateRepository", failureStart);
+    expect(source.indexOf("await postIssueComment", failureStart)).toBeGreaterThan(failureGate);
+  });
+
+  test("all webhook review, rerequest, mention, and approval paths pass through the gate before side effects", () => {
+    const source = readFileSync("src/app/api/webhooks/github/route.ts", "utf8");
+    const pullStart = source.indexOf("async function handlePullRequest");
+    const pullGate = source.indexOf("await canProcessPrivateRepository", pullStart);
+    expect(source.indexOf("await supersedeActiveReviews", pullStart)).toBeGreaterThan(pullGate);
+    expect(source.indexOf("await enqueueReviewJob", pullStart)).toBeGreaterThan(pullGate);
+
+    const rerequestResolver = source.slice(
+      source.indexOf("async function enabledRepoForRerequest"),
+      source.indexOf("async function handleCheckRerequest"),
+    );
+    expect(rerequestResolver).toContain("await canProcessPrivateRepository");
+    const rerequestHandler = source.slice(
+      source.indexOf("async function handleCheckRerequest"),
+      source.indexOf("async function handleCheckRun"),
+    );
+    expect(rerequestHandler.indexOf("enabledRepoForRerequest")).toBeLessThan(
+      rerequestHandler.indexOf("enqueueReviewJob"),
+    );
+
+    const mentionResolver = source.slice(
+      source.indexOf("async function enabledRepoForMention"),
+      source.indexOf("function isBot"),
+    );
+    expect(mentionResolver).toContain("await canProcessPrivateRepository");
+    for (const handler of ["handleIssueComment", "handleReviewComment", "handleIssues"]) {
+      const start = source.indexOf(`async function ${handler}`);
+      const end = source.indexOf("\nasync function ", start + 1);
+      const body = source.slice(start, end === -1 ? undefined : end);
+      expect(body.indexOf("enabledRepoForMention")).toBeGreaterThan(0);
+      if (body.includes("enqueueRespond")) {
+        expect(body.indexOf("enabledRepoForMention")).toBeLessThan(
+          body.indexOf("enqueueRespond"),
+        );
+      }
+      if (body.includes("handleApproveCommand")) {
+        expect(body.indexOf("handleApproveCommand")).toBeLessThan(
+          body.indexOf("enabledRepoForMention"),
+        );
+      }
+    }
+  });
+});

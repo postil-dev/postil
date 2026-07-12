@@ -12,6 +12,7 @@ import {
   validateAdditionalAuthValue,
   type ApiFormat,
 } from "@/lib/byok-provider";
+import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
@@ -366,6 +367,15 @@ export async function runReviewJob(
     console.warn(`review job skipped: repository ${payload.repoFullName} missing or disabled`);
     return;
   }
+  if (
+    !(await canProcessPrivateRepository(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repository.private,
+    })).allowed
+  ) {
+    console.warn(`review job skipped: private repository ${payload.repoFullName} requires billing`);
+    return;
+  }
 
   // Incremental re-review: baseline = last completed review of this PR.
   const baseline = (
@@ -389,6 +399,8 @@ export async function runReviewJob(
     .values({
       repositoryId: repository.id,
       prNumber: payload.prNumber,
+      authorGithubId: payload.authorGithubId ?? null,
+      authorLogin: payload.authorLogin ?? null,
       headSha: payload.headSha,
       baseSha: payload.baseSha,
       sinceSha: baseline?.headSha ?? null,
