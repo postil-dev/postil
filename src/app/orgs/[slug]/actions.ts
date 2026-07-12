@@ -196,6 +196,10 @@ export async function saveOrgSettings(
   const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
   const contentPolicyMd =
     contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
+  const escalationEmail = String(formData.get("escalationEmail") ?? "").trim() || null;
+  if (escalationEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(escalationEmail)) {
+    return { status: "error", message: "Enter a valid escalation email address." };
+  }
 
   if (configYaml) {
     try {
@@ -216,6 +220,7 @@ export async function saveOrgSettings(
     configYaml,
     guardrailsMd,
     contentPolicyMd,
+    escalationEmail,
     updatedAt: new Date(),
   };
 

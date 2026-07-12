@@ -114,6 +114,12 @@ export default function PrivacyPage() {
             traffic sources, documentation usage, and likely bot or automation
             traffic.
           </li>
+          <li>
+            <strong>Brevo</strong> sends human-escalation notifications to an
+            organization-configured recipient. These emails contain
+            finding severity, title and detail, and links to the pull
+            request and Postil run.
+          </li>
         </ul>
         <p>
           Hosted Postil uses analytics for product and traffic measurement on

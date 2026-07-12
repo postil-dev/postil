@@ -152,6 +152,14 @@ docker compose exec web bun run db:migrate`}</code>
           The LLM variables below are optional for boot but needed for reviews
           to run.
         </li>
+        <li>
+          <code>BREVO_API_KEY</code> enables transactional email for genuine
+          human-escalation findings. An organization administrator sets the
+          organization-owned recipient in dashboard settings. The sender defaults to{" "}
+          <code>reviews@mail.postil.dev</code> and can be changed with{" "}
+          <code>POSTIL_ESCALATION_FROM_EMAIL</code> and{" "}
+          <code>POSTIL_ESCALATION_FROM_NAME</code>.
+        </li>
       </ul>
 
       <h3>Pointing it at a model</h3>

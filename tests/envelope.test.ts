@@ -192,6 +192,29 @@ describe("effective gate recomputation", () => {
     expect(computeEffectiveGate(env, new Set(["kind-only"])).failing).toBe(false);
   });
 
+  test("low-confidence human escalations never block through kind or severity", () => {
+    const env = validEnvelope({
+      gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },
+      findings: [
+        {
+          id: "weak-escalation",
+          path: "src/app.ts",
+          line: 1,
+          severity: "error",
+          kind: "humanEscalation",
+          confidence: 0.05,
+          title: "Verify this function",
+          body: "Ask a human to verify this generic function works.",
+        },
+      ],
+    });
+
+    const state = computeEffectiveGate(env, new Set());
+    expect(state.failing).toBe(false);
+    expect(state.blockers).toEqual([]);
+    expect(state.kindBlockers).toEqual([]);
+  });
+
   test("active approval clears kind-only blockers from CLI v0.3 block_on_kinds", () => {
     const env = validEnvelope({
       gate: { failOn: "error", failing: true, block_on_kinds: ["humanEscalation"] },

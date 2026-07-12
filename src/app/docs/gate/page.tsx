@@ -123,6 +123,12 @@ gate:
         teams that wanted "block on critical, ignore nits" previously had to
         accept blocking on everything or nothing.
       </p>
+      <p>
+        <code>humanEscalation</code> findings are also kind-blocking by
+        default once their calibrated confidence reaches <code>0.30</code>.
+        Weaker escalation signals remain visible in the review but do not
+        fail the gate or send an escalation email.
+      </p>
 
       <h2>Fail-closed semantics</h2>
       <p>

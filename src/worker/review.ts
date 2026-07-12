@@ -9,6 +9,7 @@ import { calculateUsageCostCentsForModel } from "@/lib/billing-credits";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
+import { qualifyingHumanEscalations } from "@/lib/escalation-notification";
 import { ingestEnvelope } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import {
@@ -25,6 +26,7 @@ import {
 import { configuredPublicOrigin } from "@/lib/oauth";
 import type { ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
+import { persistReviewCompletion } from "@/lib/review-completion";
 
 export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
 // Match postil-cli's hosted profile: a normal slow review gets up to seven
@@ -494,25 +496,18 @@ export async function runReviewJob(
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
     // no longer owns the result. The CLI owns the success-path check-runs.
-    const completedRows = await db
-      .update(schema.reviews)
-      .set({
-        status: "completed",
-        envelope: ingested.envelope,
-        configFiles,
-        silent: ingested.silent,
-        engineGateFailing: ingested.gateFailing,
-        gateFailing: ingested.gateFailing,
-        finishedAt: new Date(),
-      })
-      .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
-      .returning({ id: schema.reviews.id });
-
-    if (completedRows.length > 0) {
-      await db.insert(schema.usageEvents).values({
+    const qualifyingEscalationCount = qualifyingHumanEscalations(
+      ingested.envelope,
+    ).length;
+    const completed = await persistReviewCompletion(db, {
+      reviewId,
+      envelope: ingested.envelope,
+      configFiles,
+      silent: ingested.silent,
+      gateFailing: ingested.gateFailing,
+      usage: {
         orgId: installation.orgId,
         repositoryId: repository.id,
-        reviewId,
         promptTokens: ingested.promptTokens,
         completionTokens: ingested.completionTokens,
         modelUsed: ingested.modelUsed,
@@ -521,7 +516,30 @@ export async function runReviewJob(
           ingested.promptTokens,
           ingested.completionTokens,
         ),
-      });
+      },
+      escalationJob:
+        qualifyingEscalationCount > 0 && detailsUrl
+          ? {
+              reviewPublicId: publicId,
+              repoFullName: payload.repoFullName,
+              prNumber: payload.prNumber,
+              runUrl: detailsUrl,
+            }
+          : undefined,
+    });
+
+    if (completed) {
+      if (qualifyingEscalationCount > 0) {
+        if (!detailsUrl) {
+          reviewLog.line(
+            `human escalation email skipped (${qualifyingEscalationCount} qualifying finding(s), public run URL is unavailable)`,
+          );
+        } else {
+          reviewLog.line(
+            `human escalation email queued (${qualifyingEscalationCount} new qualifying finding(s))`,
+          );
+        }
+      }
     } else {
       const terminal = (
         await db
