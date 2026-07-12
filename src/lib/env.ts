@@ -113,7 +113,7 @@ const ENV_SPECS: EnvVarSpec[] = [
     name: "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
     purpose:
       "Maximum seconds for one spawned CLI model-provider request; worker defaults below its review watchdog",
-    example: "120",
+    example: "420",
     scope: ["worker"],
     optional: true,
   },
@@ -121,7 +121,7 @@ const ENV_SPECS: EnvVarSpec[] = [
     name: "POSTIL_LLM_TOTAL_TIMEOUT_SECS",
     purpose:
       "Maximum seconds for all spawned CLI model-provider requests in one review; worker defaults below its review watchdog",
-    example: "480",
+    example: "540",
     scope: ["worker"],
     optional: true,
   },

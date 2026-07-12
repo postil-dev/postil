@@ -42,9 +42,8 @@ mock.module("@/lib/crypto/seal", () => ({
   unseal: (sealed: Buffer) => sealed.toString("utf8"),
 }));
 
-const { buildCliEnv, resolveLlmConfig, resolveOrgReviewConfig } = await import(
-  "@/worker/review"
-);
+const { REVIEW_DEADLINE_MS, buildCliEnv, resolveLlmConfig, resolveOrgReviewConfig } =
+  await import("@/worker/review");
 
 const KEY_NAMES = [
   "MODEL_API_KEY",
@@ -172,13 +171,20 @@ describe("buildCliEnv", () => {
     expect(env).toMatchObject({
       GITHUB_TOKEN: "github-token",
       POSTIL_API_BASE: "https://openrouter.ai/api/v1",
-      POSTIL_LLM_REQUEST_TIMEOUT_SECS: "120",
-      POSTIL_LLM_TOTAL_TIMEOUT_SECS: "480",
+      POSTIL_LLM_REQUEST_TIMEOUT_SECS: "420",
+      POSTIL_LLM_TOTAL_TIMEOUT_SECS: "540",
       MODEL_API_KEY: "model-key",
       POSTIL_API_KEY: "model-key",
       REVIEW_MODEL: "deepseek/deepseek-v4-pro",
       REVIEW_MODEL_CASCADE: "qwen/qwen3-coder",
     });
+    expect(
+      Number(env.POSTIL_LLM_TOTAL_TIMEOUT_SECS) -
+        Number(env.POSTIL_LLM_REQUEST_TIMEOUT_SECS),
+    ).toBe(120);
+    expect(Number(env.POSTIL_LLM_TOTAL_TIMEOUT_SECS) * 1000).toBeLessThan(
+      REVIEW_DEADLINE_MS,
+    );
   });
 
   test("lets operators override hosted CLI LLM timeout budgets", () => {
