@@ -6,12 +6,8 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const gate = source.indexOf("await canProcessPrivateRepository", source.indexOf("runReviewJob"));
     expect(gate).toBeGreaterThan(0);
-    expect(source.slice(gate, source.indexOf("let token", gate))).toContain(
-      "authorGithubId: payload.authorGithubId",
-    );
-    expect(source.slice(gate, source.indexOf("let token", gate))).toContain(
-      "authorLogin: payload.authorLogin",
-    );
+    expect(source).toContain("authorGithubId: payload.authorGithubId");
+    expect(source).toContain("authorLogin: payload.authorLogin");
     for (const sideEffect of [
       "insert(schema.reviews)",
       "await getInstallationToken",
@@ -21,11 +17,18 @@ describe("private repository worker defense in depth", () => {
     ]) {
       expect(source.indexOf(sideEffect, source.indexOf("runReviewJob"))).toBeGreaterThan(gate);
     }
+    expect(source.indexOf("providerModeMatchesPrivateAccess", gate)).toBeLessThan(
+      source.indexOf("await getInstallationToken", gate),
+    );
+    expect(source.indexOf("fetchRepositorySummary", gate)).toBeLessThan(
+      source.indexOf("insert(schema.reviews)", gate),
+    );
   });
 
   test("respond worker gates before token mint, config fetch, inference, and failure comments", () => {
     const source = readFileSync("src/worker/respond.ts", "utf8");
     const respondStart = source.indexOf("runRespondJob");
+    const failureStart = source.indexOf("postRespondFailureComment");
     const respondGate = source.indexOf("await canProcessPrivateRepository", respondStart);
     expect(respondGate).toBeGreaterThan(respondStart);
     for (const sideEffect of [
@@ -35,7 +38,12 @@ describe("private repository worker defense in depth", () => {
     ]) {
       expect(source.indexOf(sideEffect, respondStart)).toBeGreaterThan(respondGate);
     }
-    const failureStart = source.indexOf("postRespondFailureComment");
+    expect(source.indexOf("providerModeMatchesPrivateAccess", respondGate)).toBeLessThan(
+      source.indexOf("await getInstallationToken", respondGate),
+    );
+    expect(source.slice(respondStart, failureStart)).toContain(
+      "allowModelSettings: llm.byok",
+    );
     const failureGate = source.indexOf("await canProcessPrivateRepository", failureStart);
     expect(source.indexOf("await postIssueComment", failureStart)).toBeGreaterThan(failureGate);
   });

@@ -34,6 +34,7 @@ export interface ClaimedJob {
 export interface ReviewJobPayload extends Record<string, unknown> {
   installationId: number; // GitHub installation id
   repoFullName: string;
+  repositoryPrivate?: boolean;
   prNumber: number;
   authorGithubId?: number;
   authorLogin?: string;
@@ -45,6 +46,7 @@ export interface ReviewJobPayload extends Record<string, unknown> {
 export interface RespondJobPayload extends Record<string, unknown> {
   installationId: number;
   repoFullName: string;
+  repositoryPrivate?: boolean;
   number: number; // PR or issue number
   isPr: boolean;
   comment: string; // the maintainer's message text

@@ -112,9 +112,10 @@ gate:
                          # advisory fails open on provider outages only
 
 model:
-  name: deepseek/deepseek-v4-pro
+  name: z-ai/glm-5.2
   cascade:               # fallbacks, tried in order on provider errors
-    - qwen/qwen3-coder
+    - moonshotai/kimi-k2.7-code
+    - deepseek/deepseek-v4-flash
   apiBase: https://openrouter.ai/api/v1
   consensus: 1           # run the first N of [name + cascade], keep only
                          # findings they agree on (must be >= 1)`}</code>

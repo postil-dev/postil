@@ -46,7 +46,7 @@ export interface OrgSettingsActionState {
 export type ConfigProbeRefreshState =
   | { status: "idle" }
   | {
-      status: "success";
+      status: "success" | "partial";
       checkedAt: string;
       repositoryCount: number;
       successfulCount: number;
@@ -218,7 +218,7 @@ export async function refreshOrgConfigProbes(
     );
     revalidatePath(`/orgs/${slug}/settings`);
     return {
-      status: "success",
+      status: failedCount > 0 ? "partial" : "success",
       checkedAt: refreshedAt.toISOString(),
       repositoryCount: repos.length,
       successfulCount,

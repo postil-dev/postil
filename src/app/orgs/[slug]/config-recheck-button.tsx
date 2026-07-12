@@ -18,6 +18,8 @@ export function ConfigRecheckButton({ slug }: { slug: string }) {
     ? "Checking…"
     : state.status === "success"
       ? "Checked"
+      : state.status === "partial"
+        ? "Check incomplete"
       : state.status === "cooldown"
         ? "Checked recently"
         : state.status === "error"
@@ -69,6 +71,21 @@ export function ConfigRecheckButton({ slug }: { slug: string }) {
             >
               <path d="m5 12 4 4L19 6" />
             </svg>
+          ) : state.status === "partial" ? (
+            <svg
+              className="h-3.5 w-3.5 text-rust"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3 2.5 20h19L12 3Z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
           ) : state.status === "cooldown" ? (
             <svg
               className="h-3.5 w-3.5"
@@ -89,13 +106,15 @@ export function ConfigRecheckButton({ slug }: { slug: string }) {
       {state.status !== "idle" && (
         <p
           id="config-recheck-status"
-          role={state.status === "error" ? "alert" : "status"}
+          role={state.status === "error" || state.status === "partial" ? "alert" : "status"}
           className={`max-w-64 text-right text-[11px] ${
-            state.status === "error" ? "text-rust" : "text-charcoal/60"
+            state.status === "error" || state.status === "partial"
+              ? "text-rust"
+              : "text-charcoal/60"
           }`}
         >
           {state.message}
-          {state.status === "success" && (
+          {(state.status === "success" || state.status === "partial") && (
             <span className="block font-mono text-[10px]">
               {new Date(state.checkedAt).toLocaleTimeString([], {
                 hour: "numeric",

@@ -8,8 +8,12 @@ import { optionalEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { postIssueComment } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
+import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import type { RespondJobPayload } from "@/lib/queue";
-import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
+import {
+  canProcessPrivateRepository,
+  providerModeMatchesPrivateAccess,
+} from "@/lib/private-repository-entitlement";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
 
@@ -61,17 +65,43 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
     console.warn(`respond job skipped: repository ${payload.repoFullName} missing or disabled`);
     return;
   }
-  if (
-    !(await canProcessPrivateRepository(db, {
-      orgId: installation.orgId,
-      repositoryPrivate: repository.private,
-    })).allowed
-  ) {
+  const signedOrStoredPrivate = repository.private || payload.repositoryPrivate === true;
+  const privateAccess = await canProcessPrivateRepository(db, {
+    orgId: installation.orgId,
+    repositoryPrivate: signedOrStoredPrivate,
+  });
+  if (!privateAccess.allowed) {
     console.warn(`respond job skipped: private repository ${payload.repoFullName} requires billing`);
     return;
   }
 
+  const llm = await resolveLlmConfig(installation.orgId);
+  if (!providerModeMatchesPrivateAccess(signedOrStoredPrivate, privateAccess, llm.byok)) {
+    console.warn(
+      `respond job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
+    );
+    return;
+  }
+
   const token = await getInstallationToken(payload.installationId);
+  const currentRepository = await fetchRepositorySummary(token, payload.repoFullName);
+  await db
+    .update(schema.repositories)
+    .set({ fullName: currentRepository.full_name, private: currentRepository.private })
+    .where(eq(schema.repositories.id, repository.id));
+  const currentAccess = await canProcessPrivateRepository(db, {
+    orgId: installation.orgId,
+    repositoryPrivate: currentRepository.private,
+  });
+  if (
+    !currentAccess.allowed ||
+    !providerModeMatchesPrivateAccess(currentRepository.private, currentAccess, llm.byok)
+  ) {
+    console.warn(
+      `respond job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
+    );
+    return;
+  }
   const args = [
     "respond",
     "--forge",
@@ -89,7 +119,6 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
     ? `(asked on \`${payload.commentAnchor}\`)\n\n${payload.comment}`
     : payload.comment;
 
-  const llm = await resolveLlmConfig(installation.orgId);
   const cliEnv = buildCliEnv(llm, {
     GITHUB_TOKEN: token,
     POSTIL_COMMENT: comment,
@@ -101,7 +130,9 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
   await mkdir(resolve(cacheDir, "workdirs"), { recursive: true });
   const workDir = await mkdtemp(resolve(cacheDir, "workdirs", "respond-"));
   try {
-    await materializeRepoConfig(token, payload.repoFullName, workDir);
+    await materializeRepoConfig(token, payload.repoFullName, workDir, {
+      allowModelSettings: llm.byok,
+    });
 
     const result = await runCli(args, cliEnv, workDir);
     if (result.timedOut) {

@@ -37,6 +37,17 @@ export interface PrivateRepositoryAccessDecision {
   usageLimitCents: number | null;
 }
 
+/** Prevent a private BYOK subscription from silently spending hosted inference. */
+export function providerModeMatchesPrivateAccess(
+  repositoryPrivate: boolean,
+  decision: PrivateRepositoryAccessDecision,
+  byok: boolean,
+): boolean {
+  if (!repositoryPrivate) return true;
+  if (!decision.allowed || !decision.entitlement) return false;
+  return decision.entitlement.subscriptionMode === (byok ? "byok" : "hosted");
+}
+
 export function evaluatePrivateRepositoryAccess(
   repositoryPrivate: boolean,
   entitlement: OrganizationEntitlementSnapshot | null,

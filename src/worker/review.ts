@@ -12,13 +12,17 @@ import {
   validateAdditionalAuthValue,
   type ApiFormat,
 } from "@/lib/byok-provider";
-import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
+import {
+  canProcessPrivateRepository,
+  providerModeMatchesPrivateAccess,
+} from "@/lib/private-repository-entitlement";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
 import { qualifyingHumanEscalations } from "@/lib/escalation-notification";
 import { ingestEnvelope } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
   GATE_CHECK_NAME,
@@ -367,13 +371,39 @@ export async function runReviewJob(
     console.warn(`review job skipped: repository ${payload.repoFullName} missing or disabled`);
     return;
   }
-  if (
-    !(await canProcessPrivateRepository(db, {
-      orgId: installation.orgId,
-      repositoryPrivate: repository.private,
-    })).allowed
-  ) {
+  const signedOrStoredPrivate = repository.private || payload.repositoryPrivate === true;
+  const privateAccess = await canProcessPrivateRepository(db, {
+    orgId: installation.orgId,
+    repositoryPrivate: signedOrStoredPrivate,
+  });
+  if (!privateAccess.allowed) {
     console.warn(`review job skipped: private repository ${payload.repoFullName} requires billing`);
+    return;
+  }
+  const llm = await resolveLlmConfig(installation.orgId);
+  if (!providerModeMatchesPrivateAccess(signedOrStoredPrivate, privateAccess, llm.byok)) {
+    console.warn(
+      `review job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
+    );
+    return;
+  }
+  const token = await getInstallationToken(payload.installationId);
+  const currentRepository = await fetchRepositorySummary(token, payload.repoFullName);
+  await db
+    .update(schema.repositories)
+    .set({ fullName: currentRepository.full_name, private: currentRepository.private })
+    .where(eq(schema.repositories.id, repository.id));
+  const currentAccess = await canProcessPrivateRepository(db, {
+    orgId: installation.orgId,
+    repositoryPrivate: currentRepository.private,
+  });
+  if (
+    !currentAccess.allowed ||
+    !providerModeMatchesPrivateAccess(currentRepository.private, currentAccess, llm.byok)
+  ) {
+    console.warn(
+      `review job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
+    );
     return;
   }
 
@@ -418,7 +448,6 @@ export async function runReviewJob(
     `review queued at ${timing.queuedAt.toISOString()} -> worker claimed at ${timing.startedAt.toISOString()}`,
   );
 
-  let token: string | undefined;
   let advisoryCheckRunId: number | undefined;
   let gateCheckRunId: number | undefined;
   let baselinePath: string | undefined;
@@ -426,7 +455,6 @@ export async function runReviewJob(
   let sensitiveValues: string[] = [];
 
   try {
-    token = await getInstallationToken(payload.installationId);
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
     const superseded = await supersedeActiveReviews({
@@ -488,7 +516,6 @@ export async function runReviewJob(
     // trust model (default branch only, never the PR head).
     workDir = resolve(CACHE_DIR, "workdirs", `review-${reviewId}`);
     await mkdir(workDir, { recursive: true });
-    const llm = await resolveLlmConfig(installation.orgId);
     const repoConfigFiles = await materializeRepoConfig(
       token,
       payload.repoFullName,

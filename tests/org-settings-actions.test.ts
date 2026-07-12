@@ -492,7 +492,7 @@ describe("SettingsForm API key handling", () => {
     expect(source).toContain("Postil chooses and operates the models.");
     expect(source).toContain("Use your provider");
     expect(source).toContain("Choose the request format your API accepts.");
-    expect(source).toContain("Stored encrypted and never shown again.");
+    expect(source).toContain("Provider credentials are stored encrypted and never shown again.");
     expect(source).toContain('value="openai-compatible"');
     expect(source).toContain('value="anthropic"');
     expect(source).toContain('type="checkbox"');

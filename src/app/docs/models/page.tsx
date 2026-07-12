@@ -16,9 +16,10 @@ export default function ModelsPage() {
       <div className="prose-postil">
         <h1 className="serif-display text-4xl text-charcoal">Models</h1>
         <p className="mt-4 text-lg">
-          Postil talks to OpenAI-compatible chat completions. Use a managed
-          provider such as OpenRouter, bring a direct provider key, or run a
-          local endpoint with Ollama, vLLM, SGLang, or LiteLLM.
+          Postil supports OpenAI-compatible chat completions and Anthropic
+          Messages APIs. Use a managed provider such as OpenRouter, connect
+          Anthropic directly, or run a local endpoint with Ollama, vLLM,
+          SGLang, or LiteLLM.
         </p>
         <p>
           Every model does the same job: read a diff, decide what is worth
@@ -136,7 +137,7 @@ postil review --staged --output-json`}</code>
           <code>{`cd postil-cli/bench
 export MODEL_API_KEY=...
 export POSTIL_API_KEY="$MODEL_API_KEY"
-export POSTIL_BENCH_MODELS=deepseek/deepseek-v4-pro,deepseek/deepseek-v4-flash,moonshotai/kimi-k2.6
+export POSTIL_BENCH_MODELS=z-ai/glm-5.2,moonshotai/kimi-k2.7-code,deepseek/deepseek-v4-flash
 bun run bench:live-models -- --json-out .runs/live-models.json`}</code>
         </pre>
         <p>

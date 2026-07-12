@@ -26,6 +26,16 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      - name: Verify fresh database migrations and notification backfill
+        run: |
+          createdb postil_migrations
+          bun run db:migrate
+          bun run notifications:backfill-verification --dry-run
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          DATABASE_URL: postgresql://postgres@localhost:5432/postil_migrations
+          POSTIL_SEALING_KEY: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
       - run: bun run test
       - run: bun test tests/model-override-migration.test.ts
         env:

@@ -128,6 +128,18 @@ export default async function OrgDashboardPage({
   const recordedDurations = bucketRows.flatMap((row) =>
     typeof row.durationMs === "number" && row.durationMs > 0 ? [row.durationMs] : [],
   );
+  const sortedDurations = [...recordedDurations].sort((left, right) => left - right);
+  const durationMiddle = Math.floor(sortedDurations.length / 2);
+  const medianDurationMs =
+    sortedDurations.length === 0
+      ? null
+      : Math.round(
+          sortedDurations.length % 2 === 0
+            ? ((sortedDurations[durationMiddle - 1] ?? 0) +
+                (sortedDurations[durationMiddle] ?? 0)) /
+                2
+            : (sortedDurations[durationMiddle] ?? 0),
+        );
 
   // Engine telemetry across completed reviews, read from stored envelopes.
   // Older envelopes lack durationMs / counts.ungrounded; COALESCE treats the
@@ -135,12 +147,6 @@ export default async function OrgDashboardPage({
   const telemetryAgg = (
     await db
       .select({
-        // Median wall-clock duration in ms; ignore 0s (older CLIs / not recorded).
-        medianDurationMs: sql<number | null>`
-          percentile_cont(0.5) WITHIN GROUP (
-            ORDER BY (${schema.reviews.envelope} ->> 'durationMs')::int
-          ) FILTER (WHERE (${schema.reviews.envelope} ->> 'durationMs')::int > 0)
-        `,
         // Total ungrounded findings dropped for not citing a changed line.
         ungrounded: sql<number>`
           COALESCE(SUM((${schema.reviews.envelope} -> 'counts' ->> 'ungrounded')::int), 0)::int
@@ -157,10 +163,7 @@ export default async function OrgDashboardPage({
         eq(schema.installations.id, schema.repositories.installationId),
       )
       .where(and(eq(schema.installations.orgId, org.id), eq(schema.reviews.status, "completed")))
-  )[0] ?? { medianDurationMs: null, ungrounded: 0, shipped: 0 };
-
-  const medianDurationMs =
-    telemetryAgg.medianDurationMs != null ? Math.round(telemetryAgg.medianDurationMs) : null;
+  )[0] ?? { ungrounded: 0, shipped: 0 };
   const ungrounded = telemetryAgg.ungrounded ?? 0;
   const shipped = telemetryAgg.shipped ?? 0;
   // Share of model findings discarded for failing to cite a changed line.
@@ -350,7 +353,7 @@ export default async function OrgDashboardPage({
           </div>
           <p className="mt-4 text-sm text-ink-soft">
             Median time the review engine spends per pull request, measured from
-            its own envelope across completed reviews.
+            its own envelope across the latest 500 completed reviews.
           </p>
           <ReviewTimeDistribution durations={recordedDurations} />
         </div>

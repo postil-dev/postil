@@ -33,6 +33,7 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
   );
   const [bringOwnKey, setBringOwnKey] = useState(settings?.hasKey ?? false);
   const [apiKey, setApiKey] = useState("");
+  const [apiFormat, setApiFormat] = useState(settings?.apiFormat ?? "openai-compatible");
   const [additionalAuth, setAdditionalAuth] = useState(settings?.hasAdditionalAuth ?? false);
   const [apiAuthHeader, setApiAuthHeader] = useState("");
   const [apiAuthValue, setApiAuthValue] = useState("");
@@ -85,12 +86,14 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
             </label>
           </div>
           {bringOwnKey && (
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <label className="block text-sm">
                 <span className="font-medium">API format</span>
                 <select
                   name="apiFormat"
-                  defaultValue={settings?.apiFormat ?? "openai-compatible"}
+                  value={apiFormat}
+                  onChange={(event) => setApiFormat(event.target.value)}
                   className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 text-sm focus:border-gate focus:outline-none"
                 >
                   <option value="openai-compatible">OpenAI-compatible</option>
@@ -107,7 +110,11 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
                   name="apiBase"
                   required
                   defaultValue={settings?.apiBase ?? ""}
-                  placeholder="https://api.anthropic.com/v1"
+                  placeholder={
+                    apiFormat === "anthropic"
+                      ? "https://api.anthropic.com/v1"
+                      : "https://provider.example/v1"
+                  }
                   className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
                 />
               </label>
@@ -187,11 +194,12 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
                   </label>
                 </>
               )}
-            </div>
+              </div>
+              <p className="mt-3 text-xs text-charcoal/50">
+                Provider credentials are stored encrypted and never shown again.
+              </p>
+            </>
           )}
-          <p className="mt-3 text-xs text-charcoal/50">
-            Stored encrypted and never shown again.
-          </p>
         </div>
       </div>
 

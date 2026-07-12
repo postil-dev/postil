@@ -69,14 +69,14 @@ describe("refreshOrgConfigProbes", () => {
     const result = await refreshOrgConfigProbes({ status: "idle" }, form());
 
     expect(result).toMatchObject({
-      status: "success",
+      status: "partial",
       repositoryCount: 2,
       successfulCount: 1,
       failedCount: 1,
       configFileCount: 2,
       message: "Checked 2 repositories; 1 could not be reached.",
     });
-    expect(result.status === "success" && Number.isNaN(Date.parse(result.checkedAt))).toBe(false);
+    expect(result.status === "partial" && Number.isNaN(Date.parse(result.checkedAt))).toBe(false);
     expect(revalidatedPaths).toEqual(["/orgs/acme/settings"]);
   });
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   evaluatePrivateRepositoryAccess,
+  providerModeMatchesPrivateAccess,
   type OrganizationEntitlementSnapshot,
 } from "@/lib/private-repository-entitlement";
 
@@ -54,6 +55,21 @@ describe("private repository entitlement matrix", () => {
       allowed: false,
       reason: "no_entitlement",
     });
+  });
+
+  test("private inference must match the billed provider mode", () => {
+    const hosted = evaluatePrivateRepositoryAccess(true, entitlement(), 0, now);
+    const byok = evaluatePrivateRepositoryAccess(
+      true,
+      entitlement({ subscriptionMode: "byok" }),
+      0,
+      now,
+    );
+    expect(providerModeMatchesPrivateAccess(true, hosted, false)).toBe(true);
+    expect(providerModeMatchesPrivateAccess(true, hosted, true)).toBe(false);
+    expect(providerModeMatchesPrivateAccess(true, byok, true)).toBe(true);
+    expect(providerModeMatchesPrivateAccess(true, byok, false)).toBe(false);
+    expect(providerModeMatchesPrivateAccess(false, hosted, true)).toBe(true);
   });
 
   test("trial expiry is exclusive at the exact boundary", () => {

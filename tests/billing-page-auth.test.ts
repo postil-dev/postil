@@ -141,12 +141,12 @@ describe("organization billing page auth", () => {
     const page = await OrgBillingPage({ params: Promise.resolve({ slug: "acme" }) });
     const markup = renderToStaticMarkup(page);
 
-    expect(markup).toContain("17.5");
-    expect(markup).toContain("enabled repo-days");
-    expect(markup).toContain("billing-active now");
+    expect(markup).toContain("Repositories are not billing units");
+    expect(markup).toContain("per active private-PR author");
+    expect(markup).toContain("enabled, with no per-repo fee");
     expect(markup).toContain("Private repository access");
     expect(markup).toContain("Billing required");
-    expect(markup).toContain("Checkout is not available on this page");
+    expect(markup).toContain("Contact us to activate");
     expect(markup).toContain("active private PR authors: 3");
     expect(markup).toContain("$194.78");
     expect(markup).toContain("remaining from $200.00 granted");
