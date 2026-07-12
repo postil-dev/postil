@@ -2,10 +2,11 @@ import { accessSync, constants } from "node:fs";
 import { hostname } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
-import { closeDb, getPool } from "@/lib/db";
+import { closeDb, getDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
 import { claimJob } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
+import { backfillEscalationEmailVerification } from "../../scripts/backfill-escalation-email-verification";
 import { readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
@@ -111,6 +112,15 @@ async function main(): Promise<void> {
   validatePostilBin();
   // Fail fast if the database is unreachable.
   await getPool().query("SELECT 1");
+  // Queue verification for legacy recipients only after the new worker code is
+  // active. Queuing in Fly's release command would let the old worker claim an
+  // unfamiliar job kind while the deployment is rolling out.
+  const verificationBackfill = await backfillEscalationEmailVerification(getDb(), {
+    confirm: true,
+  });
+  console.log(
+    `escalation email verification backfill: pending=${verificationBackfill.pending} queued=${verificationBackfill.queued} already_queued=${verificationBackfill.alreadyQueued}`,
+  );
   // Fail fast if the image's CA trust store is broken (see tlsSelfTest).
   await tlsSelfTest();
   console.log(

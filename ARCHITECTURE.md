@@ -55,7 +55,9 @@ delivery is at-least-once: Brevo deduplicates ordinary retries, while a rare
 duplicate after an extended worker outage is preferred to a lost escalation.
 Verification jobs use the token digest as their provider idempotency key. The backfill
 command detects matching live jobs and restores missing or exhausted jobs without
-exposing addresses or token material.
+exposing addresses or token material. Worker startup runs the same idempotent backfill
+after the new worker code is active, which queues verification for migrated recipients
+without exposing the new job kind to workers from the preceding release.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog and computes the remaining credit balance shown on `/orgs/[slug]/billing`.
 
