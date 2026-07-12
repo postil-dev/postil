@@ -186,6 +186,19 @@ describe("extractBreadcrumbs", () => {
     ).toThrow("reviewUrl must point to the same GitHub pull request");
   });
 
+  test("accepts case-insensitive GitHub owner and repository matches", () => {
+    expect(
+      extractBreadcrumbs(
+        "https://github.com/Postil-Dev/Postil/pull/275",
+        "4d08309409e3b250cca5db5f53527e39a3a71ef9",
+        "https://github.com/postil-dev/postil/pull/275#discussion_r1234567890",
+      ),
+    ).toMatchObject({
+      reviewComment:
+        "https://github.com/postil-dev/postil/pull/275#discussion_r1234567890",
+    });
+  });
+
   test("matches the real evidence data review link shape", () => {
     const linkCounts = EVIDENCE_CASES.map((evidence) =>
       Object.keys(

@@ -122,12 +122,6 @@ jobs:
           if [[ -n "${DATABASE_URL}" ]]; then
             staged+="DATABASE_URL=${DATABASE_URL}"$'\n'
           fi
-          if [[ -n "${REVIEW_MODEL}" ]]; then
-            staged+="REVIEW_MODEL=${REVIEW_MODEL}"$'\n'
-          fi
-          if [[ -n "${REVIEW_MODEL_CASCADE}" ]]; then
-            staged+="REVIEW_MODEL_CASCADE=${REVIEW_MODEL_CASCADE}"$'\n'
-          fi
           if [[ -n "${BREVO_API_KEY}" ]]; then
             staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
           fi
@@ -140,11 +134,21 @@ jobs:
           if [[ -n "${staged}" ]]; then
             printf '%s' "${staged}" | flyctl secrets import --stage
           fi
+          # The pinned CLI release owns the hosted roster. Remove legacy
+          # runtime overrides so a release promotion cannot be shadowed by
+          # stale repository variables or Fly secrets.
+          legacy_model_secrets=()
+          while IFS= read -r name; do
+            case "${name}" in
+              REVIEW_MODEL|REVIEW_MODEL_CASCADE) legacy_model_secrets+=("${name}") ;;
+            esac
+          done < <(flyctl secrets list --json | jq -r '.[] | .Name // .name // empty')
+          if (( ${#legacy_model_secrets[@]} > 0 )); then
+            flyctl secrets unset --stage "${legacy_model_secrets[@]}"
+          fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          REVIEW_MODEL: ${{ vars.REVIEW_MODEL }}
-          REVIEW_MODEL_CASCADE: ${{ vars.REVIEW_MODEL_CASCADE }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
           POSTIL_ESCALATION_ORG: ${{ vars.POSTIL_ESCALATION_ORG }}

@@ -65,6 +65,30 @@ export default function TermsPage() {
           billing, invoicing, or procurement requirements.
         </p>
 
+        <h2>Usage and fair use</h2>
+        <p>
+          Hosted plans include the usage allowance shown for the subscription.
+          Additional hosted usage occurs only when an organization owner enables
+          an overage limit. Ordinary product use within purchased usage and
+          configured limits is not restricted under this policy.
+        </p>
+        <p>
+          We may rate-limit or temporarily restrict automated, abusive, or
+          materially abnormal activity that threatens service availability,
+          bypasses product limits, or uses Postil as a general-purpose inference
+          relay. Prohibited activity includes reselling hosted inference,
+          deliberately circumventing limits, and load testing without prior
+          approval. When practicable, we provide notice and an opportunity to
+          reduce usage before restricting service. Urgent security or availability
+          incidents may require immediate restriction.
+        </p>
+        <p>
+          BYOK model charges are billed by the selected provider. Postil usage
+          limits apply only to requests made through Postil and to Postil platform
+          resources. Questions or appeals can be sent to{" "}
+          <a href="mailto:hello@postil.dev">hello@postil.dev</a>.
+        </p>
+
         <h2>Your responsibilities</h2>
         <ul>
           <li>
