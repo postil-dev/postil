@@ -12,6 +12,12 @@ import {
 } from "@/lib/byok-provider";
 import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
+import {
+  createEscalationEmailVerification,
+  ESCALATION_EMAIL_RESEND_COOLDOWN_MS,
+  escalationEmailVerificationJobPayload,
+  normalizeEscalationEmail,
+} from "@/lib/escalation-email-verification";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
 import { getSessionUser } from "@/lib/session";
@@ -260,9 +266,16 @@ export async function saveOrgSettings(
   const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
   const contentPolicyMd =
     contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
-  const escalationEmail = String(formData.get("escalationEmail") ?? "").trim() || null;
-  if (escalationEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(escalationEmail)) {
-    return { status: "error", message: "Enter a valid escalation email address." };
+  let requestedEscalationEmail: string | null;
+  try {
+    requestedEscalationEmail = normalizeEscalationEmail(
+      String(formData.get("escalationEmail") ?? ""),
+    );
+  } catch (error) {
+    return {
+      status: "error",
+      message: error instanceof Error ? error.message : "Enter a valid notification email.",
+    };
   }
 
   if (configYaml) {
@@ -282,6 +295,9 @@ export async function saveOrgSettings(
       .select({
         apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
         apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
+        escalationEmail: schema.orgSettings.escalationEmail,
+        escalationEmailPending: schema.orgSettings.escalationEmailPending,
+        escalationEmailVerifiedAt: schema.orgSettings.escalationEmailVerifiedAt,
       })
       .from(schema.orgSettings)
       .where(eq(schema.orgSettings.orgId, orgId))
@@ -322,7 +338,6 @@ export async function saveOrgSettings(
     configYaml,
     guardrailsMd,
     contentPolicyMd,
-    escalationEmail,
     updatedAt: new Date(),
   };
 
@@ -369,24 +384,166 @@ export async function saveOrgSettings(
     return { status: "error", message: "Choose how to update additional authentication." };
   }
 
-  await db
-    .insert(schema.orgSettings)
-    .values({
+  const existing = currentSettings;
+  const activeEmail = existing?.escalationEmail ?? null;
+  const pendingEmail = existing?.escalationEmailPending ?? null;
+  const clearVerification = {
+    escalationEmailPending: null,
+    escalationEmailVerificationTokenDigest: null,
+    escalationEmailVerificationTokenCiphertext: null,
+    escalationEmailVerificationExpiresAt: null,
+    escalationEmailVerificationRequestedAt: null,
+    escalationEmailVerificationSentAt: null,
+    escalationEmailVerificationMessageId: null,
+  };
+  let emailInsert: Record<string, unknown> = {
+    escalationEmail: null,
+    escalationEmailVerifiedAt: null,
+    ...clearVerification,
+  };
+  let emailUpdate: Record<string, unknown> = {};
+  let verificationJob: { orgId: number; tokenDigest: string } | null = null;
+  let responseMessage = "Organization settings saved.";
+
+  if (!requestedEscalationEmail) {
+    emailUpdate = {
+      escalationEmail: null,
+      escalationEmailVerifiedAt: null,
+      ...clearVerification,
+    };
+    if (activeEmail || pendingEmail) {
+      responseMessage = "Settings saved. Notifications are off.";
+    }
+  } else if (
+    requestedEscalationEmail === activeEmail &&
+    existing?.escalationEmailVerifiedAt
+  ) {
+    emailInsert = {
+      escalationEmail: requestedEscalationEmail,
+      escalationEmailVerifiedAt: existing?.escalationEmailVerifiedAt ?? new Date(),
+      ...clearVerification,
+    };
+    emailUpdate = clearVerification;
+  } else if (requestedEscalationEmail !== pendingEmail) {
+    const verification = createEscalationEmailVerification(
       orgId,
-      ...base,
-      apiKeyCiphertext: "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
-      apiAuthHeaderCiphertext:
-        "apiAuthHeaderCiphertext" in authUpdate ? authUpdate.apiAuthHeaderCiphertext : null,
-      apiAuthValueCiphertext:
-        "apiAuthValueCiphertext" in authUpdate ? authUpdate.apiAuthValueCiphertext : null,
-    })
-    .onConflictDoUpdate({
-      target: schema.orgSettings.orgId,
-      set: { ...base, ...keyUpdate, ...authUpdate },
-    });
+      requestedEscalationEmail,
+      base.updatedAt,
+    );
+    const pendingState = {
+      escalationEmailPending: requestedEscalationEmail,
+      escalationEmailVerificationTokenDigest: verification.tokenDigest,
+      escalationEmailVerificationTokenCiphertext: verification.tokenCiphertext,
+      escalationEmailVerificationExpiresAt: verification.expiresAt,
+      escalationEmailVerificationRequestedAt: verification.requestedAt,
+      escalationEmailVerificationSentAt: null,
+      escalationEmailVerificationMessageId: null,
+    };
+    emailInsert = {
+      escalationEmail: null,
+      escalationEmailVerifiedAt: null,
+      ...pendingState,
+    };
+    emailUpdate = existing?.escalationEmailVerifiedAt
+      ? pendingState
+      : {
+          escalationEmail: null,
+          escalationEmailVerifiedAt: null,
+          ...pendingState,
+        };
+    verificationJob = escalationEmailVerificationJobPayload(
+      orgId,
+      verification.tokenDigest,
+    );
+    responseMessage = "Settings saved. Check your email to verify notifications.";
+  }
+
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(schema.orgSettings)
+      .values({
+        orgId,
+        ...base,
+        ...emailInsert,
+        apiKeyCiphertext: "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
+        apiAuthHeaderCiphertext:
+          "apiAuthHeaderCiphertext" in authUpdate ? authUpdate.apiAuthHeaderCiphertext : null,
+        apiAuthValueCiphertext:
+          "apiAuthValueCiphertext" in authUpdate ? authUpdate.apiAuthValueCiphertext : null,
+      })
+      .onConflictDoUpdate({
+        target: schema.orgSettings.orgId,
+        set: { ...base, ...keyUpdate, ...authUpdate, ...emailUpdate },
+      });
+    if (verificationJob) {
+      await tx.insert(schema.jobs).values({
+        kind: "escalation-email-verification",
+        payload: verificationJob,
+        maxAttempts: 5,
+      });
+    }
+  });
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);
-  return { status: "success", message: "Organization settings saved." };
+  return { status: "success", message: responseMessage };
+}
+
+export async function resendEscalationEmailVerification(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId } = await requireAdmin(slug);
+  const db = getDb();
+  const now = new Date();
+  const row = (
+    await db
+      .select({
+        pendingEmail: schema.orgSettings.escalationEmailPending,
+        requestedAt: schema.orgSettings.escalationEmailVerificationRequestedAt,
+      })
+      .from(schema.orgSettings)
+      .where(eq(schema.orgSettings.orgId, orgId))
+      .limit(1)
+  )[0];
+  if (!row?.pendingEmail) {
+    return { status: "error", message: "No email is waiting for verification." };
+  }
+  const pendingEmail = row.pendingEmail;
+  if (
+    row.requestedAt &&
+    now.getTime() - row.requestedAt.getTime() < ESCALATION_EMAIL_RESEND_COOLDOWN_MS
+  ) {
+    return { status: "error", message: "Wait a minute before sending another email." };
+  }
+  const verification = createEscalationEmailVerification(orgId, pendingEmail, now);
+  const payload = escalationEmailVerificationJobPayload(orgId, verification.tokenDigest);
+  await db.transaction(async (tx) => {
+    await tx
+      .update(schema.orgSettings)
+      .set({
+        escalationEmailVerificationTokenDigest: verification.tokenDigest,
+        escalationEmailVerificationTokenCiphertext: verification.tokenCiphertext,
+        escalationEmailVerificationExpiresAt: verification.expiresAt,
+        escalationEmailVerificationRequestedAt: verification.requestedAt,
+        escalationEmailVerificationSentAt: null,
+        escalationEmailVerificationMessageId: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.orgSettings.orgId, orgId),
+          eq(schema.orgSettings.escalationEmailPending, pendingEmail),
+        ),
+      );
+    await tx.insert(schema.jobs).values({
+      kind: "escalation-email-verification",
+      payload,
+      maxAttempts: 5,
+    });
+  });
+  revalidatePath(`/orgs/${slug}/settings`);
+  return { status: "success", message: "Verification email queued." };
 }
 
 

@@ -13,6 +13,7 @@
     "seed": "bun run scripts/seed.ts",
     "billing:grant-credit": "bun run scripts/grant-billing-credit.ts",
     "billing:set-entitlement": "bun run scripts/set-org-entitlement.ts",
+    "notifications:backfill-verification": "bun run scripts/backfill-escalation-email-verification.ts",
     "verify:dashboard": "bun run scripts/verify-dashboard.ts",
     "review:local": "bun run scripts/run-review-locally.ts",
     "test": "AGENT=1 bun test --isolate"

@@ -395,7 +395,9 @@ export const jobs = pgTable(
     lastError: text("last_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("jobs_claim_idx").on(t.status, t.runAfter)],
+  (t) => [
+    index("jobs_claim_idx").on(t.status, t.runAfter),
+  ],
 );
 
 export const sessions = pgTable("sessions", {
@@ -422,6 +424,32 @@ export const orgSettings = pgTable("org_settings", {
   configYaml: text("config_yaml"),
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
+  /** Active only after possession of this address is verified. */
   escalationEmail: text("escalation_email"),
+  escalationEmailPending: text("escalation_email_pending"),
+  escalationEmailVerifiedAt: timestamp("escalation_email_verified_at", {
+    withTimezone: true,
+  }),
+  escalationEmailVerificationTokenDigest: bytea(
+    "escalation_email_verification_token_digest",
+  ),
+  escalationEmailVerificationTokenCiphertext: bytea(
+    "escalation_email_verification_token_ciphertext",
+  ),
+  escalationEmailVerificationExpiresAt: timestamp(
+    "escalation_email_verification_expires_at",
+    { withTimezone: true },
+  ),
+  escalationEmailVerificationRequestedAt: timestamp(
+    "escalation_email_verification_requested_at",
+    { withTimezone: true },
+  ),
+  escalationEmailVerificationSentAt: timestamp(
+    "escalation_email_verification_sent_at",
+    { withTimezone: true },
+  ),
+  escalationEmailVerificationMessageId: text(
+    "escalation_email_verification_message_id",
+  ),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

@@ -7,7 +7,6 @@ import {
 } from "@/lib/escalation-notification";
 import type { Envelope } from "@/lib/envelope";
 import { requireEnv } from "@/lib/env";
-import { optionalEnv } from "@/lib/env";
 
 export interface EscalationNotificationJobPayload extends Record<string, unknown> {
   reviewId: number;
@@ -28,7 +27,7 @@ export async function runEscalationNotificationJob(
         publicId: schema.reviews.publicId,
         envelope: schema.reviews.envelope,
         escalationEmail: schema.orgSettings.escalationEmail,
-        orgSlug: schema.organizations.slug,
+        escalationEmailVerifiedAt: schema.orgSettings.escalationEmailVerifiedAt,
       })
       .from(schema.reviews)
       .innerJoin(
@@ -43,10 +42,6 @@ export async function runEscalationNotificationJob(
         schema.orgSettings,
         eq(schema.orgSettings.orgId, schema.installations.orgId),
       )
-      .leftJoin(
-        schema.organizations,
-        eq(schema.organizations.id, schema.installations.orgId),
-      )
       .where(
         and(
           eq(schema.reviews.id, payload.reviewId),
@@ -58,13 +53,12 @@ export async function runEscalationNotificationJob(
   if (!row || row.status !== "completed" || !row.envelope) {
     throw new Error("escalation notification review is missing or incomplete");
   }
-  const bootstrapOrg = optionalEnv("POSTIL_ESCALATION_ORG");
-  const bootstrapEmail = optionalEnv("POSTIL_ESCALATION_EMAIL");
-  const recipient =
-    row.escalationEmail?.trim() ||
-    (bootstrapOrg && row.orgSlug === bootstrapOrg ? bootstrapEmail?.trim() : undefined);
-  if (!recipient) {
-    throw new Error("organization escalation email is not configured");
+  const recipient = row.escalationEmail?.trim();
+  if (!recipient || !row.escalationEmailVerifiedAt) {
+    console.log(
+      `escalation notification ${payload.reviewPublicId} skipped: no verified recipient`,
+    );
+    return;
   }
 
   const result = await sendHumanEscalationNotification({
@@ -74,6 +68,7 @@ export async function runEscalationNotificationJob(
     runUrl: payload.runUrl,
     reviewPublicId: payload.reviewPublicId,
     recipient,
+    recipientVerifiedAt: row.escalationEmailVerifiedAt,
     apiKey: requireEnv("BREVO_API_KEY"),
     githubWebBase: configuredGithubWebBase(),
   });

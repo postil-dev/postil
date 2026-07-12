@@ -23,6 +23,10 @@ import {
   runEscalationNotificationJob,
   type EscalationNotificationJobPayload,
 } from "./escalation-notification";
+import {
+  runEscalationEmailVerificationJob,
+  type EscalationEmailVerificationJobPayload,
+} from "./escalation-email-verification";
 import { watchdogPass } from "./watchdog";
 
 const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv("POSTIL_QUEUE_DRAIN_MAX_JOBS", 1);
@@ -47,6 +51,11 @@ async function handleJob(job: ClaimedJob): Promise<void> {
     case "escalation-notification":
       await runEscalationNotificationJob(
         job.payload as EscalationNotificationJobPayload,
+      );
+      break;
+    case "escalation-email-verification":
+      await runEscalationEmailVerificationJob(
+        job.payload as EscalationEmailVerificationJobPayload,
       );
       break;
     case "check-run-cleanup":

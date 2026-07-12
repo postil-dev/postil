@@ -78,6 +78,7 @@ describe("human escalation notifications", () => {
       runUrl: "https://postil.dev/orgs/postil-dev/runs/run-42",
       reviewPublicId: "00000000-0000-0000-0000-000000000042",
       recipient: "owner@example.com",
+      recipientVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
       apiKey: "test-key",
       fetchImpl: () => {
         calls += 1;
@@ -86,6 +87,27 @@ describe("human escalation notifications", () => {
     });
 
     expect(result.sent).toBe(false);
+    expect(calls).toBe(0);
+  });
+
+  test("refuses an unverified recipient before calling Brevo", async () => {
+    let calls = 0;
+    await expect(
+      sendHumanEscalationNotification({
+        envelope: envelope([0.8]),
+        repoFullName: "postil-dev/postil",
+        prNumber: 42,
+        runUrl: "https://postil.dev/orgs/postil-dev/runs/run-42",
+        reviewPublicId: "00000000-0000-0000-0000-000000000042",
+        recipient: "owner@example.com",
+        recipientVerifiedAt: undefined as unknown as Date,
+        apiKey: "test-key",
+        fetchImpl: async () => {
+          calls += 1;
+          return new Response(null, { status: 201 });
+        },
+      }),
+    ).rejects.toThrow("escalation recipient is not verified");
     expect(calls).toBe(0);
   });
 
@@ -98,6 +120,7 @@ describe("human escalation notifications", () => {
       runUrl: "https://postil.dev/orgs/postil-dev/runs/run-42",
       reviewPublicId: "00000000-0000-0000-0000-000000000042",
       recipient: "Owner@example.com",
+      recipientVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
       apiKey: "test-key",
       githubWebBase: "https://github.example.com",
       fetchImpl: (input, init) => {
@@ -137,6 +160,7 @@ describe("human escalation notifications", () => {
         runUrl: "https://postil.dev/orgs/postil-dev/runs/run-42",
         reviewPublicId: "00000000-0000-0000-0000-000000000042",
         recipient: "owner@example.com",
+        recipientVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
         apiKey: "test-key",
         fetchImpl: () =>
           Promise.resolve(new Response("provider unavailable", { status: 503 })),
@@ -152,6 +176,7 @@ describe("human escalation notifications", () => {
       runUrl: "https://postil.dev/orgs/postil-dev/runs/run-42",
       reviewPublicId: "00000000-0000-0000-0000-000000000042",
       recipient: "owner@example.com",
+      recipientVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
       apiKey: "test-key",
       fetchImpl: () =>
         Promise.resolve(
@@ -177,6 +202,7 @@ describe("human escalation notifications", () => {
       runUrl: "https://postil.dev/orgs/postil-dev/runs/run-42",
       reviewPublicId: "00000000-0000-0000-0000-000000000042",
       recipient: "owner@example.com",
+      recipientVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
       apiKey: "test-key",
       fetchImpl: (input, init) => {
         request = new Request(input, init);
@@ -204,6 +230,7 @@ describe("human escalation notifications", () => {
       runUrl: "https://postil.dev/orgs/postil-dev/runs/run-42",
       reviewPublicId: "00000000-0000-0000-0000-000000000042",
       recipient: "owner@example.com",
+      recipientVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
       apiKey: "test-key",
       fetchImpl: (input, init) => {
         request = new Request(input, init);

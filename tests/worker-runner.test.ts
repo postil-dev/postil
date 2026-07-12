@@ -13,6 +13,7 @@ let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let escalationRun: (() => Promise<void>) | undefined;
+let escalationVerificationRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
 
@@ -67,6 +68,12 @@ mock.module("@/worker/escalation-notification", () => ({
   },
 }));
 
+mock.module("@/worker/escalation-email-verification", () => ({
+  runEscalationEmailVerificationJob: async () => {
+    await escalationVerificationRun?.();
+  },
+}));
+
 const { drainQueueOnce, triggerQueueDrain } = await import("@/worker/runner");
 
 function reviewJob(id: number): ClaimedJob {
@@ -98,6 +105,7 @@ beforeEach(() => {
   respondRun = async () => undefined;
   respondFailureCommentRun = async () => undefined;
   escalationRun = async () => undefined;
+  escalationVerificationRun = async () => undefined;
   cleanupRun = async () => undefined;
   reviewTiming = undefined;
 });
@@ -122,6 +130,21 @@ describe("drainQueueOnce", () => {
     };
     let called = false;
     escalationRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("dispatches durable escalation email verification jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "escalation-email-verification";
+    job.payload = { orgId: 7, tokenDigest: "a".repeat(43) };
+    let called = false;
+    escalationVerificationRun = async () => {
       called = true;
     };
     jobs.push(job);

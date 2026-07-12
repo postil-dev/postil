@@ -6,13 +6,12 @@ import { seal, unseal } from "@/lib/crypto/seal";
 let sessionUser: { id: number } | null = { id: 10 };
 let orgRows: Array<{ id: number }> = [{ id: 20 }];
 let memberRows: Array<{ role: string }> = [{ role: "admin" }];
-let settingsRows: Array<{
-  apiKeyCiphertext: Buffer | null;
-  apiAuthHeaderCiphertext?: Buffer | null;
-}> = [];
 let insertedValues: Record<string, unknown> | null = null;
 let conflictSet: Record<string, unknown> | null = null;
 let insertCount = 0;
+let settingsRows: Array<Record<string, unknown>> = [];
+let queuedJobs: Array<Record<string, unknown>> = [];
+let updatedValues: Record<string, unknown> | null = null;
 
 const schema = {
   organizations: { id: "organizations.id", slug: "organizations.slug" },
@@ -25,7 +24,24 @@ const schema = {
     orgId: "org_settings.org_id",
     apiKeyCiphertext: "org_settings.api_key_ciphertext",
     apiAuthHeaderCiphertext: "org_settings.api_auth_header_ciphertext",
+    escalationEmail: "org_settings.escalation_email",
+    escalationEmailPending: "org_settings.escalation_email_pending",
+    escalationEmailVerifiedAt: "org_settings.escalation_email_verified_at",
+    escalationEmailVerificationRequestedAt:
+      "org_settings.escalation_email_verification_requested_at",
+    escalationEmailVerificationTokenDigest:
+      "org_settings.escalation_email_verification_token_digest",
+    escalationEmailVerificationTokenCiphertext:
+      "org_settings.escalation_email_verification_token_ciphertext",
+    escalationEmailVerificationExpiresAt:
+      "org_settings.escalation_email_verification_expires_at",
+    escalationEmailVerificationSentAt:
+      "org_settings.escalation_email_verification_sent_at",
+    escalationEmailVerificationMessageId:
+      "org_settings.escalation_email_verification_message_id",
+    updatedAt: "org_settings.updated_at",
   },
+  jobs: { kind: "jobs.kind" },
 };
 
 mock.module("next/cache", () => ({
@@ -41,16 +57,20 @@ mock.module("@/lib/db", () => ({
   schema,
 }));
 
-const { approveFinding, saveOrgSettings } = await import("@/app/orgs/[slug]/actions");
+const { approveFinding, resendEscalationEmailVerification, saveOrgSettings } =
+  await import("@/app/orgs/[slug]/actions");
 
 function fakeDb() {
   return {
     select(selection: Record<string, unknown>) {
-      const rows = "role" in selection
-        ? memberRows
-        : "apiKeyCiphertext" in selection
-          ? settingsRows
-          : orgRows;
+      const rows =
+        "role" in selection
+          ? memberRows
+          : "apiKeyCiphertext" in selection ||
+              "escalationEmail" in selection ||
+              "pendingEmail" in selection
+            ? settingsRows
+            : orgRows;
       const chain = {
         from() {
           return chain;
@@ -64,10 +84,14 @@ function fakeDb() {
       };
       return chain;
     },
-    insert() {
+    insert(table: unknown) {
       insertCount += 1;
       return {
         values(values: Record<string, unknown>) {
+          if (table === schema.jobs) {
+            queuedJobs.push(values);
+            return Promise.resolve([]);
+          }
           insertedValues = values;
           return {
             onConflictDoUpdate(args: { set: Record<string, unknown> }) {
@@ -77,6 +101,21 @@ function fakeDb() {
           };
         },
       };
+    },
+    transaction(callback: (tx: unknown) => Promise<unknown>) {
+      return callback(fakeDb());
+    },
+    update() {
+      const chain = {
+        set(values: Record<string, unknown>) {
+          updatedValues = values;
+          return chain;
+        },
+        where() {
+          return Promise.resolve([]);
+        },
+      };
+      return chain;
     },
   };
 }
@@ -126,10 +165,12 @@ beforeEach(() => {
   sessionUser = { id: 10 };
   orgRows = [{ id: 20 }];
   memberRows = [{ role: "admin" }];
-  settingsRows = [];
   insertedValues = null;
   conflictSet = null;
   insertCount = 0;
+  settingsRows = [];
+  queuedJobs = [];
+  updatedValues = null;
 });
 
 describe("saveOrgSettings", () => {
@@ -344,8 +385,15 @@ describe("saveOrgSettings", () => {
       settingsForm({ escalationEmail: "owners@example.com" }),
     );
 
-    expect(result.status).toBe("success");
-    expect(conflictSet?.escalationEmail).toBe("owners@example.com");
+    expect(result).toEqual({
+      status: "success",
+      message: "Settings saved. Check your email to verify notifications.",
+    });
+    expect(conflictSet?.escalationEmailPending).toBe("owners@example.com");
+    expect(conflictSet?.escalationEmail).toBeNull();
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ kind: "escalation-email-verification" });
+    expect(JSON.stringify(queuedJobs[0])).not.toContain("owners@example.com");
   });
 
   test("rejects malformed escalation recipients", async () => {
@@ -356,9 +404,81 @@ describe("saveOrgSettings", () => {
 
     expect(result).toEqual({
       status: "error",
-      message: "Enter a valid escalation email address.",
+      message: "Enter a valid notification email.",
     });
     expect(insertCount).toBe(0);
+  });
+
+  test("keeps the verified address active while a replacement waits", async () => {
+    settingsRows = [
+      {
+        escalationEmail: "verified@example.com",
+        escalationEmailPending: null,
+        escalationEmailVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+    ];
+    await saveOrgSettings(
+      null,
+      settingsForm({ escalationEmail: "Replacement@Example.com" }),
+    );
+
+    expect(conflictSet?.escalationEmail).toBeUndefined();
+    expect(conflictSet?.escalationEmailVerifiedAt).toBeUndefined();
+    expect(conflictSet?.escalationEmailPending).toBe("replacement@example.com");
+    expect(queuedJobs).toHaveLength(1);
+  });
+
+  test("removing an address clears active, pending, and token state", async () => {
+    settingsRows = [
+      {
+        escalationEmail: "verified@example.com",
+        escalationEmailPending: "replacement@example.com",
+        escalationEmailVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+    ];
+    await saveOrgSettings(null, settingsForm({ escalationEmail: "" }));
+
+    expect(conflictSet).toMatchObject({
+      escalationEmail: null,
+      escalationEmailPending: null,
+      escalationEmailVerifiedAt: null,
+      escalationEmailVerificationTokenDigest: null,
+      escalationEmailVerificationTokenCiphertext: null,
+    });
+    expect(queuedJobs).toHaveLength(0);
+  });
+
+  test("does not queue another email when the same address is already pending", async () => {
+    settingsRows = [
+      {
+        escalationEmail: null,
+        escalationEmailPending: "pending@example.com",
+        escalationEmailVerifiedAt: null,
+      },
+    ];
+    await saveOrgSettings(
+      null,
+      settingsForm({ escalationEmail: "PENDING@example.com" }),
+    );
+    expect(queuedJobs).toHaveLength(0);
+    expect(conflictSet?.escalationEmailPending).toBeUndefined();
+  });
+
+  test("resend enforces cooldown without queuing", async () => {
+    settingsRows = [
+      {
+        pendingEmail: "pending@example.com",
+        requestedAt: new Date(),
+      },
+    ];
+    const form = new FormData();
+    form.set("slug", "acme");
+    expect(await resendEscalationEmailVerification(null, form)).toEqual({
+      status: "error",
+      message: "Wait a minute before sending another email.",
+    });
+    expect(queuedJobs).toHaveLength(0);
+    expect(updatedValues).toBeNull();
   });
 });
 
@@ -380,5 +500,23 @@ describe("SettingsForm API key handling", () => {
     expect(source).not.toContain("defaultValue={settings?.apiKey");
     expect(source).not.toContain("value={settings?.apiKey");
     expect(source).not.toContain("HOSTED_DEFAULT_MODEL_CHAIN");
+  });
+
+  test("renders minimal pending and verified notification states", () => {
+    const formSource = readFileSync("src/app/orgs/[slug]/settings-form.tsx", "utf8");
+    const pageSource = readFileSync("src/app/orgs/[slug]/settings/page.tsx", "utf8");
+
+    expect(formSource).toContain("Check your email to verify this address.");
+    expect(formSource).toContain("Escalation emails");
+    expect(formSource).toContain(
+      "Get an email when a finding needs human attention.",
+    );
+    expect(formSource).toContain("Alerts continue to the verified address.");
+    expect(formSource).toContain("Resend");
+    expect(formSource).toContain("verified");
+    expect(pageSource).toContain('role="status"');
+    expect(pageSource).toContain('role="alert"');
+    expect(pageSource).toContain("Notification email verified.");
+    expect(pageSource).toContain("This verification link is invalid or expired.");
   });
 });

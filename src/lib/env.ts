@@ -168,20 +168,6 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
-    name: "POSTIL_ESCALATION_ORG",
-    purpose: "Organization slug for the scoped bootstrap escalation recipient",
-    example: "postil-dev",
-    scope: ["web", "worker"],
-    optional: true,
-  },
-  {
-    name: "POSTIL_ESCALATION_EMAIL",
-    purpose: "Bootstrap escalation recipient used only for POSTIL_ESCALATION_ORG",
-    example: "owner@example.com",
-    scope: ["web", "worker"],
-    optional: true,
-  },
-  {
     name: "POSTIL_BIN",
     purpose: "Path to the postil CLI binary the worker or webhook drain spawns",
     example: "/usr/local/bin/postil",

@@ -19,6 +19,7 @@ export interface EscalationNotificationInput {
   runUrl: string;
   reviewPublicId: string;
   recipient: string;
+  recipientVerifiedAt: Date;
   apiKey: string;
   githubWebBase?: string;
   fetchImpl?: Fetch;
@@ -63,6 +64,12 @@ export async function sendHumanEscalationNotification(
       findingCount: findings.length,
       recipientCount: recipient ? 1 : 0,
     };
+  }
+  if (
+    !(input.recipientVerifiedAt instanceof Date) ||
+    !Number.isFinite(input.recipientVerifiedAt.getTime())
+  ) {
+    throw new Error("escalation recipient is not verified");
   }
 
   const highestSeverity = findings.some((finding) => finding.severity === "error")

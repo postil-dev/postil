@@ -43,12 +43,19 @@ The watchdog shares that free-tier profile: its interval is configurable so the 
 
 Completed hosted reviews send one Brevo transactional email when their stored
 envelope contains a calibrated `humanEscalation` finding at or above the gate
-confidence floor. The notification targets the organization-owned recipient
-configured by an administrator. A durable queue job retries transient provider
+confidence floor. The notification targets only the organization-owned recipient
+whose address has a non-null verification timestamp. New and replacement addresses
+remain pending until a single-use, 24-hour token is consumed. Token digests bind the
+token to the organization and normalized address; sealed token material is available
+only to durable verification-email jobs. Replacing a pending address invalidates its
+old token without deactivating an existing verified recipient. A durable queue job retries transient provider
 failures using the public review ID as the provider idempotency key, so email
 delivery cannot change review storage, comments, checks, or gate state. Queue
 delivery is at-least-once: Brevo deduplicates ordinary retries, while a rare
 duplicate after an extended worker outage is preferred to a lost escalation.
+Verification jobs use the token digest as their provider idempotency key. The backfill
+command detects matching live jobs and restores missing or exhausted jobs without
+exposing addresses or token material.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog and computes the remaining credit balance shown on `/orgs/[slug]/billing`.
 
