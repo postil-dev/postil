@@ -414,7 +414,7 @@ export async function runReviewJob(
       // the per-review work dir below, not the worker's.
       args.push("--since-sha", baseline.headSha, "--baseline", resolve(baselinePath));
     }
-    args.push("--output-json");
+    args.push("--output", "json");
 
     // Materialize the repo's .postil config (default branch) into a fresh
     // per-review directory and run the CLI there, so repo-level config works
