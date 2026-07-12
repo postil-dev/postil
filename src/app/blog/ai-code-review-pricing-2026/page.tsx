@@ -341,13 +341,14 @@ export default function PricingArticle() {
           </a>
         </p>
 
-        <h3>Postil: $200/month with hosted reviews included</h3>
+        <h3>Postil: active-author pricing with a hosted allowance</h3>
         <p>
-          Our row. 20 developers × $10 flat = <strong>$200 per month</strong>{" "}
-          for the Team plan, at any PR volume; the number does not change in
-          the agent-heavy scenario. Hosted reviews on public repositories are
-          free, hosted Team reviews are included by default, and the
-          self-hosted stack is free with no seat limit.
+          Our row assumes all 20 developers open a private-repository PR that
+          Postil reviews. Hosted is 20 active authors × $15 ={" "}
+          <strong>$300 per month</strong>, including a $120 inference allowance
+          pooled across the organization. BYOK is 20 × $9 ={" "}
+          <strong>$180 per month</strong>, with provider usage billed directly.
+          Hosted public-repository reviews are free.
           Source: <Link href="/pricing">postil.dev/pricing</Link>.
         </p>
 
@@ -408,9 +409,9 @@ export default function PricingArticle() {
             </tr>
             <tr>
               <td>Postil</td>
-              <td className="hidden sm:table-cell">Flat per developer</td>
-              <td>$200</td>
-              <td>Seats; BYOK is optional for policy</td>
+              <td className="hidden sm:table-cell">Active private-PR author</td>
+              <td>$300 Hosted / $180 BYOK</td>
+              <td>Hosted includes $120 pooled inference allowance</td>
             </tr>
           </tbody>
         </table>
@@ -458,11 +459,11 @@ export default function PricingArticle() {
           you can forecast within a few percent is worth something even when
           a metered bill might be lower, because budget surprises have
           organizational costs that unit prices do not capture. Our own
-          position follows from that: Postil charges flat for Team seats
-          ($10 per developer) with hosted reviews included, while BYOK
-          support remains available for teams that require provider-controlled
-          inference. When you choose BYOK, provider usage stays in your
-          account and Postil has no lever to profit from your volume. That
+          position follows from that: Postil charges $15 per active private-PR
+          author for Hosted, with a $6 pooled inference allowance per author,
+          or $9 per active author for BYOK. When you choose BYOK, provider
+          usage stays in your account and Postil has no lever to profit from
+          your volume. That
           property comes from the pricing structure itself, and you can check
           it on{" "}
           <Link href="/pricing">our pricing page</Link>.
@@ -575,8 +576,8 @@ export default function PricingArticle() {
             Run the math on your own numbers.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Postil is $10 per developer, flat, with hosted reviews included.
-            The calculator on the pricing page does the rest.
+            Compare $15 Hosted and $9 BYOK per active private-PR author.
+            The pricing calculator applies both models.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

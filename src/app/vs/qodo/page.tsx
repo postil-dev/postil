@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Qodo",
   description:
-    "Postil is a Qodo alternative with flat pricing and hosted reviews included instead of credit-pack billing, a hard merge gate, and self-hosting of the full product, not a separate open-source tool.",
+    "Postil is a Qodo alternative with active-author pricing instead of credit packs, a hard merge gate, and self-hosting of the full product.",
   alternates: { canonical: "/vs/qodo" },
   openGraph: {
     title: "Postil vs Qodo",
     description:
-      "Flat pricing with hosted reviews included instead of credit-pack billing, a hard merge gate, and a published silence metric. The honest comparison.",
+      "Active-author pricing instead of credit packs, a hard merge gate, and a published silence metric. The honest comparison.",
     url: "https://postil.dev/vs/qodo",
     images: ["/opengraph-image"],
   },
@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat Team price; hosted reviews included" },
+      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
       { kind: "text", note: "Credit packs; $0.012/credit, $30 start" },
     ],
   },
@@ -81,8 +81,8 @@ export default function VsQodoPage() {
         Qodo (formerly Codium) is the one major competitor with a genuine
         self-hosting story, through its open-source PR-Agent. Postil is a Qodo
         alternative for teams who want the self-hostable thing to be the whole
-        product, priced flat instead of through pooled credit packs, with
-        a merge gate you can require in branch protection.
+        product, priced by active private-PR author instead of through pooled
+        credit packs, with a merge gate you can require in branch protection.
       </p>
 
       <div className="mt-12">
@@ -125,10 +125,10 @@ export default function VsQodoPage() {
           <a href="https://docs.qodo.ai/pricing-and-usage" rel="noopener">
             usage docs
           </a>{" "}
-          describe shared workspace credits and overage caps. Postil charges a
-          flat $10 per developer per month with hosted reviews included, so the
-          bill does not move with model choice or review volume. Run the numbers
-          on the{" "}
+          describe shared workspace credits and overage caps. Postil Hosted is
+          $15 per active author with a $6 pooled inference allowance per author.
+          BYOK is $9 per active author with direct provider charges. Run the
+          numbers on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 
@@ -185,8 +185,8 @@ export default function VsQodoPage() {
         <div>
           <h2 className="serif-display text-2xl">One product, clear pricing.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Hosted Team is $10/dev/mo with reviews included. Self-hosted stays
-            free with the same gate and dashboard. Install the CLI and try it on
+            Hosted is $15 and BYOK is $9 per active private-PR author.
+            Self-hosted stays free with the same gate and dashboard. Try it on
             your next diff.
           </p>
         </div>

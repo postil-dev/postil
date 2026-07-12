@@ -57,12 +57,46 @@ export default function TermsPage() {
           fails open on provider outages only; the default remains fail-closed.
         </p>
 
-        <h2>Billing and pricing</h2>
+        <h2 id="billing-and-fair-use">Billing and fair use</h2>
         <p>
-          Hosted Team pricing is documented on the{" "}
-          <Link href="/pricing">pricing page</Link>. Public repositories, the
-          CLI, and the self-hosted stack remain free. Contact us for annual
-          billing, invoicing, or procurement requirements.
+          The organization is the customer. Hosted costs $15 per active
+          private-PR author per month and includes $6 of inference allowance per
+          active author, pooled organization-wide. BYOK costs $9 per active
+          private-PR author per month, with inference billed by the configured
+          provider. Pricing is also summarized on the{" "}
+          <Link href="/pricing">pricing page</Link>.
+        </p>
+        <p>
+          An active author is a GitHub identity, including a bot or service
+          identity, whose private-repository pull request Postil reviews during
+          the billing month. An identity counts once per organization, with no
+          repository charge. The same identity counts separately for unrelated
+          organization customers. Organizations covered by one contracted
+          enterprise account deduplicate the identity across that account.
+        </p>
+        <p>
+          Hosted inference overage defaults to $0. An organization owner must
+          explicitly choose a higher hard cap before additional hosted inference
+          usage can be charged. Allowance and usage are shown in dollars, not
+          proprietary credits. When the cap is reached, hosted reviews can pause
+          until the allowance resets, the owner raises the cap, or the
+          organization switches to BYOK.
+        </p>
+        <p>
+          Hosted public-repository reviews are free. Automated or coordinated
+          activity intended to exhaust shared capacity, evade safeguards, or
+          materially impair the service is not fair use and can be rate-limited
+          or suspended.
+        </p>
+        <p>
+          Ordinary use within purchased allowance and configured limits is not
+          restricted under fair use. Prohibited activity includes reselling or
+          proxying hosted inference, deliberately circumventing limits, and load
+          testing without prior approval. When practicable, we provide notice and
+          an opportunity to reduce usage before restricting service. Urgent
+          security or availability incidents may require immediate restriction.
+          Questions or appeals can be sent to{" "}
+          <a href="mailto:hello@postil.dev">hello@postil.dev</a>.
         </p>
 
         <h2>Usage and fair use</h2>
@@ -99,8 +133,10 @@ export default function TermsPage() {
           </li>
           <li>
             You are responsible for API keys you configure and any charges your
-            model provider bills against them. Hosted Team remains flat; BYOK
-            provider usage is billed by your provider outside Postil.
+            model provider bills against them. BYOK provider usage is billed by
+            your provider outside Postil. Configure provider-side budgets and
+            alerts, plus hard limits where the provider supports them, because
+            Postil cannot enforce spending limits in an external provider account.
           </li>
           <li>
             Do not attempt to disrupt, reverse-engineer the hosted control plane,

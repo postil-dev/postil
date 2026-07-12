@@ -433,25 +433,25 @@ export default function HomePage() {
         </div>
       </Section>
 
-      {/* 07 — Pricing teaser */}
+      {/* 07 - Pricing teaser */}
       <Section
         number="07"
         eyebrow="Pricing"
-        title="Flat per-developer pricing, reviews included."
+        title="Pricing follows active private-PR authors."
       >
         <div className="grid gap-8 md:grid-cols-3">
           <div className="card p-6">
             <p className="serif-display text-2xl">Free</p>
             <p className="mt-2 text-sm text-ink-soft">
-              Free for public repositories. The local CLI is Apache-2.0.
+              Hosted public-repository reviews are free. The local CLI is
+              Apache-2.0.
             </p>
           </div>
           <div className="card border-gate p-6">
-            <p className="serif-display text-2xl">$10 / dev / mo</p>
+            <p className="serif-display text-2xl">$15 / active author / mo</p>
             <p className="mt-2 text-sm text-ink-soft">
-              Hosted Team is $10 per developer with reviews included. BYOK
-              support remains available for organizations with a specific policy
-              requirement.
+              Hosted includes a $6 inference allowance per active author,
+              pooled across the organization. Overage defaults to $0.
             </p>
           </div>
           <div className="card p-6">
@@ -463,10 +463,9 @@ export default function HomePage() {
           </div>
         </div>
         <p className="mt-8 max-w-2xl text-ink-soft">
-          Your worst-case monthly bill is your seat count times ten dollars:
-          no per-review surcharges, no credits, no metered overage when PR
-          volume grows. Hosted reviews are included by default, and BYOK
-          remains an optional policy control.
+          BYOK is $9 per active author per month, with inference billed directly
+          by your provider. A bot or service identity counts when Postil reviews
+          its private-repository pull request. Repositories are not billed.
         </p>
         <p className="mt-6">
           <Link href="/pricing" className="link-arrow">

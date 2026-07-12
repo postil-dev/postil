@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Why Postil",
   description:
-    "Postil as a CodeRabbit alternative: where it differs from CodeRabbit, Greptile, Copilot, and the rest: silence rate, flat pricing with hosted reviews included, a hard merge gate, and self-hosting that works.",
+    "Postil as a CodeRabbit alternative: a hard merge gate, a published silence metric, active-author pricing, BYOK, and self-hosting.",
   alternates: { canonical: "/why-postil" },
   openGraph: {
     title: "Why Postil: the honest comparison",
     description:
-      "Hard merge gate, a published silence metric, flat pricing with hosted reviews included, real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
+      "Hard merge gate, a published silence metric, active-author pricing, BYOK, and real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
     url: "https://postil.dev/why-postil",
     images: ["/opengraph-image"],
   },
@@ -49,7 +49,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
   {
     feature: "Pricing model",
     cells: [
-      { kind: "text", note: "Flat Team price; hosted reviews included" },
+      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
       { kind: "text", note: "Per-seat + per-review overage" },
       { kind: "text", note: "AI Credits + Actions minutes (Jun 2026)" },
@@ -124,7 +124,7 @@ const wedges: Wedge[] = [
   },
   {
     number: "02",
-    title: "Flat price, hosted reviews included",
+    title: "Pay for active private-PR authors",
     body: (
       <>
         <p>
@@ -163,9 +163,9 @@ const wedges: Wedge[] = [
           burned in two hours.
         </p>
         <p className="mt-3">
-          Postil keeps hosted billing flat: Team is $10 per developer with
-          reviews included. BYOK support remains available for organizations
-          that require provider-controlled inference. The closest comparable model we
+          Postil Hosted is $15 per active private-PR author with a $6 pooled
+          inference allowance per author. BYOK is $9 per active author, with
+          provider usage billed directly. The closest comparable model we
           found is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">
             Kodus
@@ -174,7 +174,7 @@ const wedges: Wedge[] = [
         </p>
       </>
     ),
-    status: <span className="font-mono text-xs text-gate">price does not scale with PR count</span>,
+    status: <span className="font-mono text-xs text-gate">no repository charge</span>,
   },
   {
     number: "03",
