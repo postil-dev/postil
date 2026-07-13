@@ -13,14 +13,14 @@
  * to that localhost server for both the worker and the spawned CLI, so this
  * harness never posts a real GitHub comment, check-run, or review.
  *
- * POSTIL_BIN is passed through unchanged. Set it to a locally built postil CLI
- * binary to test CLI and control-plane changes together.
+ * POSTIL_BIN, when set, must be an absolute executable Postil v0.5.x path. The
+ * harness resolves and validates it before loading a model credential.
  */
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { Client } from "pg";
 
@@ -32,14 +32,20 @@ const DEFAULT_PR_NUMBER = 1;
 
 type DiffTarget =
   | { kind: "staged" }
-  | { kind: "base"; base: string }
+  | { kind: "base"; base: string; head: string }
   | { kind: "diff-file"; path: string };
+
+type RepositorySource =
+  | { kind: "index" }
+  | { kind: "tree"; ref: string }
+  | { kind: "working-tree" };
 
 interface CliOptions {
   repoPath: string;
   repoFullName: string;
   prNumber: number;
   keepDatabase: boolean;
+  requireClean: boolean;
   target: DiffTarget;
 }
 
@@ -98,6 +104,8 @@ export function parseArgs(argv: string[]): CliOptions {
   let repoFullName: string | undefined;
   let prNumber = DEFAULT_PR_NUMBER;
   let keepDatabase = false;
+  let requireClean = false;
+  let head: string | undefined;
   let target: DiffTarget | undefined;
 
   for (let index = 0; index < argv.length; index++) {
@@ -113,12 +121,16 @@ export function parseArgs(argv: string[]): CliOptions {
       target = { kind: "staged" };
     } else if (arg === "--base") {
       ensureNoTarget(target);
-      target = { kind: "base", base: requireValue(argv, ++index, arg) };
+      target = { kind: "base", base: requireValue(argv, ++index, arg), head: "HEAD" };
+    } else if (arg === "--head") {
+      head = requireValue(argv, ++index, arg);
     } else if (arg === "--diff-file") {
       ensureNoTarget(target);
       target = { kind: "diff-file", path: requireValue(argv, ++index, arg) };
     } else if (arg === "--keep-database") {
       keepDatabase = true;
+    } else if (arg === "--require-clean") {
+      requireClean = true;
     } else if (arg === "--help" || arg === "-h") {
       printUsage();
       process.exit(0);
@@ -128,12 +140,15 @@ export function parseArgs(argv: string[]): CliOptions {
   }
 
   if (!target) throw new Error("choose exactly one of --staged, --base, or --diff-file");
+  if (head && target.kind !== "base") throw new Error("--head requires --base");
+  if (target.kind === "base" && head) target.head = head;
   const absoluteRepoPath = resolve(repoPath);
   return {
     repoPath: absoluteRepoPath,
     repoFullName: repoFullName ?? `local/${basename(absoluteRepoPath) || "repo"}`,
     prNumber,
     keepDatabase,
+    requireClean,
     target,
   };
 }
@@ -141,11 +156,26 @@ export function parseArgs(argv: string[]): CliOptions {
 export async function runHarness(options: CliOptions): Promise<RunResult> {
   await assertGitRepository(options.repoPath);
   const diffText = await acquireDiff(options.repoPath, options.target);
-  const headSha = await gitMaybe(options.repoPath, ["rev-parse", "HEAD"], syntheticSha("1"));
+  const selectedHead = options.target.kind === "base" ? options.target.head : "HEAD";
+  const headSha = await gitMaybe(
+    options.repoPath,
+    ["rev-parse", `${selectedHead}^{commit}`],
+    syntheticSha("1"),
+  );
   const baseSha =
     options.target.kind === "base"
-      ? await gitMaybe(options.repoPath, ["rev-parse", options.target.base], syntheticSha("0"))
+      ? await gitMaybe(
+          options.repoPath,
+          ["rev-parse", `${options.target.base}^{commit}`],
+          syntheticSha("0"),
+        )
       : headSha;
+  const repositorySource: RepositorySource =
+    options.target.kind === "staged"
+      ? { kind: "index" }
+      : options.target.kind === "base"
+        ? { kind: "tree", ref: selectedHead }
+        : { kind: "working-tree" };
 
   const database = await createDisposableDatabase(options.repoFullName, options.keepDatabase);
   const github = createLocalGitHubServer({
@@ -155,6 +185,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     diffText,
     headSha,
     baseSha,
+    repositorySource,
   });
 
   const cacheDir = await mkdtemp(join(tmpdir(), "postil-local-review-cache-"));
@@ -204,18 +235,26 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
       status: string;
       gate_failing: boolean | null;
       envelope: Envelope | null;
+      error_message: string | null;
     }>(
-      `SELECT id, status, gate_failing, envelope
+      `SELECT id, status, gate_failing, envelope, error_message
        FROM reviews
        ORDER BY id DESC
        LIMIT 1`,
     );
     const review = reviewRow.rows[0];
     if (!review) throw new Error("worker did not create a review row");
+    const jobStatus = jobRow.rows[0]?.status ?? "missing";
+    if (jobStatus !== "done" || review.status !== "completed") {
+      throw new Error(
+        `local review did not complete: job=${jobStatus} review=${review.status}` +
+          (review.error_message ? `: ${review.error_message}` : ""),
+      );
+    }
 
     return {
       reviewId: Number(review.id),
-      jobStatus: jobRow.rows[0]?.status ?? "missing",
+      jobStatus,
       reviewStatus: review.status,
       gateFailing: review.gate_failing ?? false,
       envelope: review.envelope,
@@ -311,6 +350,7 @@ function createLocalGitHubServer(input: {
   diffText: string;
   headSha: string;
   baseSha: string;
+  repositorySource: RepositorySource;
 }): LocalGitHubServer {
   const events: LocalGitHubEvent[] = [];
   let nextCheckRunId = 1000;
@@ -359,7 +399,7 @@ function createLocalGitHubServer(input: {
 
       if (request.method === "GET" && suffix.startsWith("contents/")) {
         const relative = decodeURIComponent(suffix.slice("contents/".length));
-        return serveRepoFile(input.repoPath, relative);
+        return serveRepoFile(input.repoPath, input.repositorySource, relative);
       }
 
       if (request.method === "POST" && suffix === "check-runs") {
@@ -524,23 +564,54 @@ async function acquireDiff(repoPath: string, target: DiffTarget): Promise<string
   if (target.kind === "diff-file") return readFile(resolve(repoPath, target.path), "utf8");
   const args =
     target.kind === "staged"
-      ? ["diff", "--cached", "--no-color"]
-      : ["diff", "--no-color", `${target.base}...HEAD`];
+      ? ["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv"]
+      : [
+          "diff",
+          "--no-color",
+          "--no-ext-diff",
+          "--no-textconv",
+          `${target.base}...${target.head}`,
+        ];
   return git(repoPath, args);
 }
 
-async function serveRepoFile(repoPath: string, relativePath: string): Promise<Response> {
-  const path = resolve(repoPath, relativePath);
-  if (!path.startsWith(`${resolve(repoPath)}/`) && path !== resolve(repoPath)) return notFound();
+async function serveRepoFile(
+  repoPath: string,
+  source: RepositorySource,
+  relativePath: string,
+): Promise<Response> {
+  if (!isSafeRepositoryPath(relativePath)) return notFound();
   try {
-    const fileStat = await stat(path);
-    if (!fileStat.isFile()) return notFound();
-    return new Response(await readFile(path), {
+    if (source.kind === "working-tree") {
+      const path = resolve(repoPath, relativePath);
+      const [repositoryRoot, resolvedPath] = await Promise.all([realpath(repoPath), realpath(path)]);
+      const repositoryRelativePath = relative(repositoryRoot, resolvedPath);
+      if (
+        repositoryRelativePath === ".." ||
+        repositoryRelativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+        isAbsolute(repositoryRelativePath)
+      ) {
+        return notFound();
+      }
+      const fileStat = await stat(resolvedPath);
+      if (!fileStat.isFile()) return notFound();
+      return new Response(await readFile(resolvedPath), {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
+    const object = source.kind === "index" ? `:${relativePath}` : `${source.ref}:${relativePath}`;
+    const contents = await git(repoPath, ["show", object]);
+    return new Response(contents, {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   } catch {
     return notFound();
   }
+}
+
+function isSafeRepositoryPath(relativePath: string): boolean {
+  if (!relativePath || relativePath.startsWith("/") || relativePath.includes("\\")) return false;
+  return !relativePath.split("/").some((segment) => segment === "" || segment === "." || segment === "..");
 }
 
 async function assertGitRepository(repoPath: string): Promise<void> {
@@ -709,7 +780,7 @@ function ensureNoTarget(target: DiffTarget | undefined): void {
 function printUsage(): void {
   console.log(`Usage:
   bun run scripts/run-review-locally.ts --staged [--repo-path PATH]
-  bun run scripts/run-review-locally.ts --base REF [--repo-path PATH]
+  bun run scripts/run-review-locally.ts --base REF [--head REF] [--repo-path PATH]
   bun run scripts/run-review-locally.ts --diff-file PATH [--repo-path PATH]
 
 Options:
@@ -717,15 +788,170 @@ Options:
   --repo OWNER/NAME   Synthetic repository slug exposed by the local fake GitHub API.
   --pr NUMBER         Synthetic pull request number. Defaults to 1.
   --keep-database     Keep the disposable database for inspection.
+  --require-clean     Exit 1 when any surviving finding would be posted.
 `);
+}
+
+async function ensureLocalModelCredential(): Promise<void> {
+  let openRouterApiKey = process.env.OPENROUTER_API_KEY?.trim() ?? "";
+
+  if (!openRouterApiKey) {
+    const trustedHome = await resolveTrustedHome();
+    const explicitSecrets = process.env.POSTIL_LOCAL_SECRETS_BIN?.trim();
+    if (explicitSecrets && !isAbsolute(explicitSecrets)) {
+      throw new Error("POSTIL_LOCAL_SECRETS_BIN must be an absolute path");
+    }
+    const candidate = explicitSecrets ?? join(trustedHome, ".local", "bin", "secrets");
+    let secretsExecutable: string;
+    try {
+      secretsExecutable = await realpath(candidate);
+      const metadata = await stat(secretsExecutable);
+      if (!metadata.isFile() || (metadata.mode & 0o111) === 0) throw new Error("not executable");
+    } catch {
+      throw new Error(
+        "local review has no OPENROUTER_API_KEY and no trusted secrets executable is available",
+      );
+    }
+    const trustedPath = [
+      "/usr/bin",
+      "/bin",
+      dirname(process.execPath),
+      join(trustedHome, ".volta", "bin"),
+      join(trustedHome, ".bun", "bin"),
+      dirname(secretsExecutable),
+    ].join(":");
+    const child = Bun.spawn(
+      [secretsExecutable, "--profile", "morgaesis", "get", "OPENROUTER_API_KEY"],
+      {
+        env: { HOME: trustedHome, PATH: trustedPath },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [secret, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    openRouterApiKey = secret.trim();
+    if (exitCode !== 0 || !openRouterApiKey) {
+      throw new Error(
+        "could not load OPENROUTER_API_KEY from the morgaesis secrets profile" +
+          (stderr.trim() ? `: ${stderr.trim()}` : "") +
+          "; run `infisical-morgaesis login` to refresh the session",
+      );
+    }
+  }
+  process.env.MODEL_API_KEY = openRouterApiKey;
+  delete process.env.POSTIL_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.POSTIL_LOCAL_SECRETS_BIN;
+  delete process.env.POSTIL_ENDPOINT_AUTH_HEADER;
+  delete process.env.POSTIL_ENDPOINT_AUTH_VALUE;
+  delete process.env.POSTIL_ALLOW_CONFIG_API_BASE;
+  process.env.POSTIL_API_BASE = "https://openrouter.ai/api/v1";
+  process.env.POSTIL_API_FORMAT = "openai-compatible";
+  process.env.REVIEW_MODEL = "mistralai/mistral-small-3.2-24b-instruct";
+  process.env.REVIEW_MODEL_CASCADE = "google/gemma-3-27b-it";
+  process.env.REVIEW_SCORER_MODEL = "anthropic/claude-haiku-4.5";
+}
+
+async function ensureTrustedPostilExecutable(): Promise<void> {
+  const trustedHome = await resolveTrustedHome();
+  const explicit = process.env.POSTIL_BIN?.trim();
+  if (explicit && !isAbsolute(explicit)) {
+    throw new Error("POSTIL_BIN must be an absolute path for local review");
+  }
+  const candidates = explicit
+    ? [explicit]
+    : [
+        join(trustedHome, ".local", "bin", "postil"),
+        "/usr/local/bin/postil",
+        "/usr/bin/postil",
+      ];
+  let executable: string | undefined;
+  for (const candidate of candidates) {
+    try {
+      const resolved = await realpath(candidate);
+      const metadata = await stat(resolved);
+      if (metadata.isFile() && (metadata.mode & 0o111) !== 0) {
+        executable = resolved;
+        break;
+      }
+    } catch {
+      // Try the next trusted installation location.
+    }
+  }
+  if (!executable) {
+    throw new Error("no executable Postil binary exists in a trusted installation location");
+  }
+  const trustedPath = [
+    "/usr/bin",
+    "/bin",
+    dirname(process.execPath),
+    join(trustedHome, ".volta", "bin"),
+    join(trustedHome, ".bun", "bin"),
+    join(trustedHome, ".local", "bin"),
+    dirname(executable),
+  ].join(":");
+  const child = Bun.spawn([executable, "--version"], {
+    env: { HOME: trustedHome, PATH: trustedPath },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (exitCode !== 0 || !/^postil 0\.5\./m.test(stdout.trim())) {
+    throw new Error(
+      `local review requires Postil v0.5.x; ${executable} reported ${JSON.stringify((stdout || stderr).trim())}`,
+    );
+  }
+  process.env.POSTIL_BIN = executable;
+  process.env.PATH = trustedPath;
+}
+
+async function resolveTrustedHome(): Promise<string> {
+  const home = process.env.HOME?.trim();
+  if (!home || !isAbsolute(home)) throw new Error("HOME must be an absolute directory for local review");
+  const resolved = await realpath(home);
+  if (!(await stat(resolved)).isDirectory()) {
+    throw new Error("HOME must be an absolute directory for local review");
+  }
+  return resolved;
+}
+
+function clearInjectedGitEnvironment(): void {
+  for (const name of [
+    "GIT_EXTERNAL_DIFF",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_EXEC_PATH",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+  ]) {
+    delete process.env[name];
+  }
+  for (const name of Object.keys(process.env)) {
+    if (/^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name)) delete process.env[name];
+  }
 }
 
 if (import.meta.main) {
   try {
-    const result = await runHarness(parseArgs(process.argv.slice(2)));
+    const options = parseArgs(process.argv.slice(2));
+    await ensureTrustedPostilExecutable();
+    clearInjectedGitEnvironment();
+    await ensureLocalModelCredential();
+    const result = await runHarness(options);
     console.log("");
     console.log(formatRunSummary(result));
-    process.exitCode = result.gateFailing ? 1 : 0;
+    const hasFindings = (result.envelope?.findings.length ?? 0) > 0;
+    process.exitCode = result.gateFailing || (options.requireClean && hasFindings) ? 1 : 0;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 2;
