@@ -34,7 +34,10 @@ export interface ClaimedJob {
 export interface ReviewJobPayload extends Record<string, unknown> {
   installationId: number; // GitHub installation id
   repoFullName: string;
+  repositoryPrivate?: boolean;
   prNumber: number;
+  authorGithubId?: number;
+  authorLogin?: string;
   headSha: string;
   baseSha: string;
 }
@@ -43,12 +46,17 @@ export interface ReviewJobPayload extends Record<string, unknown> {
 export interface RespondJobPayload extends Record<string, unknown> {
   installationId: number;
   repoFullName: string;
+  repositoryPrivate?: boolean;
   number: number; // PR or issue number
   isPr: boolean;
   comment: string; // the maintainer's message text
   // "path:line" anchor when the mention is a PR review comment, so the bot
   // knows which code the question is about.
   commentAnchor?: string;
+}
+
+export interface RespondDeliveryJobPayload extends Record<string, unknown> {
+  respondJobId: number;
 }
 
 export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
@@ -76,7 +84,15 @@ export async function enqueueJob(
   return Number(row.id);
 }
 
-export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob | null> {
+export async function claimJob(
+  pool: Pool,
+  workerId: string,
+  allowedKinds: readonly string[],
+): Promise<ClaimedJob | null> {
+  const capabilities = [...new Set(allowedKinds.filter(Boolean))];
+  if (capabilities.length === 0) {
+    throw new Error("claimJob requires at least one allowed job kind");
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -90,10 +106,11 @@ export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob
     }>(
       `SELECT id, kind, payload, attempts, max_attempts, created_at
        FROM jobs
-       WHERE status = 'queued' AND run_after <= now()
+       WHERE status = 'queued' AND run_after <= now() AND kind = ANY($1::text[])
        ORDER BY id
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
+      [capabilities],
     );
     const row = selected.rows[0];
     if (!row) {

@@ -327,7 +327,12 @@ function createLocalGitHubServer(input: {
         });
       }
 
-      const prefix = `/repos/${input.repoFullName}/`;
+      const repositoryPath = `/repos/${input.repoFullName}`;
+      if (request.method === "GET" && path === repositoryPath) {
+        return json({ id: 1, full_name: input.repoFullName, private: false });
+      }
+
+      const prefix = `${repositoryPath}/`;
       if (!path.startsWith(prefix)) return notFound();
       const suffix = path.slice(prefix.length);
 

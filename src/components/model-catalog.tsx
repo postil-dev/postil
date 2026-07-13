@@ -120,7 +120,7 @@ export function ModelCatalog() {
         <a href="https://openrouter.ai/models" rel="noopener noreferrer" className="text-rust underline">
           OpenRouter catalog
         </a>
-        , captured July 10, 2026. Re-check provider pricing before committing to
+        , captured July 12, 2026. Re-check provider pricing before committing to
         a procurement number. Capability badges are maintained in this repo.
       </p>
     </div>

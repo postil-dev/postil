@@ -5,13 +5,24 @@ import { join, resolve } from "node:path";
 import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
-import { calculateUsageCostCentsForModel } from "@/lib/billing-credits";
+import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
+import {
+  parseApiFormat,
+  validateAdditionalAuthHeader,
+  validateAdditionalAuthValue,
+  type ApiFormat,
+} from "@/lib/byok-provider";
+import {
+  canProcessPrivateRepository,
+  providerModeMatchesPrivateAccess,
+} from "@/lib/private-repository-entitlement";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
 import { qualifyingHumanEscalations } from "@/lib/escalation-notification";
 import { ingestEnvelope } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
   GATE_CHECK_NAME,
@@ -24,6 +35,11 @@ import {
   type OrgReviewConfig,
 } from "@/lib/github/contents";
 import { configuredPublicOrigin } from "@/lib/oauth";
+import {
+  releaseHostedReviewSpend,
+  reserveHostedReviewSpend,
+} from "@/lib/hosted-usage-reservations";
+import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { persistReviewCompletion } from "@/lib/review-completion";
@@ -40,8 +56,12 @@ const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 class OperationalError extends Error {}
 
 interface CliEnvConfig {
+  byok: boolean;
   apiBase: string;
+  apiFormat: ApiFormat;
   apiKey: string | undefined;
+  apiAuthHeader: string | undefined;
+  apiAuthValue: string | undefined;
   model: string | undefined;
   modelCascade: string | undefined;
 }
@@ -53,6 +73,11 @@ export function buildCliEnv(
   const cliEnv: Record<string, string> = {
     ...baseEnv,
     POSTIL_API_BASE: llm.apiBase,
+    POSTIL_API_FORMAT: llm.apiFormat,
+    // Always shadow process.env. A BYOK endpoint without additional auth must
+    // never inherit the hosted gateway credential when runCli merges envs.
+    POSTIL_ENDPOINT_AUTH_HEADER: llm.apiAuthHeader ?? "",
+    POSTIL_ENDPOINT_AUTH_VALUE: llm.apiAuthValue ?? "",
     POSTIL_LLM_REQUEST_TIMEOUT_SECS: optionalEnv(
       "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
       HOSTED_LLM_REQUEST_TIMEOUT_SECS,
@@ -73,12 +98,28 @@ export function buildCliEnv(
 
 /** Resolve LLM config: org BYO settings win, env defaults otherwise. */
 export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConfig> {
+  const configuredFormat = optionalEnv("POSTIL_API_FORMAT", "openai-compatible") as string;
+  const defaultFormat = parseApiFormat(configuredFormat);
+  if (!defaultFormat) throw new Error("POSTIL_API_FORMAT must be openai-compatible or anthropic");
+  const defaultAuthHeader = optionalEnv("POSTIL_ENDPOINT_AUTH_HEADER");
+  const defaultAuthValue = optionalEnv("POSTIL_ENDPOINT_AUTH_VALUE");
+  if (Boolean(defaultAuthHeader) !== Boolean(defaultAuthValue)) {
+    throw new Error(
+      "POSTIL_ENDPOINT_AUTH_HEADER and POSTIL_ENDPOINT_AUTH_VALUE must be set together",
+    );
+  }
+  if (defaultAuthHeader) validateAdditionalAuthHeader(defaultAuthHeader, defaultFormat);
+  if (defaultAuthValue) validateAdditionalAuthValue(defaultAuthValue);
   const defaults: CliEnvConfig = {
+    byok: false,
     apiBase: optionalEnv("POSTIL_API_BASE", "https://openrouter.ai/api/v1") as string,
+    apiFormat: defaultFormat,
     apiKey:
       optionalEnv("MODEL_API_KEY") ??
       optionalEnv("POSTIL_API_KEY") ??
       optionalEnv("OPENROUTER_API_KEY"),
+    apiAuthHeader: defaultAuthHeader,
+    apiAuthValue: defaultAuthValue,
     model: optionalEnv("REVIEW_MODEL"),
     modelCascade: optionalEnv("REVIEW_MODEL_CASCADE"),
   };
@@ -96,9 +137,28 @@ export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConf
   // Internal-network guard at the worker boundary: rows predating write-time
   // validation must not reach the spawned CLI as POSTIL_API_BASE.
   if (settings.apiBase) await validateApiBase(settings.apiBase);
+  const apiFormat = parseApiFormat(settings.apiFormat ?? "openai-compatible");
+  if (!apiFormat) throw new Error("stored BYOK API interface is invalid");
+  const hasAuthHeader = Boolean(settings.apiAuthHeaderCiphertext);
+  const hasAuthValue = Boolean(settings.apiAuthValueCiphertext);
+  if (hasAuthHeader !== hasAuthValue) {
+    throw new Error("stored BYOK additional authentication is incomplete");
+  }
+  const apiAuthHeader = settings.apiAuthHeaderCiphertext
+    ? unseal(Buffer.from(settings.apiAuthHeaderCiphertext), getSealingKey())
+    : undefined;
+  const apiAuthValue = settings.apiAuthValueCiphertext
+    ? unseal(Buffer.from(settings.apiAuthValueCiphertext), getSealingKey())
+    : undefined;
+  if (apiAuthHeader) validateAdditionalAuthHeader(apiAuthHeader, apiFormat);
+  if (apiAuthValue) validateAdditionalAuthValue(apiAuthValue);
   return {
+    byok: true,
     apiBase: settings.apiBase ?? defaults.apiBase,
+    apiFormat,
     apiKey,
+    apiAuthHeader,
+    apiAuthValue,
     model: settings.model ?? defaults.model,
     modelCascade: settings.modelCascade ?? defaults.modelCascade,
   };
@@ -119,7 +179,8 @@ export async function resolveOrgReviewConfig(
     .from(schema.orgSettings)
     .where(eq(schema.orgSettings.orgId, orgId))
     .limit(1);
-  return rows[0] ?? null;
+  const row = rows[0];
+  return row ? { ...row, configYaml: withoutOrgModelConfig(row.configYaml) } : null;
 }
 
 interface CliResult {
@@ -314,6 +375,41 @@ export async function runReviewJob(
     console.warn(`review job skipped: repository ${payload.repoFullName} missing or disabled`);
     return;
   }
+  const signedOrStoredPrivate = repository.private || payload.repositoryPrivate === true;
+  const privateAccess = await canProcessPrivateRepository(db, {
+    orgId: installation.orgId,
+    repositoryPrivate: signedOrStoredPrivate,
+  });
+  if (!privateAccess.allowed) {
+    console.warn(`review job skipped: private repository ${payload.repoFullName} requires billing`);
+    return;
+  }
+  const llm = await resolveLlmConfig(installation.orgId);
+  if (!providerModeMatchesPrivateAccess(signedOrStoredPrivate, privateAccess, llm.byok)) {
+    console.warn(
+      `review job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
+    );
+    return;
+  }
+  const token = await getInstallationToken(payload.installationId);
+  const currentRepository = await fetchRepositorySummary(token, payload.repoFullName);
+  await db
+    .update(schema.repositories)
+    .set({ fullName: currentRepository.full_name, private: currentRepository.private })
+    .where(eq(schema.repositories.id, repository.id));
+  const currentAccess = await canProcessPrivateRepository(db, {
+    orgId: installation.orgId,
+    repositoryPrivate: currentRepository.private,
+  });
+  if (
+    !currentAccess.allowed ||
+    !providerModeMatchesPrivateAccess(currentRepository.private, currentAccess, llm.byok)
+  ) {
+    console.warn(
+      `review job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
+    );
+    return;
+  }
 
   // Incremental re-review: baseline = last completed review of this PR.
   const baseline = (
@@ -337,6 +433,8 @@ export async function runReviewJob(
     .values({
       repositoryId: repository.id,
       prNumber: payload.prNumber,
+      authorGithubId: payload.authorGithubId ?? null,
+      authorLogin: payload.authorLogin ?? null,
       headSha: payload.headSha,
       baseSha: payload.baseSha,
       sinceSha: baseline?.headSha ?? null,
@@ -354,15 +452,38 @@ export async function runReviewJob(
     `review queued at ${timing.queuedAt.toISOString()} -> worker claimed at ${timing.startedAt.toISOString()}`,
   );
 
-  let token: string | undefined;
   let advisoryCheckRunId: number | undefined;
   let gateCheckRunId: number | undefined;
   let baselinePath: string | undefined;
   let workDir: string | undefined;
   let sensitiveValues: string[] = [];
+  let hostedUsageReservationId: string | null = null;
 
   try {
-    token = await getInstallationToken(payload.installationId);
+    const spendReservation = currentRepository.private
+      ? await reserveHostedReviewSpend(db, {
+          orgId: installation.orgId,
+          reviewId,
+          usesByok: llm.byok,
+        })
+      : null;
+    if (spendReservation && !spendReservation.allowed) {
+      await db
+        .update(schema.reviews)
+        .set({
+          status: "failed",
+          errorMessage: "Hosted inference allowance is unavailable or fully reserved.",
+          finishedAt: new Date(),
+        })
+        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
+      reviewLog.line("hosted inference reservation denied before provider access");
+      console.warn(
+        `review job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
+      );
+      return;
+    }
+    hostedUsageReservationId = spendReservation?.reservationId ?? null;
+    if (hostedUsageReservationId) reviewLog.line("hosted inference spend reserved");
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
     const superseded = await supersedeActiveReviews({
@@ -428,6 +549,7 @@ export async function runReviewJob(
       token,
       payload.repoFullName,
       workDir,
+      { allowModelSettings: llm.byok },
     );
     if (repoConfigFiles.length > 0) {
       console.log(
@@ -451,8 +573,9 @@ export async function runReviewJob(
       `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
     );
 
-    const llm = await resolveLlmConfig(installation.orgId);
-    sensitiveValues = [token, llm.apiKey].filter((value): value is string => Boolean(value));
+    sensitiveValues = [token, llm.apiKey, llm.apiAuthHeader, llm.apiAuthValue].filter(
+      (value): value is string => Boolean(value),
+    );
     reviewLog.setSensitiveValues(sensitiveValues);
     const publicOrigin = configuredPublicOrigin();
     const detailsUrl =
@@ -505,18 +628,29 @@ export async function runReviewJob(
       configFiles,
       silent: ingested.silent,
       gateFailing: ingested.gateFailing,
-      usage: {
-        orgId: installation.orgId,
-        repositoryId: repository.id,
+      usage: (ingested.modelUsage ?? [{
+        model: ingested.modelUsed,
         promptTokens: ingested.promptTokens,
         completionTokens: ingested.completionTokens,
-        modelUsed: ingested.modelUsed,
-        costCents: calculateUsageCostCentsForModel(
-          ingested.modelUsed,
-          ingested.promptTokens,
-          ingested.completionTokens,
+      }]).map((entry) => ({
+        orgId: installation.orgId,
+        repositoryId: repository.id,
+        promptTokens: entry.promptTokens,
+        completionTokens: entry.completionTokens,
+        modelUsed: entry.model,
+        // A legacy aggregate is priced only when modelUsed names one known
+        // catalog model. Chains/consensus remain unpriced and consume the
+        // full reservation rather than undercharging a fallback.
+        costMicros: calculateUsageCostMicrosForModel(
+          entry.model,
+          entry.promptTokens,
+          entry.completionTokens,
         ),
-      },
+        billingScope:
+          currentRepository.private && !llm.byok ? "private_hosted" : "analytics",
+      })),
+      hostedUsageReservationId,
+      usageAccountingComplete: ingested.usageAccountingComplete,
       escalationJob:
         qualifyingEscalationCount > 0 && detailsUrl
           ? {
@@ -541,6 +675,7 @@ export async function runReviewJob(
         }
       }
     } else {
+      await releaseHostedReviewSpend(db, hostedUsageReservationId);
       const terminal = (
         await db
           .select({ status: schema.reviews.status })
@@ -575,6 +710,11 @@ export async function runReviewJob(
       })
       .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
       .returning({ id: schema.reviews.id });
+    await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
+      console.error(
+        `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
+      );
+    });
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).

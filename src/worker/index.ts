@@ -2,11 +2,12 @@ import { accessSync, constants } from "node:fs";
 import { hostname } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
-import { closeDb, getPool } from "@/lib/db";
+import { closeDb, getDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
 import { claimJob } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
-import { readPositiveIntEnv, runClaimedJob } from "./runner";
+import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
+import { PROCESSABLE_JOB_KINDS, readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
 
@@ -41,7 +42,7 @@ async function claimLoop(slot: number): Promise<void> {
   while (!shuttingDown) {
     let job;
     try {
-      job = await claimJob(getPool(), `${workerId}#${slot}`);
+      job = await claimJob(getPool(), `${workerId}#${slot}`, PROCESSABLE_JOB_KINDS);
     } catch (err) {
       console.error(`[worker ${slot}] claim error: ${redactSecrets(err)}`);
       await sleep(Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS));
@@ -111,6 +112,8 @@ async function main(): Promise<void> {
   validatePostilBin();
   // Fail fast if the database is unreachable.
   await getPool().query("SELECT 1");
+  const recoveredDeliveries = await recoverRespondDeliveryJobs(getDb());
+  console.log(`respond delivery recovery: queued=${recoveredDeliveries}`);
   // Fail fast if the image's CA trust store is broken (see tlsSelfTest).
   await tlsSelfTest();
   console.log(

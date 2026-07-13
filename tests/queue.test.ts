@@ -6,12 +6,13 @@ import { Pool, type PoolClient } from "pg";
 
 import {
   backoffMs,
-  claimJob,
+  claimJob as claimJobWithCapabilities,
   completeJob,
   enqueueJob,
   failJob,
   queueDepth,
 } from "@/lib/queue";
+import { activateReleaseJobs } from "@/lib/release-job-rollout";
 
 /**
  * Queue claim semantics against a real Postgres (FOR UPDATE SKIP LOCKED
@@ -22,6 +23,11 @@ import {
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 
 const describeDb = TEST_URL ? describe : describe.skip;
+const TEST_JOB_KINDS = ["review", "respond"] as const;
+
+function claimJob(pool: Pool, workerId: string) {
+  return claimJobWithCapabilities(pool, workerId, TEST_JOB_KINDS);
+}
 
 describeDb("postgres job queue", () => {
   let pool: Pool;
@@ -48,7 +54,9 @@ describeDb("postgres job queue", () => {
   });
 
   beforeEach(async () => {
-    await pool.query("TRUNCATE jobs RESTART IDENTITY");
+    await pool.query(
+      "TRUNCATE respond_deliveries, jobs, deployment_capabilities RESTART IDENTITY",
+    );
   });
 
   afterAll(async () => {
@@ -75,6 +83,60 @@ describeDb("postgres job queue", () => {
     expect(row.rows[0].locked_by).toBe("worker-a");
     expect(job?.createdAt).toEqual(row.rows[0].created_at);
     expect(job?.lockedAt).toEqual(row.rows[0].locked_at);
+  });
+
+  test("leaves unsupported job kinds queued for a capable release", async () => {
+    const unknownId = await enqueueJob(pool, "future-release-job", { version: 2 });
+    const reviewId = await enqueueJob(pool, "review", { prNumber: 1 });
+
+    const claimed = await claimJobWithCapabilities(pool, "current-worker", ["review"]);
+    expect(claimed?.id).toBe(reviewId);
+    expect(claimed?.kind).toBe("review");
+
+    const unknown = await pool.query(
+      "SELECT status, attempts, locked_by FROM jobs WHERE id = $1",
+      [unknownId],
+    );
+    expect(unknown.rows[0]).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      locked_by: null,
+    });
+  });
+
+  test("stages new job kinds until the post-deploy capability activation", async () => {
+    const id = await enqueueJob(pool, "escalation-email-verification", { orgId: 1 });
+    const deliveryId = await enqueueJob(pool, "respond-delivery", { jobId: 9 });
+    const staged = await pool.query<{ run_after: Date | string }>(
+      "SELECT run_after FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(String(staged.rows[0]?.run_after).toLowerCase()).toContain("infinity");
+
+    // Reproduce the pre-capability worker query, which has no kind filter.
+    const oldClaim = await pool.query(
+      `SELECT id FROM jobs
+       WHERE status = 'queued' AND run_after <= now()
+       ORDER BY id LIMIT 1`,
+    );
+    expect(oldClaim.rows).toHaveLength(0);
+
+    expect(await activateReleaseJobs(pool)).toBe(2);
+    const nowRunnable = await pool.query<{ id: string }>(
+      `SELECT id FROM jobs
+       WHERE status = 'queued' AND run_after <= now()
+       ORDER BY id`,
+    );
+    expect(nowRunnable.rows.map((row) => Number(row.id))).toEqual([id, deliveryId]);
+
+    // Activation is idempotent, and later inserts are immediately runnable.
+    expect(await activateReleaseJobs(pool)).toBe(0);
+    const laterId = await enqueueJob(pool, "billing-contact-verification", { orgId: 2 });
+    const later = await pool.query<{ runnable: boolean }>(
+      "SELECT run_after <= now() AS runnable FROM jobs WHERE id = $1",
+      [laterId],
+    );
+    expect(later.rows[0]?.runnable).toBe(true);
   });
 
   test("a locked row is skipped, not waited on (SKIP LOCKED)", async () => {

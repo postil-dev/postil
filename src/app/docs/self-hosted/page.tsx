@@ -175,11 +175,26 @@ docker compose exec web bun run db:migrate`}</code>
       <h4>OpenRouter (default)</h4>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=https://openrouter.ai/api/v1
+POSTIL_API_FORMAT=openai-compatible
 MODEL_API_KEY=sk-or-v1-...
 POSTIL_API_KEY=sk-or-v1-...
-REVIEW_MODEL=deepseek/deepseek-v4-pro
-REVIEW_MODEL_CASCADE=qwen/qwen3-coder`}</code>
+REVIEW_MODEL=z-ai/glm-5.2
+REVIEW_MODEL_CASCADE=moonshotai/kimi-k2.7-code,deepseek/deepseek-v4-flash`}</code>
       </pre>
+      <h4>Anthropic</h4>
+      <pre tabIndex={0} aria-label="Code sample">
+        <code>{`POSTIL_API_BASE=https://api.anthropic.com/v1
+POSTIL_API_FORMAT=anthropic
+MODEL_API_KEY=sk-ant-...
+POSTIL_API_KEY=sk-ant-...
+REVIEW_MODEL=claude-sonnet-4-5`}</code>
+      </pre>
+      <p>
+        A private gateway can require one additional header. Set both{" "}
+        <code>POSTIL_ENDPOINT_AUTH_HEADER</code> and{" "}
+        <code>POSTIL_ENDPOINT_AUTH_VALUE</code>. The value is treated as a secret
+        and is not passed on the command line.
+      </p>
       <h4>Azure OpenAI</h4>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=https://azure-resource.openai.azure.com/openai/v1
@@ -201,6 +216,7 @@ docker compose exec ollama ollama pull qwen3-coder:30b`}</code>
       <p>Then point the worker at it on the compose network:</p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=http://ollama:11434/v1
+POSTIL_ALLOW_PRIVATE_API_BASE=1
 MODEL_API_KEY=ollama        # any non-empty value
 POSTIL_API_KEY=ollama       # same value for direct postil doctor
 REVIEW_MODEL=qwen3-coder:30b`}</code>
@@ -208,12 +224,14 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
       <p>
         If you already run Ollama on the host instead, drop the profile and use{" "}
         <code>POSTIL_API_BASE=http://host.docker.internal:11434/v1</code>{" "}
+        with <code>POSTIL_ALLOW_PRIVATE_API_BASE=1</code>{" "}
         (add <code>extra_hosts: [&quot;host.docker.internal:host-gateway&quot;]</code>{" "}
         to the <code>worker</code> service on Linux).
       </p>
       <p>
-        The worker talks plain OpenAI-compatible chat completions, so anything
-        that serves that API (vLLM, LiteLLM, SGLang, TGI) works the same way.
+        The worker supports OpenAI-compatible chat completions and Anthropic
+        Messages. OpenAI-compatible servers such as vLLM, LiteLLM, SGLang, and
+        TGI use the same configuration shape.
         The <a href="/docs/models">models guide</a> lists current hosted and
         local recommendations plus the live benchmark command.
       </p>

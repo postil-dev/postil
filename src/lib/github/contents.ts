@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { withoutModelConfig } from "@/lib/org-review-config";
 import { apiBase } from "./app-auth";
 
 /**
@@ -83,6 +84,7 @@ export async function materializeRepoConfig(
   token: string,
   repoFullName: string,
   dir: string,
+  options: { allowModelSettings?: boolean } = {},
 ): Promise<string[]> {
   const written: string[] = [];
   await mkdir(join(dir, ".postil"), { recursive: true });
@@ -91,8 +93,13 @@ export async function materializeRepoConfig(
     try {
       const body = await fetchRepoFile(token, repoFullName, candidate);
       if (body !== null) {
-        await writeFile(join(dir, candidate), body);
-        written.push(candidate);
+        const effectiveBody = options.allowModelSettings === false
+          ? withoutModelConfig(body, candidate.endsWith(".json") ? "json" : "yaml")
+          : body;
+        if (effectiveBody !== null) {
+          await writeFile(join(dir, candidate), effectiveBody);
+          written.push(candidate);
+        }
         break; // first hit wins, matching the CLI's own discovery order
       }
     } catch (err) {

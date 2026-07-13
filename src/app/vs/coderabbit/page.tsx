@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs CodeRabbit",
   description:
-    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, flat pricing with hosted reviews included, and free self-hosting.",
+    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, active-author pricing, and free self-hosting.",
   alternates: { canonical: "/vs/coderabbit" },
   openGraph: {
     title: "Postil vs CodeRabbit",
     description:
-      "A hard merge gate, a published silence metric, flat pricing with hosted reviews included, and free self-hosting. The honest comparison.",
+      "A hard merge gate, a published silence metric, active-author pricing, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/coderabbit",
     images: ["/opengraph-image"],
   },
@@ -40,7 +40,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat Team price; hosted reviews included" },
+      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
     ],
   },
@@ -81,8 +81,8 @@ export default function VsCodeRabbitPage() {
         CodeRabbit is the most widely deployed AI reviewer and has the broadest
         platform coverage today. Postil is a CodeRabbit alternative built around
         restraint and structure: a hard merge gate separate from advisory
-        comments, a published silence rate, and flat pricing that does not scale
-        with PR volume.
+        comments, a published silence rate, and pricing based on active
+        private-PR authors rather than repositories.
       </p>
 
       <div className="mt-12">
@@ -123,15 +123,15 @@ export default function VsCodeRabbitPage() {
           finding it did ship.
         </p>
 
-        <h2>Flat pricing survives 10x PR volume</h2>
+        <h2>Postil bills active private-PR authors</h2>
         <p>
           CodeRabbit Pro is{" "}
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             $24 per seat per month on the annual plan
           </a>
-          . Postil Team is $10 per developer with hosted
-          reviews included, and BYOK support remains available for policy
-          requirements. Run the numbers on the{" "}
+          . Postil Hosted is $15 per active author with a $6 pooled inference
+          allowance per author. BYOK is $9 per active author, plus direct
+          provider charges. Run the numbers on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 

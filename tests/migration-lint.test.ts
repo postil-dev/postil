@@ -172,6 +172,19 @@ describe("migration lint", () => {
     expect(migration).toContain('"revoked_at" IS NULL');
     expect(migration).not.toContain('UPDATE "reviews" SET "engine_gate_failing" = "gate_failing"');
   });
+
+  test("BYOK provider migration preserves legacy rows and constrains new fields", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0014_byok_provider_settings.sql"),
+      "utf8",
+    );
+
+    expect(migration).toContain("DEFAULT 'openai-compatible' NOT NULL");
+    expect(migration).toContain("'openai-compatible', 'anthropic'");
+    expect(migration).toContain('"api_auth_header_ciphertext" bytea');
+    expect(migration).toContain('"api_auth_value_ciphertext" bytea');
+    expect(migration).toContain('("api_auth_header_ciphertext" IS NULL) =');
+  });
 });
 
 async function readDrizzleMigrations(): Promise<MigrationSource[]> {

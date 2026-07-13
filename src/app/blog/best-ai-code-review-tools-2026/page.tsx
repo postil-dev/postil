@@ -205,9 +205,9 @@ export default function BestToolsArticle() {
             </tr>
             <tr>
               <td>Postil</td>
-              <td className="hidden sm:table-cell">Flat per dev</td>
-              <td>$10/dev/mo, hosted reviews included</td>
-              <td>Team price published; hosted reviews included</td>
+              <td className="hidden sm:table-cell">Active private-PR author</td>
+              <td>$15 Hosted or $9 BYOK per active author</td>
+              <td>Hosted includes a pooled inference allowance</td>
             </tr>
           </tbody>
         </table>
@@ -480,8 +480,9 @@ export default function BestToolsArticle() {
           restraint is measured and reported: the first number on the
           dashboard is the silence rate, the share of PRs where Postil said
           nothing, alongside the confidence distribution of every finding it
-          shipped. Pricing is flat by developer with hosted reviews included,
-          and BYOK support remains available for policy requirements.
+          shipped. Hosted is $15 per active private-PR author with a $6 pooled
+          inference allowance per author. BYOK is $9 per active author, with
+          provider usage billed directly.
           Self-hosting is free via{" "}
           <Link href="/docs/self-hosted">Docker Compose</Link>, same product as
           hosted, with Ollama support. The hosted app is GitHub-only today; the
@@ -522,7 +523,7 @@ export default function BestToolsArticle() {
             Macroscope.
           </li>
           <li>
-            <strong>Enforceable gate, flat predictable cost, self-host at any
+            <strong>Enforceable gate, active-author pricing, self-host at any
             size</strong>: Postil. That is the niche we built for, and the rest
             of this site is the argument.
           </li>

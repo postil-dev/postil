@@ -81,9 +81,18 @@ const softwareApplicationJsonLd = {
     },
     {
       "@type": "Offer",
-      name: "Team",
-      price: "10",
+      name: "Hosted",
+      price: "15",
       priceCurrency: "USD",
+      description: "$15 per active private-PR author per month",
+    },
+    {
+      "@type": "Offer",
+      name: "BYOK",
+      price: "9",
+      priceCurrency: "USD",
+      description:
+        "$9 per active private-PR author per month; provider usage billed directly",
     },
   ],
 };

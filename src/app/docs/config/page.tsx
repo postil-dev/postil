@@ -81,6 +81,12 @@ export default function ConfigPage() {
       </p>
 
       <h2>Full reference</h2>
+      <p>
+        Hosted inference ignores the entire <code>model</code> block and uses
+        Postil&apos;s operator-managed roster. Repository model, fallback, and API
+        settings apply only to BYOK organizations, the CLI, and self-hosted
+        deployments.
+      </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`# .postil.yaml — every key, with defaults
 enabled: true            # disable reviews for this repo entirely
@@ -112,9 +118,10 @@ gate:
                          # advisory fails open on provider outages only
 
 model:
-  name: deepseek/deepseek-v4-pro
+  name: z-ai/glm-5.2
   cascade:               # fallbacks, tried in order on provider errors
-    - qwen/qwen3-coder
+    - moonshotai/kimi-k2.7-code
+    - deepseek/deepseek-v4-flash
   apiBase: https://openrouter.ai/api/v1
   consensus: 1           # run the first N of [name + cascade], keep only
                          # findings they agree on (must be >= 1)`}</code>
@@ -177,17 +184,31 @@ model:
           <tr>
             <td><code>POSTIL_API_BASE</code></td>
             <td>
-              OpenAI-compatible base URL (default{" "}
+              OpenAI-compatible or Anthropic API base URL (default{" "}
               <code>https://openrouter.ai/api/v1</code>)
             </td>
           </tr>
           <tr>
+            <td><code>POSTIL_API_FORMAT</code></td>
+            <td>
+              <code>openai-compatible</code> (default) or <code>anthropic</code>
+            </td>
+          </tr>
+          <tr>
+            <td><code>POSTIL_ENDPOINT_AUTH_HEADER</code></td>
+            <td>Optional private-gateway authentication header; set with its value</td>
+          </tr>
+          <tr>
+            <td><code>POSTIL_ENDPOINT_AUTH_VALUE</code></td>
+            <td>Secret value paired with the private-gateway authentication header</td>
+          </tr>
+          <tr>
             <td><code>REVIEW_MODEL</code></td>
-            <td>Model id (default <code>deepseek/deepseek-v4-pro</code>)</td>
+            <td>Model id for BYOK, CLI, and self-hosted use</td>
           </tr>
           <tr>
             <td><code>REVIEW_MODEL_CASCADE</code></td>
-            <td>Comma-separated fallback models</td>
+            <td>Comma-separated fallback models for BYOK, CLI, and self-hosted use</td>
           </tr>
           <tr>
             <td><code>GITHUB_TOKEN</code></td>

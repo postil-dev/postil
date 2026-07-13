@@ -91,7 +91,7 @@ const usageRows = [
     promptTokens: 10_000_000,
     completionTokens: 1_000_000,
     modelUsed: "deepseek/deepseek-v4-pro",
-    costCents: 522,
+    costMicros: 5_220_000,
     createdAt: new Date("2026-07-11T12:00:00.000Z"),
   },
 ];
@@ -102,6 +102,17 @@ mock.module("@/lib/billing-usage", () => ({
     start: new Date("2026-07-01T00:00:00.000Z"),
     end: new Date("2026-07-11T00:00:00.000Z"),
   }),
+}));
+
+mock.module("@/lib/private-repository-entitlement", () => ({
+  canProcessPrivateRepository: async () => ({
+    allowed: false,
+    reason: "no_entitlement",
+    entitlement: null,
+    usageMicros: 0,
+    usageLimitMicros: null,
+  }),
+  requireMatchingProviderMode: (decision: unknown) => decision,
 }));
 
 mock.module("@/lib/org-access", () => ({
@@ -120,7 +131,7 @@ beforeEach(() => {
 
 describe("organization billing page auth", () => {
   test("denies non-admin members before loading billing data", async () => {
-    await expect(OrgBillingPage({ params: Promise.resolve({ slug: "acme" }) })).rejects.toThrow(
+    await expect(OrgBillingPage({ params: Promise.resolve({ slug: "acme" }), searchParams: Promise.resolve({}) })).rejects.toThrow(
       "this page requires an organization admin",
     );
   });
@@ -128,12 +139,16 @@ describe("organization billing page auth", () => {
   test("renders admin billing usage, visibility counts, enabled-since, and history", async () => {
     role = "admin";
 
-    const page = await OrgBillingPage({ params: Promise.resolve({ slug: "acme" }) });
+    const page = await OrgBillingPage({ params: Promise.resolve({ slug: "acme" }), searchParams: Promise.resolve({}) });
     const markup = renderToStaticMarkup(page);
 
-    expect(markup).toContain("17.5");
-    expect(markup).toContain("enabled repo-days");
-    expect(markup).toContain("billing-active now");
+    expect(markup).toContain("Repositories are not billing units");
+    expect(markup).toContain("per active private-PR author");
+    expect(markup).toContain("enabled, with no per-repo fee");
+    expect(markup).toContain("Private repository access");
+    expect(markup).toContain("Billing required");
+    expect(markup).toContain("Contact us to activate");
+    expect(markup).toContain("active private PR authors: 3");
     expect(markup).toContain("$194.78");
     expect(markup).toContain("remaining from $200.00 granted");
     expect(markup).toContain("$5.22 charged across");
@@ -153,7 +168,11 @@ function fakeDb(): any {
   return {
     select(selection: Record<string, unknown>) {
       const kind =
-        "repositoryFullName" in selection
+        "hasKey" in selection
+          ? "provider"
+          : "count" in selection
+          ? "activeAuthors"
+          : "repositoryFullName" in selection
           ? "events"
           : "amountCents" in selection
             ? "credits"
@@ -161,12 +180,16 @@ function fakeDb(): any {
               ? "usage"
               : "repositories";
       const rows =
-        kind === "events"
+        kind === "activeAuthors"
+          ? [{ count: 3 }]
+          : kind === "events"
           ? eventRows
           : kind === "credits"
             ? creditGrantRows
             : kind === "usage"
               ? usageRows
+              : kind === "provider"
+                ? [{ hasKey: false }]
               : currentRepoRows;
       const chain = {
         from() {
@@ -176,9 +199,14 @@ function fakeDb(): any {
           return chain;
         },
         where() {
-          return kind === "repositories" ? Promise.resolve(rows) : chain;
+          return kind === "repositories" || kind === "activeAuthors"
+            ? Promise.resolve(rows)
+            : chain;
         },
         orderBy() {
+          return Promise.resolve(rows);
+        },
+        limit() {
           return Promise.resolve(rows);
         },
       };

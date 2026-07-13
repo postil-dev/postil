@@ -3,224 +3,280 @@
 import Link from "next/link";
 import { useActionState, useState } from "react";
 
-import { saveOrgSettings } from "./actions";
+import { resendEscalationEmailVerification, saveOrgSettings } from "./actions";
 
 interface SettingsFormProps {
   slug: string;
+  billedMode: "hosted" | "byok" | null;
   settings:
     | {
         apiBase: string | null;
+        apiFormat: string;
         model: string | null;
         modelCascade: string | null;
         hasKey: boolean;
+        hasAdditionalAuth: boolean;
         configYaml: string | null;
         guardrailsMd: string | null;
         contentPolicyMd: string | null;
         escalationEmail: string | null;
+        escalationEmailPending: string | null;
+        escalationEmailVerifiedAt: Date | null;
       }
     | undefined;
 }
 
-const HOSTED_DEFAULT_MODEL_CHAIN = [
-  "mistralai/mistral-small-3.2-24b-instruct",
-  "google/gemma-3-27b-it",
-  "qwen/qwen3-32b",
-] as const;
-
-function modelChain(value: string | null | undefined): string[] {
-  return (value ?? "")
-    .split(",")
-    .map((model) => model.trim())
-    .filter(Boolean);
-}
-
-export function SettingsForm({ slug, settings }: SettingsFormProps) {
+export function SettingsForm({ slug, settings, billedMode }: SettingsFormProps) {
   const [state, formAction, pending] = useActionState(saveOrgSettings, null);
-  const [bringOwnKey, setBringOwnKey] = useState(false);
+  const [resendState, resendAction, resendPending] = useActionState(
+    resendEscalationEmailVerification,
+    null,
+  );
+  const [bringOwnKey, setBringOwnKey] = useState(settings?.hasKey ?? false);
+  const [apiKey, setApiKey] = useState("");
+  const [apiFormat, setApiFormat] = useState(settings?.apiFormat ?? "openai-compatible");
+  const [additionalAuth, setAdditionalAuth] = useState(settings?.hasAdditionalAuth ?? false);
+  const [apiAuthHeader, setApiAuthHeader] = useState("");
+  const [apiAuthValue, setApiAuthValue] = useState("");
   const textareaClass =
     "mt-1 min-h-36 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs leading-relaxed focus:border-gate focus:outline-none";
-  const configuredModelChain = modelChain(settings?.modelCascade);
-  const visibleModelChain =
-    configuredModelChain.length > 0 ? configuredModelChain : [...HOSTED_DEFAULT_MODEL_CHAIN];
+  const apiKeyAction = bringOwnKey ? (apiKey ? "replace" : "keep") : "remove";
+  const apiAuthAction = !bringOwnKey || !additionalAuth
+    ? "remove"
+    : apiAuthHeader || apiAuthValue
+      ? "replace"
+      : "keep";
 
   return (
     <form action={formAction} className="card mt-3 space-y-5 p-5">
       <input type="hidden" name="slug" value={slug} />
+      <input type="hidden" name="apiKeyAction" value={apiKeyAction} />
+      <input type="hidden" name="apiAuthAction" value={apiAuthAction} />
 
       <div className="space-y-4">
-        <p className="font-medium">LLM provider</p>
-        <label className="block text-sm">
-          <span className="font-medium">API base</span>
-          <input
-            type="url"
-            name="apiBase"
-            defaultValue={settings?.apiBase ?? ""}
-            placeholder="https://openrouter.ai/api/v1"
-            className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-          />
-        </label>
-        <div className="block text-sm">
-          <span className="font-medium">Model</span>
-          <input
-            type="text"
-            name="model"
-            defaultValue={settings?.model ?? ""}
-            placeholder="deepseek/deepseek-v4-pro"
-            className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-          />
-          <div className="mt-3 rounded-card border border-stone/80 bg-paper p-3">
-            <div className="flex flex-wrap items-center gap-2">
-              {visibleModelChain.map((model, index) => (
-                <div key={`${model}-${index}`} className="flex items-center gap-2">
-                  {index > 0 && <span className="font-mono text-xs text-charcoal/35">→</span>}
-                  <span className="rounded-card border border-stone bg-ivory px-2.5 py-1 font-mono text-[11px] text-charcoal">
-                    {model}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 inline-flex max-w-full items-start gap-2 rounded-card border border-gate/30 bg-gate/5 px-3 py-2 text-xs text-charcoal/70">
-              <span className="mt-0.5 rounded-full border border-gate px-1.5 font-mono text-[10px] text-gate">
-                info
-              </span>
-              <span>
-                Models are tried in order. A later model is only used if an earlier one
-                fails.
-              </span>
-            </div>
-            {configuredModelChain.length === 0 && (
-              <p className="mt-2 text-xs text-charcoal/55">
-                Empty uses the hosted default of {HOSTED_DEFAULT_MODEL_CHAIN.join(" → ")}.
-              </p>
-            )}
-          </div>
-        </div>
-        <label className="block text-sm">
-          <span className="font-medium">Fallback models</span>
-          <input
-            type="text"
-            name="modelCascade"
-            defaultValue={settings?.modelCascade ?? ""}
-            placeholder={HOSTED_DEFAULT_MODEL_CHAIN.join(", ")}
-            className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-          />
-          <span className="mt-1 block text-xs text-charcoal/60">
-            Comma-separated fallback chain after the primary model.
-          </span>
-        </label>
         <div className="rounded-card border border-stone/80 p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="font-medium">API key</p>
-              <p className="mt-1 text-sm text-ink-soft">
-                {settings?.hasKey
-                  ? "Using your own API key."
-                  : "Using Postil's hosted inference."}
-              </p>
-            </div>
-            <span
-              className={
-                settings?.hasKey
-                  ? "rounded-full border border-gate px-2.5 py-0.5 font-mono text-[11px] text-gate"
-                  : "rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/60"
-              }
-            >
-              {settings?.hasKey ? "BYOK" : "hosted"}
-            </span>
+          <p className="font-medium">Inference</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <label className="flex cursor-pointer items-center gap-3 rounded-card border border-stone/70 px-3 py-2 text-sm">
+              <input
+                type="radio"
+                name="providerMode"
+                value="hosted"
+                checked={!bringOwnKey}
+                disabled={billedMode === "byok"}
+                onChange={() => setBringOwnKey(false)}
+                className="h-4 w-4 accent-[#2F6F4E]"
+              />
+              <span>
+                <span className="block font-medium">Hosted by Postil</span>
+                <span className="text-xs text-charcoal/55">Postil chooses and operates the models.</span>
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-3 rounded-card border border-stone/70 px-3 py-2 text-sm">
+              <input
+                type="radio"
+                name="providerMode"
+                value="byok"
+                checked={bringOwnKey}
+                disabled={billedMode === "hosted"}
+                onChange={() => setBringOwnKey(true)}
+                className="h-4 w-4 accent-[#2F6F4E]"
+              />
+              <span>
+                <span className="block font-medium">Use your provider</span>
+                <span className="text-xs text-charcoal/55">Connect your API, models, and key.</span>
+              </span>
+            </label>
           </div>
-          {settings?.hasKey ? (
-            <div className="mt-4 space-y-3">
+          <p className="mt-3 text-xs text-charcoal/60">
+            {billedMode ? (
+              <>
+                Your private-repository plan uses {billedMode === "byok" ? "BYOK" : "hosted inference"}.{" "}
+                <Link href={`/orgs/${slug}/billing`} className="text-rust hover:underline">
+                  View billing.
+                </Link>
+                {" "}
+                <a
+                  href={`mailto:hello@postil.dev?subject=${encodeURIComponent(`Change ${slug} inference plan`)}`}
+                  className="text-rust hover:underline"
+                >
+                  Contact us to change plans.
+                </a>
+              </>
+            ) : (
+              <>
+                You can stage inference settings before subscribing. Private repositories remain inactive until a matching plan is enabled on{" "}
+                <Link href={`/orgs/${slug}/billing`} className="text-rust hover:underline">Billing</Link>.
+              </>
+            )}
+          </p>
+          {bringOwnKey && (
+            <>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <label className="block text-sm">
-                <span className="flex items-center justify-between font-medium">
-                  <span>Update key</span>
-                  <span className="font-mono text-[11px] text-gate">
-                    stored key cannot be read back
-                  </span>
+                <span className="font-medium">API format</span>
+                <select
+                  name="apiFormat"
+                  value={apiFormat}
+                  onChange={(event) => setApiFormat(event.target.value)}
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 text-sm focus:border-gate focus:outline-none"
+                >
+                  <option value="openai-compatible">OpenAI-compatible</option>
+                  <option value="anthropic">Anthropic</option>
+                </select>
+                <span className="mt-1 block text-xs text-charcoal/55">
+                  Choose the request format your API accepts.
                 </span>
+              </label>
+              <label className="block text-sm">
+                <span className="font-medium">API URL</span>
                 <input
-                  type="password"
-                  name="apiKey"
-                  autoComplete="off"
-                  placeholder="new provider key"
+                  type="url"
+                  name="apiBase"
+                  required
+                  defaultValue={settings?.apiBase ?? ""}
+                  placeholder={
+                    apiFormat === "anthropic"
+                      ? "https://api.anthropic.com/v1"
+                      : "https://provider.example/v1"
+                  }
                   className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
                 />
               </label>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="submit"
-                  name="apiKeyAction"
-                  value="replace"
-                  disabled={pending}
-                  className="btn-secondary text-xs disabled:opacity-60"
-                >
-                  Update key
-                </button>
-                <button
-                  type="submit"
-                  name="apiKeyAction"
-                  value="remove"
-                  disabled={pending}
-                  className="rounded-card border border-rust px-4 py-2 text-sm font-medium text-rust transition-colors hover:bg-rust hover:text-ivory disabled:opacity-60"
-                >
-                  Remove key
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-4 space-y-3">
-              <label className="flex items-center justify-between gap-3 rounded-card border border-stone/70 px-3 py-2 text-sm">
-                <span className="font-medium">Bring your own key</span>
+              <label className="block text-sm">
+                <span className="font-medium">Provider key</span>
+                <input
+                  type="password"
+                  name="apiKey"
+                  required={!settings?.hasKey}
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  autoComplete="off"
+                  placeholder={settings?.hasKey ? "Leave blank to keep stored key" : "Provider key"}
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="font-medium">Primary model</span>
+                <input
+                  type="text"
+                  name="model"
+                  required
+                  defaultValue={settings?.model ?? ""}
+                  placeholder="model identifier"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="block text-sm sm:col-span-2">
+                <span className="font-medium">Fallback models</span>
+                <input
+                  type="text"
+                  name="modelCascade"
+                  defaultValue={settings?.modelCascade ?? ""}
+                  placeholder="optional, comma-separated"
+                  className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3 rounded-card border border-stone/70 px-3 py-2 text-sm sm:col-span-2">
+                <span>
+                  <span className="block font-medium">Additional API authentication</span>
+                  <span className="text-xs text-charcoal/55">For a private gateway in front of the provider.</span>
+                </span>
                 <input
                   type="checkbox"
-                  checked={bringOwnKey}
-                  onChange={(event) => setBringOwnKey(event.target.checked)}
+                  checked={additionalAuth}
+                  onChange={(event) => setAdditionalAuth(event.target.checked)}
                   className="h-4 w-4 accent-[#2F6F4E]"
                 />
               </label>
-              {bringOwnKey && (
-                <label className="block text-sm">
-                  <span className="font-medium">Provider key</span>
-                  <input
-                    type="password"
-                    name="apiKey"
-                    autoComplete="off"
-                    placeholder="sk-..."
-                    className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-                  />
-                </label>
+              {additionalAuth && (
+                <>
+                  <label className="block text-sm">
+                    <span className="font-medium">Auth header</span>
+                    <input
+                      type="text"
+                      name="apiAuthHeader"
+                      required={!settings?.hasAdditionalAuth || Boolean(apiAuthValue)}
+                      value={apiAuthHeader}
+                      onChange={(event) => setApiAuthHeader(event.target.value)}
+                      placeholder={settings?.hasAdditionalAuth ? "Leave blank to keep stored auth" : "X-Gateway-Key"}
+                      autoComplete="off"
+                      className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="font-medium">Auth value</span>
+                    <input
+                      type="password"
+                      name="apiAuthValue"
+                      required={!settings?.hasAdditionalAuth || Boolean(apiAuthHeader)}
+                      value={apiAuthValue}
+                      onChange={(event) => setApiAuthValue(event.target.value)}
+                      placeholder={settings?.hasAdditionalAuth ? "Leave blank to keep stored auth" : "Credential"}
+                      autoComplete="off"
+                      className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
+                    />
+                  </label>
+                </>
               )}
-              <input
-                type="hidden"
-                name="apiKeyAction"
-                value={bringOwnKey ? "replace" : "keep"}
-              />
-            </div>
+              </div>
+              <p className="mt-3 text-xs text-charcoal/50">
+                Provider credentials are stored encrypted and never shown again.
+              </p>
+            </>
           )}
-          <p className="mt-3 text-xs text-charcoal/50">
-            Keys are sealed with AES-256-GCM before storage and can never be read
-            back from this form. BYOK review calls use this key under your provider
-            account.
-          </p>
         </div>
       </div>
 
       <div className="border-t border-stone/60 pt-5">
-        <p className="font-medium">Human escalation notifications</p>
+        <p className="font-medium">Escalation emails</p>
         <p className="mt-1 text-xs text-charcoal/70">
-          Postil emails this organization-owned address when a new calibrated{" "}
-          <code>humanEscalation</code> finding requires human attention.
+          Get an email when a finding needs human attention.
         </p>
         <label className="mt-3 block text-sm">
-          <span className="font-medium">Notification email</span>
+          <span className="flex items-center gap-2 font-medium">
+            <span>Notification email</span>
+            {settings?.escalationEmailVerifiedAt && (
+              <span className="rounded-full border border-gate px-2 py-0.5 font-mono text-[10px] text-gate">
+                verified
+              </span>
+            )}
+          </span>
           <input
             type="email"
             name="escalationEmail"
-            defaultValue={settings?.escalationEmail ?? ""}
+            defaultValue={
+              settings?.escalationEmailPending ?? settings?.escalationEmail ?? ""
+            }
             placeholder="code-owners@example.com"
             autoComplete="email"
             className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
           />
         </label>
+        {settings?.escalationEmailPending && (
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-charcoal/65">
+            <span>
+              Check your email to verify this address.
+              {settings.escalationEmail && " Alerts continue to the verified address."}
+            </span>
+            <button
+              type="submit"
+              formAction={resendAction}
+              disabled={resendPending}
+              className="font-medium text-rust hover:underline disabled:opacity-60"
+            >
+              {resendPending ? "Sending..." : "Resend"}
+            </button>
+          </div>
+        )}
+        {resendState && (
+          <p
+            role={resendState.status === "error" ? "alert" : "status"}
+            className={`mt-2 text-xs ${resendState.status === "error" ? "text-rust" : "text-gate"}`}
+          >
+            {resendState.message}
+          </p>
+        )}
       </div>
 
       <div className="border-t border-stone/60 pt-5">
@@ -236,8 +292,8 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
       <label className="block text-sm">
         <span className="font-medium">.postil.yaml</span>
         <span className="mt-1 block text-xs text-charcoal/60">
-          Sets review, gate, model, and integration options for repositories without a
-          root Postil config file.
+          Sets review, gate, and integration options for repositories without a root
+          Postil config file. Hosted model selection is managed by Postil.
         </span>
         <textarea
           name="configYaml"
@@ -284,8 +340,6 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
       )}
       <button
         type="submit"
-        name="apiKeyAction"
-        value="keep"
         disabled={pending}
         className="btn-primary text-sm disabled:opacity-60"
       >

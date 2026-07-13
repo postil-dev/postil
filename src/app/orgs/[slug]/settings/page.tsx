@@ -4,8 +4,13 @@ import Link from "next/link";
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { schema } from "@/lib/db";
+import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import { requireOrgMembership } from "@/lib/org-access";
+import {
+  canProcessPrivateRepository,
+  requireMatchingProviderMode,
+} from "@/lib/private-repository-entitlement";
 import { deriveRepoHealth, getRepoHealthRows, type RepoHealth } from "@/lib/repo-health";
 import { formatRelativeTime } from "@/lib/time";
 import {
@@ -13,7 +18,7 @@ import {
   resolveConfigArtifacts,
   type VisibleConfigArtifact,
 } from "../config-resolution";
-import { refreshOrgConfigProbes } from "../actions";
+import { ConfigRecheckButton } from "../config-recheck-button";
 import { RepoHealthBanner } from "../repo-health-banner";
 import { SettingsForm } from "../settings-form";
 
@@ -25,10 +30,13 @@ export const dynamic = "force-dynamic";
 
 export default async function OrgSettingsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ emailVerification?: string }>;
 }) {
   const { slug } = await params;
+  const { emailVerification } = await searchParams;
   const { db, org, membership } = await requireOrgMembership(slug);
   const now = new Date();
   if (membership.role !== "admin") {
@@ -39,16 +47,27 @@ export default async function OrgSettingsPage({
     await db
       .select({
         apiBase: schema.orgSettings.apiBase,
+        apiFormat: schema.orgSettings.apiFormat,
         model: schema.orgSettings.model,
         modelCascade: schema.orgSettings.modelCascade,
         configYaml: schema.orgSettings.configYaml,
         guardrailsMd: schema.orgSettings.guardrailsMd,
         contentPolicyMd: schema.orgSettings.contentPolicyMd,
         escalationEmail: schema.orgSettings.escalationEmail,
+        escalationEmailPending: schema.orgSettings.escalationEmailPending,
+        escalationEmailVerifiedAt: schema.orgSettings.escalationEmailVerifiedAt,
         hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
+        hasAdditionalAuth: sql<boolean>`${schema.orgSettings.apiAuthHeaderCiphertext} IS NOT NULL AND ${schema.orgSettings.apiAuthValueCiphertext} IS NOT NULL`,
       })
       .from(schema.orgSettings)
       .where(eq(schema.orgSettings.orgId, org.id))
+      .limit(1)
+  )[0];
+  const entitlement = (
+    await db
+      .select({ subscriptionMode: schema.organizationEntitlements.subscriptionMode })
+      .from(schema.organizationEntitlements)
+      .where(eq(schema.organizationEntitlements.orgId, org.id))
       .limit(1)
   )[0];
 
@@ -57,6 +76,7 @@ export default async function OrgSettingsPage({
       id: schema.repositories.id,
       fullName: schema.repositories.fullName,
       enabled: schema.repositories.enabled,
+      private: schema.repositories.private,
       githubInstallationId: schema.installations.githubInstallationId,
     })
     .from(schema.repositories)
@@ -133,6 +153,15 @@ export default async function OrgSettingsPage({
     .filter((summary) => summary.artifacts.length > 0);
   const showConfigFiles =
     repos.length === 0 || repoConfigSummaries.length > 0 || enabledRepos.length > 0;
+  const rawPrivateAccess = repos.some((repo) => repo.private && repo.enabled)
+    ? await canProcessPrivateRepository(db, {
+        orgId: org.id,
+        repositoryPrivate: true,
+      })
+    : null;
+  const privateAccess = rawPrivateAccess
+    ? requireMatchingProviderMode(rawPrivateAccess, settings?.hasKey ?? false)
+    : null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -156,6 +185,8 @@ export default async function OrgSettingsPage({
         </div>
       </div>
 
+      <PrivateBillingNotice orgSlug={org.slug} decision={privateAccess} />
+
       <RepoHealthBanner
         slug={org.slug}
         rows={repoHealthRows}
@@ -166,7 +197,26 @@ export default async function OrgSettingsPage({
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
         <div>
           <p className="eyebrow">Organization settings</p>
-          <SettingsForm slug={org.slug} settings={settings} />
+          {emailVerification === "success" && (
+            <p role="status" className="mt-3 rounded-card border border-gate/40 bg-gate/5 px-4 py-3 text-sm text-gate">
+              Notification email verified.
+            </p>
+          )}
+          {emailVerification === "invalid" && (
+            <p role="alert" className="mt-3 rounded-card border border-rust/40 bg-rust/5 px-4 py-3 text-sm text-rust">
+              This verification link is invalid or expired.
+            </p>
+          )}
+          <SettingsForm
+            slug={org.slug}
+            settings={settings}
+            billedMode={
+              entitlement?.subscriptionMode === "hosted" ||
+              entitlement?.subscriptionMode === "byok"
+                ? entitlement.subscriptionMode
+                : null
+            }
+          />
         </div>
 
         {showConfigFiles && (
@@ -174,12 +224,7 @@ export default async function OrgSettingsPage({
             <div className="flex items-center justify-between gap-3">
               <p className="eyebrow">Config files</p>
               {enabledRepos.length > 0 && (
-                <form action={refreshOrgConfigProbes}>
-                  <input type="hidden" name="slug" value={org.slug} />
-                  <button type="submit" className="btn-secondary text-xs">
-                    Re-check
-                  </button>
-                </form>
+                <ConfigRecheckButton slug={org.slug} />
               )}
             </div>
             {(repoConfigSummaries.length > 0 || repos.length === 0) && (

@@ -2,16 +2,21 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { PricingCalculator } from "@/components/pricing-calculator";
+import {
+  BYOK_ACTIVE_AUTHOR_MONTHLY_USD,
+  HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
+  HOSTED_INFERENCE_ALLOWANCE_USD,
+} from "@/lib/pricing-policy";
 
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Free on public repos. Hosted teams get unlimited hosted reviews in a flat $10/developer plan. Self-hosted is Apache-2.0 with no license cost.",
+    "Hosted reviews are $15 per active private-PR author with a pooled inference allowance. BYOK is $9 per active author. Public repositories are free.",
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
     description:
-      "Unlimited hosted reviews, free self-hosting, and no per-review meter.",
+      "Hosted and BYOK plans priced by active private-PR author, with no repository charge.",
     url: "https://postil.dev/pricing",
     images: ["/opengraph-image"],
   },
@@ -19,24 +24,24 @@ export const metadata: Metadata = {
 
 const FAQ = [
   {
-    q: "What is my worst-case monthly cost?",
-    a: "For the hosted Team plan, the customer-facing price is flat by developer. The public calculator compares published customer-facing prices only.",
+    q: "Who counts as an active author?",
+    a: "A GitHub identity, including a bot or service identity, whose private-repository pull request Postil reviews during the billing month. An identity counts once per organization, regardless of repository or review count.",
   },
   {
-    q: "Do I have to bring my own key?",
-    a: "No. The hosted app includes reviews by default. Bring-your-own-key remains available for teams with a specific policy requirement.",
+    q: "What happens when Hosted uses its allowance?",
+    a: "Hosted includes $6 of inference per active author, pooled across the organization. Overage defaults to $0. An organization owner must explicitly set a higher hard cap before Postil can incur additional hosted inference charges.",
   },
   {
-    q: "What does hosted Team cost?",
-    a: "Hosted Team is $10 per developer per month with hosted reviews included. Hosted public-repository reviews are free; the CLI and self-hosted stack are Apache-2.0 with no license cost.",
+    q: "How does BYOK billing work?",
+    a: "Postil charges $9 per active author. Your model provider bills inference directly. Set budgets, hard limits, and alerts with the provider because Postil cannot enforce limits on charges in an external provider account.",
   },
   {
-    q: "What is included at no charge?",
-    a: "Hosted reviews on public repositories are free. The CLI, GitHub Action, and self-hosted stack are Apache-2.0 with no license cost; self-hosters pay for their own inference and infrastructure.",
+    q: "Are repositories billed?",
+    a: "No. Pricing follows active private-PR authors, not repositories. The same identity is billed separately when it works for unrelated organization customers, and is deduplicated across organizations covered by one contracted enterprise account.",
   },
   {
-    q: "Do you offer annual billing or invoicing?",
-    a: "Contact us for annual billing or invoicing. The public calculator uses monthly list prices so comparisons stay simple.",
+    q: "What is included for public repositories?",
+    a: "Hosted public-repository reviews are free, subject to the service-protection fair-use terms. The CLI and self-hosted stack have no license cost.",
   },
 ] as const;
 
@@ -45,64 +50,68 @@ export default function PricingPage() {
     <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
       <p className="eyebrow">Pricing</p>
       <h1 className="serif-display mt-4 max-w-3xl text-4xl md:text-5xl">
-        Flat pricing, reviews included.
+        Pay for authors who use Postil.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        Pricing in this category usually takes one of two forms: per-review
-        meters that scale cost with usage, or bundles that make a forecast
-        hard. Postil charges a flat per-developer seat price with hosted
-        reviews included.
+        The organization is the customer. Private-repository plans count the
+        GitHub identities whose pull requests Postil reviews during the month.
+        There is no repository charge.
       </p>
 
-      {/* Tiers */}
-      <div className="mt-14 grid gap-6 lg:grid-cols-3">
+      <div className="mt-14 grid gap-6 md:grid-cols-2 xl:grid-cols-4">
         <div className="card flex flex-col p-7">
-          <p className="eyebrow">Free</p>
+          <p className="eyebrow">Public</p>
           <p className="serif-display mt-3 text-4xl">$0</p>
-          <p className="mt-1 text-sm text-charcoal/70">public repositories</p>
+          <p className="mt-1 text-sm text-charcoal/70">per organization</p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
-            <li>Hosted reviews on public repositories</li>
-            <li>The full CLI, locally and in CI (Apache-2.0)</li>
-            <li>GitHub Action with pinned-SHA installs</li>
-            <li>CodeRabbit config translation (reads .coderabbit.yaml)</li>
+            <li>Hosted public-repository reviews</li>
+            <li>Service-protection fair use</li>
+            <li>CLI and GitHub Action</li>
           </ul>
           <Link href="/install" className="btn-secondary mt-8 text-center">
-            Install the CLI
+            Install the App
           </Link>
         </div>
 
         <div className="card flex flex-col border-gate p-7">
-          <div className="flex items-center justify-between">
-            <p className="eyebrow">Team</p>
-            <span className="rounded-full border border-gate px-2.5 py-0.5 font-mono text-[11px] text-gate">
-              reviews included
-            </span>
-          </div>
-          <p className="serif-display mt-3 text-4xl">$10</p>
+          <p className="eyebrow">Hosted</p>
+          <p className="serif-display mt-3 text-4xl">
+            ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD}
+          </p>
           <p className="mt-1 text-sm text-charcoal/70">
-            per developer per month, flat
+            per active author / month
           </p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
-            <li>Private repositories, unlimited reviews</li>
-            <li>Unlimited hosted reviews included</li>
-            <li>BYOK support for custom policy requirements</li>
-            <li>postil/gate for branch protection</li>
-            <li>Silence-rate and confidence dashboards</li>
-            <li>Incremental re-review on every push</li>
+            <li>
+              ${HOSTED_INFERENCE_ALLOWANCE_USD} inference allowance per author,
+              pooled organization-wide
+            </li>
+            <li>$0 default overage</li>
+            <li>Owner-controlled hard cap for additional usage</li>
+            <li>Private repositories with no repository fee</li>
           </ul>
           <Link href="/install" className="btn-primary mt-8 text-center">
             Install the App
           </Link>
-          <p className="mt-4 text-xs text-charcoal/70">
-            Procurement, invoicing, SSO, or DPA requirements?{" "}
-            <a
-              href="mailto:hello@postil.dev"
-              className="text-rust underline"
-            >
-              Talk to us
-            </a>
-            .
+        </div>
+
+        <div className="card flex flex-col p-7">
+          <p className="eyebrow">BYOK</p>
+          <p className="serif-display mt-3 text-4xl">
+            ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD}
           </p>
+          <p className="mt-1 text-sm text-charcoal/70">
+            per active author / month
+          </p>
+          <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
+            <li>Use your model provider and credentials</li>
+            <li>Provider usage billed directly to you</li>
+            <li>Provider budgets and limits control spend</li>
+            <li>Private repositories with no repository fee</li>
+          </ul>
+          <Link href="/install" className="btn-secondary mt-8 text-center">
+            Install the App
+          </Link>
         </div>
 
         <div className="card flex flex-col p-7">
@@ -110,30 +119,42 @@ export default function PricingPage() {
           <p className="serif-display mt-3 text-4xl">Free</p>
           <p className="mt-1 text-sm text-charcoal/70">Apache-2.0, no license cost</p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
-            <li>Docker Compose: Postgres, web, worker</li>
-            <li>Startup validation with actionable errors</li>
-            <li>OpenRouter, Azure OpenAI, Ollama, vLLM, and LiteLLM documented</li>
-            <li>postil doctor verifies endpoint, key, and reviewer config</li>
+            <li>Docker Compose deployment</li>
+            <li>Your infrastructure and inference account</li>
+            <li>The same review gate and dashboard</li>
           </ul>
-          <Link href="/docs/self-hosted" className="btn-secondary mt-8 text-center">
+          <Link
+            href="/docs/self-hosted"
+            className="btn-secondary mt-8 text-center"
+          >
             Self-host guide
           </Link>
         </div>
       </div>
 
-      {/* Calculator */}
+      <div className="mt-8 rounded-card border border-stone bg-paper p-6 text-sm text-ink-soft">
+        An active author is a GitHub identity, including a bot or service
+        identity, whose private-repository PR Postil reviews in the billing
+        month. One identity counts once per organization. Related organizations
+        under one enterprise contract share identity deduplication. See the{" "}
+        <Link
+          href="/terms#billing-and-fair-use"
+          className="text-rust underline"
+        >
+          billing and fair-use terms
+        </Link>
+        .
+      </div>
+
       <div className="mt-20">
         <div className="rule pt-8">
-          <p className="eyebrow">The calculator</p>
+          <p className="eyebrow">Calculator</p>
           <h2 className="serif-display mt-3 text-3xl">
-            What does your team actually pay?
+            Estimate by active author.
           </h2>
           <p className="mt-3 max-w-2xl text-ink-soft">
-            Compared against published customer-facing prices for CodeRabbit
-            Pro, Greptile, Qodo Pro Team, Macroscope, and Copilot Business.
-            Where a competitor uses usage pricing or unpublished review
-            consumption, the calculator shows a range or a floor instead of
-            inventing a precise total.
+            Postil totals use active private-PR authors. Competitor cards retain
+            each vendor&apos;s published billing unit.
           </p>
         </div>
         <div className="mt-8">
@@ -141,7 +162,6 @@ export default function PricingPage() {
         </div>
       </div>
 
-      {/* FAQ */}
       <div className="mt-20">
         <div className="rule pt-8">
           <p className="eyebrow">Questions</p>

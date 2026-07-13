@@ -5,10 +5,12 @@ import type { NextConfig } from "next";
 // is restrictive by default. Next.js emits inline bootstrap scripts and the
 // pages embed inline JSON-LD, so script-src needs 'unsafe-inline' until nonces
 // are wired through middleware; inline style attributes need it on style-src.
+const developmentScriptPolicy =
+  process.env.NODE_ENV === "production" ? "" : " 'unsafe-eval'";
 const csp = [
   "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://eu-assets.i.posthog.com https://us-assets.i.posthog.com",
-      "script-src-attr 'none'",
+  `script-src 'self' 'unsafe-inline'${developmentScriptPolicy} https://eu-assets.i.posthog.com https://us-assets.i.posthog.com`,
+  "script-src-attr 'none'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",

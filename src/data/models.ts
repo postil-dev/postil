@@ -1,6 +1,6 @@
 // Curated model list for /docs/models. Facts and public price snapshots are
 // maintained in this repo so public docs do not depend on a third-party request
-// at render time. Prices captured from OpenRouter on 2026-07-10.
+// at render time. Prices captured from OpenRouter on 2026-07-13.
 
 export type ParamClass = "unknown" | "<40B" | "40B-200B" | ">200B";
 
@@ -27,6 +27,30 @@ export interface CatalogModel {
 
 export const MODELS: CatalogModel[] = [
   {
+    id: "z-ai/glm-5.2",
+    name: "GLM 5.2",
+    contextLength: 1_048_576,
+    vision: false,
+    openWeights: true,
+    paramClass: ">200B",
+    locallyRunnable: false,
+    recommended: true,
+    tested: false,
+    pricePerToken: { input: 0.00000042, output: 0.00000132 },
+  },
+  {
+    id: "moonshotai/kimi-k2.7-code",
+    name: "Kimi K2.7 Code",
+    contextLength: 262_144,
+    vision: false,
+    openWeights: true,
+    paramClass: ">200B",
+    locallyRunnable: false,
+    recommended: false,
+    tested: false,
+    pricePerToken: { input: 0.00000072, output: 0.0000035 },
+  },
+  {
     id: "deepseek/deepseek-v4-pro",
     name: "DeepSeek V4 Pro",
     contextLength: 1_048_576,
@@ -34,7 +58,7 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: ">200B",
     locallyRunnable: false,
-    recommended: true,
+    recommended: false,
     tested: true,
     pricePerToken: { input: 0.000000435, output: 0.00000087 },
   },
@@ -60,7 +84,31 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: false,
     recommended: false,
     tested: true,
-    pricePerToken: { input: 0.00000009, output: 0.00000018 },
+    pricePerToken: { input: 0.000000077, output: 0.000000154 },
+  },
+  {
+    id: "anthropic/claude-haiku-4.5",
+    name: "Claude Haiku 4.5",
+    contextLength: 200_000,
+    vision: true,
+    openWeights: false,
+    paramClass: "unknown",
+    locallyRunnable: false,
+    recommended: false,
+    tested: false,
+    pricePerToken: { input: 0.000001, output: 0.000005 },
+  },
+  {
+    id: "openai/gpt-5-mini",
+    name: "GPT-5 Mini",
+    contextLength: 400_000,
+    vision: true,
+    openWeights: false,
+    paramClass: "unknown",
+    locallyRunnable: false,
+    recommended: false,
+    tested: false,
+    pricePerToken: { input: 0.00000025, output: 0.000002 },
   },
   {
     id: "qwen/qwen3-32b",

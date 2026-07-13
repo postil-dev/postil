@@ -6,10 +6,32 @@ import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { postIssueComment } from "@/lib/github/checks";
+import {
+  findIssueCommentByMarker,
+  postIssueComment,
+} from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
-import type { RespondJobPayload } from "@/lib/queue";
+import { fetchRepositorySummary } from "@/lib/github/installation-sync";
+import type { RespondDeliveryJobPayload, RespondJobPayload } from "@/lib/queue";
+import {
+  canProcessPrivateRepository,
+  providerModeMatchesPrivateAccess,
+} from "@/lib/private-repository-entitlement";
+import {
+  reconcileHostedRespondSpend,
+  releaseHostedRespondSpend,
+  reserveHostedRespondSpend,
+} from "@/lib/hosted-usage-reservations";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
+import { readRespondUsageReceipt } from "@/lib/respond-usage-receipt";
+import {
+  claimRespondDelivery,
+  getRespondDelivery,
+  markRespondDelivered,
+  prepareUnmeteredRespondDelivery,
+  RESPOND_DELIVERY_REQUEST_TIMEOUT_MS,
+  respondDeliveryMarker,
+} from "@/lib/respond-delivery";
 import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
 
 /**
@@ -19,7 +41,7 @@ import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
  * environment, and let the CLI fetch context, generate the answer, and post
  * the reply. Postil only reviews and answers; it never opens PRs or pushes.
  */
-export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
+export async function runRespondJob(payload: RespondJobPayload, jobId: number): Promise<void> {
   // A malformed row must fail loudly, not spawn the CLI with "undefined" argv.
   if (
     typeof payload.installationId !== "number" ||
@@ -30,6 +52,7 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
   ) {
     throw new Error(`respond job payload malformed: ${JSON.stringify(Object.keys(payload))}`);
   }
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) throw new Error("respond job id is invalid");
   const db = getDb();
 
   const installation = (
@@ -60,8 +83,49 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
     console.warn(`respond job skipped: repository ${payload.repoFullName} missing or disabled`);
     return;
   }
+  const signedOrStoredPrivate = repository.private || payload.repositoryPrivate === true;
+  const privateAccess = await canProcessPrivateRepository(db, {
+    orgId: installation.orgId,
+    repositoryPrivate: signedOrStoredPrivate,
+  });
+  if (!privateAccess.allowed) {
+    console.warn(`respond job skipped: private repository ${payload.repoFullName} requires billing`);
+    return;
+  }
+
+  const llm = await resolveLlmConfig(installation.orgId);
+  if (!providerModeMatchesPrivateAccess(signedOrStoredPrivate, privateAccess, llm.byok)) {
+    console.warn(
+      `respond job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
+    );
+    return;
+  }
 
   const token = await getInstallationToken(payload.installationId);
+  const currentRepository = await fetchRepositorySummary(token, payload.repoFullName);
+  await db
+    .update(schema.repositories)
+    .set({ fullName: currentRepository.full_name, private: currentRepository.private })
+    .where(eq(schema.repositories.id, repository.id));
+  const currentAccess = await canProcessPrivateRepository(db, {
+    orgId: installation.orgId,
+    repositoryPrivate: currentRepository.private,
+  });
+  if (
+    !currentAccess.allowed ||
+    !providerModeMatchesPrivateAccess(currentRepository.private, currentAccess, llm.byok)
+  ) {
+    console.warn(
+      `respond job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
+    );
+    return;
+  }
+  const existingDelivery = await getRespondDelivery(db, jobId);
+  if (existingDelivery?.state === "delivered") return;
+  if (existingDelivery) {
+    await deliverPreparedRespond(db, token, jobId);
+    return;
+  }
   const args = [
     "respond",
     "--forge",
@@ -70,6 +134,7 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
     payload.repoFullName,
     payload.isPr ? "--pr" : "--issue",
     String(payload.number),
+    "--no-post",
   ];
 
   // The mention text travels via env, not argv: argv is visible in `ps` and
@@ -79,33 +144,163 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
     ? `(asked on \`${payload.commentAnchor}\`)\n\n${payload.comment}`
     : payload.comment;
 
-  const llm = await resolveLlmConfig(installation.orgId);
-  const cliEnv = buildCliEnv(llm, {
-    GITHUB_TOKEN: token,
-    POSTIL_COMMENT: comment,
-  });
-
   // Same repo-config materialization as review jobs, so replies honor the
   // repo's tone/guardrails/content-policy settings. See lib/github/contents.ts.
   const cacheDir = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
   await mkdir(resolve(cacheDir, "workdirs"), { recursive: true });
   const workDir = await mkdtemp(resolve(cacheDir, "workdirs", "respond-"));
+  let hostedUsageReservationId: string | null = null;
+  let cliStarted = false;
+  let hostedSpendReconciled = false;
   try {
-    await materializeRepoConfig(token, payload.repoFullName, workDir);
+    if (currentRepository.private && !llm.byok) {
+      const reservation = await reserveHostedRespondSpend(db, {
+        orgId: installation.orgId,
+        usesByok: false,
+      });
+      if (!reservation.allowed || !reservation.reservationId) {
+        console.warn(
+          `respond job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
+        );
+        return;
+      }
+      hostedUsageReservationId = reservation.reservationId;
+    }
+    const usageReceiptPath = resolve(workDir, "respond-usage.json");
+    const cliEnv = buildCliEnv(llm, {
+      GITHUB_TOKEN: token,
+      POSTIL_COMMENT: comment,
+      ...(hostedUsageReservationId
+        ? { POSTIL_USAGE_RECEIPT_PATH: usageReceiptPath }
+        : {}),
+    });
+    await materializeRepoConfig(token, payload.repoFullName, workDir, {
+      allowModelSettings: llm.byok,
+    });
 
+    cliStarted = true;
     const result = await runCli(args, cliEnv, workDir);
     if (result.timedOut) {
       throw new Error("respond exceeded the CLI deadline");
     }
     if (result.exitCode !== 0) {
-      const stderr = redactAndTruncate(result.stderr, 500, [token, llm.apiKey]);
+      const stderr = redactAndTruncate(result.stderr, 500, [
+        token,
+        llm.apiKey,
+        llm.apiAuthHeader,
+        llm.apiAuthValue,
+      ]);
       throw new Error(
         `postil respond exited with code ${result.exitCode}: ${stderr}`,
       );
     }
+    const reply = result.stdout.trim();
+    if (!reply || reply.length > 65_000) throw new Error("postil respond produced an invalid reply");
+    const body = `${reply}\n\n${respondDeliveryMarker(jobId)}`;
+    if (hostedUsageReservationId) {
+      let usage: Awaited<ReturnType<typeof readRespondUsageReceipt>> | null = null;
+      try {
+        usage = await readRespondUsageReceipt(usageReceiptPath);
+      } catch {
+        console.error("hosted respond usage receipt was missing or invalid; charging reservation");
+      }
+      await reconcileHostedRespondSpend(db, {
+        reservationId: hostedUsageReservationId,
+        repositoryId: repository.id,
+        promptTokens: usage?.promptTokens ?? 0,
+        completionTokens: usage?.completionTokens ?? 0,
+        modelUsed: usage?.modelUsed ?? "respond (conservative reservation)",
+        actualMicros: usage?.actualMicros ?? null,
+        usageAccountingComplete: usage?.usageAccountingComplete ?? false,
+        delivery: {
+          jobId,
+          repoFullName: currentRepository.full_name,
+          issueNumber: payload.number,
+          body,
+        },
+      });
+      hostedSpendReconciled = true;
+    } else {
+      await prepareUnmeteredRespondDelivery(db, {
+        jobId,
+        repositoryId: repository.id,
+        repoFullName: currentRepository.full_name,
+        issueNumber: payload.number,
+        body,
+      });
+    }
+    await deliverPreparedRespond(db, token, jobId);
+  } catch (error) {
+    if (hostedUsageReservationId && cliStarted && !hostedSpendReconciled) {
+      // Once the CLI can reach inference, absence of a validated receipt is
+      // conservatively charged at the reservation. Never release potentially
+      // consumed provider work as unspent after a delivery-side failure.
+      await reconcileHostedRespondSpend(db, {
+        reservationId: hostedUsageReservationId,
+        repositoryId: repository.id,
+        promptTokens: 0,
+        completionTokens: 0,
+        modelUsed: "respond (conservative reservation)",
+        actualMicros: null,
+        usageAccountingComplete: false,
+      }).catch((reconcileError) => {
+        console.error(
+          `failed to conservatively reconcile hosted respond usage: ${redactSecrets(reconcileError)}`,
+        );
+      });
+    } else if (hostedUsageReservationId && !cliStarted) {
+      await releaseHostedRespondSpend(db, hostedUsageReservationId).catch((releaseError) => {
+        console.error(`failed to release unused hosted respond reservation: ${redactSecrets(releaseError)}`);
+      });
+    }
+    throw error;
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+export async function runRespondDeliveryJob(
+  payload: RespondDeliveryJobPayload,
+): Promise<void> {
+  if (!Number.isSafeInteger(payload.respondJobId) || payload.respondJobId <= 0) {
+    throw new Error("respond delivery payload malformed");
+  }
+  const db = getDb();
+  const delivery = await getRespondDelivery(db, payload.respondJobId);
+  if (!delivery || delivery.state === "delivered") return;
+  const token = await getInstallationToken(delivery.githubInstallationId);
+  await deliverPreparedRespond(db, token, payload.respondJobId);
+}
+
+async function deliverPreparedRespond(
+  db: ReturnType<typeof getDb>,
+  token: string,
+  jobId: number,
+): Promise<void> {
+  const delivery = await claimRespondDelivery(db, jobId);
+  if (!delivery) {
+    const existing = await getRespondDelivery(db, jobId);
+    if (existing?.state === "delivered") return;
+    throw new Error("respond delivery is already in progress");
+  }
+  const marker = respondDeliveryMarker(jobId);
+  const signal = AbortSignal.timeout(RESPOND_DELIVERY_REQUEST_TIMEOUT_MS);
+  const existingCommentId = await findIssueCommentByMarker(
+    token,
+    delivery.repoFullName,
+    delivery.issueNumber,
+    marker,
+    new Date(delivery.createdAt.getTime() - 5 * 60_000),
+    signal,
+  );
+  const commentId = existingCommentId ?? await postIssueComment(
+    token,
+    delivery.repoFullName,
+    delivery.issueNumber,
+    delivery.body,
+    signal,
+  );
+  await markRespondDelivered(db, jobId, commentId);
 }
 
 /** The user-facing message posted when a respond job exhausts its retries. */
@@ -131,6 +326,7 @@ export async function postRespondFailureComment(
   signal?: AbortSignal,
   timeoutMs = RESPOND_FAILURE_COMMENT_TIMEOUT_MS,
   throwOnError = false,
+  respondJobId?: number,
 ): Promise<void> {
   const requestSignal = signal ?? AbortSignal.timeout(timeoutMs);
   try {
@@ -146,6 +342,10 @@ export async function postRespondFailureComment(
     }
 
     const db = getDb();
+    if (respondJobId && await getRespondDelivery(db, respondJobId)) {
+      console.warn("respond failure comment skipped: a durable answer delivery exists");
+      return;
+    }
     const installation = (
       await db
         .select()
@@ -174,6 +374,17 @@ export async function postRespondFailureComment(
     if (!repository || !repository.enabled) {
       console.warn(
         `respond failure comment skipped: repository ${payload.repoFullName} missing/disabled`,
+      );
+      return;
+    }
+    if (
+      !(await canProcessPrivateRepository(db, {
+        orgId: installation.orgId,
+        repositoryPrivate: repository.private,
+      })).allowed
+    ) {
+      console.warn(
+        `respond failure comment skipped: private repository ${payload.repoFullName} requires billing`,
       );
       return;
     }

@@ -57,8 +57,10 @@ mock.module("@/lib/github/checks", () => ({
     completedCheckRuns.push({ repoFullName, conclusion });
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
+  findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
+    return 123;
   },
 }));
 
@@ -113,7 +115,7 @@ describeDb("webhook handler behaviour", () => {
     pullRequestHeadSha = "head-sha";
     checkRunPatchFails = false;
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
-    await pool.query("TRUNCATE jobs RESTART IDENTITY");
+    await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
       "TRUNCATE reviews, repositories, installations, organizations RESTART IDENTITY CASCADE",
@@ -144,11 +146,12 @@ describeDb("webhook handler behaviour", () => {
     installationId: number,
     githubRepoId: number,
     fullName: string,
+    privateRepository = false,
   ): Promise<number> {
     const repo = await pool.query<{ id: string }>(
       `INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
-       VALUES ($1, $2, $3, false, true) RETURNING id`,
-      [installationId, githubRepoId, fullName],
+       VALUES ($1, $2, $3, $4, true) RETURNING id`,
+      [installationId, githubRepoId, fullName, privateRepository],
     );
     return Number(repo.rows[0]!.id);
   }
@@ -220,13 +223,17 @@ describeDb("webhook handler behaviour", () => {
     return Number(row.rows[0]!.id);
   }
 
-  function approvalComment(deliveryId: string, body = "@postil approve kind-blocker -- reviewed"): Promise<Response> {
+  function approvalComment(
+    deliveryId: string,
+    body = "@postil approve kind-blocker -- reviewed",
+    privateRepository = false,
+  ): Promise<Response> {
     return post(
       "issue_comment",
       {
         action: "created",
         installation: { id: 700 },
-        repository: { id: 7000, full_name: "octo/approvals", private: false },
+        repository: { id: 7000, full_name: "octo/approvals", private: privateRepository },
         sender: { id: 501, login: "admin", type: "User" },
         comment: {
           id: 123456,
@@ -256,7 +263,12 @@ describeDb("webhook handler behaviour", () => {
         number: 7,
         installation: { id: 200 },
         repository: { id: 7777, full_name: "octo/repo", private: false },
-        pull_request: { number: 7, head: { sha: "h" }, base: { sha: "b" } },
+        pull_request: {
+          number: 7,
+          head: { sha: "h" },
+          base: { sha: "b" },
+          user: { id: 4242, login: "dependabot[bot]", type: "Bot" },
+        },
       },
       "delivery-transfer-1",
     );
@@ -269,10 +281,16 @@ describeDb("webhook handler behaviour", () => {
     expect(Number(row.rows[0]!.installation_id)).toBe(newInst);
 
     // And the review job was enqueued (installation resolved, repo enabled).
-    const jobs = await pool.query<{ c: number }>(
-      "SELECT count(*)::int AS c FROM jobs WHERE kind = 'review'",
+    const jobs = await pool.query<{
+      payload: { authorGithubId: number; authorLogin: string };
+    }>(
+      "SELECT payload FROM jobs WHERE kind = 'review'",
     );
-    expect(jobs.rows[0]!.c).toBe(1);
+    expect(jobs.rows).toHaveLength(1);
+    expect(jobs.rows[0]!.payload).toMatchObject({
+      authorGithubId: 4242,
+      authorLogin: "dependabot[bot]",
+    });
   });
 
   test("pull_request synchronize neutralizes superseded review check-runs", async () => {
@@ -320,6 +338,81 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(jobs.rows).toHaveLength(1);
     expect(jobs.rows[0]!.payload.headSha).toBe("new-head");
+  });
+
+  test("private repositories without entitlement produce no jobs, reviews, checks, or comments across webhook paths", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 260);
+    await seedRepo(inst, 7979, "octo/private", true);
+    const repository = { id: 7979, full_name: "octo/private", private: true };
+
+    expect((await post("pull_request", {
+      action: "opened",
+      installation: { id: 260 },
+      repository,
+      pull_request: { number: 7, head: { sha: "head" }, base: { sha: "base" } },
+    }, "private-pull")).status).toBe(200);
+    expect((await post("check_run", {
+      action: "rerequested",
+      installation: { id: 260 },
+      repository,
+      check_run: {
+        name: "postil/gate",
+        head_sha: "head",
+        pull_requests: [{ number: 7, head: { sha: "head" }, base: { sha: "base" } }],
+      },
+    }, "private-rerequest")).status).toBe(200);
+    const comment = {
+      body: "@postil please help",
+      user: { login: "maintainer", type: "User" },
+      author_association: "MEMBER",
+    };
+    expect((await post("issue_comment", {
+      action: "created",
+      installation: { id: 260 },
+      repository,
+      sender: { login: "maintainer", type: "User" },
+      comment,
+      issue: { number: 7, pull_request: {} },
+    }, "private-issue-comment")).status).toBe(200);
+    expect((await post("pull_request_review_comment", {
+      action: "created",
+      installation: { id: 260 },
+      repository,
+      sender: { login: "maintainer", type: "User" },
+      comment: { ...comment, path: "src/app.ts", line: 2 },
+      pull_request: { number: 7 },
+    }, "private-review-comment")).status).toBe(200);
+    expect((await post("issues", {
+      action: "opened",
+      installation: { id: 260 },
+      repository,
+      sender: { login: "maintainer", type: "User" },
+      issue: { number: 8, body: "@postil please help", author_association: "MEMBER" },
+    }, "private-issue")).status).toBe(200);
+    const [jobs, reviews] = await Promise.all([
+      pool.query<{ c: number }>("SELECT count(*)::int AS c FROM jobs"),
+      pool.query<{ c: number }>("SELECT count(*)::int AS c FROM reviews"),
+    ]);
+    expect(jobs.rows[0]!.c).toBe(0);
+    expect(reviews.rows[0]!.c).toBe(0);
+    expect(completedCheckRuns).toEqual([]);
+    expect(postedComments).toEqual([]);
+  });
+
+  test("private approval commands remain available without billing entitlement", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals", true);
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+
+    expect((await approvalComment("private-approval", undefined, true)).status).toBe(200);
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE revoked_at IS NULL",
+    );
+    expect(approvals.rows[0]!.c).toBe(1);
+    expect(postedComments[0]?.body).toContain("Approved by @admin");
   });
 
   test("installation_repositories removed completes in-flight review check-runs then deletes", async () => {

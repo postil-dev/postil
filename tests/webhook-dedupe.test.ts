@@ -50,7 +50,7 @@ describeDb("webhook delivery dedupe durability", () => {
     // Restore the jobs table first if a prior test left it renamed.
     await pool.query("ALTER TABLE jobs_quarantine RENAME TO jobs").catch(() => undefined);
     // Clean slate, FK-safe order.
-    await pool.query("TRUNCATE jobs RESTART IDENTITY");
+    await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
       "TRUNCATE reviews, repositories, installations, organizations RESTART IDENTITY CASCADE",

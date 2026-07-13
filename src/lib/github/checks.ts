@@ -12,6 +12,9 @@ import { apiBase } from "./app-auth";
 
 export const ADVISORY_CHECK_NAME = "postil/review";
 export const GATE_CHECK_NAME = "postil/gate";
+export const RESPOND_MARKER_MAX_PAGES = 10;
+
+const ISSUE_COMMENTS_PAGE_SIZE = 100;
 
 type Conclusion = "success" | "failure" | "neutral";
 
@@ -86,13 +89,50 @@ export async function postIssueComment(
   number: number,
   body: string,
   signal?: AbortSignal,
-): Promise<void> {
-  await githubFetch(
+): Promise<number> {
+  const response = await githubFetch(
     token,
     "POST",
     `/repos/${repoFullName}/issues/${number}/comments`,
     { body },
     signal,
+  );
+  const data = (await response.json()) as { id?: number };
+  if (!Number.isSafeInteger(data.id)) throw new Error("GitHub comment response has no valid id");
+  return data.id!;
+}
+
+/** Find a previously posted respond marker after an ambiguous delivery. */
+export async function findIssueCommentByMarker(
+  token: string,
+  repoFullName: string,
+  number: number,
+  marker: string,
+  since: Date,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  for (let page = 1; page <= RESPOND_MARKER_MAX_PAGES; page += 1) {
+    const query = new URLSearchParams({
+      per_page: String(ISSUE_COMMENTS_PAGE_SIZE),
+      page: String(page),
+      since: since.toISOString(),
+    });
+    const response = await githubFetch(
+      token,
+      "GET",
+      `/repos/${repoFullName}/issues/${number}/comments?${query}`,
+      undefined,
+      signal,
+    );
+    const comments = (await response.json()) as Array<{ id?: number; body?: string }>;
+    const match = comments.find(
+      (comment) => Number.isSafeInteger(comment.id) && comment.body?.includes(marker),
+    );
+    if (match?.id !== undefined) return match.id;
+    if (comments.length < ISSUE_COMMENTS_PAGE_SIZE) return null;
+  }
+  throw new Error(
+    `GitHub comment marker search is inconclusive after ${RESPOND_MARKER_MAX_PAGES} full pages`,
   );
 }
 

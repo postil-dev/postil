@@ -9,10 +9,14 @@ const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
 let claimCalls = 0;
+const claimCapabilities: string[][] = [];
 let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
+let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let escalationRun: (() => Promise<void>) | undefined;
+let escalationVerificationRun: (() => Promise<void>) | undefined;
+let billingContactVerificationRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
 
@@ -21,8 +25,9 @@ mock.module("@/lib/db", () => ({
 }));
 
 mock.module("@/lib/queue", () => ({
-  claimJob: async () => {
+  claimJob: async (_pool: unknown, _workerId: string, allowedKinds: readonly string[]) => {
     claimCalls += 1;
+    claimCapabilities.push([...allowedKinds]);
     return jobs.shift();
   },
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
@@ -56,6 +61,9 @@ mock.module("@/worker/respond", () => ({
   runRespondFailureCommentJob: async () => {
     await respondFailureCommentRun?.();
   },
+  runRespondDeliveryJob: async () => {
+    await respondDeliveryRun?.();
+  },
   runRespondJob: async () => {
     await respondRun?.();
   },
@@ -64,6 +72,18 @@ mock.module("@/worker/respond", () => ({
 mock.module("@/worker/escalation-notification", () => ({
   runEscalationNotificationJob: async () => {
     await escalationRun?.();
+  },
+}));
+
+mock.module("@/worker/escalation-email-verification", () => ({
+  runEscalationEmailVerificationJob: async () => {
+    await escalationVerificationRun?.();
+  },
+}));
+
+mock.module("@/worker/billing-contact-verification", () => ({
+  runBillingContactVerificationJob: async () => {
+    await billingContactVerificationRun?.();
   },
 }));
 
@@ -94,10 +114,14 @@ beforeEach(() => {
   completed.length = 0;
   failed.length = 0;
   claimCalls = 0;
+  claimCapabilities.length = 0;
   reviewRun = async () => undefined;
   respondRun = async () => undefined;
+  respondDeliveryRun = async () => undefined;
   respondFailureCommentRun = async () => undefined;
   escalationRun = async () => undefined;
+  escalationVerificationRun = async () => undefined;
+  billingContactVerificationRun = async () => undefined;
   cleanupRun = async () => undefined;
   reviewTiming = undefined;
 });
@@ -110,6 +134,35 @@ afterEach(() => {
 });
 
 describe("drainQueueOnce", () => {
+  test("claims only job kinds implemented by this web release", async () => {
+    expect(await drainQueueOnce("capability-drain", { maxJobs: 1 })).toBe(0);
+    expect(claimCapabilities).toEqual([[
+      "review",
+      "respond",
+      "respond-delivery",
+      "escalation-notification",
+      "escalation-email-verification",
+      "billing-contact-verification",
+      "check-run-cleanup",
+      "respond-failure-comment",
+    ]]);
+  });
+
+  test("dispatches durable respond delivery jobs independently", async () => {
+    const job = reviewJob(1);
+    job.kind = "respond-delivery";
+    job.payload = { respondJobId: 7 };
+    let called = false;
+    respondDeliveryRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
   test("dispatches durable escalation notification jobs", async () => {
     const job = reviewJob(1);
     job.kind = "escalation-notification";
@@ -122,6 +175,36 @@ describe("drainQueueOnce", () => {
     };
     let called = false;
     escalationRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("dispatches durable escalation email verification jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "escalation-email-verification";
+    job.payload = { orgId: 7, tokenDigest: "a".repeat(43) };
+    let called = false;
+    escalationVerificationRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("dispatches durable billing contact verification jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "billing-contact-verification";
+    job.payload = { orgId: 7, tokenDigest: "a".repeat(43) };
+    let called = false;
+    billingContactVerificationRun = async () => {
       called = true;
     };
     jobs.push(job);

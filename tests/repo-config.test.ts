@@ -9,7 +9,7 @@ import {
   materializeOrgConfig,
   materializeRepoConfig,
 } from "@/lib/github/contents";
-import { validateOrgConfigYaml } from "@/lib/org-review-config";
+import { validateOrgConfigYaml, withoutOrgModelConfig } from "@/lib/org-review-config";
 
 /**
  * Serves a fake GitHub contents API so the helpers are exercised over real
@@ -132,6 +132,46 @@ describe("materializeRepoConfig", () => {
     // The failed fetches are skipped with a warning; the healthy one lands.
     expect(written).toEqual([".postil/content-policy.md"]);
   });
+
+  test("hosted mode strips repository model selection before the CLI reads it", async () => {
+    files.set(
+      ".postil.yaml",
+      "review:\n  minConfidence: 0.8\nmodel:\n  name: attacker-selected-model\n",
+    );
+    const dir = await mkdtemp(join(tmpdir(), "postil-config-"));
+
+    const written = await materializeRepoConfig("tok", "acme/widgets", dir, {
+      allowModelSettings: false,
+    });
+
+    expect(written).toEqual([".postil.yaml"]);
+    expect(await readFile(join(dir, ".postil.yaml"), "utf8")).toBe(
+      "review:\n  minConfidence: 0.8\n",
+    );
+  });
+
+  test("BYOK mode retains repository model selection", async () => {
+    files.set(".postil.yaml", "model:\n  name: customer-model\n");
+    const dir = await mkdtemp(join(tmpdir(), "postil-config-"));
+
+    await materializeRepoConfig("tok", "acme/widgets", dir, { allowModelSettings: true });
+
+    expect(await readFile(join(dir, ".postil.yaml"), "utf8")).toContain("customer-model");
+  });
+
+  test("hosted mode keeps JSON config valid while removing its model block", async () => {
+    files.set(
+      ".postil.json",
+      JSON.stringify({ review: { minConfidence: 0.8 }, model: { name: "repo-model" } }),
+    );
+    const dir = await mkdtemp(join(tmpdir(), "postil-config-"));
+
+    await materializeRepoConfig("tok", "acme/widgets", dir, { allowModelSettings: false });
+
+    expect(JSON.parse(await readFile(join(dir, ".postil.json"), "utf8"))).toEqual({
+      review: { minConfidence: 0.8 },
+    });
+  });
 });
 
 describe("materializeOrgConfig", () => {
@@ -203,5 +243,18 @@ describe("validateOrgConfigYaml", () => {
     expect(() => validateOrgConfigYaml("review: [broken\n")).toThrow(
       /Config YAML is invalid:/,
     );
+  });
+
+  test("rejects organization model overrides", () => {
+    expect(() =>
+      validateOrgConfigYaml("review:\n  minConfidence: 0.8\nmodel:\n  name: org-model\n"),
+    ).toThrow("Organization fallback config cannot set model options");
+  });
+
+  test("strips model settings from legacy stored organization config", () => {
+    expect(
+      withoutOrgModelConfig("review:\n  minConfidence: 0.8\nmodel:\n  name: legacy-model\n"),
+    ).toBe("review:\n  minConfidence: 0.8\n");
+    expect(withoutOrgModelConfig("model:\n  name: legacy-model\n")).toBeNull();
   });
 });

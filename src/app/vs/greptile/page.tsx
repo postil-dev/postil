@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Greptile",
   description:
-    "Postil is a Greptile alternative with flat pricing and hosted reviews included instead of per-review overage, a hard merge gate, a published silence metric, and free self-hosting.",
+    "Postil is a Greptile alternative with active-author pricing, a hard merge gate, a published silence metric, BYOK, and free self-hosting.",
   alternates: { canonical: "/vs/greptile" },
   openGraph: {
     title: "Postil vs Greptile",
     description:
-      "Flat pricing with hosted reviews included instead of per-review overage, a hard merge gate, and a published silence metric. The honest comparison.",
+      "Active-author pricing, a hard merge gate, BYOK, and a published silence metric. The honest comparison.",
     url: "https://postil.dev/vs/greptile",
     images: ["/opengraph-image"],
   },
@@ -37,14 +37,14 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat Team price; hosted reviews included" },
+      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
       { kind: "text", note: "~$30/seat + ~$1 per review past 50" },
     ],
   },
   {
     feature: "Cost at high PR volume",
     cells: [
-      { kind: "yes", note: "flat: seats × $10" },
+      { kind: "text", note: "Hosted owner cap; BYOK provider controls" },
       { kind: "no", note: "scales with review count" },
     ],
   },
@@ -105,9 +105,9 @@ export default function VsGreptilePage() {
             public backlash
           </a>
           . A developer pushing several hundred agent-driven PRs in a month can
-          owe hundreds of dollars. Postil charges a flat $10 per developer per
-          month with hosted reviews included, so the bill stays independent of
-          PR count. Compare on the{" "}
+          owe hundreds of dollars. Postil Hosted is $15 per active author with
+          a $6 pooled inference allowance per author. BYOK is $9 per active
+          author plus direct provider charges. Compare on the{" "}
           <Link href="/pricing">cost calculator</Link>.
         </p>
 
@@ -144,9 +144,9 @@ export default function VsGreptilePage() {
 
       <div className="rounded-card shadow-card mt-12 flex flex-col items-start gap-6 bg-charcoal p-10 text-ivory md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="serif-display text-2xl">Flat pricing, no per-review meter.</h2>
+          <h2 className="serif-display text-2xl">Pay for active private-PR authors.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Flat Team pricing, hosted reviews included. Install the CLI and
+            Choose Hosted or BYOK. Install the CLI and
             try it on your next diff.
           </p>
         </div>

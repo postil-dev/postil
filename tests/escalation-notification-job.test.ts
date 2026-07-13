@@ -30,7 +30,11 @@ mock.module("@/lib/db", () => ({
     repositories: { id: "repositories.id", installationId: "repositories.installation_id" },
     installations: { id: "installations.id", orgId: "installations.org_id" },
     organizations: { id: "organizations.id", slug: "organizations.slug" },
-    orgSettings: { orgId: "org_settings.org_id", escalationEmail: "org_settings.escalation_email" },
+    orgSettings: {
+      orgId: "org_settings.org_id",
+      escalationEmail: "org_settings.escalation_email",
+      escalationEmailVerifiedAt: "org_settings.escalation_email_verified_at",
+    },
   },
 }));
 
@@ -53,15 +57,13 @@ const envelope = {
 
 beforeEach(() => {
   process.env.BREVO_API_KEY = "test-key";
-  delete process.env.POSTIL_ESCALATION_ORG;
-  delete process.env.POSTIL_ESCALATION_EMAIL;
   sentInput = undefined;
   storedRow = {
     status: "completed",
     publicId: reviewPublicId,
     envelope,
     escalationEmail: "owners@example.com",
-    orgSlug: "octo",
+    escalationEmailVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
   };
 });
 
@@ -86,46 +88,38 @@ describe("durable escalation notification job", () => {
     });
   });
 
-  test("fails without an explicit organization-owned recipient so the queue records it", async () => {
+  test("skips cleanly without an explicit verified recipient", async () => {
     storedRow = { ...storedRow, escalationEmail: null };
-
-    await expect(
-      runEscalationNotificationJob({
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...values: unknown[]) => logs.push(values.join(" "));
+    try {
+      await runEscalationNotificationJob({
         reviewId: 7,
         reviewPublicId,
         repoFullName: "octo/repo",
         prNumber: 9,
         runUrl: "https://postil.dev/orgs/octo/runs/7",
-      }),
-    ).rejects.toThrow("organization escalation email is not configured");
+      });
+    } finally {
+      console.log = originalLog;
+    }
     expect(sentInput).toBeUndefined();
+    expect(logs).toEqual([
+      `escalation notification ${reviewPublicId} skipped: no verified recipient`,
+    ]);
+    expect(logs.join(" ")).not.toContain("example.com");
   });
 
-  test("uses the bootstrap recipient only for its explicitly scoped organization", async () => {
-    process.env.POSTIL_ESCALATION_ORG = "octo";
-    process.env.POSTIL_ESCALATION_EMAIL = "bootstrap@example.com";
-    storedRow = { ...storedRow, escalationEmail: null };
-
+  test("refuses a stored address without verification metadata", async () => {
+    storedRow = { ...storedRow, escalationEmailVerifiedAt: null };
     await runEscalationNotificationJob({
       reviewId: 7,
       reviewPublicId,
-      repoFullName: "octo/repo",
+      repoFullName: "octo/private",
       prNumber: 9,
       runUrl: "https://postil.dev/orgs/octo/runs/7",
     });
-    expect(sentInput?.recipient).toBe("bootstrap@example.com");
-
-    storedRow = { ...storedRow, orgSlug: "unrelated" };
-    sentInput = undefined;
-    await expect(
-      runEscalationNotificationJob({
-        reviewId: 7,
-        reviewPublicId,
-        repoFullName: "unrelated/private",
-        prNumber: 9,
-        runUrl: "https://postil.dev/orgs/unrelated/runs/7",
-      }),
-    ).rejects.toThrow("organization escalation email is not configured");
     expect(sentInput).toBeUndefined();
   });
 });

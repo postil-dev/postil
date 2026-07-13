@@ -99,6 +99,55 @@
       "when": 1783824297345,
       "tag": "0013_org_escalation_email",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783872000000,
+      "tag": "0014_byok_provider_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1783873000000,
+      "tag": "0015_organization_entitlements",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1783898008812,
+      "tag": "0016_verify_escalation_email",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783899000000,
+      "tag": "0017_precise_hosted_usage_reservations",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783900000000,
+      "tag": "0018_verify_billing_contact",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1783901000000,
+      "tag": "0019_respond_usage_reservations",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783902000000,
+      "tag": "0020_usage_integrity",
+      "breakpoints": true
     }
   ]
 }

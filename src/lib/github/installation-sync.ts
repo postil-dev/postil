@@ -36,6 +36,34 @@ export interface RepoSummary {
   private: boolean;
 }
 
+/** Read current repository visibility with an installation token. */
+export async function fetchRepositorySummary(
+  token: string,
+  repoFullName: string,
+  signal: AbortSignal = AbortSignal.timeout(10_000),
+): Promise<RepoSummary> {
+  const response = await fetch(`${apiBase()}/repos/${repoFullName}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub repository lookup failed with HTTP ${response.status}`);
+  }
+  const value = (await response.json()) as Partial<RepoSummary>;
+  if (
+    typeof value.id !== "number" ||
+    typeof value.full_name !== "string" ||
+    typeof value.private !== "boolean"
+  ) {
+    throw new Error("GitHub repository lookup returned an invalid response");
+  }
+  return { id: value.id, full_name: value.full_name, private: value.private };
+}
+
 /** One GitHub account (org or user) to check for an app installation. */
 export interface AccountRef {
   githubId: number;

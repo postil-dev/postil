@@ -10,14 +10,17 @@ export interface ReviewCompletionInput {
   configFiles: string[];
   silent: boolean;
   gateFailing: boolean;
-  usage: {
+  usage: Array<{
     orgId: number | null;
     repositoryId: number;
     promptTokens: number;
     completionTokens: number;
     modelUsed: string;
-    costCents: number | null;
-  };
+    costMicros: number | null;
+    billingScope: "analytics" | "private_hosted";
+  }>;
+  hostedUsageReservationId?: string | null;
+  usageAccountingComplete: boolean;
   escalationJob?: {
     reviewPublicId: string;
     repoFullName: string;
@@ -56,10 +59,63 @@ export async function persistReviewCompletion(
       .returning({ id: schema.reviews.id });
     if (rows.length === 0) return false;
 
-    await tx.insert(schema.usageEvents).values({
-      ...input.usage,
+    const persistedUsageRows = input.usage.map((usage) => ({
+      ...usage,
       reviewId: input.reviewId,
-    });
+    }));
+    if (input.hostedUsageReservationId) {
+      const reservation = (
+        await tx
+          .select({ reservedMicros: schema.hostedUsageReservations.reservedMicros })
+          .from(schema.hostedUsageReservations)
+          .where(eq(schema.hostedUsageReservations.id, input.hostedUsageReservationId))
+          .limit(1)
+      )[0];
+      if (!reservation) throw new Error("hosted usage reservation not found");
+      const priced = input.usage.every((usage) => usage.costMicros !== null);
+      const knownMicros = input.usage.reduce(
+        (total, usage) => total + (usage.costMicros ?? 0),
+        0,
+      );
+      // A private hosted event must never retain NULL cost: reservation
+      // accounting interprets any NULL as an unknown full-period spend. Keep
+      // the model/token analytics at zero and charge uncertainty explicitly.
+      for (const usage of persistedUsageRows) {
+        if (usage.billingScope === "private_hosted" && usage.costMicros === null) {
+          usage.costMicros = 0;
+        }
+      }
+      const actualMicros = input.usageAccountingComplete && priced
+        ? knownMicros
+        : Math.max(reservation.reservedMicros, knownMicros);
+      const unattributedMicros = actualMicros - knownMicros;
+      if (unattributedMicros > 0) {
+        const first = input.usage[0];
+        if (!first) throw new Error("hosted review usage is empty");
+        persistedUsageRows.push({
+          ...first,
+          promptTokens: 0,
+          completionTokens: 0,
+          modelUsed: "unattributed provider usage",
+          costMicros: unattributedMicros,
+          reviewId: input.reviewId,
+        });
+      }
+      const reconciled = await tx
+        .update(schema.hostedUsageReservations)
+        .set({ status: "reconciled", actualMicros, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.hostedUsageReservations.id, input.hostedUsageReservationId),
+            eq(schema.hostedUsageReservations.status, "active"),
+          ),
+        )
+        .returning({ id: schema.hostedUsageReservations.id });
+      if (reconciled.length !== 1) {
+        throw new Error("hosted usage reservation is not active");
+      }
+    }
+    await tx.insert(schema.usageEvents).values(persistedUsageRows);
     if (input.escalationJob) {
       await tx.insert(schema.jobs).values({
         kind: "escalation-notification",

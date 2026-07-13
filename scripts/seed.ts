@@ -10,7 +10,7 @@
  */
 import { randomBytes } from "node:crypto";
 
-import { calculateUsageCostCentsForModel } from "@/lib/billing-credits";
+import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 import { closeDb, getDb, schema } from "@/lib/db";
 import type { Envelope, Finding } from "@/lib/envelope";
 import { signSessionToken } from "@/lib/session-token";
@@ -280,11 +280,12 @@ async function main(): Promise<void> {
         promptTokens: env.usage.promptTokens,
         completionTokens: env.usage.completionTokens,
         modelUsed: env.modelUsed,
-        costCents: calculateUsageCostCentsForModel(
+        costMicros: calculateUsageCostMicrosForModel(
           env.modelUsed,
           env.usage.promptTokens,
           env.usage.completionTokens,
         ),
+        billingScope: "analytics",
       });
     }
   }

@@ -1,20 +1,26 @@
 import { hostname } from "node:os";
 
 import { getPool } from "@/lib/db";
-import { redactSecrets } from "@/lib/redact";
+import { optionalEnv } from "@/lib/env";
 import {
   claimJob,
   completeJob,
   failJob,
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
+  type RespondDeliveryJobPayload,
   type RespondJobPayload,
   type ReviewJobPayload,
 } from "@/lib/queue";
-import { optionalEnv } from "@/lib/env";
+import { redactSecrets } from "@/lib/redact";
+import {
+  runBillingContactVerificationJob,
+  type BillingContactVerificationJobPayload,
+} from "./billing-contact-verification";
 import { isPermanentFailure } from "./failure-classifier";
 import {
   postRespondFailureComment,
+  runRespondDeliveryJob,
   runRespondFailureCommentJob,
   runRespondJob,
 } from "./respond";
@@ -23,6 +29,10 @@ import {
   runEscalationNotificationJob,
   type EscalationNotificationJobPayload,
 } from "./escalation-notification";
+import {
+  runEscalationEmailVerificationJob,
+  type EscalationEmailVerificationJobPayload,
+} from "./escalation-email-verification";
 import { watchdogPass } from "./watchdog";
 
 const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv("POSTIL_QUEUE_DRAIN_MAX_JOBS", 1);
@@ -33,6 +43,17 @@ const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
 
 let backgroundDrain: Promise<void> | undefined;
 
+export const PROCESSABLE_JOB_KINDS = [
+  "review",
+  "respond",
+  "respond-delivery",
+  "escalation-notification",
+  "escalation-email-verification",
+  "billing-contact-verification",
+  "check-run-cleanup",
+  "respond-failure-comment",
+] as const;
+
 async function handleJob(job: ClaimedJob): Promise<void> {
   switch (job.kind) {
     case "review":
@@ -42,11 +63,24 @@ async function handleJob(job: ClaimedJob): Promise<void> {
       });
       break;
     case "respond":
-      await runRespondJob(job.payload as RespondJobPayload);
+      await runRespondJob(job.payload as RespondJobPayload, job.id);
+      break;
+    case "respond-delivery":
+      await runRespondDeliveryJob(job.payload as RespondDeliveryJobPayload);
       break;
     case "escalation-notification":
       await runEscalationNotificationJob(
         job.payload as EscalationNotificationJobPayload,
+      );
+      break;
+    case "escalation-email-verification":
+      await runEscalationEmailVerificationJob(
+        job.payload as EscalationEmailVerificationJobPayload,
+      );
+      break;
+    case "billing-contact-verification":
+      await runBillingContactVerificationJob(
+        job.payload as BillingContactVerificationJobPayload,
       );
       break;
     case "check-run-cleanup":
@@ -75,7 +109,13 @@ export async function runClaimedJob(job: ClaimedJob, label: string): Promise<voi
       `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
     );
     if (outcome === "failed" && job.kind === "respond") {
-      await postRespondFailureComment(job.payload as RespondJobPayload);
+      await postRespondFailureComment(
+        job.payload as RespondJobPayload,
+        undefined,
+        undefined,
+        false,
+        job.id,
+      );
     }
   }
 }
@@ -94,7 +134,7 @@ export async function drainQueueOnce(
   });
 
   while (drained < maxJobs && Date.now() < deadlineAt) {
-    const job = await claimJob(getPool(), workerId);
+    const job = await claimJob(getPool(), workerId, PROCESSABLE_JOB_KINDS);
     if (!job) break;
     await runClaimedJob(job, label);
     drained += 1;

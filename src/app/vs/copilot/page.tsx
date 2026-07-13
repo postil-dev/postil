@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs GitHub Copilot code review",
   description:
-    "Postil is a Copilot code review alternative with a blocking merge gate (Copilot reviews are comment-only), flat pricing with hosted reviews included, and free self-hosting.",
+    "Postil is a Copilot code review alternative with a blocking merge gate, active-author pricing, BYOK, and free self-hosting.",
   alternates: { canonical: "/vs/copilot" },
   openGraph: {
     title: "Postil vs GitHub Copilot code review",
     description:
-      "A blocking merge gate where Copilot is comment-only, flat pricing with hosted reviews included, and free self-hosting. The honest comparison.",
+      "A blocking merge gate where Copilot is comment-only, active-author pricing, BYOK, and free self-hosting. The honest comparison.",
     url: "https://postil.dev/vs/copilot",
     images: ["/opengraph-image"],
   },
@@ -43,7 +43,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Flat Team price; hosted reviews included" },
+      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
       {
         kind: "text",
         note: "Paid Copilot plan + AI Credits + Actions minutes per review",
@@ -53,7 +53,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Cost predictability",
     cells: [
-      { kind: "yes", note: "flat: seats × $10" },
+      { kind: "text", note: "Hosted owner cap; BYOK provider controls" },
       { kind: "no", note: "usage-billed since June 2026" },
     ],
   },
@@ -162,9 +162,10 @@ export default function VsCopilotPage() {
             one who burned an entire month&apos;s included credits on a single
             automatic PR review
           </a>
-          . Postil charges a flat $10 per developer per month with hosted
-          reviews included, so the bill is known before the month starts. Run
-          your numbers on the <Link href="/pricing">cost calculator</Link>.
+          . Postil Hosted is $15 per active private-PR author with a $6 pooled
+          inference allowance per author. BYOK is $9 per active author plus
+          direct provider charges. Run your numbers on the{" "}
+          <Link href="/pricing">cost calculator</Link>.
         </p>
 
         <h2>A silence rate tracked continuously, on your PRs</h2>

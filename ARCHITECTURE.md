@@ -41,16 +41,97 @@ The free-tier operating profile keeps Postgres idle-capable by avoiding permanen
 
 The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods.
 
+Every queue consumer supplies its explicit supported job kinds to the claim query.
+The bounded web drain and long-running worker share the handler capability list
+from the queue runner; adding a handler and adding its capability are one change.
+Release job kinds are also staged in PostgreSQL with an infinite `run_after` until
+the deploy workflow confirms that every managed web and worker Machine is running
+one image. Activation and inserts share a transaction advisory lock, so no job can
+become claimable between the fleet check and capability activation.
+
 Completed hosted reviews send one Brevo transactional email when their stored
 envelope contains a calibrated `humanEscalation` finding at or above the gate
-confidence floor. The notification targets the organization-owned recipient
-configured by an administrator. A durable queue job retries transient provider
+confidence floor. The notification targets only the organization-owned recipient
+whose address has a non-null verification timestamp. New and replacement addresses
+remain pending until a single-use, 24-hour token is consumed. Token digests bind the
+token to the organization and normalized address; sealed token material is available
+only to durable verification-email jobs. Verification-link GET requests render a
+no-store, no-referrer confirmation form and never consume tokens because mail
+scanners follow links. A same-origin POST performs the single-use transition.
+Replacing a pending address invalidates its
+old token without deactivating an existing verified recipient. A durable queue job retries transient provider
 failures using the public review ID as the provider idempotency key, so email
 delivery cannot change review storage, comments, checks, or gate state. Queue
 delivery is at-least-once: Brevo deduplicates ordinary retries, while a rare
 duplicate after an extended worker outage is preferred to a lost escalation.
+Verification jobs use the token digest as their provider idempotency key. The backfill
+command detects matching live jobs and restores missing or exhausted jobs without
+exposing addresses or token material. The post-deploy release activation runs the
+idempotent backfill while PostgreSQL keeps verification jobs staged, then atomically
+activates the release job kinds after the fleet compatibility check succeeds.
 
-Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog and computes the remaining credit balance shown on `/orgs/[slug]/billing`.
+Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
+
+Organization administrators manage the billing contact on the billing page.
+New addresses remain pending until a single-use, 24-hour token is consumed;
+replacements leave the existing verified address active until the new address is
+verified. Link GET requests only render confirmation; a same-origin POST consumes
+the token. Verification tokens are bound to the organization, purpose, and
+normalized address, stored as a digest plus sealed delivery material, and sent
+through durable, provider-idempotent jobs. Resends rotate the token after a
+cooldown. The post-deploy release activation queues verification for every migrated
+unverified contact without exposing addresses or tokens in output. Operator entitlement
+updates preserve the dashboard-managed billing contact.
+
+Private-repository product access is organization-scoped and fail-closed.
+`organization_entitlements` records hosted or BYOK subscription mode, lifecycle
+state, trial and past-due grace boundaries, operator promotions, verified billing
+contacts, and the current-period included usage plus overage hard cap.
+`src/lib/private-repository-entitlement.ts` is the single decision point used by
+webhook intake and workers. The webhook stores delivery and repository metadata,
+then skips review/respond queue, check, and conversational comment side effects
+when a private repository is ineligible. Approval commands remain available
+because they update stored control state without code fetch or inference.
+Workers repeat the gate before token minting, code/config fetch, check creation,
+CLI spawn, or inference. Hosted subscriptions default to zero overage; only BYOK
+may omit the provider-spend cap. Public repositories bypass entitlement lookup.
+Before hosted private-repository inference, the worker locks the organization
+entitlement row and reserves the checked-in conservative maximum for one review
+or conversational response.
+Committed precise usage plus every unexpired reservation must fit within the
+allowance and hard cap. Completion records one event per model attempt and
+reconciles their summed provider-priced usage with the hold in one transaction.
+A legacy envelope without per-model usage is priced only when its aggregate names
+one catalog model; ambiguous aggregates consume the full reservation. Failure
+before inference releases the hold, and abandoned holds expire after 15 minutes.
+The reservation maximum is part of a hosted model
+promotion: it must continue to bound the checked-in prompt, generation, fallback,
+and scorer roster. Hosted responses receive a worker-owned receipt path inside
+their private work directory. The CLI writes and syncs a versioned `0600` receipt
+before exposing a successful answer, with aggregate and per-model token usage.
+The worker runs replies without CLI-side posting, validates and prices every model
+entry, then commits usage, reservation reconciliation, answer body, and delivery
+state before posting to GitHub. A database lease serializes delivery. A durable
+delivery job retries independently of model execution, and worker startup repairs
+pending deliveries created without one. Delivery jobs retain capped-backoff retry
+capacity across extended GitHub outages. A hidden comment marker lets retries
+discover a comment after an ambiguous POST rather than duplicating it. Missing,
+malformed, or unpriceable usage after CLI start
+consumes the full reservation; only failures before CLI start release it. BYOK
+spend remains provider-direct and never creates a Postil reservation or receipt.
+Both review envelopes and respond receipts carry `usageAccountingComplete`.
+Missing or false completeness consumes at least the full reservation while known
+per-model token and price rows remain available as analytics; an unattributed
+adjustment event makes committed billing equal the conservative charge.
+Provider credentials do not grant product access. Operators apply the
+complete entitlement state idempotently through
+`scripts/set-org-entitlement.ts`; the billing page reports the stored state and
+lets organization administrators set the hosted overage hard cap. BYOK billing
+copy directs administrators to provider-side budgets because Postil cannot
+enforce external charges. The page does not represent a payment checkout. Review rows snapshot the pull request
+author GitHub ID and login supplied by the reviewable pull-request webhook.
+Billing counts distinct GitHub author IDs on private pull requests within the
+entitlement period; bot and service identities count by the same ID rule.
 
 ## Dashboard
 
@@ -62,8 +143,11 @@ noindexed:
   reviews across all of them.
 - `/orgs/[slug]` is the organization dashboard: silence rate, confidence
   distribution, engine telemetry, recent reviews, repository review coverage
-  toggles, LLM settings (model, API base, cascade, sealed BYOK credential), and the
-  member list with roles. Banners surface suspended installations and enabled
+  toggles, hosted review configuration, sealed BYOK provider settings, and the
+  member list with roles. Hosted inference uses operator-managed provider and
+  model settings. BYOK supports OpenAI-compatible and Anthropic interfaces, a
+  model cascade, and one constrained additional authentication header. Banners
+  surface suspended installations and enabled
   repositories that have never completed their first review.
 - `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file

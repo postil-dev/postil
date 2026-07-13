@@ -188,6 +188,8 @@ export const reviews = pgTable(
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
     prNumber: integer("pr_number").notNull(),
+    authorGithubId: bigint("author_github_id", { mode: "number" }),
+    authorLogin: text("author_login"),
     headSha: text("head_sha").notNull(),
     baseSha: text("base_sha").notNull(),
     sinceSha: text("since_sha"),
@@ -276,13 +278,27 @@ export const usageEvents = pgTable(
     promptTokens: integer("prompt_tokens").notNull().default(0),
     completionTokens: integer("completion_tokens").notNull().default(0),
     modelUsed: text("model_used"),
+    /** Exact provider-priced spend in millionths of one US dollar. */
+    costMicros: bigint("cost_micros", { mode: "number" }),
+    /** Rolling-deploy compatibility; new accounting reads costMicros. */
     costCents: integer("cost_cents"),
+    // Required from current writers. The database trigger classifies omitted
+    // values only for pre-0020 processes during the migration rollout.
+    billingScope: text("billing_scope").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     check(
+      "usage_events_cost_micros_nonnegative",
+      sql`${t.costMicros} IS NULL OR ${t.costMicros} >= 0`,
+    ),
+    check(
       "usage_events_cost_cents_nonnegative",
       sql`${t.costCents} IS NULL OR ${t.costCents} >= 0`,
+    ),
+    check(
+      "usage_events_billing_scope_check",
+      sql`${t.billingScope} IN ('analytics', 'private_hosted')`,
     ),
   ],
 );
@@ -319,6 +335,129 @@ export const billingCreditGrants = pgTable(
   ],
 );
 
+/** Organization product entitlement. Provider credentials never grant access. */
+export const organizationEntitlements = pgTable(
+  "organization_entitlements",
+  {
+    orgId: bigint("org_id", { mode: "number" })
+      .primaryKey()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    subscriptionMode: text("subscription_mode").notNull(),
+    status: text("status").notNull(),
+    trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    pastDueGraceEndsAt: timestamp("past_due_grace_ends_at", { withTimezone: true }),
+    periodStartsAt: timestamp("period_starts_at", { withTimezone: true }),
+    periodEndsAt: timestamp("period_ends_at", { withTimezone: true }),
+    /** Allowance and cap use USD micros so sub-cent model calls remain exact. */
+    includedUsageMicros: bigint("included_usage_micros", { mode: "number" })
+      .notNull()
+      .default(0),
+    overageHardCapMicros: bigint("overage_hard_cap_micros", { mode: "number" }).default(0),
+    /** Rolling-deploy compatibility; new entitlement checks read the micros fields. */
+    includedUsageCents: integer("included_usage_cents").notNull().default(0),
+    overageHardCapCents: integer("overage_hard_cap_cents").default(0),
+    billingContactEmail: text("billing_contact_email"),
+    billingContactVerifiedAt: timestamp("billing_contact_verified_at", {
+      withTimezone: true,
+    }),
+    billingContactPending: text("billing_contact_pending"),
+    billingContactVerificationTokenDigest: bytea("billing_contact_verification_token_digest"),
+    billingContactVerificationTokenCiphertext: bytea(
+      "billing_contact_verification_token_ciphertext",
+    ),
+    billingContactVerificationExpiresAt: timestamp(
+      "billing_contact_verification_expires_at",
+      { withTimezone: true },
+    ),
+    billingContactVerificationRequestedAt: timestamp(
+      "billing_contact_verification_requested_at",
+      { withTimezone: true },
+    ),
+    billingContactVerificationSentAt: timestamp("billing_contact_verification_sent_at", {
+      withTimezone: true,
+    }),
+    billingContactVerificationMessageId: text("billing_contact_verification_message_id"),
+    promotionalEligible: boolean("promotional_eligible").notNull().default(false),
+    promotionalEndsAt: timestamp("promotional_ends_at", { withTimezone: true }),
+    updatedBy: text("updated_by").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "organization_entitlements_subscription_mode_check",
+      sql`${t.subscriptionMode} IN ('hosted', 'byok')`,
+    ),
+    check(
+      "organization_entitlements_status_check",
+      sql`${t.status} IN ('active', 'trialing', 'past_due', 'suspended')`,
+    ),
+    check(
+      "organization_entitlements_included_usage_micros_nonnegative",
+      sql`${t.includedUsageMicros} >= 0`,
+    ),
+    check(
+      "organization_entitlements_overage_cap_micros_nonnegative",
+      sql`${t.overageHardCapMicros} IS NULL OR ${t.overageHardCapMicros} >= 0`,
+    ),
+    check(
+      "organization_entitlements_included_usage_nonnegative",
+      sql`${t.includedUsageCents} >= 0`,
+    ),
+    check(
+      "organization_entitlements_overage_cap_nonnegative",
+      sql`${t.overageHardCapCents} IS NULL OR ${t.overageHardCapCents} >= 0`,
+    ),
+    check(
+      "organization_entitlements_updated_by_nonempty",
+      sql`length(btrim(${t.updatedBy})) > 0`,
+    ),
+  ],
+);
+
+/** Atomic hosted-inference budget holds. Expired active rows no longer consume capacity. */
+export const hostedUsageReservations = pgTable(
+  "hosted_usage_reservations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    reviewId: bigint("review_id", { mode: "number" }).references(() => reviews.id, {
+      onDelete: "cascade",
+    }),
+    operation: text("operation").notNull().default("review"),
+    reservedMicros: bigint("reserved_micros", { mode: "number" }).notNull(),
+    actualMicros: bigint("actual_micros", { mode: "number" }),
+    status: text("status").notNull().default("active"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("hosted_usage_reservations_review_idx").on(t.reviewId),
+    index("hosted_usage_reservations_active_org_expiry_idx")
+      .on(t.orgId, t.expiresAt)
+      .where(sql`${t.status} = 'active'`),
+    check(
+      "hosted_usage_reservations_status_check",
+      sql`${t.status} IN ('active', 'reconciled', 'released')`,
+    ),
+    check(
+      "hosted_usage_reservations_operation_check",
+      sql`${t.operation} IN ('review', 'respond')`,
+    ),
+    check(
+      "hosted_usage_reservations_operation_reference_check",
+      sql`(${t.operation} = 'review' AND ${t.reviewId} IS NOT NULL) OR (${t.operation} = 'respond' AND ${t.reviewId} IS NULL)`,
+    ),
+    check("hosted_usage_reservations_reserved_positive", sql`${t.reservedMicros} > 0`),
+    check(
+      "hosted_usage_reservations_actual_nonnegative",
+      sql`${t.actualMicros} IS NULL OR ${t.actualMicros} >= 0`,
+    ),
+  ],
+);
+
 /** Webhook delivery dedupe: insert-or-skip keyed by X-GitHub-Delivery. */
 export const webhookDeliveries = pgTable("webhook_deliveries", {
   deliveryId: text("delivery_id").primaryKey(),
@@ -345,7 +484,43 @@ export const jobs = pgTable(
     lastError: text("last_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("jobs_claim_idx").on(t.status, t.runAfter)],
+  (t) => [
+    index("jobs_claim_idx").on(t.status, t.runAfter),
+  ],
+);
+
+/** Durable answer preparation and external-delivery state for respond jobs. */
+export const respondDeliveries = pgTable(
+  "respond_deliveries",
+  {
+    jobId: bigint("job_id", { mode: "number" })
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    repositoryId: bigint("repository_id", { mode: "number" })
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    reservationId: uuid("reservation_id").references(() => hostedUsageReservations.id, {
+      onDelete: "set null",
+    }),
+    repoFullName: text("repo_full_name").notNull(),
+    issueNumber: integer("issue_number").notNull(),
+    body: text("body").notNull(),
+    state: text("state").notNull().default("prepared"),
+    deliveryLeaseExpiresAt: timestamp("delivery_lease_expires_at", { withTimezone: true }),
+    githubCommentId: bigint("github_comment_id", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("respond_deliveries_pending_idx").on(t.state, t.deliveryLeaseExpiresAt),
+    check(
+      "respond_deliveries_state_check",
+      sql`${t.state} IN ('prepared', 'delivering', 'delivered')`,
+    ),
+    check("respond_deliveries_issue_number_positive", sql`${t.issueNumber} > 0`),
+    check("respond_deliveries_body_nonempty", sql`length(btrim(${t.body})) > 0`),
+  ],
 );
 
 export const sessions = pgTable("sessions", {
@@ -357,18 +532,47 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-/** Per-org hosted review configuration and BYO LLM settings. */
+/** Per-org review configuration and write-only BYOK provider settings. */
 export const orgSettings = pgTable("org_settings", {
   orgId: bigint("org_id", { mode: "number" })
     .primaryKey()
     .references(() => organizations.id, { onDelete: "cascade" }),
   apiBase: text("api_base"),
   apiKeyCiphertext: bytea("api_key_ciphertext"),
+  apiFormat: text("api_format").notNull().default("openai-compatible"),
+  apiAuthHeaderCiphertext: bytea("api_auth_header_ciphertext"),
+  apiAuthValueCiphertext: bytea("api_auth_value_ciphertext"),
   model: text("model"),
   modelCascade: text("model_cascade"),
   configYaml: text("config_yaml"),
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
+  /** Active only after possession of this address is verified. */
   escalationEmail: text("escalation_email"),
+  escalationEmailPending: text("escalation_email_pending"),
+  escalationEmailVerifiedAt: timestamp("escalation_email_verified_at", {
+    withTimezone: true,
+  }),
+  escalationEmailVerificationTokenDigest: bytea(
+    "escalation_email_verification_token_digest",
+  ),
+  escalationEmailVerificationTokenCiphertext: bytea(
+    "escalation_email_verification_token_ciphertext",
+  ),
+  escalationEmailVerificationExpiresAt: timestamp(
+    "escalation_email_verification_expires_at",
+    { withTimezone: true },
+  ),
+  escalationEmailVerificationRequestedAt: timestamp(
+    "escalation_email_verification_requested_at",
+    { withTimezone: true },
+  ),
+  escalationEmailVerificationSentAt: timestamp(
+    "escalation_email_verification_sent_at",
+    { withTimezone: true },
+  ),
+  escalationEmailVerificationMessageId: text(
+    "escalation_email_verification_message_id",
+  ),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

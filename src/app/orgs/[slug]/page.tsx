@@ -4,10 +4,16 @@ import Link from "next/link";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { formatMs } from "@/components/review-status";
+import { ReviewTimeDistribution } from "@/components/review-time-distribution";
+import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { schema } from "@/lib/db";
 import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
+import {
+  canProcessPrivateRepository,
+  requireMatchingProviderMode,
+} from "@/lib/private-repository-entitlement";
 import { toggleRepository } from "./actions";
 import { RepoHealthBanner } from "./repo-health-banner";
 import { ReviewsTable } from "./reviews-table";
@@ -89,6 +95,7 @@ export default async function OrgDashboardPage({
   const bucketRows = await db
     .select({
       buckets: sql<number[]>`${schema.reviews.envelope} -> 'confidenceBuckets'`,
+      durationMs: sql<number | null>`(${schema.reviews.envelope} ->> 'durationMs')::int`,
     })
     .from(schema.reviews)
     .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
@@ -109,8 +116,33 @@ export default async function OrgDashboardPage({
       });
     }
   }
-  const bucketMax = Math.max(...buckets, 1);
-  const bucketTicks = [bucketMax, Math.ceil(bucketMax / 2), 0];
+  const shippedConfidenceFindings = buckets.reduce((sum, count) => sum + count, 0);
+  const bucketPercentages = buckets.map((count) =>
+    shippedConfidenceFindings > 0
+      ? Math.round((count / shippedConfidenceFindings) * 100)
+      : 0,
+  );
+  const bucketPercentageMax = Math.max(...bucketPercentages, 1);
+  const bucketTicks = [
+    `${bucketPercentageMax}%`,
+    `${Math.ceil(bucketPercentageMax / 2)}%`,
+    "0%",
+  ];
+  const recordedDurations = bucketRows.flatMap((row) =>
+    typeof row.durationMs === "number" && row.durationMs > 0 ? [row.durationMs] : [],
+  );
+  const sortedDurations = [...recordedDurations].sort((left, right) => left - right);
+  const durationMiddle = Math.floor(sortedDurations.length / 2);
+  const medianDurationMs =
+    sortedDurations.length === 0
+      ? null
+      : Math.round(
+          sortedDurations.length % 2 === 0
+            ? ((sortedDurations[durationMiddle - 1] ?? 0) +
+                (sortedDurations[durationMiddle] ?? 0)) /
+                2
+            : (sortedDurations[durationMiddle] ?? 0),
+        );
 
   // Engine telemetry across completed reviews, read from stored envelopes.
   // Older envelopes lack durationMs / counts.ungrounded; COALESCE treats the
@@ -118,12 +150,6 @@ export default async function OrgDashboardPage({
   const telemetryAgg = (
     await db
       .select({
-        // Median wall-clock duration in ms; ignore 0s (older CLIs / not recorded).
-        medianDurationMs: sql<number | null>`
-          percentile_cont(0.5) WITHIN GROUP (
-            ORDER BY (${schema.reviews.envelope} ->> 'durationMs')::int
-          ) FILTER (WHERE (${schema.reviews.envelope} ->> 'durationMs')::int > 0)
-        `,
         // Total ungrounded findings dropped for not citing a changed line.
         ungrounded: sql<number>`
           COALESCE(SUM((${schema.reviews.envelope} -> 'counts' ->> 'ungrounded')::int), 0)::int
@@ -140,13 +166,11 @@ export default async function OrgDashboardPage({
         eq(schema.installations.id, schema.repositories.installationId),
       )
       .where(and(eq(schema.installations.orgId, org.id), eq(schema.reviews.status, "completed")))
-  )[0] ?? { medianDurationMs: null, ungrounded: 0, shipped: 0 };
-
-  const medianDurationMs =
-    telemetryAgg.medianDurationMs != null ? Math.round(telemetryAgg.medianDurationMs) : null;
+  )[0] ?? { ungrounded: 0, shipped: 0 };
   const ungrounded = telemetryAgg.ungrounded ?? 0;
   const shipped = telemetryAgg.shipped ?? 0;
-  // Share of model findings discarded for failing to cite a changed line.
+  // Comparison of ungrounded drops with findings that reached pull requests.
+  // Suppressed findings are intentionally outside this displayed comparison.
   const ungroundedRate =
     ungrounded + shipped > 0 ? Math.round((ungrounded / (ungrounded + shipped)) * 100) : null;
 
@@ -166,6 +190,25 @@ export default async function OrgDashboardPage({
     )
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
+  const rawPrivateAccess =
+    isAdmin && repos.some((repo) => repo.private && repo.enabled)
+      ? await canProcessPrivateRepository(db, {
+          orgId: org.id,
+          repositoryPrivate: true,
+        })
+      : null;
+  const providerSettings = rawPrivateAccess
+    ? (
+        await db
+          .select({ hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL` })
+          .from(schema.orgSettings)
+          .where(eq(schema.orgSettings.orgId, org.id))
+          .limit(1)
+      )[0]
+    : undefined;
+  const privateAccess = rawPrivateAccess
+    ? requireMatchingProviderMode(rawPrivateAccess, providerSettings?.hasKey ?? false)
+    : null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -190,8 +233,27 @@ export default async function OrgDashboardPage({
               </Link>
             </>
           )}
-          <Link href="/pricing" className="btn-primary text-xs">
-            plan: {org.plan} · upgrade
+          <Link
+            href="/pricing"
+            aria-label={`${org.plan} plan. View plans and upgrade.`}
+            className="inline-flex items-center gap-1.5 rounded-full border border-stone bg-white/40 px-3 py-1.5 font-mono text-[11px] text-charcoal/70 transition-colors hover:border-gate hover:text-gate focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gate"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m12 3 7 4-7 4-7-4 7-4Z" />
+              <path d="m5 12 7 4 7-4M5 17l7 4 7-4" />
+            </svg>
+            {org.plan.charAt(0).toUpperCase() + org.plan.slice(1)}
+            <span aria-hidden="true">·</span>
+            <span>Upgrade</span>
           </Link>
         </div>
       </div>
@@ -211,6 +273,8 @@ export default async function OrgDashboardPage({
           </p>
         </div>
       )}
+
+      <PrivateBillingNotice orgSlug={org.slug} decision={privateAccess} />
 
       <RepoHealthBanner
         slug={org.slug}
@@ -238,6 +302,9 @@ export default async function OrgDashboardPage({
         </div>
         <div className="card p-8">
           <p className="eyebrow">Confidence distribution</p>
+          <p className="mt-2 text-xs text-charcoal/60">
+            Higher confidence is better. Each bar is the share of shipped findings.
+          </p>
           <div className="mt-6 grid grid-cols-[2.5rem_1fr] gap-3">
             <div className="flex h-32 flex-col justify-between border-r border-stone/80 pr-2 text-right font-mono text-[10px] text-charcoal/55">
               {bucketTicks.map((tick, index) => (
@@ -247,11 +314,20 @@ export default async function OrgDashboardPage({
             <div className="flex h-32 items-end gap-3">
               {buckets.map((v, i) => (
                 <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-1">
-                  <span className="font-mono text-[10px] text-charcoal/60">{v}</span>
+                  <span className="font-mono text-[10px] text-charcoal/60">
+                    {bucketPercentages[i]}%
+                  </span>
                   <div
+                    role="img"
+                    tabIndex={0}
+                    aria-label={`${BUCKET_LABELS[i]} confidence: ${v} findings, ${bucketPercentages[i]} percent of shipped findings`}
                     className="w-full rounded-t-[3px] bg-gate"
+                    title={`${bucketPercentages[i]}% · ${v} findings at ${BUCKET_LABELS[i]} confidence`}
                     style={{
-                      height: `${Math.max((v / bucketMax) * 100, v > 0 ? 4 : 1)}%`,
+                      height: `${Math.max(
+                        ((bucketPercentages[i] ?? 0) / bucketPercentageMax) * 100,
+                        v > 0 ? 4 : 1,
+                      )}%`,
                       opacity: 0.45 + i * 0.13,
                     }}
                   />
@@ -263,9 +339,21 @@ export default async function OrgDashboardPage({
             </div>
           </div>
           <p className="mt-4 text-sm text-ink-soft">
-            Shipped findings by model confidence, across the last{" "}
-            {bucketRows.length} reviews. Linear scale, labeled by finding count.
+            {shippedConfidenceFindings} shipped findings across the latest{" "}
+            {bucketRows.length} completed reviews.
           </p>
+          <details className="mt-3 text-xs text-charcoal/60">
+            <summary className="cursor-pointer font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gate">
+              Raw counts
+            </summary>
+            <ul className="mt-2 grid gap-1 font-mono text-[11px] sm:grid-cols-2">
+              {buckets.map((count, index) => (
+                <li key={BUCKET_LABELS[index]}>
+                  {BUCKET_LABELS[index]}: {count} finding{count === 1 ? "" : "s"}
+                </li>
+              ))}
+            </ul>
+          </details>
         </div>
       </div>
 
@@ -281,22 +369,24 @@ export default async function OrgDashboardPage({
           </div>
           <p className="mt-4 text-sm text-ink-soft">
             Median time the review engine spends per pull request, measured from
-            its own envelope across completed reviews.
+            its own envelope across the latest 500 completed reviews.
           </p>
+          <ReviewTimeDistribution durations={recordedDurations} />
         </div>
         <div className="card p-8">
-          <p className="eyebrow">Ungrounded rate</p>
+          <p className="eyebrow">Ungrounded comparison</p>
           <div className="mt-3 flex items-end gap-3">
             <span className="serif-display text-6xl">
               {ungroundedRate === null ? "—" : `${ungroundedRate}%`}
             </span>
             <span className="pb-2 text-sm text-charcoal/70">
-              {ungrounded} dropped, {shipped} shipped
+              {ungrounded} dropped · {shipped} reached pull requests
             </span>
           </div>
           <p className="mt-4 text-sm text-ink-soft">
-            A model-quality signal: the share of model findings discarded for not
-            citing a changed line, before anything reached a pull request.
+            Across {silenceAgg.completed} completed reviews, this compares findings
+            discarded for not citing a changed line with findings that reached pull
+            requests. Policy-suppressed findings are excluded.
           </p>
         </div>
       </div>

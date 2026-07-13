@@ -228,17 +228,14 @@ ${doctorTranscript}`}</code>
           key values are not printed.
         </p>
 
-        <h2>Why &quot;OpenAI-compatible&quot; is the whole trick</h2>
+        <h2>Two provider interfaces, one worker</h2>
         <p>
-          The structural reason there is no seat gate is that there is no
-          customer-facing inference meter. The Postil worker speaks plain
-          OpenAI-compatible chat completions, against{" "}
-          <code>POST {"{base}"}/chat/completions</code>. The same binary points
-          at Ollama, vLLM, LiteLLM, TGI, Azure OpenAI, or OpenRouter by changing
-          one base URL. In CLI and self-hosted modes there is no proxy in the
-          middle: inference goes to your endpoint under your provider account.
-          Hosted BYOK routes through the worker to your configured provider, and
-          hosted Team reviews are included by default.
+          The Postil worker supports OpenAI-compatible chat completions and the
+          Anthropic Messages API. The same binary points at Ollama, vLLM,
+          LiteLLM, TGI, Azure OpenAI, OpenRouter, or Anthropic by selecting the
+          request format and base URL. In CLI and self-hosted modes inference
+          goes directly to your endpoint. Hosted BYOK uses the organization&apos;s
+          configured provider and credentials.
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`# OpenRouter (default)

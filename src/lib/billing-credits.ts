@@ -10,15 +10,15 @@ export interface UsageEventForBillingCredits {
   promptTokens: number;
   completionTokens: number;
   modelUsed: string | null;
-  costCents: number | null;
+  costMicros: number | null;
   createdAt: Date;
 }
 
 export interface BillingCreditBalance {
   creditStartsAt: Date | null;
   totalGrantedCents: number;
-  usageCostCents: number;
-  remainingCents: number;
+  usageCostMicros: number;
+  remainingMicros: number;
   chargedUsageEvents: number;
   unpricedUsageEvents: number;
 }
@@ -55,43 +55,43 @@ export function calculateBillingCreditBalance(
     if (time !== 0) return time;
     return left.kind === right.kind ? 0 : left.kind === "grant" ? -1 : 1;
   });
-  let usageCostCents = 0;
-  let remainingCents = 0;
+  let usageCostMicros = 0;
+  let remainingMicros = 0;
   let chargedUsageEvents = 0;
   let unpricedUsageEvents = 0;
 
   for (const ledgerEvent of ledgerEvents) {
     if (ledgerEvent.kind === "grant") {
-      remainingCents += ledgerEvent.amountCents;
+      remainingMicros += centsToMicros(ledgerEvent.amountCents);
       continue;
     }
-    if (remainingCents <= 0) continue;
-    const costCents = usageEventCostCents(ledgerEvent.event);
-    if (costCents === null) {
+    if (remainingMicros <= 0) continue;
+    const costMicros = usageEventCostMicros(ledgerEvent.event);
+    if (costMicros === null) {
       unpricedUsageEvents += 1;
       continue;
     }
-    const appliedCostCents = Math.min(remainingCents, costCents);
-    if (appliedCostCents <= 0) continue;
-    usageCostCents += appliedCostCents;
-    remainingCents -= appliedCostCents;
+    const appliedCostMicros = Math.min(remainingMicros, costMicros);
+    if (appliedCostMicros <= 0) continue;
+    usageCostMicros += appliedCostMicros;
+    remainingMicros -= appliedCostMicros;
     chargedUsageEvents += 1;
   }
 
   return {
     creditStartsAt,
     totalGrantedCents,
-    usageCostCents,
-    remainingCents,
+    usageCostMicros,
+    remainingMicros,
     chargedUsageEvents,
     unpricedUsageEvents,
   };
 }
 
-export function usageEventCostCents(event: UsageEventForBillingCredits): number | null {
+export function usageEventCostMicros(event: UsageEventForBillingCredits): number | null {
   return (
-    event.costCents ??
-    calculateUsageCostCentsForModel(
+    event.costMicros ??
+    calculateUsageCostMicrosForModel(
       event.modelUsed,
       event.promptTokens,
       event.completionTokens,
@@ -99,7 +99,7 @@ export function usageEventCostCents(event: UsageEventForBillingCredits): number 
   );
 }
 
-export function calculateUsageCostCentsForModel(
+export function calculateUsageCostMicrosForModel(
   modelUsed: string | null,
   promptTokens: number,
   completionTokens: number,
@@ -109,7 +109,20 @@ export function calculateUsageCostCentsForModel(
   if (!price) return null;
   const dollars = promptTokens * price.input + completionTokens * price.output;
   if (dollars <= 0) return 0;
-  return Math.ceil(dollars * 100 - 1e-9);
+  return Math.ceil(dollars * 1_000_000 - 1e-9);
+}
+
+export function centsToMicros(cents: number): number {
+  return cents * 10_000;
+}
+
+export function formatCurrencyMicros(micros: number): string {
+  return (micros / 1_000_000).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: micros % 10_000 === 0 ? 2 : 4,
+  });
 }
 
 export function parseUsdToCents(value: string): number {

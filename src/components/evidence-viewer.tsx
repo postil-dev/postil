@@ -176,8 +176,8 @@ export function extractBreadcrumbs(
   if (reviewUrl) {
     const review = parseGitHubPullRequestUrl(reviewUrl, "reviewUrl");
     if (
-      review.owner !== source.owner ||
-      review.repo !== source.repo ||
+      review.owner.toLowerCase() !== source.owner.toLowerCase() ||
+      review.repo.toLowerCase() !== source.repo.toLowerCase() ||
       review.prNumber !== source.prNumber
     ) {
       throw new Error("reviewUrl must point to the same GitHub pull request");

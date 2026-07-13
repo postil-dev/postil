@@ -157,6 +157,14 @@ function FindingCard({
         <span className="font-mono text-[11px] text-charcoal/60">
           confidence {finding.confidence.toFixed(2)}
         </span>
+        {finding.scorerConfidence !== undefined && (
+          <span
+            className="font-mono text-[11px] text-charcoal/60"
+            title={finding.scorerReason || undefined}
+          >
+            scorer {finding.scorerConfidence.toFixed(2)}
+          </span>
+        )}
         <a
           href={githubFileUrl(repoFullName, headSha, finding.path, finding.line, finding.endLine)}
           rel="noopener"
@@ -174,6 +182,12 @@ function FindingCard({
       <div className="mt-2 text-sm leading-relaxed text-ink-soft">
         <FindingMarkdown>{finding.body}</FindingMarkdown>
       </div>
+      {finding.scorerReason && (
+        <details className="mt-3 text-xs text-charcoal/60">
+          <summary className="cursor-pointer font-medium">Scorer assessment</summary>
+          <p className="mt-1">{finding.scorerReason}</p>
+        </details>
+      )}
     </article>
   );
 }
@@ -459,6 +473,14 @@ export default async function RunDetailPage({
             </a>
           </RunFact>
           <RunFact label="Model">{envelope?.modelUsed ?? "Not recorded"}</RunFact>
+          {envelope?.scorerModel && (
+            <RunFact label="Scorer">
+              {envelope.scorerModel}
+              {envelope.scorerDisagreements !== undefined
+                ? ` · ${envelope.scorerDisagreements} disagreement${envelope.scorerDisagreements === 1 ? "" : "s"}`
+                : ""}
+            </RunFact>
+          )}
           <RunFact label="Status">
             <LiveReviewStatus gateFailing={review.gateFailing} />
           </RunFact>

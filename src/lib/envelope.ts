@@ -77,6 +77,16 @@ export const envelopeSchema = z
       promptTokens: z.number().int().nonnegative(),
       completionTokens: z.number().int().nonnegative(),
     }),
+    modelUsage: z
+      .array(
+        z.object({
+          model: z.string().trim().min(1),
+          promptTokens: z.number().int().nonnegative(),
+          completionTokens: z.number().int().nonnegative(),
+        }),
+      )
+      .optional(),
+    usageAccountingComplete: z.boolean().optional(),
     // Engine wall-clock duration in milliseconds (0 when emitted by older CLIs).
     durationMs: z.number().int().nonnegative().optional().default(0),
     baseSha: z.string(),
@@ -84,6 +94,25 @@ export const envelopeSchema = z
     sinceSha: z.string().nullable(),
   })
   .superRefine((envelope, ctx) => {
+    if (envelope.modelUsage) {
+      const totals = envelope.modelUsage.reduce(
+        (sum, entry) => ({
+          promptTokens: sum.promptTokens + entry.promptTokens,
+          completionTokens: sum.completionTokens + entry.completionTokens,
+        }),
+        { promptTokens: 0, completionTokens: 0 },
+      );
+      if (
+        totals.promptTokens !== envelope.usage.promptTokens ||
+        totals.completionTokens !== envelope.usage.completionTokens
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["modelUsage"],
+          message: "per-model token totals must match aggregate usage",
+        });
+      }
+    }
     const seen = new Map<string, number>();
     envelope.findings.forEach((finding, index) => {
       const id = findingStableId(finding);
@@ -146,6 +175,8 @@ export interface IngestedEnvelope {
   promptTokens: number;
   completionTokens: number;
   modelUsed: string;
+  modelUsage: Array<{ model: string; promptTokens: number; completionTokens: number }> | null;
+  usageAccountingComplete: boolean;
 }
 
 /**
@@ -178,6 +209,8 @@ export function ingestEnvelope(raw: string): IngestedEnvelope {
     promptTokens: envelope.usage.promptTokens,
     completionTokens: envelope.usage.completionTokens,
     modelUsed: envelope.modelUsed,
+    modelUsage: envelope.modelUsage ?? null,
+    usageAccountingComplete: envelope.usageAccountingComplete === true,
   };
 }
 

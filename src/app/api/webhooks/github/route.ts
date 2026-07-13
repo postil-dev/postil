@@ -33,6 +33,7 @@ import {
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
 import { mentionsPostil, parsePostilApproveCommand } from "@/lib/mentions";
+import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import {
@@ -75,6 +76,7 @@ interface PullRequestEventPayload {
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    user?: GithubUser;
   };
 }
 
@@ -458,6 +460,7 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
     await db
       .select({
         id: schema.installations.id,
+        orgId: schema.installations.orgId,
         suspended: schema.installations.suspended,
       })
       .from(schema.installations)
@@ -468,6 +471,15 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
 
   const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
   if (!repoRow?.enabled) return;
+  if (
+    !(await canProcessPrivateRepository(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repo.private,
+    })).allowed
+  ) {
+    console.log(`private review skipped: ${repo.full_name} requires billing`);
+    return;
+  }
 
   await supersedeActiveReviews({
     repositoryId: repoRow.id,
@@ -481,7 +493,10 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
   await enqueueReviewJob({
     installationId,
     repoFullName: repo.full_name,
+    repositoryPrivate: repo.private,
     prNumber: pr.number,
+    ...(typeof pr.user?.id === "number" ? { authorGithubId: pr.user.id } : {}),
+    ...(pr.user?.login ? { authorLogin: pr.user.login } : {}),
     headSha,
     baseSha,
   });
@@ -547,25 +562,24 @@ async function enabledRepoForRerequest(
   const db = getDb();
   const installation = (
     await db
-      .select({ id: schema.installations.id, suspended: schema.installations.suspended })
+      .select({
+        id: schema.installations.id,
+        orgId: schema.installations.orgId,
+        suspended: schema.installations.suspended,
+      })
       .from(schema.installations)
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
   if (!installation || installation.suspended) return false;
-  const repoRow = (
-    await db
-      .select({ enabled: schema.repositories.enabled })
-      .from(schema.repositories)
-      .where(
-        and(
-          eq(schema.repositories.githubRepoId, repo.id),
-          eq(schema.repositories.installationId, installation.id),
-        ),
-      )
-      .limit(1)
-  )[0];
-  return Boolean(repoRow?.enabled);
+  const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
+  if (!repoRow?.enabled) return false;
+  return (
+    await canProcessPrivateRepository(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repo.private,
+    })
+  ).allowed;
 }
 
 /**
@@ -617,6 +631,7 @@ async function handleCheckRerequest(
   await enqueueReviewJob({
     installationId,
     repoFullName: repo.full_name,
+    repositoryPrivate: repo.private,
     prNumber: pr.number,
     headSha,
     baseSha,
@@ -670,7 +685,11 @@ async function enabledRepoForMention(
   const db = getDb();
   const installation = (
     await db
-      .select({ id: schema.installations.id, suspended: schema.installations.suspended })
+      .select({
+        id: schema.installations.id,
+        orgId: schema.installations.orgId,
+        suspended: schema.installations.suspended,
+      })
       .from(schema.installations)
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
@@ -682,19 +701,14 @@ async function enabledRepoForMention(
   // claiming installation A plus a repo row owned by installation B would pass
   // the enabled check; here we reject that mismatch at the webhook gate rather
   // than relying solely on GitHub's downstream token scoping.
-  const repoRow = (
-    await db
-      .select({ enabled: schema.repositories.enabled })
-      .from(schema.repositories)
-      .where(
-        and(
-          eq(schema.repositories.githubRepoId, repo.id),
-          eq(schema.repositories.installationId, installation.id),
-        ),
-      )
-      .limit(1)
-  )[0];
-  return Boolean(repoRow?.enabled);
+  const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
+  if (!repoRow?.enabled) return false;
+  return (
+    await canProcessPrivateRepository(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repo.private,
+    })
+  ).allowed;
 }
 
 /** Skip our own comments and other bots to avoid mention loops. */
@@ -766,6 +780,7 @@ async function handleIssueComment(payload: CommentEventPayload): Promise<void> {
   await enqueueRespond({
     installationId: payload.installation!.id,
     repoFullName: payload.repository.full_name,
+    repositoryPrivate: payload.repository.private,
     number: payload.issue.number,
     // GitHub sends issue_comment for PR conversation comments too; the
     // pull_request marker distinguishes them.
@@ -791,6 +806,7 @@ async function handleReviewComment(payload: CommentEventPayload): Promise<void> 
   await enqueueRespond({
     installationId: payload.installation!.id,
     repoFullName: payload.repository.full_name,
+    repositoryPrivate: payload.repository.private,
     number: payload.pull_request.number,
     isPr: true,
     comment: body!,
@@ -998,6 +1014,7 @@ async function handleIssues(payload: IssuesEventPayload): Promise<void> {
   await enqueueRespond({
     installationId: payload.installation!.id,
     repoFullName: payload.repository.full_name,
+    repositoryPrivate: payload.repository.private,
     number: payload.issue.number,
     isPr: false,
     comment: body!,
