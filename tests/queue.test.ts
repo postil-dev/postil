@@ -53,7 +53,7 @@ describeDb("postgres job queue", () => {
   });
 
   beforeEach(async () => {
-    await pool.query("TRUNCATE jobs RESTART IDENTITY");
+    await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
   });
 
   afterAll(async () => {
