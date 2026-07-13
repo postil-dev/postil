@@ -7,7 +7,6 @@ import { formatMs } from "@/components/review-status";
 import { ReviewTimeDistribution } from "@/components/review-time-distribution";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { schema } from "@/lib/db";
-import { githubInstallationSettingsUrl } from "@/lib/github-app";
 import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
@@ -16,7 +15,10 @@ import {
   requireMatchingProviderMode,
 } from "@/lib/private-repository-entitlement";
 import { toggleRepository } from "./actions";
-import { RepoHealthBanner } from "./repo-health-banner";
+import {
+  RepoHealthBanner,
+  SuspendedInstallationsNotice,
+} from "./repo-health-banner";
 import { ReviewsTable } from "./reviews-table";
 
 export const metadata: Metadata = {
@@ -263,34 +265,10 @@ export default async function OrgDashboardPage({
         </div>
       </div>
 
-      {suspendedInstallations.length > 0 && (
-        <div className="card mt-6 border-rust p-5">
-          <p className="text-sm">
-            <span className="font-medium text-rust">
-              Installation{suspendedInstallations.length === 1 ? "" : "s"} suspended.
-            </span>{" "}
-            The GitHub App installation on{" "}
-            <span className="font-mono text-xs">
-              {suspendedInstallations.map((i) => i.accountLogin).join(", ")}
-            </span>{" "}
-            {suspendedInstallations.length === 1 ? "is" : "are"} suspended, so
-            Postil does not run reviews for {suspendedInstallations.length === 1
-              ? "that account"
-              : "those accounts"}.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {suspendedInstallations.map((installation) => (
-              <a
-                key={installation.githubInstallationId}
-                href={githubInstallationSettingsUrl(installation)}
-                className="btn-secondary text-xs"
-              >
-                Manage {installation.accountLogin} on GitHub
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
+      <SuspendedInstallationsNotice
+        installations={suspendedInstallations}
+        isAdmin={isAdmin}
+      />
 
       <PrivateBillingNotice orgSlug={org.slug} decision={privateAccess} />
 

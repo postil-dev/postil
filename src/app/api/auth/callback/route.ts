@@ -30,10 +30,9 @@ interface GithubOrgMembership {
 /**
  * Page through GET /user/memberships/orgs, which returns the authenticated
  * user's org memberships WITH role (admin/member) and paginates via the Link
- * rel="next" header. Returns the complete list, or null if any page fails —
- * the caller must skip reconciliation on null rather than delete memberships
- * from a truncated set (a user in more orgs than one page holds would
- * otherwise have the missing orgs silently revoked).
+ * rel="next" header. Returns the complete list, or null if any page fails. The
+ * callback rejects sign-in on null rather than reconciling from a truncated set
+ * that could silently hide or revoke accounts.
  */
 async function fetchAllOrgMemberships(
   headers: Record<string, string>,
@@ -144,11 +143,18 @@ export async function GET(request: Request): Promise<NextResponse> {
   // records the real per-org role so write actions can gate on it.
   //
   // /user/memberships/orgs carries the caller's role (admin/member) per org
-  // and paginates. Only reconcile when the full list is fetched: on any page
-  // failure we cannot tell "left every org" from "GitHub blipped" or a
-  // truncated page, so we keep the user's last-known memberships rather than
-  // revoke from an incomplete set.
+  // and paginates. Reconciliation requires the full list: on any page failure
+  // we cannot tell "left every org" from a temporary GitHub failure or a
+  // truncated page. Sign-in fails with a retryable error instead of creating a
+  // session from stale or incomplete account access.
   const memberships = await fetchAllOrgMemberships(ghHeaders);
+  if (!memberships) {
+    const response = NextResponse.redirect(
+      new URL("/login?error=organization_memberships", origin),
+    );
+    response.cookies.delete(OAUTH_STATE_COOKIE);
+    return response;
+  }
 
   // Bring installation rows in line with GitHub before linking memberships:
   // an installation that predates this database (or whose webhooks were
@@ -158,29 +164,25 @@ export async function GET(request: Request): Promise<NextResponse> {
   const syncAccounts: AccountRef[] = [
     { githubId: ghUser.id, login: ghUser.login, type: "User" },
   ];
-  if (memberships) {
-    for (const m of memberships) {
-      const org = m.organization;
-      if (typeof org?.id === "number" && typeof org.login === "string") {
-        syncAccounts.push({ githubId: org.id, login: org.login, type: "Organization" });
-      }
+  for (const m of memberships) {
+    const org = m.organization;
+    if (typeof org?.id === "number" && typeof org.login === "string") {
+      syncAccounts.push({ githubId: org.id, login: org.login, type: "Organization" });
     }
   }
   await syncInstallationsFromGithub(syncAccounts);
 
-  if (memberships) {
-    // The user owns their personal account; user-scoped installations are
-    // always administered by the account holder.
-    const accounts: GithubAccountMembership[] = [{ githubOrgId: ghUser.id, role: "admin" }];
-    for (const m of memberships) {
-      const orgId = m.organization?.id;
-      if (typeof orgId !== "number") continue;
-      // GitHub reports "admin" or "member"; keep it verbatim and default any
-      // unexpected value to the least-privileged role.
-      accounts.push({ githubOrgId: orgId, role: m.role === "admin" ? "admin" : "member" });
-    }
-    await reconcileOrgMemberships(db, userId, accounts);
+  // The user owns their personal account; user-scoped installations are
+  // always administered by the account holder.
+  const accounts: GithubAccountMembership[] = [{ githubOrgId: ghUser.id, role: "admin" }];
+  for (const m of memberships) {
+    const orgId = m.organization?.id;
+    if (typeof orgId !== "number") continue;
+    // GitHub reports "admin" or "member"; keep it verbatim and default any
+    // unexpected value to the least-privileged role.
+    accounts.push({ githubOrgId: orgId, role: m.role === "admin" ? "admin" : "member" });
   }
+  await reconcileOrgMemberships(db, userId, accounts);
 
   const sessionToken = await createSession(userId);
   const response = NextResponse.redirect(new URL("/reports", origin));

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { RepoHealthBanner } from "@/app/orgs/[slug]/repo-health-banner";
+import {
+  RepoHealthBanner,
+  SuspendedInstallationsNotice,
+} from "@/app/orgs/[slug]/repo-health-banner";
 import type { RepoHealthRow } from "@/lib/repo-health";
 
 const NOW = new Date("2026-07-11T12:00:00.000Z");
@@ -79,5 +82,37 @@ describe("RepoHealthBanner", () => {
     );
 
     expect(markup).toBe("");
+  });
+});
+
+describe("SuspendedInstallationsNotice", () => {
+  const installations = [
+    {
+      githubInstallationId: 123,
+      accountLogin: "postil-dev",
+      accountType: "Organization",
+    },
+  ];
+
+  test("gives organization admins the GitHub management action", () => {
+    const markup = renderToStaticMarkup(
+      <SuspendedInstallationsNotice installations={installations} isAdmin />,
+    );
+
+    expect(markup).toContain("Manage postil-dev on GitHub");
+    expect(markup).toContain(
+      "https://github.com/organizations/postil-dev/settings/installations/123",
+    );
+    expect(markup).not.toContain("Ask a GitHub organization owner");
+  });
+
+  test("directs non-admins to an owner without exposing an unusable settings action", () => {
+    const markup = renderToStaticMarkup(
+      <SuspendedInstallationsNotice installations={installations} isAdmin={false} />,
+    );
+
+    expect(markup).toContain("Ask a GitHub organization owner to manage the installation.");
+    expect(markup).not.toContain("Manage postil-dev on GitHub");
+    expect(markup).not.toContain("settings/installations/123");
   });
 });
