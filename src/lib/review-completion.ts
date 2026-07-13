@@ -59,7 +59,10 @@ export async function persistReviewCompletion(
       .returning({ id: schema.reviews.id });
     if (rows.length === 0) return false;
 
-    const usageRows = input.usage.map((usage) => ({ ...usage, reviewId: input.reviewId }));
+    const persistedUsageRows = input.usage.map((usage) => ({
+      ...usage,
+      reviewId: input.reviewId,
+    }));
     if (input.hostedUsageReservationId) {
       const reservation = (
         await tx
@@ -77,7 +80,7 @@ export async function persistReviewCompletion(
       // A private hosted event must never retain NULL cost: reservation
       // accounting interprets any NULL as an unknown full-period spend. Keep
       // the model/token analytics at zero and charge uncertainty explicitly.
-      for (const usage of usageRows) {
+      for (const usage of persistedUsageRows) {
         if (usage.billingScope === "private_hosted" && usage.costMicros === null) {
           usage.costMicros = 0;
         }
@@ -89,7 +92,7 @@ export async function persistReviewCompletion(
       if (unattributedMicros > 0) {
         const first = input.usage[0];
         if (!first) throw new Error("hosted review usage is empty");
-        usageRows.push({
+        persistedUsageRows.push({
           ...first,
           promptTokens: 0,
           completionTokens: 0,
@@ -112,7 +115,7 @@ export async function persistReviewCompletion(
         throw new Error("hosted usage reservation is not active");
       }
     }
-    await tx.insert(schema.usageEvents).values(usageRows);
+    await tx.insert(schema.usageEvents).values(persistedUsageRows);
     if (input.escalationJob) {
       await tx.insert(schema.jobs).values({
         kind: "escalation-notification",
