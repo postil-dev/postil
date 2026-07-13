@@ -1,28 +1,31 @@
 const MAX_RESPOND_CHARACTERS = 2_400;
 const MAX_RESPOND_NONBLANK_LINES = 24;
-const MAX_RESPOND_HEADINGS = 2;
-const MAX_RESPOND_LIST_ITEMS = 5;
+const MAX_RESPOND_LIST_ITEMS = 3;
 
 const ACTIVE_MENTION = /(^|[^a-z0-9_-])@[a-z0-9][a-z0-9-]{0,38}(?=$|[^a-z0-9_-])/i;
-const RAW_HTML = /<!--[\s\S]*?-->|<\/?[a-z][^>]*>/i;
+const RAW_HTML = /<!--|<\/?[a-z][^>]*>/i;
 const MARKDOWN_IMAGE = /!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])?/;
-const MERMAID = /(?:```|~~~)\s*mermaid\b|^\s*(?:flowchart\s+(?:TB|TD|BT|RL|LR)|sequenceDiagram)\b/im;
-const REPORT_HEADINGS = new Set([
-  "what this pr does",
-  "what this pull request does",
-  "summary",
-  "correctness",
-  "issue",
-  "issues",
-  "issue and risk",
-  "issue and risks",
-  "issues and risk",
-  "issues and risks",
-  "risk",
-  "risks",
-  "verdict",
-  "assessment",
-  "review metadata",
+const MERMAID_DECLARATIONS = new Set([
+  "flowchart",
+  "graph",
+  "sequencediagram",
+  "statediagram",
+  "statediagram-v2",
+  "classdiagram",
+  "erdiagram",
+  "journey",
+  "gantt",
+  "pie",
+  "mindmap",
+  "timeline",
+  "gitgraph",
+  "quadrantchart",
+  "xychart-beta",
+  "block-beta",
+  "packet-beta",
+  "architecture-beta",
+  "kanban",
+  "sankey-beta",
 ]);
 
 export class PublicationValidationError extends Error {
@@ -45,7 +48,7 @@ export function validateRespondPublication(reply: string, _maintainerMessage: st
   if (nonblankLines.length > MAX_RESPOND_NONBLANK_LINES) {
     throw new PublicationValidationError("reply exceeds the line limit");
   }
-  if (MERMAID.test(normalized)) {
+  if (containsMermaid(normalized)) {
     throw new PublicationValidationError("reply contains Mermaid");
   }
 
@@ -53,8 +56,8 @@ export function validateRespondPublication(reply: string, _maintainerMessage: st
   const visibleLines = masked.split("\n");
   const visibleNonblankLines = visibleLines.filter((line) => line.trim().length > 0);
   const headings = markdownHeadingNames(visibleLines);
-  if (headings.length > MAX_RESPOND_HEADINGS) {
-    throw new PublicationValidationError("reply has too many headings");
+  if (headings.length > 0) {
+    throw new PublicationValidationError("reply contains a Markdown heading");
   }
   const listItems = visibleNonblankLines.filter((line) =>
     /^\s*(?:[-+*]|\d+[.)])\s+\S/.test(line),
@@ -74,10 +77,24 @@ export function validateRespondPublication(reply: string, _maintainerMessage: st
   if (containsMarkdownTable(visibleLines)) {
     throw new PublicationValidationError("reply contains a table");
   }
-  if (headings.some((heading) => REPORT_HEADINGS.has(heading))) {
-    throw new PublicationValidationError("reply is formatted as a report");
-  }
   return normalized;
+}
+
+function containsMermaid(value: string): boolean {
+  return value.split("\n").some((line) => {
+    const opening = openingFence(line);
+    if (opening) {
+      const marker = line.trimStart().slice(0, opening.length);
+      const language = line
+        .trimStart()
+        .slice(marker.length)
+        .trim()
+        .split(/\s+/u)[0];
+      if (language?.toLowerCase() === "mermaid") return true;
+    }
+    const declaration = line.trim().split(/\s+/u)[0]?.toLowerCase();
+    return declaration !== undefined && MERMAID_DECLARATIONS.has(declaration);
+  });
 }
 
 function trimOuterBlankLines(value: string): string {

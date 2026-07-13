@@ -20,13 +20,16 @@ describe("validateRespondPublication", () => {
   test("rejects article-sized and report-shaped output", () => {
     rejected("x".repeat(2_401));
     rejected(Array.from({ length: 25 }, (_, index) => `line ${index}`).join("\n"));
-    rejected("# Summary\n## Correctness\n### Verdict\nText");
-    rejected(Array.from({ length: 6 }, (_, index) => `${index + 1}. item`).join("\n"));
+    for (const heading of ["Analysis", "Recommendations", "Overview", "Summary"]) {
+      rejected(`# ${heading}\nLong-form report prose.`);
+    }
+    rejected(Array.from({ length: 4 }, (_, index) => `${index + 1}. item`).join("\n"));
   });
 
   test("rejects active mentions, HTML, tables, and images", () => {
     rejected("Ask @maintainer to approve this.");
     rejected("<details><summary>More</summary>hidden</details>");
+    rejected("<!-- unterminated comment");
     rejected("A | B\n--- | ---\n1 | 2");
     rejected("![diagram](https://example.test/image.png)");
     expect(validateRespondPublication("Email dev@example.test.", "@postil help")).toBe(
@@ -40,6 +43,16 @@ describe("validateRespondPublication", () => {
     rejected(reply, "@postil explain the worker");
     rejected("flowchart TD\nA --> B", "@postil diagram the flow");
     rejected("sequenceDiagram\nA->>B: hi", "@postil show the sequence");
+    for (const declaration of [
+      "graph TD\nA --> B",
+      "classDiagram\nclass A",
+      "stateDiagram-v2\n[*] --> A",
+      "erDiagram\nA ||--o{ B : has",
+      "mindmap\n root((Postil))",
+      "architecture-beta\nservice api(server)",
+    ]) {
+      rejected(declaration, "@postil explain the flow");
+    }
   });
 
   test("masks code before publication-shape checks", () => {
