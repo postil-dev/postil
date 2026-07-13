@@ -114,6 +114,9 @@ function responseWithCrawlerHeaders(request: NextRequest, response: NextResponse
   if (isNoindexRoute(request.nextUrl.pathname)) {
     response.headers.set("X-Robots-Tag", "noindex, nofollow");
   }
+  if (isVerificationRoute(request.nextUrl.pathname)) {
+    response.headers.set("Referrer-Policy", "no-referrer");
+  }
   return response;
 }
 
@@ -140,11 +143,14 @@ function isNoindexRoute(pathname: string): boolean {
     pathname.startsWith("/operator/") ||
     pathname === "/reports" ||
     pathname.startsWith("/reports/") ||
-    pathname === "/verify" ||
-    pathname.startsWith("/verify/") ||
+    isVerificationRoute(pathname) ||
     pathname.startsWith("/orgs/") ||
     pathname.startsWith("/api/")
   );
+}
+
+function isVerificationRoute(pathname: string): boolean {
+  return pathname === "/verify" || pathname.startsWith("/verify/");
 }
 
 function shouldCaptureTraffic(request: NextRequest): boolean {
