@@ -57,6 +57,23 @@ describe("web startup environment validation", () => {
     );
   });
 
+  test("does not include malformed public URL input in startup errors", () => {
+    configureRequiredWebEnvironment();
+    mutableEnv.NODE_ENV = "production";
+    process.env.POSTIL_PUBLIC_URL = "https://operator:credential@[invalid";
+
+    let message = "";
+    try {
+      validateEnv("web");
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toBe("Postil web cannot start: invalid POSTIL_PUBLIC_URL.");
+    expect(message).not.toContain("operator");
+    expect(message).not.toContain("credential");
+  });
+
   test("requires a project token when operational telemetry is enabled", () => {
     configureRequiredWebEnvironment();
     process.env.POSTHOG_ERROR_CAPTURE = "1";

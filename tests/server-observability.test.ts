@@ -269,6 +269,35 @@ describe("server operational observability", () => {
     expect(exporter.getFinishedLogRecords()).toHaveLength(2);
   });
 
+  test("applies finite default caps to unsampled failure telemetry", async () => {
+    const requests: string[] = [];
+    const exporter = new RetainingLogExporter();
+    const observability = new ServerObservability({
+      processGroup: "worker",
+      environment: {
+        POSTHOG_ERROR_CAPTURE: "1",
+        POSTHOG_LOG_CAPTURE: "1",
+        POSTHOG_PROJECT_TOKEN: TOKEN,
+      },
+      now: () => NOW,
+      posthogFetch: async (_url, options) => {
+        requests.push(String(options.body ?? ""));
+        return successfulPostHogResponse();
+      },
+      logExporter: exporter,
+    });
+
+    for (let line = 1; line <= 100; line += 1) {
+      const error = new Error("private details");
+      error.stack = `Error: private details\n    at privateName (/app/src/worker/runner.ts:${line}:1)`;
+      observability.reportFailure("job_permanently_failed", error);
+    }
+    await observability.shutdown();
+
+    expect(postHogBatchSize(requests)).toBe(10);
+    expect(exporter.getFinishedLogRecords()).toHaveLength(60);
+  });
+
   test("samples warning logs deterministically by event, process, and minute", async () => {
     const first = await sampledWarningMinutes();
     const second = await sampledWarningMinutes();

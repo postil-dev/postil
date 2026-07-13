@@ -385,7 +385,7 @@ function createLocalGitHubServer(input: {
         }
         return json({
           title: "Local Postil review",
-          body: "Synthetic pull request served by scripts/run-review-locally.ts.",
+          body: "",
           head: { sha: input.headSha },
           base: { sha: input.baseSha },
         });

@@ -398,11 +398,22 @@ export function validateEnv(processKind: "web" | "worker"): void {
     try {
       configuredPublicOrigin();
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Postil web cannot start: invalid POSTIL_PUBLIC_URL. ${detail}`);
+      const detail = safePublicUrlValidationDetail(error);
+      throw new Error(
+        `Postil web cannot start: invalid POSTIL_PUBLIC_URL.${detail ? ` ${detail}` : ""}`,
+      );
     }
   }
   validateOperationalTelemetryEnv(processKind);
+}
+
+function safePublicUrlValidationDetail(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  return /^POSTIL_PUBLIC_URL must (?:not contain credentials|be an origin without a path, query, or fragment|use https \(http is allowed only for local development\))$/.test(
+    error.message,
+  )
+    ? error.message
+    : undefined;
 }
 
 function validateOperationalTelemetryEnv(processKind: "web" | "worker"): void {
