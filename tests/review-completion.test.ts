@@ -98,6 +98,23 @@ describe("review completion transaction", () => {
     expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(0);
   });
 
+  test("records repeated model usage rows as separate events", async () => {
+    const state = fakeDb();
+    const sameModelUsage = base.usage.map((usage) => ({
+      ...usage,
+      modelUsed: "shared-model",
+    }));
+
+    expect(
+      await persistReviewCompletion(state.db, { ...base, usage: sameModelUsage }),
+    ).toBe(true);
+    const usageInsert = state.inserted.find((row) => row.table === schema.usageEvents);
+    expect(usageInsert?.values).toEqual([
+      { ...sameModelUsage[0], reviewId: 7 },
+      { ...sameModelUsage[1], reviewId: 7 },
+    ]);
+  });
+
   test("records no accounting after losing the completion race", async () => {
     const state = fakeDb(false);
     expect(await persistReviewCompletion(state.db, base)).toBe(false);

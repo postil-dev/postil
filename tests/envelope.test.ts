@@ -234,6 +234,17 @@ describe("envelope ingestion", () => {
     );
   });
 
+  test("accepts duplicate model rows with matching aggregate totals", () => {
+    const exact = validEnvelope({
+      modelUsage: [
+        { model: "shared-model", promptTokens: 4000, completionTokens: 300 },
+        { model: "shared-model", promptTokens: 200, completionTokens: 10 },
+      ],
+    });
+
+    expect(ingestEnvelope(JSON.stringify(exact)).modelUsage).toEqual(exact.modelUsage!);
+  });
+
   test("identifies only scorer runs that predate per-model usage attribution", () => {
     const legacy = validEnvelope({ scorerModel: "independent/model" });
     expect(hasLegacyCombinedModelUsage(legacy)).toBe(true);
