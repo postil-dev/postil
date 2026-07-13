@@ -35,8 +35,10 @@ export default function ConfigPage() {
         configuration reads only <code>.postil.yaml</code>,{" "}
         <code>.postil/guardrails.md</code>, and{" "}
         <code>.postil/content-policy.md</code> from one default-branch commit. The App
-        never reads an uninstalled public repository without authentication. A failed
-        refresh keeps the last successful shared snapshot and marks its provenance stale.
+        never reads an uninstalled public repository without authentication. Authorization
+        or identity failures remove the shared snapshot and return no shared policy. A
+        transient refresh may use the last successful snapshot only after the current call
+        validates installation access and immutable repository identity.
       </p>
       <p>
         Add or create <code>&lt;owner&gt;/.github</code> in the same GitHub App installation

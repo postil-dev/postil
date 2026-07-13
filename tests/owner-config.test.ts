@@ -10,10 +10,11 @@ const COMMIT = "a".repeat(40);
 const files = new Map<string, string>();
 const requests: Request[] = [];
 const authorizationHeaders: Array<string | null> = [];
-let failContents = false;
+let failContentsStatus: number | null = null;
 let snapshot: Parameters<OwnerConfigStore["saveSnapshot"]>[0] | null = null;
 let installed = true;
 let installedGithubRepoId = 99;
+let deletedSnapshots = 0;
 let server: ReturnType<typeof Bun.serve>;
 
 const store: OwnerConfigStore = {
@@ -27,6 +28,10 @@ const store: OwnerConfigStore = {
     snapshot = value;
   },
   async markDegraded() {},
+  async deleteSnapshot() {
+    snapshot = null;
+    deletedSnapshots += 1;
+  },
 };
 
 beforeAll(() => {
@@ -50,9 +55,26 @@ beforeAll(() => {
       if (url.pathname === "/repos/acme/.github/commits/trunk") {
         return Response.json({ sha: COMMIT });
       }
+      if (url.pathname === "/repos/acme/.github/contents") {
+        if (failContentsStatus) return new Response("unavailable", { status: failContentsStatus });
+        return Response.json([
+          ...(files.has(".postil.yaml") ? [{ name: ".postil.yaml", type: "file" }] : []),
+          ...(Array.from(files.keys()).some((path) => path.startsWith(".postil/"))
+            ? [{ name: ".postil", type: "dir" }]
+            : []),
+        ]);
+      }
+      if (url.pathname === "/repos/acme/.github/contents/.postil") {
+        if (failContentsStatus) return new Response("unavailable", { status: failContentsStatus });
+        return Response.json(
+          Array.from(files.keys())
+            .filter((path) => path.startsWith(".postil/"))
+            .map((path) => ({ name: path.slice(".postil/".length), type: "file" })),
+        );
+      }
       const prefix = "/repos/acme/.github/contents/";
       if (url.pathname.startsWith(prefix)) {
-        if (failContents) return new Response("unavailable", { status: 503 });
+        if (failContentsStatus) return new Response("unavailable", { status: failContentsStatus });
         if (url.searchParams.get("ref") !== COMMIT) return new Response("bad ref", { status: 400 });
         const path = decodeURIComponent(url.pathname.slice(prefix.length));
         const body = files.get(path);
@@ -79,10 +101,11 @@ beforeEach(() => {
   files.clear();
   requests.length = 0;
   authorizationHeaders.length = 0;
-  failContents = false;
+  failContentsStatus = null;
   snapshot = null;
   installed = true;
   installedGithubRepoId = 99;
+  deletedSnapshots = 0;
 });
 
 const input = {
@@ -104,7 +127,7 @@ describe("owner .github configuration", () => {
     expect(resolved.commitSha).toBe(COMMIT);
     expect(resolved.files).toEqual([".postil.yaml", ".postil/guardrails.md"]);
     expect(authorizationHeaders.every((value) => value === "Bearer installation-token")).toBe(true);
-    expect(requests.filter((request) => request.url.includes("/contents/"))).toHaveLength(3);
+    expect(requests.filter((request) => request.url.includes("/contents"))).toHaveLength(4);
     expect(resolved.provenance.map((entry) => entry.status)).toEqual([
       "present",
       "present",
@@ -117,7 +140,7 @@ describe("owner .github configuration", () => {
     files.set(".postil/guardrails.md", "Known rule.\n");
     const fresh = await resolveOwnerGithubConfig(store, input);
     expect(fresh.stale).toBe(false);
-    failContents = true;
+    failContentsStatus = 503;
 
     const degraded = await resolveOwnerGithubConfig(store, input);
 
@@ -125,9 +148,13 @@ describe("owner .github configuration", () => {
     expect(degraded.stale).toBe(true);
     expect(degraded.config?.guardrailsMd).toBe("Known rule.\n");
     expect(degraded.provenance.every((entry) => entry.stale)).toBe(true);
+    expect(deletedSnapshots).toBe(0);
   });
 
-  test("does not make an unauthenticated public read when the source is not installed", async () => {
+  test("removes cached policy when the source is no longer installed", async () => {
+    files.set(".postil/guardrails.md", "Cached rule.\n");
+    await resolveOwnerGithubConfig(store, input);
+    requests.length = 0;
     installed = false;
 
     const resolved = await resolveOwnerGithubConfig(store, input);
@@ -136,9 +163,13 @@ describe("owner .github configuration", () => {
     expect(resolved.provenance.every((entry) => entry.status === "inaccessible")).toBe(true);
     expect(buildConfigProvenance([], resolved.provenance).degraded).toBe(true);
     expect(requests).toHaveLength(0);
+    expect(snapshot).toBeNull();
+    expect(deletedSnapshots).toBe(1);
   });
 
   test("rejects a repository owned by a different GitHub account", async () => {
+    files.set(".postil/guardrails.md", "Cached rule.\n");
+    await resolveOwnerGithubConfig(store, input);
     const wrongOwnerServer = Bun.serve({
       port: 0,
       fetch() {
@@ -159,6 +190,8 @@ describe("owner .github configuration", () => {
       const resolved = await resolveOwnerGithubConfig(store, input);
       expect(resolved.status).toBe("inaccessible");
       expect(resolved.config).toBeNull();
+      expect(snapshot).toBeNull();
+      expect(deletedSnapshots).toBe(1);
     } finally {
       wrongOwnerServer.stop(true);
       process.env.GITHUB_API_URL = original;
@@ -175,5 +208,20 @@ describe("owner .github configuration", () => {
     expect(resolved.status).toBe("inaccessible");
     expect(resolved.config).toBeNull();
     expect(resolved.sourceGithubRepoId).toBe(100);
+    expect(snapshot).toBeNull();
+    expect(deletedSnapshots).toBe(1);
+  });
+
+  test("removes cached policy after authenticated content access is denied", async () => {
+    files.set(".postil/guardrails.md", "Cached rule.\n");
+    await resolveOwnerGithubConfig(store, input);
+    failContentsStatus = 403;
+
+    const resolved = await resolveOwnerGithubConfig(store, input);
+
+    expect(resolved.status).toBe("inaccessible");
+    expect(resolved.config).toBeNull();
+    expect(snapshot).toBeNull();
+    expect(deletedSnapshots).toBe(1);
   });
 });

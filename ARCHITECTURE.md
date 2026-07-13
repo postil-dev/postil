@@ -170,8 +170,10 @@ use the same installation token as the target repository, validate immutable
 owner and repository IDs, and fetch only `.postil.yaml`,
 `.postil/guardrails.md`, and `.postil/content-policy.md` from one pinned
 default-branch commit. A private, internal, or public source is eligible only
-when the GitHub App installation includes it. Access and network failures retain
-the last successful snapshot and mark review provenance degraded. Each completed
+when the GitHub App installation includes it. Authorization or identity failures
+delete the usable snapshot and return no shared policy. A transient refresh after
+the current call validates installation access and immutable identity may retain
+the last successful snapshot and marks review provenance degraded. Each completed
 review records the effective source, repository, commit, path, and stale state
 for every configuration slot. Hosted inference removes model settings after
 layer resolution; BYOK may use repository or shared model settings.

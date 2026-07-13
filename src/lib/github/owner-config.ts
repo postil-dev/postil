@@ -62,6 +62,7 @@ export interface OwnerConfigStore {
   loadSnapshot(orgId: number): Promise<Snapshot | null>;
   saveSnapshot(snapshot: Snapshot): Promise<void>;
   markDegraded(orgId: number, status: "inaccessible" | "transient"): Promise<void>;
+  deleteSnapshot(orgId: number): Promise<void>;
 }
 
 export function createOwnerConfigStore(db: Database): OwnerConfigStore {
@@ -119,6 +120,11 @@ export function createOwnerConfigStore(db: Database): OwnerConfigStore {
       await db
         .update(schema.orgConfigSnapshots)
         .set({ stale: true, lastError: status, updatedAt: new Date() })
+        .where(eq(schema.orgConfigSnapshots.orgId, orgId));
+    },
+    async deleteSnapshot(orgId) {
+      await db
+        .delete(schema.orgConfigSnapshots)
         .where(eq(schema.orgConfigSnapshots.orgId, orgId));
     },
   };
@@ -206,7 +212,9 @@ async function fetchFileAtCommit(
   } catch {
     throw new GithubConfigError("transient", "GitHub contents request failed");
   }
-  if (response.status === 404) return null;
+  if (response.status === 404) {
+    throw new GithubConfigError("inaccessible", `Shared config path ${path} disappeared`);
+  }
   if (!response.ok) {
     throw new GithubConfigError(
       response.status === 403 ? "inaccessible" : "transient",
@@ -233,6 +241,65 @@ async function fetchFileAtCommit(
     throw new GithubConfigError("transient", `Shared config path ${path} has invalid content`);
   }
   return body;
+}
+
+interface GithubContentEntry {
+  name: string;
+  type: string;
+}
+
+async function listDirectoryAtCommit(
+  token: string,
+  fullName: string,
+  path: string,
+  commitSha: string,
+): Promise<GithubContentEntry[]> {
+  const suffix = path ? `/${path.split("/").map(encodeURIComponent).join("/")}` : "";
+  const value = await githubJson(
+    token,
+    `/repos/${fullName}/contents${suffix}?ref=${commitSha}`,
+  );
+  if (!Array.isArray(value)) {
+    throw new GithubConfigError("inaccessible", `Shared config directory ${path || "/"} is invalid`);
+  }
+  return value.filter(
+    (entry): entry is GithubContentEntry =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as GithubContentEntry).name === "string" &&
+      typeof (entry as GithubContentEntry).type === "string",
+  );
+}
+
+async function discoverSharedPaths(
+  token: string,
+  fullName: string,
+  commitSha: string,
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  const root = await listDirectoryAtCommit(token, fullName, "", commitSha);
+  const rootConfig = root.find((entry) => entry.name === ".postil.yaml");
+  if (rootConfig) {
+    if (rootConfig.type !== "file") {
+      throw new GithubConfigError("inaccessible", "Shared root config is not a file");
+    }
+    found.add(".postil.yaml");
+  }
+  const postilDirectory = root.find((entry) => entry.name === ".postil");
+  if (!postilDirectory) return found;
+  if (postilDirectory.type !== "dir") {
+    throw new GithubConfigError("inaccessible", "Shared .postil path is not a directory");
+  }
+  const nested = await listDirectoryAtCommit(token, fullName, ".postil", commitSha);
+  for (const name of ["guardrails.md", "content-policy.md"]) {
+    const entry = nested.find((candidate) => candidate.name === name);
+    if (!entry) continue;
+    if (entry.type !== "file") {
+      throw new GithubConfigError("inaccessible", `Shared config path .postil/${name} is not a file`);
+    }
+    found.add(`.postil/${name}`);
+  }
+  return found;
 }
 
 function fromSnapshot(
@@ -292,10 +359,7 @@ export async function resolveOwnerGithubConfig(
   const snapshot = await store.loadSnapshot(input.orgId);
   const installed = await store.findInstalledRepository(input.installationId, sourceFullName);
   if (!installed) {
-    if (snapshot) {
-      await store.markDegraded(input.orgId, "inaccessible");
-      return fromSnapshot(snapshot, "inaccessible");
-    }
+    if (snapshot) await store.deleteSnapshot(input.orgId);
     return {
       config: null,
       files: [],
@@ -318,8 +382,9 @@ export async function resolveOwnerGithubConfig(
     };
   }
 
+  let metadata: RepositoryMetadata;
   try {
-    const metadata = await fetchMetadata(input.token, installed.fullName);
+    metadata = await fetchMetadata(input.token, installed.fullName);
     if (
       metadata.id !== installed.githubRepoId ||
       metadata.owner.id !== input.githubOwnerId ||
@@ -329,6 +394,13 @@ export async function resolveOwnerGithubConfig(
     ) {
       throw new GithubConfigError("inaccessible", "Shared config repository identity is invalid");
     }
+  } catch (error) {
+    if (snapshot) await store.deleteSnapshot(input.orgId);
+    const status = error instanceof GithubConfigError ? error.status : "transient";
+    return unavailableResolution(sourceFullName, installed, status);
+  }
+
+  try {
     const commitSha = await fetchCommitSha(
       input.token,
       metadata.full_name,
@@ -340,8 +412,15 @@ export async function resolveOwnerGithubConfig(
       contentPolicyMd: null,
     };
     const files: string[] = [];
+    const discoveredPaths = await discoverSharedPaths(
+      input.token,
+      metadata.full_name,
+      commitSha,
+    );
     for (const [, path, property] of SHARED_PATHS) {
-      const body = await fetchFileAtCommit(input.token, metadata.full_name, path, commitSha);
+      const body = discoveredPaths.has(path)
+        ? await fetchFileAtCommit(input.token, metadata.full_name, path, commitSha)
+        : null;
       config[property] = body;
       if (body !== null) files.push(path);
     }
@@ -373,30 +452,39 @@ export async function resolveOwnerGithubConfig(
     };
   } catch (error) {
     const status = error instanceof GithubConfigError ? error.status : "transient";
-    await store.markDegraded(input.orgId, status);
-    if (snapshot?.sourceGithubRepoId === installed.githubRepoId) {
+    if (status === "transient" && snapshot?.sourceGithubRepoId === installed.githubRepoId) {
+      await store.markDegraded(input.orgId, status);
       return fromSnapshot(snapshot, status);
     }
-    return {
-      config: null,
-      files: [],
-      status,
-      stale: false,
-      sourceRepositoryId: installed.id,
-      sourceGithubRepoId: installed.githubRepoId,
-      sourceFullName,
-      visibility: null,
-      defaultBranch: null,
-      commitSha: null,
-      provenance: SHARED_PATHS.map(([slot]) => ({
-        slot: slot as ConfigSlot,
-        source: "shared",
-        path: null,
-        repositoryId: installed.githubRepoId,
-        repository: sourceFullName,
-        stale: false,
-        status,
-      })),
-    };
+    if (snapshot) await store.deleteSnapshot(input.orgId);
+    return unavailableResolution(sourceFullName, installed, status);
   }
+}
+
+function unavailableResolution(
+  sourceFullName: string,
+  installed: { id: number; githubRepoId: number },
+  status: "inaccessible" | "transient",
+): OwnerConfigResolution {
+  return {
+    config: null,
+    files: [],
+    status,
+    stale: false,
+    sourceRepositoryId: installed.id,
+    sourceGithubRepoId: installed.githubRepoId,
+    sourceFullName,
+    visibility: null,
+    defaultBranch: null,
+    commitSha: null,
+    provenance: SHARED_PATHS.map(([slot]) => ({
+      slot: slot as ConfigSlot,
+      source: "shared",
+      path: null,
+      repositoryId: installed.githubRepoId,
+      repository: sourceFullName,
+      stale: false,
+      status,
+    })),
+  };
 }
