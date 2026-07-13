@@ -47,9 +47,14 @@ jobs:
       - run: bun test tests/watchdog.test.ts
         env:
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
-      - run: bun test --isolate tests/queue.test.ts
+      - name: Verify queue and notification retirement on fresh Postgres
+        run: |
+          createdb postil_queue_retirement
+          bun test --isolate tests/queue.test.ts
         env:
-          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postil_queue_retirement
       - run: bun run build
       - run: bun run verify:dashboard
         env:
