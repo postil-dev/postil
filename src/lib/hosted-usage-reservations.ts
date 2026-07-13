@@ -138,7 +138,10 @@ async function reserveHostedSpend(
         ),
       );
 
-    const usageFilters = [eq(schema.usageEvents.orgId, orgId)];
+    const usageFilters = [
+      eq(schema.usageEvents.orgId, orgId),
+      eq(schema.usageEvents.billingScope, "private_hosted"),
+    ];
     if (entitlement.periodStartsAt) {
       usageFilters.push(sql`${schema.usageEvents.createdAt} >= ${entitlement.periodStartsAt}`);
     }
@@ -243,6 +246,12 @@ export async function reconcileHostedRespondSpend(
     completionTokens: number;
     modelUsed: string;
     actualMicros: number | null;
+    delivery?: {
+      jobId: number;
+      repoFullName: string;
+      issueNumber: number;
+      body: string;
+    };
     now?: Date;
   },
 ): Promise<number> {
@@ -289,8 +298,21 @@ export async function reconcileHostedRespondSpend(
       completionTokens: input.completionTokens,
       modelUsed: input.modelUsed,
       costMicros: chargedMicros,
+      billingScope: "private_hosted",
       createdAt: now,
     });
+    if (input.delivery) {
+      await tx.insert(schema.respondDeliveries).values({
+        jobId: input.delivery.jobId,
+        repositoryId: input.repositoryId,
+        reservationId: input.reservationId,
+        repoFullName: input.delivery.repoFullName,
+        issueNumber: input.delivery.issueNumber,
+        body: input.delivery.body,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
     return chargedMicros;
   });
 }

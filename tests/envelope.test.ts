@@ -42,8 +42,26 @@ describe("envelope ingestion", () => {
     expect(ingested.promptTokens).toBe(4200);
     expect(ingested.completionTokens).toBe(310);
     expect(ingested.modelUsed).toBe("deepseek/deepseek-v4-pro");
+    expect(ingested.modelUsage).toBeNull();
     // Stored verbatim.
     expect(ingested.envelope).toEqual(validEnvelope());
+  });
+
+  test("accepts exact per-model usage and rejects mismatched aggregates", () => {
+    const exact = validEnvelope({
+      modelUsage: [
+        { model: "generator", promptTokens: 4000, completionTokens: 300 },
+        { model: "scorer", promptTokens: 200, completionTokens: 10 },
+      ],
+    });
+    expect(ingestEnvelope(JSON.stringify(exact)).modelUsage).toEqual(exact.modelUsage!);
+
+    const mismatched = validEnvelope({
+      modelUsage: [{ model: "generator", promptTokens: 1, completionTokens: 1 }],
+    });
+    expect(() => ingestEnvelope(JSON.stringify(mismatched))).toThrow(
+      /per-model token totals must match aggregate usage/,
+    );
   });
 
   test("ingests a silent envelope", () => {

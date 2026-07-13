@@ -86,14 +86,41 @@ export async function postIssueComment(
   number: number,
   body: string,
   signal?: AbortSignal,
-): Promise<void> {
-  await githubFetch(
+): Promise<number> {
+  const response = await githubFetch(
     token,
     "POST",
     `/repos/${repoFullName}/issues/${number}/comments`,
     { body },
     signal,
   );
+  const data = (await response.json()) as { id?: number };
+  if (!Number.isSafeInteger(data.id)) throw new Error("GitHub comment response has no valid id");
+  return data.id!;
+}
+
+/** Find a previously posted respond marker after an ambiguous delivery. */
+export async function findIssueCommentByMarker(
+  token: string,
+  repoFullName: string,
+  number: number,
+  marker: string,
+  since: Date,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  const query = new URLSearchParams({ per_page: "100", since: since.toISOString() });
+  const response = await githubFetch(
+    token,
+    "GET",
+    `/repos/${repoFullName}/issues/${number}/comments?${query}`,
+    undefined,
+    signal,
+  );
+  const comments = (await response.json()) as Array<{ id?: number; body?: string }>;
+  const match = comments.find(
+    (comment) => Number.isSafeInteger(comment.id) && comment.body?.includes(marker),
+  );
+  return match?.id ?? null;
 }
 
 export async function getPullRequestHeadSha(

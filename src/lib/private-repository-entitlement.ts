@@ -176,7 +176,10 @@ export async function canProcessPrivateRepository(
     entitlement.overageHardCapMicros ??
     (entitlement.subscriptionMode === "hosted" ? 0 : null);
   if (effectiveOverageHardCapMicros !== null) {
-    const filters = [eq(schema.usageEvents.orgId, input.orgId)];
+    const filters = [
+      eq(schema.usageEvents.orgId, input.orgId),
+      eq(schema.usageEvents.billingScope, "private_hosted"),
+    ];
     if (entitlement.periodStartsAt) {
       filters.push(gte(schema.usageEvents.createdAt, entitlement.periodStartsAt));
     }

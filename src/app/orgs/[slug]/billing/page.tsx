@@ -104,7 +104,12 @@ export default async function OrgBillingPage({
         createdAt: schema.usageEvents.createdAt,
       })
       .from(schema.usageEvents)
-      .where(eq(schema.usageEvents.orgId, org.id))
+      .where(
+        and(
+          eq(schema.usageEvents.orgId, org.id),
+          eq(schema.usageEvents.billingScope, "private_hosted"),
+        ),
+      )
       .orderBy(asc(schema.usageEvents.createdAt), asc(schema.usageEvents.id)),
   ]);
   const currentRepoById = new Map(currentRepoRows.map((repo) => [repo.id, repo]));

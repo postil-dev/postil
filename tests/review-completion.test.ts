@@ -58,14 +58,26 @@ const base = {
   configFiles: [],
   silent: false,
   gateFailing: true,
-  usage: {
-    orgId: 1,
-    repositoryId: 2,
-    promptTokens: 100,
-    completionTokens: 20,
-    modelUsed: "model",
-    costMicros: 1_000,
-  },
+  usage: [
+    {
+      orgId: 1,
+      repositoryId: 2,
+      promptTokens: 100,
+      completionTokens: 20,
+      modelUsed: "generator",
+      costMicros: 800,
+      billingScope: "private_hosted" as const,
+    },
+    {
+      orgId: 1,
+      repositoryId: 2,
+      promptTokens: 30,
+      completionTokens: 10,
+      modelUsed: "scorer",
+      costMicros: 200,
+      billingScope: "private_hosted" as const,
+    },
+  ],
 };
 
 describe("review completion transaction", () => {

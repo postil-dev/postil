@@ -136,7 +136,12 @@ async function main(): Promise<void> {
           createdAt: schema.usageEvents.createdAt,
         })
         .from(schema.usageEvents)
-        .where(eq(schema.usageEvents.orgId, org.id))
+        .where(
+          and(
+            eq(schema.usageEvents.orgId, org.id),
+            eq(schema.usageEvents.billingScope, "private_hosted"),
+          ),
+        )
         .orderBy(asc(schema.usageEvents.createdAt), asc(schema.usageEvents.id)),
     ]);
     const balance = calculateBillingCreditBalance(grants, usageEvents);

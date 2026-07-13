@@ -282,6 +282,7 @@ export const usageEvents = pgTable(
     costMicros: bigint("cost_micros", { mode: "number" }),
     /** Rolling-deploy compatibility; new accounting reads costMicros. */
     costCents: integer("cost_cents"),
+    billingScope: text("billing_scope").notNull().default("analytics"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -292,6 +293,10 @@ export const usageEvents = pgTable(
     check(
       "usage_events_cost_cents_nonnegative",
       sql`${t.costCents} IS NULL OR ${t.costCents} >= 0`,
+    ),
+    check(
+      "usage_events_billing_scope_check",
+      sql`${t.billingScope} IN ('analytics', 'private_hosted')`,
     ),
   ],
 );
@@ -479,6 +484,40 @@ export const jobs = pgTable(
   },
   (t) => [
     index("jobs_claim_idx").on(t.status, t.runAfter),
+  ],
+);
+
+/** Durable answer preparation and external-delivery state for respond jobs. */
+export const respondDeliveries = pgTable(
+  "respond_deliveries",
+  {
+    jobId: bigint("job_id", { mode: "number" })
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    repositoryId: bigint("repository_id", { mode: "number" })
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    reservationId: uuid("reservation_id").references(() => hostedUsageReservations.id, {
+      onDelete: "set null",
+    }),
+    repoFullName: text("repo_full_name").notNull(),
+    issueNumber: integer("issue_number").notNull(),
+    body: text("body").notNull(),
+    state: text("state").notNull().default("prepared"),
+    deliveryLeaseExpiresAt: timestamp("delivery_lease_expires_at", { withTimezone: true }),
+    githubCommentId: bigint("github_comment_id", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("respond_deliveries_pending_idx").on(t.state, t.deliveryLeaseExpiresAt),
+    check(
+      "respond_deliveries_state_check",
+      sql`${t.state} IN ('prepared', 'delivering', 'delivered')`,
+    ),
+    check("respond_deliveries_issue_number_positive", sql`${t.issueNumber} > 0`),
+    check("respond_deliveries_body_nonempty", sql`length(btrim(${t.body})) > 0`),
   ],
 );
 

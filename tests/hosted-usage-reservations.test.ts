@@ -15,6 +15,11 @@ import {
 import * as schema from "@/lib/db/schema";
 import type { Envelope } from "@/lib/envelope";
 import { persistReviewCompletion } from "@/lib/review-completion";
+import {
+  claimRespondDelivery,
+  getRespondDelivery,
+  markRespondDelivered,
+} from "@/lib/respond-delivery";
 
 describe("hosted usage reservation arithmetic", () => {
   test("includes committed and every concurrent active hold", () => {
@@ -141,14 +146,15 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
         configFiles: [],
         silent: true,
         gateFailing: false,
-        usage: {
+        usage: [{
           orgId,
           repositoryId,
           promptTokens: 100,
           completionTokens: 10,
           modelUsed: "z-ai/glm-5.2",
           costMicros: 1_234,
-        },
+          billingScope: "private_hosted",
+        }],
         hostedUsageReservationId: recovered.reservationId,
       }),
     ).toBe(true);
@@ -284,5 +290,89 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       usesByok: true,
     });
     expect(decision).toMatchObject({ allowed: true, reason: "not_hosted", reservationId: null });
+  });
+
+  test("respond receipt and prepared delivery commit together, with one retry lease owner", async () => {
+    const db = drizzle(pool!, { schema });
+    const fixture = await pool!.query<{
+      org_id: string;
+      repository_id: string;
+      job_id: string;
+    }>(`
+      WITH org AS (
+        INSERT INTO organizations (slug, name)
+        VALUES ('delivery-metering', 'Delivery Metering') RETURNING id
+      ), installation AS (
+        INSERT INTO installations (github_installation_id, account_login, account_type, org_id)
+        SELECT 99317, 'delivery-metering', 'Organization', id FROM org RETURNING id, org_id
+      ), repository AS (
+        INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+        SELECT id, 99318, 'delivery-metering/private', true, true FROM installation
+        RETURNING id
+      ), entitlement AS (
+        INSERT INTO organization_entitlements (
+          org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents,
+          updated_by
+        ) SELECT org_id, 'hosted', 'active', 1000000, 0, 100, 0, 'test'
+        FROM installation
+      ), job AS (
+        INSERT INTO jobs (kind, payload) VALUES ('respond', '{}') RETURNING id
+      )
+      SELECT installation.org_id, repository.id AS repository_id, job.id AS job_id
+      FROM installation, repository, job;
+    `);
+    const row = fixture.rows[0]!;
+    await pool!.query(
+      `INSERT INTO usage_events (
+        org_id, repository_id, prompt_tokens, completion_tokens, model_used,
+        cost_micros, billing_scope
+      ) VALUES ($1, $2, 1000000, 0, 'analytics-model', 1000000, 'analytics')`,
+      [row.org_id, row.repository_id],
+    );
+    const reservation = await reserveHostedRespondSpend(db, {
+      orgId: Number(row.org_id),
+      usesByok: false,
+    });
+    // Analytics events, including public reviews, never consume the private
+    // hosted allowance despite carrying provider-cost telemetry.
+    expect(reservation.allowed).toBe(true);
+    await reconcileHostedRespondSpend(db, {
+      reservationId: reservation.reservationId!,
+      repositoryId: Number(row.repository_id),
+      promptTokens: 12,
+      completionTokens: 3,
+      modelUsed: "z-ai/glm-5.2",
+      actualMicros: 321,
+      delivery: {
+        jobId: Number(row.job_id),
+        repoFullName: "delivery-metering/private",
+        issueNumber: 4,
+        body: "Prepared answer\n\n<!-- postil-respond-job:4 -->",
+      },
+    });
+    const durable = await pool!.query<{ cost_micros: string; state: string }>(`
+      SELECT usage.cost_micros, delivery.state
+      FROM usage_events usage
+      JOIN respond_deliveries delivery ON delivery.job_id = ${Number(row.job_id)}
+      WHERE usage.repository_id = ${Number(row.repository_id)}
+        AND usage.billing_scope = 'private_hosted'
+    `);
+    expect(durable.rows[0]).toEqual({ cost_micros: "321", state: "prepared" });
+
+    const claims = await Promise.all([
+      claimRespondDelivery(db, Number(row.job_id)),
+      claimRespondDelivery(db, Number(row.job_id)),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    await pool!.query(
+      `UPDATE respond_deliveries SET delivery_lease_expires_at = now() - interval '1 second' WHERE job_id = $1`,
+      [row.job_id],
+    );
+    expect(await claimRespondDelivery(db, Number(row.job_id))).not.toBeNull();
+    await markRespondDelivered(db, Number(row.job_id), 7788);
+    expect(await getRespondDelivery(db, Number(row.job_id))).toMatchObject({
+      state: "delivered",
+    });
   });
 });

@@ -628,18 +628,27 @@ export async function runReviewJob(
       configFiles,
       silent: ingested.silent,
       gateFailing: ingested.gateFailing,
-      usage: {
-        orgId: installation.orgId,
-        repositoryId: repository.id,
+      usage: (ingested.modelUsage ?? [{
+        model: ingested.modelUsed,
         promptTokens: ingested.promptTokens,
         completionTokens: ingested.completionTokens,
-        modelUsed: ingested.modelUsed,
+      }]).map((entry) => ({
+        orgId: installation.orgId,
+        repositoryId: repository.id,
+        promptTokens: entry.promptTokens,
+        completionTokens: entry.completionTokens,
+        modelUsed: entry.model,
+        // A legacy aggregate is priced only when modelUsed names one known
+        // catalog model. Chains/consensus remain unpriced and consume the
+        // full reservation rather than undercharging a fallback.
         costMicros: calculateUsageCostMicrosForModel(
-          ingested.modelUsed,
-          ingested.promptTokens,
-          ingested.completionTokens,
+          entry.model,
+          entry.promptTokens,
+          entry.completionTokens,
         ),
-      },
+        billingScope:
+          currentRepository.private && !llm.byok ? "private_hosted" : "analytics",
+      })),
       hostedUsageReservationId,
       escalationJob:
         qualifyingEscalationCount > 0 && detailsUrl

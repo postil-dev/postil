@@ -60,7 +60,7 @@ async function handleJob(job: ClaimedJob): Promise<void> {
       });
       break;
     case "respond":
-      await runRespondJob(job.payload as RespondJobPayload);
+      await runRespondJob(job.payload as RespondJobPayload, job.id);
       break;
     case "escalation-notification":
       await runEscalationNotificationJob(
@@ -103,7 +103,13 @@ export async function runClaimedJob(job: ClaimedJob, label: string): Promise<voi
       `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
     );
     if (outcome === "failed" && job.kind === "respond") {
-      await postRespondFailureComment(job.payload as RespondJobPayload);
+      await postRespondFailureComment(
+        job.payload as RespondJobPayload,
+        undefined,
+        undefined,
+        false,
+        job.id,
+      );
     }
   }
 }

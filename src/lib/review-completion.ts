@@ -10,14 +10,15 @@ export interface ReviewCompletionInput {
   configFiles: string[];
   silent: boolean;
   gateFailing: boolean;
-  usage: {
+  usage: Array<{
     orgId: number | null;
     repositoryId: number;
     promptTokens: number;
     completionTokens: number;
     modelUsed: string;
     costMicros: number | null;
-  };
+    billingScope: "analytics" | "private_hosted";
+  }>;
   hostedUsageReservationId?: string | null;
   escalationJob?: {
     reviewPublicId: string;
@@ -57,10 +58,9 @@ export async function persistReviewCompletion(
       .returning({ id: schema.reviews.id });
     if (rows.length === 0) return false;
 
-    await tx.insert(schema.usageEvents).values({
-      ...input.usage,
-      reviewId: input.reviewId,
-    });
+    await tx.insert(schema.usageEvents).values(
+      input.usage.map((usage) => ({ ...usage, reviewId: input.reviewId })),
+    );
     if (input.hostedUsageReservationId) {
       const reservation = (
         await tx
@@ -70,7 +70,10 @@ export async function persistReviewCompletion(
           .limit(1)
       )[0];
       if (!reservation) throw new Error("hosted usage reservation not found");
-      const actualMicros = input.usage.costMicros ?? reservation.reservedMicros;
+      const priced = input.usage.every((usage) => usage.costMicros !== null);
+      const actualMicros = priced
+        ? input.usage.reduce((total, usage) => total + (usage.costMicros ?? 0), 0)
+        : reservation.reservedMicros;
       const reconciled = await tx
         .update(schema.hostedUsageReservations)
         .set({ status: "reconciled", actualMicros, updatedAt: new Date() })

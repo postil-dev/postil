@@ -68,7 +68,7 @@ exposing addresses or token material. Worker startup runs the same idempotent ba
 after the new worker code is active, which queues verification for migrated recipients
 without exposing the new job kind to workers from the preceding release.
 
-Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. The legacy whole-cent columns remain only for rolling-deploy compatibility.
+Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
 Organization administrators manage the billing contact on the billing page.
 New addresses remain pending until a single-use, 24-hour token is consumed;
@@ -97,17 +97,23 @@ Before hosted private-repository inference, the worker locks the organization
 entitlement row and reserves the checked-in conservative maximum for one review
 or conversational response.
 Committed precise usage plus every unexpired reservation must fit within the
-allowance and hard cap. Completion records actual provider-priced usage and
-reconciles the hold in one transaction; failure releases it, and abandoned holds
-expire after 15 minutes. The reservation maximum is part of a hosted model
+allowance and hard cap. Completion records one event per model attempt and
+reconciles their summed provider-priced usage with the hold in one transaction.
+A legacy envelope without per-model usage is priced only when its aggregate names
+one catalog model; ambiguous aggregates consume the full reservation. Failure
+before inference releases the hold, and abandoned holds expire after 15 minutes.
+The reservation maximum is part of a hosted model
 promotion: it must continue to bound the checked-in prompt, generation, fallback,
 and scorer roster. Hosted responses receive a worker-owned receipt path inside
-their private work directory. The CLI writes a versioned `0600` receipt only
-after success, with aggregate and per-model token usage. The worker validates
-and prices every model entry before transactional reconciliation. A missing,
-malformed, or unpriceable successful receipt consumes the full reservation;
-CLI failure releases it. BYOK spend remains provider-direct and never creates a
-Postil reservation or receipt.
+their private work directory. The CLI writes and syncs a versioned `0600` receipt
+before exposing a successful answer, with aggregate and per-model token usage.
+The worker runs replies without CLI-side posting, validates and prices every model
+entry, then commits usage, reservation reconciliation, answer body, and delivery
+state before posting to GitHub. A database lease serializes delivery. A durable
+hidden job marker lets retries discover a comment after an ambiguous POST rather
+than duplicating it. Missing, malformed, or unpriceable usage after CLI start
+consumes the full reservation; only failures before CLI start release it. BYOK
+spend remains provider-direct and never creates a Postil reservation or receipt.
 Provider credentials do not grant product access. Operators apply the
 complete entitlement state idempotently through
 `scripts/set-org-entitlement.ts`; the billing page reports the stored state and
