@@ -42,13 +42,18 @@ async function fetchAllOrgMemberships(
   let next: string | null = "https://api.github.com/user/memberships/orgs?per_page=100&state=active";
   // Bound the loop defensively against a malformed Link header cycle.
   for (let page = 0; next && page < 100; page++) {
-    const res: Response = await fetch(next, { headers });
-    if (!res.ok) return null;
-    const batch = (await res.json()) as GithubOrgMembership[];
-    memberships.push(...batch);
-    next = nextPageUrl(res.headers.get("link"));
+    try {
+      const res: Response = await fetch(next, { headers });
+      if (!res.ok) return null;
+      const batch: unknown = await res.json();
+      if (!Array.isArray(batch)) return null;
+      memberships.push(...(batch as GithubOrgMembership[]));
+      next = nextPageUrl(res.headers.get("link"));
+    } catch {
+      return null;
+    }
   }
-  return memberships;
+  return next === null ? memberships : null;
 }
 
 /** Extract the rel="next" URL from a GitHub Link header, or null when absent. */

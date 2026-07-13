@@ -22,7 +22,7 @@ const syncCalls: AccountRef[][] = [];
 const reconciliationCalls: Array<{ userId: number; accounts: AccountMembership[] }> = [];
 const sessionCalls: number[] = [];
 const requestedUrls: string[] = [];
-let githubResponses: Response[] = [];
+let githubResponses: Array<Response | Error> = [];
 
 mock.module("@/lib/db", () => ({
   ...dbModule,
@@ -71,6 +71,7 @@ beforeEach(() => {
     );
     const response = githubResponses.shift();
     if (!response) throw new Error("unexpected GitHub request");
+    if (response instanceof Error) throw response;
     return response;
   }) as typeof fetch;
 });
@@ -102,6 +103,38 @@ describe("GET /api/auth/callback", () => {
     expect(syncCalls).toEqual([]);
     expect(reconciliationCalls).toEqual([]);
     expect(sessionCalls).toEqual([]);
+  });
+
+  test("shows the retryable error when the membership request throws", async () => {
+    githubResponses = [
+      jsonResponse({ access_token: "user-access-token" }),
+      githubUserResponse(),
+      new Error("network unavailable"),
+    ];
+
+    assertMembershipFailure(await GET(callbackRequest()));
+  });
+
+  test("shows the retryable error when GitHub returns malformed membership JSON", async () => {
+    githubResponses = [
+      jsonResponse({ access_token: "user-access-token" }),
+      githubUserResponse(),
+      new Response("{", { status: 200, headers: { "content-type": "application/json" } }),
+    ];
+
+    assertMembershipFailure(await GET(callbackRequest()));
+  });
+
+  test("rejects membership pagination that remains incomplete at the page cap", async () => {
+    const link = '<https://api.github.com/user/memberships/orgs?page=2>; rel="next"';
+    githubResponses = [
+      jsonResponse({ access_token: "user-access-token" }),
+      githubUserResponse(),
+      ...Array.from({ length: 100 }, () => jsonResponse([], { link })),
+    ];
+
+    assertMembershipFailure(await GET(callbackRequest()));
+    expect(requestedUrls).toHaveLength(102);
   });
 
   test("reconciles the personal account and every organization before creating a session", async () => {
@@ -170,11 +203,21 @@ function githubUserResponse(): Response {
   });
 }
 
-function jsonResponse(value: unknown): Response {
+function jsonResponse(value: unknown, headers: HeadersInit = {}): Response {
   return new Response(JSON.stringify(value), {
     status: 200,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...Object.fromEntries(new Headers(headers)) },
   });
+}
+
+function assertMembershipFailure(response: Response): void {
+  expect(response.status).toBe(307);
+  expect(response.headers.get("location")).toBe(
+    "https://postil.dev/login?error=organization_memberships",
+  );
+  expect(syncCalls).toEqual([]);
+  expect(reconciliationCalls).toEqual([]);
+  expect(sessionCalls).toEqual([]);
 }
 
 function fakeDb(): any {
