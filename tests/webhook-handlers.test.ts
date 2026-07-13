@@ -44,7 +44,6 @@ let pullRequestReviewContext = {
   authorGithubId: 501,
   authorLogin: "admin",
 };
-let checkRunPatchFails = false;
 const realAppAuth = await import("@/lib/github/app-auth");
 mock.module("@/lib/github/app-auth", () => ({
   ...realAppAuth,
@@ -60,7 +59,6 @@ mock.module("@/lib/github/checks", () => ({
     _id: number,
     conclusion: string,
   ) => {
-    if (checkRunPatchFails) throw new Error("check patch failed");
     completedCheckRuns.push({ repoFullName, conclusion });
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
@@ -128,7 +126,6 @@ describeDb("webhook handler behaviour", () => {
       authorGithubId: 501,
       authorLogin: "admin",
     };
-    checkRunPatchFails = false;
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
@@ -866,14 +863,12 @@ describeDb("webhook handler behaviour", () => {
     ).toBe(true);
   });
 
-  test("approval command removes the inserted approval if check-run patching fails", async () => {
+  test("approval command commits state before asynchronous gate synchronization", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedUser(501, "admin", orgId, "admin");
     const reviewId = await seedCompletedApprovalReview(repoId);
-    checkRunPatchFails = true;
-
     const res = await approvalComment("approval-check-fails");
 
     expect(res.status).toBe(200);
@@ -881,13 +876,19 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
       [reviewId],
     );
-    expect(approvals.rows[0]!.c).toBe(0);
+    expect(approvals.rows[0]!.c).toBe(1);
     const review = await pool.query<{ gate_failing: boolean }>(
       "SELECT gate_failing FROM reviews WHERE id = $1",
       [reviewId],
     );
-    expect(review.rows[0]!.gate_failing).toBe(true);
-    expect(postedComments[0]?.body).toContain("could not be patched");
+    expect(review.rows[0]!.gate_failing).toBe(false);
+    const syncJobs = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM jobs WHERE kind = 'gate-state-sync'",
+    );
+    expect(syncJobs.rows[0]!.c).toBe(1);
+    expect(completedCheckRuns).toEqual([]);
+    expect(postedComments[0]?.body).toContain("Approval recorded");
+    expect(postedComments[0]?.body).toContain("gate update is queued");
   });
 
   function checkRunRerequestedEvent(
