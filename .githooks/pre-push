@@ -20,7 +20,8 @@ local_primary_model=openai/gpt-5-mini
 local_cascade_override=$local_primary_model
 remote_name=${1:-origin}
 cached_openrouter_api_key=${OPENROUTER_API_KEY:-}
-unset OPENROUTER_API_KEY MODEL_API_KEY POSTIL_API_KEY BASH_ENV ENV
+dispositions_source=${POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE:-}
+unset OPENROUTER_API_KEY MODEL_API_KEY POSTIL_API_KEY POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE BASH_ENV ENV
 
 fail_setup() {
   echo "postil pre-push: $*" >&2
@@ -54,6 +55,21 @@ trap 'exit 143' TERM
 /bin/cat >"$input_file" || fail_setup "could not read Git pre-push updates"
 /bin/mkdir "$temporary_root/empty-hooks" "$temporary_root/home" ||
   fail_setup "could not prepare the isolated review environment"
+
+dispositions_file=
+if [ -n "$dispositions_source" ]; then
+  case "$dispositions_source" in
+    /*) ;;
+    *) fail_setup "POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE must be an absolute path" ;;
+  esac
+  if [ -L "$dispositions_source" ] || [ ! -f "$dispositions_source" ]; then
+    fail_setup "POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE must name a regular, non-symlink file"
+  fi
+  dispositions_file=$temporary_root/dispositions.json
+  /bin/cat -- "$dispositions_source" >"$dispositions_file" ||
+    fail_setup "could not snapshot POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE"
+fi
+unset dispositions_source
 
 resolve_base_branch() {
   resolve_local_branch=$1
@@ -131,6 +147,55 @@ validate_envelope() {
       ))
     )
   ' "$output_file" >/dev/null 2>&1
+}
+
+validate_dispositions() {
+  disposition_input=$1
+  review_input=$2
+  expected_base=$3
+  expected_head=$4
+  # The disposition document is exact by construction: no stale SHA, omitted
+  # finding, additional finding, or changed location can survive this check.
+  # shellcheck disable=SC2016
+  "$JQ_EXECUTABLE" -e --arg base "$expected_base" --arg head "$expected_head" \
+    --slurpfile review "$review_input" '
+      ($review | length == 1) and
+      (($review[0].findings | map(.id)) as $ids |
+        ($ids | all(type == "string" and length > 0)) and
+        (($ids | unique | length) == ($ids | length)) and
+        (. | type == "object") and
+        ((keys | sort) == (["baseSha", "findings", "headSha"] | sort)) and
+        (.baseSha == $base) and (.headSha == $head) and
+        (.findings | type == "object") and
+        ((.findings | keys | sort) == ($ids | sort)) and
+        (. as $document | all($review[0].findings[];
+          . as $finding |
+          ($document.findings[$finding.id] as $entry |
+            ($entry | type == "object") and
+            (($entry | keys | sort) == (["line", "path", "reason"] | sort)) and
+            ($entry.path == $finding.path) and
+            ($entry.line == $finding.line) and
+            (($entry.reason | type) == "string") and
+            (($entry.reason | gsub("^\\s+|\\s+$"; "")) as $reason |
+              ($reason | length) >= 40 and
+              ($reason | length) <= 1000 and
+              ([$reason | scan("\\S+")] | length) >= 6)
+          )
+        ))
+      )
+    ' "$disposition_input" >/dev/null 2>&1
+}
+
+log_dispositions() {
+  disposition_input=$1
+  review_input=$2
+  # JSON quoting keeps model-authored paths and operator-authored reasons from
+  # injecting terminal control lines into the push transcript.
+  # shellcheck disable=SC2016
+  "$JQ_EXECUTABLE" -r --slurpfile review "$review_input" '
+    . as $document | $review[0].findings[] as $finding |
+    "postil pre-push: accepted disposition path=\($finding.path | @json) line=\($finding.line) reason=\($document.findings[$finding.id].reason | @json)"
+  ' "$disposition_input" >&2
 }
 
 validate_config_artifacts() {
@@ -248,12 +313,32 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     fail_setup "local review result does not match the Postil v0.6 envelope contract or reviewed SHAs"
   finding_count=$("$JQ_EXECUTABLE" -er '.findings | length' "$output_file") ||
     fail_setup "could not read local review findings"
+  non_dispositionable_count=$("$JQ_EXECUTABLE" -er \
+    '[.findings[] | select(.path == ".postil/provider" or .path == ".postil/model-output" or .path == ".postil/diff")] | length' \
+    "$output_file") || fail_setup "could not classify local review findings"
   if [ "$finding_count" -gt 0 ]; then
-    echo "postil pre-push: $finding_count finding(s) require triage before push" >&2
-    "$JQ_EXECUTABLE" -r '.findings[] | "  \(.severity)/\(.kind) \(.path):\(.line) \(.title)"' "$output_file" >&2
-    exit 1
+    if [ -z "$dispositions_file" ]; then
+      echo "postil pre-push: $finding_count finding(s) require triage before push" >&2
+      "$JQ_EXECUTABLE" -r '.findings[] | "  \(.severity)/\(.kind) \(.path):\(.line) \(.title)"' "$output_file" >&2
+      exit 1
+    fi
+    if [ "$non_dispositionable_count" -gt 0 ]; then
+      echo "postil pre-push: provider, setup, and truncated-review findings cannot be dispositioned" >&2
+      "$JQ_EXECUTABLE" -r \
+        '.findings[] | select(.path == ".postil/provider" or .path == ".postil/model-output" or .path == ".postil/diff") | "  \(.severity)/\(.kind) \(.path):\(.line) \(.title)"' \
+        "$output_file" >&2
+      exit 1
+    fi
   fi
-  [ "$review_status" -eq 0 ] || fail_setup "local review failed without structured findings"
+  if [ -n "$dispositions_file" ]; then
+    validate_dispositions "$dispositions_file" "$output_file" "$merge_base_sha" "$head_sha" ||
+      fail_setup "review dispositions are malformed, stale, incomplete, or do not match the reviewed findings"
+    log_dispositions "$dispositions_file" "$output_file" ||
+      fail_setup "could not log accepted review dispositions"
+  fi
+  if [ "$finding_count" -eq 0 ]; then
+    [ "$review_status" -eq 0 ] || fail_setup "local review failed without structured findings"
+  fi
 
   "$GIT_EXECUTABLE" -C "$repository_root" -c core.hooksPath="$temporary_root/empty-hooks" \
     worktree remove --force "$worktree_path" >/dev/null 2>&1 ||

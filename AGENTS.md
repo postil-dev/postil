@@ -23,3 +23,12 @@ When Git uses a global hook that delegates to the common Git directory, verify
 that wrapper first and pass `--allow-delegated-hooks-path` during installation.
 When no model key is exported, the harness and installed hook load only
 `OPENROUTER_API_KEY` from the `morgaesis` secrets profile.
+
+An integrator may disposition verified false positives by setting
+`POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE` to an absolute, non-symlink JSON file.
+The document has exactly `baseSha`, `headSha`, and `findings`; `baseSha` is the
+reviewed merge base, and `findings` maps every stable finding ID to its exact
+`path`, `line`, and an evidence-based `reason` of at least 40 characters and
+six words. Stale, partial, additional, or location-mismatched entries fail
+closed. Provider, model-output, and truncated-diff findings cannot be
+dispositioned.

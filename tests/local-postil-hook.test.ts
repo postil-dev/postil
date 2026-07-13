@@ -263,6 +263,149 @@ describe("trusted local Postil pre-push hook", () => {
     }
   });
 
+  test("accepts an exact, evidence-based disposition for every reviewed finding", async () => {
+    const fixture = await createFixture("accepted-disposition");
+    const head = await commit(fixture.repository, "topic", "reviewed finding\n");
+    const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+    const dispositions = join(fixture.root, "dispositions.json");
+    await writeFile(
+      dispositions,
+      JSON.stringify({
+        baseSha: base,
+        headSha: head,
+        findings: {
+          "fixture-finding-id": {
+            path: "app.txt",
+            line: 1,
+            reason:
+              "The changed fixture line is intentional and the focused assertion proves the required behavior.",
+          },
+        },
+      }),
+    );
+    await installHook(fixture, fixture.repository, true);
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/accepted-disposition"],
+      "finding",
+      { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: dispositions },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain('accepted disposition path="app.txt" line=1');
+    expect(result.stderr).toContain("focused assertion proves the required behavior");
+    expect((await readRecord(fixture)).dispositionsVariable).toBe("absent");
+    expect(await refExists(fixture.remote, "refs/heads/accepted-disposition")).toBe(true);
+  });
+
+  test("rejects malformed, stale, partial, additional, and mismatched dispositions", async () => {
+    const scenarios = [
+      "malformed",
+      "stale-base",
+      "stale-head",
+      "partial",
+      "additional",
+      "mismatched-path",
+      "mismatched-line",
+      "short-reason",
+      "additional-field",
+    ] as const;
+    for (const scenario of scenarios) {
+      const fixture = await createFixture(`invalid-disposition-${scenario}`);
+      const head = await commit(fixture.repository, "topic", `${scenario}\n`);
+      const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+      const dispositions = join(fixture.root, "dispositions.json");
+      const reason =
+        "The changed fixture line is intentional and the focused assertion proves the required behavior.";
+      const document: Record<string, unknown> = {
+        baseSha: base,
+        headSha: head,
+        findings: {
+          "fixture-finding-id": { path: "app.txt", line: 1, reason },
+        },
+      };
+      const findingMap = document.findings as Record<string, Record<string, unknown>>;
+      const primaryFinding = findingMap["fixture-finding-id"]!;
+      if (scenario === "malformed") {
+        await writeFile(dispositions, "{\n");
+      } else {
+        if (scenario === "stale-base") document.baseSha = "0".repeat(40);
+        if (scenario === "stale-head") document.headSha = "f".repeat(40);
+        if (scenario === "partial") delete findingMap["fixture-second-id"];
+        if (scenario === "additional") {
+          findingMap["unreviewed-finding-id"] = { path: "app.txt", line: 2, reason };
+        }
+        if (scenario === "mismatched-path") primaryFinding.path = "other.txt";
+        if (scenario === "mismatched-line") primaryFinding.line = 2;
+        if (scenario === "short-reason") primaryFinding.reason = "false positive";
+        if (scenario === "additional-field") primaryFinding.approved = true;
+        await writeFile(dispositions, JSON.stringify(document));
+      }
+      await installHook(fixture, fixture.repository, true);
+      const mode: ReviewMode = scenario === "partial" ? "two-findings" : "finding";
+
+      const result = await push(
+        fixture,
+        fixture.repository,
+        ["origin", `HEAD:refs/heads/invalid-${scenario}`],
+        mode,
+        { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: dispositions },
+      );
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain(
+        "review dispositions are malformed, stale, incomplete, or do not match",
+      );
+      expect(await refExists(fixture.remote, `refs/heads/invalid-${scenario}`)).toBe(false);
+    }
+  }, 30_000);
+
+  test("never dispositions provider, model-output, or truncated-diff findings", async () => {
+    const scenarios = [
+      ["synthetic-provider", ".postil/provider"],
+      ["synthetic-model-output", ".postil/model-output"],
+      ["synthetic-diff", ".postil/diff"],
+    ] as const;
+    for (const [mode, path] of scenarios) {
+      const fixture = await createFixture(mode);
+      const head = await commit(fixture.repository, "topic", `${mode}\n`);
+      const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+      const dispositions = join(fixture.root, "dispositions.json");
+      await writeFile(
+        dispositions,
+        JSON.stringify({
+          baseSha: base,
+          headSha: head,
+          findings: {
+            "synthetic-finding-id": {
+              path,
+              line: 1,
+              reason:
+                "The operator inspected this synthetic result and requests an explicit exception for testing.",
+            },
+          },
+        }),
+      );
+      await installHook(fixture, fixture.repository, true);
+
+      const result = await push(
+        fixture,
+        fixture.repository,
+        ["origin", `HEAD:refs/heads/${mode}`],
+        mode,
+        { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: dispositions },
+      );
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain(
+        "provider, setup, and truncated-review findings cannot be dispositioned",
+      );
+      expect(await refExists(fixture.remote, `refs/heads/${mode}`)).toBe(false);
+    }
+  });
+
   test("non-delete tag pushes fail closed unless an explicit base is supplied", async () => {
     const fixture = await createFixture("tag");
     const head = await commit(fixture.repository, "tagged", "tagged\n");
@@ -325,7 +468,16 @@ describe("trusted local Postil pre-push hook", () => {
   });
 });
 
-type ReviewMode = "pass" | "finding" | "provider-error" | "malformed" | "gh-error";
+type ReviewMode =
+  | "pass"
+  | "finding"
+  | "two-findings"
+  | "synthetic-provider"
+  | "synthetic-model-output"
+  | "synthetic-diff"
+  | "provider-error"
+  | "malformed"
+  | "gh-error";
 
 interface Fixture {
   root: string;
@@ -450,15 +602,28 @@ head=\$(git rev-parse HEAD)
 merge_base=\$(git merge-base "\$base" "\$head")
 mode=\$(< '${paths.modeFile}')
 aws=absent; [[ -n "\${AWS_SECRET_ACCESS_KEY+x}" ]] && aws=present
+dispositions_variable=absent; [[ -n "\${POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE+x}" ]] && dispositions_variable=present
 credential=absent; [[ -n "\${MODEL_API_KEY:-}\${POSTIL_API_KEY:-}\${OPENROUTER_API_KEY:-}" ]] && credential=present
-printf '{"base":"%s","head":"%s","model":"%s","cascade":"%s","scorer":"%s","scorerDisabled":"%s","hostedMode":"%s","apiBase":"%s","apiFormat":"%s","awsCredential":"%s","modelCredential":"%s","credentialValue":"%s","invocation":"%s"}\n' \
-  "\$base" "\$head" "\$model" "\$REVIEW_MODEL_CASCADE" "\$REVIEW_SCORER_MODEL" "\$POSTIL_DISABLE_SCORER" "\$POSTIL_HOSTED_MODE" "\$POSTIL_API_BASE" "\$POSTIL_API_FORMAT" "\$aws" "\$credential" "\${MODEL_API_KEY:-}" "\$invocation" >>'${paths.log}'
+printf '{"base":"%s","head":"%s","model":"%s","cascade":"%s","scorer":"%s","scorerDisabled":"%s","hostedMode":"%s","apiBase":"%s","apiFormat":"%s","awsCredential":"%s","dispositionsVariable":"%s","modelCredential":"%s","credentialValue":"%s","invocation":"%s"}\n' \
+  "\$base" "\$head" "\$model" "\$REVIEW_MODEL_CASCADE" "\$REVIEW_SCORER_MODEL" "\$POSTIL_DISABLE_SCORER" "\$POSTIL_HOSTED_MODE" "\$POSTIL_API_BASE" "\$POSTIL_API_FORMAT" "\$aws" "\$dispositions_variable" "\$credential" "\${MODEL_API_KEY:-}" "\$invocation" >>'${paths.log}'
 if [[ "\$mode" == provider-error ]]; then exit 2; fi
 if [[ "\$mode" == malformed ]]; then echo '{"findings":[]}'; exit 0; fi
 if git diff --quiet "\$base...\$head"; then base_value=null; base_quote=; model_used='none (empty diff)'; else base_value="\$merge_base"; base_quote='"'; model_used="\$model"; fi
 if [[ "\$mode" == finding ]]; then
-  findings='[{"path":"app.txt","line":1,"severity":"warn","kind":"risk","confidence":0.9,"title":"fixture finding","body":"fixture"}]'
+  findings='[{"path":"app.txt","line":1,"severity":"warn","kind":"risk","confidence":0.9,"title":"fixture finding","body":"fixture","id":"fixture-finding-id"}]'
   silent=false; warn=1; summary='fixture finding'; status=1
+elif [[ "\$mode" == two-findings ]]; then
+  findings='[{"path":"app.txt","line":1,"severity":"warn","kind":"risk","confidence":0.9,"title":"fixture finding","body":"fixture","id":"fixture-finding-id"},{"path":"app.txt","line":2,"severity":"warn","kind":"risk","confidence":0.8,"title":"second fixture finding","body":"fixture","id":"fixture-second-id"}]'
+  silent=false; warn=2; summary='fixture findings'; status=1
+elif [[ "\$mode" == synthetic-provider ]]; then
+  findings='[{"path":".postil/provider","line":1,"severity":"error","kind":"uncertainty","confidence":1,"title":"provider failure","body":"fixture","id":"synthetic-finding-id"}]'
+  silent=false; warn=0; summary='provider failure'; status=1
+elif [[ "\$mode" == synthetic-model-output ]]; then
+  findings='[{"path":".postil/model-output","line":1,"severity":"error","kind":"uncertainty","confidence":1,"title":"model output failure","body":"fixture","id":"synthetic-finding-id"}]'
+  silent=false; warn=0; summary='model output failure'; status=1
+elif [[ "\$mode" == synthetic-diff ]]; then
+  findings='[{"path":".postil/diff","line":1,"severity":"info","kind":"uncertainty","confidence":1,"title":"truncated diff","body":"fixture","id":"synthetic-finding-id"}]'
+  silent=false; warn=0; summary='truncated diff'; status=1
 else
   findings='[]'; silent=true; warn=0; summary=''; status=0
 fi
