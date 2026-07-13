@@ -1,0 +1,259 @@
+#!/bin/sh
+# postil-local-hook:v1
+# This tracked template is rendered into the common Git directory only by the
+# explicit installer. Placeholders are never resolved from the pushed tree.
+
+set -u
+
+POSTIL_EXECUTABLE='__POSTIL_EXECUTABLE__'
+GIT_EXECUTABLE='__GIT_EXECUTABLE__'
+GH_EXECUTABLE='__GH_EXECUTABLE__'
+JQ_EXECUTABLE='__JQ_EXECUTABLE__'
+MKTEMP_EXECUTABLE='__MKTEMP_EXECUTABLE__'
+CREDENTIAL_WRAPPER='__CREDENTIAL_WRAPPER__'
+SECRETS_EXECUTABLE='__SECRETS_EXECUTABLE__'
+TRUSTED_PATH='__TRUSTED_PATH__'
+TRUSTED_HOME='__TRUSTED_HOME__'
+
+zero_sha=0000000000000000000000000000000000000000
+local_primary_model=mistralai/mistral-small-3.2-24b-instruct
+local_fallback_model=google/gemma-3-27b-it
+local_scorer_model=anthropic/claude-haiku-4.5
+remote_name=${1:-origin}
+cached_openrouter_api_key=${OPENROUTER_API_KEY:-}
+unset OPENROUTER_API_KEY MODEL_API_KEY POSTIL_API_KEY BASH_ENV ENV
+
+fail_setup() {
+  echo "postil pre-push: $*" >&2
+  exit 2
+}
+
+repository_root=$("$GIT_EXECUTABLE" rev-parse --show-toplevel 2>/dev/null) ||
+  fail_setup "not inside a non-bare Git work tree"
+"$GIT_EXECUTABLE" remote get-url "$remote_name" >/dev/null 2>&1 ||
+  fail_setup "remote is not configured: $remote_name"
+
+umask 077
+temporary_root=$("$MKTEMP_EXECUTABLE" -d "/tmp/postil-pre-push.XXXXXX") ||
+  fail_setup "could not create a private temporary directory"
+input_file=$temporary_root/updates
+worktree_path=
+
+# shellcheck disable=SC2317
+cleanup() {
+  if [ -n "$worktree_path" ]; then
+    "$GIT_EXECUTABLE" -C "$repository_root" -c core.hooksPath="$temporary_root/empty-hooks" \
+      worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+  fi
+  /bin/rm -rf -- "$temporary_root"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+/bin/cat >"$input_file" || fail_setup "could not read Git pre-push updates"
+/bin/mkdir "$temporary_root/empty-hooks" "$temporary_root/home" ||
+  fail_setup "could not prepare the isolated review environment"
+
+resolve_base_branch() {
+  resolve_local_branch=$1
+  base_branch=''
+  if [ -n "${POSTIL_LOCAL_REVIEW_BASE:-}" ]; then
+    base_branch=$POSTIL_LOCAL_REVIEW_BASE
+    case "$base_branch" in
+      "refs/remotes/$remote_name/"*) base_branch=${base_branch#refs/remotes/"$remote_name"/} ;;
+      "$remote_name/"*) base_branch=${base_branch#"$remote_name"/} ;;
+      refs/heads/*) base_branch=${base_branch#refs/heads/} ;;
+    esac
+  else
+    [ -n "$resolve_local_branch" ] ||
+      fail_setup "a non-branch push requires POSTIL_LOCAL_REVIEW_BASE=<branch> or a separate local review"
+    [ -x "$GH_EXECUTABLE" ] ||
+      fail_setup "gh is unavailable; set POSTIL_LOCAL_REVIEW_BASE=<branch> explicitly"
+    pull_requests_file=$temporary_root/pull-requests.json
+    if ! "$GH_EXECUTABLE" pr list --head "$resolve_local_branch" --state open --limit 2 \
+      --json baseRefName >"$pull_requests_file"; then
+      fail_setup "could not query the pull request base; set POSTIL_LOCAL_REVIEW_BASE=<branch> explicitly"
+    fi
+    pull_request_count=$("$JQ_EXECUTABLE" -er 'if type == "array" then length else error("not an array") end' "$pull_requests_file") ||
+      fail_setup "could not parse the pull request base lookup"
+    [ "$pull_request_count" -le 1 ] ||
+      fail_setup "multiple open pull requests use $resolve_local_branch; set POSTIL_LOCAL_REVIEW_BASE=<branch> explicitly"
+    if [ "$pull_request_count" -eq 1 ]; then
+      base_branch=$("$JQ_EXECUTABLE" -er '.[0].baseRefName | select(type == "string" and length > 0)' "$pull_requests_file") ||
+        fail_setup "could not parse the pull request base"
+    else
+      remote_head=$("$GIT_EXECUTABLE" symbolic-ref --quiet --short "refs/remotes/$remote_name/HEAD" 2>/dev/null || true)
+      case "$remote_head" in
+        "$remote_name/"*) base_branch=${remote_head#"$remote_name"/} ;;
+      esac
+    fi
+  fi
+
+  [ -n "$base_branch" ] ||
+    fail_setup "no open pull request and no $remote_name/HEAD; set POSTIL_LOCAL_REVIEW_BASE=<branch> explicitly"
+  "$GIT_EXECUTABLE" check-ref-format --branch "$base_branch" >/dev/null 2>&1 ||
+    fail_setup "invalid pull request base branch: $base_branch"
+  printf '%s\n' "$base_branch"
+}
+
+validate_envelope() {
+  output_file=$1
+  expected_base=$2
+  expected_head=$3
+  # The single-quoted program is jq syntax; $base and $head are jq arguments.
+  # shellcheck disable=SC2016
+  "$JQ_EXECUTABLE" -se --arg base "$expected_base" --arg head "$expected_head" '
+    length == 1 and (.[0] |
+      .version == 1 and
+      (.summary | type == "string") and
+      (.silent | type == "boolean") and
+      (.findings | type == "array") and
+      (.resolved | type == "array") and
+      (.counts | type == "object" and
+        ([.info,.warn,.error,.suppressed] | all(type == "number" and floor == . and . >= 0)) and
+        ((.ungrounded // 0) | type == "number" and floor == . and . >= 0)) and
+      (.confidenceBuckets | type == "array" and length == 5 and all(type == "number" and floor == . and . >= 0)) and
+      (.gate | type == "object" and (.failOn == "info" or .failOn == "warn" or .failOn == "error") and (.failing | type == "boolean")) and
+      (.modelUsed | type == "string" and length > 0) and
+      (.usage | type == "object" and
+        ([.promptTokens,.completionTokens] | all(type == "number" and floor == . and . >= 0))) and
+      (.baseSha == null or .baseSha == $base) and (.headSha == $head) and
+      (.sinceSha == null or (.sinceSha | type == "string")) and
+      (.silent == (.findings | length == 0)) and
+      (.findings + .resolved | all(
+        type == "object" and (.path | type == "string") and
+        (.line | type == "number" and floor == .) and
+        (.severity == "info" or .severity == "warn" or .severity == "error") and
+        (.kind == "risk" or .kind == "humanEscalation" or .kind == "guardrail" or .kind == "uncertainty" or .kind == "contentPolicy") and
+        (.confidence | type == "number" and . >= 0 and . <= 1) and
+        (.title | type == "string") and (.body | type == "string")
+      ))
+    )
+  ' "$output_file" >/dev/null 2>&1
+}
+
+validate_config_artifacts() {
+  config_root=$1
+  if [ -e "$config_root/.postil" ] || [ -L "$config_root/.postil" ]; then
+    if [ -L "$config_root/.postil" ] || [ ! -d "$config_root/.postil" ]; then
+      fail_setup "local review refuses a symlink or non-directory .postil config parent"
+    fi
+  fi
+  for config_path in \
+    .postil.yaml .postil.yml .postil.json .coderabbit.yaml .coderabbit.yml \
+    .postil/guardrails.md .postil/content-policy.md
+  do
+    candidate_path=$config_root/$config_path
+    if [ -e "$candidate_path" ] || [ -L "$candidate_path" ]; then
+      if [ -L "$candidate_path" ] || [ ! -f "$candidate_path" ]; then
+        fail_setup "local review refuses symlinked or non-file config artifact: $config_path"
+      fi
+    fi
+  done
+}
+
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
+  [ -n "${local_ref:-}" ] || continue
+  if [ -n "${extra:-}" ] || [ -z "${local_sha:-}" ] || [ -z "${remote_ref:-}" ] || [ -z "${remote_sha:-}" ]; then
+    fail_setup "malformed pre-push update"
+  fi
+  [ "$local_sha" != "$zero_sha" ] || continue
+  case "$local_sha" in
+    *[!0-9a-fA-F]*|'') fail_setup "invalid local object id: $local_sha" ;;
+  esac
+  [ "${#local_sha}" -eq 40 ] || fail_setup "invalid local object id: $local_sha"
+  "$GIT_EXECUTABLE" cat-file -e "$local_sha^{commit}" 2>/dev/null ||
+    fail_setup "pushed object is not a commit: $local_sha"
+  head_sha=$("$GIT_EXECUTABLE" rev-parse --verify "$local_sha^{commit}" 2>/dev/null) ||
+    fail_setup "could not resolve pushed commit: $local_sha"
+
+  local_branch=
+  case "$remote_ref" in
+    refs/heads/*) local_branch=${remote_ref#refs/heads/} ;;
+    *)
+      [ -n "${POSTIL_LOCAL_REVIEW_BASE:-}" ] ||
+        fail_setup "non-branch push $remote_ref was not reviewed; set POSTIL_LOCAL_REVIEW_BASE=<branch> or run Postil explicitly"
+      ;;
+  esac
+
+  base_branch=$(resolve_base_branch "$local_branch") || exit $?
+  base_ref="refs/remotes/$remote_name/$base_branch"
+  "$GIT_EXECUTABLE" fetch --quiet --no-tags "$remote_name" \
+    "+refs/heads/$base_branch:$base_ref" ||
+    fail_setup "could not fetch pull request base $remote_name/$base_branch"
+  base_sha=$("$GIT_EXECUTABLE" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) ||
+    fail_setup "fetched base is not a commit: $base_ref"
+  merge_base_sha=$("$GIT_EXECUTABLE" merge-base "$base_sha" "$head_sha" 2>/dev/null) ||
+    fail_setup "pushed commit has no merge base with $remote_name/$base_branch"
+
+  worktree_path=$temporary_root/worktree
+  "$GIT_EXECUTABLE" -C "$repository_root" -c core.hooksPath="$temporary_root/empty-hooks" \
+    worktree add --quiet --detach "$worktree_path" "$head_sha" ||
+    fail_setup "could not create a detached worktree for $head_sha"
+  validate_config_artifacts "$worktree_path"
+
+  output_file=$temporary_root/review.json
+  /bin/rm -f -- "$output_file"
+  openrouter_api_key=$cached_openrouter_api_key
+  if [ -z "$openrouter_api_key" ] && [ -z "$CREDENTIAL_WRAPPER" ]; then
+    [ -n "$SECRETS_EXECUTABLE" ] ||
+      fail_setup "no OpenRouter credential is available; export OPENROUTER_API_KEY or reinstall with POSTIL_LOCAL_CREDENTIAL_WRAPPER"
+    openrouter_api_key=$(/usr/bin/env -i HOME="$TRUSTED_HOME" PATH="$TRUSTED_PATH" \
+      "$SECRETS_EXECUTABLE" --profile morgaesis get OPENROUTER_API_KEY) ||
+      fail_setup "could not load OPENROUTER_API_KEY from the morgaesis Infisical profile; refresh its noninteractive login or export OPENROUTER_API_KEY"
+    [ -n "$openrouter_api_key" ] || fail_setup "the morgaesis Infisical profile returned an empty OPENROUTER_API_KEY"
+  fi
+  if [ -n "$CREDENTIAL_WRAPPER" ]; then
+    (cd "$worktree_path" && /usr/bin/env -i HOME="$TRUSTED_HOME" PATH="$TRUSTED_PATH" \
+      "$CREDENTIAL_WRAPPER" "$POSTIL_EXECUTABLE" review --base "$base_sha" --no-post \
+      --output json --fail-on info --model "$local_primary_model") >"$output_file"
+  else
+    key_file=$temporary_root/openrouter-key
+    (umask 077 && printf '%s\n' "$openrouter_api_key" >"$key_file") ||
+      fail_setup "could not stage the OpenRouter credential for isolated review"
+    /bin/chmod 600 "$key_file" || fail_setup "could not protect the isolated OpenRouter credential"
+    unset openrouter_api_key
+    # The single-quoted program expands only inside the isolated child shell.
+    # shellcheck disable=SC2016
+    (cd "$worktree_path" && /usr/bin/env -i \
+      HOME="$temporary_root/home" PATH="$TRUSTED_PATH" \
+      POSTIL_API_BASE=https://openrouter.ai/api/v1 \
+      POSTIL_API_FORMAT=openai-compatible \
+      REVIEW_MODEL="$local_primary_model" \
+      REVIEW_MODEL_CASCADE="$local_fallback_model" \
+      REVIEW_SCORER_MODEL="$local_scorer_model" \
+      POSTIL_KEY_FILE="$key_file" POSTIL_EXECUTABLE="$POSTIL_EXECUTABLE" \
+      POSTIL_BASE_SHA="$base_sha" POSTIL_PRIMARY_MODEL="$local_primary_model" \
+      /bin/sh -c '
+        IFS= read -r MODEL_API_KEY <"$POSTIL_KEY_FILE" || exit 2
+        /bin/rm -f -- "$POSTIL_KEY_FILE" || exit 2
+        unset POSTIL_KEY_FILE
+        export MODEL_API_KEY
+        exec "$POSTIL_EXECUTABLE" review --base "$POSTIL_BASE_SHA" --no-post \
+          --output json --fail-on info --model "$POSTIL_PRIMARY_MODEL"
+      ') >"$output_file"
+  fi
+  review_status=$?
+
+  [ "$review_status" -le 1 ] || fail_setup "local review did not complete for $local_ref ($local_sha)"
+  [ -s "$output_file" ] || fail_setup "local review produced no result"
+  validate_envelope "$output_file" "$merge_base_sha" "$head_sha" ||
+    fail_setup "local review result does not match the Postil v0.5 envelope contract or reviewed SHAs"
+  finding_count=$("$JQ_EXECUTABLE" -er '.findings | length' "$output_file") ||
+    fail_setup "could not read local review findings"
+  if [ "$finding_count" -gt 0 ]; then
+    echo "postil pre-push: $finding_count finding(s) require triage before push" >&2
+    "$JQ_EXECUTABLE" -r '.findings[] | "  \(.severity)/\(.kind) \(.path):\(.line) \(.title)"' "$output_file" >&2
+    exit 1
+  fi
+  [ "$review_status" -eq 0 ] || fail_setup "local review failed without structured findings"
+
+  "$GIT_EXECUTABLE" -C "$repository_root" -c core.hooksPath="$temporary_root/empty-hooks" \
+    worktree remove --force "$worktree_path" >/dev/null 2>&1 ||
+    fail_setup "could not remove the detached review worktree"
+  worktree_path=
+done <"$input_file"
+
+exit 0
