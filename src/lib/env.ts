@@ -7,6 +7,8 @@
  * documented anti-goal here.
  */
 
+import { configuredPublicOrigin } from "@/lib/oauth";
+
 interface EnvVarSpec {
   name: string;
   purpose: string;
@@ -14,6 +16,8 @@ interface EnvVarSpec {
   /** Required for which processes. */
   scope: Array<"web" | "worker">;
   optional?: boolean;
+  /** Required only when NODE_ENV is production. */
+  productionOnly?: boolean;
 }
 
 const ENV_SPECS: EnvVarSpec[] = [
@@ -22,6 +26,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     purpose: "Postgres connection string used by web and worker",
     example: "postgres://postil:postil@localhost:5432/postil",
     scope: ["web", "worker"],
+  },
+  {
+    name: "POSTIL_PUBLIC_URL",
+    purpose: "Canonical HTTPS origin used for browser URLs and proxy-safe request telemetry",
+    example: "https://postil.example.com",
+    scope: ["web"],
+    productionOnly: true,
   },
   {
     name: "POSTIL_DB_POOL_MAX",
@@ -299,6 +310,7 @@ export function validateEnv(processKind: "web" | "worker"): void {
   const missing: EnvVarSpec[] = [];
   for (const spec of ENV_SPECS) {
     if (!spec.scope.includes(processKind) || spec.optional) continue;
+    if (spec.productionOnly && process.env.NODE_ENV !== "production") continue;
     const value = process.env[spec.name];
     if (!value || value.trim() === "") missing.push(spec);
   }
@@ -318,6 +330,14 @@ export function validateEnv(processKind: "web" | "worker"): void {
         `${lines.join("\n")}\n` +
         `Copy .env.example to .env and fill these in. See /docs/self-hosted for details.`,
     );
+  }
+  if (processKind === "web" && process.env.POSTIL_PUBLIC_URL?.trim()) {
+    try {
+      configuredPublicOrigin();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Postil web cannot start: invalid POSTIL_PUBLIC_URL. ${detail}`);
+    }
   }
 }
 

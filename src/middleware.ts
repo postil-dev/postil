@@ -1,6 +1,6 @@
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 
-import { publicOrigin } from "@/lib/oauth";
+import { publicOrigin, publicRequestUrl } from "@/lib/oauth";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/session-token";
 import {
   isPublicTelemetryPath,
@@ -170,7 +170,7 @@ async function captureTraffic(request: NextRequest): Promise<void> {
   const host = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://eu.i.posthog.com";
   const endpoint = `${host.replace(/\/+$/, "")}/i/v0/e/`;
   const publicProperties = publicTelemetryProperties(
-    request.nextUrl,
+    publicRequestUrl(request),
     request.headers.get("referer"),
   );
   if (!publicProperties) return;
