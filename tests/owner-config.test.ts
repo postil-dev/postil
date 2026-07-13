@@ -18,6 +18,7 @@ let snapshot: Parameters<OwnerConfigStore["saveSnapshot"]>[0] | null = null;
 let installed = true;
 let installedGithubRepoId = 99;
 let deletedSnapshots = 0;
+let metadataVisibility = "private";
 let server: ReturnType<typeof Bun.serve>;
 
 const store: OwnerConfigStore = {
@@ -49,7 +50,7 @@ beforeAll(() => {
         return Response.json({
           id: 99,
           full_name: "acme/.github",
-          visibility: "private",
+          visibility: metadataVisibility,
           default_branch: "trunk",
           fork: false,
           archived: false,
@@ -112,6 +113,7 @@ beforeEach(() => {
   installed = true;
   installedGithubRepoId = 99;
   deletedSnapshots = 0;
+  metadataVisibility = "private";
 });
 
 const input = {
@@ -173,6 +175,17 @@ describe("owner .github configuration", () => {
     expect(requests.some((request) => request.url.includes("/contents"))).toBe(false);
   });
 
+  test("persists refreshed repository metadata when content is unchanged", async () => {
+    files.set(".postil/guardrails.md", "Shared guardrail.\n");
+    await resolveOwnerGithubConfig(store, input);
+    metadataVisibility = "public";
+
+    const resolved = await resolveOwnerGithubConfig(store, input);
+
+    expect(resolved.visibility).toBe("public");
+    expect(snapshot?.visibility).toBe("public");
+  });
+
   test("hydrates only newly required slots at the same pinned commit", async () => {
     files.set(".postil.yaml", "review:\n  minConfidence: 0.8\n");
     files.set(".postil/guardrails.md", "Shared guardrail.\n");
@@ -209,7 +222,7 @@ describe("owner .github configuration", () => {
     expect(deletedSnapshots).toBe(0);
   });
 
-  test("treats a rate-limited metadata response as transient", async () => {
+  test("does not use cached private policy when metadata validation is rate limited", async () => {
     files.set(".postil/guardrails.md", "Known rule.\n");
     await resolveOwnerGithubConfig(store, input);
     metadataFailure = {
@@ -220,9 +233,52 @@ describe("owner .github configuration", () => {
     const resolved = await resolveOwnerGithubConfig(store, input);
 
     expect(resolved.status).toBe("transient");
-    expect(resolved.stale).toBe(true);
-    expect(resolved.config?.guardrailsMd).toBe("Known rule.\n");
-    expect(deletedSnapshots).toBe(0);
+    expect(resolved.stale).toBe(false);
+    expect(resolved.config).toBeNull();
+    expect(snapshot).toBeNull();
+    expect(deletedSnapshots).toBe(1);
+  });
+
+  test("resolves a personal account's canonical owner repository", async () => {
+    const personalServer = Bun.serve({
+      port: 0,
+      fetch(request) {
+        const url = new URL(request.url);
+        if (url.pathname === "/repos/Morgaesis/.github") {
+          return Response.json({
+            id: 99,
+            full_name: "Morgaesis/.github",
+            visibility: "private",
+            default_branch: "main",
+            fork: false,
+            archived: false,
+            owner: { id: 1001, login: "Morgaesis" },
+          });
+        }
+        if (url.pathname === "/repos/Morgaesis/.github/commits/main") {
+          return Response.json({ sha: COMMIT });
+        }
+        if (url.pathname === "/repos/Morgaesis/.github/contents") {
+          return Response.json([]);
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const original = process.env.GITHUB_API_URL;
+    process.env.GITHUB_API_URL = `http://127.0.0.1:${personalServer.port}`;
+    try {
+      const resolved = await resolveOwnerGithubConfig(store, {
+        ...input,
+        owner: "Morgaesis",
+        githubOwnerId: 1001,
+      });
+      expect(resolved.status).toBe("absent");
+      expect(resolved.sourceFullName).toBe("Morgaesis/.github");
+      expect(resolved.sourceGithubRepoId).toBe(99);
+    } finally {
+      personalServer.stop(true);
+      process.env.GITHUB_API_URL = original;
+    }
   });
 
   test("removes cached policy when the source is no longer installed", async () => {

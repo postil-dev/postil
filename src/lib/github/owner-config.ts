@@ -456,14 +456,9 @@ export async function resolveOwnerGithubConfig(
     }
   } catch (error) {
     const status = error instanceof GithubConfigError ? error.status : "transient";
-    if (
-      status === "transient" &&
-      snapshot?.sourceGithubRepoId === installed.githubRepoId &&
-      snapshotHasRequiredContent(snapshot, paths)
-    ) {
-      await store.markDegraded(input.orgId, status);
-      return fromSnapshot(snapshot, status);
-    }
+    // A cached private policy is not usable until this request validates the
+    // installation's current access and immutable repository identity. A
+    // metadata outage can conceal revocation, transfer, or archival.
     if (snapshot) await store.deleteSnapshot(input.orgId);
     return unavailableResolution(sourceFullName, installed, status);
   }
@@ -486,6 +481,14 @@ export async function resolveOwnerGithubConfig(
         defaultBranch: metadata.default_branch,
       };
       if (snapshotHasRequiredContent(currentSnapshot, paths)) {
+        if (
+          snapshot.sourceRepositoryId !== currentSnapshot.sourceRepositoryId ||
+          snapshot.sourceFullName !== currentSnapshot.sourceFullName ||
+          snapshot.visibility !== currentSnapshot.visibility ||
+          snapshot.defaultBranch !== currentSnapshot.defaultBranch
+        ) {
+          await store.saveSnapshot(currentSnapshot);
+        }
         return freshResolution(currentSnapshot);
       }
       for (const [, path, property] of SHARED_PATHS) {
