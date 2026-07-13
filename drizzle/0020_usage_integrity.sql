@@ -2,7 +2,8 @@ ALTER TABLE "usage_events" ADD COLUMN "billing_scope" text;
 
 -- Preserve historical rows as analytics-only. For inserts made after this
 -- migration, an omitted scope identifies a pre-0020 writer. Classify that
--- writer from the durable repository visibility and provider entitlement
+-- writer from the durable repository visibility and the same stored-key test
+-- the pre-0020 worker uses for provider selection
 -- instead of letting a default silently turn private hosted spend into
 -- analytics during a rolling deployment.
 UPDATE "usage_events" SET "billing_scope" = 'analytics';
@@ -13,14 +14,14 @@ BEGIN
   IF NEW."billing_scope" IS NULL THEN
     SELECT CASE
       WHEN repository."private"
-        AND COALESCE(entitlement."subscription_mode", 'hosted') <> 'byok'
+        AND setting."api_key_ciphertext" IS NULL
         THEN 'private_hosted'
       ELSE 'analytics'
     END
     INTO NEW."billing_scope"
     FROM "repositories" repository
-    LEFT JOIN "organization_entitlements" entitlement
-      ON entitlement."org_id" = NEW."org_id"
+    LEFT JOIN "org_settings" setting
+      ON setting."org_id" = NEW."org_id"
     WHERE repository."id" = NEW."repository_id";
 
     NEW."billing_scope" := COALESCE(NEW."billing_scope", 'analytics');

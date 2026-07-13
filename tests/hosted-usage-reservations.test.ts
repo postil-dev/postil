@@ -197,18 +197,33 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       "UPDATE organization_entitlements SET subscription_mode = 'byok' WHERE org_id = $1",
       [orgId],
     );
-    const legacyByok = await pool!.query<{ billing_scope: string }>(
+    const entitlementSaysByokWithoutKey = await pool!.query<{ billing_scope: string }>(
       `INSERT INTO usage_events (
          org_id, repository_id, prompt_tokens, completion_tokens, model_used, cost_micros
-       ) VALUES ($1, $2, 10, 2, 'legacy-byok', 77)
+       ) VALUES ($1, $2, 10, 2, 'legacy-entitlement-byok-without-key', 77)
        RETURNING billing_scope`,
       [orgId, repositoryId],
     );
-    expect(legacyByok.rows[0]?.billing_scope).toBe("analytics");
+    expect(entitlementSaysByokWithoutKey.rows[0]?.billing_scope).toBe("private_hosted");
     await pool!.query(
       "UPDATE organization_entitlements SET subscription_mode = 'hosted' WHERE org_id = $1",
       [orgId],
     );
+    await pool!.query(
+      `INSERT INTO org_settings (org_id, api_key_ciphertext)
+       VALUES ($1, decode('010203', 'hex'))
+       ON CONFLICT (org_id) DO UPDATE SET api_key_ciphertext = EXCLUDED.api_key_ciphertext`,
+      [orgId],
+    );
+    const entitlementSaysHostedWithKey = await pool!.query<{ billing_scope: string }>(
+      `INSERT INTO usage_events (
+         org_id, repository_id, prompt_tokens, completion_tokens, model_used, cost_micros
+       ) VALUES ($1, $2, 10, 2, 'legacy-entitlement-hosted-with-key', 77)
+       RETURNING billing_scope`,
+      [orgId, repositoryId],
+    );
+    expect(entitlementSaysHostedWithKey.rows[0]?.billing_scope).toBe("analytics");
+    await pool!.query("DELETE FROM org_settings WHERE org_id = $1", [orgId]);
   });
 
   test("respond holds serialize, reconcile without a review, and release on failure", async () => {
