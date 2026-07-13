@@ -64,6 +64,7 @@ describe("private repository worker defense in depth", () => {
       failureGate,
     );
     const deliveryStart = source.indexOf("async function deliverPreparedRespond");
+    expect(deliveryStart).toBeGreaterThan(0);
     expect(source.indexOf("await postIssueComment", deliveryStart)).toBeGreaterThan(
       deliveryStart,
     );
