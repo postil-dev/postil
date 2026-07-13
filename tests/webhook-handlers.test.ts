@@ -57,8 +57,10 @@ mock.module("@/lib/github/checks", () => ({
     completedCheckRuns.push({ repoFullName, conclusion });
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
+  findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
+    return 1;
   },
 }));
 
