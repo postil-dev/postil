@@ -60,6 +60,7 @@ describe("private repository worker defense in depth", () => {
       "await releaseHostedRespondSpend",
     );
     const failureGate = source.indexOf("await canProcessPrivateRepository", failureStart);
+    expect(source.slice(failureStart, failureGate)).not.toContain("postIssueComment");
     expect(source.indexOf("await deliverPreparedRespond", failureStart)).toBeGreaterThan(
       failureGate,
     );
