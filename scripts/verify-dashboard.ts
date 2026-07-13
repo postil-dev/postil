@@ -67,6 +67,11 @@ try {
     FROM reviews
     INNER JOIN repositories ON repositories.id = reviews.repository_id
     WHERE reviews.status = 'completed' AND reviews.silent = false
+      AND EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(reviews.envelope -> 'findings') AS finding
+        WHERE finding ->> 'kind' = 'humanEscalation'
+      )
     ORDER BY reviews.id
     LIMIT 1
   `);
