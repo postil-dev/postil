@@ -45,13 +45,39 @@ describe("validateRespondPublication", () => {
     rejected("sequenceDiagram\nA->>B: hi", "@postil show the sequence");
     for (const declaration of [
       "graph TD\nA --> B",
+      "sequenceDiagram",
+      "stateDiagram",
+      "stateDiagram-v2",
       "classDiagram\nclass A",
       "stateDiagram-v2\n[*] --> A",
       "erDiagram\nA ||--o{ B : has",
+      "journey",
+      "gantt",
+      "pie showData",
       "mindmap\n root((Postil))",
+      "timeline",
+      'gitGraph {"showBranches": true}',
+      "quadrantChart",
+      "xychart-beta",
+      "block-beta columns 3",
+      "packet-beta",
       "architecture-beta\nservice api(server)",
+      "kanban",
+      "sankey-beta",
     ]) {
       rejected(declaration, "@postil explain the flow");
+    }
+  });
+
+  test("does not mistake ordinary prose for a Mermaid declaration", () => {
+    for (const reply of [
+      "Graph construction is linear in the number of edges.",
+      "A timeline helps explain the retry sequence.",
+      "Pie is not relevant to this handler.",
+      "The journey continues through the queue.",
+      "Kanban boards are outside this change.",
+    ]) {
+      expect(validateRespondPublication(reply, "@postil explain this")).toBe(reply);
     }
   });
 

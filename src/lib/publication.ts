@@ -5,9 +5,7 @@ const MAX_RESPOND_LIST_ITEMS = 3;
 const ACTIVE_MENTION = /(^|[^a-z0-9_-])@[a-z0-9][a-z0-9-]{0,38}(?=$|[^a-z0-9_-])/i;
 const RAW_HTML = /<!--|<\/?[a-z][^>]*>/i;
 const MARKDOWN_IMAGE = /!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])?/;
-const MERMAID_DECLARATIONS = new Set([
-  "flowchart",
-  "graph",
+const MERMAID_EXACT_DECLARATIONS = new Set([
   "sequencediagram",
   "statediagram",
   "statediagram-v2",
@@ -15,13 +13,10 @@ const MERMAID_DECLARATIONS = new Set([
   "erdiagram",
   "journey",
   "gantt",
-  "pie",
   "mindmap",
   "timeline",
-  "gitgraph",
   "quadrantchart",
   "xychart-beta",
-  "block-beta",
   "packet-beta",
   "architecture-beta",
   "kanban",
@@ -92,9 +87,28 @@ function containsMermaid(value: string): boolean {
         .split(/\s+/u)[0];
       if (language?.toLowerCase() === "mermaid") return true;
     }
-    const declaration = line.trim().split(/\s+/u)[0]?.toLowerCase();
-    return declaration !== undefined && MERMAID_DECLARATIONS.has(declaration);
+    return isMermaidDeclaration(line);
   });
+}
+
+function isMermaidDeclaration(line: string): boolean {
+  const trimmed = line.trim();
+  const declaration = trimmed.split(/\s+/u)[0];
+  if (!declaration) return false;
+  const rest = trimmed.slice(declaration.length).trim();
+  switch (declaration.toLowerCase()) {
+    case "flowchart":
+    case "graph":
+      return /^(?:TB|TD|BT|RL|LR)(?:\s|$)/i.test(rest);
+    case "pie":
+      return rest === "" || /^showData$/i.test(rest) || /^title\s+/i.test(rest);
+    case "block-beta":
+      return rest === "" || /^columns\s+/i.test(rest);
+    case "gitgraph":
+      return rest === "" || rest.startsWith("{");
+    default:
+      return rest === "" && MERMAID_EXACT_DECLARATIONS.has(declaration.toLowerCase());
+  }
 }
 
 function trimOuterBlankLines(value: string): string {
