@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  rename,
   rm,
   stat,
   symlink,
@@ -52,6 +53,26 @@ describe("trusted local Postil pre-push hook", () => {
     expect((await lstat(fixture.hook)).isSymbolicLink()).toBe(false);
     expect(await readFile(victim, "utf8")).toBe("do not change\n");
     expect(await readFile(fixture.hook, "utf8")).toContain("postil-local-hook:v1");
+  });
+
+  test("reviews a repository whose common Git directory is reached through a symlink", async () => {
+    const fixture = await createFixture("symlinked-common-directory");
+    const linkedGitDirectory = join(fixture.repository, ".git");
+    const physicalGitDirectory = join(fixture.root, "git-data");
+    await rename(linkedGitDirectory, physicalGitDirectory);
+    await symlink(physicalGitDirectory, linkedGitDirectory, "dir");
+    await commit(fixture.repository, "topic", "symlinked Git directory\n");
+    await installHook(fixture, fixture.repository, true);
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/symlinked-common-directory"],
+      "pass",
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(await refExists(fixture.remote, "refs/heads/symlinked-common-directory")).toBe(true);
   });
 
   test("an actual linked-worktree push reviews the exact head and immutable base", async () => {
@@ -263,41 +284,87 @@ describe("trusted local Postil pre-push hook", () => {
     }
   });
 
-  test("accepts an exact, evidence-based disposition for every reviewed finding", async () => {
+  test("emits a private template and accepts it without a second model call", async () => {
     const fixture = await createFixture("accepted-disposition");
     const head = await commit(fixture.repository, "topic", "reviewed finding\n");
     const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
-    const dispositions = join(fixture.root, "dispositions.json");
-    await writeFile(
-      dispositions,
-      JSON.stringify({
-        baseSha: base,
-        headSha: head,
-        findings: {
-          "fixture-finding-id": {
-            path: "app.txt",
-            line: 1,
-            reason:
-              "The changed fixture line is intentional and the focused assertion proves the required behavior.",
-          },
-        },
-      }),
-    );
     await installHook(fixture, fixture.repository, true);
+
+    const first = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/accepted-disposition"],
+      "finding",
+    );
+    const paths = reviewCachePaths(fixture, base, head);
+
+    expect(first.exitCode).not.toBe(0);
+    expect(first.stderr).toContain(`disposition template written to ${paths.template}`);
+    expect((await stat(dirname(paths.cache))).mode & 0o777).toBe(0o700);
+    expect((await stat(paths.cache)).mode & 0o777).toBe(0o600);
+    expect((await stat(paths.template)).mode & 0o777).toBe(0o600);
+    expect(await Bun.file(paths.lock).exists()).toBe(false);
+    const cacheDocument = JSON.parse(await readFile(paths.cache, "utf8")) as Record<string, unknown>;
+    expect(Object.keys(cacheDocument).sort()).toEqual(["baseSha", "findings", "headSha", "version"]);
+    expect(await readFile(paths.cache, "utf8")).not.toContain("fixture finding");
+    expect(await readFile(paths.cache, "utf8")).not.toContain("body");
+    const blankTemplate = JSON.parse(await readFile(paths.template, "utf8")) as {
+      reviewDigest: string;
+      findings: Record<string, { path: string; line: number; reason: string }>;
+    };
+    expect(blankTemplate.reviewDigest).toMatch(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+    expect(blankTemplate.findings["fixture-finding-id"]).toEqual({
+      path: "app.txt",
+      line: 1,
+      reason: "",
+    });
+    await fillDispositionReasons(paths.template);
 
     const result = await push(
       fixture,
       fixture.repository,
       ["origin", "HEAD:refs/heads/accepted-disposition"],
-      "finding",
-      { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: dispositions },
+      "provider-error",
+      { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template },
     );
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toContain('accepted disposition path="app.txt" line=1');
     expect(result.stderr).toContain("focused assertion proves the required behavior");
+    expect((await readRecords(fixture)).length).toBe(1);
     expect((await readRecord(fixture)).dispositionsVariable).toBe("absent");
+    expect(await Bun.file(paths.cache).exists()).toBe(false);
+    expect(await Bun.file(paths.template).exists()).toBe(false);
+    expect(await Bun.file(paths.lock).exists()).toBe(false);
     expect(await refExists(fixture.remote, "refs/heads/accepted-disposition")).toBe(true);
+  });
+
+  test("replaces cache symlinks without modifying their targets", async () => {
+    const fixture = await createFixture("cache-symlinks");
+    const head = await commit(fixture.repository, "topic", "cache symlink safety\n");
+    const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+    const paths = reviewCachePaths(fixture, base, head);
+    await mkdir(dirname(paths.cache), { recursive: true, mode: 0o700 });
+    const cacheVictim = join(fixture.root, "cache-victim");
+    const templateVictim = join(fixture.root, "template-victim");
+    await writeFile(cacheVictim, "do not replace cache target\n");
+    await writeFile(templateVictim, "do not replace template target\n");
+    await symlink(cacheVictim, paths.cache);
+    await symlink(templateVictim, paths.template);
+    await installHook(fixture, fixture.repository, true);
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/cache-symlinks"],
+      "finding",
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    expect((await lstat(paths.cache)).isSymbolicLink()).toBe(false);
+    expect((await lstat(paths.template)).isSymbolicLink()).toBe(false);
+    expect(await readFile(cacheVictim, "utf8")).toBe("do not replace cache target\n");
+    expect(await readFile(templateVictim, "utf8")).toBe("do not replace template target\n");
   });
 
   test("rejects malformed, stale, partial, additional, and mismatched dispositions", async () => {
@@ -311,58 +378,101 @@ describe("trusted local Postil pre-push hook", () => {
       "mismatched-line",
       "short-reason",
       "additional-field",
+      "tampered-cache",
     ] as const;
     for (const scenario of scenarios) {
       const fixture = await createFixture(`invalid-disposition-${scenario}`);
       const head = await commit(fixture.repository, "topic", `${scenario}\n`);
       const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
-      const dispositions = join(fixture.root, "dispositions.json");
-      const reason =
-        "The changed fixture line is intentional and the focused assertion proves the required behavior.";
-      const document: Record<string, unknown> = {
-        baseSha: base,
-        headSha: head,
-        findings: {
-          "fixture-finding-id": { path: "app.txt", line: 1, reason },
-        },
-      };
+      const mode: ReviewMode = scenario === "partial" ? "two-findings" : "finding";
+      await installHook(fixture, fixture.repository, true);
+      const first = await push(
+        fixture,
+        fixture.repository,
+        ["origin", `HEAD:refs/heads/invalid-${scenario}`],
+        mode,
+      );
+      expect(first.exitCode).not.toBe(0);
+      const paths = reviewCachePaths(fixture, base, head);
+      await fillDispositionReasons(paths.template);
+      const document = JSON.parse(await readFile(paths.template, "utf8")) as Record<string, unknown>;
       const findingMap = document.findings as Record<string, Record<string, unknown>>;
       const primaryFinding = findingMap["fixture-finding-id"]!;
       if (scenario === "malformed") {
-        await writeFile(dispositions, "{\n");
+        await writeFile(paths.template, "{\n");
       } else {
         if (scenario === "stale-base") document.baseSha = "0".repeat(40);
         if (scenario === "stale-head") document.headSha = "f".repeat(40);
         if (scenario === "partial") delete findingMap["fixture-second-id"];
         if (scenario === "additional") {
-          findingMap["unreviewed-finding-id"] = { path: "app.txt", line: 2, reason };
+          findingMap["unreviewed-finding-id"] = {
+            path: "app.txt",
+            line: 2,
+            reason:
+              "The changed fixture line is intentional and the focused assertion proves the required behavior.",
+          };
         }
         if (scenario === "mismatched-path") primaryFinding.path = "other.txt";
         if (scenario === "mismatched-line") primaryFinding.line = 2;
         if (scenario === "short-reason") primaryFinding.reason = "false positive";
         if (scenario === "additional-field") primaryFinding.approved = true;
-        await writeFile(dispositions, JSON.stringify(document));
+        if (scenario === "tampered-cache") {
+          const cache = JSON.parse(await readFile(paths.cache, "utf8")) as {
+            findings: Array<{ path: string }>;
+          };
+          cache.findings[0]!.path = "tampered.txt";
+          await writeFile(paths.cache, JSON.stringify(cache));
+        } else {
+          await writeFile(paths.template, JSON.stringify(document));
+        }
       }
-      await installHook(fixture, fixture.repository, true);
-      const mode: ReviewMode = scenario === "partial" ? "two-findings" : "finding";
 
       const result = await push(
         fixture,
         fixture.repository,
         ["origin", `HEAD:refs/heads/invalid-${scenario}`],
-        mode,
-        { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: dispositions },
+        "provider-error",
+        { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template },
       );
 
       expect(result.exitCode).not.toBe(0);
-      expect(result.stderr).toContain(
-        "review dispositions are malformed, stale, incomplete, or do not match",
-      );
+      expect(result.stderr).toContain("malformed, stale, incomplete, tampered, or do not match");
+      expect((await readRecords(fixture)).length).toBe(1);
       expect(await refExists(fixture.remote, `refs/heads/invalid-${scenario}`)).toBe(false);
     }
   }, 30_000);
 
-  test("never dispositions provider, model-output, or truncated-diff findings", async () => {
+  test("invalidates a cached review when the pushed head changes", async () => {
+    const fixture = await createFixture("stale-current-head");
+    const reviewedHead = await commit(fixture.repository, "topic", "reviewed head\n");
+    const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+    await installHook(fixture, fixture.repository, true);
+    const first = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/stale-current-head"],
+      "finding",
+    );
+    expect(first.exitCode).not.toBe(0);
+    const paths = reviewCachePaths(fixture, base, reviewedHead);
+    await fillDispositionReasons(paths.template);
+    await commit(fixture.repository, "later", "changed head\n");
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/stale-current-head"],
+      "provider-error",
+      { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template },
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("does not match the exact generated template");
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect(await refExists(fixture.remote, "refs/heads/stale-current-head")).toBe(false);
+  });
+
+  test("never caches provider, model-output, or truncated-diff findings", async () => {
     const scenarios = [
       ["synthetic-provider", ".postil/provider"],
       ["synthetic-model-output", ".postil/model-output"],
@@ -372,22 +482,6 @@ describe("trusted local Postil pre-push hook", () => {
       const fixture = await createFixture(mode);
       const head = await commit(fixture.repository, "topic", `${mode}\n`);
       const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
-      const dispositions = join(fixture.root, "dispositions.json");
-      await writeFile(
-        dispositions,
-        JSON.stringify({
-          baseSha: base,
-          headSha: head,
-          findings: {
-            "synthetic-finding-id": {
-              path,
-              line: 1,
-              reason:
-                "The operator inspected this synthetic result and requests an explicit exception for testing.",
-            },
-          },
-        }),
-      );
       await installHook(fixture, fixture.repository, true);
 
       const result = await push(
@@ -395,13 +489,16 @@ describe("trusted local Postil pre-push hook", () => {
         fixture.repository,
         ["origin", `HEAD:refs/heads/${mode}`],
         mode,
-        { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: dispositions },
       );
 
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain(
         "provider, setup, and truncated-review findings cannot be dispositioned",
       );
+      const paths = reviewCachePaths(fixture, base, head);
+      expect(result.stderr).toContain(path);
+      expect(await Bun.file(paths.cache).exists()).toBe(false);
+      expect(await Bun.file(paths.template).exists()).toBe(false);
       expect(await refExists(fixture.remote, `refs/heads/${mode}`)).toBe(false);
     }
   });
@@ -667,6 +764,27 @@ async function readRecord(fixture: Fixture): Promise<Record<string, string>> {
 async function readRecords(fixture: Fixture): Promise<Array<Record<string, string>>> {
   const lines = (await readFile(fixture.log, "utf8")).trim().split("\n").filter(Boolean);
   return lines.map((line) => JSON.parse(line) as Record<string, string>);
+}
+
+function reviewCachePaths(fixture: Fixture, base: string, head: string) {
+  const directory = join(fixture.repository, ".git", "postil-local-review");
+  const key = `${base}-${head}`;
+  return {
+    cache: join(directory, `review-${key}.json`),
+    template: join(directory, `dispositions-${key}.json`),
+    lock: join(directory, `lock-${key}`),
+  };
+}
+
+async function fillDispositionReasons(path: string): Promise<void> {
+  const document = JSON.parse(await readFile(path, "utf8")) as {
+    findings: Record<string, { reason: string }>;
+  };
+  for (const finding of Object.values(document.findings)) {
+    finding.reason =
+      "The changed fixture line is intentional and the focused assertion proves the required behavior.";
+  }
+  await writeFile(path, JSON.stringify(document));
 }
 
 async function refExists(remote: string, ref: string): Promise<boolean> {

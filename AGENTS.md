@@ -24,11 +24,15 @@ that wrapper first and pass `--allow-delegated-hooks-path` during installation.
 When no model key is exported, the harness and installed hook load only
 `OPENROUTER_API_KEY` from the `morgaesis` secrets profile.
 
-An integrator may disposition verified false positives by setting
-`POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE` to an absolute, non-symlink JSON file.
-The document has exactly `baseSha`, `headSha`, and `findings`; `baseSha` is the
-reviewed merge base, and `findings` maps every stable finding ID to its exact
-`path`, `line`, and an evidence-based `reason` of at least 40 characters and
-six words. Stale, partial, additional, or location-mismatched entries fail
-closed. Provider, model-output, and truncated-diff findings cannot be
-dispositioned.
+When a completed exact review has real findings, the hook writes a private
+disposition template under the common Git directory and prints its path. Add
+an evidence-based `reason` of at least 40 characters and six words for every
+finding, then retry with `POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE` set to that
+absolute path. The retry validates the mode-0600 template against a private
+mode-0600 cache bound to the exact reviewed merge base, head, stable IDs,
+locations, and digest; it does not rerun model inference. Stale, partial,
+additional, tampered, or location-mismatched entries fail closed. Provider,
+model-output, and truncated-diff findings cannot be dispositioned. An accepted
+retry removes its cache and generated template. Unaccepted records contain
+only finding IDs and locations and remain under `.git/postil-local-review`
+until the matching retry succeeds or the repository owner removes them.

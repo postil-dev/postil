@@ -30,6 +30,10 @@ fail_setup() {
 
 repository_root=$("$GIT_EXECUTABLE" rev-parse --show-toplevel 2>/dev/null) ||
   fail_setup "not inside a non-bare Git work tree"
+common_git_directory=$("$GIT_EXECUTABLE" rev-parse --git-common-dir 2>/dev/null) ||
+  fail_setup "could not resolve the common Git directory"
+common_git_directory=$(cd "$common_git_directory" 2>/dev/null && pwd -P) ||
+  fail_setup "the common Git directory must resolve to an accessible directory"
 "$GIT_EXECUTABLE" remote get-url "$remote_name" >/dev/null 2>&1 ||
   fail_setup "remote is not configured: $remote_name"
 
@@ -38,9 +42,14 @@ temporary_root=$("$MKTEMP_EXECUTABLE" -d "/tmp/postil-pre-push.XXXXXX") ||
   fail_setup "could not create a private temporary directory"
 input_file=$temporary_root/updates
 worktree_path=
+cache_lock_path=
+cache_lock_held=0
 
 # shellcheck disable=SC2317
 cleanup() {
+  if [ "$cache_lock_held" -eq 1 ]; then
+    /bin/rmdir "$cache_lock_path" >/dev/null 2>&1 || true
+  fi
   if [ -n "$worktree_path" ]; then
     "$GIT_EXECUTABLE" -C "$repository_root" -c core.hooksPath="$temporary_root/empty-hooks" \
       worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
@@ -55,21 +64,6 @@ trap 'exit 143' TERM
 /bin/cat >"$input_file" || fail_setup "could not read Git pre-push updates"
 /bin/mkdir "$temporary_root/empty-hooks" "$temporary_root/home" ||
   fail_setup "could not prepare the isolated review environment"
-
-dispositions_file=
-if [ -n "$dispositions_source" ]; then
-  case "$dispositions_source" in
-    /*) ;;
-    *) fail_setup "POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE must be an absolute path" ;;
-  esac
-  if [ -L "$dispositions_source" ] || [ ! -f "$dispositions_source" ]; then
-    fail_setup "POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE must name a regular, non-symlink file"
-  fi
-  dispositions_file=$temporary_root/dispositions.json
-  /bin/cat -- "$dispositions_source" >"$dispositions_file" ||
-    fail_setup "could not snapshot POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE"
-fi
-unset dispositions_source
 
 resolve_base_branch() {
   resolve_local_branch=$1
@@ -149,23 +143,91 @@ validate_envelope() {
   ' "$output_file" >/dev/null 2>&1
 }
 
+ensure_review_cache_directory() {
+  review_cache_directory=$common_git_directory/postil-local-review
+  if [ -e "$review_cache_directory" ] || [ -L "$review_cache_directory" ]; then
+    if [ ! -d "$review_cache_directory" ] || [ -L "$review_cache_directory" ]; then
+      fail_setup "local review cache must be a non-symlink directory"
+    fi
+  else
+    /bin/mkdir -m 700 "$review_cache_directory" ||
+      fail_setup "could not create the private local review cache"
+  fi
+  /bin/chmod 700 "$review_cache_directory" ||
+    fail_setup "local review cache must be owner-controlled with mode 0700"
+}
+
+acquire_cache_lock() {
+  /bin/mkdir -m 700 "$cache_lock_path" ||
+    fail_setup "another local review is updating these exact SHAs; retry after it finishes"
+  cache_lock_held=1
+}
+
+release_cache_lock() {
+  /bin/rmdir "$cache_lock_path" || fail_setup "could not release the local review cache lock"
+  cache_lock_held=0
+}
+
+validate_private_file() {
+  private_path=$1
+  private_label=$2
+  if [ ! -f "$private_path" ] || [ -L "$private_path" ]; then
+    fail_setup "$private_label must be a regular, non-symlink file"
+  fi
+  /bin/chmod 600 "$private_path" ||
+    fail_setup "$private_label must be owner-controlled with mode 0600"
+}
+
+file_digest() {
+  digest=$("$GIT_EXECUTABLE" hash-object "$1") || return 1
+  case "$digest" in
+    *[!0-9a-f]*|'') return 1 ;;
+  esac
+  [ "${#digest}" -eq 40 ] || [ "${#digest}" -eq 64 ] || return 1
+  printf '%s\n' "$digest"
+}
+
+validate_review_cache() {
+  cache_input=$1
+  expected_base=$2
+  expected_head=$3
+  # shellcheck disable=SC2016
+  "$JQ_EXECUTABLE" -e --arg base "$expected_base" --arg head "$expected_head" '
+    (. | type == "object") and
+    ((keys | sort) == (["baseSha", "findings", "headSha", "version"] | sort)) and
+    (.version == 1) and (.baseSha == $base) and (.headSha == $head) and
+    (.findings | type == "array" and length > 0) and
+    (.findings | all(
+      type == "object" and
+      ((keys | sort) == (["id", "line", "path"] | sort)) and
+      (.id | type == "string" and length > 0) and
+      (.path | type == "string" and length > 0) and
+      (.line | type == "number" and floor == . and . >= 0) and
+      (.path != ".postil/provider") and
+      (.path != ".postil/model-output") and
+      (.path != ".postil/diff")
+    )) and
+    ((.findings | map(.id) | unique | length) == (.findings | length))
+  ' "$cache_input" >/dev/null 2>&1
+}
+
 validate_dispositions() {
   disposition_input=$1
-  review_input=$2
+  cache_input=$2
   expected_base=$3
   expected_head=$4
-  # The disposition document is exact by construction: no stale SHA, omitted
-  # finding, additional finding, or changed location can survive this check.
+  expected_digest=$5
+  # No stale SHA, altered cache, omitted finding, additional finding, or
+  # changed location can survive this comparison.
   # shellcheck disable=SC2016
   "$JQ_EXECUTABLE" -e --arg base "$expected_base" --arg head "$expected_head" \
-    --slurpfile review "$review_input" '
+    --arg digest "$expected_digest" --slurpfile review "$cache_input" '
       ($review | length == 1) and
       (($review[0].findings | map(.id)) as $ids |
-        ($ids | all(type == "string" and length > 0)) and
-        (($ids | unique | length) == ($ids | length)) and
         (. | type == "object") and
-        ((keys | sort) == (["baseSha", "findings", "headSha"] | sort)) and
-        (.baseSha == $base) and (.headSha == $head) and
+        ((keys | sort) == (["baseSha", "findings", "headSha", "reviewDigest", "version"] | sort)) and
+        (.version == 1) and
+        (.baseSha == $base) and (.headSha == $head) and (.reviewDigest == $digest) and
         (.findings | type == "object") and
         ((.findings | keys | sort) == ($ids | sort)) and
         (. as $document | all($review[0].findings[];
@@ -186,13 +248,94 @@ validate_dispositions() {
     ' "$disposition_input" >/dev/null 2>&1
 }
 
+write_review_cache_and_template() {
+  review_input=$1
+  expected_base=$2
+  expected_head=$3
+  cache_path=$4
+  template_path=$5
+  cache_temporary=$("$MKTEMP_EXECUTABLE" "$review_cache_directory/.review.XXXXXX") || return 1
+  template_temporary=$("$MKTEMP_EXECUTABLE" "$review_cache_directory/.dispositions.XXXXXX") || {
+    /bin/rm -f -- "$cache_temporary"
+    return 1
+  }
+  # Persist only stable identity and location data. Model prose, usage, and
+  # credentials never enter the durable local cache.
+  # shellcheck disable=SC2016
+  if ! "$JQ_EXECUTABLE" -e --arg base "$expected_base" --arg head "$expected_head" '
+    (.findings | map(.id)) as $ids |
+    if (($ids | all(type == "string" and length > 0)) and
+        (($ids | unique | length) == ($ids | length))) then
+      {
+        version: 1,
+        baseSha: $base,
+        headSha: $head,
+        findings: (.findings | map({id, path, line}) | sort_by(.id))
+      }
+    else
+      error("findings require unique stable IDs")
+    end
+  ' "$review_input" >"$cache_temporary"; then
+    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+    return 1
+  fi
+  /bin/chmod 600 "$cache_temporary" "$template_temporary" || {
+    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+    return 1
+  }
+  cache_digest=$(file_digest "$cache_temporary") || {
+    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+    return 1
+  }
+  # shellcheck disable=SC2016
+  if ! "$JQ_EXECUTABLE" -e --arg digest "$cache_digest" '
+    {
+      version,
+      baseSha,
+      headSha,
+      reviewDigest: $digest,
+      findings: (.findings | map({key: .id, value: {path, line, reason: ""}}) | from_entries)
+    }
+  ' "$cache_temporary" >"$template_temporary"; then
+    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+    return 1
+  fi
+  /bin/chmod 600 "$template_temporary" || {
+    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+    return 1
+  }
+  if [ -d "$cache_path" ] && [ ! -L "$cache_path" ]; then
+    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+    return 1
+  fi
+  /bin/rm -f -- "$cache_path" || {
+    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+    return 1
+  }
+  /bin/mv -f -- "$cache_temporary" "$cache_path" || {
+    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+    return 1
+  }
+  if [ -d "$template_path" ] && [ ! -L "$template_path" ]; then
+    /bin/rm -f -- "$cache_path" "$template_temporary"
+    return 1
+  fi
+  /bin/rm -f -- "$template_path" || {
+    /bin/rm -f -- "$cache_path" "$template_temporary"
+    return 1
+  }
+  /bin/mv -f -- "$template_temporary" "$template_path" || {
+    /bin/rm -f -- "$cache_path" "$template_temporary"
+    return 1
+  }
+}
+
 log_dispositions() {
   disposition_input=$1
-  review_input=$2
-  # JSON quoting keeps model-authored paths and operator-authored reasons from
-  # injecting terminal control lines into the push transcript.
+  cache_input=$2
+  # JSON quoting prevents paths and reasons from injecting terminal lines.
   # shellcheck disable=SC2016
-  "$JQ_EXECUTABLE" -r --slurpfile review "$review_input" '
+  "$JQ_EXECUTABLE" -r --slurpfile review "$cache_input" '
     . as $document | $review[0].findings[] as $finding |
     "postil pre-push: accepted disposition path=\($finding.path | @json) line=\($finding.line) reason=\($document.findings[$finding.id].reason | @json)"
   ' "$disposition_input" >&2
@@ -251,6 +394,42 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     fail_setup "fetched base is not a commit: $base_ref"
   merge_base_sha=$("$GIT_EXECUTABLE" merge-base "$base_sha" "$head_sha" 2>/dev/null) ||
     fail_setup "pushed commit has no merge base with $remote_name/$base_branch"
+
+  ensure_review_cache_directory
+  review_cache_key=$merge_base_sha-$head_sha
+  review_cache_path=$review_cache_directory/review-$review_cache_key.json
+  disposition_template_path=$review_cache_directory/dispositions-$review_cache_key.json
+  cache_lock_path=$review_cache_directory/lock-$review_cache_key
+  dispositions_file=
+  if [ -n "$dispositions_source" ]; then
+    [ "$dispositions_source" = "$disposition_template_path" ] ||
+      fail_setup "POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE does not match the exact generated template for these SHAs"
+    validate_private_file "$dispositions_source" "POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE"
+    dispositions_file=$temporary_root/dispositions.json
+    /bin/cat -- "$dispositions_source" >"$dispositions_file" ||
+      fail_setup "could not snapshot POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE"
+    /bin/chmod 600 "$dispositions_file" || fail_setup "could not protect the disposition snapshot"
+  fi
+
+  if [ -n "$dispositions_file" ]; then
+    acquire_cache_lock
+    [ -e "$review_cache_path" ] ||
+      fail_setup "no cached exact review matches the disposition file; run the push once without dispositions"
+    validate_private_file "$review_cache_path" "cached local review"
+    validate_review_cache "$review_cache_path" "$merge_base_sha" "$head_sha" ||
+      fail_setup "cached local review is malformed, stale, synthetic, or does not match the pushed SHAs"
+    review_digest=$(file_digest "$review_cache_path") ||
+      fail_setup "could not verify the cached local review digest"
+    validate_dispositions "$dispositions_file" "$review_cache_path" \
+      "$merge_base_sha" "$head_sha" "$review_digest" ||
+      fail_setup "review dispositions are malformed, stale, incomplete, tampered, or do not match the cached findings"
+    log_dispositions "$dispositions_file" "$review_cache_path" ||
+      fail_setup "could not log accepted review dispositions"
+    /bin/rm -f -- "$review_cache_path" "$disposition_template_path" ||
+      fail_setup "could not remove the accepted local review cache"
+    release_cache_lock
+    continue
+  fi
 
   worktree_path=$temporary_root/worktree
   "$GIT_EXECUTABLE" -C "$repository_root" -c core.hooksPath="$temporary_root/empty-hooks" \
@@ -316,34 +495,37 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
   non_dispositionable_count=$("$JQ_EXECUTABLE" -er \
     '[.findings[] | select(.path == ".postil/provider" or .path == ".postil/model-output" or .path == ".postil/diff")] | length' \
     "$output_file") || fail_setup "could not classify local review findings"
+  acquire_cache_lock
+  /bin/rm -f -- "$review_cache_path" "$disposition_template_path" ||
+    fail_setup "could not clear the superseded exact-review cache"
   if [ "$finding_count" -gt 0 ]; then
-    if [ -z "$dispositions_file" ]; then
-      echo "postil pre-push: $finding_count finding(s) require triage before push" >&2
-      "$JQ_EXECUTABLE" -r '.findings[] | "  \(.severity)/\(.kind) \(.path):\(.line) \(.title)"' "$output_file" >&2
-      exit 1
-    fi
     if [ "$non_dispositionable_count" -gt 0 ]; then
+      /bin/rm -f -- "$review_cache_path" "$disposition_template_path"
       echo "postil pre-push: provider, setup, and truncated-review findings cannot be dispositioned" >&2
       "$JQ_EXECUTABLE" -r \
         '.findings[] | select(.path == ".postil/provider" or .path == ".postil/model-output" or .path == ".postil/diff") | "  \(.severity)/\(.kind) \(.path):\(.line) \(.title)"' \
         "$output_file" >&2
       exit 1
     fi
-  fi
-  if [ -n "$dispositions_file" ]; then
-    validate_dispositions "$dispositions_file" "$output_file" "$merge_base_sha" "$head_sha" ||
-      fail_setup "review dispositions are malformed, stale, incomplete, or do not match the reviewed findings"
-    log_dispositions "$dispositions_file" "$output_file" ||
-      fail_setup "could not log accepted review dispositions"
-  fi
-  if [ "$finding_count" -eq 0 ]; then
+    write_review_cache_and_template "$output_file" "$merge_base_sha" "$head_sha" \
+      "$review_cache_path" "$disposition_template_path" ||
+      fail_setup "could not persist the exact local review and disposition template"
+    echo "postil pre-push: $finding_count finding(s) require triage before push" >&2
+    "$JQ_EXECUTABLE" -r '.findings[] | "  \(.severity)/\(.kind) \(.path):\(.line) \(.title)"' "$output_file" >&2
+    echo "postil pre-push: disposition template written to $disposition_template_path" >&2
+    echo "postil pre-push: add evidence-based reasons, then retry with POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE set to that path" >&2
+    exit 1
+  else
     [ "$review_status" -eq 0 ] || fail_setup "local review failed without structured findings"
+    /bin/rm -f -- "$review_cache_path" "$disposition_template_path" ||
+      fail_setup "could not remove stale exact-review cache files"
   fi
 
   "$GIT_EXECUTABLE" -C "$repository_root" -c core.hooksPath="$temporary_root/empty-hooks" \
     worktree remove --force "$worktree_path" >/dev/null 2>&1 ||
     fail_setup "could not remove the detached review worktree"
   worktree_path=
+  release_cache_lock
 done <"$input_file"
 
 exit 0
