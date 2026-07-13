@@ -301,13 +301,11 @@ export async function reconcileHostedRespondSpend(
       promptTokens: input.promptTokens,
       completionTokens: input.completionTokens,
       modelUsed: input.modelUsed,
-      costMicros: input.actualMicros,
+      costMicros: input.actualMicros ?? 0,
       billingScope: "private_hosted",
       createdAt: now,
     });
-    const unattributedMicros = input.actualMicros === null
-      ? 0
-      : chargedMicros - input.actualMicros;
+    const unattributedMicros = chargedMicros - (input.actualMicros ?? 0);
     if (unattributedMicros > 0) {
       await tx.insert(schema.usageEvents).values({
         orgId: reservation.orgId,

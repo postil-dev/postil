@@ -70,13 +70,22 @@ export async function persistReviewCompletion(
       )[0];
       if (!reservation) throw new Error("hosted usage reservation not found");
       const priced = input.usage.every((usage) => usage.costMicros !== null);
-      const knownMicros = priced
-        ? input.usage.reduce((total, usage) => total + (usage.costMicros ?? 0), 0)
-        : null;
-      const actualMicros = input.usageAccountingComplete && knownMicros !== null
+      const knownMicros = input.usage.reduce(
+        (total, usage) => total + (usage.costMicros ?? 0),
+        0,
+      );
+      // A private hosted event must never retain NULL cost: reservation
+      // accounting interprets any NULL as an unknown full-period spend. Keep
+      // the model/token analytics at zero and charge uncertainty explicitly.
+      for (const usage of usageRows) {
+        if (usage.billingScope === "private_hosted" && usage.costMicros === null) {
+          usage.costMicros = 0;
+        }
+      }
+      const actualMicros = input.usageAccountingComplete && priced
         ? knownMicros
-        : Math.max(reservation.reservedMicros, knownMicros ?? 0);
-      const unattributedMicros = knownMicros === null ? 0 : actualMicros - knownMicros;
+        : Math.max(reservation.reservedMicros, knownMicros);
+      const unattributedMicros = actualMicros - knownMicros;
       if (unattributedMicros > 0) {
         const first = input.usage[0];
         if (!first) throw new Error("hosted review usage is empty");

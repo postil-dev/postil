@@ -337,6 +337,131 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     expect(conservative.rows[0]?.actual_micros).toBe("1000000");
   });
 
+  test("unpriced hosted review charges one reservation without poisoning later capacity", async () => {
+    const db = drizzle(pool!, { schema });
+    const fixture = await pool!.query<{
+      org_id: string;
+      repository_id: string;
+      first_review_id: string;
+      second_review_id: string;
+    }>(`
+      WITH org AS (
+        INSERT INTO organizations (slug, name) VALUES ('unpriced-review', 'Unpriced Review') RETURNING id
+      ), installation AS (
+        INSERT INTO installations (github_installation_id, account_login, account_type, org_id)
+        SELECT 99417, 'unpriced-review', 'Organization', id FROM org RETURNING id, org_id
+      ), repository AS (
+        INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+        SELECT id, 99418, 'unpriced-review/private', true, true FROM installation RETURNING id
+      ), reviews AS (
+        INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status)
+        SELECT id, 1, 'unpriced-review-1', 'base', 'running'::review_status FROM repository
+        UNION ALL
+        SELECT id, 2, 'unpriced-review-2', 'base', 'running'::review_status FROM repository
+        RETURNING id, pr_number
+      ), entitlement AS (
+        INSERT INTO organization_entitlements (
+          org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents, updated_by
+        ) SELECT org_id, 'hosted', 'active', 3000000, 0, 300, 0, 'test' FROM installation
+      )
+      SELECT installation.org_id, repository.id AS repository_id,
+        min(reviews.id) FILTER (WHERE reviews.pr_number = 1) AS first_review_id,
+        min(reviews.id) FILTER (WHERE reviews.pr_number = 2) AS second_review_id
+      FROM installation, repository, reviews
+      GROUP BY installation.org_id, repository.id;
+    `);
+    const row = fixture.rows[0]!;
+    const first = await reserveHostedReviewSpend(db, {
+      orgId: Number(row.org_id),
+      reviewId: Number(row.first_review_id),
+      usesByok: false,
+    });
+    expect(first.allowed).toBe(true);
+    expect(await persistReviewCompletion(db, {
+      reviewId: Number(row.first_review_id),
+      envelope: { version: 1 } as Envelope,
+      configFiles: [],
+      silent: true,
+      gateFailing: false,
+      usage: [
+        {
+          orgId: Number(row.org_id), repositoryId: Number(row.repository_id),
+          promptTokens: 100, completionTokens: 10, modelUsed: "known-model",
+          costMicros: 125, billingScope: "private_hosted",
+        },
+        {
+          orgId: Number(row.org_id), repositoryId: Number(row.repository_id),
+          promptTokens: 50, completionTokens: 5, modelUsed: "unknown-model",
+          costMicros: null, billingScope: "private_hosted",
+        },
+      ],
+      hostedUsageReservationId: first.reservationId,
+      usageAccountingComplete: true,
+    })).toBe(true);
+    const usage = await pool!.query<{ null_costs: number; total_micros: string }>(
+      `SELECT count(*) FILTER (WHERE cost_micros IS NULL)::int AS null_costs,
+              sum(cost_micros)::bigint AS total_micros
+       FROM usage_events WHERE review_id = $1 AND billing_scope = 'private_hosted'`,
+      [row.first_review_id],
+    );
+    expect(usage.rows[0]).toEqual({ null_costs: 0, total_micros: "1000000" });
+    const second = await reserveHostedReviewSpend(db, {
+      orgId: Number(row.org_id),
+      reviewId: Number(row.second_review_id),
+      usesByok: false,
+    });
+    expect(second).toMatchObject({ allowed: true, committedMicros: 1_000_000 });
+  });
+
+  test("unpriced hosted response charges one reservation without poisoning later capacity", async () => {
+    const db = drizzle(pool!, { schema });
+    const fixture = await pool!.query<{ org_id: string; repository_id: string }>(`
+      WITH org AS (
+        INSERT INTO organizations (slug, name) VALUES ('unpriced-respond', 'Unpriced Respond') RETURNING id
+      ), installation AS (
+        INSERT INTO installations (github_installation_id, account_login, account_type, org_id)
+        SELECT 99517, 'unpriced-respond', 'Organization', id FROM org RETURNING id, org_id
+      ), repository AS (
+        INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+        SELECT id, 99518, 'unpriced-respond/private', true, true FROM installation RETURNING id
+      ), entitlement AS (
+        INSERT INTO organization_entitlements (
+          org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents, updated_by
+        ) SELECT org_id, 'hosted', 'active', 3000000, 0, 300, 0, 'test' FROM installation
+      )
+      SELECT installation.org_id, repository.id AS repository_id FROM installation, repository;
+    `);
+    const row = fixture.rows[0]!;
+    const first = await reserveHostedRespondSpend(db, {
+      orgId: Number(row.org_id), usesByok: false,
+    });
+    expect(first.allowed).toBe(true);
+    await reconcileHostedRespondSpend(db, {
+      reservationId: first.reservationId!,
+      repositoryId: Number(row.repository_id),
+      promptTokens: 80,
+      completionTokens: 8,
+      modelUsed: "unknown-model",
+      actualMicros: null,
+      usageAccountingComplete: true,
+    });
+    const usage = await pool!.query<{ null_costs: number; total_micros: string }>(
+      `SELECT count(*) FILTER (WHERE cost_micros IS NULL)::int AS null_costs,
+              sum(cost_micros)::bigint AS total_micros
+       FROM usage_events
+       WHERE org_id = $1 AND repository_id = $2 AND review_id IS NULL
+         AND billing_scope = 'private_hosted'`,
+      [row.org_id, row.repository_id],
+    );
+    expect(usage.rows[0]).toEqual({ null_costs: 0, total_micros: "1000000" });
+    const second = await reserveHostedRespondSpend(db, {
+      orgId: Number(row.org_id), usesByok: false,
+    });
+    expect(second).toMatchObject({ allowed: true, committedMicros: 1_000_000 });
+  });
+
   test("BYOK respond bypasses hosted reservations", async () => {
     const db = drizzle(pool!, { schema });
     await pool!.query(
