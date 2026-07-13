@@ -236,6 +236,7 @@ describe("buildCliEnv", () => {
       POSTIL_PREVENTION_COMMANDS_JSON: "[]",
       POSTIL_API_BASE: "https://openrouter.ai/api/v1",
       POSTIL_API_FORMAT: "anthropic",
+      POSTIL_HOSTED_MODE: "0",
       POSTIL_ENDPOINT_AUTH_HEADER: "CF-Access-Client-Secret",
       POSTIL_ENDPOINT_AUTH_VALUE: "gateway-key",
       POSTIL_LLM_REQUEST_TIMEOUT_SECS: "420",
@@ -275,6 +276,7 @@ describe("buildCliEnv", () => {
     expect(env).toMatchObject({
       POSTIL_LLM_REQUEST_TIMEOUT_SECS: "90",
       POSTIL_LLM_TOTAL_TIMEOUT_SECS: "360",
+      POSTIL_HOSTED_MODE: "1",
       POSTIL_ENDPOINT_AUTH_HEADER: "",
       POSTIL_ENDPOINT_AUTH_VALUE: "",
       POSTIL_PREVENTION_HINT: "0",

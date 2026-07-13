@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyOperationalModelIncidents,
   computeEffectiveGate,
+  hasLegacyCombinedModelUsage,
   ingestEnvelope,
   type Envelope,
 } from "@/lib/envelope";
@@ -231,6 +232,34 @@ describe("envelope ingestion", () => {
     expect(() => ingestEnvelope(JSON.stringify(mismatched))).toThrow(
       /per-model token totals must match aggregate usage/,
     );
+  });
+
+  test("identifies only scorer runs that predate per-model usage attribution", () => {
+    const legacy = validEnvelope({ scorerModel: "independent/model" });
+    expect(hasLegacyCombinedModelUsage(legacy)).toBe(true);
+    expect(
+      hasLegacyCombinedModelUsage(
+        validEnvelope({ scorerError: "independent check failed" }),
+      ),
+    ).toBe(true);
+    expect(
+      hasLegacyCombinedModelUsage({
+        ...legacy,
+        modelUsage: [
+          {
+            model: "reviewer/model",
+            promptTokens: 4000,
+            completionTokens: 300,
+          },
+          {
+            model: "independent/model",
+            promptTokens: 200,
+            completionTokens: 10,
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(hasLegacyCombinedModelUsage(validEnvelope())).toBe(false);
   });
 
   test("ingests a silent envelope", () => {

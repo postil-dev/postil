@@ -17,8 +17,7 @@ TRUSTED_HOME='__TRUSTED_HOME__'
 
 zero_sha=0000000000000000000000000000000000000000
 local_primary_model=mistralai/mistral-small-3.2-24b-instruct
-local_fallback_model=google/gemma-3-27b-it
-local_scorer_model=anthropic/claude-haiku-4.5
+local_fallback_models=google/gemma-3-27b-it,qwen/qwen3-32b
 remote_name=${1:-origin}
 cached_openrouter_api_key=${OPENROUTER_API_KEY:-}
 unset OPENROUTER_API_KEY MODEL_API_KEY POSTIL_API_KEY BASH_ENV ENV
@@ -207,6 +206,11 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
   fi
   if [ -n "$CREDENTIAL_WRAPPER" ]; then
     (cd "$worktree_path" && /usr/bin/env -i HOME="$TRUSTED_HOME" PATH="$TRUSTED_PATH" \
+      POSTIL_API_BASE=https://openrouter.ai/api/v1 \
+      POSTIL_API_FORMAT=openai-compatible \
+      POSTIL_HOSTED_MODE=1 \
+      REVIEW_MODEL_CASCADE="$local_fallback_models" \
+      REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \
       "$CREDENTIAL_WRAPPER" "$POSTIL_EXECUTABLE" review --base "$base_sha" --no-post \
       --output json --fail-on info --model "$local_primary_model") >"$output_file"
   else
@@ -221,9 +225,10 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
       HOME="$temporary_root/home" PATH="$TRUSTED_PATH" \
       POSTIL_API_BASE=https://openrouter.ai/api/v1 \
       POSTIL_API_FORMAT=openai-compatible \
+      POSTIL_HOSTED_MODE=1 \
       REVIEW_MODEL="$local_primary_model" \
-      REVIEW_MODEL_CASCADE="$local_fallback_model" \
-      REVIEW_SCORER_MODEL="$local_scorer_model" \
+      REVIEW_MODEL_CASCADE="$local_fallback_models" \
+      REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \
       POSTIL_KEY_FILE="$key_file" POSTIL_EXECUTABLE="$POSTIL_EXECUTABLE" \
       POSTIL_BASE_SHA="$base_sha" POSTIL_PRIMARY_MODEL="$local_primary_model" \
       /bin/sh -c '
@@ -240,7 +245,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
   [ "$review_status" -le 1 ] || fail_setup "local review did not complete for $local_ref ($local_sha)"
   [ -s "$output_file" ] || fail_setup "local review produced no result"
   validate_envelope "$output_file" "$merge_base_sha" "$head_sha" ||
-    fail_setup "local review result does not match the Postil v0.5 envelope contract or reviewed SHAs"
+    fail_setup "local review result does not match the Postil v0.6 envelope contract or reviewed SHAs"
   finding_count=$("$JQ_EXECUTABLE" -er '.findings | length' "$output_file") ||
     fail_setup "could not read local review findings"
   if [ "$finding_count" -gt 0 ]; then

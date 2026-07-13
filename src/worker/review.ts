@@ -82,6 +82,10 @@ export function buildCliEnv(
     ...baseEnv,
     POSTIL_API_BASE: llm.apiBase,
     POSTIL_API_FORMAT: llm.apiFormat,
+    // Hosted inference always uses the roster baked into the pinned CLI.
+    // Repository model settings are accepted only when the organization has
+    // supplied its own provider credentials.
+    POSTIL_HOSTED_MODE: llm.byok ? "0" : "1",
     // Always shadow process.env. A BYOK endpoint without additional auth must
     // never inherit the hosted gateway credential when runCli merges envs.
     POSTIL_ENDPOINT_AUTH_HEADER: llm.apiAuthHeader ?? "",
@@ -204,6 +208,91 @@ interface CliResult {
 
 interface CliObservers {
   onStderrLine?: (line: string) => void;
+}
+
+const POSTIL_CLI_VERSION_TIMEOUT_MS = 3_000;
+const POSTIL_CLI_VERSION_OUTPUT_MAX_BYTES = 256;
+const POSTIL_CLI_VERSION_PATTERN =
+  /^postil\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;
+const postilCliVersionCache = new Map<string, Promise<string>>();
+
+/** Probe the immutable worker binary without forwarding process credentials. */
+export function probePostilCliVersion(
+  executable: string,
+  timeoutMs = POSTIL_CLI_VERSION_TIMEOUT_MS,
+): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const safeEnvironment = (process.env.PATH
+      ? { PATH: process.env.PATH }
+      : {}) as NodeJS.ProcessEnv;
+    const child = spawn(executable, ["--version"], {
+      env: safeEnvironment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stdoutBytes = 0;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const reject = (message: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectPromise(new OperationalError(message));
+    };
+    const resolve = (version: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(version);
+    };
+
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(`postil CLI version probe timed out after ${timeoutMs}ms`);
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > POSTIL_CLI_VERSION_OUTPUT_MAX_BYTES) {
+        child.kill("SIGKILL");
+        reject("postil CLI version probe exceeded its output limit");
+        return;
+      }
+      stdout += chunk.toString();
+    });
+    child.stderr.resume();
+    child.on("error", () => {
+      reject("failed to start postil CLI version probe");
+    });
+    child.on("close", (exitCode) => {
+      if (settled) return;
+      if (exitCode !== 0) {
+        reject(`postil CLI version probe exited with code ${exitCode ?? "unknown"}`);
+        return;
+      }
+      const match = POSTIL_CLI_VERSION_PATTERN.exec(stdout.trim());
+      if (!match?.[1]) {
+        reject("postil CLI version probe returned unrecognized output");
+        return;
+      }
+      resolve(match[1]);
+    });
+  });
+}
+
+export async function postilCliVersionLogLine(): Promise<string> {
+  const executable = optionalEnv("POSTIL_BIN", "postil") as string;
+  let version = postilCliVersionCache.get(executable);
+  if (!version) {
+    // A broken or missing binary should not add the full probe timeout to every
+    // queued review. Cache the safe sentinel just like a successful version.
+    version = probePostilCliVersion(executable).catch(() => "unavailable");
+    postilCliVersionCache.set(executable, version);
+  }
+  return `postil CLI version ${await version}`;
 }
 
 const REVIEW_LOG_FLUSH_MS = 1_000;
@@ -488,6 +577,7 @@ export async function runReviewJob(
   let hostedUsageReservationId: string | null = null;
 
   try {
+    reviewLog.line(await postilCliVersionLogLine());
     const spendReservation = currentRepository.private
       ? await reserveHostedReviewSpend(db, {
           orgId: installation.orgId,

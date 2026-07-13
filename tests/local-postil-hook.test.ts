@@ -69,8 +69,10 @@ describe("trusted local Postil pre-push hook", () => {
       base: remoteBase,
       head: topicHead,
       model: "mistralai/mistral-small-3.2-24b-instruct",
-      cascade: "google/gemma-3-27b-it",
-      scorer: "anthropic/claude-haiku-4.5",
+      cascade: "google/gemma-3-27b-it,qwen/qwen3-32b",
+      scorer: "",
+      scorerDisabled: "1",
+      hostedMode: "1",
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
       modelCredential: "present",
@@ -79,7 +81,20 @@ describe("trusted local Postil pre-push hook", () => {
     expect(await refExists(fixture.remote, "refs/heads/topic")).toBe(true);
   });
 
-  test("accepts the v0.5 empty-diff envelope with a null baseSha", async () => {
+  test("rejects a prerelease that can predate the hosted-mode contract", async () => {
+    const fixture = await createFixture("prerelease-version");
+    await writeFile(
+      fixture.postil,
+      "#!/bin/sh\nprintf 'postil 0.6.0-alpha.1\\n'\n",
+      { mode: 0o755 },
+    );
+
+    await expect(installHook(fixture, fixture.repository, true)).rejects.toThrow(
+      "requires Postil v0.6.0 or newer",
+    );
+  });
+
+  test("accepts the v0.6 empty-diff envelope with a null baseSha", async () => {
     const fixture = await createFixture("empty-diff");
     const head = await gitCapture(fixture.repository, ["rev-parse", "HEAD"]);
     await installHook(fixture, fixture.repository, true);
@@ -139,7 +154,7 @@ describe("trusted local Postil pre-push hook", () => {
     const fixture = await createFixture("hostile-environment");
     await writeFile(
       join(fixture.repository, ".postil.yaml"),
-      "model: attacker/expensive\napiBase: https://attacker.invalid/v1\n",
+      "model:\n  name: attacker/expensive\n  cascade:\n    - attacker/fallback\n  scorer: attacker/scorer\n  apiBase: https://attacker.invalid/v1\n  apiFormat: anthropic\n  consensus: 3\n",
     );
     await git(fixture.repository, ["add", ".postil.yaml"]);
     await commit(fixture.repository, "topic", "hostile config\n");
@@ -170,8 +185,10 @@ describe("trusted local Postil pre-push hook", () => {
     expect(result.exitCode).toBe(0);
     const record = await readRecord(fixture);
     expect(record.model).toBe("mistralai/mistral-small-3.2-24b-instruct");
-    expect(record.cascade).toBe("google/gemma-3-27b-it");
-    expect(record.scorer).toBe("anthropic/claude-haiku-4.5");
+    expect(record.cascade).toBe("google/gemma-3-27b-it,qwen/qwen3-32b");
+    expect(record.scorer).toBe("");
+    expect(record.scorerDisabled).toBe("1");
+    expect(record.hostedMode).toBe("1");
     expect(record.apiBase).toBe("https://openrouter.ai/api/v1");
     expect(record.apiFormat).toBe("openai-compatible");
     expect(record.awsCredential).toBe("absent");
@@ -242,7 +259,7 @@ describe("trusted local Postil pre-push hook", () => {
       expect(await refExists(fixture.remote, `refs/heads/${mode}`)).toBe(false);
       if (mode === "finding") expect(result.stderr).toContain("require triage");
       if (mode === "provider-error") expect(result.stderr).toContain("did not complete");
-      if (mode === "malformed") expect(result.stderr).toContain("v0.5 envelope contract");
+      if (mode === "malformed") expect(result.stderr).toContain("v0.6 envelope contract");
     }
   });
 
@@ -418,7 +435,7 @@ async function writeFakeCommands(
   await writeFile(
     postil,
     `#!/bin/bash
-if [[ "\${1:-}" == "--version" ]]; then echo 'postil 0.5.0'; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo 'postil 0.6.0'; exit 0; fi
 base=
 model=
 invocation="\$*"
@@ -434,8 +451,8 @@ merge_base=\$(git merge-base "\$base" "\$head")
 mode=\$(< '${paths.modeFile}')
 aws=absent; [[ -n "\${AWS_SECRET_ACCESS_KEY+x}" ]] && aws=present
 credential=absent; [[ -n "\${MODEL_API_KEY:-}\${POSTIL_API_KEY:-}\${OPENROUTER_API_KEY:-}" ]] && credential=present
-printf '{"base":"%s","head":"%s","model":"%s","cascade":"%s","scorer":"%s","apiBase":"%s","apiFormat":"%s","awsCredential":"%s","modelCredential":"%s","credentialValue":"%s","invocation":"%s"}\n' \
-  "\$base" "\$head" "\$model" "\$REVIEW_MODEL_CASCADE" "\$REVIEW_SCORER_MODEL" "\$POSTIL_API_BASE" "\$POSTIL_API_FORMAT" "\$aws" "\$credential" "\${MODEL_API_KEY:-}" "\$invocation" >>'${paths.log}'
+printf '{"base":"%s","head":"%s","model":"%s","cascade":"%s","scorer":"%s","scorerDisabled":"%s","hostedMode":"%s","apiBase":"%s","apiFormat":"%s","awsCredential":"%s","modelCredential":"%s","credentialValue":"%s","invocation":"%s"}\n' \
+  "\$base" "\$head" "\$model" "\$REVIEW_MODEL_CASCADE" "\$REVIEW_SCORER_MODEL" "\$POSTIL_DISABLE_SCORER" "\$POSTIL_HOSTED_MODE" "\$POSTIL_API_BASE" "\$POSTIL_API_FORMAT" "\$aws" "\$credential" "\${MODEL_API_KEY:-}" "\$invocation" >>'${paths.log}'
 if [[ "\$mode" == provider-error ]]; then exit 2; fi
 if [[ "\$mode" == malformed ]]; then echo '{"findings":[]}'; exit 0; fi
 if git diff --quiet "\$base...\$head"; then base_value=null; base_quote=; model_used='none (empty diff)'; else base_value="\$merge_base"; base_quote='"'; model_used="\$model"; fi

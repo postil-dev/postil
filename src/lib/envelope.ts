@@ -170,6 +170,17 @@ export type SuppressedFinding = z.infer<typeof suppressedFindingSchema>;
 export type ModelIncident = z.infer<typeof modelIncidentSchema>;
 export type Envelope = z.infer<typeof envelopeSchema>;
 
+export const LEGACY_COMBINED_USAGE_NOTICE =
+  "This run records one token total that may combine reviewer and independent-check calls. Its older envelope cannot split usage by model.";
+
+/** Older envelopes aggregate scorer tokens under the reviewer model. */
+export function hasLegacyCombinedModelUsage(envelope: Envelope): boolean {
+  return (
+    envelope.modelUsage === undefined &&
+    Boolean(envelope.scorerModel || envelope.scorerError?.trim())
+  );
+}
+
 export type OperationalModelIncidentCategory = ModelIncident["category"] | "operational";
 export type OperationalModelIncidentSource =
   | "model_incident"

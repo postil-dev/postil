@@ -5,11 +5,17 @@ import ReactMarkdown from "react-markdown";
 
 import { and, eq, isNotNull } from "drizzle-orm";
 
+import {
+  FindingConfidenceDetails,
+  FindingConfidenceLabel,
+} from "@/components/finding-confidence";
 import { GateBadge } from "@/components/review-status";
 import { MODELS } from "@/data/models";
 import { schema } from "@/lib/db";
 import {
   envelopeSchema,
+  hasLegacyCombinedModelUsage,
+  LEGACY_COMBINED_USAGE_NOTICE,
   type Finding,
   type SuppressionReason,
 } from "@/lib/envelope";
@@ -171,17 +177,7 @@ function FindingCard({
         <span className="font-mono text-[11px] text-charcoal/60">
           {findingKindLabel(finding.kind)}
         </span>
-        <span className="font-mono text-[11px] text-charcoal/60">
-          confidence {finding.confidence.toFixed(2)}
-        </span>
-        {finding.scorerConfidence !== undefined && (
-          <span
-            className="font-mono text-[11px] text-charcoal/60"
-            title={finding.scorerReason || undefined}
-          >
-            scorer {finding.scorerConfidence.toFixed(2)}
-          </span>
-        )}
+        <FindingConfidenceLabel finding={finding} />
         <a
           href={githubFileUrl(repoFullName, headSha, finding.path, finding.line, finding.endLine)}
           rel="noopener"
@@ -199,12 +195,7 @@ function FindingCard({
       <div className="mt-2 text-sm leading-relaxed text-ink-soft">
         <FindingMarkdown>{finding.body}</FindingMarkdown>
       </div>
-      {finding.scorerReason && (
-        <details className="mt-3 text-xs text-charcoal/60">
-          <summary className="cursor-pointer font-medium">Scorer assessment</summary>
-          <p className="mt-1">{finding.scorerReason}</p>
-        </details>
-      )}
+      <FindingConfidenceDetails finding={finding} />
     </article>
   );
 }
@@ -511,10 +502,10 @@ export default async function RunDetailPage({
             </a>
           </RunFact>
           <RunFact label="Model">{envelope?.modelUsed ?? "Not recorded"}</RunFact>
-          {envelope?.scorerModel && (
-            <RunFact label="Scorer">
-              {envelope.scorerModel}
-              {envelope.scorerDisagreements !== undefined
+          {(envelope?.scorerModel || envelope?.scorerError) && (
+            <RunFact label="Independent check">
+              {envelope.scorerModel ?? "Unavailable; reviewer confidence retained"}
+              {envelope.scorerModel && envelope.scorerDisagreements !== undefined
                 ? ` · ${envelope.scorerDisagreements} disagreement${envelope.scorerDisagreements === 1 ? "" : "s"}`
                 : ""}
             </RunFact>
@@ -719,6 +710,11 @@ export default async function RunDetailPage({
                   <span className="font-medium text-charcoal">
                     {formatEstimatedCost(estimatedCost)}
                   </span>
+                </p>
+              )}
+              {envelope && hasLegacyCombinedModelUsage(envelope) && (
+                <p className="border-t border-stone px-4 py-3 text-xs text-charcoal/60">
+                  {LEGACY_COMBINED_USAGE_NOTICE}
                 </p>
               )}
             </div>

@@ -73,11 +73,26 @@ console.log("fixture-key");
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
       model: "mistralai/mistral-small-3.2-24b-instruct",
-      cascade: "google/gemma-3-27b-it",
-      scorer: "anthropic/claude-haiku-4.5",
+      cascade: "google/gemma-3-27b-it,qwen/qwen3-32b",
+      scorer: undefined,
+      scorerDisabled: "1",
+      hostedMode: "1",
       endpointAuthPresent: false,
       configApiBaseAllowed: false,
     });
+  }, 120_000);
+
+  test("rejects a prerelease that can predate the hosted-mode contract", async () => {
+    const repo = await createFixtureRepo("prerelease-version");
+    const prereleasePostil = join(dir, "prerelease-postil");
+    await writeFile(prereleasePostil, "#!/bin/sh\nprintf 'postil 0.6.0-alpha.1\\n'\n", {
+      mode: 0o755,
+    });
+
+    const result = await runLocalReview(repo, "0", 2, {
+      env: { POSTIL_BIN: prereleasePostil },
+    });
+    expect(result.stderr).toContain("requires Postil v0.6.0 or newer");
   }, 120_000);
 
   test("loads only the local OpenRouter credential when no key is exported", async () => {
@@ -144,7 +159,7 @@ console.log("fixture-key");
       },
     });
 
-    expect(result.stderr).toMatch(/git|Postil binary/i);
+    expect(result.stderr).toMatch(/git|Postil (?:binary|v0\.6)/i);
     expect(await Bun.file(shadowMarker).exists()).toBe(false);
   }, 120_000);
 
@@ -413,7 +428,7 @@ function fakePostilSource(): string {
   return `#!/usr/bin/env bun
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
-  console.log("postil 0.5.0");
+  console.log("postil 0.6.0");
   process.exit(0);
 }
 if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {
@@ -428,6 +443,8 @@ if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {
     model: process.env.REVIEW_MODEL,
     cascade: process.env.REVIEW_MODEL_CASCADE,
     scorer: process.env.REVIEW_SCORER_MODEL,
+    scorerDisabled: process.env.POSTIL_DISABLE_SCORER,
+    hostedMode: process.env.POSTIL_HOSTED_MODE,
     endpointAuthPresent: Boolean(process.env.POSTIL_ENDPOINT_AUTH_HEADER || process.env.POSTIL_ENDPOINT_AUTH_VALUE),
     configApiBaseAllowed: Boolean(process.env.POSTIL_ALLOW_CONFIG_API_BASE),
   }));

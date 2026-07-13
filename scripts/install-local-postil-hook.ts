@@ -62,9 +62,14 @@ export async function installLocalPostilHook(
     "postil",
   );
   const version = await run(postilExecutable, ["--version"]);
-  if (version.exitCode !== 0 || !/^postil 0\.5\./m.test(version.stdout.trim())) {
+  const versionMatch = /^postil (\d+)\.(\d+)\.(\d+)(?:\+[^\s]+)?$/m.exec(version.stdout.trim());
+  const supported =
+    version.exitCode === 0 &&
+    versionMatch !== null &&
+    (Number(versionMatch[1]) > 0 || Number(versionMatch[2]) >= 6);
+  if (!supported) {
     throw new Error(
-      `local pre-push review requires Postil v0.5.x; ${postilExecutable} reported ${JSON.stringify(version.stdout.trim())}`,
+      `local pre-push review requires Postil v0.6.0 or newer; ${postilExecutable} reported ${JSON.stringify(version.stdout.trim())}`,
     );
   }
 

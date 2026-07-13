@@ -7,10 +7,10 @@ import { persistReviewCompletion } from "@/lib/review-completion";
 
 function fakeDb(reviewUpdated = true): {
   db: Database;
-  inserted: Array<{ table: unknown; values: Record<string, unknown> }>;
+  inserted: Array<{ table: unknown; values: unknown }>;
   transactions: number;
 } {
-  const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+  const inserted: Array<{ table: unknown; values: unknown }> = [];
   let transactions = 0;
   const tx = {
     update() {
@@ -29,7 +29,7 @@ function fakeDb(reviewUpdated = true): {
     },
     insert(table: unknown) {
       return {
-        values(values: Record<string, unknown>) {
+        values(values: unknown) {
           inserted.push({ table, values });
           return Promise.resolve();
         },
@@ -89,6 +89,11 @@ describe("review completion transaction", () => {
     expect(completed).toBe(true);
     expect(state.transactions).toBe(1);
     expect(state.inserted.filter((row) => row.table === schema.usageEvents)).toHaveLength(1);
+    const usageInsert = state.inserted.find((row) => row.table === schema.usageEvents);
+    expect(usageInsert?.values).toEqual([
+      { ...base.usage[0], reviewId: 7 },
+      { ...base.usage[1], reviewId: 7 },
+    ]);
     expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(0);
   });
 
