@@ -82,50 +82,19 @@ const base = {
 };
 
 describe("review completion transaction", () => {
-  test("atomically records usage and exactly one escalation outbox job", async () => {
+  test("atomically records review usage without a notification outbox", async () => {
     const state = fakeDb();
-    const completed = await persistReviewCompletion(state.db, {
-      ...base,
-      escalationJob: {
-        reviewPublicId: "00000000-0000-0000-0000-000000000007",
-        repoFullName: "octo/repo",
-        prNumber: 9,
-        runUrl: "https://postil.dev/orgs/octo/runs/7",
-      },
-    });
+    const completed = await persistReviewCompletion(state.db, base);
 
     expect(completed).toBe(true);
     expect(state.transactions).toBe(1);
     expect(state.inserted.filter((row) => row.table === schema.usageEvents)).toHaveLength(1);
-    const jobs = state.inserted.filter((row) => row.table === schema.jobs);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0]?.values).toMatchObject({
-      kind: "escalation-notification",
-      maxAttempts: 5,
-      payload: { reviewId: 7, repoFullName: "octo/repo", prNumber: 9 },
-    });
-  });
-
-  test("records no outbox job for a review without a new qualifying escalation", async () => {
-    const state = fakeDb();
-    expect(await persistReviewCompletion(state.db, base)).toBe(true);
-    expect(state.inserted.filter((row) => row.table === schema.usageEvents)).toHaveLength(1);
     expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(0);
   });
 
-  test("records neither accounting nor notification after losing the completion race", async () => {
+  test("records no accounting after losing the completion race", async () => {
     const state = fakeDb(false);
-    expect(
-      await persistReviewCompletion(state.db, {
-        ...base,
-        escalationJob: {
-          reviewPublicId: "00000000-0000-0000-0000-000000000007",
-          repoFullName: "octo/repo",
-          prNumber: 9,
-          runUrl: "https://postil.dev/orgs/octo/runs/7",
-        },
-      }),
-    ).toBe(false);
+    expect(await persistReviewCompletion(state.db, base)).toBe(false);
     expect(state.inserted).toEqual([]);
   });
 });

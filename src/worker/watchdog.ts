@@ -77,7 +77,11 @@ export async function watchdogPass(
   await pool.query(
     `WITH updated AS (
        UPDATE jobs
-       SET status = CASE WHEN attempts < max_attempts THEN 'queued'::job_status ELSE 'failed'::job_status END,
+       SET status = CASE
+             WHEN kind = 'gate-state-sync' OR attempts < max_attempts
+               THEN 'queued'::job_status
+             ELSE 'failed'::job_status
+           END,
            locked_at = NULL, locked_by = NULL,
            last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
        WHERE status = 'running' AND locked_at < $1

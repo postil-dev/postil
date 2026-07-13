@@ -213,8 +213,9 @@ jobs:
       - name: Activate release job kinds after fleet replacement
         # Migration 0020 stages new job kinds with an infinite
         # run_after. This runs only after flyctl deploy has replaced the managed
-        # fleet, so no pre-capability worker can claim them. It backfills
-        # existing recipients before atomically releasing every staged job. A
+        # fleet, so no pre-capability worker can claim them. It retires the
+        # quiesced escalation-email state, backfills billing contacts, then
+        # atomically releases every staged supported job. A
         # failure leaves jobs safely staged and fails the workflow for a retry.
         timeout-minutes: 5
         run: |

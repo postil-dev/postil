@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
@@ -6,6 +6,7 @@ import {
   computeEffectiveGate,
   envelopeSchema,
   findingStableId,
+  qualifiesHumanEscalation,
   type EffectiveGateState,
   type Envelope,
   type Finding,
@@ -77,6 +78,11 @@ export interface ApprovalInsert {
   sourceUrl?: string | null;
 }
 
+export interface GateStateSyncJobPayload extends Record<string, unknown> {
+  reviewId: number;
+  reviewPublicId: string;
+}
+
 export function validateApprovalRationale(value: string): string {
   const rationale = value.trim();
   if (rationale.length === 0) throw new Error("approval rationale is required");
@@ -121,7 +127,15 @@ export async function getReviewApprovalState(
     if (!latestByFinding.has(approval.findingId)) latestByFinding.set(approval.findingId, approval);
     if (!approval.revokedAt) activeByFinding.set(approval.findingId, approval);
   }
-  const activeIds = new Set(activeByFinding.keys());
+  const approvableIds = new Set(
+    (envelope?.findings ?? []).flatMap((finding) => {
+      const findingId = findingStableId(finding);
+      return findingId && qualifiesHumanEscalation(finding) ? [findingId] : [];
+    }),
+  );
+  const activeIds = new Set(
+    Array.from(activeByFinding.keys()).filter((findingId) => approvableIds.has(findingId)),
+  );
   const effectiveGate = computeEffectiveGate(envelope, activeIds, review.engineGateFailing ?? false);
   const blockById = new Map(
     effectiveGate.kindBlockers
@@ -132,6 +146,7 @@ export async function getReviewApprovalState(
     .map((finding) => {
       const findingId = findingStableId(finding);
       if (!findingId) return null;
+      if (!qualifiesHumanEscalation(finding)) return null;
       const blockState = blockById.get(findingId);
       if (!blockState?.kindBlocking) return null;
       const state: FindingApprovalState = {
@@ -147,6 +162,28 @@ export async function getReviewApprovalState(
     })
     .filter((state): state is FindingApprovalState => state !== null);
   return { review, effectiveGate, findingStates };
+}
+
+export async function enqueueGateStateSync(
+  db: Database,
+  review: Pick<ReviewForApproval, "id" | "publicId">,
+): Promise<void> {
+  const payload: GateStateSyncJobPayload = {
+    reviewId: review.id,
+    reviewPublicId: review.publicId,
+  };
+  await db.insert(schema.jobs).values({
+    kind: "gate-state-sync",
+    payload,
+    maxAttempts: 5,
+  });
+}
+
+export async function lockReviewApprovalState(
+  db: Database,
+  reviewId: number,
+): Promise<void> {
+  await db.execute(sql`SELECT pg_advisory_xact_lock(${reviewId})`);
 }
 
 export async function updateStoredEffectiveGate(
@@ -198,20 +235,6 @@ export async function revokeFindingApproval(
     )
     .returning({ id: schema.findingApprovals.id });
   return rows[0]?.id ?? null;
-}
-
-export async function deleteApprovalById(db: Database, approvalId: string): Promise<void> {
-  await db.delete(schema.findingApprovals).where(eq(schema.findingApprovals.id, approvalId));
-}
-
-export async function restoreRevokedApprovalById(
-  db: Database,
-  approvalId: string,
-): Promise<void> {
-  await db
-    .update(schema.findingApprovals)
-    .set({ revokedAt: null, revokedByUserId: null })
-    .where(and(eq(schema.findingApprovals.id, approvalId), isNotNull(schema.findingApprovals.revokedAt)));
 }
 
 export async function loadLatestCompletedReviewForPr(

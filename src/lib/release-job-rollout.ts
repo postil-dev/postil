@@ -1,7 +1,6 @@
 import type { Pool } from "pg";
 
 export const RELEASE_V1_JOB_KINDS = [
-  "escalation-email-verification",
   "billing-contact-verification",
   "respond-delivery",
 ] as const;

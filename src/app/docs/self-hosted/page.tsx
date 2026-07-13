@@ -155,12 +155,11 @@ docker compose exec web bun run db:migrate`}</code>
           to run.
         </li>
         <li>
-          <code>BREVO_API_KEY</code> enables transactional email for genuine
-          human-escalation findings. An organization administrator sets the
-          organization-owned recipient in dashboard settings. The sender defaults to{" "}
+          <code>BREVO_API_KEY</code> enables billing-contact verification email.
+          The sender defaults to{" "}
           <code>reviews@mail.postil.dev</code> and can be changed with{" "}
-          <code>POSTIL_ESCALATION_FROM_EMAIL</code> and{" "}
-          <code>POSTIL_ESCALATION_FROM_NAME</code>.
+          <code>POSTIL_EMAIL_FROM_EMAIL</code> and{" "}
+          <code>POSTIL_EMAIL_FROM_NAME</code>.
         </li>
       </ul>
 

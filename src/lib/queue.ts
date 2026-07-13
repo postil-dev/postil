@@ -224,6 +224,24 @@ export async function failJob(
   return (res.rowCount ?? 0) > 0 ? "failed" : "lost";
 }
 
+/** Requeue reconciliation work until its target state is superseded or published. */
+export async function retryJobIndefinitely(
+  pool: Pool,
+  job: Pick<ClaimedJob, "id" | "attempts" | "lockedBy">,
+  error: string,
+): Promise<"retried" | "lost"> {
+  const redactedError = redactAndTruncate(error, 2000);
+  const delay = backoffMs(job.attempts);
+  const res = await pool.query(
+    `UPDATE jobs
+     SET status = 'queued', locked_at = NULL, locked_by = NULL,
+         last_error = $2, run_after = now() + ($3 || ' milliseconds')::interval
+     WHERE id = $1 AND status = 'running' AND locked_by = $4`,
+    [job.id, redactedError, String(delay), job.lockedBy],
+  );
+  return (res.rowCount ?? 0) > 0 ? "retried" : "lost";
+}
+
 export async function queueDepth(pool: Pool): Promise<number> {
   const res = await pool.query<{ count: string }>(
     `SELECT count(*)::text AS count FROM jobs WHERE status = 'queued'`,

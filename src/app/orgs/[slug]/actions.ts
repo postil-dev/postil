@@ -19,24 +19,17 @@ import {
 } from "@/lib/byok-provider";
 import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
-import {
-  createEscalationEmailVerification,
-  ESCALATION_EMAIL_RESEND_COOLDOWN_MS,
-  escalationEmailVerificationJobPayload,
-  normalizeEscalationEmail,
-} from "@/lib/escalation-email-verification";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
 import { getSessionUser } from "@/lib/session";
 import {
-  deleteApprovalById,
+  enqueueGateStateSync,
   findKindBlockingState,
-  formatRemainingGateBlockers,
   getReviewApprovalState,
   hasNewerCompletedReviewForHead,
   insertFindingApproval,
+  lockReviewApprovalState,
   loadReviewForApprovalByPublicId,
-  restoreRevokedApprovalById,
   revokeFindingApproval,
   updateStoredEffectiveGate,
   type ReviewForApproval,
@@ -457,18 +450,6 @@ export async function saveOrgSettings(
   const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
   const contentPolicyMd =
     contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
-  let requestedEscalationEmail: string | null;
-  try {
-    requestedEscalationEmail = normalizeEscalationEmail(
-      String(formData.get("escalationEmail") ?? ""),
-    );
-  } catch (error) {
-    return {
-      status: "error",
-      message: error instanceof Error ? error.message : "Enter a valid notification email.",
-    };
-  }
-
   if (configYaml) {
     try {
       validateOrgConfigYaml(configYaml);
@@ -486,9 +467,6 @@ export async function saveOrgSettings(
       .select({
         apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
         apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
-        escalationEmail: schema.orgSettings.escalationEmail,
-        escalationEmailPending: schema.orgSettings.escalationEmailPending,
-        escalationEmailVerifiedAt: schema.orgSettings.escalationEmailVerifiedAt,
       })
       .from(schema.orgSettings)
       .where(eq(schema.orgSettings.orgId, orgId))
@@ -593,172 +571,48 @@ export async function saveOrgSettings(
     return { status: "error", message: "Choose how to update additional authentication." };
   }
 
-  const existing = currentSettings;
-  const activeEmail = existing?.escalationEmail ?? null;
-  const pendingEmail = existing?.escalationEmailPending ?? null;
-  const clearVerification = {
-    escalationEmailPending: null,
-    escalationEmailVerificationTokenDigest: null,
-    escalationEmailVerificationTokenCiphertext: null,
-    escalationEmailVerificationExpiresAt: null,
-    escalationEmailVerificationRequestedAt: null,
-    escalationEmailVerificationSentAt: null,
-    escalationEmailVerificationMessageId: null,
-  };
-  let emailInsert: Record<string, unknown> = {
-    escalationEmail: null,
-    escalationEmailVerifiedAt: null,
-    ...clearVerification,
-  };
-  let emailUpdate: Record<string, unknown> = {};
-  let verificationJob: { orgId: number; tokenDigest: string } | null = null;
-  let responseMessage = "Organization settings saved.";
-
-  if (!requestedEscalationEmail) {
-    emailUpdate = {
-      escalationEmail: null,
-      escalationEmailVerifiedAt: null,
-      ...clearVerification,
-    };
-    if (activeEmail || pendingEmail) {
-      responseMessage = "Settings saved. Notifications are off.";
-    }
-  } else if (
-    requestedEscalationEmail === activeEmail &&
-    existing?.escalationEmailVerifiedAt
-  ) {
-    emailInsert = {
-      escalationEmail: requestedEscalationEmail,
-      escalationEmailVerifiedAt: existing?.escalationEmailVerifiedAt ?? new Date(),
-      ...clearVerification,
-    };
-    emailUpdate = clearVerification;
-  } else if (requestedEscalationEmail !== pendingEmail) {
-    const verification = createEscalationEmailVerification(
+  await db
+    .insert(schema.orgSettings)
+    .values({
       orgId,
-      requestedEscalationEmail,
-      base.updatedAt,
-    );
-    const pendingState = {
-      escalationEmailPending: requestedEscalationEmail,
-      escalationEmailVerificationTokenDigest: verification.tokenDigest,
-      escalationEmailVerificationTokenCiphertext: verification.tokenCiphertext,
-      escalationEmailVerificationExpiresAt: verification.expiresAt,
-      escalationEmailVerificationRequestedAt: verification.requestedAt,
-      escalationEmailVerificationSentAt: null,
-      escalationEmailVerificationMessageId: null,
-    };
-    emailInsert = {
-      escalationEmail: null,
-      escalationEmailVerifiedAt: null,
-      ...pendingState,
-    };
-    emailUpdate = existing?.escalationEmailVerifiedAt
-      ? pendingState
-      : {
-          escalationEmail: null,
-          escalationEmailVerifiedAt: null,
-          ...pendingState,
-        };
-    verificationJob = escalationEmailVerificationJobPayload(
-      orgId,
-      verification.tokenDigest,
-    );
-    responseMessage = "Settings saved. Check your email to verify notifications.";
-  }
-
-  await db.transaction(async (tx) => {
-    await tx
-      .insert(schema.orgSettings)
-      .values({
-        orgId,
-        ...base,
-        ...emailInsert,
-        apiKeyCiphertext: "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
-        apiAuthHeaderCiphertext:
-          "apiAuthHeaderCiphertext" in authUpdate ? authUpdate.apiAuthHeaderCiphertext : null,
-        apiAuthValueCiphertext:
-          "apiAuthValueCiphertext" in authUpdate ? authUpdate.apiAuthValueCiphertext : null,
-      })
-      .onConflictDoUpdate({
-        target: schema.orgSettings.orgId,
-        set: { ...base, ...keyUpdate, ...authUpdate, ...emailUpdate },
-      });
-    if (verificationJob) {
-      await tx.insert(schema.jobs).values({
-        kind: "escalation-email-verification",
-        payload: verificationJob,
-        maxAttempts: 5,
-      });
-    }
-  });
+      ...base,
+      apiKeyCiphertext: "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
+      apiAuthHeaderCiphertext:
+        "apiAuthHeaderCiphertext" in authUpdate ? authUpdate.apiAuthHeaderCiphertext : null,
+      apiAuthValueCiphertext:
+        "apiAuthValueCiphertext" in authUpdate ? authUpdate.apiAuthValueCiphertext : null,
+    })
+    .onConflictDoUpdate({
+      target: schema.orgSettings.orgId,
+      set: { ...base, ...keyUpdate, ...authUpdate },
+    });
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);
-  return { status: "success", message: responseMessage };
+  return { status: "success", message: "Organization settings saved." };
 }
-
-export async function resendEscalationEmailVerification(
-  _previousState: OrgSettingsActionState | null,
-  formData: FormData,
-): Promise<OrgSettingsActionState> {
-  const slug = String(formData.get("slug") ?? "");
-  const { orgId } = await requireAdmin(slug);
-  const db = getDb();
-  const now = new Date();
-  const row = (
-    await db
-      .select({
-        pendingEmail: schema.orgSettings.escalationEmailPending,
-        requestedAt: schema.orgSettings.escalationEmailVerificationRequestedAt,
-      })
-      .from(schema.orgSettings)
-      .where(eq(schema.orgSettings.orgId, orgId))
-      .limit(1)
-  )[0];
-  if (!row?.pendingEmail) {
-    return { status: "error", message: "No email is waiting for verification." };
-  }
-  const pendingEmail = row.pendingEmail;
-  if (
-    row.requestedAt &&
-    now.getTime() - row.requestedAt.getTime() < ESCALATION_EMAIL_RESEND_COOLDOWN_MS
-  ) {
-    return { status: "error", message: "Wait a minute before sending another email." };
-  }
-  const verification = createEscalationEmailVerification(orgId, pendingEmail, now);
-  const payload = escalationEmailVerificationJobPayload(orgId, verification.tokenDigest);
-  await db.transaction(async (tx) => {
-    await tx
-      .update(schema.orgSettings)
-      .set({
-        escalationEmailVerificationTokenDigest: verification.tokenDigest,
-        escalationEmailVerificationTokenCiphertext: verification.tokenCiphertext,
-        escalationEmailVerificationExpiresAt: verification.expiresAt,
-        escalationEmailVerificationRequestedAt: verification.requestedAt,
-        escalationEmailVerificationSentAt: null,
-        escalationEmailVerificationMessageId: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(schema.orgSettings.orgId, orgId),
-          eq(schema.orgSettings.escalationEmailPending, pendingEmail),
-        ),
-      );
-    await tx.insert(schema.jobs).values({
-      kind: "escalation-email-verification",
-      payload,
-      maxAttempts: 5,
-    });
-  });
-  revalidatePath(`/orgs/${slug}/settings`);
-  return { status: "success", message: "Verification email queued." };
-}
-
 
 async function assertDashboardReviewApprovable(review: ReviewForApproval): Promise<void> {
   if (review.status !== "completed") throw new Error("review must be completed");
   if (!review.envelope) throw new Error("review must have an envelope");
+  if (!review.gateCheckRunId) throw new Error("review has no gate check-run");
+}
+
+async function requireCurrentReviewHead(review: ReviewForApproval): Promise<string> {
+  const signal = AbortSignal.timeout(10_000);
+  const token = await getInstallationToken(review.githubInstallationId, signal);
+  const currentHeadSha = await getPullRequestHeadSha(
+    token,
+    review.repoFullName,
+    review.prNumber,
+    signal,
+  );
+  if (currentHeadSha !== review.headSha) {
+    throw new Error("the pull request changed after this review; use the latest review");
+  }
+  if (await hasNewerCompletedReviewForHead(getDb(), review)) {
+    throw new Error("a newer completed review exists for this commit");
+  }
+  return token;
 }
 
 export async function approveFinding(formData: FormData): Promise<void> {
@@ -771,17 +625,19 @@ export async function approveFinding(formData: FormData): Promise<void> {
   const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
   if (!review) throw new Error("review not found in this organization");
   await assertDashboardReviewApprovable(review);
-  const state = await getReviewApprovalState(db, review);
-  const finding = findKindBlockingState(state, findingId);
-  if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
-    throw new Error("that finding is absent, already approved, revoked, or no longer kind-blocking");
-  }
-  if (finding.severityBlocking) {
-    throw new Error("this finding is also severity-blocking, and approvals only clear kind-based blocks");
-  }
+  await requireCurrentReviewHead(review);
   const user = await getSessionUser();
   if (!user?.githubId) throw new Error("user has no github id");
   await db.transaction(async (tx) => {
+    await lockReviewApprovalState(tx, review.id);
+    const state = await getReviewApprovalState(tx, review);
+    const finding = findKindBlockingState(state, findingId);
+    if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
+      throw new Error("that finding is absent, already approved, revoked, or no longer kind-blocking");
+    }
+    if (finding.severityBlocking) {
+      throw new Error("this finding is also severity-blocking, and approvals only clear kind-based blocks");
+    }
     await insertFindingApproval(tx, {
       reviewId: review.id,
       findingId,
@@ -796,7 +652,11 @@ export async function approveFinding(formData: FormData): Promise<void> {
     });
     const nextState = await getReviewApprovalState(tx, review);
     await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing);
+    await enqueueGateStateSync(tx, review);
   });
+  void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+    triggerQueueDrain("gate-state-sync"),
+  );
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/runs/${publicId}`);
 }
@@ -809,11 +669,32 @@ export async function revokeFinding(formData: FormData): Promise<void> {
   const db = getDb();
   const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
   if (!review) throw new Error("review not found in this organization");
+  await assertDashboardReviewApprovable(review);
+  const token = await requireCurrentReviewHead(review);
   await db.transaction(async (tx) => {
-    await revokeFindingApproval(tx, review.id, findingId, userId);
+    await lockReviewApprovalState(tx, review.id);
+    const state = await getReviewApprovalState(tx, review);
+    const finding = findKindBlockingState(state, findingId);
+    if (!finding?.activeApproval) throw new Error("that finding has no active approval");
+    if (!review.gateCheckRunId) throw new Error("review has no gate check-run");
+    await completeCheckRun(
+      token,
+      review.repoFullName,
+      review.gateCheckRunId,
+      "failure",
+      "Postil gate approval revoked",
+      "An organization admin revoked a human judgment approval. The pull request is blocked until a new review resolves the finding or an eligible approval is recorded.",
+      AbortSignal.timeout(10_000),
+    );
+    const revokedApprovalId = await revokeFindingApproval(tx, review.id, findingId, userId);
+    if (!revokedApprovalId) throw new Error("that finding has no active approval");
     const nextState = await getReviewApprovalState(tx, review);
     await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing);
+    await enqueueGateStateSync(tx, review);
   });
+  void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+    triggerQueueDrain("gate-state-sync"),
+  );
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/runs/${publicId}`);
 }

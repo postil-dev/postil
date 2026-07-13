@@ -230,7 +230,9 @@ function ApprovalPanel({
         <div>
           <p className="eyebrow">Kind-blocking escalations</p>
           <p className="mt-1 text-sm text-ink-soft">
-            Admin approvals apply only to commit{" "}
+            Human judgment is required before merge. Update the pull request and push again,
+            or have an organization admin approve an eligible judgment call with a rationale.
+            Approvals apply only to commit{" "}
             <span className="font-mono text-charcoal">{headSha.slice(0, 12)}</span>.
           </p>
         </div>
@@ -258,6 +260,21 @@ function ApprovalPanel({
                 )}
               </div>
               <h2 className="mt-3 text-base font-semibold leading-snug">{state.finding.title}</h2>
+              <p className="mt-2 font-mono text-[11px] text-charcoal/60">
+                {state.finding.path}:{state.finding.line}
+              </p>
+              <div className="mt-2 text-sm leading-relaxed text-ink-soft">
+                <FindingMarkdown>{state.finding.body}</FindingMarkdown>
+              </div>
+              {!state.activeApproval && !state.latestApproval?.revokedAt && (
+                <p className="mt-3 rounded-card border border-stone/70 bg-stone/20 px-3 py-2 text-xs text-charcoal/75">
+                  {state.severityBlocking
+                    ? "Update the pull request and push again. This finding also blocks by severity, so an approval cannot clear it."
+                    : isAdmin
+                      ? "Update the pull request and push again, or approve this finding below with a rationale."
+                      : "Update the pull request and push again, or ask an organization admin to approve this finding with a rationale."}
+                </p>
+              )}
               {approval && (
                 <dl className="mt-3 grid gap-2 text-xs text-charcoal/70 sm:grid-cols-2">
                   <div>

@@ -115,10 +115,9 @@ export default function PrivacyPage() {
             traffic.
           </li>
           <li>
-            <strong>Brevo</strong> sends human-escalation notifications to an
-            organization-configured recipient. These emails contain
-            finding severity, title and detail, and links to the pull
-            request and Postil run.
+            <strong>Brevo</strong> sends verification messages when an
+            organization administrator configures a billing contact. Review findings
+            remain in GitHub and the authenticated Postil dashboard.
           </li>
         </ul>
         <p>

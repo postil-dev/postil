@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useActionState, useState } from "react";
 
-import { resendEscalationEmailVerification, saveOrgSettings } from "./actions";
+import { saveOrgSettings } from "./actions";
 
 interface SettingsFormProps {
   slug: string;
@@ -19,19 +19,12 @@ interface SettingsFormProps {
         configYaml: string | null;
         guardrailsMd: string | null;
         contentPolicyMd: string | null;
-        escalationEmail: string | null;
-        escalationEmailPending: string | null;
-        escalationEmailVerifiedAt: Date | null;
       }
     | undefined;
 }
 
 export function SettingsForm({ slug, settings, billedMode }: SettingsFormProps) {
   const [state, formAction, pending] = useActionState(saveOrgSettings, null);
-  const [resendState, resendAction, resendPending] = useActionState(
-    resendEscalationEmailVerification,
-    null,
-  );
   const [bringOwnKey, setBringOwnKey] = useState(settings?.hasKey ?? false);
   const [apiKey, setApiKey] = useState("");
   const [apiFormat, setApiFormat] = useState(settings?.apiFormat ?? "openai-compatible");
@@ -226,57 +219,6 @@ export function SettingsForm({ slug, settings, billedMode }: SettingsFormProps) 
             </>
           )}
         </div>
-      </div>
-
-      <div className="border-t border-stone/60 pt-5">
-        <p className="font-medium">Escalation emails</p>
-        <p className="mt-1 text-xs text-charcoal/70">
-          Get an email when a finding needs human attention.
-        </p>
-        <label className="mt-3 block text-sm">
-          <span className="flex items-center gap-2 font-medium">
-            <span>Notification email</span>
-            {settings?.escalationEmailVerifiedAt && (
-              <span className="rounded-full border border-gate px-2 py-0.5 font-mono text-[10px] text-gate">
-                verified
-              </span>
-            )}
-          </span>
-          <input
-            type="email"
-            name="escalationEmail"
-            defaultValue={
-              settings?.escalationEmailPending ?? settings?.escalationEmail ?? ""
-            }
-            placeholder="code-owners@example.com"
-            autoComplete="email"
-            className="mt-1 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs focus:border-gate focus:outline-none"
-          />
-        </label>
-        {settings?.escalationEmailPending && (
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-charcoal/65">
-            <span>
-              Check your email to verify this address.
-              {settings.escalationEmail && " Alerts continue to the verified address."}
-            </span>
-            <button
-              type="submit"
-              formAction={resendAction}
-              disabled={resendPending}
-              className="font-medium text-rust hover:underline disabled:opacity-60"
-            >
-              {resendPending ? "Sending..." : "Resend"}
-            </button>
-          </div>
-        )}
-        {resendState && (
-          <p
-            role={resendState.status === "error" ? "alert" : "status"}
-            className={`mt-2 text-xs ${resendState.status === "error" ? "text-rust" : "text-gate"}`}
-          >
-            {resendState.message}
-          </p>
-        )}
       </div>
 
       <div className="border-t border-stone/60 pt-5">

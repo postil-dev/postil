@@ -127,7 +127,10 @@ gate:
         <code>humanEscalation</code> findings are also kind-blocking by
         default once their calibrated confidence reaches <code>0.30</code>.
         Weaker escalation signals remain visible in the review but do not
-        fail the gate or send an escalation email.
+        fail the gate. The pull request is the escalation channel: update the
+        change and push again, or have an organization admin approve an eligible
+        judgment call with a rationale in the linked Postil run. A finding that
+        also blocks by severity requires a change and cannot be approved away.
       </p>
 
       <h2>Fail-closed semantics</h2>

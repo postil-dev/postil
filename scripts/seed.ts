@@ -81,7 +81,13 @@ function envelope(
     resolved: opts.resolved ?? [],
     counts,
     confidenceBuckets: buckets(findings),
-    gate: { failOn: "error", failing: opts.failing ?? counts.error > 0, blockOnKinds: [] },
+    gate: {
+      failOn: "error",
+      failing: opts.failing ?? counts.error > 0,
+      blockOnKinds: findings.some((finding) => finding.kind === "humanEscalation")
+        ? ["humanEscalation"]
+        : [],
+    },
     modelUsed: "deepseek/deepseek-v4-pro",
     usage: {
       promptTokens: 2000 + Math.floor(Math.random() * 6000),
@@ -115,6 +121,7 @@ const FINDING_POOL: Finding[] = [
     body: "The new endpoint has no pagination or row cap.",
   },
   {
+    id: "human-escalation-hot-table-drop",
     path: "migrations/0042_orders.sql",
     line: 12,
     severity: "warn",
@@ -263,6 +270,7 @@ async function main(): Promise<void> {
         status: "completed",
         envelope: env,
         silent: env.silent,
+        engineGateFailing: env.gate.failing,
         gateFailing: env.gate.failing,
         advisoryCheckRunId: 31000 + i,
         gateCheckRunId: 32000 + i,

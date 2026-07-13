@@ -8,7 +8,6 @@ import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import {
   ADVISORY_CHECK_NAME,
-  completeCheckRun,
   GATE_CHECK_NAME,
   getPullRequestHeadSha,
   postIssueComment,
@@ -21,12 +20,12 @@ import {
   upsertRepositories,
 } from "@/lib/github/installation-sync";
 import {
-  deleteApprovalById,
+  enqueueGateStateSync,
   findKindBlockingState,
-  formatRemainingGateBlockers,
   getReviewApprovalState,
   hasNewerCompletedReviewForHead,
   insertFindingApproval,
+  lockReviewApprovalState,
   loadLatestCompletedReviewForPr,
   updateStoredEffectiveGate,
   type ApprovalActor,
@@ -868,9 +867,7 @@ async function handleApproveCommand(payload: CommentEventPayload): Promise<boole
     return true;
   }
 
-  let approvalId: string | null = null;
   let effectiveFailing: boolean | null = null;
-  let remainingBlockers = "";
   try {
     const state = await getReviewApprovalState(db, review);
     const finding = findKindBlockingState(state, command.findingId);
@@ -890,7 +887,19 @@ async function handleApproveCommand(payload: CommentEventPayload): Promise<boole
     }
 
     await db.transaction(async (tx) => {
-      approvalId = await insertFindingApproval(tx, {
+      await lockReviewApprovalState(tx, review.id);
+      const lockedState = await getReviewApprovalState(tx, review);
+      const lockedFinding = findKindBlockingState(lockedState, command.findingId);
+      if (
+        !lockedFinding ||
+        !lockedFinding.blocking ||
+        lockedFinding.activeApproval ||
+        lockedFinding.latestApproval?.revokedAt ||
+        lockedFinding.severityBlocking
+      ) {
+        throw new Error("the finding changed while the approval was being recorded");
+      }
+      await insertFindingApproval(tx, {
         reviewId: review.id,
         findingId: command.findingId,
         actor,
@@ -901,8 +910,8 @@ async function handleApproveCommand(payload: CommentEventPayload): Promise<boole
       });
       const nextState = await getReviewApprovalState(tx, review);
       effectiveFailing = nextState.effectiveGate.failing;
-      remainingBlockers = formatRemainingGateBlockers(nextState.effectiveGate);
       await updateStoredEffectiveGate(tx, review.id, effectiveFailing);
+      await enqueueGateStateSync(tx, review);
     });
   } catch (err) {
     if (isUniqueConstraintError(err)) {
@@ -919,24 +928,10 @@ async function handleApproveCommand(payload: CommentEventPayload): Promise<boole
     return true;
   }
 
-  try {
-    await patchGateCheckRun(token, review, effectiveFailing ?? true, remainingBlockers);
-  } catch (err) {
-    if (approvalId) {
-      await deleteApprovalById(db, approvalId);
-      const reverted = await getReviewApprovalState(db, review);
-      await updateStoredEffectiveGate(db, review.id, reverted.effectiveGate.failing);
-    }
-    await replyToApprovalCommand(
-      payload,
-      `Approval rejected: the gate check-run could not be patched (${err instanceof Error ? err.message : "unknown error"}).`,
-    );
-    return true;
-  }
-
+  triggerQueueDrain("gate-state-sync");
   await replyToApprovalCommand(
     payload,
-    `Approved by @${actor.login}: finding ${command.findingId} on commit ${review.headSha}. Gate is ${effectiveFailing ? "still failing" : "passing"}.`,
+    `Approval recorded by @${actor.login} for finding ${command.findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
   );
   return true;
 }
@@ -966,25 +961,6 @@ async function loadApprovalActor(
     login: user.login,
     role: row.role,
   };
-}
-
-async function patchGateCheckRun(
-  token: string,
-  review: ReviewForApproval,
-  failing: boolean,
-  remainingBlockers: string,
-): Promise<void> {
-  if (!review.gateCheckRunId) throw new Error("review has no gate check-run id");
-  await completeCheckRun(
-    token,
-    review.repoFullName,
-    review.gateCheckRunId,
-    failing ? "failure" : "success",
-    failing ? "Postil gate still failing" : "Postil gate approved",
-    failing
-      ? `One or more blocking findings remain after approval.\n\n${remainingBlockers}`
-      : "All kind-based blocking findings for this reviewed commit have active admin approvals.",
-  );
 }
 
 async function replyToApprovalCommand(

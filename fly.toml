@@ -12,8 +12,9 @@
 # Browser PostHog receives the public project token from a runtime route so
 # POSTHOG_CLIENT_CAPTURE can disable initialization without rebuilding.
 #
-# Migrations run automatically via [deploy].release_command below: Fly runs
-# it as a one-off machine from the new image, with the app's env/secrets
+# Migrations and retired-job quiescence run automatically via
+# [deploy].release_command below. Fly runs it as a one-off machine from the
+# new image, with the app's env/secrets
 # (including DATABASE_URL), before any existing machine is updated. A
 # non-zero exit aborts the deploy, so code that depends on a migration can
 # no longer ship ahead of it. `drizzle-kit` and the `drizzle/` migrations
@@ -31,7 +32,7 @@ primary_region = "lhr"
 NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 
 [deploy]
-release_command = "bun run db:migrate"
+release_command = "bun run db:migrate && bun run notifications:quiesce"
 
 [processes]
 web = "bun run start"
