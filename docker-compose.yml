@@ -72,8 +72,9 @@ services:
   #   docker compose --profile ollama up -d
   # then pull a model before the first review:
   #   docker compose exec ollama ollama pull qwen3-coder:30b
-  # Set POSTIL_API_BASE=http://ollama:11434/v1 in .env so the worker can reach
-  # it on the compose network. Omit the profile and run Ollama on the host
+  # Set POSTIL_API_BASE=http://ollama:11434/v1 and
+  # POSTIL_ALLOW_PRIVATE_API_BASE=1 in .env so the worker can reach it on the
+  # compose network. Omit the profile and run Ollama on the host
   # (POSTIL_API_BASE=http://host.docker.internal:11434/v1) if you prefer.
   ollama:
     image: ollama/ollama

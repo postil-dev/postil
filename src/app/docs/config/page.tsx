@@ -178,13 +178,27 @@ model:
           <tr>
             <td><code>POSTIL_API_BASE</code></td>
             <td>
-              OpenAI-compatible base URL (default{" "}
+              OpenAI-compatible or Anthropic API base URL (default{" "}
               <code>https://openrouter.ai/api/v1</code>)
             </td>
           </tr>
           <tr>
+            <td><code>POSTIL_API_FORMAT</code></td>
+            <td>
+              <code>openai-compatible</code> (default) or <code>anthropic</code>
+            </td>
+          </tr>
+          <tr>
+            <td><code>POSTIL_ENDPOINT_AUTH_HEADER</code></td>
+            <td>Optional private-gateway authentication header; set with its value</td>
+          </tr>
+          <tr>
+            <td><code>POSTIL_ENDPOINT_AUTH_VALUE</code></td>
+            <td>Secret value paired with the private-gateway authentication header</td>
+          </tr>
+          <tr>
             <td><code>REVIEW_MODEL</code></td>
-            <td>Model id (default <code>deepseek/deepseek-v4-pro</code>)</td>
+            <td>Model id (hosted primary <code>z-ai/glm-5.2</code>)</td>
           </tr>
           <tr>
             <td><code>REVIEW_MODEL_CASCADE</code></td>

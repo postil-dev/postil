@@ -103,6 +103,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_ALLOW_PRIVATE_API_BASE",
+    purpose: "Explicit opt-in for a self-hosted model endpoint on a private network",
+    example: "1",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
     name: "POSTIL_ENDPOINT_AUTH_HEADER",
     purpose: "Optional additional authentication header for a private provider gateway",
     example: "CF-Access-Client-Secret",
@@ -119,14 +126,14 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "REVIEW_MODEL",
     purpose: "Default review model",
-    example: "deepseek/deepseek-v4-pro",
+    example: "z-ai/glm-5.2",
     scope: ["worker"],
     optional: true,
   },
   {
     name: "REVIEW_MODEL_CASCADE",
     purpose: "Comma-separated fallback models",
-    example: "qwen/qwen3-coder",
+    example: "moonshotai/kimi-k2.7-code,deepseek/deepseek-v4-flash",
     scope: ["worker"],
     optional: true,
   },

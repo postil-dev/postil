@@ -216,6 +216,7 @@ docker compose exec ollama ollama pull qwen3-coder:30b`}</code>
       <p>Then point the worker at it on the compose network:</p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`POSTIL_API_BASE=http://ollama:11434/v1
+POSTIL_ALLOW_PRIVATE_API_BASE=1
 MODEL_API_KEY=ollama        # any non-empty value
 POSTIL_API_KEY=ollama       # same value for direct postil doctor
 REVIEW_MODEL=qwen3-coder:30b`}</code>
@@ -223,6 +224,7 @@ REVIEW_MODEL=qwen3-coder:30b`}</code>
       <p>
         If you already run Ollama on the host instead, drop the profile and use{" "}
         <code>POSTIL_API_BASE=http://host.docker.internal:11434/v1</code>{" "}
+        with <code>POSTIL_ALLOW_PRIVATE_API_BASE=1</code>{" "}
         (add <code>extra_hosts: [&quot;host.docker.internal:host-gateway&quot;]</code>{" "}
         to the <code>worker</code> service on Linux).
       </p>
