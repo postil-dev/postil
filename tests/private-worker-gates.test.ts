@@ -60,7 +60,13 @@ describe("private repository worker defense in depth", () => {
       "await releaseHostedRespondSpend",
     );
     const failureGate = source.indexOf("await canProcessPrivateRepository", failureStart);
-    expect(source.indexOf("await postIssueComment", failureStart)).toBeGreaterThan(failureGate);
+    expect(source.indexOf("await deliverPreparedRespond", failureStart)).toBeGreaterThan(
+      failureGate,
+    );
+    const deliveryStart = source.indexOf("async function deliverPreparedRespond");
+    expect(source.indexOf("await postIssueComment", deliveryStart)).toBeGreaterThan(
+      deliveryStart,
+    );
   });
 
   test("all webhook review, rerequest, mention, and approval paths pass through the gate before side effects", () => {
