@@ -12,9 +12,8 @@
   trial, or promotional entitlement before fetching code, creating checks, or
   invoking inference. Public repositories remain independent of private-repository
   billing eligibility.
-- Add verified billing contacts, billing-manager roles, payment state, invoices,
-  usage alerts, in-app service notices, and clear provider-side budget guidance
-  for BYOK customers.
+- Add billing-manager roles, payment state, invoices, usage alerts, in-app service
+  notices, and clear provider-side budget guidance for BYOK customers.
 - Run the hosted service on a free-tier-compatible PostgreSQL profile: low per-process DB pools, single-job webhook queue drains, one low-frequency worker fallback, and explicit provider docs.
 - Stand up PostHog dashboards for traffic sources, docs/blog paths, install funnel events, and bot/automation breakdowns.
 - Keep Prometheus metrics focused on operational health: database reachability, queue depth, stuck jobs, review outcomes, token usage, and webhook volume.

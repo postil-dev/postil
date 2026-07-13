@@ -15,8 +15,6 @@ export interface EntitlementOptions {
   periodEndsAt: Date | null;
   includedUsageCents: number;
   overageHardCapCents: number | null;
-  billingContactEmail: string | null;
-  billingContactVerifiedAt: Date | null;
   promotionalEligible: boolean;
   promotionalEndsAt: Date | null;
   actor: string;
@@ -52,8 +50,6 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         options.overageHardCapCents === null
           ? null
           : centsToMicros(options.overageHardCapCents),
-      billingContactEmail: options.billingContactEmail,
-      billingContactVerifiedAt: options.billingContactVerifiedAt,
       promotionalEligible: options.promotionalEligible,
       promotionalEndsAt: options.promotionalEndsAt,
       updatedBy: options.actor,
@@ -139,13 +135,8 @@ export function parseEntitlementArgs(args: string[]): EntitlementOptions {
   ) {
     throw new Error("--status must be active, trialing, past_due, or suspended");
   }
-  const billingContactEmail = optional(values, "billing-contact-email");
-  if (billingContactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingContactEmail)) {
-    throw new Error("--billing-contact-email must be a valid email address");
-  }
-  const billingContactVerifiedAt = optionalDate(values, "billing-contact-verified-at");
-  if (billingContactVerifiedAt && !billingContactEmail) {
-    throw new Error("--billing-contact-verified-at requires --billing-contact-email");
+  if (values.has("billing-contact-email") || values.has("billing-contact-verified-at")) {
+    throw new Error("billing contacts must be changed and verified through the organization billing page");
   }
   const trialEndsAt = optionalDate(values, "trial-ends-at");
   if (status === "trialing" && !trialEndsAt) {
@@ -187,8 +178,6 @@ export function parseEntitlementArgs(args: string[]): EntitlementOptions {
       : mode === "hosted"
         ? 0
         : null,
-    billingContactEmail,
-    billingContactVerifiedAt,
     promotionalEligible,
     promotionalEndsAt: optionalDate(values, "promotional-ends-at"),
     actor: required(values, "actor").trim(),
@@ -250,8 +239,6 @@ Optional state:
   --period-ends-at ISO          Usage period upper bound.
   --included-usage-cents N      Included usage. At least 100 cents is required for hosted active, trialing, or promotional access.
   --overage-hard-cap-cents N    Maximum overage; hosted defaults to 0, BYOK omission means no provider-spend cap.
-  --billing-contact-email EMAIL
-  --billing-contact-verified-at ISO
   --promotional-eligible        Enable operator-managed promotion.
   --no-promotional-eligible     Disable operator-managed promotion.
   --promotional-ends-at ISO     Exclusive promotion expiry.`);

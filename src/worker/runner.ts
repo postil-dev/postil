@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 
 import { getPool } from "@/lib/db";
-import { redactSecrets } from "@/lib/redact";
+import { optionalEnv } from "@/lib/env";
 import {
   claimJob,
   completeJob,
@@ -11,7 +11,11 @@ import {
   type RespondJobPayload,
   type ReviewJobPayload,
 } from "@/lib/queue";
-import { optionalEnv } from "@/lib/env";
+import { redactSecrets } from "@/lib/redact";
+import {
+  runBillingContactVerificationJob,
+  type BillingContactVerificationJobPayload,
+} from "./billing-contact-verification";
 import { isPermanentFailure } from "./failure-classifier";
 import {
   postRespondFailureComment,
@@ -56,6 +60,11 @@ async function handleJob(job: ClaimedJob): Promise<void> {
     case "escalation-email-verification":
       await runEscalationEmailVerificationJob(
         job.payload as EscalationEmailVerificationJobPayload,
+      );
+      break;
+    case "billing-contact-verification":
+      await runBillingContactVerificationJob(
+        job.payload as BillingContactVerificationJobPayload,
       );
       break;
     case "check-run-cleanup":

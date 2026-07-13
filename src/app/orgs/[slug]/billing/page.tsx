@@ -22,6 +22,7 @@ import {
 } from "@/lib/pricing-policy";
 import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import { updateHostedOverageCap } from "../actions";
+import { BillingContactForm } from "./billing-contact-form";
 
 export const metadata: Metadata = {
   title: "Organization billing",
@@ -31,10 +32,13 @@ export const dynamic = "force-dynamic";
 
 export default async function OrgBillingPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ contactVerification?: string }>;
 }) {
   const { slug } = await params;
+  const { contactVerification } = await searchParams;
   const { db, org, membership } = await requireOrgMembership(slug);
   if (membership.role !== "admin") {
     throw new Error("this page requires an organization admin");
@@ -133,6 +137,19 @@ export default async function OrgBillingPage({
     repositoryPrivate: true,
   });
   const entitlement = privateAccess.entitlement;
+  const contactState = entitlement
+    ? (
+        await db
+          .select({
+            activeEmail: schema.organizationEntitlements.billingContactEmail,
+            pendingEmail: schema.organizationEntitlements.billingContactPending,
+            verifiedAt: schema.organizationEntitlements.billingContactVerifiedAt,
+          })
+          .from(schema.organizationEntitlements)
+          .where(eq(schema.organizationEntitlements.orgId, org.id))
+          .limit(1)
+      )[0]
+    : undefined;
   const effectiveOverageHardCapMicros = entitlement
     ? entitlement.overageHardCapMicros ??
       (entitlement.subscriptionMode === "hosted" ? 0 : null)
@@ -188,6 +205,17 @@ export default async function OrgBillingPage({
           </Link>
         </div>
       </div>
+
+      {contactVerification === "success" && (
+        <p role="status" className="mt-6 rounded-card border border-gate/40 bg-gate/5 px-4 py-3 text-sm text-gate">
+          Billing contact verified.
+        </p>
+      )}
+      {contactVerification === "invalid" && (
+        <p role="alert" className="mt-6 rounded-card border border-rust/40 bg-rust/5 px-4 py-3 text-sm text-rust">
+          This billing contact verification link is invalid or expired.
+        </p>
+      )}
 
       <div className={`card mt-8 p-6 ${privateAccess.allowed ? "border-gate" : "border-rust"}`}>
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -258,6 +286,14 @@ export default async function OrgBillingPage({
           <p className="mt-4 border-t border-stone/60 pt-4 text-xs text-charcoal/60">
             Provider usage is billed directly to your provider account. Configure budgets, alerts, and hard limits there.
           </p>
+        )}
+        {entitlement && (
+          <BillingContactForm
+            slug={org.slug}
+            activeEmail={contactState?.activeEmail ?? null}
+            pendingEmail={contactState?.pendingEmail ?? null}
+            verified={Boolean(contactState?.verifiedAt)}
+          />
         )}
       </div>
 

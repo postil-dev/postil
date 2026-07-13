@@ -61,10 +61,20 @@ without exposing the new job kind to workers from the preceding release.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
+Organization administrators manage the billing contact on the billing page.
+New addresses remain pending until a single-use, 24-hour token is consumed;
+replacements leave the existing verified address active until the new address is
+verified. Verification tokens are bound to the organization, purpose, and
+normalized address, stored as a digest plus sealed delivery material, and sent
+through durable, provider-idempotent jobs. Resends rotate the token after a
+cooldown. The worker startup backfill queues verification for every migrated
+unverified contact without exposing addresses or tokens in output. Operator
+entitlement updates preserve the dashboard-managed billing contact.
+
 Private-repository product access is organization-scoped and fail-closed.
 `organization_entitlements` records hosted or BYOK subscription mode, lifecycle
-state, trial and past-due grace boundaries, operator promotions, billing-contact
-verification, and the current-period included usage plus overage hard cap.
+state, trial and past-due grace boundaries, operator promotions, verified billing
+contacts, and the current-period included usage plus overage hard cap.
 `src/lib/private-repository-entitlement.ts` is the single decision point used by
 webhook intake and workers. The webhook stores delivery and repository metadata,
 then skips review/respond queue, check, and conversational comment side effects

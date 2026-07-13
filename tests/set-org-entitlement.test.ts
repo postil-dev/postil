@@ -37,7 +37,7 @@ describe("set organization entitlement CLI", () => {
     });
   });
 
-  test("rejects invalid lifecycle values and verified contacts without an email", () => {
+  test("rejects invalid lifecycle values and billing contact bypass flags", () => {
     expect(() =>
       parseEntitlementArgs([
         "--org", "acme", "--mode", "hosted", "--status", "trial", "--actor", "ops",
@@ -49,7 +49,7 @@ describe("set organization entitlement CLI", () => {
         "--billing-contact-verified-at", "2026-07-12T00:00:00Z",
         "--included-usage-cents", "600",
       ]),
-    ).toThrow("requires --billing-contact-email");
+    ).toThrow("billing contacts must be changed and verified through the organization billing page");
   });
 
   test("requires both --yes and an exact organization confirmation for mutation", () => {

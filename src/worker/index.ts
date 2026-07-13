@@ -6,6 +6,7 @@ import { closeDb, getDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
 import { claimJob } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
+import { backfillBillingContactVerification } from "../../scripts/backfill-billing-contact-verification";
 import { backfillEscalationEmailVerification } from "../../scripts/backfill-escalation-email-verification";
 import { readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
@@ -120,6 +121,12 @@ async function main(): Promise<void> {
   });
   console.log(
     `escalation email verification backfill: pending=${verificationBackfill.pending} queued=${verificationBackfill.queued} already_queued=${verificationBackfill.alreadyQueued}`,
+  );
+  const billingContactBackfill = await backfillBillingContactVerification(getDb(), {
+    confirm: true,
+  });
+  console.log(
+    `billing contact verification backfill: pending=${billingContactBackfill.pending} queued=${billingContactBackfill.queued} already_queued=${billingContactBackfill.alreadyQueued}`,
   );
   // Fail fast if the image's CA trust store is broken (see tlsSelfTest).
   await tlsSelfTest();

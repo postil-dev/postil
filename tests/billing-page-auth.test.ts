@@ -130,7 +130,7 @@ beforeEach(() => {
 
 describe("organization billing page auth", () => {
   test("denies non-admin members before loading billing data", async () => {
-    await expect(OrgBillingPage({ params: Promise.resolve({ slug: "acme" }) })).rejects.toThrow(
+    await expect(OrgBillingPage({ params: Promise.resolve({ slug: "acme" }), searchParams: Promise.resolve({}) })).rejects.toThrow(
       "this page requires an organization admin",
     );
   });
@@ -138,7 +138,7 @@ describe("organization billing page auth", () => {
   test("renders admin billing usage, visibility counts, enabled-since, and history", async () => {
     role = "admin";
 
-    const page = await OrgBillingPage({ params: Promise.resolve({ slug: "acme" }) });
+    const page = await OrgBillingPage({ params: Promise.resolve({ slug: "acme" }), searchParams: Promise.resolve({}) });
     const markup = renderToStaticMarkup(page);
 
     expect(markup).toContain("Repositories are not billing units");

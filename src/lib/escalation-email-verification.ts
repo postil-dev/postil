@@ -1,29 +1,25 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 
 import { and, eq, gt } from "drizzle-orm";
 
-import { getSealingKey, seal } from "@/lib/crypto/seal";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
-import { optionalEnv } from "@/lib/env";
+import {
+  createEmailVerification,
+  EMAIL_VERIFICATION_RESEND_COOLDOWN_MS,
+  EMAIL_VERIFICATION_TOKEN_PATTERN,
+  EMAIL_VERIFICATION_TOKEN_TTL_MS,
+  emailVerificationJobPayload,
+  emailVerificationUrl,
+  normalizeVerificationEmail,
+  sanitizeVerificationLabel,
+  sendVerificationEmail,
+  verificationTokenDigest,
+  type VerificationTokenState,
+} from "@/lib/email-verification";
 
-const BREVO_SEND_URL = "https://api.brevo.com/v3/smtp/email";
-const BREVO_TIMEOUT_MS = 10_000;
-const TOKEN_BYTES = 32;
-const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-
-export const ESCALATION_EMAIL_TOKEN_TTL_MS = 24 * 60 * 60 * 1_000;
-export const ESCALATION_EMAIL_RESEND_COOLDOWN_MS = 60 * 1_000;
-
-type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-export interface VerificationTokenState {
-  token: string;
-  tokenDigest: Buffer;
-  tokenCiphertext: Buffer;
-  expiresAt: Date;
-  requestedAt: Date;
-}
+export const ESCALATION_EMAIL_TOKEN_TTL_MS = EMAIL_VERIFICATION_TOKEN_TTL_MS;
+export const ESCALATION_EMAIL_RESEND_COOLDOWN_MS = EMAIL_VERIFICATION_RESEND_COOLDOWN_MS;
 
 export interface VerificationResult {
   verified: boolean;
@@ -31,15 +27,7 @@ export interface VerificationResult {
 }
 
 export function normalizeEscalationEmail(value: string): string | null {
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return null;
-  if (
-    normalized.length > 320 ||
-    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)
-  ) {
-    throw new Error("Enter a valid notification email.");
-  }
-  return normalized;
+  return normalizeVerificationEmail(value, "Enter a valid notification email.");
 }
 
 export function escalationEmailTokenDigest(
@@ -47,14 +35,7 @@ export function escalationEmailTokenDigest(
   normalizedEmail: string,
   token: string,
 ): Buffer {
-  return createHash("sha256")
-    .update("postil-escalation-email:v1\0", "utf8")
-    .update(String(orgId), "utf8")
-    .update("\0", "utf8")
-    .update(normalizedEmail, "utf8")
-    .update("\0", "utf8")
-    .update(token, "utf8")
-    .digest();
+  return verificationTokenDigest("escalation-email", orgId, normalizedEmail, token);
 }
 
 export function createEscalationEmailVerification(
@@ -62,21 +43,14 @@ export function createEscalationEmailVerification(
   normalizedEmail: string,
   now = new Date(),
 ): VerificationTokenState {
-  const token = randomBytes(TOKEN_BYTES).toString("base64url");
-  return {
-    token,
-    tokenDigest: escalationEmailTokenDigest(orgId, normalizedEmail, token),
-    tokenCiphertext: seal(token, getSealingKey()),
-    expiresAt: new Date(now.getTime() + ESCALATION_EMAIL_TOKEN_TTL_MS),
-    requestedAt: now,
-  };
+  return createEmailVerification("escalation-email", orgId, normalizedEmail, now);
 }
 
 export function escalationEmailVerificationJobPayload(
   orgId: number,
   tokenDigest: Buffer,
 ): { orgId: number; tokenDigest: string } {
-  return { orgId, tokenDigest: tokenDigest.toString("base64url") };
+  return emailVerificationJobPayload(orgId, tokenDigest);
 }
 
 export function escalationEmailVerificationUrl(
@@ -84,10 +58,7 @@ export function escalationEmailVerificationUrl(
   orgId: number,
   token: string,
 ): string {
-  const url = new URL("/verify/escalation-email", publicOrigin);
-  url.searchParams.set("org", String(orgId));
-  url.searchParams.set("token", token);
-  return url.toString();
+  return emailVerificationUrl(publicOrigin, "/verify/escalation-email", orgId, token);
 }
 
 export async function verifyEscalationEmailToken(
@@ -115,7 +86,7 @@ export async function verifyEscalationEmailToken(
     !row.tokenDigest ||
     !row.expiresAt ||
     row.expiresAt <= now ||
-    !TOKEN_PATTERN.test(token)
+    !EMAIL_VERIFICATION_TOKEN_PATTERN.test(token)
   ) {
     return { verified: false, slug: row.slug };
   }
@@ -159,56 +130,18 @@ export async function sendEscalationEmailVerification(input: {
   verificationUrl: string;
   idempotencyKey: string;
   apiKey: string;
-  fetchImpl?: Fetch;
+  fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }): Promise<{ messageId: string | null }> {
-  const response = await (input.fetchImpl ?? fetch)(BREVO_SEND_URL, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "api-key": input.apiKey,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      sender: {
-        name: optionalEnv("POSTIL_ESCALATION_FROM_NAME", "Postil") as string,
-        email: optionalEnv(
-          "POSTIL_ESCALATION_FROM_EMAIL",
-          "reviews@mail.postil.dev",
-        ) as string,
-      },
-      to: [{ email: input.recipient }],
-      subject: "Verify your Postil notification email",
-      textContent: [
-        `Verify this address to receive human escalation notifications for ${sanitizeSingleLine(input.orgName, 160)}.`,
-        "",
-        `Verify email: ${input.verificationUrl}`,
-        "",
-        "This link expires in 24 hours. If you did not request this, ignore it.",
-      ].join("\n"),
-      headers: { "Idempotency-Key": input.idempotencyKey },
-    }),
-    signal: AbortSignal.timeout(BREVO_TIMEOUT_MS),
+  return sendVerificationEmail({
+    recipient: input.recipient,
+    subject: "Verify your Postil notification email",
+    text: [
+      `Verify this address to receive human escalation notifications for ${sanitizeVerificationLabel(input.orgName)}.`,
+      "",
+      `Verify email: ${input.verificationUrl}`,
+    ],
+    idempotencyKey: input.idempotencyKey,
+    apiKey: input.apiKey,
+    fetchImpl: input.fetchImpl,
   });
-
-  const responseText = await response.text();
-  let parsed: { code?: unknown; messageId?: unknown } = {};
-  try {
-    parsed = JSON.parse(responseText) as typeof parsed;
-  } catch {
-    parsed = {};
-  }
-  if (!response.ok && parsed.code !== "duplicate_parameter") {
-    throw new Error(`Brevo verification email failed: ${response.status}`);
-  }
-  return {
-    messageId: typeof parsed.messageId === "string" ? parsed.messageId : null,
-  };
-}
-
-function sanitizeSingleLine(value: string, maxChars: number): string {
-  return value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, maxChars);
 }

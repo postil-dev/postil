@@ -10,8 +10,10 @@ let insertedValues: Record<string, unknown> | null = null;
 let conflictSet: Record<string, unknown> | null = null;
 let insertCount = 0;
 let settingsRows: Array<Record<string, unknown>> = [];
+let billingRows: Array<Record<string, unknown>> = [];
 let queuedJobs: Array<Record<string, unknown>> = [];
 let updatedValues: Record<string, unknown> | null = null;
+let updateResultRows: Array<Record<string, unknown>> = [];
 
 const schema = {
   organizations: { id: "organizations.id", slug: "organizations.slug" },
@@ -41,6 +43,25 @@ const schema = {
       "org_settings.escalation_email_verification_message_id",
     updatedAt: "org_settings.updated_at",
   },
+  organizationEntitlements: {
+    orgId: "organization_entitlements.org_id",
+    subscriptionMode: "organization_entitlements.subscription_mode",
+    billingContactEmail: "organization_entitlements.billing_contact_email",
+    billingContactPending: "organization_entitlements.billing_contact_pending",
+    billingContactVerifiedAt: "organization_entitlements.billing_contact_verified_at",
+    billingContactVerificationTokenDigest:
+      "organization_entitlements.billing_contact_verification_token_digest",
+    billingContactVerificationTokenCiphertext:
+      "organization_entitlements.billing_contact_verification_token_ciphertext",
+    billingContactVerificationExpiresAt:
+      "organization_entitlements.billing_contact_verification_expires_at",
+    billingContactVerificationRequestedAt:
+      "organization_entitlements.billing_contact_verification_requested_at",
+    billingContactVerificationSentAt:
+      "organization_entitlements.billing_contact_verification_sent_at",
+    billingContactVerificationMessageId:
+      "organization_entitlements.billing_contact_verification_message_id",
+  },
   jobs: { kind: "jobs.kind" },
 };
 
@@ -57,8 +78,13 @@ mock.module("@/lib/db", () => ({
   schema,
 }));
 
-const { approveFinding, resendEscalationEmailVerification, saveOrgSettings } =
-  await import("@/app/orgs/[slug]/actions");
+const {
+  approveFinding,
+  resendBillingContactVerification,
+  resendEscalationEmailVerification,
+  saveBillingContact,
+  saveOrgSettings,
+} = await import("@/app/orgs/[slug]/actions");
 
 function fakeDb() {
   return {
@@ -66,6 +92,9 @@ function fakeDb() {
       const rows =
         "role" in selection
           ? memberRows
+          : "activeEmail" in selection ||
+              selection.pendingEmail === schema.organizationEntitlements.billingContactPending
+            ? billingRows
           : "apiKeyCiphertext" in selection ||
               "escalationEmail" in selection ||
               "pendingEmail" in selection
@@ -112,7 +141,13 @@ function fakeDb() {
           return chain;
         },
         where() {
-          return Promise.resolve([]);
+          return chain;
+        },
+        returning() {
+          return Promise.resolve(updateResultRows);
+        },
+        then(resolve: (value: unknown) => unknown) {
+          return Promise.resolve([]).then(resolve);
         },
       };
       return chain;
@@ -169,8 +204,79 @@ beforeEach(() => {
   conflictSet = null;
   insertCount = 0;
   settingsRows = [];
+  billingRows = [];
   queuedJobs = [];
   updatedValues = null;
+  updateResultRows = [];
+});
+
+function billingContactForm(email: string): FormData {
+  const form = new FormData();
+  form.set("slug", "acme");
+  form.set("billingContact", email);
+  return form;
+}
+
+describe("billing contact verification actions", () => {
+  test("preserves the verified contact while a replacement waits for verification", async () => {
+    billingRows = [{
+      activeEmail: "accounts@example.com",
+      pendingEmail: null,
+      verifiedAt: new Date("2026-07-01T00:00:00.000Z"),
+    }];
+    updateResultRows = [{ orgId: 20 }];
+
+    const result = await saveBillingContact(null, billingContactForm(" New@Example.COM "));
+
+    expect(result).toEqual({
+      status: "success",
+      message: "Check your email to verify the replacement. The verified contact remains active.",
+    });
+    expect(updatedValues).toMatchObject({ billingContactPending: "new@example.com" });
+    expect(updatedValues).not.toHaveProperty("billingContactEmail");
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ kind: "billing-contact-verification", maxAttempts: 5 });
+  });
+
+  test("does not send another email when the same address is already pending", async () => {
+    billingRows = [{ activeEmail: null, pendingEmail: "billing@example.com", verifiedAt: null }];
+    updateResultRows = [{ orgId: 20 }];
+
+    const result = await saveBillingContact(null, billingContactForm("billing@example.com"));
+
+    expect(result.message).toBe("Check your email to verify the billing contact.");
+    expect(queuedJobs).toHaveLength(0);
+  });
+
+  test("resend requires a pending contact and enforces the cooldown", async () => {
+    billingRows = [];
+    expect(await resendBillingContactVerification(null, billingContactForm(""))).toMatchObject({
+      status: "error",
+    });
+
+    billingRows = [{ pendingEmail: "billing@example.com", requestedAt: new Date() }];
+    expect(await resendBillingContactVerification(null, billingContactForm(""))).toEqual({
+      status: "error",
+      message: "Wait a minute before sending another email.",
+    });
+    expect(queuedJobs).toHaveLength(0);
+  });
+
+  test("resend rotates the token and queues a durable job after the cooldown", async () => {
+    billingRows = [{
+      pendingEmail: "billing@example.com",
+      requestedAt: new Date(Date.now() - 61_000),
+    }];
+    updateResultRows = [{ orgId: 20 }];
+
+    expect(await resendBillingContactVerification(null, billingContactForm(""))).toEqual({
+      status: "success",
+      message: "Verification email queued.",
+    });
+    expect(updatedValues?.billingContactVerificationTokenDigest).toBeInstanceOf(Buffer);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]?.kind).toBe("billing-contact-verification");
+  });
 });
 
 describe("saveOrgSettings", () => {

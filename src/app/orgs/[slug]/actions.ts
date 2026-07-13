@@ -7,6 +7,12 @@ import { and, eq, sql } from "drizzle-orm";
 import { validateApiBase } from "@/lib/api-base";
 import { centsToMicros } from "@/lib/billing-credits";
 import {
+  BILLING_CONTACT_RESEND_COOLDOWN_MS,
+  billingContactVerificationJobPayload,
+  createBillingContactVerification,
+  normalizeBillingContact,
+} from "@/lib/billing-contact-verification";
+import {
   parseApiFormat,
   validateAdditionalAuthHeader,
   validateAdditionalAuthValue,
@@ -138,6 +144,159 @@ export async function updateHostedOverageCap(formData: FormData): Promise<void> 
   if (updated.length !== 1) throw new Error("an active hosted entitlement is required");
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/billing`);
+}
+
+export async function saveBillingContact(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId, userId } = await requireAdmin(slug);
+  let requestedEmail: string | null;
+  try {
+    requestedEmail = normalizeBillingContact(String(formData.get("billingContact") ?? ""));
+  } catch (error) {
+    return {
+      status: "error",
+      message: error instanceof Error ? error.message : "Enter a valid billing email.",
+    };
+  }
+  const db = getDb();
+  const existing = (
+    await db
+      .select({
+        activeEmail: schema.organizationEntitlements.billingContactEmail,
+        pendingEmail: schema.organizationEntitlements.billingContactPending,
+        verifiedAt: schema.organizationEntitlements.billingContactVerifiedAt,
+      })
+      .from(schema.organizationEntitlements)
+      .where(eq(schema.organizationEntitlements.orgId, orgId))
+      .limit(1)
+  )[0];
+  if (!existing) return { status: "error", message: "Activate billing before setting a contact." };
+
+  const now = new Date();
+  const clearPending = {
+    billingContactPending: null,
+    billingContactVerificationTokenDigest: null,
+    billingContactVerificationTokenCiphertext: null,
+    billingContactVerificationExpiresAt: null,
+    billingContactVerificationRequestedAt: null,
+    billingContactVerificationSentAt: null,
+    billingContactVerificationMessageId: null,
+  };
+  let update: Record<string, unknown>;
+  let verificationJob: { orgId: number; tokenDigest: string } | null = null;
+  let message = "Billing contact saved.";
+  if (!requestedEmail) {
+    update = {
+      billingContactEmail: null,
+      billingContactVerifiedAt: null,
+      ...clearPending,
+    };
+    message = "Billing contact removed.";
+  } else if (requestedEmail === existing.activeEmail && existing.verifiedAt) {
+    update = clearPending;
+  } else if (requestedEmail === existing.pendingEmail) {
+    update = {};
+    message = "Check your email to verify the billing contact.";
+  } else {
+    const verification = createBillingContactVerification(orgId, requestedEmail, now);
+    const pending = {
+      billingContactPending: requestedEmail,
+      billingContactVerificationTokenDigest: verification.tokenDigest,
+      billingContactVerificationTokenCiphertext: verification.tokenCiphertext,
+      billingContactVerificationExpiresAt: verification.expiresAt,
+      billingContactVerificationRequestedAt: verification.requestedAt,
+      billingContactVerificationSentAt: null,
+      billingContactVerificationMessageId: null,
+    };
+    update = existing.verifiedAt
+      ? pending
+      : { billingContactEmail: null, billingContactVerifiedAt: null, ...pending };
+    verificationJob = billingContactVerificationJobPayload(orgId, verification.tokenDigest);
+    message = existing.verifiedAt
+      ? "Check your email to verify the replacement. The verified contact remains active."
+      : "Check your email to verify the billing contact.";
+  }
+  await db.transaction(async (tx) => {
+    const changed = await tx
+      .update(schema.organizationEntitlements)
+      .set({ ...update, updatedBy: `billing-admin:${userId}`, updatedAt: now })
+      .where(eq(schema.organizationEntitlements.orgId, orgId))
+      .returning({ orgId: schema.organizationEntitlements.orgId });
+    if (changed.length !== 1) throw new Error("billing entitlement changed; retry");
+    if (verificationJob) {
+      await tx.insert(schema.jobs).values({
+        kind: "billing-contact-verification",
+        payload: verificationJob,
+        maxAttempts: 5,
+      });
+    }
+  });
+  revalidatePath(`/orgs/${slug}/billing`);
+  return { status: "success", message };
+}
+
+export async function resendBillingContactVerification(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId, userId } = await requireAdmin(slug);
+  const db = getDb();
+  const now = new Date();
+  const row = (
+    await db
+      .select({
+        pendingEmail: schema.organizationEntitlements.billingContactPending,
+        requestedAt: schema.organizationEntitlements.billingContactVerificationRequestedAt,
+      })
+      .from(schema.organizationEntitlements)
+      .where(eq(schema.organizationEntitlements.orgId, orgId))
+      .limit(1)
+  )[0];
+  if (!row?.pendingEmail) {
+    return { status: "error", message: "No billing contact is waiting for verification." };
+  }
+  if (
+    row.requestedAt &&
+    now.getTime() - row.requestedAt.getTime() < BILLING_CONTACT_RESEND_COOLDOWN_MS
+  ) {
+    return { status: "error", message: "Wait a minute before sending another email." };
+  }
+  const pendingEmail = row.pendingEmail;
+  const verification = createBillingContactVerification(orgId, pendingEmail, now);
+  const payload = billingContactVerificationJobPayload(orgId, verification.tokenDigest);
+  await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(schema.organizationEntitlements)
+      .set({
+        billingContactVerificationTokenDigest: verification.tokenDigest,
+        billingContactVerificationTokenCiphertext: verification.tokenCiphertext,
+        billingContactVerificationExpiresAt: verification.expiresAt,
+        billingContactVerificationRequestedAt: verification.requestedAt,
+        billingContactVerificationSentAt: null,
+        billingContactVerificationMessageId: null,
+        updatedBy: `billing-admin:${userId}`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.organizationEntitlements.orgId, orgId),
+          eq(schema.organizationEntitlements.billingContactPending, pendingEmail),
+        ),
+      )
+      .returning({ orgId: schema.organizationEntitlements.orgId });
+    if (updated.length !== 1) throw new Error("billing contact changed; retry");
+    await tx.insert(schema.jobs).values({
+      kind: "billing-contact-verification",
+      payload,
+      maxAttempts: 5,
+    });
+  });
+  revalidatePath(`/orgs/${slug}/billing`);
+  return { status: "success", message: "Verification email queued." };
 }
 
 export async function toggleRepository(formData: FormData): Promise<void> {

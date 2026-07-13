@@ -353,6 +353,23 @@ export const organizationEntitlements = pgTable(
     billingContactVerifiedAt: timestamp("billing_contact_verified_at", {
       withTimezone: true,
     }),
+    billingContactPending: text("billing_contact_pending"),
+    billingContactVerificationTokenDigest: bytea("billing_contact_verification_token_digest"),
+    billingContactVerificationTokenCiphertext: bytea(
+      "billing_contact_verification_token_ciphertext",
+    ),
+    billingContactVerificationExpiresAt: timestamp(
+      "billing_contact_verification_expires_at",
+      { withTimezone: true },
+    ),
+    billingContactVerificationRequestedAt: timestamp(
+      "billing_contact_verification_requested_at",
+      { withTimezone: true },
+    ),
+    billingContactVerificationSentAt: timestamp("billing_contact_verification_sent_at", {
+      withTimezone: true,
+    }),
+    billingContactVerificationMessageId: text("billing_contact_verification_message_id"),
     promotionalEligible: boolean("promotional_eligible").notNull().default(false),
     promotionalEndsAt: timestamp("promotional_ends_at", { withTimezone: true }),
     updatedBy: text("updated_by").notNull(),

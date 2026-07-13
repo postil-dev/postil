@@ -127,6 +127,13 @@
       "when": 1783899000000,
       "tag": "0017_precise_hosted_usage_reservations",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783900000000,
+      "tag": "0018_verify_billing_contact",
+      "breakpoints": true
     }
   ]
 }
