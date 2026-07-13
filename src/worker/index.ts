@@ -6,6 +6,7 @@ import { closeDb, getDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
 import { claimJob } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
+import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
 import { backfillBillingContactVerification } from "../../scripts/backfill-billing-contact-verification";
 import { backfillEscalationEmailVerification } from "../../scripts/backfill-escalation-email-verification";
 import { PROCESSABLE_JOB_KINDS, readPositiveIntEnv, runClaimedJob } from "./runner";
@@ -128,6 +129,8 @@ async function main(): Promise<void> {
   console.log(
     `billing contact verification backfill: pending=${billingContactBackfill.pending} queued=${billingContactBackfill.queued} already_queued=${billingContactBackfill.alreadyQueued}`,
   );
+  const recoveredDeliveries = await recoverRespondDeliveryJobs(getDb());
+  console.log(`respond delivery recovery: queued=${recoveredDeliveries}`);
   // Fail fast if the image's CA trust store is broken (see tlsSelfTest).
   await tlsSelfTest();
   console.log(

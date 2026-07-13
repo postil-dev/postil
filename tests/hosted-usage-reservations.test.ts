@@ -19,6 +19,8 @@ import {
   claimRespondDelivery,
   getRespondDelivery,
   markRespondDelivered,
+  recoverRespondDeliveryJobs,
+  RESPOND_DELIVERY_MAX_ATTEMPTS,
 } from "@/lib/respond-delivery";
 
 describe("hosted usage reservation arithmetic", () => {
@@ -364,6 +366,19 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       GROUP BY delivery.job_id
     `);
     expect(durable.rows[0]).toEqual({ cost_micros: "1000000", state: "prepared" });
+    const deliveryJob = await pool!.query<{ max_attempts: number }>(`
+      SELECT max_attempts
+      FROM jobs
+      WHERE kind = 'respond-delivery'
+        AND payload @> jsonb_build_object('respondJobId', ${Number(row.job_id)}::bigint)
+    `);
+    expect(deliveryJob.rows).toEqual([{ max_attempts: RESPOND_DELIVERY_MAX_ATTEMPTS }]);
+    await pool!.query(
+      `DELETE FROM jobs WHERE kind = 'respond-delivery' AND payload @> jsonb_build_object('respondJobId', $1::bigint)`,
+      [row.job_id],
+    );
+    expect(await recoverRespondDeliveryJobs(db)).toBe(1);
+    expect(await recoverRespondDeliveryJobs(db)).toBe(0);
 
     const claims = await Promise.all([
       claimRespondDelivery(db, Number(row.job_id)),

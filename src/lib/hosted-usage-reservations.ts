@@ -6,6 +6,7 @@ import {
   evaluatePrivateRepositoryAccess,
   type OrganizationEntitlementSnapshot,
 } from "@/lib/private-repository-entitlement";
+import { enqueueRespondDeliveryJob } from "@/lib/respond-delivery";
 
 /**
  * Conservative upper bound for one hosted review using the checked-in model
@@ -331,6 +332,7 @@ export async function reconcileHostedRespondSpend(
         createdAt: now,
         updatedAt: now,
       });
+      await enqueueRespondDeliveryJob(tx, input.delivery.jobId);
     }
     return chargedMicros;
   });

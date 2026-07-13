@@ -110,8 +110,11 @@ before exposing a successful answer, with aggregate and per-model token usage.
 The worker runs replies without CLI-side posting, validates and prices every model
 entry, then commits usage, reservation reconciliation, answer body, and delivery
 state before posting to GitHub. A database lease serializes delivery. A durable
-hidden job marker lets retries discover a comment after an ambiguous POST rather
-than duplicating it. Missing, malformed, or unpriceable usage after CLI start
+delivery job retries independently of model execution, and worker startup repairs
+pending deliveries created without one. Delivery jobs retain capped-backoff retry
+capacity across extended GitHub outages. A hidden comment marker lets retries
+discover a comment after an ambiguous POST rather than duplicating it. Missing,
+malformed, or unpriceable usage after CLI start
 consumes the full reservation; only failures before CLI start release it. BYOK
 spend remains provider-direct and never creates a Postil reservation or receipt.
 Both review envelopes and respond receipts carry `usageAccountingComplete`.

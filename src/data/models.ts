@@ -1,6 +1,6 @@
 // Curated model list for /docs/models. Facts and public price snapshots are
 // maintained in this repo so public docs do not depend on a third-party request
-// at render time. Prices captured from OpenRouter on 2026-07-12.
+// at render time. Prices captured from OpenRouter on 2026-07-13.
 
 export type ParamClass = "unknown" | "<40B" | "40B-200B" | ">200B";
 
@@ -85,6 +85,30 @@ export const MODELS: CatalogModel[] = [
     recommended: false,
     tested: true,
     pricePerToken: { input: 0.000000077, output: 0.000000154 },
+  },
+  {
+    id: "anthropic/claude-haiku-4.5",
+    name: "Claude Haiku 4.5",
+    contextLength: 200_000,
+    vision: true,
+    openWeights: false,
+    paramClass: "unknown",
+    locallyRunnable: false,
+    recommended: false,
+    tested: false,
+    pricePerToken: { input: 0.000001, output: 0.000005 },
+  },
+  {
+    id: "openai/gpt-5-mini",
+    name: "GPT-5 Mini",
+    contextLength: 400_000,
+    vision: true,
+    openWeights: false,
+    paramClass: "unknown",
+    locallyRunnable: false,
+    recommended: false,
+    tested: false,
+    pricePerToken: { input: 0.00000025, output: 0.000002 },
   },
   {
     id: "qwen/qwen3-32b",

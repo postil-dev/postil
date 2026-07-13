@@ -60,7 +60,7 @@ mock.module("@/lib/github/checks", () => ({
   findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
-    return 1;
+    return 123;
   },
 }));
 

@@ -8,6 +8,7 @@ import {
   failJob,
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
+  type RespondDeliveryJobPayload,
   type RespondJobPayload,
   type ReviewJobPayload,
 } from "@/lib/queue";
@@ -19,6 +20,7 @@ import {
 import { isPermanentFailure } from "./failure-classifier";
 import {
   postRespondFailureComment,
+  runRespondDeliveryJob,
   runRespondFailureCommentJob,
   runRespondJob,
 } from "./respond";
@@ -44,6 +46,7 @@ let backgroundDrain: Promise<void> | undefined;
 export const PROCESSABLE_JOB_KINDS = [
   "review",
   "respond",
+  "respond-delivery",
   "escalation-notification",
   "escalation-email-verification",
   "billing-contact-verification",
@@ -61,6 +64,9 @@ async function handleJob(job: ClaimedJob): Promise<void> {
       break;
     case "respond":
       await runRespondJob(job.payload as RespondJobPayload, job.id);
+      break;
+    case "respond-delivery":
+      await runRespondDeliveryJob(job.payload as RespondDeliveryJobPayload);
       break;
     case "escalation-notification":
       await runEscalationNotificationJob(

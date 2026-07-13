@@ -9,6 +9,13 @@ import {
 } from "@/lib/billing-credits";
 
 describe("billing credit calculations", () => {
+  test.each([
+    ["anthropic/claude-haiku-4.5", 6_000_000],
+    ["openai/gpt-5-mini", 2_250_000],
+  ] as const)("prices configured scorer %s", (model, expected) => {
+    expect(calculateUsageCostMicrosForModel(model, 1_000_000, 1_000_000)).toBe(expected);
+  });
+
   test("snapshots sub-cent usage in USD micros from the model catalog", () => {
     const costMicros = calculateUsageCostMicrosForModel(
       "deepseek/deepseek-v4-pro",

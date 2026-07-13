@@ -12,7 +12,7 @@ import {
 } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
-import type { RespondJobPayload } from "@/lib/queue";
+import type { RespondDeliveryJobPayload, RespondJobPayload } from "@/lib/queue";
 import {
   canProcessPrivateRepository,
   providerModeMatchesPrivateAccess,
@@ -257,6 +257,19 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+export async function runRespondDeliveryJob(
+  payload: RespondDeliveryJobPayload,
+): Promise<void> {
+  if (!Number.isSafeInteger(payload.respondJobId) || payload.respondJobId <= 0) {
+    throw new Error("respond delivery payload malformed");
+  }
+  const db = getDb();
+  const delivery = await getRespondDelivery(db, payload.respondJobId);
+  if (!delivery || delivery.state === "delivered") return;
+  const token = await getInstallationToken(delivery.githubInstallationId);
+  await deliverPreparedRespond(db, token, payload.respondJobId);
 }
 
 async function deliverPreparedRespond(

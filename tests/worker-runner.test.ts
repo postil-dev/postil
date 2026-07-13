@@ -12,6 +12,7 @@ let claimCalls = 0;
 const claimCapabilities: string[][] = [];
 let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
+let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let escalationRun: (() => Promise<void>) | undefined;
 let escalationVerificationRun: (() => Promise<void>) | undefined;
@@ -59,6 +60,9 @@ mock.module("@/worker/respond", () => ({
   postRespondFailureComment: async () => undefined,
   runRespondFailureCommentJob: async () => {
     await respondFailureCommentRun?.();
+  },
+  runRespondDeliveryJob: async () => {
+    await respondDeliveryRun?.();
   },
   runRespondJob: async () => {
     await respondRun?.();
@@ -113,6 +117,7 @@ beforeEach(() => {
   claimCapabilities.length = 0;
   reviewRun = async () => undefined;
   respondRun = async () => undefined;
+  respondDeliveryRun = async () => undefined;
   respondFailureCommentRun = async () => undefined;
   escalationRun = async () => undefined;
   escalationVerificationRun = async () => undefined;
@@ -134,12 +139,28 @@ describe("drainQueueOnce", () => {
     expect(claimCapabilities).toEqual([[
       "review",
       "respond",
+      "respond-delivery",
       "escalation-notification",
       "escalation-email-verification",
       "billing-contact-verification",
       "check-run-cleanup",
       "respond-failure-comment",
     ]]);
+  });
+
+  test("dispatches durable respond delivery jobs independently", async () => {
+    const job = reviewJob(1);
+    job.kind = "respond-delivery";
+    job.payload = { respondJobId: 7 };
+    let called = false;
+    respondDeliveryRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
   });
 
   test("dispatches durable escalation notification jobs", async () => {
