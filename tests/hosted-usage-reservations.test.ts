@@ -173,6 +173,44 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     expect(usage.rows[0]).toEqual({ cost_micros: "1000000" });
   });
 
+  test("classifies omitted legacy usage scope without undercounting private hosted work", async () => {
+    const legacyHosted = await pool!.query<{ billing_scope: string }>(
+      `INSERT INTO usage_events (
+         org_id, repository_id, prompt_tokens, completion_tokens, model_used, cost_micros
+       ) VALUES ($1, $2, 10, 2, 'legacy-hosted', 77)
+       RETURNING billing_scope`,
+      [orgId, repositoryId],
+    );
+    expect(legacyHosted.rows[0]?.billing_scope).toBe("private_hosted");
+
+    const explicitAnalytics = await pool!.query<{ billing_scope: string }>(
+      `INSERT INTO usage_events (
+         org_id, repository_id, prompt_tokens, completion_tokens, model_used,
+         cost_micros, billing_scope
+       ) VALUES ($1, $2, 10, 2, 'current-explicit', 77, 'analytics')
+       RETURNING billing_scope`,
+      [orgId, repositoryId],
+    );
+    expect(explicitAnalytics.rows[0]?.billing_scope).toBe("analytics");
+
+    await pool!.query(
+      "UPDATE organization_entitlements SET subscription_mode = 'byok' WHERE org_id = $1",
+      [orgId],
+    );
+    const legacyByok = await pool!.query<{ billing_scope: string }>(
+      `INSERT INTO usage_events (
+         org_id, repository_id, prompt_tokens, completion_tokens, model_used, cost_micros
+       ) VALUES ($1, $2, 10, 2, 'legacy-byok', 77)
+       RETURNING billing_scope`,
+      [orgId, repositoryId],
+    );
+    expect(legacyByok.rows[0]?.billing_scope).toBe("analytics");
+    await pool!.query(
+      "UPDATE organization_entitlements SET subscription_mode = 'hosted' WHERE org_id = $1",
+      [orgId],
+    );
+  });
+
   test("respond holds serialize, reconcile without a review, and release on failure", async () => {
     const db = drizzle(pool!, { schema });
     const fixture = await pool!.query<{ org_id: string; repository_id: string }>(`

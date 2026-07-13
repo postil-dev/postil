@@ -1,11 +1,77 @@
-ALTER TABLE "usage_events" ADD COLUMN "billing_scope" text DEFAULT 'analytics' NOT NULL;
+ALTER TABLE "usage_events" ADD COLUMN "billing_scope" text;
+
+-- Preserve historical rows as analytics-only. For inserts made after this
+-- migration, an omitted scope identifies a pre-0020 writer. Classify that
+-- writer from the durable repository visibility and provider entitlement
+-- instead of letting a default silently turn private hosted spend into
+-- analytics during a rolling deployment.
+UPDATE "usage_events" SET "billing_scope" = 'analytics';
+
+CREATE FUNCTION "classify_legacy_usage_event_scope"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."billing_scope" IS NULL THEN
+    SELECT CASE
+      WHEN repository."private"
+        AND COALESCE(entitlement."subscription_mode", 'hosted') <> 'byok'
+        THEN 'private_hosted'
+      ELSE 'analytics'
+    END
+    INTO NEW."billing_scope"
+    FROM "repositories" repository
+    LEFT JOIN "organization_entitlements" entitlement
+      ON entitlement."org_id" = NEW."org_id"
+    WHERE repository."id" = NEW."repository_id";
+
+    NEW."billing_scope" := COALESCE(NEW."billing_scope", 'analytics');
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER "usage_events_legacy_scope_trigger"
+  BEFORE INSERT ON "usage_events"
+  FOR EACH ROW EXECUTE FUNCTION "classify_legacy_usage_event_scope"();
+
+ALTER TABLE "usage_events" ALTER COLUMN "billing_scope" SET NOT NULL;
 
 ALTER TABLE "usage_events" ADD CONSTRAINT "usage_events_billing_scope_check"
   CHECK ("billing_scope" IN ('analytics', 'private_hosted'));
 
--- Existing rows remain analytics-only. Historical visibility and provider
--- mode are not immutable on those rows, so billing them during backfill could
--- consume allowance without durable proof that they were private hosted work.
+-- These job kinds are introduced by this release. New web machines can
+-- accept settings changes while old workers remain alive in a rolling deploy,
+-- so capability-filtered new workers alone are insufficient. Hold these jobs
+-- at infinity until the deploy workflow has replaced the fleet and explicitly
+-- activates the capability. The transaction advisory lock closes the race
+-- between an insert and activation's release UPDATE.
+CREATE TABLE "deployment_capabilities" (
+  "name" text PRIMARY KEY,
+  "activated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE FUNCTION "stage_unactivated_release_job"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."kind" IN (
+    'escalation-email-verification',
+    'billing-contact-verification',
+    'respond-delivery'
+  ) THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('postil:release-v1-jobs', 0));
+    IF NOT EXISTS (
+      SELECT 1 FROM "deployment_capabilities"
+      WHERE "name" = 'release-v1-jobs'
+    ) THEN
+      NEW."run_after" := 'infinity'::timestamptz;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER "jobs_stage_unactivated_release_trigger"
+  BEFORE INSERT ON "jobs"
+  FOR EACH ROW EXECUTE FUNCTION "stage_unactivated_release_job"();
 
 CREATE TABLE "respond_deliveries" (
   "job_id" bigint PRIMARY KEY REFERENCES "jobs"("id") ON DELETE CASCADE,

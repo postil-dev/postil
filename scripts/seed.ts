@@ -285,6 +285,7 @@ async function main(): Promise<void> {
           env.usage.promptTokens,
           env.usage.completionTokens,
         ),
+        billingScope: "analytics",
       });
     }
   }

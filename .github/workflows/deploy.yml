@@ -183,7 +183,11 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          stopped=$(flyctl machine list --app postil-web --json | jq -r '.[] | select(.state == "stopped") | .id')
+          stopped=$(flyctl machine list --app postil-web --json | jq -r '.[] | select(
+            .state == "stopped"
+            and (.config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker")
+            and .config.metadata.fly_platform_version == "v2"
+          ) | .id')
           if [ -z "$stopped" ]; then
             echo "No stopped machines after deploy."
           else
@@ -206,5 +210,39 @@ jobs:
           if [ "${web_running}" -lt 2 ]; then
             echo "::warning::Only ${web_running} web machine(s) reported running after deploy; fly.toml requires min_machines_running = 2. Verify with 'fly status -a postil-web'."
           fi
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Activate release job kinds after fleet replacement
+        # Migration 0020 stages new job kinds with an infinite
+        # run_after. This runs only after flyctl deploy has replaced the managed
+        # fleet, so no pre-capability worker can claim them. It backfills
+        # existing recipients before atomically releasing every staged job. A
+        # failure leaves jobs safely staged and fails the workflow for a retry.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          machines=$(flyctl machine list --app postil-web --json)
+          release_group_count=$(jq -r '[.[] | select(
+            .config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker"
+          )] | length' <<<"${machines}")
+          managed_count=$(jq -r '[.[] | select(
+            (.config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker")
+            and .config.metadata.fly_platform_version == "v2"
+          )] | length' <<<"${machines}")
+          image_count=$(jq -r '[.[] | select(
+            (.config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker")
+            and .config.metadata.fly_platform_version == "v2"
+          ) | .config.image] | unique | length' <<<"${machines}")
+          web_started=$(jq -r '[.[] | select(.config.metadata.fly_process_group == "web" and .state == "started")] | length' <<<"${machines}")
+          worker_started=$(jq -r '[.[] | select(.config.metadata.fly_process_group == "worker" and .state == "started")] | length' <<<"${machines}")
+          if [ "${release_group_count}" -ne "${managed_count}" ] \
+            || [ "${managed_count}" -lt 3 ] \
+            || [ "${image_count}" -ne 1 ] \
+            || [ "${web_started}" -lt 2 ] \
+            || [ "${worker_started}" -lt 1 ]; then
+            echo "::error::Refusing to activate release job kinds: the managed web/worker fleet is incomplete or uses mixed images."
+            exit 1
+          fi
+          flyctl ssh console --app postil-web --command "bun run jobs:activate-release"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

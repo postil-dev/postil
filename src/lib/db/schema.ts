@@ -282,7 +282,9 @@ export const usageEvents = pgTable(
     costMicros: bigint("cost_micros", { mode: "number" }),
     /** Rolling-deploy compatibility; new accounting reads costMicros. */
     costCents: integer("cost_cents"),
-    billingScope: text("billing_scope").notNull().default("analytics"),
+    // Required from current writers. The database trigger classifies omitted
+    // values only for pre-0020 processes during the migration rollout.
+    billingScope: text("billing_scope").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

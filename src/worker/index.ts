@@ -7,8 +7,6 @@ import { optionalEnv, validateEnv } from "@/lib/env";
 import { claimJob } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
-import { backfillBillingContactVerification } from "../../scripts/backfill-billing-contact-verification";
-import { backfillEscalationEmailVerification } from "../../scripts/backfill-escalation-email-verification";
 import { PROCESSABLE_JOB_KINDS, readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
@@ -114,21 +112,6 @@ async function main(): Promise<void> {
   validatePostilBin();
   // Fail fast if the database is unreachable.
   await getPool().query("SELECT 1");
-  // Queue verification for legacy recipients only after the new worker code is
-  // active. Queuing in Fly's release command would let the old worker claim an
-  // unfamiliar job kind while the deployment is rolling out.
-  const verificationBackfill = await backfillEscalationEmailVerification(getDb(), {
-    confirm: true,
-  });
-  console.log(
-    `escalation email verification backfill: pending=${verificationBackfill.pending} queued=${verificationBackfill.queued} already_queued=${verificationBackfill.alreadyQueued}`,
-  );
-  const billingContactBackfill = await backfillBillingContactVerification(getDb(), {
-    confirm: true,
-  });
-  console.log(
-    `billing contact verification backfill: pending=${billingContactBackfill.pending} queued=${billingContactBackfill.queued} already_queued=${billingContactBackfill.alreadyQueued}`,
-  );
   const recoveredDeliveries = await recoverRespondDeliveryJobs(getDb());
   console.log(`respond delivery recovery: queued=${recoveredDeliveries}`);
   // Fail fast if the image's CA trust store is broken (see tlsSelfTest).
