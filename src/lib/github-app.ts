@@ -7,3 +7,18 @@ export function githubAppInstallUrl(): string {
   const slug = process.env.GITHUB_APP_SLUG?.trim() || "postil-dev";
   return `https://github.com/apps/${slug}/installations/new`;
 }
+
+interface GithubInstallationRef {
+  githubInstallationId: number;
+  accountLogin: string;
+  accountType: string;
+}
+
+/** GitHub's settings page for one existing account-scoped installation. */
+export function githubInstallationSettingsUrl(
+  installation: GithubInstallationRef,
+): string {
+  return installation.accountType === "Organization"
+    ? `https://github.com/organizations/${encodeURIComponent(installation.accountLogin)}/settings/installations/${installation.githubInstallationId}`
+    : `https://github.com/settings/installations/${installation.githubInstallationId}`;
+}

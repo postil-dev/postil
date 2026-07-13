@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { githubInstallationSettingsUrl } from "@/lib/github-app";
 import { formatRelativeTime } from "@/lib/time";
 import {
   deriveRepoHealth,
@@ -92,7 +93,7 @@ export function RepoHealthBanner({
         {installationLinks.map((installation) => (
           <Link
             key={installation.githubInstallationId}
-            href={installationSettingsUrl(installation)}
+            href={githubInstallationSettingsUrl(installation)}
             className="btn-secondary text-xs"
           >
             Repository access on GitHub
@@ -165,10 +166,4 @@ function liveConfigSentence(
 
 function uniqueInstallations(rows: readonly RepoHealthRow[]): RepoHealthRow[] {
   return [...new Map(rows.map((row) => [row.githubInstallationId, row])).values()];
-}
-
-function installationSettingsUrl(row: RepoHealthRow): string {
-  return row.accountType === "Organization"
-    ? `https://github.com/organizations/${encodeURIComponent(row.accountLogin)}/settings/installations/${row.githubInstallationId}`
-    : `https://github.com/settings/installations/${row.githubInstallationId}`;
 }

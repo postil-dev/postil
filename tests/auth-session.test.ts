@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-import { shouldShowInstallApp } from "@/components/mobile-nav";
+import { installNavigationAction } from "@/components/mobile-nav";
 import * as dbModule from "@/lib/db";
 
 let sessionUser: { id: number; login: string } | null;
@@ -79,18 +79,33 @@ describe("GET /api/auth/session", () => {
 });
 
 describe("install navigation affordance", () => {
-  test("is hidden while session state loads and after an active installation is found", () => {
-    expect(shouldShowInstallApp(undefined)).toBe(false);
-    expect(
-      shouldShowInstallApp({ dashboardHref: "/reports", hasActiveInstallation: true }),
-    ).toBe(false);
+  test("is hidden while session state loads", () => {
+    expect(installNavigationAction(undefined)).toBeNull();
   });
 
-  test("remains available to signed-out users and users without an installation", () => {
-    expect(shouldShowInstallApp(null)).toBe(true);
+  test("uses the prominent install action for signed-out users and users without an installation", () => {
+    expect(installNavigationAction(null)).toEqual({
+      label: "Install the App",
+      variant: "primary",
+    });
     expect(
-      shouldShowInstallApp({ dashboardHref: "/reports", hasActiveInstallation: false }),
-    ).toBe(true);
+      installNavigationAction({
+        dashboardHref: "/reports",
+        hasActiveInstallation: false,
+      }),
+    ).toEqual({ label: "Install the App", variant: "primary" });
+  });
+
+  test("uses a secondary add-account action after an installation exists", () => {
+    const session = {
+      dashboardHref: "/reports",
+      hasActiveInstallation: true,
+    };
+
+    expect(installNavigationAction(session)).toEqual({
+      label: "Add account",
+      variant: "secondary",
+    });
   });
 });
 

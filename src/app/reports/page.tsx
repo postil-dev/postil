@@ -9,6 +9,7 @@ import {
   GateBadge,
   ReviewStatusBadge,
 } from "@/components/review-status";
+import { ReportsHeader } from "@/components/reports-header";
 import { getDb, schema } from "@/lib/db";
 import { githubAppInstallUrl } from "@/lib/github-app";
 import { githubPrUrl } from "@/lib/github-links";
@@ -100,14 +101,10 @@ export default async function ReportsPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="eyebrow">Reports</p>
-          <h1 className="serif-display mt-2 text-3xl">
-            Recent reviews, {user.login}
-          </h1>
-        </div>
-      </div>
+      <ReportsHeader
+        login={user.login}
+        addAccountUrl={memberships.length > 0 ? githubAppInstallUrl() : undefined}
+      />
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {memberships.map((m) => {

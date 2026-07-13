@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { githubAppInstallUrl } from "@/lib/github-app";
+import {
+  githubAppInstallUrl,
+  githubInstallationSettingsUrl,
+} from "@/lib/github-app";
 
 const ORIGINAL_SLUG = process.env.GITHUB_APP_SLUG;
 
@@ -35,5 +38,27 @@ describe("GitHub App install URL", () => {
     expect(githubAppInstallUrl()).toBe(
       "https://github.com/apps/postil-dev/installations/new",
     );
+  });
+});
+
+describe("GitHub App installation settings URL", () => {
+  test("targets an organization installation", () => {
+    expect(
+      githubInstallationSettingsUrl({
+        githubInstallationId: 123,
+        accountLogin: "postil dev",
+        accountType: "Organization",
+      }),
+    ).toBe("https://github.com/organizations/postil%20dev/settings/installations/123");
+  });
+
+  test("targets a personal installation", () => {
+    expect(
+      githubInstallationSettingsUrl({
+        githubInstallationId: 456,
+        accountLogin: "octocat",
+        accountType: "User",
+      }),
+    ).toBe("https://github.com/settings/installations/456");
   });
 });

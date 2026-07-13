@@ -7,6 +7,7 @@ import { formatMs } from "@/components/review-status";
 import { ReviewTimeDistribution } from "@/components/review-time-distribution";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { schema } from "@/lib/db";
+import { githubInstallationSettingsUrl } from "@/lib/github-app";
 import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
@@ -37,7 +38,11 @@ export default async function OrgDashboardPage({
   const now = new Date();
 
   const suspendedInstallations = await db
-    .select({ accountLogin: schema.installations.accountLogin })
+    .select({
+      githubInstallationId: schema.installations.githubInstallationId,
+      accountLogin: schema.installations.accountLogin,
+      accountType: schema.installations.accountType,
+    })
     .from(schema.installations)
     .where(and(eq(schema.installations.orgId, org.id), eq(schema.installations.suspended, true)));
 
@@ -268,9 +273,22 @@ export default async function OrgDashboardPage({
             <span className="font-mono text-xs">
               {suspendedInstallations.map((i) => i.accountLogin).join(", ")}
             </span>{" "}
-            is suspended, so no reviews run for it. Unsuspend it in GitHub under
-            organization Settings → GitHub Apps.
+            {suspendedInstallations.length === 1 ? "is" : "are"} suspended, so
+            Postil does not run reviews for {suspendedInstallations.length === 1
+              ? "that account"
+              : "those accounts"}.
           </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {suspendedInstallations.map((installation) => (
+              <a
+                key={installation.githubInstallationId}
+                href={githubInstallationSettingsUrl(installation)}
+                className="btn-secondary text-xs"
+              >
+                Manage {installation.accountLogin} on GitHub
+              </a>
+            ))}
+          </div>
         </div>
       )}
 
