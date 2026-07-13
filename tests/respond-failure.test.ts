@@ -51,6 +51,19 @@ let tokenMintError: Error | undefined;
 const postedComments: Array<{ repo: string; number: number; body: string }> = [];
 let postShouldThrow = false;
 let postShouldHang = false;
+let postShouldThrowAfterAccept = false;
+let deliveryJobEnqueues = 0;
+let delivery:
+  | {
+      jobId: number;
+      repoFullName: string;
+      issueNumber: number;
+      body: string;
+      state: "prepared" | "delivering" | "delivered";
+      createdAt: Date;
+      githubInstallationId: number;
+    }
+  | undefined;
 
 mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
@@ -78,6 +91,18 @@ mock.module("@/lib/github/app-auth", () => ({
 const realChecks = await import("@/lib/github/checks");
 mock.module("@/lib/github/checks", () => ({
   ...realChecks,
+  findIssueCommentByMarker: async (
+    _token: string,
+    repo: string,
+    number: number,
+    marker: string,
+  ) => {
+    const index = postedComments.findIndex(
+      (comment) =>
+        comment.repo === repo && comment.number === number && comment.body.includes(marker),
+    );
+    return index < 0 ? null : index + 1;
+  },
   postIssueComment: async (
     _token: string,
     repo: string,
@@ -92,11 +117,52 @@ mock.module("@/lib/github/checks", () => ({
       });
     }
     postedComments.push({ repo, number, body });
+    if (postShouldThrowAfterAccept) throw new Error("connection lost after accept");
+    return postedComments.length;
   },
 }));
 
+const realRespondDelivery = await import("@/lib/respond-delivery");
+mock.module("@/lib/respond-delivery", () => ({
+  ...realRespondDelivery,
+  RESPOND_DELIVERY_REQUEST_TIMEOUT_MS: 30_000,
+  claimRespondDelivery: async (_db: unknown, jobId: number) => {
+    if (!delivery || delivery.jobId !== jobId || delivery.state !== "prepared") return null;
+    delivery.state = "delivering";
+    return delivery;
+  },
+  getRespondDelivery: async (_db: unknown, jobId: number) =>
+    delivery?.jobId === jobId ? delivery : null,
+  markRespondDelivered: async (_db: unknown, jobId: number) => {
+    if (delivery?.jobId === jobId) delivery.state = "delivered";
+  },
+  prepareUnmeteredRespondDelivery: async (
+    _db: unknown,
+    input: {
+      jobId: number;
+      repoFullName: string;
+      issueNumber: number;
+      body: string;
+    },
+  ) => {
+    if (delivery) return;
+    delivery = {
+      ...input,
+      state: "prepared",
+      createdAt: new Date(),
+      githubInstallationId: 42,
+    };
+    deliveryJobEnqueues += 1;
+  },
+  respondDeliveryMarker: (jobId: number) => `<!-- postil-respond-job:${jobId} -->`,
+}));
+
 // Imported after the mocks are registered so the helper binds to them.
-const { postRespondFailureComment, RESPOND_FAILURE_COMMENT } = await import("@/worker/respond");
+const {
+  postRespondFailureComment,
+  RESPOND_FAILURE_COMMENT,
+  runRespondDeliveryJob,
+} = await import("@/worker/respond");
 
 function payload(over: Partial<RespondJobPayload> = {}): RespondJobPayload {
   return {
@@ -118,6 +184,9 @@ beforeEach(() => {
   tokenMintError = undefined;
   postShouldThrow = false;
   postShouldHang = false;
+  postShouldThrowAfterAccept = false;
+  deliveryJobEnqueues = 0;
+  delivery = undefined;
   postedComments.length = 0;
 });
 
@@ -127,72 +196,92 @@ afterEach(() => {
 
 describe("postRespondFailureComment (final-attempt exhaustion)", () => {
   test("posts exactly one honest fallback comment to the originating PR/issue", async () => {
-    await postRespondFailureComment(payload());
+    await postRespondFailureComment(payload(), 123);
     expect(postedComments).toHaveLength(1);
     expect(postedComments[0]).toEqual({
       repo: "octo/repo",
       number: 7,
-      body: RESPOND_FAILURE_COMMENT,
+      body: `${RESPOND_FAILURE_COMMENT}\n\n<!-- postil-respond-job:123 -->`,
     });
-    // No hype: brief, honest, points at re-mention + logs.
-    expect(RESPOND_FAILURE_COMMENT).toContain("could not complete");
-    expect(RESPOND_FAILURE_COMMENT).toContain("@postil");
+    // Brief acknowledgment without provider detail or another active mention.
+    expect(RESPOND_FAILURE_COMMENT).toContain("couldn't complete");
+    expect(RESPOND_FAILURE_COMMENT).not.toContain("@postil");
+    expect(RESPOND_FAILURE_COMMENT).not.toContain("model");
+    expect(deliveryJobEnqueues).toBe(1);
   });
 
-  test("calling once posts once (idempotent per failed job)", async () => {
-    await postRespondFailureComment(payload());
+  test("calling twice posts once through the durable delivery marker", async () => {
+    await postRespondFailureComment(payload(), 123);
+    await postRespondFailureComment(payload(), 123);
     expect(postedComments).toHaveLength(1);
+    expect(deliveryJobEnqueues).toBe(1);
+  });
+
+  test("ambiguous accepted POST is found by marker instead of duplicated", async () => {
+    postShouldThrowAfterAccept = true;
+    await postRespondFailureComment(payload(), 123);
+    expect(postedComments).toHaveLength(1);
+    expect(delivery?.state).toBe("delivering");
+
+    postShouldThrowAfterAccept = false;
+    delivery!.state = "prepared"; // The real lease expiry makes this claimable.
+    await runRespondDeliveryJob({ respondJobId: 123 });
+
+    expect(postedComments).toHaveLength(1);
+    expect(String(delivery?.state)).toBe("delivered");
   });
 });
 
 describe("postRespondFailureComment skips genuinely skipped work", () => {
   test("suspended installation posts no comment", async () => {
     installationRows = [{ ...enabledInstallation, suspended: true }];
-    await postRespondFailureComment(payload());
+    await postRespondFailureComment(payload(), 123);
     expect(postedComments).toHaveLength(0);
   });
 
   test("missing installation posts no comment", async () => {
     installationRows = [];
-    await postRespondFailureComment(payload());
+    await postRespondFailureComment(payload(), 123);
     expect(postedComments).toHaveLength(0);
   });
 
   test("disabled repository posts no comment", async () => {
     repositoryRows = [{ ...enabledRepository, enabled: false }];
-    await postRespondFailureComment(payload());
+    await postRespondFailureComment(payload(), 123);
     expect(postedComments).toHaveLength(0);
   });
 
   test("missing repository posts no comment", async () => {
     repositoryRows = [];
-    await postRespondFailureComment(payload());
+    await postRespondFailureComment(payload(), 123);
     expect(postedComments).toHaveLength(0);
   });
 });
 
 describe("postRespondFailureComment is fail-safe", () => {
   test("malformed payload (no routing fields) posts nothing and does not throw", async () => {
-    await postRespondFailureComment({} as RespondJobPayload);
+    await postRespondFailureComment({} as RespondJobPayload, 123);
     expect(postedComments).toHaveLength(0);
   });
 
   test("a failing comment POST is swallowed, never re-thrown", async () => {
     postShouldThrow = true;
-    await expect(postRespondFailureComment(payload())).resolves.toBeUndefined();
+    await expect(postRespondFailureComment(payload(), 123)).resolves.toBeUndefined();
     expect(postedComments).toHaveLength(0);
   });
 
   test("a failing token mint is swallowed, never re-thrown", async () => {
     tokenMintError = new Error("mint failed");
-    await expect(postRespondFailureComment(payload())).resolves.toBeUndefined();
+    await expect(postRespondFailureComment(payload(), 123)).resolves.toBeUndefined();
     expect(postedComments).toHaveLength(0);
   });
 
   test("a hung comment POST is bounded when the caller supplies no signal", async () => {
     postShouldHang = true;
 
-    await expect(postRespondFailureComment(payload(), undefined, 10)).resolves.toBeUndefined();
+    await expect(
+      postRespondFailureComment(payload(), 123, undefined, 10),
+    ).resolves.toBeUndefined();
     expect(postedComments).toHaveLength(0);
   });
 
@@ -200,7 +289,7 @@ describe("postRespondFailureComment is fail-safe", () => {
     postShouldThrow = true;
 
     await expect(
-      postRespondFailureComment(payload(), undefined, 10, true),
+      postRespondFailureComment(payload(), 123, undefined, 10, true),
     ).rejects.toThrow("github 500");
   });
 });

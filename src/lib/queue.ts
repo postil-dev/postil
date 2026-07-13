@@ -59,6 +59,10 @@ export interface RespondDeliveryJobPayload extends Record<string, unknown> {
   respondJobId: number;
 }
 
+export interface RespondFailureCommentJobPayload extends RespondJobPayload {
+  respondJobId: number;
+}
+
 export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   installationId: number;
   repoFullName: string;

@@ -12,7 +12,11 @@ import {
 } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
-import type { RespondDeliveryJobPayload, RespondJobPayload } from "@/lib/queue";
+import type {
+  RespondDeliveryJobPayload,
+  RespondFailureCommentJobPayload,
+  RespondJobPayload,
+} from "@/lib/queue";
 import {
   canProcessPrivateRepository,
   providerModeMatchesPrivateAccess,
@@ -276,6 +280,7 @@ async function deliverPreparedRespond(
   db: ReturnType<typeof getDb>,
   token: string,
   jobId: number,
+  signal?: AbortSignal,
 ): Promise<void> {
   const delivery = await claimRespondDelivery(db, jobId);
   if (!delivery) {
@@ -284,36 +289,35 @@ async function deliverPreparedRespond(
     throw new Error("respond delivery is already in progress");
   }
   const marker = respondDeliveryMarker(jobId);
-  const signal = AbortSignal.timeout(RESPOND_DELIVERY_REQUEST_TIMEOUT_MS);
+  const requestSignal = signal ?? AbortSignal.timeout(RESPOND_DELIVERY_REQUEST_TIMEOUT_MS);
   const existingCommentId = await findIssueCommentByMarker(
     token,
     delivery.repoFullName,
     delivery.issueNumber,
     marker,
     new Date(delivery.createdAt.getTime() - 5 * 60_000),
-    signal,
+    requestSignal,
   );
   const commentId = existingCommentId ?? await postIssueComment(
     token,
     delivery.repoFullName,
     delivery.issueNumber,
     delivery.body,
-    signal,
+    requestSignal,
   );
   await markRespondDelivered(db, jobId, commentId);
 }
 
 /** The user-facing message posted when a respond job exhausts its retries. */
 export const RESPOND_FAILURE_COMMENT =
-  "Postil could not complete this request after several attempts. " +
-  "The maintainers can re-run by mentioning @postil again, or check the run logs.";
+  "Postil couldn't complete this request. Please try again.";
 export const RESPOND_FAILURE_COMMENT_TIMEOUT_MS = 10_000;
 
 /**
  * Post one brief, honest fallback comment after a respond job has been
- * permanently failed (retries exhausted). Call this only when the job has
- * actually transitioned to `failed`, and only once — the queue's conditional
- * transition (failJob returning "failed") is the single-post guard.
+ * permanently failed (retries exhausted). The failed respond job id is also
+ * the durable delivery id, so a lost POST response is reconciled by marker
+ * instead of producing another comment.
  *
  * Never throws: a respond job is already failed when this runs, so a failed
  * comment POST must not turn into an unhandled rejection in the worker loop.
@@ -323,10 +327,10 @@ export const RESPOND_FAILURE_COMMENT_TIMEOUT_MS = 10_000;
  */
 export async function postRespondFailureComment(
   payload: RespondJobPayload,
+  respondJobId: number,
   signal?: AbortSignal,
   timeoutMs = RESPOND_FAILURE_COMMENT_TIMEOUT_MS,
   throwOnError = false,
-  respondJobId?: number,
 ): Promise<void> {
   const requestSignal = signal ?? AbortSignal.timeout(timeoutMs);
   try {
@@ -335,17 +339,17 @@ export async function postRespondFailureComment(
     if (
       typeof payload.installationId !== "number" ||
       typeof payload.repoFullName !== "string" ||
-      typeof payload.number !== "number"
+      typeof payload.number !== "number" ||
+      !Number.isSafeInteger(respondJobId) ||
+      respondJobId <= 0
     ) {
       console.warn("respond failure comment skipped: payload missing routing fields");
       return;
     }
 
     const db = getDb();
-    if (respondJobId && await getRespondDelivery(db, respondJobId)) {
-      console.warn("respond failure comment skipped: a durable answer delivery exists");
-      return;
-    }
+    const existingDelivery = await getRespondDelivery(db, respondJobId);
+    if (existingDelivery?.state === "delivered") return;
     const installation = (
       await db
         .select()
@@ -389,14 +393,17 @@ export async function postRespondFailureComment(
       return;
     }
 
+    if (!existingDelivery) {
+      await prepareUnmeteredRespondDelivery(db, {
+        jobId: respondJobId,
+        repositoryId: repository.id,
+        repoFullName: payload.repoFullName,
+        issueNumber: payload.number,
+        body: `${RESPOND_FAILURE_COMMENT}\n\n${respondDeliveryMarker(respondJobId)}`,
+      });
+    }
     const token = await getInstallationToken(payload.installationId, requestSignal);
-    await postIssueComment(
-      token,
-      payload.repoFullName,
-      payload.number,
-      RESPOND_FAILURE_COMMENT,
-      requestSignal,
-    );
+    await deliverPreparedRespond(db, token, respondJobId, requestSignal);
     console.warn(
       `respond failure comment posted to ${payload.repoFullName}#${payload.number}`,
     );
@@ -411,9 +418,12 @@ export async function postRespondFailureComment(
 }
 
 /** Retryable worker job for a terminal respond-job fallback comment. */
-export async function runRespondFailureCommentJob(payload: RespondJobPayload): Promise<void> {
+export async function runRespondFailureCommentJob(
+  payload: RespondFailureCommentJobPayload,
+): Promise<void> {
   await postRespondFailureComment(
     payload,
+    payload.respondJobId,
     undefined,
     RESPOND_FAILURE_COMMENT_TIMEOUT_MS,
     true,

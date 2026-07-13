@@ -11,6 +11,7 @@ import {
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
   type RespondDeliveryJobPayload,
+  type RespondFailureCommentJobPayload,
   type RespondJobPayload,
   type ReviewJobPayload,
 } from "@/lib/queue";
@@ -86,7 +87,7 @@ async function handleJob(
       await runCheckRunCleanupJob(job.payload as CheckRunCleanupJobPayload);
       break;
     case "respond-failure-comment":
-      await runRespondFailureCommentJob(job.payload as RespondJobPayload);
+      await runRespondFailureCommentJob(job.payload as RespondFailureCommentJobPayload);
       break;
     default:
       throw new Error(`unknown job kind: ${job.kind}`);
@@ -127,10 +128,10 @@ export async function runClaimedJob(
     if (outcome === "failed" && job.kind === "respond") {
       await postRespondFailureComment(
         job.payload as RespondJobPayload,
+        job.id,
         undefined,
         undefined,
         false,
-        job.id,
       );
     }
   }

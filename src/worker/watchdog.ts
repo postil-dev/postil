@@ -85,10 +85,13 @@ export async function watchdogPass(
            locked_at = NULL, locked_by = NULL, run_after = now(),
            last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
        WHERE status = 'running' AND locked_at < $1
-       RETURNING kind, status, payload
+       RETURNING id, kind, status, payload
      )
      INSERT INTO jobs (kind, payload, max_attempts)
-     SELECT 'respond-failure-comment', payload, 5
+     SELECT
+       'respond-failure-comment',
+       payload || jsonb_build_object('respondJobId', id),
+       5
      FROM updated
      WHERE kind = 'respond' AND status = 'failed'`,
     [cutoff],

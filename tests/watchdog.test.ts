@@ -222,13 +222,20 @@ describeDb("watchdog stuck-review kill", () => {
 
     expect(first.killed).toBe(0);
     expect(second.killed).toBe(0);
-    const jobs = await pool.query<{ kind: string; status: string; run_after: Date }>(
-      "SELECT kind, status, run_after FROM jobs ORDER BY id",
+    const jobs = await pool.query<{
+      id: string;
+      kind: string;
+      status: string;
+      run_after: Date;
+      payload: Record<string, unknown>;
+    }>(
+      "SELECT id, kind, status, run_after, payload FROM jobs ORDER BY id",
     );
     expect(jobs.rows.map(({ kind, status }) => ({ kind, status }))).toEqual([
       { kind: "respond", status: "failed" },
       { kind: "respond-failure-comment", status: "queued" },
     ]);
+    expect(jobs.rows[1]!.payload.respondJobId).toBe(Number(jobs.rows[0]!.id));
     expect(jobs.rows[0]!.run_after.getTime()).toBeGreaterThanOrEqual(failedAfter.getTime());
   });
 
