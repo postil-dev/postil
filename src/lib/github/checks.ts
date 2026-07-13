@@ -131,7 +131,9 @@ export async function findIssueCommentByMarker(
     if (match?.id !== undefined) return match.id;
     if (comments.length < ISSUE_COMMENTS_PAGE_SIZE) return null;
   }
-  return null;
+  throw new Error(
+    `GitHub comment marker search is inconclusive after ${RESPOND_MARKER_MAX_PAGES} full pages`,
+  );
 }
 
 export async function getPullRequestHeadSha(

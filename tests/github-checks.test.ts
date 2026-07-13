@@ -42,7 +42,7 @@ describe("respond delivery marker lookup", () => {
     expect(requestedPages).toEqual([1, 2]);
   });
 
-  test("stops after the bounded search window when the marker is absent", async () => {
+  test("fails closed after the bounded search window is full", async () => {
     const requestedPages: number[] = [];
     globalThis.fetch = (async (input) => {
       const url = new URL(String(input));
@@ -50,6 +50,22 @@ describe("respond delivery marker lookup", () => {
       requestedPages.push(page);
       return Response.json(comments(100, page));
     }) as typeof fetch;
+
+    const lookup = findIssueCommentByMarker(
+      "token",
+      "postil-dev/postil",
+      7,
+      "<!-- postil-respond-job:missing -->",
+      new Date("2026-07-13T00:00:00.000Z"),
+    );
+
+    await expect(lookup).rejects.toThrow("marker search is inconclusive");
+    expect(requestedPages).toHaveLength(RESPOND_MARKER_MAX_PAGES);
+    expect(requestedPages.at(-1)).toBe(RESPOND_MARKER_MAX_PAGES);
+  });
+
+  test("returns null when a short page proves the search is exhausted", async () => {
+    globalThis.fetch = (async (_input) => Response.json(comments(3, 1))) as typeof fetch;
 
     const found = await findIssueCommentByMarker(
       "token",
@@ -60,7 +76,5 @@ describe("respond delivery marker lookup", () => {
     );
 
     expect(found).toBeNull();
-    expect(requestedPages).toHaveLength(RESPOND_MARKER_MAX_PAGES);
-    expect(requestedPages.at(-1)).toBe(RESPOND_MARKER_MAX_PAGES);
   });
 });
