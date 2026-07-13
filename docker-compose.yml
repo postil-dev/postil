@@ -35,7 +35,6 @@ services:
         # Override alongside a new vendor/postil binary to upgrade the
         # reviewer version.
         POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.2.1}
-        NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     env_file: .env
     environment:
@@ -57,7 +56,6 @@ services:
       context: .
       args:
         POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.2.1}
-        NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     command: ["bun", "run", "worker"]
     env_file: .env

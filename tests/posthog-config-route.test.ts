@@ -15,7 +15,7 @@ describe("/api/analytics/posthog", () => {
     delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
     delete process.env.POSTHOG_PROJECT_TOKEN;
 
-    const response = await route.GET();
+    const response = await route.GET(request());
 
     expect(response.status).toBe(204);
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -26,13 +26,14 @@ describe("/api/analytics/posthog", () => {
     process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com";
 
-    const response = await route.GET();
+    const response = await route.GET(request());
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toContain("max-age=300");
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({
       key: "phc_test_project_token",
-      host: "https://eu.i.posthog.com",
+      apiHost: "/relay",
+      uiHost: "https://eu.posthog.com",
     });
   });
 
@@ -40,9 +41,31 @@ describe("/api/analytics/posthog", () => {
     process.env.POSTHOG_CLIENT_CAPTURE = "0";
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_project_token";
 
-    const response = await route.GET();
+    const response = await route.GET(request());
 
     expect(response.status).toBe(204);
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+
+  test("honors Global Privacy Control and Do Not Track", async () => {
+    process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
+
+    const gpc = await route.GET(
+      new Request("https://postil.dev/api/analytics/posthog", {
+        headers: { "sec-gpc": "1" },
+      }),
+    );
+    const dnt = await route.GET(
+      new Request("https://postil.dev/api/analytics/posthog", {
+        headers: { dnt: "1" },
+      }),
+    );
+
+    expect(gpc.status).toBe(204);
+    expect(dnt.status).toBe(204);
+  });
 });
+
+function request(): Request {
+  return new Request("https://postil.dev/api/analytics/posthog");
+}

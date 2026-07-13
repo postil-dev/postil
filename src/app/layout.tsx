@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Inter, Source_Serif_4 } from "next/font/google";
+import { Suspense } from "react";
 
 import { CodeCopyEnhancer } from "@/components/code-copy-enhancer";
+import { PostHogPageview } from "@/components/posthog-pageview";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 
@@ -125,6 +127,9 @@ export default function RootLayout({
         <main id="main-content" tabIndex={-1} className="flex-1">
           {children}
         </main>
+        <Suspense fallback={null}>
+          <PostHogPageview />
+        </Suspense>
         <CodeCopyEnhancer />
         <SiteFooter />
       </body>

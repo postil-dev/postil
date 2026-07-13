@@ -189,4 +189,4 @@ The app exposes three layers:
 - `/api/health/dependencies` and `/api/metrics` for dependency and product-operation metrics.
 - PostHog for traffic-source, campaign, pageview, and likely bot/automation analysis.
 
-PostHog is configured for minimal capture: browser pageviews and pageleave engagement events with autocapture and session replay disabled, plus server-side request events on public pages only. Events omit IP addresses, arbitrary query strings, and protected dashboard paths.
+PostHog is configured for anonymous cookieless capture on public pages only. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Event payloads omit arbitrary query strings and protected dashboard paths.

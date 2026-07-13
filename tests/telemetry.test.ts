@@ -4,6 +4,7 @@ import {
   isPublicTelemetryPath,
   publicTelemetryProperties,
   sanitizePostHogProperties,
+  sanitizePostHogWebVitalsProperties,
   sanitizedPublicUrl,
   sanitizedReferrer,
 } from "@/lib/telemetry";
@@ -44,9 +45,12 @@ describe("public telemetry sanitization", () => {
         "https://postil.dev",
       ),
     ).toBe("https://postil.dev/docs/self-hosted?utm_source=docs");
-    expect(sanitizedReferrer("https://postil.dev/orgs/private?x=secret", "https://postil.dev")).toBe(
-      "https://postil.dev/",
-    );
+    expect(
+      sanitizedReferrer(
+        "https://postil.dev/orgs/private?x=secret&utm_campaign=confidential&ref=private",
+        "https://postil.dev",
+      ),
+    ).toBeUndefined();
   });
 
   test("sanitizes PostHog automatic URL and referrer properties", () => {
@@ -66,5 +70,36 @@ describe("public telemetry sanitization", () => {
     expect(properties.$referrer).toBe("https://google.com/?utm_source=search");
     expect(JSON.stringify(properties)).not.toContain("must_drop");
     expect(JSON.stringify(properties)).not.toContain("private");
+  });
+
+  test("minimizes nested Web Vitals and rejects protected pages", () => {
+    const properties: Record<string, unknown> = {
+      $web_vitals_LCP_event: {
+        name: "LCP",
+        value: 1500,
+        rating: "good",
+        $current_url: "https://postil.dev/pricing?secret=drop&utm_source=docs",
+        entries: [{ name: "private payload" }],
+      },
+    };
+    expect(sanitizePostHogWebVitalsProperties(properties, "https://postil.dev")).toBe(true);
+    expect(properties.$web_vitals_LCP_event).toEqual({
+      name: "LCP",
+      value: 1500,
+      rating: "good",
+      $current_url: "https://postil.dev/pricing?utm_source=docs",
+    });
+    expect(
+      sanitizePostHogWebVitalsProperties(
+        {
+          $web_vitals_LCP_event: {
+            name: "LCP",
+            value: 1500,
+            $current_url: "https://postil.dev/orgs/private?secret=drop",
+          },
+        },
+        "https://postil.dev",
+      ),
+    ).toBe(false);
   });
 });
