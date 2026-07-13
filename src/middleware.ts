@@ -8,12 +8,20 @@ import {
   removeEmpty,
 } from "@/lib/telemetry";
 
+const RELAY_WINDOW_MS = 60_000;
+const RELAY_REQUEST_LIMIT = 1_200;
+const RELAY_MAX_BODY_BYTES = 65_536;
+const relayRateWindows = new Map<string, { count: number; startedAt: number }>();
+
 /**
  * Gate private dashboards and capture lightweight request telemetry.
  * Session signatures are checked here (edge-compatible Web Crypto); the
  * session row itself is checked in the page, which redirects on expiry.
  */
 export async function middleware(request: NextRequest, event: NextFetchEvent) {
+  const relayResponse = guardPostHogIngestionRelay(request);
+  if (relayResponse) return relayResponse;
+
   if (isWwwHost(request)) {
     const canonicalUrl = request.nextUrl.clone();
     canonicalUrl.protocol = "https:";
@@ -39,6 +47,52 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   }
 
   return responseWithTelemetry(request, event, responseWithCrawlerHeaders(request, response));
+}
+
+function guardPostHogIngestionRelay(request: NextRequest): NextResponse | undefined {
+  if (!isPostHogIngestionRelay(request.nextUrl.pathname)) return undefined;
+  if (request.method !== "POST") {
+    return new NextResponse(null, { status: 405, headers: { allow: "POST" } });
+  }
+  if (request.headers.has("transfer-encoding")) {
+    return new NextResponse(null, { status: 411 });
+  }
+  const contentLengthHeader = request.headers.get("content-length");
+  if (!contentLengthHeader || !/^\d+$/.test(contentLengthHeader)) {
+    return new NextResponse(null, { status: 411 });
+  }
+  const contentLength = Number(contentLengthHeader);
+  if (contentLength <= 0 || contentLength > RELAY_MAX_BODY_BYTES) {
+    return new NextResponse(null, { status: 413 });
+  }
+  if (!acceptRelayRequest(relayClientKey(request))) {
+    return new NextResponse(null, { status: 429, headers: { "retry-after": "60" } });
+  }
+  return undefined;
+}
+
+function isPostHogIngestionRelay(pathname: string): boolean {
+  return (
+    pathname === "/relay/e" ||
+    pathname.startsWith("/relay/e/") ||
+    pathname === "/relay/i/v0/e" ||
+    pathname.startsWith("/relay/i/v0/e/")
+  );
+}
+
+function relayClientKey(request: NextRequest): string {
+  return request.headers.get("fly-client-ip") ?? "untrusted-peer";
+}
+
+function acceptRelayRequest(key: string, now = Date.now()): boolean {
+  const rateWindow = relayRateWindows.get(key);
+  if (!rateWindow || now - rateWindow.startedAt >= RELAY_WINDOW_MS) {
+    if (relayRateWindows.size >= 10_000) relayRateWindows.clear();
+    relayRateWindows.set(key, { count: 1, startedAt: now });
+    return true;
+  }
+  rateWindow.count += 1;
+  return rateWindow.count <= RELAY_REQUEST_LIMIT;
 }
 
 export const config = {
@@ -94,11 +148,13 @@ function isNoindexRoute(pathname: string): boolean {
 function shouldCaptureTraffic(request: NextRequest): boolean {
   if (!posthogProjectToken()) return false;
   if (process.env.POSTHOG_SERVER_CAPTURE === "0") return false;
+  if (request.headers.get("sec-gpc") === "1" || request.headers.get("dnt") === "1") return false;
   if (request.method !== "GET" && request.method !== "HEAD") return false;
 
   const pathname = request.nextUrl.pathname;
   if (!isPublicTelemetryPath(pathname)) return false;
   if (pathname.startsWith("/api/")) return false;
+  if (pathname.startsWith("/relay/")) return false;
   if (pathname.startsWith("/_next/")) return false;
   if (pathname.startsWith("/brand/")) return false;
   if (pathname.startsWith("/images/")) return false;

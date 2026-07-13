@@ -259,14 +259,14 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "POSTHOG_PROJECT_TOKEN",
     purpose:
-      "PostHog project token for server-side request telemetry; same value as NEXT_PUBLIC_POSTHOG_KEY",
+      "PostHog project token for server request telemetry and runtime-gated cookieless browser analytics",
     example: "phc_...",
     scope: ["web"],
     optional: true,
   },
   {
     name: "NEXT_PUBLIC_POSTHOG_KEY",
-    purpose: "PostHog project token compiled into the browser analytics bundle",
+    purpose: "Legacy runtime alias for POSTHOG_PROJECT_TOKEN; no value is compiled into the browser bundle",
     example: "phc_...",
     scope: ["web"],
     optional: true,
@@ -288,7 +288,7 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "POSTHOG_CLIENT_CAPTURE",
     purpose:
-      "Set to 0 to disable client-side browser analytics (no PostHog init, no analytics cookies) while keeping server-side request telemetry",
+      "Set to 0 to disable cookieless public-page browser analytics while keeping server-side request telemetry",
     example: "1",
     scope: ["web"],
     optional: true,

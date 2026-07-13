@@ -1,9 +1,11 @@
 import posthog from "posthog-js";
 
-import { publicTelemetryProperties, sanitizePostHogProperties } from "@/lib/telemetry";
+import {
+  publicTelemetryProperties,
+  sanitizePostHogProperties,
+  sanitizePostHogWebVitalsProperties,
+} from "@/lib/telemetry";
 
-const token = process.env.NEXT_PUBLIC_POSTHOG_KEY;
-const host = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://eu.i.posthog.com";
 const SESSION_ATTRIBUTION_PROPERTIES = new Set([
   "$current_url",
   "$host",
@@ -32,28 +34,66 @@ const SESSION_ATTRIBUTION_PROPERTIES = new Set([
   "irclid",
   "_kx",
 ]);
+const ALLOWED_EVENTS = new Set(["$pageview", "$pageleave", "$web_vitals"]);
 
-void bootPostHog();
+clearLegacyPostHogPersistence();
 
-async function bootPostHog(): Promise<void> {
-  const config = token ? { key: token, host } : await runtimeConfig();
-  if (!config?.key) return;
+let bootPromise: Promise<boolean> | undefined;
+
+interface PostHogConfig {
+  key: string;
+  apiHost: string;
+  uiHost: string;
+}
+
+async function bootPostHog(): Promise<boolean> {
+  const config = await runtimeConfig();
+  if (!config) return false;
   posthog.init(config.key, {
-    api_host: config.host,
+    api_host: config.apiHost,
+    ui_host: config.uiHost,
     defaults: "2026-05-30",
+    cookieless_mode: "always",
+    disable_persistence: true,
+    person_profiles: "never",
+    respect_dnt: true,
     autocapture: false,
     capture_pageview: false,
     capture_pageleave: true,
+    disable_beacon: false,
+    capture_performance: {
+      web_vitals: true,
+      network_timing: false,
+      web_vitals_attribution: false,
+    },
+    capture_heatmaps: false,
+    capture_dead_clicks: false,
+    capture_exceptions: false,
     disable_session_recording: true,
-    person_profiles: "identified_only",
+    disable_surveys: true,
+    disable_surveys_automatic_display: true,
+    disable_product_tours: true,
+    disable_conversations: true,
+    advanced_disable_flags: true,
     before_send: (event) => {
+      if (!event || !ALLOWED_EVENTS.has(event.event) || !event.properties) return null;
       if (
-        (event?.event === "$pageview" || event?.event === "$pageleave") &&
-        !publicTelemetryProperties(window.location.href)
+        (event.event === "$pageview" || event.event === "$pageleave") &&
+        !publicEventProperties(event.properties)
       ) {
         return null;
       }
-      if (!event?.properties) return event;
+      if (crossedProtectedRoute && event.event === "$pageleave") return null;
+      if (crossedProtectedRoute && event.event === "$pageview") {
+        removePropertyGroup(event.properties, "$prev_pageview_");
+        crossedProtectedRoute = false;
+      }
+      if (
+        event.event === "$web_vitals" &&
+        !sanitizePostHogWebVitalsProperties(event.properties, window.location.origin)
+      ) {
+        return null;
+      }
       removeProtectedPropertyGroup(
         event.properties,
         "$prev_pageview_",
@@ -85,54 +125,87 @@ async function bootPostHog(): Promise<void> {
       return event;
     },
   });
-  installPageviewCapture();
-}
-
-interface PostHogConfig {
-  key: string;
-  host: string;
+  return true;
 }
 
 async function runtimeConfig(): Promise<PostHogConfig | undefined> {
   try {
-    const response = await fetch("/api/analytics/posthog", { cache: "force-cache" });
+    const response = await fetch("/api/analytics/posthog", { cache: "no-store" });
     if (!response.ok) return undefined;
     const body = (await response.json()) as Partial<PostHogConfig>;
-    if (typeof body.key !== "string" || typeof body.host !== "string") return undefined;
-    return { key: body.key, host: body.host };
+    if (
+      typeof body.key !== "string" ||
+      typeof body.apiHost !== "string" ||
+      typeof body.uiHost !== "string"
+    ) {
+      return undefined;
+    }
+    return { key: body.key, apiHost: body.apiHost, uiHost: body.uiHost };
   } catch {
     return undefined;
   }
 }
 
 let lastCapturedUrl = "";
+let crossedProtectedRoute = false;
 
-function installPageviewCapture(): void {
-  if (typeof window === "undefined") return;
-  queueMicrotask(capturePageview);
-  window.addEventListener("popstate", capturePageview);
-  const pushState = window.history.pushState;
-  const replaceState = window.history.replaceState;
-  window.history.pushState = function pushStateWithCapture(...args) {
-    const value = pushState.apply(this, args);
-    queueMicrotask(capturePageview);
-    return value;
-  };
-  window.history.replaceState = function replaceStateWithCapture(...args) {
-    const value = replaceState.apply(this, args);
-    queueMicrotask(capturePageview);
-    return value;
-  };
+export async function capturePublicPageview(
+  currentUrl: string,
+  referrer: string,
+): Promise<void> {
+  if (currentUrl === lastCapturedUrl) return;
+  const properties = publicTelemetryProperties(currentUrl, referrer);
+  if (!properties) {
+    lastCapturedUrl = "";
+    crossedProtectedRoute = true;
+    return;
+  }
+  bootPromise ??= bootPostHog();
+  if (!(await bootPromise)) return;
+  lastCapturedUrl = currentUrl;
+  posthog.capture("$pageview", properties);
 }
 
-function capturePageview(): void {
-  const currentUrl = window.location.href;
-  if (currentUrl === lastCapturedUrl) return;
-  lastCapturedUrl = currentUrl;
-  const properties = publicTelemetryProperties(currentUrl, document.referrer);
-  posthog.capture("$pageview", properties);
-  if (!properties) return;
-  posthog.capture("postil_pageview", properties);
+function clearLegacyPostHogPersistence(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const legacyKey = /^ph_.+_(?:posthog|primary_window_exists|window_id)(?:_.+)?$/;
+  for (const storageName of ["localStorage", "sessionStorage"] as const) {
+    try {
+      const storage = window[storageName];
+      for (let index = storage.length - 1; index >= 0; index -= 1) {
+        const key = storage.key(index);
+        if (key && legacyKey.test(key)) storage.removeItem(key);
+      }
+    } catch {
+      // Storage can be unavailable in hardened browser contexts.
+    }
+  }
+
+  try {
+    const hostname = window.location.hostname;
+    const hostParts = hostname.split(".");
+    const cookieDomains = new Set([`.${hostname}`]);
+    for (let index = 1; index < hostParts.length - 1; index += 1) {
+      cookieDomains.add(`.${hostParts.slice(index).join(".")}`);
+    }
+    for (const cookie of document.cookie.split(";")) {
+      const name = cookie.split("=", 1)[0]?.trim();
+      if (!name || !legacyKey.test(name)) continue;
+      document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
+      for (const domain of cookieDomains) {
+        document.cookie = `${name}=; Path=/; Domain=${domain}; Max-Age=0; SameSite=Lax`;
+      }
+    }
+  } catch {
+    // Cookie access can be unavailable in hardened browser contexts.
+  }
+}
+
+function publicEventProperties(properties: Record<string, unknown>): boolean {
+  const location = [properties.$current_url, properties.$pathname].find(
+    (value): value is string => typeof value === "string",
+  );
+  return Boolean(location && isPublicTelemetryLocation(location));
 }
 
 function removeProtectedPropertyGroup(
@@ -145,6 +218,12 @@ function removeProtectedPropertyGroup(
     .find((value): value is string => typeof value === "string");
   if (!location) return;
   if (isPublicTelemetryLocation(location)) return;
+  for (const key of Object.keys(properties)) {
+    if (key.startsWith(prefix)) delete properties[key];
+  }
+}
+
+function removePropertyGroup(properties: Record<string, unknown>, prefix: string): void {
   for (const key of Object.keys(properties)) {
     if (key.startsWith(prefix)) delete properties[key];
   }

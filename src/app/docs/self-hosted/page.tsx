@@ -330,10 +330,12 @@ ${doctorTranscript}`}</code>
         </li>
         <li>
           PostHog analytics are optional. Set <code>POSTHOG_PROJECT_TOKEN</code>{" "}
-          for server-side request telemetry, and set{" "}
-          <code>NEXT_PUBLIC_POSTHOG_KEY</code> as a Docker build arg for
-          browser pageviews. Analytics capture is limited to public marketing,
-          docs, blog, install, pricing, and comparison pages. The server event
+          for server-side request telemetry and runtime-gated browser analytics.
+          Enable Cookieless server hash mode and IP discard in the PostHog
+          project before setting <code>POSTHOG_CLIENT_CAPTURE=1</code>. Browser
+          capture stores no cookies or browser-persistent identifiers, honors
+          DNT/GPC, and is limited to public marketing, docs, blog, install,
+          pricing, and comparison pages. The server event
           sends sanitized path, referrer origin/public path, campaign
           parameters, user agent, and Cloudflare bot metadata when present; it
           does not send IP addresses or protected dashboard paths.

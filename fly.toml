@@ -9,8 +9,8 @@
 #     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... MODEL_API_KEY=... \
 #     POSTIL_API_KEY=... METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=...
 #
-# Browser PostHog also needs NEXT_PUBLIC_POSTHOG_KEY as a Docker build arg.
-# The GitHub Actions deploy workflow passes it from repo variables.
+# Browser PostHog receives the public project token from a runtime route so
+# POSTHOG_CLIENT_CAPTURE can disable initialization without rebuilding.
 #
 # Migrations run automatically via [deploy].release_command below: Fly runs
 # it as a one-off machine from the new image, with the app's env/secrets
@@ -51,7 +51,7 @@ WORKER_POLL_INTERVAL_MS = "1000"
 WORKER_IDLE_POLL_MAX_MS = "900000"
 WORKER_WATCHDOG_INTERVAL_MS = "60000"
 POSTHOG_SERVER_CAPTURE = "1"
-POSTHOG_CLIENT_CAPTURE = "0"
+POSTHOG_CLIENT_CAPTURE = "1"
 NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 
 [http_service]
