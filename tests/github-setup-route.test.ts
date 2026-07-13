@@ -12,10 +12,13 @@ describe("GET /api/github/setup", () => {
   test("starts user authorization without trusting the installation id", async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
 
-    for (const installationId of ["146332124", "spoofed-by-a-caller"]) {
+    for (const [installationId, setupAction] of [
+      ["146332124", "install"],
+      ["spoofed-by-a-caller", "update"],
+    ]) {
       const response = await GET(
         new Request(
-          `https://internal:3000/api/github/setup?installation_id=${installationId}&setup_action=install`,
+          `https://internal:3000/api/github/setup?installation_id=${installationId}&setup_action=${setupAction}`,
         ),
       );
 
