@@ -12,6 +12,15 @@ afterEach(() => {
 });
 
 describe("redactSecrets", () => {
+  test("redacts every supported PostHog credential prefix", () => {
+    for (const prefix of ["phc", "phx", "phs"]) {
+      const token = `${prefix}_abcdefghijklmnopqrstuvwxyz0123456789`;
+      expect(redactSecrets(`PostHog rejected ${token}`)).toBe(
+        "PostHog rejected [redacted posthog token]",
+      );
+    }
+  });
+
   test("redacts explicit secret values before logs or persistence", () => {
     const token = "ghs_abcdefghijklmnopqrstuvwxyz123456";
     expect(redactSecrets(`cli failed with ${token}`, [token])).toBe(

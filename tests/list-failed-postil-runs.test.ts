@@ -157,14 +157,14 @@ describe("failed Postil run polling", () => {
     expect(failure?.model).toBe("matching/model");
   });
 
-  test("classifies fail-closed operational errors by their review output", () => {
+  test("classifies fail-closed operational errors by check state, not display title", () => {
     const advisory = check({
       id: 30,
       name: "postil/review",
       conclusion: "neutral",
       details_url: null,
       output: {
-        title: "Review did not complete",
+        title: "No verdict available",
         summary: "Postil could not complete this review: watchdog deadline exceeded",
       },
     });
@@ -172,7 +172,7 @@ describe("failed Postil run polling", () => {
       id: 31,
       details_url: null,
       output: {
-        title: "Review did not complete",
+        title: "Required review unavailable",
         summary: "The gate fails closed because the review did not complete",
       },
     });
@@ -219,6 +219,32 @@ describe("failed Postil run polling", () => {
 
     expect(failure?.reviewCheckId).toBe(41);
     expect(failure?.model).toBe("fallback/model");
+  });
+
+  test("does not classify a neutral superseded check pair as operational", () => {
+    const advisory = check({
+      id: 50,
+      name: "postil/review",
+      conclusion: "neutral",
+      output: { title: "Review superseded", summary: "A newer head exists." },
+    });
+    const gate = check({
+      id: 51,
+      conclusion: "neutral",
+      output: { title: "Review superseded", summary: "A newer head exists." },
+    });
+
+    expect(
+      failedRunsForCommit(
+        "postil-dev/postil",
+        354,
+        "https://github.com/postil-dev/postil/pull/354",
+        "b80bd237",
+        [advisory, gate],
+        "2026-07-11T17:10:00Z",
+        "2026-07-11T17:46:00Z",
+      ),
+    ).toEqual([]);
   });
 
   test("ignores other apps and failures outside the half-open window", () => {

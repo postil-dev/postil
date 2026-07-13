@@ -11,10 +11,16 @@ import {
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
   type RespondDeliveryJobPayload,
+  type RespondFailureCommentJobPayload,
   type RespondJobPayload,
   type ReviewJobPayload,
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
+import {
+  reportOperationalFailure,
+  reportOperationalWarning,
+  type ObservabilityProcessGroup,
+} from "@/lib/server-observability";
 import {
   runBillingContactVerificationJob,
   type BillingContactVerificationJobPayload,
@@ -48,13 +54,20 @@ export const PROCESSABLE_JOB_KINDS = [
   "respond-failure-comment",
 ] as const;
 
-async function handleJob(job: ClaimedJob): Promise<void> {
+async function handleJob(
+  job: ClaimedJob,
+  processGroup: ObservabilityProcessGroup,
+): Promise<void> {
   switch (job.kind) {
     case "review":
-      await runReviewJob(job.payload as ReviewJobPayload, {
-        queuedAt: job.createdAt,
-        startedAt: job.lockedAt,
-      });
+      await runReviewJob(
+        job.payload as ReviewJobPayload,
+        {
+          queuedAt: job.createdAt,
+          startedAt: job.lockedAt,
+        },
+        processGroup,
+      );
       break;
     case "respond":
       await runRespondJob(job.payload as RespondJobPayload, job.id);
@@ -74,18 +87,22 @@ async function handleJob(job: ClaimedJob): Promise<void> {
       await runCheckRunCleanupJob(job.payload as CheckRunCleanupJobPayload);
       break;
     case "respond-failure-comment":
-      await runRespondFailureCommentJob(job.payload as RespondJobPayload);
+      await runRespondFailureCommentJob(job.payload as RespondFailureCommentJobPayload);
       break;
     default:
       throw new Error(`unknown job kind: ${job.kind}`);
   }
 }
 
-export async function runClaimedJob(job: ClaimedJob, label: string): Promise<void> {
+export async function runClaimedJob(
+  job: ClaimedJob,
+  label: string,
+  processGroup: ObservabilityProcessGroup = "worker",
+): Promise<void> {
   const started = Date.now();
   console.log(`[${label}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
   try {
-    await handleJob(job);
+    await handleJob(job, processGroup);
     await completeJob(getPool(), job);
     console.log(`[${label}] job ${job.id} done in ${Date.now() - started}ms`);
   } catch (err) {
@@ -103,13 +120,18 @@ export async function runClaimedJob(job: ClaimedJob, label: string): Promise<voi
     console.error(
       `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
     );
+    if (outcome === "failed") {
+      reportOperationalFailure(processGroup, "job_permanently_failed", err);
+    } else if (outcome === "retried") {
+      reportOperationalWarning(processGroup, "job_retrying");
+    }
     if (outcome === "failed" && job.kind === "respond") {
       await postRespondFailureComment(
         job.payload as RespondJobPayload,
+        job.id,
         undefined,
         undefined,
         false,
-        job.id,
       );
     }
   }
@@ -131,7 +153,7 @@ export async function drainQueueOnce(
   while (drained < maxJobs && Date.now() < deadlineAt) {
     const job = await claimJob(getPool(), workerId, PROCESSABLE_JOB_KINDS);
     if (!job) break;
-    await runClaimedJob(job, label);
+    await runClaimedJob(job, label, "web");
     drained += 1;
   }
 

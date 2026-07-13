@@ -15,7 +15,10 @@ import {
   requireMatchingProviderMode,
 } from "@/lib/private-repository-entitlement";
 import { toggleRepository } from "./actions";
-import { RepoHealthBanner } from "./repo-health-banner";
+import {
+  RepoHealthBanner,
+  SuspendedInstallationsNotice,
+} from "./repo-health-banner";
 import { ReviewsTable } from "./reviews-table";
 
 export const metadata: Metadata = {
@@ -37,7 +40,11 @@ export default async function OrgDashboardPage({
   const now = new Date();
 
   const suspendedInstallations = await db
-    .select({ accountLogin: schema.installations.accountLogin })
+    .select({
+      githubInstallationId: schema.installations.githubInstallationId,
+      accountLogin: schema.installations.accountLogin,
+      accountType: schema.installations.accountType,
+    })
     .from(schema.installations)
     .where(and(eq(schema.installations.orgId, org.id), eq(schema.installations.suspended, true)));
 
@@ -258,21 +265,10 @@ export default async function OrgDashboardPage({
         </div>
       </div>
 
-      {suspendedInstallations.length > 0 && (
-        <div className="card mt-6 border-rust p-5">
-          <p className="text-sm">
-            <span className="font-medium text-rust">
-              Installation{suspendedInstallations.length === 1 ? "" : "s"} suspended.
-            </span>{" "}
-            The GitHub App installation on{" "}
-            <span className="font-mono text-xs">
-              {suspendedInstallations.map((i) => i.accountLogin).join(", ")}
-            </span>{" "}
-            is suspended, so no reviews run for it. Unsuspend it in GitHub under
-            organization Settings → GitHub Apps.
-          </p>
-        </div>
-      )}
+      <SuspendedInstallationsNotice
+        installations={suspendedInstallations}
+        isAdmin={isAdmin}
+      />
 
       <PrivateBillingNotice orgSlug={org.slug} decision={privateAccess} />
 
@@ -296,8 +292,9 @@ export default async function OrgDashboardPage({
             </span>
           </div>
           <p className="mt-4 text-sm text-ink-soft">
-            A clean PR gets a green check and zero comments. This number is the
-            product working as designed.
+            Review yield, measured as how often Postil had no finding worth posting.
+            It describes reviewer output frequency, not commit quality. Read it with
+            finding precision and repository mix.
           </p>
         </div>
         <div className="card p-8">

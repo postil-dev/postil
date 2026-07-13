@@ -49,14 +49,15 @@ the deploy workflow confirms that every managed web and worker Machine is runnin
 one image. Activation and inserts share a transaction advisory lock, so no job can
 become claimable between the fleet check and capability activation.
 
-`humanEscalation` is a GitHub-native, kind-blocking review outcome. The PR review
-contains the grounded finding and concrete next step, while `postil/gate` prevents
-merge until a new review resolves it or an organization admin records a rationale
-for an eligible judgment call. Dashboard approvals are bound to one reviewed commit
-and atomically enqueue a gate-state sync with the recorded rationale. Sync jobs
+`humanEscalation` is a GitHub-native, kind-blocking maintainer decision. The PR review
+contains the grounded finding and directs the author to encode the intended behavior
+in code, tests, configuration, or the pull request before pushing again. The
+`postil/gate` check prevents merge until a new review resolves it. An organization
+admin can record a rationale for an irreducible product decision through a secondary,
+commit-scoped dashboard override. Overrides atomically enqueue a gate-state sync. Sync jobs
 serialize per review, recompute the latest decision, and idempotently publish it to
 the GitHub check. Severity-blocking findings require a code or configuration change
-and cannot be cleared by an approval.
+and cannot be cleared by an override.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
@@ -139,8 +140,9 @@ noindexed:
   repositories that have never completed their first review.
 - `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file
-  links), resolved findings, suppressed/ungrounded counts, gate verdict,
-  model, token usage, timing, and kind-blocking approval state.
+  links), resolved findings, retained policy-suppressed findings in collapsed
+  detail, suppressed/ungrounded counts, gate verdict,
+  model, token usage, timing, and kind-blocking override state.
 
 Authorization is uniform: every page and server action re-derives access from
 the session. An `org_members` row grants read access; the `admin` role gates
@@ -161,6 +163,29 @@ since that enablement. Suspended installations and repositories with any
 completed review in the active enablement window do not produce first-review
 warnings.
 
+Hosted reviews resolve configuration independently per artifact. A target
+repository file wins, then the owner account's installed `.github` repository,
+then the organization settings form, then built-in defaults. Shared owner reads
+use the same installation token as the target repository, validate immutable
+owner and repository IDs, and fetch only `.postil.yaml`,
+`.postil/guardrails.md`, and `.postil/content-policy.md` from one pinned
+default-branch commit. A private, internal, or public source is eligible only
+when the GitHub App installation includes it. Authorization or identity failures
+delete the usable snapshot and return no shared policy. A transient refresh after
+installation access and immutable identity validation may retain the last
+successful snapshot and marks review provenance degraded. Each review revalidates
+repository identity and the default-branch commit before reusing cached file
+contents. A changed commit loads only slots not supplied by the target repository;
+later consumers hydrate other slots against that same immutable commit. Repository
+removal and App uninstall events delete the snapshot in the same transaction as
+access removal. Each completed review records the effective source, repository,
+commit, path, and stale state for every configuration slot. Hosted inference
+removes model settings after layer resolution; BYOK may use repository or shared
+model settings.
+Write access to the owner `.github` default branch is organization-wide policy
+administration. The source repository uses CODEOWNERS, a ruleset, and required
+review to constrain policy changes.
+
 Aggregates (silence rate, gate failures) read the denormalized `silent` and
 `gate_failing` columns; `engine_gate_failing` stores the immutable CLI gate
 result. Active rows in `finding_approvals` clear kind-based blockers for the
@@ -168,6 +193,12 @@ same review and head SHA, while severity blockers remain governed by the
 configured severity threshold. Per-review detail reads the stored envelope
 `jsonb` verbatim. The envelope is the CLI's frozen v1 output contract
 (`src/lib/envelope.ts`); the dashboard renders it and never reshapes it.
+The worker enables local-prevention guidance on the second revision after one
+earlier completed review on the same pull request introduced an actionable
+finding. Silent and operational-only reviews do not arm the hint, and repeated
+prior reviews carrying the same finding do not keep rearming it. Preflight
+commands come only from allowlisted scripts and standard tool manifests on the
+trusted default branch; model output never supplies shell commands.
 
 ## Observability
 
@@ -175,6 +206,13 @@ The app exposes three layers:
 
 - `/api/health` for cheap liveness without database access.
 - `/api/health/dependencies` and `/api/metrics` for dependency and product-operation metrics.
+  Overlapping 30-minute incident gauges cover operational review failures, scorer
+  failures and structured reviewer/scorer fallbacks, invalid model output, and failed jobs.
+  The production monitor fails on any operational, scorer, invalid-output, or failed-job
+  incident, more than two scorer fallbacks, or more than five model fallbacks in that
+  window without exposing provider error text.
 - PostHog for traffic-source, campaign, pageview, and likely bot/automation analysis.
 
 PostHog is configured for anonymous cookieless capture on public pages only. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Event payloads omit arbitrary query strings and protected dashboard paths.
+
+Operational Error Tracking and OTLP Logs are separate, server-only features disabled by default. `POSTHOG_ERROR_CAPTURE=1` sends exceptions only at the Next.js request boundary, worker boot boundary, and exhausted job boundary, plus fixed model-incident classification events after successful envelope ingestion. Those events contain only phase, category, recovery, and source classifications from typed `modelIncidents` or exact CLI operational sentinel paths. `POSTHOG_LOG_CAPTURE=1` sends fixed event names and fixed outcome categories with deterministic sampling and per-process hard caps. Both paths use a fixed `postil-system` identity and reject request data, headers, cookies, account identities, repository names, prompts, diffs, source code, finding text, model output, arbitrary caller properties, raw error messages, function names, and absolute paths. Source map upload is disabled because the supported PostHog upload path includes application source content.

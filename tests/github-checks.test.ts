@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   findIssueCommentByMarker,
+  getPullRequestReviewContext,
   RESPOND_MARKER_MAX_PAGES,
 } from "@/lib/github/checks";
 
@@ -76,5 +77,34 @@ describe("respond delivery marker lookup", () => {
     );
 
     expect(found).toBeNull();
+  });
+});
+
+describe("pull-request review context", () => {
+  test("loads immutable refs and optional author identity", async () => {
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        draft: false,
+        head: { sha: "head-sha" },
+        base: { sha: "base-sha" },
+        user: { id: 42, login: "octocat" },
+      })) as typeof fetch;
+
+    await expect(getPullRequestReviewContext("token", "octo/repo", 7)).resolves.toEqual({
+      headSha: "head-sha",
+      baseSha: "base-sha",
+      draft: false,
+      authorGithubId: 42,
+      authorLogin: "octocat",
+    });
+  });
+
+  test("fails closed when either immutable ref is absent", async () => {
+    globalThis.fetch = (async (_input) =>
+      Response.json({ head: { sha: "head-sha" }, base: {} })) as typeof fetch;
+
+    await expect(getPullRequestReviewContext("token", "octo/repo", 7)).rejects.toThrow(
+      "incomplete refs",
+    );
   });
 });

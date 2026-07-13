@@ -108,6 +108,27 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
       ],
     };
   }
+  if (sql.includes("AS operational_failure") && sql.includes("AS scorer_fallback")) {
+    expect(sql).toContain("jsonb_array_elements");
+    expect(sql).toContain("modelIncidents");
+    expect(sql).not.toContain("JOIN review_logs");
+    expect(sql).toContain(".postil/provider");
+    expect(sql).toContain(".postil/model-output");
+    expect(sql).toContain("Hosted inference allowance is unavailable or fully reserved.");
+    expect(sql).toContain("run_after >= now() - interval '30 minutes'");
+    return {
+      rows: [
+        {
+          operational_failure: "1",
+          scorer_failure: "2",
+          scorer_fallback: "3",
+          model_fallback: "4",
+          invalid_output: "5",
+          failed_job: "6",
+        },
+      ],
+    };
+  }
   throw new Error(`unexpected metrics query: ${text}`);
 }
 
@@ -189,8 +210,16 @@ describe("/api/metrics", () => {
     expect(text).toContain(
       'postil_usage_tokens_total{model="qwen/\\"coder\\"",type="completion"} 250',
     );
+    expect(text).toContain(
+      'postil_review_incidents_30m{category="operational_failure"} 1',
+    );
+    expect(text).toContain('postil_review_incidents_30m{category="scorer_failure"} 2');
+    expect(text).toContain('postil_review_incidents_30m{category="scorer_fallback"} 3');
+    expect(text).toContain('postil_review_incidents_30m{category="model_fallback"} 4');
+    expect(text).toContain('postil_review_incidents_30m{category="invalid_output"} 5');
+    expect(text).toContain('postil_review_incidents_30m{category="failed_job"} 6');
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(9);
+    expect(queryCalls).toBe(10);
   });
 
   test("keeps the scrape successful and reports database down when DB access fails", async () => {
@@ -204,6 +233,6 @@ describe("/api/metrics", () => {
     expect(text).not.toContain("postil_database_size_bytes");
     expect(text).not.toContain("postil_queue_depth");
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(9);
+    expect(queryCalls).toBe(10);
   });
 });

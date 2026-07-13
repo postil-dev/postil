@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { githubInstallationSettingsUrl } from "@/lib/github-app";
 import { formatRelativeTime } from "@/lib/time";
 import {
   deriveRepoHealth,
@@ -13,7 +14,56 @@ interface RepoHealthBannerProps {
   liveConfigFilesByRepositoryId?: ReadonlyMap<number, readonly string[]>;
 }
 
+interface SuspendedInstallation {
+  githubInstallationId: number;
+  accountLogin: string;
+  accountType: string;
+}
+
 const MAX_REPOSITORY_NAMES = 5;
+
+export function SuspendedInstallationsNotice({
+  installations,
+  isAdmin,
+}: {
+  installations: readonly SuspendedInstallation[];
+  isAdmin: boolean;
+}) {
+  if (installations.length === 0) return null;
+
+  return (
+    <div className="card mt-6 border-rust p-5">
+      <p className="text-sm">
+        <span className="font-medium text-rust">
+          Installation{installations.length === 1 ? "" : "s"} suspended.
+        </span>{" "}
+        The GitHub App installation on{" "}
+        <span className="font-mono text-xs">
+          {installations.map((installation) => installation.accountLogin).join(", ")}
+        </span>{" "}
+        {installations.length === 1 ? "is" : "are"} suspended, so Postil does not run reviews
+        for {installations.length === 1 ? "that account" : "those accounts"}.
+      </p>
+      {isAdmin ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {installations.map((installation) => (
+            <a
+              key={installation.githubInstallationId}
+              href={githubInstallationSettingsUrl(installation)}
+              className="btn-secondary text-xs"
+            >
+              Manage {installation.accountLogin} on GitHub
+            </a>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-3 text-xs text-charcoal/60">
+          Ask a GitHub organization owner to manage the installation.
+        </p>
+      )}
+    </div>
+  );
+}
 
 export function RepoHealthBanner({
   slug,
@@ -92,7 +142,7 @@ export function RepoHealthBanner({
         {installationLinks.map((installation) => (
           <Link
             key={installation.githubInstallationId}
-            href={installationSettingsUrl(installation)}
+            href={githubInstallationSettingsUrl(installation)}
             className="btn-secondary text-xs"
           >
             Repository access on GitHub
@@ -165,10 +215,4 @@ function liveConfigSentence(
 
 function uniqueInstallations(rows: readonly RepoHealthRow[]): RepoHealthRow[] {
   return [...new Map(rows.map((row) => [row.githubInstallationId, row])).values()];
-}
-
-function installationSettingsUrl(row: RepoHealthRow): string {
-  return row.accountType === "Organization"
-    ? `https://github.com/organizations/${encodeURIComponent(row.accountLogin)}/settings/installations/${row.githubInstallationId}`
-    : `https://github.com/settings/installations/${row.githubInstallationId}`;
 }

@@ -12,6 +12,14 @@ const INSTALLATION_STATES = ["active", "suspended"] as const;
 const REPOSITORY_ENABLED = ["true", "false"] as const;
 const REVIEW_ACTIVITY_EVENTS = ["queued", "started", "finished"] as const;
 const JOB_AGE_STATUSES = ["queued", "running"] as const;
+const REVIEW_INCIDENT_CATEGORIES = [
+  "operational_failure",
+  "scorer_failure",
+  "scorer_fallback",
+  "model_fallback",
+  "invalid_output",
+  "failed_job",
+] as const;
 const DATABASE_METRICS_TIMEOUT_MS = 2_000;
 
 interface DatabaseMetrics {
@@ -31,6 +39,7 @@ interface DatabaseMetrics {
   oldestJobAges: Map<string, number>;
   oldestRunningReviewAge: number;
   usageTokens: Array<{ model: string; type: "prompt" | "completion"; tokens: number }>;
+  reviewIncidents30m: Map<string, number>;
 }
 
 /** Prometheus text exposition, protected by a bearer token. */
@@ -147,6 +156,14 @@ export async function GET(request: Request): Promise<NextResponse> {
             row.model,
           )}",type="${row.type}"} ${row.tokens}`,
       ),
+      "# HELP postil_review_incidents_30m Operational review incidents observed in the last 30 minutes.",
+      "# TYPE postil_review_incidents_30m gauge",
+      ...REVIEW_INCIDENT_CATEGORIES.map(
+        (category) =>
+          `postil_review_incidents_30m{category="${category}"} ${
+            dbMetrics.reviewIncidents30m.get(category) ?? 0
+          }`,
+      ),
     );
   }
 
@@ -185,6 +202,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     oldestJobs,
     oldestRunningReview,
     usageByModel,
+    reviewIncidents30m,
   ] = await Promise.all([
     pool.query<{
       database_size_bytes: string;
@@ -271,6 +289,83 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       GROUP BY COALESCE(NULLIF(model_used, ''), 'unknown')
       ORDER BY model
     `),
+    pool.query<{
+      operational_failure: string;
+      scorer_failure: string;
+      scorer_fallback: string;
+      model_fallback: string;
+      invalid_output: string;
+      failed_job: string;
+    }>(`
+      SELECT
+        (SELECT count(*)::text
+         FROM reviews
+         WHERE finished_at >= now() - interval '30 minutes'
+           AND (
+             (status = 'failed'
+              AND error_message IS DISTINCT FROM 'Hosted inference allowance is unavailable or fully reserved.')
+             OR (
+               status = 'completed'
+               AND EXISTS (
+                 SELECT 1
+                 FROM jsonb_array_elements(COALESCE(envelope -> 'findings', '[]'::jsonb)) AS finding
+                 WHERE finding ->> 'path' IN (
+                   '.postil/provider',
+                   '.postil/model-output',
+                   '.postil/operational'
+                 )
+               )
+             )
+           )) AS operational_failure,
+        (SELECT count(*)::text
+         FROM reviews
+         WHERE status = 'completed'
+           AND finished_at >= now() - interval '30 minutes'
+           AND (
+             NULLIF(btrim(envelope ->> 'scorerError'), '') IS NOT NULL
+             OR EXISTS (
+               SELECT 1
+               FROM jsonb_array_elements(COALESCE(envelope -> 'modelIncidents', '[]'::jsonb)) AS incident
+               WHERE incident ->> 'phase' = 'scorer'
+                 AND incident ->> 'recovered' = 'false'
+             )
+           )) AS scorer_failure,
+        (SELECT count(*)::text
+         FROM reviews
+         WHERE status = 'completed'
+           AND finished_at >= now() - interval '30 minutes'
+           AND EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements(COALESCE(envelope -> 'modelIncidents', '[]'::jsonb)) AS incident
+             WHERE incident ->> 'phase' = 'scorer'
+               AND incident ->> 'recovery' = 'fallback'
+           )) AS scorer_fallback,
+        (SELECT count(*)::text
+         FROM reviews
+         WHERE status = 'completed'
+           AND finished_at >= now() - interval '30 minutes'
+           AND EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements(COALESCE(envelope -> 'modelIncidents', '[]'::jsonb)) AS incident
+             WHERE incident ->> 'phase' = 'review'
+               AND incident ->> 'recovery' = 'fallback'
+           )) AS model_fallback,
+        (SELECT count(*)::text
+         FROM reviews
+         WHERE status = 'completed'
+           AND finished_at >= now() - interval '30 minutes'
+           AND EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements(COALESCE(envelope -> 'modelIncidents', '[]'::jsonb)) AS incident
+             WHERE incident ->> 'category' = 'invalidOutput'
+           )) AS invalid_output,
+        (SELECT count(*)::text
+         FROM jobs
+         WHERE status = 'failed'
+           -- Queue terminal transitions stamp run_after with their completion
+           -- time because failed jobs no longer use it for scheduling.
+           AND run_after >= now() - interval '30 minutes') AS failed_job
+    `),
   ]);
 
   const row = overview.rows[0];
@@ -281,6 +376,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
   const completed = toNumber(silence.rows[0]?.completed);
   const silent = toNumber(silence.rows[0]?.silent);
   const silenceRate = completed > 0 ? silent / completed : 0;
+  const incidentRow = reviewIncidents30m.rows[0];
 
   return {
     databaseSizeBytes: toNumber(row.database_size_bytes),
@@ -329,6 +425,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         tokens: toNumber(usageRow.completion_tokens),
       },
     ]),
+    reviewIncidents30m: new Map(
+      REVIEW_INCIDENT_CATEGORIES.map((category) => [
+        category,
+        toNumber(incidentRow?.[category]),
+      ]),
+    ),
   };
 }
 

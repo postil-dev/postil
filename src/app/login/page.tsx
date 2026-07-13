@@ -12,6 +12,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   oauth_state: "The sign-in attempt expired or was tampered with. Try again.",
   token_exchange: "GitHub did not accept the sign-in. Try again.",
   profile: "Could not load your GitHub profile. Try again.",
+  organization_memberships: "GitHub did not return your organizations. Try signing in again.",
 };
 
 export default async function LoginPage({

@@ -12,6 +12,13 @@ const MANAGED_ENV = [
   "POSTIL_SEALING_KEY",
   "POSTIL_SESSION_SECRET",
   "POSTIL_WEBHOOK_DRAIN_ENABLED",
+  "POSTHOG_ERROR_CAPTURE",
+  "POSTHOG_LOG_CAPTURE",
+  "POSTHOG_PROJECT_TOKEN",
+  "NEXT_PUBLIC_POSTHOG_HOST",
+  "POSTHOG_LOG_INFO_SAMPLE_RATE",
+  "POSTHOG_LOG_MAX_PER_MINUTE",
+  "POSTIL_RELEASE_SHA",
 ] as const;
 const originalEnv = new Map(MANAGED_ENV.map((name) => [name, process.env[name]]));
 const mutableEnv = process.env as Record<string, string | undefined>;
@@ -48,6 +55,69 @@ describe("web startup environment validation", () => {
     expect(() => validateEnv("web")).toThrow(
       /cannot start: invalid POSTIL_PUBLIC_URL.*without a path, query, or fragment/,
     );
+  });
+
+  test("does not include malformed public URL input in startup errors", () => {
+    configureRequiredWebEnvironment();
+    mutableEnv.NODE_ENV = "production";
+    process.env.POSTIL_PUBLIC_URL = "https://operator:credential@[invalid";
+
+    let message = "";
+    try {
+      validateEnv("web");
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toBe("Postil web cannot start: invalid POSTIL_PUBLIC_URL.");
+    expect(message).not.toContain("operator");
+    expect(message).not.toContain("credential");
+  });
+
+  test("requires a project token when operational telemetry is enabled", () => {
+    configureRequiredWebEnvironment();
+    process.env.POSTHOG_ERROR_CAPTURE = "1";
+    delete process.env.POSTHOG_PROJECT_TOKEN;
+
+    expect(() => validateEnv("web")).toThrow(/requires POSTHOG_PROJECT_TOKEN/);
+  });
+
+  test("rejects unsafe or malformed operational telemetry settings", () => {
+    configureRequiredWebEnvironment();
+    mutableEnv.NODE_ENV = "production";
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.POSTHOG_LOG_CAPTURE = "1";
+    process.env.POSTHOG_PROJECT_TOKEN = "phc_test";
+    process.env.NEXT_PUBLIC_POSTHOG_HOST = "http://posthog.invalid/path";
+
+    expect(() => validateEnv("web")).toThrow(/credential-free HTTPS origin/);
+
+    process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com";
+    process.env.POSTHOG_LOG_INFO_SAMPLE_RATE = "1.1";
+    expect(() => validateEnv("web")).toThrow(/must be between 0 and 1/);
+
+    process.env.POSTHOG_LOG_INFO_SAMPLE_RATE = "0.01";
+    process.env.POSTHOG_LOG_MAX_PER_MINUTE = "0";
+    expect(() => validateEnv("web")).toThrow(/must be a positive integer/);
+
+    process.env.POSTHOG_LOG_MAX_PER_MINUTE = "60";
+    process.env.POSTIL_RELEASE_SHA = "release-main";
+    expect(() => validateEnv("web")).toThrow(/hexadecimal commit SHA/);
+  });
+
+  test("accepts bounded operational telemetry settings", () => {
+    configureRequiredWebEnvironment();
+    mutableEnv.NODE_ENV = "production";
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.POSTHOG_ERROR_CAPTURE = "1";
+    process.env.POSTHOG_LOG_CAPTURE = "1";
+    process.env.POSTHOG_PROJECT_TOKEN = "phc_test";
+    process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com";
+    process.env.POSTHOG_LOG_INFO_SAMPLE_RATE = "0.01";
+    process.env.POSTHOG_LOG_MAX_PER_MINUTE = "60";
+    process.env.POSTIL_RELEASE_SHA = "0123456789abcdef";
+
+    expect(() => validateEnv("web")).not.toThrow();
   });
 });
 

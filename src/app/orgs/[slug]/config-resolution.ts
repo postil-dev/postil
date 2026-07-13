@@ -4,23 +4,26 @@ export const CONFIG_ARTIFACTS = [
     label: ".postil.yaml",
     repoFiles: [".postil.yaml", ".postil.yml", ".postil.json"],
     orgFile: "org:.postil.yaml",
+    sharedFile: "shared:.postil.yaml",
   },
   {
     key: "guardrails",
     label: ".postil/guardrails.md",
     repoFiles: [".postil/guardrails.md"],
     orgFile: "org:.postil/guardrails.md",
+    sharedFile: "shared:.postil/guardrails.md",
   },
   {
     key: "content-policy",
     label: ".postil/content-policy.md",
     repoFiles: [".postil/content-policy.md"],
     orgFile: "org:.postil/content-policy.md",
+    sharedFile: "shared:.postil/content-policy.md",
   },
 ] as const;
 
 export type ConfigState = "active" | "pending" | "removed" | "absent" | "unverified";
-export type ConfigOrigin = "repository" | "organization" | "none";
+export type ConfigOrigin = "repository" | "shared" | "organization" | "none";
 
 export interface ConfigProbeSnapshot {
   ok: boolean;
@@ -45,6 +48,10 @@ export interface VisibleConfigArtifact extends ResolvedConfigArtifact {
   state: Exclude<ConfigState, "absent">;
 }
 
+export function ownerConfigRepositoryFullName(accountLogin: string): string {
+  return `${accountLogin}/.github`;
+}
+
 export function isVisibleConfigArtifact(
   artifact: ResolvedConfigArtifact,
 ): artifact is VisibleConfigArtifact {
@@ -60,6 +67,7 @@ export function resolveConfigArtifacts(
   recordedConfigFiles: readonly string[] | null | undefined,
   liveProbe: ConfigProbeSnapshot,
   liveOrgConfigFiles: readonly string[] = [],
+  liveSharedConfigFiles: readonly string[] = [],
 ): ResolvedConfigArtifact[] {
   const hasCompletedReview = recordedConfigFiles != null;
 
@@ -69,11 +77,17 @@ export function resolveConfigArtifacts(
     );
     const recordedSource: ConfigOrigin = recordedRepoFile
       ? "repository"
+      : recordedConfigFiles?.includes(artifact.sharedFile)
+        ? "shared"
       : recordedConfigFiles?.includes(artifact.orgFile)
         ? "organization"
         : "none";
     const recordedFile = recordedRepoFile ??
-      (recordedSource === "organization" ? artifact.orgFile.slice(4) : null);
+      (recordedSource === "shared"
+        ? artifact.sharedFile.slice("shared:".length)
+        : recordedSource === "organization"
+          ? artifact.orgFile.slice(4)
+          : null);
 
     if (!liveProbe.ok) {
       const lastKnownLiveFile = artifact.repoFiles.find((file) =>
@@ -91,14 +105,21 @@ export function resolveConfigArtifacts(
     }
 
     const liveRepoFile = artifact.repoFiles.find((file) => liveProbe.files.includes(file));
+    const hasLiveSharedFile = liveSharedConfigFiles.includes(artifact.sharedFile);
     const hasLiveOrgFile = liveOrgConfigFiles.includes(artifact.orgFile);
     const liveSource: ConfigOrigin = liveRepoFile
       ? "repository"
-      : hasLiveOrgFile
-        ? "organization"
-        : "none";
+      : hasLiveSharedFile
+        ? "shared"
+        : hasLiveOrgFile
+          ? "organization"
+          : "none";
     const liveFile = liveRepoFile ??
-      (liveSource === "organization" ? artifact.orgFile.slice(4) : null);
+      (liveSource === "shared"
+        ? artifact.sharedFile.slice("shared:".length)
+        : liveSource === "organization"
+          ? artifact.orgFile.slice(4)
+          : null);
 
     let state: ConfigState;
     if (liveSource === "none") {

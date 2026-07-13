@@ -12,7 +12,8 @@
   alerts, and in-app service notices.
 - Run the hosted service on a free-tier-compatible PostgreSQL profile: low per-process DB pools, single-job webhook queue drains, one low-frequency worker fallback, and explicit provider docs.
 - Stand up PostHog dashboards for traffic sources, docs/blog paths, install funnel events, and bot/automation breakdowns.
-- Keep Prometheus metrics focused on operational health: database reachability, queue depth, stuck jobs, review outcomes, token usage, and webhook volume.
+- Activate scrubbed PostHog Error Tracking and sampled OTLP Logs only with zero-dollar billing caps, project and issue rate limits, alert destinations, and log drop rules configured.
+- Keep Prometheus metrics focused on operational health: database reachability, queue depth, stuck jobs, bounded review incidents, token usage, and webhook volume.
 
 ## Later
 
@@ -24,3 +25,5 @@
 - Evaluate a non-Postgres queue only if the product needs an edge-native database/runtime migration.
 - Add privacy-preserving conversion events for GitHub App install, OAuth login, org settings save, and first completed review.
 - Export analytics and metrics into a long-retention warehouse only after the PostHog dashboards prove which views are worth preserving.
+- Add team-scoped and mandatory configuration layers only with explicit conflict,
+  provenance, and policy-lock semantics.

@@ -37,7 +37,13 @@ const WEBHOOK_SECRET = "test-webhook-secret-for-handlers";
 const completedCheckRuns: Array<{ repoFullName: string; conclusion: string }> = [];
 const postedComments: Array<{ repoFullName: string; number: number; body: string }> = [];
 let pullRequestHeadSha = "head-sha";
-let checkRunPatchFails = false;
+let pullRequestReviewContext = {
+  headSha: "head-sha",
+  baseSha: "base-sha",
+  draft: false,
+  authorGithubId: 501,
+  authorLogin: "admin",
+};
 const realAppAuth = await import("@/lib/github/app-auth");
 mock.module("@/lib/github/app-auth", () => ({
   ...realAppAuth,
@@ -53,10 +59,10 @@ mock.module("@/lib/github/checks", () => ({
     _id: number,
     conclusion: string,
   ) => {
-    if (checkRunPatchFails) throw new Error("check patch failed");
     completedCheckRuns.push({ repoFullName, conclusion });
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
+  getPullRequestReviewContext: async () => pullRequestReviewContext,
   findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
@@ -113,7 +119,13 @@ describeDb("webhook handler behaviour", () => {
     completedCheckRuns.length = 0;
     postedComments.length = 0;
     pullRequestHeadSha = "head-sha";
-    checkRunPatchFails = false;
+    pullRequestReviewContext = {
+      headSha: "head-sha",
+      baseSha: "base-sha",
+      draft: false,
+      authorGithubId: 501,
+      authorLogin: "admin",
+    };
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
@@ -154,6 +166,21 @@ describeDb("webhook handler behaviour", () => {
       [installationId, githubRepoId, fullName, privateRepository],
     );
     return Number(repo.rows[0]!.id);
+  }
+
+  async function seedSharedSnapshot(
+    orgId: number,
+    repositoryId: number,
+    githubRepoId: number,
+    fullName = "octo/.github",
+  ): Promise<void> {
+    await pool.query(
+      `INSERT INTO org_config_snapshots
+         (org_id, source_repository_id, source_github_repo_id, source_full_name,
+          visibility, default_branch, commit_sha, files, loaded_files, fetched_at)
+       VALUES ($1, $2, $3, $4, 'private', 'main', $5, $6, $6, now())`,
+      [orgId, repositoryId, githubRepoId, fullName, "a".repeat(40), [".postil.yaml"]],
+    );
   }
 
   async function seedUser(
@@ -449,6 +476,56 @@ describeDb("webhook handler behaviour", () => {
     expect(repos.rows[0]!.c).toBe(0);
   });
 
+  test("removing the shared source repository deletes its snapshot", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 301);
+    const repoId = await seedRepo(inst, 8889, "octo/.github");
+    await seedSharedSnapshot(orgId, repoId, 8889);
+
+    const res = await post(
+      "installation_repositories",
+      {
+        action: "removed",
+        installation: { id: 301 },
+        repositories_removed: [{ id: 8889, full_name: "octo/.github", private: true }],
+      },
+      "delivery-shared-removed",
+    );
+
+    expect(res.status).toBe(200);
+    const snapshots = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM org_config_snapshots WHERE org_id = $1",
+      [orgId],
+    );
+    expect(snapshots.rows[0]!.c).toBe(0);
+  });
+
+  test("uninstalling the App deletes the owner snapshot", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 302);
+    const repoId = await seedRepo(inst, 8890, "octo/.github");
+    await seedSharedSnapshot(orgId, repoId, 8890);
+
+    const res = await post(
+      "installation",
+      {
+        action: "deleted",
+        installation: {
+          id: 302,
+          account: { id: 999, login: "octo", type: "Organization" },
+        },
+      },
+      "delivery-shared-uninstalled",
+    );
+
+    expect(res.status).toBe(200);
+    const snapshots = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM org_config_snapshots WHERE org_id = $1",
+      [orgId],
+    );
+    expect(snapshots.rows[0]!.c).toBe(0);
+  });
+
   test("respond jobs are rate-limited per installation per hour", async () => {
     process.env.POSTIL_RESPOND_HOURLY_CAP = "2";
     const orgId = await seedOrg();
@@ -534,6 +611,70 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(approvals.rows[0]!.c).toBe(0);
     expect(jobs.rows[0]!.c).toBe(1);
+  });
+
+  test("exact PR review mentions enqueue the structured reviewer", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    await seedRepo(inst, 7000, "octo/approvals");
+
+    const res = await approvalComment(
+      "mention-review-current-head",
+      "@postil please review the current head.",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+      "SELECT kind, payload FROM jobs ORDER BY id",
+    );
+    expect(jobs.rows).toEqual([
+      {
+        kind: "review",
+        payload: expect.objectContaining({
+          installationId: 700,
+          repoFullName: "octo/approvals",
+          prNumber: 9,
+          headSha: "head-sha",
+          baseSha: "base-sha",
+          authorGithubId: 501,
+          authorLogin: "admin",
+        }),
+      },
+    ]);
+  });
+
+  test("issue review mentions cannot invoke the pull-request reviewer", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 701);
+    await seedRepo(inst, 7001, "octo/issues");
+
+    const res = await post(
+      "issue_comment",
+      {
+        action: "created",
+        installation: { id: 701 },
+        repository: { id: 7001, full_name: "octo/issues", private: false },
+        sender: { id: 501, login: "admin", type: "User" },
+        comment: {
+          body: "@postil review the current head",
+          user: { id: 501, login: "admin", type: "User" },
+          author_association: "MEMBER",
+        },
+        issue: { number: 4 },
+      },
+      "issue-review-command",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{ kind: string }>("SELECT kind FROM jobs ORDER BY id");
+    expect(jobs.rows).toEqual([]);
+    expect(postedComments).toEqual([
+      {
+        repoFullName: "octo/issues",
+        number: 4,
+        body: "Review commands only work on pull requests.",
+      },
+    ]);
   });
 
   test("approval command rejects head mismatches", async () => {
@@ -722,14 +863,12 @@ describeDb("webhook handler behaviour", () => {
     ).toBe(true);
   });
 
-  test("approval command removes the inserted approval if check-run patching fails", async () => {
+  test("approval command commits state before asynchronous gate synchronization", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedUser(501, "admin", orgId, "admin");
     const reviewId = await seedCompletedApprovalReview(repoId);
-    checkRunPatchFails = true;
-
     const res = await approvalComment("approval-check-fails");
 
     expect(res.status).toBe(200);
@@ -737,13 +876,19 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
       [reviewId],
     );
-    expect(approvals.rows[0]!.c).toBe(0);
+    expect(approvals.rows[0]!.c).toBe(1);
     const review = await pool.query<{ gate_failing: boolean }>(
       "SELECT gate_failing FROM reviews WHERE id = $1",
       [reviewId],
     );
-    expect(review.rows[0]!.gate_failing).toBe(true);
-    expect(postedComments[0]?.body).toContain("could not be patched");
+    expect(review.rows[0]!.gate_failing).toBe(false);
+    const syncJobs = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM jobs WHERE kind = 'gate-state-sync'",
+    );
+    expect(syncJobs.rows[0]!.c).toBe(1);
+    expect(completedCheckRuns).toEqual([]);
+    expect(postedComments[0]?.body).toContain("Approval recorded");
+    expect(postedComments[0]?.body).toContain("gate update is queued");
   });
 
   function checkRunRerequestedEvent(
@@ -815,15 +960,15 @@ describeDb("webhook handler behaviour", () => {
     const inst = await seedInstallation(orgId, 500);
     await seedRepo(inst, 5555, "octo/gate");
 
-    const first = await checkRunRerequestedEvent("delivery-rerequest-dup-1");
+    // Simultaneous deliveries for different check names must contend on the
+    // database constraint rather than both passing an application-side check.
+    const [first, second] = await Promise.all([
+      checkRunRerequestedEvent("delivery-rerequest-dup-1"),
+      checkRunRerequestedEvent("delivery-rerequest-dup-2", {
+        name: "postil/review",
+      }),
+    ]);
     expect(first.status).toBe(200);
-
-    // A second rerequest for the same repo+PR+head (e.g. the maintainer
-    // clicks "Re-run" twice, or GitHub fires check_run once per check name)
-    // must not enqueue a second review job while the first is still queued.
-    const second = await checkRunRerequestedEvent("delivery-rerequest-dup-2", {
-      name: "postil/review",
-    });
     expect(second.status).toBe(200);
 
     const jobs = await pool.query<{ c: number }>(

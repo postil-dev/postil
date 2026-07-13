@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  rename,
   rm,
   stat,
   symlink,
@@ -54,6 +55,26 @@ describe("trusted local Postil pre-push hook", () => {
     expect(await readFile(fixture.hook, "utf8")).toContain("postil-local-hook:v1");
   });
 
+  test("reviews a repository whose common Git directory is reached through a symlink", async () => {
+    const fixture = await createFixture("symlinked-common-directory");
+    const linkedGitDirectory = join(fixture.repository, ".git");
+    const physicalGitDirectory = join(fixture.root, "git-data");
+    await rename(linkedGitDirectory, physicalGitDirectory);
+    await symlink(physicalGitDirectory, linkedGitDirectory, "dir");
+    await commit(fixture.repository, "topic", "symlinked Git directory\n");
+    await installHook(fixture, fixture.repository, true);
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/symlinked-common-directory"],
+      "pass",
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(await refExists(fixture.remote, "refs/heads/symlinked-common-directory")).toBe(true);
+  });
+
   test("an actual linked-worktree push reviews the exact head and immutable base", async () => {
     const fixture = await createFixture("linked-push");
     const linked = join(fixture.root, "linked");
@@ -68,18 +89,33 @@ describe("trusted local Postil pre-push hook", () => {
     expect(await readRecord(fixture)).toMatchObject({
       base: remoteBase,
       head: topicHead,
-      model: "mistralai/mistral-small-3.2-24b-instruct",
-      cascade: "google/gemma-3-27b-it",
-      scorer: "anthropic/claude-haiku-4.5",
+      model: "openai/gpt-5-mini",
+      cascade: "openai/gpt-5-mini",
+      scorer: "",
+      scorerDisabled: "1",
+      hostedMode: "1",
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
       modelCredential: "present",
-      invocation: `review --base ${remoteBase} --no-post --output json --fail-on info --model mistralai/mistral-small-3.2-24b-instruct`,
+      invocation: `review --base ${remoteBase} --no-post --output json --fail-on info --model openai/gpt-5-mini`,
     });
     expect(await refExists(fixture.remote, "refs/heads/topic")).toBe(true);
   });
 
-  test("accepts the v0.5 empty-diff envelope with a null baseSha", async () => {
+  test("rejects a prerelease that can predate the hosted-mode contract", async () => {
+    const fixture = await createFixture("prerelease-version");
+    await writeFile(
+      fixture.postil,
+      "#!/bin/sh\nprintf 'postil 0.6.0-alpha.1\\n'\n",
+      { mode: 0o755 },
+    );
+
+    await expect(installHook(fixture, fixture.repository, true)).rejects.toThrow(
+      "requires Postil v0.6.0 or newer",
+    );
+  });
+
+  test("accepts the v0.6 empty-diff envelope with a null baseSha", async () => {
     const fixture = await createFixture("empty-diff");
     const head = await gitCapture(fixture.repository, ["rev-parse", "HEAD"]);
     await installHook(fixture, fixture.repository, true);
@@ -139,7 +175,7 @@ describe("trusted local Postil pre-push hook", () => {
     const fixture = await createFixture("hostile-environment");
     await writeFile(
       join(fixture.repository, ".postil.yaml"),
-      "model: attacker/expensive\napiBase: https://attacker.invalid/v1\n",
+      "model:\n  name: attacker/expensive\n  cascade:\n    - attacker/fallback\n  scorer: attacker/scorer\n  apiBase: https://attacker.invalid/v1\n  apiFormat: anthropic\n  consensus: 3\n",
     );
     await git(fixture.repository, ["add", ".postil.yaml"]);
     await commit(fixture.repository, "topic", "hostile config\n");
@@ -169,9 +205,11 @@ describe("trusted local Postil pre-push hook", () => {
 
     expect(result.exitCode).toBe(0);
     const record = await readRecord(fixture);
-    expect(record.model).toBe("mistralai/mistral-small-3.2-24b-instruct");
-    expect(record.cascade).toBe("google/gemma-3-27b-it");
-    expect(record.scorer).toBe("anthropic/claude-haiku-4.5");
+    expect(record.model).toBe("openai/gpt-5-mini");
+    expect(record.cascade).toBe("openai/gpt-5-mini");
+    expect(record.scorer).toBe("");
+    expect(record.scorerDisabled).toBe("1");
+    expect(record.hostedMode).toBe("1");
     expect(record.apiBase).toBe("https://openrouter.ai/api/v1");
     expect(record.apiFormat).toBe("openai-compatible");
     expect(record.awsCredential).toBe("absent");
@@ -242,7 +280,226 @@ describe("trusted local Postil pre-push hook", () => {
       expect(await refExists(fixture.remote, `refs/heads/${mode}`)).toBe(false);
       if (mode === "finding") expect(result.stderr).toContain("require triage");
       if (mode === "provider-error") expect(result.stderr).toContain("did not complete");
-      if (mode === "malformed") expect(result.stderr).toContain("v0.5 envelope contract");
+      if (mode === "malformed") expect(result.stderr).toContain("v0.6 envelope contract");
+    }
+  });
+
+  test("emits a private template and accepts it without a second model call", async () => {
+    const fixture = await createFixture("accepted-disposition");
+    const head = await commit(fixture.repository, "topic", "reviewed finding\n");
+    const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+    await installHook(fixture, fixture.repository, true);
+
+    const first = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/accepted-disposition"],
+      "finding",
+    );
+    const paths = reviewCachePaths(fixture, base, head);
+
+    expect(first.exitCode).not.toBe(0);
+    expect(first.stderr).toContain(`disposition template written to ${paths.template}`);
+    expect((await stat(dirname(paths.cache))).mode & 0o777).toBe(0o700);
+    expect((await stat(paths.cache)).mode & 0o777).toBe(0o600);
+    expect((await stat(paths.template)).mode & 0o777).toBe(0o600);
+    expect(await Bun.file(paths.lock).exists()).toBe(false);
+    const cacheDocument = JSON.parse(await readFile(paths.cache, "utf8")) as Record<string, unknown>;
+    expect(Object.keys(cacheDocument).sort()).toEqual(["baseSha", "findings", "headSha", "version"]);
+    expect(await readFile(paths.cache, "utf8")).not.toContain("fixture finding");
+    expect(await readFile(paths.cache, "utf8")).not.toContain("body");
+    const blankTemplate = JSON.parse(await readFile(paths.template, "utf8")) as {
+      reviewDigest: string;
+      findings: Record<string, { path: string; line: number; reason: string }>;
+    };
+    expect(blankTemplate.reviewDigest).toMatch(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+    expect(blankTemplate.findings["fixture-finding-id"]).toEqual({
+      path: "app.txt",
+      line: 1,
+      reason: "",
+    });
+    await fillDispositionReasons(paths.template);
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/accepted-disposition"],
+      "provider-error",
+      { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain('accepted disposition path="app.txt" line=1');
+    expect(result.stderr).toContain("focused assertion proves the required behavior");
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect((await readRecord(fixture)).dispositionsVariable).toBe("absent");
+    expect(await Bun.file(paths.cache).exists()).toBe(false);
+    expect(await Bun.file(paths.template).exists()).toBe(false);
+    expect(await Bun.file(paths.lock).exists()).toBe(false);
+    expect(await refExists(fixture.remote, "refs/heads/accepted-disposition")).toBe(true);
+  });
+
+  test("replaces cache symlinks without modifying their targets", async () => {
+    const fixture = await createFixture("cache-symlinks");
+    const head = await commit(fixture.repository, "topic", "cache symlink safety\n");
+    const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+    const paths = reviewCachePaths(fixture, base, head);
+    await mkdir(dirname(paths.cache), { recursive: true, mode: 0o700 });
+    const cacheVictim = join(fixture.root, "cache-victim");
+    const templateVictim = join(fixture.root, "template-victim");
+    await writeFile(cacheVictim, "do not replace cache target\n");
+    await writeFile(templateVictim, "do not replace template target\n");
+    await symlink(cacheVictim, paths.cache);
+    await symlink(templateVictim, paths.template);
+    await installHook(fixture, fixture.repository, true);
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/cache-symlinks"],
+      "finding",
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    expect((await lstat(paths.cache)).isSymbolicLink()).toBe(false);
+    expect((await lstat(paths.template)).isSymbolicLink()).toBe(false);
+    expect(await readFile(cacheVictim, "utf8")).toBe("do not replace cache target\n");
+    expect(await readFile(templateVictim, "utf8")).toBe("do not replace template target\n");
+  });
+
+  test("rejects malformed, stale, partial, additional, and mismatched dispositions", async () => {
+    const scenarios = [
+      "malformed",
+      "stale-base",
+      "stale-head",
+      "partial",
+      "additional",
+      "mismatched-path",
+      "mismatched-line",
+      "short-reason",
+      "additional-field",
+      "tampered-cache",
+    ] as const;
+    for (const scenario of scenarios) {
+      const fixture = await createFixture(`invalid-disposition-${scenario}`);
+      const head = await commit(fixture.repository, "topic", `${scenario}\n`);
+      const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+      const mode: ReviewMode = scenario === "partial" ? "two-findings" : "finding";
+      await installHook(fixture, fixture.repository, true);
+      const first = await push(
+        fixture,
+        fixture.repository,
+        ["origin", `HEAD:refs/heads/invalid-${scenario}`],
+        mode,
+      );
+      expect(first.exitCode).not.toBe(0);
+      const paths = reviewCachePaths(fixture, base, head);
+      await fillDispositionReasons(paths.template);
+      const document = JSON.parse(await readFile(paths.template, "utf8")) as Record<string, unknown>;
+      const findingMap = document.findings as Record<string, Record<string, unknown>>;
+      const primaryFinding = findingMap["fixture-finding-id"]!;
+      if (scenario === "malformed") {
+        await writeFile(paths.template, "{\n");
+      } else {
+        if (scenario === "stale-base") document.baseSha = "0".repeat(40);
+        if (scenario === "stale-head") document.headSha = "f".repeat(40);
+        if (scenario === "partial") delete findingMap["fixture-second-id"];
+        if (scenario === "additional") {
+          findingMap["unreviewed-finding-id"] = {
+            path: "app.txt",
+            line: 2,
+            reason:
+              "The changed fixture line is intentional and the focused assertion proves the required behavior.",
+          };
+        }
+        if (scenario === "mismatched-path") primaryFinding.path = "other.txt";
+        if (scenario === "mismatched-line") primaryFinding.line = 2;
+        if (scenario === "short-reason") primaryFinding.reason = "false positive";
+        if (scenario === "additional-field") primaryFinding.approved = true;
+        if (scenario === "tampered-cache") {
+          const cache = JSON.parse(await readFile(paths.cache, "utf8")) as {
+            findings: Array<{ path: string }>;
+          };
+          cache.findings[0]!.path = "tampered.txt";
+          await writeFile(paths.cache, JSON.stringify(cache));
+        } else {
+          await writeFile(paths.template, JSON.stringify(document));
+        }
+      }
+
+      const result = await push(
+        fixture,
+        fixture.repository,
+        ["origin", `HEAD:refs/heads/invalid-${scenario}`],
+        "provider-error",
+        { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template },
+      );
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("malformed, stale, incomplete, tampered, or do not match");
+      expect((await readRecords(fixture)).length).toBe(1);
+      expect(await refExists(fixture.remote, `refs/heads/invalid-${scenario}`)).toBe(false);
+    }
+  }, 30_000);
+
+  test("invalidates a cached review when the pushed head changes", async () => {
+    const fixture = await createFixture("stale-current-head");
+    const reviewedHead = await commit(fixture.repository, "topic", "reviewed head\n");
+    const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+    await installHook(fixture, fixture.repository, true);
+    const first = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/stale-current-head"],
+      "finding",
+    );
+    expect(first.exitCode).not.toBe(0);
+    const paths = reviewCachePaths(fixture, base, reviewedHead);
+    await fillDispositionReasons(paths.template);
+    await commit(fixture.repository, "later", "changed head\n");
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/stale-current-head"],
+      "provider-error",
+      { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template },
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("does not match the exact generated template");
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect(await refExists(fixture.remote, "refs/heads/stale-current-head")).toBe(false);
+  });
+
+  test("never caches provider, model-output, or truncated-diff findings", async () => {
+    const scenarios = [
+      ["synthetic-provider", ".postil/provider"],
+      ["synthetic-model-output", ".postil/model-output"],
+      ["synthetic-diff", ".postil/diff"],
+    ] as const;
+    for (const [mode, path] of scenarios) {
+      const fixture = await createFixture(mode);
+      const head = await commit(fixture.repository, "topic", `${mode}\n`);
+      const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+      await installHook(fixture, fixture.repository, true);
+
+      const result = await push(
+        fixture,
+        fixture.repository,
+        ["origin", `HEAD:refs/heads/${mode}`],
+        mode,
+      );
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain(
+        "provider, setup, and truncated-review findings cannot be dispositioned",
+      );
+      const paths = reviewCachePaths(fixture, base, head);
+      expect(result.stderr).toContain(path);
+      expect(await Bun.file(paths.cache).exists()).toBe(false);
+      expect(await Bun.file(paths.template).exists()).toBe(false);
+      expect(await refExists(fixture.remote, `refs/heads/${mode}`)).toBe(false);
     }
   });
 
@@ -308,7 +565,16 @@ describe("trusted local Postil pre-push hook", () => {
   });
 });
 
-type ReviewMode = "pass" | "finding" | "provider-error" | "malformed" | "gh-error";
+type ReviewMode =
+  | "pass"
+  | "finding"
+  | "two-findings"
+  | "synthetic-provider"
+  | "synthetic-model-output"
+  | "synthetic-diff"
+  | "provider-error"
+  | "malformed"
+  | "gh-error";
 
 interface Fixture {
   root: string;
@@ -418,7 +684,7 @@ async function writeFakeCommands(
   await writeFile(
     postil,
     `#!/bin/bash
-if [[ "\${1:-}" == "--version" ]]; then echo 'postil 0.5.0'; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo 'postil 0.6.0'; exit 0; fi
 base=
 model=
 invocation="\$*"
@@ -433,15 +699,28 @@ head=\$(git rev-parse HEAD)
 merge_base=\$(git merge-base "\$base" "\$head")
 mode=\$(< '${paths.modeFile}')
 aws=absent; [[ -n "\${AWS_SECRET_ACCESS_KEY+x}" ]] && aws=present
+dispositions_variable=absent; [[ -n "\${POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE+x}" ]] && dispositions_variable=present
 credential=absent; [[ -n "\${MODEL_API_KEY:-}\${POSTIL_API_KEY:-}\${OPENROUTER_API_KEY:-}" ]] && credential=present
-printf '{"base":"%s","head":"%s","model":"%s","cascade":"%s","scorer":"%s","apiBase":"%s","apiFormat":"%s","awsCredential":"%s","modelCredential":"%s","credentialValue":"%s","invocation":"%s"}\n' \
-  "\$base" "\$head" "\$model" "\$REVIEW_MODEL_CASCADE" "\$REVIEW_SCORER_MODEL" "\$POSTIL_API_BASE" "\$POSTIL_API_FORMAT" "\$aws" "\$credential" "\${MODEL_API_KEY:-}" "\$invocation" >>'${paths.log}'
+printf '{"base":"%s","head":"%s","model":"%s","cascade":"%s","scorer":"%s","scorerDisabled":"%s","hostedMode":"%s","apiBase":"%s","apiFormat":"%s","awsCredential":"%s","dispositionsVariable":"%s","modelCredential":"%s","credentialValue":"%s","invocation":"%s"}\n' \
+  "\$base" "\$head" "\$model" "\$REVIEW_MODEL_CASCADE" "\$REVIEW_SCORER_MODEL" "\$POSTIL_DISABLE_SCORER" "\$POSTIL_HOSTED_MODE" "\$POSTIL_API_BASE" "\$POSTIL_API_FORMAT" "\$aws" "\$dispositions_variable" "\$credential" "\${MODEL_API_KEY:-}" "\$invocation" >>'${paths.log}'
 if [[ "\$mode" == provider-error ]]; then exit 2; fi
 if [[ "\$mode" == malformed ]]; then echo '{"findings":[]}'; exit 0; fi
 if git diff --quiet "\$base...\$head"; then base_value=null; base_quote=; model_used='none (empty diff)'; else base_value="\$merge_base"; base_quote='"'; model_used="\$model"; fi
 if [[ "\$mode" == finding ]]; then
-  findings='[{"path":"app.txt","line":1,"severity":"warn","kind":"risk","confidence":0.9,"title":"fixture finding","body":"fixture"}]'
+  findings='[{"path":"app.txt","line":1,"severity":"warn","kind":"risk","confidence":0.9,"title":"fixture finding","body":"fixture","id":"fixture-finding-id"}]'
   silent=false; warn=1; summary='fixture finding'; status=1
+elif [[ "\$mode" == two-findings ]]; then
+  findings='[{"path":"app.txt","line":1,"severity":"warn","kind":"risk","confidence":0.9,"title":"fixture finding","body":"fixture","id":"fixture-finding-id"},{"path":"app.txt","line":2,"severity":"warn","kind":"risk","confidence":0.8,"title":"second fixture finding","body":"fixture","id":"fixture-second-id"}]'
+  silent=false; warn=2; summary='fixture findings'; status=1
+elif [[ "\$mode" == synthetic-provider ]]; then
+  findings='[{"path":".postil/provider","line":1,"severity":"error","kind":"uncertainty","confidence":1,"title":"provider failure","body":"fixture","id":"synthetic-finding-id"}]'
+  silent=false; warn=0; summary='provider failure'; status=1
+elif [[ "\$mode" == synthetic-model-output ]]; then
+  findings='[{"path":".postil/model-output","line":1,"severity":"error","kind":"uncertainty","confidence":1,"title":"model output failure","body":"fixture","id":"synthetic-finding-id"}]'
+  silent=false; warn=0; summary='model output failure'; status=1
+elif [[ "\$mode" == synthetic-diff ]]; then
+  findings='[{"path":".postil/diff","line":1,"severity":"info","kind":"uncertainty","confidence":1,"title":"truncated diff","body":"fixture","id":"synthetic-finding-id"}]'
+  silent=false; warn=0; summary='truncated diff'; status=1
 else
   findings='[]'; silent=true; warn=0; summary=''; status=0
 fi
@@ -485,6 +764,27 @@ async function readRecord(fixture: Fixture): Promise<Record<string, string>> {
 async function readRecords(fixture: Fixture): Promise<Array<Record<string, string>>> {
   const lines = (await readFile(fixture.log, "utf8")).trim().split("\n").filter(Boolean);
   return lines.map((line) => JSON.parse(line) as Record<string, string>);
+}
+
+function reviewCachePaths(fixture: Fixture, base: string, head: string) {
+  const directory = join(fixture.repository, ".git", "postil-local-review");
+  const key = `${base}-${head}`;
+  return {
+    cache: join(directory, `review-${key}.json`),
+    template: join(directory, `dispositions-${key}.json`),
+    lock: join(directory, `lock-${key}`),
+  };
+}
+
+async function fillDispositionReasons(path: string): Promise<void> {
+  const document = JSON.parse(await readFile(path, "utf8")) as {
+    findings: Record<string, { reason: string }>;
+  };
+  for (const finding of Object.values(document.findings)) {
+    finding.reason =
+      "The changed fixture line is intentional and the focused assertion proves the required behavior.";
+  }
+  await writeFile(path, JSON.stringify(document));
 }
 
 async function refExists(remote: string, ref: string): Promise<boolean> {

@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { resolve } from "node:path";
 
 // Enforced CSP. The site loads only first-party assets plus a small,
 // same-origin PostHog relay, so the policy is restrictive by default. Next.js
@@ -47,6 +48,18 @@ const nextConfig: NextConfig = {
     // Optimized image responses are content-addressed by their query string;
     // let browsers and the CDN keep them for a year.
     minimumCacheTTL: 31536000,
+  },
+  webpack(config, { nextRuntime }) {
+    if (nextRuntime === "edge") {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        "./instrumentation-node$": resolve(
+          process.cwd(),
+          "src/instrumentation-edge.ts",
+        ),
+      };
+    }
+    return config;
   },
   async headers() {
     return [

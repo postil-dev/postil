@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Pool } from "pg";
@@ -7,6 +8,8 @@ import { Pool } from "pg";
 import {
   REVIEW_LOG_MAX_LINES,
   ReviewLogWriter,
+  postilCliVersionLogLine,
+  probePostilCliVersion,
   runCli,
 } from "@/worker/review";
 
@@ -35,6 +38,66 @@ describe("runCli log observation", () => {
     } finally {
       if (oldBin === undefined) delete process.env.POSTIL_BIN;
       else process.env.POSTIL_BIN = oldBin;
+    }
+  });
+});
+
+async function versionFixture(source: string): Promise<{ directory: string; executable: string }> {
+  const directory = await mkdtemp(join(tmpdir(), "postil-version-"));
+  const executable = join(directory, "postil");
+  await writeFile(executable, `#!/usr/bin/env bun\n${source}\n`, "utf8");
+  await chmod(executable, 0o755);
+  return { directory, executable };
+}
+
+describe("postil CLI version logging", () => {
+  test("normalizes and caches the exact version log line", async () => {
+    const fixture = await versionFixture('console.log("postil 0.5.7");');
+    const previousExecutable = process.env.POSTIL_BIN;
+    process.env.POSTIL_BIN = fixture.executable;
+    try {
+      expect(await postilCliVersionLogLine()).toBe("postil CLI version 0.5.7");
+      await writeFile(
+        fixture.executable,
+        '#!/usr/bin/env bun\nconsole.log("postil 0.5.8");\n',
+        "utf8",
+      );
+      expect(await postilCliVersionLogLine()).toBe("postil CLI version 0.5.7");
+    } finally {
+      if (previousExecutable === undefined) delete process.env.POSTIL_BIN;
+      else process.env.POSTIL_BIN = previousExecutable;
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds a hung probe", async () => {
+    const fixture = await versionFixture(
+      'await Bun.sleep(250); console.log("postil 0.5.7");',
+    );
+    try {
+      await expect(probePostilCliVersion(fixture.executable, 20)).rejects.toThrow(
+        "postil CLI version probe timed out after 20ms",
+      );
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
+  test("degrades safely and nonblockingly when version output is unrecognized", async () => {
+    const fixture = await versionFixture(
+      'console.log("postil credential-value-must-not-leak");',
+    );
+    const previousExecutable = process.env.POSTIL_BIN;
+    process.env.POSTIL_BIN = fixture.executable;
+    try {
+      const error = await probePostilCliVersion(fixture.executable).catch((cause) => cause);
+      expect(String(error)).toContain("returned unrecognized output");
+      expect(String(error)).not.toContain("credential-value-must-not-leak");
+      expect(await postilCliVersionLogLine()).toBe("postil CLI version unavailable");
+    } finally {
+      if (previousExecutable === undefined) delete process.env.POSTIL_BIN;
+      else process.env.POSTIL_BIN = previousExecutable;
+      await rm(fixture.directory, { recursive: true, force: true });
     }
   });
 });

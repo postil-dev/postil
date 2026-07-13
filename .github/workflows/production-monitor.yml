@@ -136,6 +136,10 @@ jobs:
             exit 1
           fi
 
+          if [[ -z "${METRICS_API_KEY:-}" ]]; then
+            echo "METRICS_API_KEY is required; operational incident monitoring cannot run without it"
+            exit 1
+          fi
           if [[ -n "${METRICS_API_KEY:-}" ]]; then
             printf 'header = "Authorization: Bearer %s"\n' "${METRICS_API_KEY}" > .cache/curl-metrics.conf
             chmod 0600 .cache/curl-metrics.conf
@@ -185,6 +189,24 @@ jobs:
               echo "Check-run cleanup exhausted all retries; a GitHub check may remain in progress"
               stale_found=1
             fi
+            incident_found=0
+            for category in operational_failure scorer_failure scorer_fallback model_fallback invalid_output failed_job; do
+              count=$(awk -v metric="postil_review_incidents_30m{category=\"${category}\"}" \
+                '$1 == metric { print $2 }' .cache/metrics.out)
+              threshold=0
+              case "${category}" in
+                scorer_fallback) threshold=2 ;;
+                model_fallback) threshold=5 ;;
+              esac
+              echo "Recent ${category} incidents: ${count:-missing}"
+              if [[ -z "${count:-}" ]]; then
+                echo "Operational incident metric is missing for ${category}"
+                incident_found=1
+              elif (( $(printf '%.0f' "${count}") > threshold )); then
+                echo "Postil reported ${count} ${category} incident(s) in the last 30 minutes (threshold ${threshold})"
+                incident_found=1
+              fi
+            done
             for status in queued running; do
               age=$(grep -E "^postil_oldest_job_age_seconds\{status=\"${status}\"\}" .cache/metrics.out \
                 | awk '{print $2}')
@@ -194,7 +216,7 @@ jobs:
                 stale_found=1
               fi
             done
-            if [[ "${stale_found}" -eq 1 ]]; then
+            if [[ "${stale_found}" -eq 1 || "${incident_found}" -eq 1 ]]; then
               echo "Full metrics for context:"
               cat .cache/metrics.out
               exit 1

@@ -16,6 +16,18 @@ afterEach(() => {
 });
 
 describe("server request telemetry privacy", () => {
+  test("marks verification pages as private to search crawlers", async () => {
+    const event = { waitUntil: () => undefined } as unknown as NextFetchEvent;
+    const response = await middleware(
+      new NextRequest("https://postil.dev/verify/billing-contact?org=7&token=secret"),
+      event,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
   test("does not capture requests carrying DNT or Global Privacy Control", async () => {
     process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
     let captures = 0;

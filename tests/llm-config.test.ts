@@ -232,8 +232,11 @@ describe("buildCliEnv", () => {
 
     expect(env).toMatchObject({
       GITHUB_TOKEN: "github-token",
+      POSTIL_PREVENTION_HINT: "0",
+      POSTIL_PREVENTION_COMMANDS_JSON: "[]",
       POSTIL_API_BASE: "https://openrouter.ai/api/v1",
       POSTIL_API_FORMAT: "anthropic",
+      POSTIL_HOSTED_MODE: "0",
       POSTIL_ENDPOINT_AUTH_HEADER: "CF-Access-Client-Secret",
       POSTIL_ENDPOINT_AUTH_VALUE: "gateway-key",
       POSTIL_LLM_REQUEST_TIMEOUT_SECS: "420",
@@ -273,9 +276,34 @@ describe("buildCliEnv", () => {
     expect(env).toMatchObject({
       POSTIL_LLM_REQUEST_TIMEOUT_SECS: "90",
       POSTIL_LLM_TOTAL_TIMEOUT_SECS: "360",
+      POSTIL_HOSTED_MODE: "1",
       POSTIL_ENDPOINT_AUTH_HEADER: "",
       POSTIL_ENDPOINT_AUTH_VALUE: "",
+      POSTIL_PREVENTION_HINT: "0",
+      POSTIL_PREVENTION_COMMANDS_JSON: "[]",
     });
+  });
+
+  test("normalizes the per-review prevention hint instead of inheriting deployment state", () => {
+    const llm = {
+      byok: false,
+      apiBase: "https://openrouter.ai/api/v1",
+      apiFormat: "openai-compatible" as const,
+      apiKey: undefined,
+      apiAuthHeader: undefined,
+      apiAuthValue: undefined,
+      model: undefined,
+      modelCascade: undefined,
+    };
+
+    expect(buildCliEnv(llm).POSTIL_PREVENTION_HINT).toBe("0");
+    expect(buildCliEnv(llm, { POSTIL_PREVENTION_HINT: "1" }).POSTIL_PREVENTION_HINT).toBe("1");
+    expect(buildCliEnv(llm, { POSTIL_PREVENTION_HINT: "true" }).POSTIL_PREVENTION_HINT).toBe("0");
+    expect(buildCliEnv(llm).POSTIL_PREVENTION_COMMANDS_JSON).toBe("[]");
+    expect(
+      buildCliEnv(llm, { POSTIL_PREVENTION_COMMANDS_JSON: '["bun run test"]' })
+        .POSTIL_PREVENTION_COMMANDS_JSON,
+    ).toBe('["bun run test"]');
   });
 });
 

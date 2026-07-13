@@ -69,7 +69,13 @@ postil review --repo owner/name --pr 123`}</code>
       <p>
         Mention <code>@postil</code> in a pull-request or issue comment, reply
         to one of its review comments, or open an issue that mentions it. The
-        hosted bot replies automatically; the CLI equivalent is:
+        hosted bot replies automatically. On a pull request, an exact command
+        such as <code>@postil review the current head</code> or{" "}
+        <code>@postil re-review</code> runs the structured reviewer, with
+        inline findings and the compact review summary. Other mentions are
+        treated as questions and receive a bounded thread reply. Issue
+        comments cannot start a pull-request review. The CLI equivalent for a
+        question is:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`postil respond --repo owner/name --pr 123 --comment "@postil is this safe?"

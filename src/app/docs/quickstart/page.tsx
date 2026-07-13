@@ -41,10 +41,10 @@ export default function QuickstartPage() {
         </a>
       </p>
       <p>
-        The hosted app also answers <code>@postil</code> mentions: reply to one
-        of its review comments, mention it in a PR or issue comment, and it
-        responds in thread. It reviews and answers only: it never opens PRs or
-        pushes commits. GitHub only today.
+        The hosted app also handles <code>@postil</code> mentions. Exact review
+        commands on a pull request run the structured reviewer; questions get
+        a compact thread reply. It reviews and answers only: it never opens PRs
+        or pushes commits. GitHub only today.
       </p>
 
       <h2>2. Local CLI</h2>

@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { computeEffectiveGate, ingestEnvelope, type Envelope } from "@/lib/envelope";
+import {
+  classifyOperationalModelIncidents,
+  computeEffectiveGate,
+  hasLegacyCombinedModelUsage,
+  ingestEnvelope,
+  type Envelope,
+} from "@/lib/envelope";
 
 function validEnvelope(overrides: Partial<Envelope> = {}): Envelope {
   return {
@@ -55,6 +61,162 @@ describe("envelope ingestion", () => {
     ).toBe(true);
   });
 
+  test("preserves retained suppressed findings and their policy reasons", () => {
+    const suppressedFinding = {
+      finding: {
+        path: "src/billing/invoice.ts",
+        line: 90,
+        severity: "info" as const,
+        kind: "risk" as const,
+        confidence: 0.45,
+        title: "Retry signal is ambiguous",
+        body: "The retry result does not distinguish a duplicate request.",
+      },
+      reason: "belowConfidence" as const,
+    };
+    const ingested = ingestEnvelope(
+      JSON.stringify(validEnvelope({ suppressedFindings: [suppressedFinding] })),
+    );
+    expect(ingested.envelope.suppressedFindings).toEqual([suppressedFinding]);
+  });
+
+  test("preserves exact model incidents and enforces recovery consistency", () => {
+    const modelIncidents = [
+      {
+        phase: "scorer" as const,
+        category: "invalidOutput" as const,
+        recovered: true,
+        recovery: "repair" as const,
+      },
+      {
+        phase: "review" as const,
+        category: "timeout" as const,
+        recovered: true,
+        recovery: "fallback" as const,
+      },
+      {
+        phase: "review" as const,
+        category: "deadline" as const,
+        recovered: false,
+      },
+      {
+        phase: "scorer" as const,
+        category: "providerError" as const,
+        recovered: false,
+      },
+    ];
+    expect(
+      ingestEnvelope(JSON.stringify(validEnvelope({ modelIncidents }))).envelope
+        .modelIncidents,
+    ).toEqual(modelIncidents);
+
+    for (const invalidIncident of [
+      { phase: "review", category: "timeout", recovered: true },
+      {
+        phase: "review",
+        category: "timeout",
+        recovered: false,
+        recovery: "fallback",
+      },
+    ]) {
+      expect(() =>
+        ingestEnvelope(
+          JSON.stringify({ ...validEnvelope(), modelIncidents: [invalidIncident] }),
+        ),
+      ).toThrow(/recovery must be present exactly when the incident recovered/);
+    }
+  });
+
+  test("classifies only typed incidents and exact operational sentinel paths", () => {
+    const hostile = "private@example.test raw-provider raw-model raw-repo raw-finding";
+    const rawEnvelope = validEnvelope({
+      findings: [
+        {
+          path: ".postil/provider",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: hostile,
+          body: hostile,
+        },
+        {
+          path: ".postil/model-output",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: hostile,
+          body: hostile,
+        },
+        {
+          path: ".postil/operational",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: hostile,
+          body: hostile,
+        },
+        {
+          path: ".postil/provider-near-match",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: hostile,
+          body: hostile,
+        },
+      ],
+      modelIncidents: [
+        {
+          phase: "review",
+          category: "providerError",
+          recovered: false,
+        },
+        {
+          phase: "scorer",
+          category: "timeout",
+          recovered: true,
+          recovery: "fallback",
+        },
+      ],
+    }) as Envelope & { modelIncidents: Array<Record<string, unknown>> };
+    rawEnvelope.modelIncidents[1]!.provider = hostile;
+    rawEnvelope.modelIncidents[1]!.model = hostile;
+
+    const ingested = ingestEnvelope(JSON.stringify(rawEnvelope)).envelope;
+    const classifications = classifyOperationalModelIncidents(ingested);
+    expect(classifications).toEqual([
+      {
+        phase: "review",
+        category: "providerError",
+        recovered: false,
+        source: "model_incident",
+      },
+      {
+        phase: "scorer",
+        category: "timeout",
+        recovered: true,
+        recovery: "fallback",
+        source: "model_incident",
+      },
+      {
+        phase: "review",
+        category: "invalidOutput",
+        recovered: false,
+        source: "model_output_sentinel",
+      },
+      {
+        phase: "review",
+        category: "operational",
+        recovered: false,
+        source: "operational_sentinel",
+      },
+    ]);
+    expect(JSON.stringify(classifications)).not.toContain(hostile);
+  });
+
   test("accepts exact per-model usage and rejects mismatched aggregates", () => {
     const exact = validEnvelope({
       modelUsage: [
@@ -70,6 +232,45 @@ describe("envelope ingestion", () => {
     expect(() => ingestEnvelope(JSON.stringify(mismatched))).toThrow(
       /per-model token totals must match aggregate usage/,
     );
+  });
+
+  test("accepts duplicate model rows with matching aggregate totals", () => {
+    const exact = validEnvelope({
+      modelUsage: [
+        { model: "shared-model", promptTokens: 4000, completionTokens: 300 },
+        { model: "shared-model", promptTokens: 200, completionTokens: 10 },
+      ],
+    });
+
+    expect(ingestEnvelope(JSON.stringify(exact)).modelUsage).toEqual(exact.modelUsage!);
+  });
+
+  test("identifies only scorer runs that predate per-model usage attribution", () => {
+    const legacy = validEnvelope({ scorerModel: "independent/model" });
+    expect(hasLegacyCombinedModelUsage(legacy)).toBe(true);
+    expect(
+      hasLegacyCombinedModelUsage(
+        validEnvelope({ scorerError: "independent check failed" }),
+      ),
+    ).toBe(true);
+    expect(
+      hasLegacyCombinedModelUsage({
+        ...legacy,
+        modelUsage: [
+          {
+            model: "reviewer/model",
+            promptTokens: 4000,
+            completionTokens: 300,
+          },
+          {
+            model: "independent/model",
+            promptTokens: 200,
+            completionTokens: 10,
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(hasLegacyCombinedModelUsage(validEnvelope())).toBe(false);
   });
 
   test("ingests a silent envelope", () => {

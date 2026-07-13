@@ -11,6 +11,7 @@
 
 ARG POSTIL_CLI_REV=unpinned
 ARG NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com
+ARG POSTIL_RELEASE_SHA
 
 FROM oven/bun:1.3 AS deps
 WORKDIR /app
@@ -28,11 +29,13 @@ RUN bun run build
 
 FROM oven/bun:1.3 AS runtime
 ARG POSTIL_CLI_REV
+ARG POSTIL_RELEASE_SHA
 LABEL org.opencontainers.image.title="postil-control-plane" \
       org.opencontainers.image.source="https://github.com/postil-dev/postil" \
       dev.postil.cli-rev="${POSTIL_CLI_REV}"
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    POSTIL_RELEASE_SHA=${POSTIL_RELEASE_SHA}
 # The baked postil CLI (Rust) makes outbound HTTPS calls to the forge and the
 # model endpoint; the slim bun image ships no root certificates, so without
 # ca-certificates every review fails with "No CA certificates were loaded from

@@ -259,9 +259,10 @@ export function failedRunsForCommit(
           (candidate) => candidate.name === REVIEW_CHECK_NAME,
         ),
       );
-      const operational =
-        gate.output.title === "Review did not complete" ||
-        review?.output.title === "Review did not complete";
+      // Operational failures have no review verdict, so the advisory check is
+      // neutral while the gate fails closed. Titles are presentation copy and
+      // must not be used as the incident contract.
+      const operational = review?.conclusion === "neutral";
       return {
         repo,
         pr,
@@ -292,10 +293,15 @@ export function failedRunsForCommit(
   const operationalFailures = postilChecks
     .filter((review) => {
       const completed = checkTime(review);
+      const pairedGate = pairedCheck(
+        review,
+        postilChecks.filter((candidate) => candidate.name === GATE_CHECK_NAME),
+      );
       return (
         review.name === REVIEW_CHECK_NAME &&
         review.status === "completed" &&
-        review.output.title === "Review did not complete" &&
+        review.conclusion === "neutral" &&
+        (pairedGate === undefined || pairedGate.conclusion === "failure") &&
         completed !== null &&
         completed >= start &&
         completed < end &&

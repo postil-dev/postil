@@ -35,6 +35,44 @@ export interface OrgReviewConfig {
   contentPolicyMd: string | null;
 }
 
+export type ConfigSlot = "root" | "guardrails" | "content-policy";
+export type ConfigSource = "repository" | "shared" | "organization" | "builtin";
+
+export interface ConfigProvenanceEntry {
+  slot: ConfigSlot;
+  source: ConfigSource;
+  path: string | null;
+  /** Immutable GitHub repository ID, never the control-plane database row ID. */
+  repositoryId?: number;
+  repository?: string;
+  commitSha?: string;
+  stale?: boolean;
+  status?: "present" | "absent" | "inaccessible" | "transient";
+  fallback?: {
+    source: "shared";
+    repository?: string;
+    commitSha?: string;
+    stale?: boolean;
+    status: "inaccessible" | "transient";
+  };
+}
+
+export interface ReviewConfigProvenance {
+  entries: ConfigProvenanceEntry[];
+  degraded: boolean;
+}
+
+/** Return the configuration slots not supplied by the target repository. */
+export function missingRepositoryConfigSlots(repoFiles: readonly string[]): ConfigSlot[] {
+  const missing: ConfigSlot[] = [];
+  if (!CONFIG_FILE_CANDIDATES.some((candidate) => repoFiles.includes(candidate))) {
+    missing.push("root");
+  }
+  if (!repoFiles.includes(PROSE_FILES[0]!)) missing.push("guardrails");
+  if (!repoFiles.includes(PROSE_FILES[1]!)) missing.push("content-policy");
+  return missing;
+}
+
 /**
  * Fetch one file from the repo's default branch. Returns null when the file
  * does not exist or exceeds the size cap; throws on other API failures.
@@ -163,4 +201,99 @@ export async function materializeOrgConfig(
   }
 
   return written;
+}
+
+/**
+ * Fill missing repository slots from the owner `.github` snapshot. Shared
+ * root config uses one explicit YAML path and can select models only in BYOK.
+ */
+export async function materializeSharedConfig(
+  dir: string,
+  repoFiles: readonly string[],
+  config: OrgReviewConfig | null,
+  options: { allowModelSettings?: boolean } = {},
+): Promise<string[]> {
+  if (!config) return [];
+  const written: string[] = [];
+  await mkdir(join(dir, ".postil"), { recursive: true });
+
+  if (
+    config.configYaml !== null &&
+    !CONFIG_FILE_CANDIDATES.some((candidate) => repoFiles.includes(candidate))
+  ) {
+    const body = options.allowModelSettings === false
+      ? withoutModelConfig(config.configYaml, "yaml")
+      : config.configYaml;
+    if (body !== null) {
+      await writeFile(join(dir, ".postil.yaml"), body);
+      written.push("shared:.postil.yaml");
+    }
+  }
+  for (const [path, body] of [
+    [".postil/guardrails.md", config.guardrailsMd],
+    [".postil/content-policy.md", config.contentPolicyMd],
+  ] as const) {
+    if (body !== null && !repoFiles.includes(path)) {
+      await writeFile(join(dir, path), body);
+      written.push(`shared:${path}`);
+    }
+  }
+  return written;
+}
+
+/** Return one provenance row per effective slot, including built-in fallbacks. */
+export function buildConfigProvenance(
+  configFiles: readonly string[],
+  shared: readonly ConfigProvenanceEntry[] = [],
+  repository?: { id: number; fullName: string },
+): ReviewConfigProvenance {
+  const slots: Array<{ slot: ConfigSlot; repositoryFiles: readonly string[]; path: string }> = [
+    { slot: "root", repositoryFiles: CONFIG_FILE_CANDIDATES, path: ".postil.yaml" },
+    { slot: "guardrails", repositoryFiles: [PROSE_FILES[0]!], path: PROSE_FILES[0]! },
+    { slot: "content-policy", repositoryFiles: [PROSE_FILES[1]!], path: PROSE_FILES[1]! },
+  ];
+  const entries = slots.map(({ slot, repositoryFiles, path }) => {
+    const repositoryPath = repositoryFiles.find((candidate) => configFiles.includes(candidate));
+    if (repositoryPath) {
+      return {
+        slot,
+        source: "repository" as const,
+        path: repositoryPath,
+        ...(repository ? { repositoryId: repository.id, repository: repository.fullName } : {}),
+      };
+    }
+    const sharedEntry = shared.find((entry) => entry.slot === slot);
+    if (sharedEntry?.source === "shared" && configFiles.includes(`shared:${path}`)) {
+      return sharedEntry;
+    }
+    const fallback =
+      sharedEntry?.status === "inaccessible" || sharedEntry?.status === "transient"
+        ? {
+            source: "shared" as const,
+            repository: sharedEntry.repository,
+            commitSha: sharedEntry.commitSha,
+            stale: sharedEntry.stale,
+            status: sharedEntry.status,
+          }
+        : undefined;
+    if (configFiles.includes(`org:${path}`)) {
+      return { slot, source: "organization" as const, path, ...(fallback ? { fallback } : {}) };
+    }
+    return {
+      slot,
+      source: "builtin" as const,
+      path: null,
+      ...(fallback ? { fallback } : {}),
+    };
+  });
+  return {
+    entries,
+    degraded: entries.some(
+      (entry) =>
+        entry.stale === true ||
+        entry.status === "inaccessible" ||
+        entry.status === "transient" ||
+        entry.fallback !== undefined,
+    ),
+  };
 }

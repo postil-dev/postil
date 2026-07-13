@@ -28,6 +28,29 @@ export default function ConfigPage() {
       </p>
 
       <h2>Precedence</h2>
+      <p>
+        In the hosted GitHub App, each configuration artifact resolves separately:
+        the target repository, the owner account&apos;s installed <code>.github</code>{" "}
+        repository, organization form fallback, then built-in defaults. Shared owner
+        configuration reads only <code>.postil.yaml</code>,{" "}
+        <code>.postil/guardrails.md</code>, and{" "}
+        <code>.postil/content-policy.md</code> from one default-branch commit. The App
+        never reads an uninstalled public repository without authentication. Authorization
+        or identity failures remove the shared snapshot and return no shared policy. A
+        transient refresh may use the last successful snapshot only after the current call
+        validates installation access and immutable repository identity.
+      </p>
+      <p>
+        Add or create <code>&lt;owner&gt;/.github</code> in the same GitHub App installation
+        to use shared configuration. Public source files are public. Private and internal
+        source files follow GitHub repository access, but policy text is not a secret:
+        review output can reveal its effect.
+      </p>
+      <p>
+        Anyone who can merge to the owner <code>.github</code> repository can change review
+        policy for every inheriting repository. Protect its default branch with CODEOWNERS,
+        a ruleset, and required review.
+      </p>
       <p>From strongest to weakest:</p>
       <ol>
         <li>CLI flags</li>

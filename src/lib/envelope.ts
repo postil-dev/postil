@@ -40,6 +40,24 @@ export const findingSchema = z.object({
   body: z.string(),
 });
 
+export const suppressionReasonSchema = z.enum([
+  "ignored",
+  "belowSeverity",
+  "belowConfidence",
+  "maxFindings",
+]);
+
+export const suppressedFindingSchema = z.object({
+  finding: findingSchema,
+  reason: suppressionReasonSchema,
+});
+
+export const modelIncidentSchema = z.object({
+  phase: z.enum(["review", "scorer"]),
+  category: z.enum(["providerError", "invalidOutput", "timeout", "deadline"]),
+  recovered: z.boolean(),
+  recovery: z.enum(["repair", "fallback"]).optional(),
+});
 export const envelopeSchema = z
   .object({
     version: z.literal(1),
@@ -47,6 +65,9 @@ export const envelopeSchema = z
     silent: z.boolean(),
     findings: z.array(findingSchema),
     resolved: z.array(findingSchema),
+    // CLI >= v0.5.1 retains policy-suppressed details for the authenticated run
+    // page. Older envelopes expose only counts.suppressed.
+    suppressedFindings: z.array(suppressedFindingSchema).optional(),
     counts: z.object({
       info: z.number().int().nonnegative(),
       warn: z.number().int().nonnegative(),
@@ -86,6 +107,9 @@ export const envelopeSchema = z
         }),
       )
       .optional(),
+    // CLI >= v0.5.1 emits safe structured degradation signals. Raw provider
+    // responses and generated content never enter this monitoring field.
+    modelIncidents: z.array(modelIncidentSchema).optional(),
     usageAccountingComplete: z.boolean().optional(),
     // Engine wall-clock duration in milliseconds (0 when emitted by older CLIs).
     durationMs: z.number().int().nonnegative().optional().default(0),
@@ -128,12 +152,65 @@ export const envelopeSchema = z
         message: `duplicate finding id also used at findings.${firstIndex}.id`,
       });
     });
+    envelope.modelIncidents?.forEach((incident, index) => {
+      if (incident.recovered === Boolean(incident.recovery)) return;
+      ctx.addIssue({
+        code: "custom",
+        path: ["modelIncidents", index, "recovery"],
+        message: "recovery must be present exactly when the incident recovered",
+      });
+    });
   });
 
 export type Severity = z.infer<typeof severitySchema>;
 export type FindingKind = z.infer<typeof findingKindSchema>;
 export type Finding = z.infer<typeof findingSchema>;
+export type SuppressionReason = z.infer<typeof suppressionReasonSchema>;
+export type SuppressedFinding = z.infer<typeof suppressedFindingSchema>;
+export type ModelIncident = z.infer<typeof modelIncidentSchema>;
 export type Envelope = z.infer<typeof envelopeSchema>;
+
+export const LEGACY_COMBINED_USAGE_NOTICE =
+  "This run records one token total that may combine reviewer and independent-check calls. Its older envelope cannot split usage by model.";
+
+/** Older envelopes aggregate scorer tokens under the reviewer model. */
+export function hasLegacyCombinedModelUsage(envelope: Envelope): boolean {
+  return (
+    envelope.modelUsage === undefined &&
+    Boolean(envelope.scorerModel || envelope.scorerError?.trim())
+  );
+}
+
+export type OperationalModelIncidentCategory = ModelIncident["category"] | "operational";
+export type OperationalModelIncidentSource =
+  | "model_incident"
+  | "provider_sentinel"
+  | "model_output_sentinel"
+  | "operational_sentinel";
+
+export type OperationalModelIncidentClassification =
+  | (ModelIncident & { source: "model_incident" })
+  | {
+      phase: "review";
+      category: "providerError";
+      recovered: false;
+      source: "provider_sentinel";
+      recovery?: never;
+    }
+  | {
+      phase: "review";
+      category: "invalidOutput";
+      recovered: false;
+      source: "model_output_sentinel";
+      recovery?: never;
+    }
+  | {
+      phase: "review";
+      category: "operational";
+      recovered: false;
+      source: "operational_sentinel";
+      recovery?: never;
+    };
 
 const SEVERITY_RANK: Record<Severity, number> = { error: 0, warn: 1, info: 2 };
 
@@ -212,6 +289,75 @@ export function ingestEnvelope(raw: string): IngestedEnvelope {
     modelUsage: envelope.modelUsage ?? null,
     usageAccountingComplete: envelope.usageAccountingComplete === true,
   };
+}
+
+/**
+ * Reduce typed incidents and exact CLI sentinel paths to a fixed monitoring
+ * vocabulary. Finding text and non-sentinel paths never leave this function.
+ */
+export function classifyOperationalModelIncidents(
+  envelope: Pick<Envelope, "findings" | "modelIncidents">,
+): OperationalModelIncidentClassification[] {
+  const classifications: OperationalModelIncidentClassification[] =
+    envelope.modelIncidents?.map((incident) => ({
+      ...incident,
+      source: "model_incident" as const,
+    })) ?? [];
+  const seen = new Set(classifications.map(modelIncidentClassificationKey));
+
+  for (const finding of envelope.findings) {
+    const classification = sentinelModelIncidentClassification(finding.path);
+    if (!classification) continue;
+    const key = modelIncidentClassificationKey(classification);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    classifications.push(classification);
+  }
+  return classifications;
+}
+
+function sentinelModelIncidentClassification(
+  path: string,
+): OperationalModelIncidentClassification | undefined {
+  if (path === ".postil/provider") {
+    return {
+      phase: "review",
+      category: "providerError",
+      recovered: false,
+      source: "provider_sentinel",
+    };
+  }
+  if (path === ".postil/model-output") {
+    return {
+      phase: "review",
+      category: "invalidOutput",
+      recovered: false,
+      source: "model_output_sentinel",
+    };
+  }
+  if (path === ".postil/operational") {
+    return {
+      phase: "review",
+      category: "operational",
+      recovered: false,
+      source: "operational_sentinel",
+    };
+  }
+  return undefined;
+}
+
+function modelIncidentClassificationKey(
+  incident: Pick<
+    OperationalModelIncidentClassification,
+    "phase" | "category" | "recovered" | "recovery"
+  >,
+): string {
+  return [
+    incident.phase,
+    incident.category,
+    incident.recovered ? "recovered" : "unrecovered",
+    incident.recovery ?? "none",
+  ].join(":");
 }
 
 export function severityBlocksGate(severity: Severity, failOn: Severity): boolean {

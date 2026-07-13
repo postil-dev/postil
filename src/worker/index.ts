@@ -7,6 +7,11 @@ import { optionalEnv, validateEnv } from "@/lib/env";
 import { claimJob } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
+import {
+  reportOperationalFailure,
+  reportOperationalState,
+  shutdownServerObservability,
+} from "@/lib/server-observability";
 import { PROCESSABLE_JOB_KINDS, readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
@@ -119,13 +124,14 @@ async function main(): Promise<void> {
   console.log(
     `postil worker ${workerId} started (concurrency ${CONCURRENCY}, idle poll max ${IDLE_POLL_MAX_MS}ms, watchdog ${WATCHDOG_INTERVAL_MS}ms)`,
   );
+  reportOperationalState("worker", "worker_started");
 
   const shutdown = (signal: string) => {
     console.log(`received ${signal}, draining...`);
     shuttingDown = true;
     // Give in-flight jobs a moment, then close.
     setTimeout(async () => {
-      await closeDb().catch(() => undefined);
+      await Promise.allSettled([closeDb(), shutdownServerObservability("worker")]);
       process.exit(0);
     }, 5000);
   };
@@ -137,9 +143,11 @@ async function main(): Promise<void> {
   await Promise.all(loops);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   // Boot failures (e.g. a malformed DATABASE_URL surfacing from getPool) can
   // embed credentials in the error; redact before it hits platform logs.
+  reportOperationalFailure("worker", "worker_boot_failed", err);
   console.error(redactSecrets(err));
+  await shutdownServerObservability("worker");
   process.exit(1);
 });

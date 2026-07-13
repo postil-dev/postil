@@ -10,6 +10,7 @@ import {
   claimJob as claimJobWithCapabilities,
   completeJob,
   enqueueJob,
+  enqueueReviewJobOnce,
   failJob,
   queueDepth,
   retryJobIndefinitely,
@@ -329,6 +330,34 @@ describeDb("postgres job queue", () => {
     expect(a?.id).not.toBe(b?.id);
   });
 
+  test("concurrent review enqueue creates one active job per repository PR head", async () => {
+    const payload = {
+      installationId: 1,
+      repoFullName: "octo/repo",
+      prNumber: 42,
+      headSha: "a".repeat(40),
+      baseSha: "b".repeat(40),
+    };
+    const results = await Promise.all(
+      Array.from({ length: 12 }, () => enqueueReviewJobOnce(pool, payload)),
+    );
+
+    expect(results.filter((id) => id !== null)).toHaveLength(1);
+    const active = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM jobs
+        WHERE kind = 'review' AND status IN ('queued', 'running')
+          AND payload->>'repoFullName' = $1
+          AND payload->>'prNumber' = $2
+          AND payload->>'headSha' = $3`,
+      [payload.repoFullName, String(payload.prNumber), payload.headSha],
+    );
+    expect(Number(active.rows[0]?.count)).toBe(1);
+
+    await pool.query("UPDATE jobs SET status = 'done' WHERE kind = 'review'");
+    expect(await enqueueReviewJobOnce(pool, payload)).not.toBeNull();
+  });
+
   test("jobs scheduled in the future are not claimed", async () => {
     await enqueueJob(pool, "review", { n: 1 }, { runAfter: new Date(Date.now() + 60_000) });
     expect(await claimJob(pool, "w")).toBeNull();
@@ -353,10 +382,14 @@ describeDb("postgres job queue", () => {
 
     const secondTry = await claimJob(pool, "w");
     expect(secondTry?.attempts).toBe(2);
+    const failedAfter = new Date();
     expect(await failJob(pool, secondTry!, "boom 2")).toBe("failed");
 
-    row = await pool.query("SELECT status FROM jobs");
+    row = await pool.query("SELECT status, run_after FROM jobs");
     expect(row.rows[0].status).toBe("failed");
+    expect(new Date(row.rows[0].run_after).getTime()).toBeGreaterThanOrEqual(
+      failedAfter.getTime(),
+    );
     expect(await claimJob(pool, "w")).toBeNull();
   });
 

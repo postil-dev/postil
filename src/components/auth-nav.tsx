@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import {
+  installNavigationAction,
   MobileNav,
-  shouldShowInstallApp,
   type NavItem,
 } from "@/components/mobile-nav";
 
@@ -52,6 +52,8 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
     };
   }, []);
 
+  const installAction = installNavigationAction(session);
+
   return (
     <>
       <div className="hidden shrink-0 items-center justify-end gap-5 whitespace-nowrap lg:flex lg:w-40">
@@ -81,12 +83,14 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
           </>
         )}
       </div>
-      {shouldShowInstallApp(session) && (
+      {installAction && (
         <Link
           href="/install"
-          className="btn-primary hidden whitespace-nowrap text-sm sm:inline-block"
+          className={`${
+            installAction.variant === "primary" ? "btn-primary" : "btn-secondary"
+          } hidden whitespace-nowrap text-sm sm:inline-block`}
         >
-          Install the App
+          {installAction.label}
         </Link>
       )}
       <MobileNav items={items} session={session} />

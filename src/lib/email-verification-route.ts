@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
 
-import { publicOrigin } from "@/lib/oauth";
-
 export function verificationConfirmationPage(
   request: Request,
   opts: { action: string; heading: string; description: string },
@@ -35,31 +33,33 @@ export function verificationConfirmationPage(
 </html>`;
   return new NextResponse(html, {
     status: validInput ? 200 : 400,
-    headers: {
-      "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-      "content-type": "text/html; charset=utf-8",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
-    },
+    headers: verificationPageHeaders(),
   });
 }
 
-export function isSameOriginVerificationPost(request: Request): boolean {
-  const expectedOrigin = publicOrigin(request);
-  const origin = request.headers.get("origin");
-  if (origin) return origin === expectedOrigin;
-
-  const referer = request.headers.get("referer");
-  if (referer) {
-    try {
-      return new URL(referer).origin === expectedOrigin;
-    } catch {
-      return false;
-    }
-  }
-
-  return request.headers.get("sec-fetch-site") === "same-origin";
+export function verificationResultPage(): NextResponse {
+  const heading = "Verification request processed";
+  const description = "Open Postil to view the billing email status or request a new verification link.";
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>${heading} · Postil</title>
+  </head>
+  <body>
+    <main>
+      <h1>${heading}</h1>
+      <p>${description}</p>
+      <p><a href="/reports">Open Postil</a></p>
+    </main>
+  </body>
+</html>`;
+  return new NextResponse(html, {
+    status: 200,
+    headers: verificationPageHeaders(),
+  });
 }
 
 export async function verificationFormValues(
@@ -89,4 +89,15 @@ function escapeHtml(value: string): string {
     };
     return entities[character] ?? character;
   });
+}
+
+function verificationPageHeaders(): Record<string, string> {
+  return {
+    "cache-control": "no-store",
+    "content-security-policy": "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "content-type": "text/html; charset=utf-8",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-robots-tag": "noindex, nofollow",
+  };
 }

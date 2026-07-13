@@ -163,6 +163,7 @@ jobs:
           flyctl deploy \
             --remote-only \
             --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
+            --build-arg POSTIL_RELEASE_SHA="${GITHUB_SHA}" \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

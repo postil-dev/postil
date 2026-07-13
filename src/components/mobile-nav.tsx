@@ -13,10 +13,18 @@ export interface AuthSession {
   hasActiveInstallation: boolean;
 }
 
-export function shouldShowInstallApp(
+export interface InstallNavigationAction {
+  label: "Install the App" | "Add account";
+  variant: "primary" | "secondary";
+}
+
+export function installNavigationAction(
   session: AuthSession | null | undefined,
-): boolean {
-  return session !== undefined && !session?.hasActiveInstallation;
+): InstallNavigationAction | null {
+  if (session === undefined) return null;
+  return session?.hasActiveInstallation
+    ? { label: "Add account", variant: "secondary" }
+    : { label: "Install the App", variant: "primary" };
 }
 
 /**
@@ -31,6 +39,7 @@ export function MobileNav({
   items: readonly NavItem[];
   session: AuthSession | null | undefined;
 }) {
+  const installAction = installNavigationAction(session);
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -154,13 +163,15 @@ export function MobileNav({
                   </form>
                 </>
               )}
-              {shouldShowInstallApp(session) && (
+              {installAction && (
                 <Link
                   href="/install"
                   onClick={() => setOpen(false)}
-                  className="btn-primary flex-1 text-center text-sm"
+                  className={`${
+                    installAction.variant === "primary" ? "btn-primary" : "btn-secondary"
+                  } flex-1 text-center text-sm`}
                 >
-                  Install the App
+                  {installAction.label}
                 </Link>
               )}
             </div>

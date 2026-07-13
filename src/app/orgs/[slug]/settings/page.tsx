@@ -15,6 +15,7 @@ import { deriveRepoHealth, getRepoHealthRows, type RepoHealth } from "@/lib/repo
 import { formatRelativeTime } from "@/lib/time";
 import {
   isVisibleConfigArtifact,
+  ownerConfigRepositoryFullName,
   resolveConfigArtifacts,
   type VisibleConfigArtifact,
 } from "../config-resolution";
@@ -50,6 +51,7 @@ export default async function OrgSettingsPage({
         configYaml: schema.orgSettings.configYaml,
         guardrailsMd: schema.orgSettings.guardrailsMd,
         contentPolicyMd: schema.orgSettings.contentPolicyMd,
+        sharedConfigEnabled: schema.orgSettings.sharedConfigEnabled,
         hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
         hasAdditionalAuth: sql<boolean>`${schema.orgSettings.apiAuthHeaderCiphertext} IS NOT NULL AND ${schema.orgSettings.apiAuthValueCiphertext} IS NOT NULL`,
       })
@@ -57,11 +59,34 @@ export default async function OrgSettingsPage({
       .where(eq(schema.orgSettings.orgId, org.id))
       .limit(1)
   )[0];
+  const sharedSnapshot = (
+    await db
+      .select({
+        sourceFullName: schema.orgConfigSnapshots.sourceFullName,
+        visibility: schema.orgConfigSnapshots.visibility,
+        defaultBranch: schema.orgConfigSnapshots.defaultBranch,
+        commitSha: schema.orgConfigSnapshots.commitSha,
+        files: schema.orgConfigSnapshots.files,
+        stale: schema.orgConfigSnapshots.stale,
+        lastError: schema.orgConfigSnapshots.lastError,
+      })
+      .from(schema.orgConfigSnapshots)
+      .where(eq(schema.orgConfigSnapshots.orgId, org.id))
+      .limit(1)
+  )[0];
   const entitlement = (
     await db
       .select({ subscriptionMode: schema.organizationEntitlements.subscriptionMode })
       .from(schema.organizationEntitlements)
       .where(eq(schema.organizationEntitlements.orgId, org.id))
+      .limit(1)
+  )[0];
+  const installationAccount = (
+    await db
+      .select({ accountLogin: schema.installations.accountLogin })
+      .from(schema.installations)
+      .where(eq(schema.installations.orgId, org.id))
+      .orderBy(schema.installations.id)
       .limit(1)
   )[0];
 
@@ -72,6 +97,7 @@ export default async function OrgSettingsPage({
       enabled: schema.repositories.enabled,
       private: schema.repositories.private,
       githubInstallationId: schema.installations.githubInstallationId,
+      accountLogin: schema.installations.accountLogin,
     })
     .from(schema.repositories)
     .innerJoin(
@@ -108,6 +134,9 @@ export default async function OrgSettingsPage({
     settings?.guardrailsMd ? "org:.postil/guardrails.md" : null,
     settings?.contentPolicyMd ? "org:.postil/content-policy.md" : null,
   ].filter((file): file is string => file !== null);
+  const liveSharedConfigFiles = settings?.sharedConfigEnabled === false
+    ? []
+    : (sharedSnapshot?.files ?? []).map((file) => `shared:${file}`);
 
   const latestRepoReviews = await db
     .selectDistinctOn([schema.reviews.repositoryId], {
@@ -139,6 +168,7 @@ export default async function OrgSettingsPage({
         latestReview?.configFiles,
         probe,
         liveOrgConfigFiles,
+        liveSharedConfigFiles,
       ).filter(isVisibleConfigArtifact);
       const healthRow = healthByRepositoryId.get(repo.id);
       const health = healthRow ? deriveRepoHealth(healthRow, now) : null;
@@ -156,6 +186,12 @@ export default async function OrgSettingsPage({
   const privateAccess = rawPrivateAccess
     ? requireMatchingProviderMode(rawPrivateAccess, settings?.hasKey ?? false)
     : null;
+  const sharedSourceFullName = ownerConfigRepositoryFullName(
+    installationAccount?.accountLogin ?? org.slug,
+  );
+  const sharedSourceInstalled = repos.some(
+    (repo) => repo.fullName.toLowerCase() === sharedSourceFullName.toLowerCase(),
+  );
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -194,6 +230,9 @@ export default async function OrgSettingsPage({
           <SettingsForm
             slug={org.slug}
             settings={settings}
+            sharedSnapshot={sharedSnapshot}
+            sharedSourceFullName={sharedSnapshot?.sourceFullName ?? sharedSourceFullName}
+            sharedSourceInstalled={sharedSourceInstalled}
             billedMode={
               entitlement?.subscriptionMode === "hosted" ||
               entitlement?.subscriptionMode === "byok"
@@ -337,7 +376,10 @@ function relative(value: Date, now: Date): string {
 }
 
 function configArtifactLabel(artifact: VisibleConfigArtifact): string {
-  if (artifact.state === "active") return artifact.liveSource === "repository" ? "repo" : "org";
+  if (artifact.state === "active") {
+    if (artifact.recordedSource === "shared") return "shared";
+    return artifact.liveSource === "repository" ? "repo" : "org";
+  }
   return artifact.state;
 }
 
@@ -353,15 +395,20 @@ function configArtifactClass(artifact: VisibleConfigArtifact): string {
 
 function configArtifactDescription(artifact: VisibleConfigArtifact): string {
   if (artifact.state === "active") {
-    return artifact.liveSource === "repository"
-      ? `Repository supplies ${artifact.file}; the latest review used repository config.`
+    if (artifact.liveSource === "repository") {
+      return `Repository supplies ${artifact.file}; the latest review used repository config.`;
+    }
+    return artifact.liveSource === "shared"
+      ? `Shared owner configuration supplies ${artifact.file}; the latest review used it.`
       : `Hosted organization ${artifact.file} is active; the latest review used it.`;
   }
   if (artifact.state === "pending") {
     const source =
       artifact.liveSource === "repository"
         ? `Repository ${artifact.file}`
-        : `Hosted organization ${artifact.file}`;
+        : artifact.liveSource === "shared"
+          ? `Shared owner configuration ${artifact.file}`
+          : `Hosted organization ${artifact.file}`;
     return `${source} is set up but not yet exercised. It takes effect on the next review.`;
   }
   if (artifact.state === "removed") {

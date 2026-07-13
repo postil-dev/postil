@@ -10,6 +10,7 @@ import {
   ADVISORY_CHECK_NAME,
   GATE_CHECK_NAME,
   getPullRequestHeadSha,
+  getPullRequestReviewContext,
   postIssueComment,
 } from "@/lib/github/checks";
 import {
@@ -31,9 +32,18 @@ import {
   type ApprovalActor,
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
-import { mentionsPostil, parsePostilApproveCommand } from "@/lib/mentions";
+import {
+  isPostilReviewCommand,
+  mentionsPostil,
+  parsePostilApproveCommand,
+} from "@/lib/mentions";
 import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
-import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
+import {
+  enqueueJob,
+  enqueueReviewJobOnce,
+  type RespondJobPayload,
+  type ReviewJobPayload,
+} from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import {
   recordRepositoryEnablementEvent,
@@ -278,7 +288,19 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
       // revoked the moment it is uninstalled, so there is no way to complete
       // those check-runs from here; just delete.
       await db.transaction(async (tx) => {
+        const existing = (
+          await tx
+            .select({ orgId: schema.installations.orgId })
+            .from(schema.installations)
+            .where(eq(schema.installations.githubInstallationId, installation.id))
+            .limit(1)
+        )[0];
         await recordEnabledRepositoryRemovals(tx, installation.id, "github_uninstall");
+        if (existing?.orgId !== null && existing?.orgId !== undefined) {
+          await tx
+            .delete(schema.orgConfigSnapshots)
+            .where(eq(schema.orgConfigSnapshots.orgId, existing.orgId));
+        }
         await tx
           .delete(schema.installations)
           .where(eq(schema.installations.githubInstallationId, installation.id));
@@ -334,6 +356,14 @@ async function handleInstallationRepositories(
         "github_installation",
         removed.map((repo) => repo.id),
       );
+      await tx
+        .delete(schema.orgConfigSnapshots)
+        .where(
+          inArray(
+            schema.orgConfigSnapshots.sourceGithubRepoId,
+            removed.map((repo) => repo.id),
+          ),
+        );
       for (const repo of removed) {
         await tx
           .delete(schema.repositories)
@@ -502,46 +532,19 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
 }
 
 /**
- * True when a review job for this exact repo+PR+head is already queued or
- * running. Guards the check_run/check_suite rerequest path: unlike
- * pull_request (one delivery per push), GitHub can send a rerequested event
- * per check-run, and a maintainer can also click "Re-run" more than once
- * before the first attempt starts, so the delivery-id dedupe alone is not
- * enough here. Cheap count against the existing jobs table, same pattern as
- * respondRateLimited above; no new table or state.
- */
-async function reviewJobInFlight(
-  repoFullName: string,
-  prNumber: number,
-  headSha: string,
-): Promise<boolean> {
-  const res = await getPool().query<{ count: string }>(
-    `SELECT count(*)::text AS count
-       FROM jobs
-      WHERE kind = 'review'
-        AND status IN ('queued', 'running')
-        AND payload->>'repoFullName' = $1
-        AND (payload->>'prNumber')::int = $2
-        AND payload->>'headSha' = $3`,
-    [repoFullName, prNumber, headSha],
-  );
-  return Number(res.rows[0]?.count ?? 0) > 0;
-}
-
-/**
  * Resolve the enabled, non-suspended installation for `installationId` and
  * enqueue a review job for it. Shared by pull_request and the
  * check_run/check_suite rerequest handlers so both go through the same
  * installation/repo-enabled gate and enqueue semantics.
  */
 async function enqueueReviewJob(job: ReviewJobPayload): Promise<void> {
-  if (await reviewJobInFlight(job.repoFullName, job.prNumber, job.headSha)) {
+  const id = await enqueueReviewJobOnce(getPool(), job);
+  if (id === null) {
     console.log(
       `review job skipped: ${job.repoFullName}#${job.prNumber}@${job.headSha} already queued or running`,
     );
     return;
   }
-  await enqueueJob(getPool(), "review", job);
   triggerQueueDrain("review");
 }
 
@@ -776,6 +779,20 @@ async function handleIssueComment(payload: CommentEventPayload): Promise<void> {
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
   if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
+  if (isPostilReviewCommand(body)) {
+    if (payload.issue.pull_request != null) {
+      await enqueueMentionReview(payload, payload.issue.number);
+    } else {
+      const token = await getInstallationToken(payload.installation!.id);
+      await postIssueComment(
+        token,
+        payload.repository.full_name,
+        payload.issue.number,
+        "Review commands only work on pull requests.",
+      );
+    }
+    return;
+  }
   await enqueueRespond({
     installationId: payload.installation!.id,
     repoFullName: payload.repository.full_name,
@@ -796,6 +813,10 @@ async function handleReviewComment(payload: CommentEventPayload): Promise<void> 
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
   if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
+  if (isPostilReviewCommand(body)) {
+    await enqueueMentionReview(payload, payload.pull_request.number);
+    return;
+  }
   // Review comments anchor to a file/line; without it the bot answers blind
   // to which code the question is about.
   const anchor =
@@ -810,6 +831,30 @@ async function handleReviewComment(payload: CommentEventPayload): Promise<void> 
     isPr: true,
     comment: body!,
     commentAnchor: anchor,
+  });
+}
+
+async function enqueueMentionReview(
+  payload: CommentEventPayload,
+  prNumber: number,
+): Promise<void> {
+  const installationId = payload.installation?.id;
+  const repo = payload.repository;
+  if (!installationId || !repo) return;
+  const token = await getInstallationToken(installationId);
+  const context = await getPullRequestReviewContext(token, repo.full_name, prNumber);
+  if (context.draft) return;
+  await enqueueReviewJob({
+    installationId,
+    repoFullName: repo.full_name,
+    repositoryPrivate: repo.private,
+    prNumber,
+    ...(context.authorGithubId !== undefined
+      ? { authorGithubId: context.authorGithubId }
+      : {}),
+    ...(context.authorLogin ? { authorLogin: context.authorLogin } : {}),
+    headSha: context.headSha,
+    baseSha: context.baseSha,
   });
 }
 
@@ -921,9 +966,10 @@ async function handleApproveCommand(payload: CommentEventPayload): Promise<boole
       );
       return true;
     }
+    console.error(`approval command failed: ${redactSecrets(err)}`);
     await replyToApprovalCommand(
       payload,
-      `Approval rejected: ${err instanceof Error ? err.message : "approval state could not be updated"}.`,
+      "Approval could not be recorded. Try again or open the Postil run for details.",
     );
     return true;
   }

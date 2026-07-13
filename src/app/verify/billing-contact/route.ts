@@ -3,13 +3,17 @@ import { NextResponse } from "next/server";
 import { verifyBillingContactToken } from "@/lib/billing-contact-verification";
 import { getDb } from "@/lib/db";
 import {
-  isSameOriginVerificationPost,
   verificationConfirmationPage,
   verificationFormValues,
+  verificationResultPage,
 } from "@/lib/email-verification-route";
 import { publicOrigin } from "@/lib/oauth";
 
 export async function GET(request: Request): Promise<NextResponse> {
+  const result = new URL(request.url).searchParams.get("result");
+  if (result === "processed") {
+    return verificationResultPage();
+  }
   return verificationConfirmationPage(request, {
     action: "/verify/billing-contact",
     heading: "Confirm billing email",
@@ -18,15 +22,14 @@ export async function GET(request: Request): Promise<NextResponse> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  if (!isSameOriginVerificationPost(request)) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
+  // The sealed, expiring, one-time token is the authority for this public
+  // action. It is bound to the organization and normalized email, so browser
+  // session cookies and optional Origin/Referer headers are neither required
+  // nor trusted as a substitute.
   const values = await verificationFormValues(request);
-  const result = values
-    ? await verifyBillingContactToken(getDb(), values.orgId, values.token)
-    : { verified: false, slug: null };
-  const destination = result.slug
-    ? `/orgs/${encodeURIComponent(result.slug)}/billing?contactVerification=${result.verified ? "success" : "invalid"}`
-    : "/";
+  if (values) {
+    await verifyBillingContactToken(getDb(), values.orgId, values.token);
+  }
+  const destination = "/verify/billing-contact?result=processed";
   return NextResponse.redirect(new URL(destination, publicOrigin(request)), 303);
 }

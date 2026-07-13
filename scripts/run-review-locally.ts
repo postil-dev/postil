@@ -13,7 +13,7 @@
  * to that localhost server for both the worker and the spawned CLI, so this
  * harness never posts a real GitHub comment, check-run, or review.
  *
- * POSTIL_BIN, when set, must be an absolute executable Postil v0.5.x path. The
+ * POSTIL_BIN, when set, must be an absolute executable Postil v0.6.0+ path. The
  * harness resolves and validates it before loading a model credential.
  */
 import { generateKeyPairSync, randomBytes } from "node:crypto";
@@ -385,7 +385,7 @@ function createLocalGitHubServer(input: {
         }
         return json({
           title: "Local Postil review",
-          body: "Synthetic pull request served by scripts/run-review-locally.ts.",
+          body: "",
           head: { sha: input.headSha },
           base: { sha: input.baseSha },
         });
@@ -851,9 +851,13 @@ async function ensureLocalModelCredential(): Promise<void> {
   delete process.env.POSTIL_ALLOW_CONFIG_API_BASE;
   process.env.POSTIL_API_BASE = "https://openrouter.ai/api/v1";
   process.env.POSTIL_API_FORMAT = "openai-compatible";
-  process.env.REVIEW_MODEL = "mistralai/mistral-small-3.2-24b-instruct";
-  process.env.REVIEW_MODEL_CASCADE = "google/gemma-3-27b-it";
-  process.env.REVIEW_SCORER_MODEL = "anthropic/claude-haiku-4.5";
+  process.env.POSTIL_HOSTED_MODE = "1";
+  process.env.REVIEW_MODEL = "openai/gpt-5-mini";
+  // The CLI deduplicates the model chain. Repeating the primary model yields
+  // one attempt, while an empty cascade variable would retain built-in defaults.
+  process.env.REVIEW_MODEL_CASCADE = "openai/gpt-5-mini";
+  process.env.POSTIL_DISABLE_SCORER = "1";
+  delete process.env.REVIEW_SCORER_MODEL;
 }
 
 async function ensureTrustedPostilExecutable(): Promise<void> {
@@ -904,9 +908,14 @@ async function ensureTrustedPostilExecutable(): Promise<void> {
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (exitCode !== 0 || !/^postil 0\.5\./m.test(stdout.trim())) {
+  const versionMatch = /^postil (\d+)\.(\d+)\.(\d+)(?:\+[^\s]+)?$/m.exec(stdout.trim());
+  const supported =
+    exitCode === 0 &&
+    versionMatch !== null &&
+    (Number(versionMatch[1]) > 0 || Number(versionMatch[2]) >= 6);
+  if (!supported) {
     throw new Error(
-      `local review requires Postil v0.5.x; ${executable} reported ${JSON.stringify((stdout || stderr).trim())}`,
+      `local review requires Postil v0.6.0 or newer; ${executable} reported ${JSON.stringify((stdout || stderr).trim())}`,
     );
   }
   process.env.POSTIL_BIN = executable;

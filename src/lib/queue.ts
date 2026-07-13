@@ -59,6 +59,10 @@ export interface RespondDeliveryJobPayload extends Record<string, unknown> {
   respondJobId: number;
 }
 
+export interface RespondFailureCommentJobPayload extends RespondJobPayload {
+  respondJobId: number;
+}
+
 export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   installationId: number;
   repoFullName: string;
@@ -82,6 +86,36 @@ export async function enqueueJob(
   const row = result.rows[0];
   if (!row) throw new Error("job insert returned no row");
   return Number(row.id);
+}
+
+/** Atomically enqueue one active review for an exact repository, PR, and head. */
+export async function enqueueReviewJobOnce(
+  pool: Pool,
+  payload: ReviewJobPayload,
+): Promise<number | null> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const identity = [payload.repoFullName, String(payload.prNumber), payload.headSha].join(
+      "\u001f",
+    );
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `postil:active-review:${identity}`,
+    ]);
+    const result = await client.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       VALUES ('review', $1, 'queued', now(), 3)
+       RETURNING id`,
+      [JSON.stringify(payload)],
+    );
+    await client.query("COMMIT");
+    return result.rows[0] ? Number(result.rows[0].id) : null;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function claimJob(
@@ -217,7 +251,8 @@ export async function failJob(
   // effect (e.g. posting a user-facing failure comment).
   const res = await pool.query(
     `UPDATE jobs
-     SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2
+     SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2,
+         run_after = now()
      WHERE id = $1 AND status = 'running' AND locked_by = $3`,
     [job.id, redactedError, job.lockedBy],
   );

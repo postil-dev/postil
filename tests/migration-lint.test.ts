@@ -173,6 +173,27 @@ describe("migration lint", () => {
     expect(migration).not.toContain('UPDATE "reviews" SET "engine_gate_failing" = "gate_failing"');
   });
 
+  test("review job dedupe migration serializes queued and running work", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0023_atomic_review_job_dedupe.sql"),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE FUNCTION "suppress_duplicate_active_review_job"');
+    expect(migration).toContain("pg_advisory_xact_lock");
+    expect(migration).toContain("\"payload\"->>'repoFullName'");
+    expect(migration).toContain("\"payload\"->>'prNumber'");
+    expect(migration).toContain("\"payload\"->>'headSha'");
+    expect(migration).toContain("\"kind\" = 'review'");
+    expect(migration).toContain("\"status\" IN ('queued', 'running')");
+    expect(migration).toContain('CREATE TRIGGER "jobs_suppress_duplicate_active_review_trigger"');
+    expect(migration).toContain('BEFORE INSERT OR UPDATE OF "kind", "payload", "status"');
+    expect(migration).toContain("row_number() OVER");
+    expect(migration).toContain("duplicate_position > 1");
+    expect(migration).toContain("SET \"status\" = 'failed'");
+    expect(migration).not.toContain("CREATE UNIQUE INDEX");
+  });
+
   test("BYOK provider migration preserves legacy rows and constrains new fields", async () => {
     const migration = await readFile(
       join(import.meta.dir, "..", "drizzle", "0014_byok_provider_settings.sql"),

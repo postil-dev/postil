@@ -19,7 +19,10 @@ import {
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
-import { ingestEnvelope } from "@/lib/envelope";
+import {
+  classifyOperationalModelIncidents,
+  ingestEnvelope,
+} from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
@@ -31,8 +34,16 @@ import {
 import {
   materializeOrgConfig,
   materializeRepoConfig,
+  materializeSharedConfig,
+  buildConfigProvenance,
+  missingRepositoryConfigSlots,
+  type ConfigProvenanceEntry,
   type OrgReviewConfig,
 } from "@/lib/github/contents";
+import {
+  createOwnerConfigStore,
+  resolveOwnerGithubConfig,
+} from "@/lib/github/owner-config";
 import { configuredPublicOrigin } from "@/lib/oauth";
 import {
   releaseHostedReviewSpend,
@@ -42,6 +53,12 @@ import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { persistReviewCompletion } from "@/lib/review-completion";
+import { discoverPreventionCommands } from "@/lib/review-guidance";
+import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
+import {
+  reportOperationalModelIncident,
+  type ObservabilityProcessGroup,
+} from "@/lib/server-observability";
 
 export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
 // Match postil-cli's hosted profile: a normal slow review gets up to seven
@@ -73,10 +90,18 @@ export function buildCliEnv(
     ...baseEnv,
     POSTIL_API_BASE: llm.apiBase,
     POSTIL_API_FORMAT: llm.apiFormat,
+    // Hosted inference always uses the roster baked into the pinned CLI.
+    // Repository model settings are accepted only when the organization has
+    // supplied its own provider credentials.
+    POSTIL_HOSTED_MODE: llm.byok ? "0" : "1",
     // Always shadow process.env. A BYOK endpoint without additional auth must
     // never inherit the hosted gateway credential when runCli merges envs.
     POSTIL_ENDPOINT_AUTH_HEADER: llm.apiAuthHeader ?? "",
     POSTIL_ENDPOINT_AUTH_VALUE: llm.apiAuthValue ?? "",
+    // This is per-review policy, never a deployment-wide toggle inherited by
+    // every child process.
+    POSTIL_PREVENTION_HINT: baseEnv.POSTIL_PREVENTION_HINT === "1" ? "1" : "0",
+    POSTIL_PREVENTION_COMMANDS_JSON: baseEnv.POSTIL_PREVENTION_COMMANDS_JSON ?? "[]",
     POSTIL_LLM_REQUEST_TIMEOUT_SECS: optionalEnv(
       "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
       HOSTED_LLM_REQUEST_TIMEOUT_SECS,
@@ -182,6 +207,19 @@ export async function resolveOrgReviewConfig(
   return row ? { ...row, configYaml: withoutOrgModelConfig(row.configYaml) } : null;
 }
 
+/** Shared owner config defaults on even when the organization has no settings row. */
+export async function resolveSharedConfigEnabled(orgId: number | null): Promise<boolean> {
+  if (orgId == null) return false;
+  const row = (
+    await getDb()
+      .select({ enabled: schema.orgSettings.sharedConfigEnabled })
+      .from(schema.orgSettings)
+      .where(eq(schema.orgSettings.orgId, orgId))
+      .limit(1)
+  )[0];
+  return row?.enabled ?? true;
+}
+
 interface CliResult {
   exitCode: number | null;
   stdout: string;
@@ -191,6 +229,91 @@ interface CliResult {
 
 interface CliObservers {
   onStderrLine?: (line: string) => void;
+}
+
+const POSTIL_CLI_VERSION_TIMEOUT_MS = 3_000;
+const POSTIL_CLI_VERSION_OUTPUT_MAX_BYTES = 256;
+const POSTIL_CLI_VERSION_PATTERN =
+  /^postil\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;
+const postilCliVersionCache = new Map<string, Promise<string>>();
+
+/** Probe the immutable worker binary without forwarding process credentials. */
+export function probePostilCliVersion(
+  executable: string,
+  timeoutMs = POSTIL_CLI_VERSION_TIMEOUT_MS,
+): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const safeEnvironment = (process.env.PATH
+      ? { PATH: process.env.PATH }
+      : {}) as NodeJS.ProcessEnv;
+    const child = spawn(executable, ["--version"], {
+      env: safeEnvironment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stdoutBytes = 0;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const reject = (message: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectPromise(new OperationalError(message));
+    };
+    const resolve = (version: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(version);
+    };
+
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(`postil CLI version probe timed out after ${timeoutMs}ms`);
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > POSTIL_CLI_VERSION_OUTPUT_MAX_BYTES) {
+        child.kill("SIGKILL");
+        reject("postil CLI version probe exceeded its output limit");
+        return;
+      }
+      stdout += chunk.toString();
+    });
+    child.stderr.resume();
+    child.on("error", () => {
+      reject("failed to start postil CLI version probe");
+    });
+    child.on("close", (exitCode) => {
+      if (settled) return;
+      if (exitCode !== 0) {
+        reject(`postil CLI version probe exited with code ${exitCode ?? "unknown"}`);
+        return;
+      }
+      const match = POSTIL_CLI_VERSION_PATTERN.exec(stdout.trim());
+      if (!match?.[1]) {
+        reject("postil CLI version probe returned unrecognized output");
+        return;
+      }
+      resolve(match[1]);
+    });
+  });
+}
+
+export async function postilCliVersionLogLine(): Promise<string> {
+  const executable = optionalEnv("POSTIL_BIN", "postil") as string;
+  let version = postilCliVersionCache.get(executable);
+  if (!version) {
+    // A broken or missing binary should not add the full probe timeout to every
+    // queued review. Cache the safe sentinel just like a successful version.
+    version = probePostilCliVersion(executable).catch(() => "unavailable");
+    postilCliVersionCache.set(executable, version);
+  }
+  return `postil CLI version ${await version}`;
 }
 
 const REVIEW_LOG_FLUSH_MS = 1_000;
@@ -333,6 +456,7 @@ export async function runReviewJob(
     queuedAt: new Date(),
     startedAt: new Date(),
   },
+  observabilityProcessGroup: ObservabilityProcessGroup = "worker",
 ): Promise<void> {
   const db = getDb();
 
@@ -342,6 +466,7 @@ export async function runReviewJob(
         id: schema.installations.id,
         orgId: schema.installations.orgId,
         orgSlug: schema.organizations.slug,
+        githubOrgId: schema.organizations.githubOrgId,
         suspended: schema.installations.suspended,
       })
       .from(schema.installations)
@@ -426,6 +551,14 @@ export async function runReviewJob(
       .orderBy(desc(schema.reviews.finishedAt))
       .limit(1)
   )[0];
+  const preventionHint = await shouldSendPreventionHint(
+    db,
+    repository.id,
+    payload.prNumber,
+  );
+  // Validate the configured origin before inserting a running review. A bad
+  // deployment setting must not create a row that only the watchdog can close.
+  const publicOrigin = configuredPublicOrigin();
 
   const inserted = await db
     .insert(schema.reviews)
@@ -445,6 +578,13 @@ export async function runReviewJob(
   const reviewId = inserted[0]?.id;
   const publicId = inserted[0]?.publicId;
   if (reviewId === undefined || !publicId) throw new Error("review insert returned no row");
+  const detailsUrl =
+    publicOrigin && installation.orgSlug
+      ? new URL(
+          `/orgs/${encodeURIComponent(installation.orgSlug)}/runs/${publicId}`,
+          publicOrigin,
+        ).toString()
+      : undefined;
 
   const reviewLog = new ReviewLogWriter(reviewId);
   reviewLog.line(
@@ -459,6 +599,7 @@ export async function runReviewJob(
   let hostedUsageReservationId: string | null = null;
 
   try {
+    reviewLog.line(await postilCliVersionLogLine());
     const spendReservation = currentRepository.private
       ? await reserveHostedReviewSpend(db, {
           orgId: installation.orgId,
@@ -555,9 +696,43 @@ export async function runReviewJob(
         `review ${reviewId}: using repo config from ${payload.repoFullName} (${repoConfigFiles.join(", ")})`,
       );
     }
+    let sharedConfigFiles: string[] = [];
+    let sharedProvenance: ConfigProvenanceEntry[] = [];
+    const missingSharedSlots = missingRepositoryConfigSlots(repoConfigFiles);
+    if (
+      missingSharedSlots.length > 0 &&
+      installation.orgId !== null &&
+      installation.githubOrgId !== null &&
+      await resolveSharedConfigEnabled(installation.orgId)
+    ) {
+      const owner = currentRepository.full_name.split("/", 1)[0];
+      if (owner) {
+        const shared = await resolveOwnerGithubConfig(createOwnerConfigStore(db), {
+          token,
+          orgId: installation.orgId,
+          githubOwnerId: installation.githubOrgId,
+          installationId: installation.id,
+          owner,
+          requiredSlots: missingSharedSlots,
+        });
+        sharedProvenance = shared.provenance;
+        sharedConfigFiles = await materializeSharedConfig(
+          workDir,
+          repoConfigFiles,
+          shared.config,
+          { allowModelSettings: llm.byok },
+        );
+        reviewLog.line(
+          `shared configuration ${shared.status}${shared.stale ? " (last known good snapshot)" : ""}`,
+        );
+      }
+    }
     const orgConfigFiles = await materializeOrgConfig(
       workDir,
-      repoConfigFiles,
+      [
+        ...repoConfigFiles,
+        ...sharedConfigFiles.map((file) => file.slice("shared:".length)),
+      ],
       await resolveOrgReviewConfig(installation.orgId),
     );
     if (orgConfigFiles.length > 0) {
@@ -567,7 +742,11 @@ export async function runReviewJob(
           .join(", ")})`,
       );
     }
-    const configFiles = [...repoConfigFiles, ...orgConfigFiles];
+    const configFiles = [...repoConfigFiles, ...sharedConfigFiles, ...orgConfigFiles];
+    const configProvenance = buildConfigProvenance(configFiles, sharedProvenance, {
+      id: currentRepository.id,
+      fullName: currentRepository.full_name,
+    });
     reviewLog.line(
       `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
     );
@@ -576,17 +755,15 @@ export async function runReviewJob(
       (value): value is string => Boolean(value),
     );
     reviewLog.setSensitiveValues(sensitiveValues);
-    const publicOrigin = configuredPublicOrigin();
-    const detailsUrl =
-      publicOrigin && installation.orgSlug
-        ? new URL(
-            `/orgs/${encodeURIComponent(installation.orgSlug)}/runs/${publicId}`,
-            publicOrigin,
-          ).toString()
-        : undefined;
     const cliEnv = buildCliEnv(llm, {
       GITHUB_TOKEN: token,
       ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
+      POSTIL_PREVENTION_HINT: preventionHint ? "1" : "0",
+      POSTIL_PREVENTION_COMMANDS_JSON: JSON.stringify(
+        preventionHint
+          ? await discoverPreventionCommands(token, payload.repoFullName)
+          : [],
+      ),
     });
 
     reviewLog.line("postil CLI spawned");
@@ -610,6 +787,9 @@ export async function runReviewJob(
     }
 
     const ingested = ingestEnvelope(result.stdout);
+    for (const incident of classifyOperationalModelIncidents(ingested.envelope)) {
+      reportOperationalModelIncident(observabilityProcessGroup, incident);
+    }
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
@@ -622,6 +802,7 @@ export async function runReviewJob(
       reviewId,
       envelope: ingested.envelope,
       configFiles,
+      configProvenance,
       silent: ingested.silent,
       gateFailing: ingested.gateFailing,
       usage: (ingested.modelUsage ?? [{
@@ -694,7 +875,16 @@ export async function runReviewJob(
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).
     if (token && failedRows.length > 0) {
-      await failCheckRuns(token, payload.repoFullName, advisoryCheckRunId, gateCheckRunId, message);
+      await failCheckRuns(
+        token,
+        payload.repoFullName,
+        advisoryCheckRunId,
+        gateCheckRunId,
+        message,
+        undefined,
+        false,
+        detailsUrl,
+      );
       reviewLog.line("forge check-runs updated for review failure");
     }
     throw err;
@@ -814,13 +1004,13 @@ export async function failCheckRuns(
   repoFullName: string,
   advisoryCheckRunId: number | undefined | null,
   gateCheckRunId: number | undefined | null,
-  message: string,
+  _message: string,
   signal?: AbortSignal,
   throwOnError = false,
+  detailsUrl?: string,
 ): Promise<void> {
-  const summary = `Postil could not complete this review: ${redactAndTruncate(message, 400, [
-    token,
-  ])}`;
+  const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
+  const summary = `Postil could not complete this review, so no review verdict exists.${details}`;
   const errors: unknown[] = [];
   if (gateCheckRunId != null) {
     await completeCheckRun(
@@ -829,7 +1019,7 @@ export async function failCheckRuns(
       gateCheckRunId,
       "failure",
       "Review did not complete",
-      `${summary}\n\nThe gate fails closed: an unreviewed head is not a passing head. Re-run by pushing or re-requesting the check.`,
+      `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`,
       signal,
     ).catch((error) => {
       errors.push(error);
