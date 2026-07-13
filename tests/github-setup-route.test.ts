@@ -12,19 +12,27 @@ describe("GET /api/github/setup", () => {
   test("starts user authorization without trusting the installation id", async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
 
-    for (const [installationId, setupAction] of [
-      ["146332124", "install"],
-      ["spoofed-by-a-caller", "update"],
-    ]) {
-      const response = await GET(
-        new Request(
-          `https://internal:3000/api/github/setup?installation_id=${installationId}&setup_action=${setupAction}`,
-        ),
-      );
+    const response = await GET(
+      new Request(
+        "https://internal:3000/api/github/setup?installation_id=spoofed-by-a-caller&setup_action=install",
+      ),
+    );
 
-      expect(response.status).toBe(303);
-      expect(response.headers.get("location")).toBe("https://postil.dev/api/auth/login");
-    }
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://postil.dev/api/auth/login");
+  });
+
+  test("reconciles installation updates through the same user authorization flow", async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+
+    const response = await GET(
+      new Request(
+        "https://internal:3000/api/github/setup?installation_id=146332124&setup_action=update",
+      ),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://postil.dev/api/auth/login");
   });
 
   test("returns incomplete callbacks to the install page", async () => {
