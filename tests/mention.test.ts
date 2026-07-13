@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { mentionsPostil, parsePostilApproveCommand } from "@/lib/mentions";
+import {
+  isPostilReviewCommand,
+  mentionsPostil,
+  parsePostilApproveCommand,
+} from "@/lib/mentions";
 
 describe("mentionsPostil", () => {
   test("matches a plain mention", () => {
@@ -53,6 +57,34 @@ describe("mentionsPostil", () => {
   test("still matches prose mentions next to code", () => {
     expect(mentionsPostil("`config` @postil what does this do?")).toBe(true);
     expect(mentionsPostil("```\nsome code\n```\n@postil thoughts?")).toBe(true);
+  });
+});
+
+describe("isPostilReviewCommand", () => {
+  test("accepts exact review and rerun commands", () => {
+    for (const command of [
+      "@postil review",
+      "@Postil please review the current head.",
+      "@postil review this PR!",
+      "@postil re-review",
+      "@postil rerun the review",
+      "@postil please re-run the review",
+      "@postil can you please review the pull request?",
+    ]) {
+      expect(isPostilReviewCommand(command)).toBe(true);
+    }
+  });
+
+  test("keeps questions and embedded mentions on the respond path", () => {
+    for (const message of [
+      "@postil review why this function fails?",
+      "@postil can you explain the review?",
+      "please ask @postil to review",
+      "`@postil review`",
+      "@postil approve finding -- reason",
+    ]) {
+      expect(isPostilReviewCommand(message)).toBe(false);
+    }
   });
 });
 

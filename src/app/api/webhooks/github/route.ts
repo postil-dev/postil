@@ -10,6 +10,7 @@ import {
   ADVISORY_CHECK_NAME,
   GATE_CHECK_NAME,
   getPullRequestHeadSha,
+  getPullRequestReviewContext,
   postIssueComment,
 } from "@/lib/github/checks";
 import {
@@ -31,7 +32,11 @@ import {
   type ApprovalActor,
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
-import { mentionsPostil, parsePostilApproveCommand } from "@/lib/mentions";
+import {
+  isPostilReviewCommand,
+  mentionsPostil,
+  parsePostilApproveCommand,
+} from "@/lib/mentions";
 import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
@@ -796,6 +801,20 @@ async function handleIssueComment(payload: CommentEventPayload): Promise<void> {
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
   if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
+  if (isPostilReviewCommand(body)) {
+    if (payload.issue.pull_request != null) {
+      await enqueueMentionReview(payload, payload.issue.number);
+    } else {
+      const token = await getInstallationToken(payload.installation!.id);
+      await postIssueComment(
+        token,
+        payload.repository.full_name,
+        payload.issue.number,
+        "Review commands only work on pull requests.",
+      );
+    }
+    return;
+  }
   await enqueueRespond({
     installationId: payload.installation!.id,
     repoFullName: payload.repository.full_name,
@@ -816,6 +835,10 @@ async function handleReviewComment(payload: CommentEventPayload): Promise<void> 
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
   if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
+  if (isPostilReviewCommand(body)) {
+    await enqueueMentionReview(payload, payload.pull_request.number);
+    return;
+  }
   // Review comments anchor to a file/line; without it the bot answers blind
   // to which code the question is about.
   const anchor =
@@ -830,6 +853,30 @@ async function handleReviewComment(payload: CommentEventPayload): Promise<void> 
     isPr: true,
     comment: body!,
     commentAnchor: anchor,
+  });
+}
+
+async function enqueueMentionReview(
+  payload: CommentEventPayload,
+  prNumber: number,
+): Promise<void> {
+  const installationId = payload.installation?.id;
+  const repo = payload.repository;
+  if (!installationId || !repo) return;
+  const token = await getInstallationToken(installationId);
+  const context = await getPullRequestReviewContext(token, repo.full_name, prNumber);
+  if (context.draft) return;
+  await enqueueReviewJob({
+    installationId,
+    repoFullName: repo.full_name,
+    repositoryPrivate: repo.private,
+    prNumber,
+    ...(context.authorGithubId !== undefined
+      ? { authorGithubId: context.authorGithubId }
+      : {}),
+    ...(context.authorLogin ? { authorLogin: context.authorLogin } : {}),
+    headSha: context.headSha,
+    baseSha: context.baseSha,
   });
 }
 
@@ -941,9 +988,10 @@ async function handleApproveCommand(payload: CommentEventPayload): Promise<boole
       );
       return true;
     }
+    console.error(`approval command failed: ${redactSecrets(err)}`);
     await replyToApprovalCommand(
       payload,
-      `Approval rejected: ${err instanceof Error ? err.message : "approval state could not be updated"}.`,
+      "Approval could not be recorded. Try again or open the Postil run for details.",
     );
     return true;
   }

@@ -154,3 +154,45 @@ export async function getPullRequestHeadSha(
   if (!headSha) throw new Error(`GitHub pull request ${repoFullName}#${number} has no head sha`);
   return headSha;
 }
+
+export interface PullRequestReviewContext {
+  headSha: string;
+  baseSha: string;
+  draft: boolean;
+  authorGithubId?: number;
+  authorLogin?: string;
+}
+
+/** Load the immutable refs required by the existing review-job payload. */
+export async function getPullRequestReviewContext(
+  token: string,
+  repoFullName: string,
+  number: number,
+  signal?: AbortSignal,
+): Promise<PullRequestReviewContext> {
+  const res = await githubFetch(
+    token,
+    "GET",
+    `/repos/${repoFullName}/pulls/${number}`,
+    undefined,
+    signal,
+  );
+  const data = (await res.json()) as {
+    draft?: boolean;
+    head?: { sha?: string };
+    base?: { sha?: string };
+    user?: { id?: number; login?: string };
+  };
+  const headSha = data.head?.sha;
+  const baseSha = data.base?.sha;
+  if (!headSha || !baseSha) {
+    throw new Error(`GitHub pull request ${repoFullName}#${number} has incomplete refs`);
+  }
+  return {
+    headSha,
+    baseSha,
+    draft: data.draft === true,
+    ...(typeof data.user?.id === "number" ? { authorGithubId: data.user.id } : {}),
+    ...(data.user?.login ? { authorLogin: data.user.login } : {}),
+  };
+}

@@ -23,6 +23,7 @@ import {
   reserveHostedRespondSpend,
 } from "@/lib/hosted-usage-reservations";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
+import { validateRespondPublication } from "@/lib/publication";
 import { readRespondUsageReceipt } from "@/lib/respond-usage-receipt";
 import {
   claimRespondDelivery,
@@ -194,8 +195,7 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
         `postil respond exited with code ${result.exitCode}: ${stderr}`,
       );
     }
-    const reply = result.stdout.trim();
-    if (!reply || reply.length > 65_000) throw new Error("postil respond produced an invalid reply");
+    const reply = validateRespondPublication(result.stdout, payload.comment);
     const body = `${reply}\n\n${respondDeliveryMarker(jobId)}`;
     if (hostedUsageReservationId) {
       let usage: Awaited<ReturnType<typeof readRespondUsageReceipt>> | null = null;

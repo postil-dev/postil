@@ -13,6 +13,24 @@ export function mentionsPostil(text: string | undefined | null): boolean {
   return /(^|[^a-z0-9_-])@postil($|[^a-z0-9_-])/i.test(prose);
 }
 
+/**
+ * An exact request to run the structured pull-request reviewer.
+ *
+ * Keep this grammar deliberately narrow. A question which happens to contain
+ * "review" belongs to the bounded interactive-answer path; only a whole
+ * comment whose post-mention text is a review command starts another review.
+ */
+export function isPostilReviewCommand(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const prose = stripCode(text)
+    .trim()
+    .replace(/[.!?]+$/, "")
+    .replace(/\s+/g, " ");
+  return /^@postil\s+(?:(?:please|can you(?: please)?)\s+)?(?:re-?review(?:\s+(?:this|this pr|the pull request|the current head|current head))?|re-?run(?:\s+the)?\s+review|review(?:\s+(?:this|this pr|the pull request|the current head|current head))?)$/i.test(
+    prose,
+  );
+}
+
 export type PostilApproveCommand =
   | { ok: true; findingId: string; rationale: string }
   | { ok: false; error: string };

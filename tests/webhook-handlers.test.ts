@@ -37,6 +37,13 @@ const WEBHOOK_SECRET = "test-webhook-secret-for-handlers";
 const completedCheckRuns: Array<{ repoFullName: string; conclusion: string }> = [];
 const postedComments: Array<{ repoFullName: string; number: number; body: string }> = [];
 let pullRequestHeadSha = "head-sha";
+let pullRequestReviewContext = {
+  headSha: "head-sha",
+  baseSha: "base-sha",
+  draft: false,
+  authorGithubId: 501,
+  authorLogin: "admin",
+};
 let checkRunPatchFails = false;
 const realAppAuth = await import("@/lib/github/app-auth");
 mock.module("@/lib/github/app-auth", () => ({
@@ -57,6 +64,7 @@ mock.module("@/lib/github/checks", () => ({
     completedCheckRuns.push({ repoFullName, conclusion });
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
+  getPullRequestReviewContext: async () => pullRequestReviewContext,
   findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
@@ -113,6 +121,13 @@ describeDb("webhook handler behaviour", () => {
     completedCheckRuns.length = 0;
     postedComments.length = 0;
     pullRequestHeadSha = "head-sha";
+    pullRequestReviewContext = {
+      headSha: "head-sha",
+      baseSha: "base-sha",
+      draft: false,
+      authorGithubId: 501,
+      authorLogin: "admin",
+    };
     checkRunPatchFails = false;
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
@@ -599,6 +614,70 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(approvals.rows[0]!.c).toBe(0);
     expect(jobs.rows[0]!.c).toBe(1);
+  });
+
+  test("exact PR review mentions enqueue the structured reviewer", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    await seedRepo(inst, 7000, "octo/approvals");
+
+    const res = await approvalComment(
+      "mention-review-current-head",
+      "@postil please review the current head.",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+      "SELECT kind, payload FROM jobs ORDER BY id",
+    );
+    expect(jobs.rows).toEqual([
+      {
+        kind: "review",
+        payload: expect.objectContaining({
+          installationId: 700,
+          repoFullName: "octo/approvals",
+          prNumber: 9,
+          headSha: "head-sha",
+          baseSha: "base-sha",
+          authorGithubId: 501,
+          authorLogin: "admin",
+        }),
+      },
+    ]);
+  });
+
+  test("issue review mentions cannot invoke the pull-request reviewer", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 701);
+    await seedRepo(inst, 7001, "octo/issues");
+
+    const res = await post(
+      "issue_comment",
+      {
+        action: "created",
+        installation: { id: 701 },
+        repository: { id: 7001, full_name: "octo/issues", private: false },
+        sender: { id: 501, login: "admin", type: "User" },
+        comment: {
+          body: "@postil review the current head",
+          user: { id: 501, login: "admin", type: "User" },
+          author_association: "MEMBER",
+        },
+        issue: { number: 4 },
+      },
+      "issue-review-command",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{ kind: string }>("SELECT kind FROM jobs ORDER BY id");
+    expect(jobs.rows).toEqual([]);
+    expect(postedComments).toEqual([
+      {
+        repoFullName: "octo/issues",
+        number: 4,
+        body: "Review commands only work on pull requests.",
+      },
+    ]);
   });
 
   test("approval command rejects head mismatches", async () => {
