@@ -37,7 +37,9 @@ export function PrivateBillingNotice({
     );
   }
   const detail =
-    decision.reason === "usage_cap_reached"
+    decision.reason === "provider_mode_mismatch"
+      ? "The configured inference mode does not match the organization’s billed plan."
+      : decision.reason === "usage_cap_reached"
       ? "The organization usage cap has been reached."
       : decision.reason === "suspended"
         ? "The organization entitlement is suspended."

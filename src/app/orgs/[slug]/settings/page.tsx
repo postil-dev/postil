@@ -7,7 +7,10 @@ import { schema } from "@/lib/db";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import { requireOrgMembership } from "@/lib/org-access";
-import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
+import {
+  canProcessPrivateRepository,
+  requireMatchingProviderMode,
+} from "@/lib/private-repository-entitlement";
 import { deriveRepoHealth, getRepoHealthRows, type RepoHealth } from "@/lib/repo-health";
 import { formatRelativeTime } from "@/lib/time";
 import {
@@ -58,6 +61,13 @@ export default async function OrgSettingsPage({
       })
       .from(schema.orgSettings)
       .where(eq(schema.orgSettings.orgId, org.id))
+      .limit(1)
+  )[0];
+  const entitlement = (
+    await db
+      .select({ subscriptionMode: schema.organizationEntitlements.subscriptionMode })
+      .from(schema.organizationEntitlements)
+      .where(eq(schema.organizationEntitlements.orgId, org.id))
       .limit(1)
   )[0];
 
@@ -143,11 +153,14 @@ export default async function OrgSettingsPage({
     .filter((summary) => summary.artifacts.length > 0);
   const showConfigFiles =
     repos.length === 0 || repoConfigSummaries.length > 0 || enabledRepos.length > 0;
-  const privateAccess = repos.some((repo) => repo.private && repo.enabled)
+  const rawPrivateAccess = repos.some((repo) => repo.private && repo.enabled)
     ? await canProcessPrivateRepository(db, {
         orgId: org.id,
         repositoryPrivate: true,
       })
+    : null;
+  const privateAccess = rawPrivateAccess
+    ? requireMatchingProviderMode(rawPrivateAccess, settings?.hasKey ?? false)
     : null;
 
   return (
@@ -194,7 +207,16 @@ export default async function OrgSettingsPage({
               This verification link is invalid or expired.
             </p>
           )}
-          <SettingsForm slug={org.slug} settings={settings} />
+          <SettingsForm
+            slug={org.slug}
+            settings={settings}
+            billedMode={
+              entitlement?.subscriptionMode === "hosted" ||
+              entitlement?.subscriptionMode === "byok"
+                ? entitlement.subscriptionMode
+                : null
+            }
+          />
         </div>
 
         {showConfigFiles && (

@@ -39,6 +39,23 @@ describe("private repository billing notice", () => {
     ).toBe("");
   });
 
+  test("explains a provider mode that conflicts with billing", () => {
+    const markup = renderToStaticMarkup(
+      <PrivateBillingNotice
+        orgSlug="acme"
+        decision={{
+          allowed: false,
+          reason: "provider_mode_mismatch",
+          entitlement: null,
+          usageMicros: 0,
+          usageLimitMicros: 6_000_000,
+        }}
+      />,
+    );
+    expect(markup).toContain("configured inference mode does not match");
+    expect(markup).toContain("Private repositories are paused");
+  });
+
   test("surfaces past-due grace and approaching hosted cap", () => {
     for (const decision of [
       {

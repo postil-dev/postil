@@ -92,6 +92,8 @@ function fakeDb() {
       const rows =
         "role" in selection
           ? memberRows
+          : "subscriptionMode" in selection
+            ? billingRows
           : "activeEmail" in selection ||
               selection.pendingEmail === schema.organizationEntitlements.billingContactPending
             ? billingRows
@@ -485,6 +487,19 @@ describe("saveOrgSettings", () => {
     expect(insertCount).toBe(0);
   });
 
+  test("rejects an inference mode that conflicts with the billed plan", async () => {
+    billingRows = [{ subscriptionMode: "hosted" }];
+    const result = await saveOrgSettings(
+      null,
+      byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
+    );
+    expect(result).toEqual({
+      status: "error",
+      message: "Your billed plan uses hosted inference. Contact Postil before switching inference mode.",
+    });
+    expect(insertCount).toBe(0);
+  });
+
   test("stores an organization-scoped escalation recipient", async () => {
     const result = await saveOrgSettings(
       null,
@@ -603,6 +618,9 @@ describe("SettingsForm API key handling", () => {
     expect(source).toContain('value="anthropic"');
     expect(source).toContain('type="checkbox"');
     expect(source).toContain('type="radio"');
+    expect(source).toContain('disabled={billedMode === "byok"}');
+    expect(source).toContain('disabled={billedMode === "hosted"}');
+    expect(source).toContain("Private repositories remain inactive until a matching plan");
     expect(source).not.toContain("defaultValue={settings?.apiKey");
     expect(source).not.toContain("value={settings?.apiKey");
     expect(source).not.toContain("HOSTED_DEFAULT_MODEL_CHAIN");

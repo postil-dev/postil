@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
@@ -27,5 +28,12 @@ describe("dashboard metric details", () => {
     expect(markup).toContain("Review-time distribution across 3 reviews");
     expect(markup).toContain("The rust marker is the");
     expect(markup).toContain("33 percent");
+  });
+
+  test("describes the ungrounded denominator without calling it all candidates", () => {
+    const source = readFileSync("src/app/orgs/[slug]/page.tsx", "utf8");
+    expect(source).toContain("Policy-suppressed findings are excluded.");
+    expect(source).toContain("dropped · {shipped} reached pull requests");
+    expect(source).not.toContain("candidate findings dropped");
   });
 });

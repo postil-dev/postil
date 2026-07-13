@@ -32,9 +32,8 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       # Bake the pinned CLI into the image so the worker can spawn it.
-      # POSTIL_CLI_TAG is a repo variable naming a postil-cli release tag;
-      # this step always runs on deploy (falling back to v0.2.1 when the
-      # variable is unset, matching the flyctl build-arg default below) so
+      # POSTIL_CLI_TAG is a required repo variable naming a compatible
+      # postil-cli release tag; this step always runs on deploy so
       # vendor/postil is always populated with a cosign-verified binary
       # before the image is built. The Dockerfile has no fetch fallback of
       # its own and fails the build if vendor/postil is absent, so this step
@@ -48,9 +47,13 @@ jobs:
         # = 370s, so 4 * 370s = 1480s worst case before verification/install.
         timeout-minutes: 30
         env:
-          TAG: ${{ vars.POSTIL_CLI_TAG || 'v0.2.1' }}
+          TAG: ${{ vars.POSTIL_CLI_TAG }}
         run: |
           set -euo pipefail
+          if [[ -z "${TAG}" ]]; then
+            echo "::error::POSTIL_CLI_TAG must name a compatible postil-cli release."
+            exit 1
+          fi
           base="https://github.com/postil-dev/postil-cli/releases/download/${TAG}"
           art="postil-x86_64-unknown-linux-gnu.tar.gz"
           tmp=""
@@ -157,7 +160,7 @@ jobs:
         run: |
           flyctl deploy \
             --remote-only \
-            --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG:-v0.2.1}" \
+            --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
             --build-arg NEXT_PUBLIC_POSTHOG_KEY="${NEXT_PUBLIC_POSTHOG_KEY:-}" \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}"
         env:

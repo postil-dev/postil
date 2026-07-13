@@ -12,6 +12,7 @@ export type PrivateRepositoryAccessReason =
   | "no_entitlement"
   | "suspended"
   | "inactive"
+  | "provider_mode_mismatch"
   | "usage_cap_reached";
 
 export interface OrganizationEntitlementSnapshot {
@@ -46,6 +47,18 @@ export function providerModeMatchesPrivateAccess(
   if (!repositoryPrivate) return true;
   if (!decision.allowed || !decision.entitlement) return false;
   return decision.entitlement.subscriptionMode === (byok ? "byok" : "hosted");
+}
+
+/** Reflect a configured provider that cannot be used by the billed plan. */
+export function requireMatchingProviderMode(
+  decision: PrivateRepositoryAccessDecision,
+  byok: boolean,
+): PrivateRepositoryAccessDecision {
+  if (!decision.allowed || !decision.entitlement) return decision;
+  if (decision.entitlement.subscriptionMode === (byok ? "byok" : "hosted")) {
+    return decision;
+  }
+  return { ...decision, allowed: false, reason: "provider_mode_mismatch" };
 }
 
 export function evaluatePrivateRepositoryAccess(

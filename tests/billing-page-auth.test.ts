@@ -112,6 +112,7 @@ mock.module("@/lib/private-repository-entitlement", () => ({
     usageMicros: 0,
     usageLimitMicros: null,
   }),
+  requireMatchingProviderMode: (decision: unknown) => decision,
 }));
 
 mock.module("@/lib/org-access", () => ({
@@ -167,7 +168,9 @@ function fakeDb(): any {
   return {
     select(selection: Record<string, unknown>) {
       const kind =
-        "count" in selection
+        "hasKey" in selection
+          ? "provider"
+          : "count" in selection
           ? "activeAuthors"
           : "repositoryFullName" in selection
           ? "events"
@@ -185,6 +188,8 @@ function fakeDb(): any {
             ? creditGrantRows
             : kind === "usage"
               ? usageRows
+              : kind === "provider"
+                ? [{ hasKey: false }]
               : currentRepoRows;
       const chain = {
         from() {
@@ -199,6 +204,9 @@ function fakeDb(): any {
             : chain;
         },
         orderBy() {
+          return Promise.resolve(rows);
+        },
+        limit() {
           return Promise.resolve(rows);
         },
       };

@@ -481,8 +481,8 @@ export async function saveOrgSettings(
   }
 
   const db = getDb();
-  const currentSettings = (
-    await db
+  const [currentSettings, entitlement] = await Promise.all([
+    db
       .select({
         apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
         apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
@@ -493,9 +493,27 @@ export async function saveOrgSettings(
       .from(schema.orgSettings)
       .where(eq(schema.orgSettings.orgId, orgId))
       .limit(1)
-  )[0];
+      .then((rows) => rows[0]),
+    db
+      .select({ subscriptionMode: schema.organizationEntitlements.subscriptionMode })
+      .from(schema.organizationEntitlements)
+      .where(eq(schema.organizationEntitlements.orgId, orgId))
+      .limit(1)
+      .then((rows) => rows[0]),
+  ]);
 
   const removingByok = providerMode === "hosted" || apiKeyAction === "remove";
+  const requestedMode = removingByok ? "hosted" : "byok";
+  if (
+    (entitlement?.subscriptionMode === "hosted" ||
+      entitlement?.subscriptionMode === "byok") &&
+    entitlement.subscriptionMode !== requestedMode
+  ) {
+    return {
+      status: "error",
+      message: `Your billed plan uses ${entitlement.subscriptionMode === "byok" ? "BYOK" : "hosted inference"}. Contact Postil before switching inference mode.`,
+    };
+  }
   if (!removingByok) {
     if (!apiFormat) {
       return { status: "error", message: "Choose a supported API interface." };

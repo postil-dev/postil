@@ -81,6 +81,12 @@ export default function ConfigPage() {
       </p>
 
       <h2>Full reference</h2>
+      <p>
+        Hosted inference ignores the entire <code>model</code> block and uses
+        Postil&apos;s operator-managed roster. Repository model, fallback, and API
+        settings apply only to BYOK organizations, the CLI, and self-hosted
+        deployments.
+      </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`# .postil.yaml — every key, with defaults
 enabled: true            # disable reviews for this repo entirely
@@ -198,11 +204,11 @@ model:
           </tr>
           <tr>
             <td><code>REVIEW_MODEL</code></td>
-            <td>Model id (hosted primary <code>z-ai/glm-5.2</code>)</td>
+            <td>Model id for BYOK, CLI, and self-hosted use</td>
           </tr>
           <tr>
             <td><code>REVIEW_MODEL_CASCADE</code></td>
-            <td>Comma-separated fallback models</td>
+            <td>Comma-separated fallback models for BYOK, CLI, and self-hosted use</td>
           </tr>
           <tr>
             <td><code>GITHUB_TOKEN</code></td>

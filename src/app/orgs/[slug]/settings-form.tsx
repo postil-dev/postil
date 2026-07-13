@@ -7,6 +7,7 @@ import { resendEscalationEmailVerification, saveOrgSettings } from "./actions";
 
 interface SettingsFormProps {
   slug: string;
+  billedMode: "hosted" | "byok" | null;
   settings:
     | {
         apiBase: string | null;
@@ -25,7 +26,7 @@ interface SettingsFormProps {
     | undefined;
 }
 
-export function SettingsForm({ slug, settings }: SettingsFormProps) {
+export function SettingsForm({ slug, settings, billedMode }: SettingsFormProps) {
   const [state, formAction, pending] = useActionState(saveOrgSettings, null);
   const [resendState, resendAction, resendPending] = useActionState(
     resendEscalationEmailVerification,
@@ -62,6 +63,7 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
                 name="providerMode"
                 value="hosted"
                 checked={!bringOwnKey}
+                disabled={billedMode === "byok"}
                 onChange={() => setBringOwnKey(false)}
                 className="h-4 w-4 accent-[#2F6F4E]"
               />
@@ -76,6 +78,7 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
                 name="providerMode"
                 value="byok"
                 checked={bringOwnKey}
+                disabled={billedMode === "hosted"}
                 onChange={() => setBringOwnKey(true)}
                 className="h-4 w-4 accent-[#2F6F4E]"
               />
@@ -85,6 +88,28 @@ export function SettingsForm({ slug, settings }: SettingsFormProps) {
               </span>
             </label>
           </div>
+          <p className="mt-3 text-xs text-charcoal/60">
+            {billedMode ? (
+              <>
+                Your private-repository plan uses {billedMode === "byok" ? "BYOK" : "hosted inference"}.{" "}
+                <Link href={`/orgs/${slug}/billing`} className="text-rust hover:underline">
+                  View billing.
+                </Link>
+                {" "}
+                <a
+                  href={`mailto:hello@postil.dev?subject=${encodeURIComponent(`Change ${slug} inference plan`)}`}
+                  className="text-rust hover:underline"
+                >
+                  Contact us to change plans.
+                </a>
+              </>
+            ) : (
+              <>
+                You can stage inference settings before subscribing. Private repositories remain inactive until a matching plan is enabled on{" "}
+                <Link href={`/orgs/${slug}/billing`} className="text-rust hover:underline">Billing</Link>.
+              </>
+            )}
+          </p>
           {bringOwnKey && (
             <>
               <div className="mt-4 grid gap-4 sm:grid-cols-2">

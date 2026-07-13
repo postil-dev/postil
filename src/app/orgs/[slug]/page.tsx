@@ -10,7 +10,10 @@ import { schema } from "@/lib/db";
 import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
-import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
+import {
+  canProcessPrivateRepository,
+  requireMatchingProviderMode,
+} from "@/lib/private-repository-entitlement";
 import { toggleRepository } from "./actions";
 import { RepoHealthBanner } from "./repo-health-banner";
 import { ReviewsTable } from "./reviews-table";
@@ -166,7 +169,8 @@ export default async function OrgDashboardPage({
   )[0] ?? { ungrounded: 0, shipped: 0 };
   const ungrounded = telemetryAgg.ungrounded ?? 0;
   const shipped = telemetryAgg.shipped ?? 0;
-  // Share of model findings discarded for failing to cite a changed line.
+  // Comparison of ungrounded drops with findings that reached pull requests.
+  // Suppressed findings are intentionally outside this displayed comparison.
   const ungroundedRate =
     ungrounded + shipped > 0 ? Math.round((ungrounded / (ungrounded + shipped)) * 100) : null;
 
@@ -186,13 +190,25 @@ export default async function OrgDashboardPage({
     )
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
-  const privateAccess =
+  const rawPrivateAccess =
     isAdmin && repos.some((repo) => repo.private && repo.enabled)
       ? await canProcessPrivateRepository(db, {
           orgId: org.id,
           repositoryPrivate: true,
         })
       : null;
+  const providerSettings = rawPrivateAccess
+    ? (
+        await db
+          .select({ hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL` })
+          .from(schema.orgSettings)
+          .where(eq(schema.orgSettings.orgId, org.id))
+          .limit(1)
+      )[0]
+    : undefined;
+  const privateAccess = rawPrivateAccess
+    ? requireMatchingProviderMode(rawPrivateAccess, providerSettings?.hasKey ?? false)
+    : null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -358,18 +374,19 @@ export default async function OrgDashboardPage({
           <ReviewTimeDistribution durations={recordedDurations} />
         </div>
         <div className="card p-8">
-          <p className="eyebrow">Ungrounded findings</p>
+          <p className="eyebrow">Ungrounded comparison</p>
           <div className="mt-3 flex items-end gap-3">
             <span className="serif-display text-6xl">
               {ungroundedRate === null ? "—" : `${ungroundedRate}%`}
             </span>
             <span className="pb-2 text-sm text-charcoal/70">
-              {ungrounded} of {ungrounded + shipped} candidate findings dropped
+              {ungrounded} dropped · {shipped} reached pull requests
             </span>
           </div>
           <p className="mt-4 text-sm text-ink-soft">
-            Across {silenceAgg.completed} completed reviews, {shipped} findings reached
-            pull requests and {ungrounded} were discarded for not citing a changed line.
+            Across {silenceAgg.completed} completed reviews, this compares findings
+            discarded for not citing a changed line with findings that reached pull
+            requests. Policy-suppressed findings are excluded.
           </p>
         </div>
       </div>

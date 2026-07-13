@@ -20,7 +20,10 @@ import {
   BYOK_ACTIVE_AUTHOR_MONTHLY_USD,
   HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
 } from "@/lib/pricing-policy";
-import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
+import {
+  canProcessPrivateRepository,
+  requireMatchingProviderMode,
+} from "@/lib/private-repository-entitlement";
 import { updateHostedOverageCap } from "../actions";
 import { BillingContactForm } from "./billing-contact-form";
 
@@ -132,10 +135,21 @@ export default async function OrgBillingPage({
     (repo) => repo.repositoryPrivate,
   ).length;
   const creditBalance = calculateBillingCreditBalance(creditGrantRows, usageRows);
-  const privateAccess = await canProcessPrivateRepository(db, {
+  const rawPrivateAccess = await canProcessPrivateRepository(db, {
     orgId: org.id,
     repositoryPrivate: true,
   });
+  const providerSettings = (
+    await db
+      .select({ hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL` })
+      .from(schema.orgSettings)
+      .where(eq(schema.orgSettings.orgId, org.id))
+      .limit(1)
+  )[0];
+  const privateAccess = requireMatchingProviderMode(
+    rawPrivateAccess,
+    providerSettings?.hasKey ?? false,
+  );
   const entitlement = privateAccess.entitlement;
   const contactState = entitlement
     ? (
