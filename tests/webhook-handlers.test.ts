@@ -960,15 +960,15 @@ describeDb("webhook handler behaviour", () => {
     const inst = await seedInstallation(orgId, 500);
     await seedRepo(inst, 5555, "octo/gate");
 
-    const first = await checkRunRerequestedEvent("delivery-rerequest-dup-1");
+    // Simultaneous deliveries for different check names must contend on the
+    // database constraint rather than both passing an application-side check.
+    const [first, second] = await Promise.all([
+      checkRunRerequestedEvent("delivery-rerequest-dup-1"),
+      checkRunRerequestedEvent("delivery-rerequest-dup-2", {
+        name: "postil/review",
+      }),
+    ]);
     expect(first.status).toBe(200);
-
-    // A second rerequest for the same repo+PR+head (e.g. the maintainer
-    // clicks "Re-run" twice, or GitHub fires check_run once per check name)
-    // must not enqueue a second review job while the first is still queued.
-    const second = await checkRunRerequestedEvent("delivery-rerequest-dup-2", {
-      name: "postil/review",
-    });
     expect(second.status).toBe(200);
 
     const jobs = await pool.query<{ c: number }>(

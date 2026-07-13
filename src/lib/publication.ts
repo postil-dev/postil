@@ -2,14 +2,12 @@ const MAX_RESPOND_CHARACTERS = 2_400;
 const MAX_RESPOND_NONBLANK_LINES = 24;
 const MAX_RESPOND_HEADINGS = 2;
 const MAX_RESPOND_LIST_ITEMS = 5;
-const MAX_MERMAID_LINES = 16;
-const MAX_MERMAID_CHARACTERS = 1_200;
 
 const ACTIVE_MENTION = /(^|[^a-z0-9_-])@[a-z0-9][a-z0-9-]{0,38}(?=$|[^a-z0-9_-])/i;
 const RAW_HTML = /<!--[\s\S]*?-->|<\/?[a-z][^>]*>/i;
-const MARKDOWN_IMAGE = /!\[[^\]]*\]\s*\(/;
-const DIAGRAM_REQUEST = /\b(?:diagram|flow(?:chart)?|mermaid|sequence|architecture)\b/i;
-const MERMAID_DIRECTIVE = /\b(?:click|href|classDef|linkStyle|style)\b|%%\{|https?:\/\//i;
+const MARKDOWN_IMAGE = /!\[[^\]\n]*\](?:\([^\n)]*\)|\[[^\]\n]*\])?/;
+const MERMAID = /(?:```|~~~)\s*mermaid\b|^\s*(?:flowchart\s+(?:TB|TD|BT|RL|LR)|sequenceDiagram)\b/im;
+const REPORT_HEADING = /^\s{0,3}#{1,6}\s+(?:what this (?:pr|pull request) does|summary|correctness|issues?(?: and risks?)?|risks?|verdict|assessment|review metadata)\s*$/im;
 
 export class PublicationValidationError extends Error {
   constructor(message: string) {
@@ -19,7 +17,7 @@ export class PublicationValidationError extends Error {
 }
 
 /** Validate model-authored respond output immediately before durable delivery. */
-export function validateRespondPublication(reply: string, maintainerMessage: string): string {
+export function validateRespondPublication(reply: string, _maintainerMessage: string): string {
   const normalized = reply.replace(/\r\n?/g, "\n").trim();
   if (!normalized) throw new PublicationValidationError("reply is empty");
   if ([...normalized].length > MAX_RESPOND_CHARACTERS) {
@@ -31,29 +29,71 @@ export function validateRespondPublication(reply: string, maintainerMessage: str
   if (nonblankLines.length > MAX_RESPOND_NONBLANK_LINES) {
     throw new PublicationValidationError("reply exceeds the line limit");
   }
-  const headings = nonblankLines.filter((line) => /^\s{0,3}#{1,6}\s+\S/.test(line));
+  if (MERMAID.test(normalized)) {
+    throw new PublicationValidationError("reply contains Mermaid");
+  }
+
+  const masked = maskCode(normalized);
+  const visibleLines = masked.split("\n");
+  const visibleNonblankLines = visibleLines.filter((line) => line.trim().length > 0);
+  const headings = visibleNonblankLines.filter((line) => /^\s{0,3}#{1,6}\s+\S/.test(line));
   if (headings.length > MAX_RESPOND_HEADINGS) {
     throw new PublicationValidationError("reply has too many headings");
   }
-  const listItems = nonblankLines.filter((line) => /^\s*(?:[-+*]|\d+[.)])\s+\S/.test(line));
+  const listItems = visibleNonblankLines.filter((line) =>
+    /^\s*(?:[-+*]|\d+[.)])\s+\S/.test(line),
+  );
   if (listItems.length > MAX_RESPOND_LIST_ITEMS) {
     throw new PublicationValidationError("reply has too many list items");
   }
-  if (ACTIVE_MENTION.test(normalized)) {
+  if (ACTIVE_MENTION.test(masked)) {
     throw new PublicationValidationError("reply contains an active mention");
   }
-  if (RAW_HTML.test(normalized)) {
+  if (RAW_HTML.test(masked)) {
     throw new PublicationValidationError("reply contains raw HTML");
   }
-  if (MARKDOWN_IMAGE.test(normalized)) {
+  if (MARKDOWN_IMAGE.test(masked)) {
     throw new PublicationValidationError("reply contains an image");
   }
-  if (containsMarkdownTable(lines)) {
+  if (containsMarkdownTable(visibleLines)) {
     throw new PublicationValidationError("reply contains a table");
   }
-
-  validateMermaid(normalized, maintainerMessage);
+  if (REPORT_HEADING.test(masked)) {
+    throw new PublicationValidationError("reply is formatted as a report");
+  }
   return normalized;
+}
+
+/** Replace code content with spaces while preserving line and character positions. */
+function maskCode(value: string): string {
+  let fence: { character: "`" | "~"; length: number } | null = null;
+  return value
+    .split("\n")
+    .map((line) => {
+      const indentation = line.length - line.trimStart().length;
+      const candidate = indentation <= 3 ? line.trimStart() : "";
+      const marker = candidate.match(/^(`{3,}|~{3,})/u)?.[1];
+
+      if (fence) {
+        if (
+          marker &&
+          marker[0] === fence.character &&
+          marker.length >= fence.length &&
+          candidate.slice(marker.length).trim().length === 0
+        ) {
+          fence = null;
+        }
+        return " ".repeat(line.length);
+      }
+
+      if (marker) {
+        fence = { character: marker[0] as "`" | "~", length: marker.length };
+        return " ".repeat(line.length);
+      }
+
+      return line.replace(/(`+)([^\n]*?)\1/g, (span) => " ".repeat(span.length));
+    })
+    .join("\n");
 }
 
 function containsMarkdownTable(lines: string[]): boolean {
@@ -68,30 +108,4 @@ function containsMarkdownTable(lines: string[]): boolean {
     }
   }
   return false;
-}
-
-function validateMermaid(reply: string, maintainerMessage: string): void {
-  const blocks = [...reply.matchAll(/(^|\n)(```|~~~)mermaid\s*\n([\s\S]*?)\n\2(?=\n|$)/gi)];
-  const mentionsMermaid = /(?:```|~~~)mermaid\b|\b(?:flowchart|sequenceDiagram)\b/i.test(reply);
-  if (!mentionsMermaid) return;
-  if (blocks.length !== 1) {
-    throw new PublicationValidationError("reply must contain one fenced Mermaid diagram");
-  }
-  if (!DIAGRAM_REQUEST.test(maintainerMessage)) {
-    throw new PublicationValidationError("reply contains an unrequested Mermaid diagram");
-  }
-  const diagram = blocks[0]![3]!.trim();
-  const diagramLines = diagram.split("\n").filter((line) => line.trim().length > 0);
-  if (
-    [...diagram].length > MAX_MERMAID_CHARACTERS ||
-    diagramLines.length > MAX_MERMAID_LINES
-  ) {
-    throw new PublicationValidationError("Mermaid diagram exceeds its size limit");
-  }
-  if (!/^(?:flowchart\s+(?:TB|TD|BT|RL|LR)|sequenceDiagram)\b/.test(diagram)) {
-    throw new PublicationValidationError("Mermaid diagram type is not allowed");
-  }
-  if (MERMAID_DIRECTIVE.test(diagram) || RAW_HTML.test(diagram)) {
-    throw new PublicationValidationError("Mermaid diagram contains a disallowed directive");
-  }
 }

@@ -38,7 +38,12 @@ import {
   parsePostilApproveCommand,
 } from "@/lib/mentions";
 import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
-import { enqueueJob, type RespondJobPayload, type ReviewJobPayload } from "@/lib/queue";
+import {
+  enqueueJob,
+  enqueueReviewJobOnce,
+  type RespondJobPayload,
+  type ReviewJobPayload,
+} from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import {
   recordRepositoryEnablementEvent,
@@ -527,46 +532,19 @@ async function handlePullRequest(payload: PullRequestEventPayload): Promise<void
 }
 
 /**
- * True when a review job for this exact repo+PR+head is already queued or
- * running. Guards the check_run/check_suite rerequest path: unlike
- * pull_request (one delivery per push), GitHub can send a rerequested event
- * per check-run, and a maintainer can also click "Re-run" more than once
- * before the first attempt starts, so the delivery-id dedupe alone is not
- * enough here. Cheap count against the existing jobs table, same pattern as
- * respondRateLimited above; no new table or state.
- */
-async function reviewJobInFlight(
-  repoFullName: string,
-  prNumber: number,
-  headSha: string,
-): Promise<boolean> {
-  const res = await getPool().query<{ count: string }>(
-    `SELECT count(*)::text AS count
-       FROM jobs
-      WHERE kind = 'review'
-        AND status IN ('queued', 'running')
-        AND payload->>'repoFullName' = $1
-        AND (payload->>'prNumber')::int = $2
-        AND payload->>'headSha' = $3`,
-    [repoFullName, prNumber, headSha],
-  );
-  return Number(res.rows[0]?.count ?? 0) > 0;
-}
-
-/**
  * Resolve the enabled, non-suspended installation for `installationId` and
  * enqueue a review job for it. Shared by pull_request and the
  * check_run/check_suite rerequest handlers so both go through the same
  * installation/repo-enabled gate and enqueue semantics.
  */
 async function enqueueReviewJob(job: ReviewJobPayload): Promise<void> {
-  if (await reviewJobInFlight(job.repoFullName, job.prNumber, job.headSha)) {
+  const id = await enqueueReviewJobOnce(getPool(), job);
+  if (id === null) {
     console.log(
       `review job skipped: ${job.repoFullName}#${job.prNumber}@${job.headSha} already queued or running`,
     );
     return;
   }
-  await enqueueJob(getPool(), "review", job);
   triggerQueueDrain("review");
 }
 
