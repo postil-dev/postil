@@ -42,6 +42,8 @@ import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { persistReviewCompletion } from "@/lib/review-completion";
+import { discoverPreventionCommands } from "@/lib/review-guidance";
+import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 
 export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
 // Match postil-cli's hosted profile: a normal slow review gets up to seven
@@ -77,6 +79,10 @@ export function buildCliEnv(
     // never inherit the hosted gateway credential when runCli merges envs.
     POSTIL_ENDPOINT_AUTH_HEADER: llm.apiAuthHeader ?? "",
     POSTIL_ENDPOINT_AUTH_VALUE: llm.apiAuthValue ?? "",
+    // This is per-review policy, never a deployment-wide toggle inherited by
+    // every child process.
+    POSTIL_PREVENTION_HINT: baseEnv.POSTIL_PREVENTION_HINT === "1" ? "1" : "0",
+    POSTIL_PREVENTION_COMMANDS_JSON: baseEnv.POSTIL_PREVENTION_COMMANDS_JSON ?? "[]",
     POSTIL_LLM_REQUEST_TIMEOUT_SECS: optionalEnv(
       "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
       HOSTED_LLM_REQUEST_TIMEOUT_SECS,
@@ -426,6 +432,14 @@ export async function runReviewJob(
       .orderBy(desc(schema.reviews.finishedAt))
       .limit(1)
   )[0];
+  const preventionHint = await shouldSendPreventionHint(
+    db,
+    repository.id,
+    payload.prNumber,
+  );
+  // Validate the configured origin before inserting a running review. A bad
+  // deployment setting must not create a row that only the watchdog can close.
+  const publicOrigin = configuredPublicOrigin();
 
   const inserted = await db
     .insert(schema.reviews)
@@ -445,6 +459,13 @@ export async function runReviewJob(
   const reviewId = inserted[0]?.id;
   const publicId = inserted[0]?.publicId;
   if (reviewId === undefined || !publicId) throw new Error("review insert returned no row");
+  const detailsUrl =
+    publicOrigin && installation.orgSlug
+      ? new URL(
+          `/orgs/${encodeURIComponent(installation.orgSlug)}/runs/${publicId}`,
+          publicOrigin,
+        ).toString()
+      : undefined;
 
   const reviewLog = new ReviewLogWriter(reviewId);
   reviewLog.line(
@@ -576,17 +597,15 @@ export async function runReviewJob(
       (value): value is string => Boolean(value),
     );
     reviewLog.setSensitiveValues(sensitiveValues);
-    const publicOrigin = configuredPublicOrigin();
-    const detailsUrl =
-      publicOrigin && installation.orgSlug
-        ? new URL(
-            `/orgs/${encodeURIComponent(installation.orgSlug)}/runs/${publicId}`,
-            publicOrigin,
-          ).toString()
-        : undefined;
     const cliEnv = buildCliEnv(llm, {
       GITHUB_TOKEN: token,
       ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
+      POSTIL_PREVENTION_HINT: preventionHint ? "1" : "0",
+      POSTIL_PREVENTION_COMMANDS_JSON: JSON.stringify(
+        preventionHint
+          ? await discoverPreventionCommands(token, payload.repoFullName)
+          : [],
+      ),
     });
 
     reviewLog.line("postil CLI spawned");
@@ -694,7 +713,16 @@ export async function runReviewJob(
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).
     if (token && failedRows.length > 0) {
-      await failCheckRuns(token, payload.repoFullName, advisoryCheckRunId, gateCheckRunId, message);
+      await failCheckRuns(
+        token,
+        payload.repoFullName,
+        advisoryCheckRunId,
+        gateCheckRunId,
+        message,
+        undefined,
+        false,
+        detailsUrl,
+      );
       reviewLog.line("forge check-runs updated for review failure");
     }
     throw err;
@@ -814,13 +842,13 @@ export async function failCheckRuns(
   repoFullName: string,
   advisoryCheckRunId: number | undefined | null,
   gateCheckRunId: number | undefined | null,
-  message: string,
+  _message: string,
   signal?: AbortSignal,
   throwOnError = false,
+  detailsUrl?: string,
 ): Promise<void> {
-  const summary = `Postil could not complete this review: ${redactAndTruncate(message, 400, [
-    token,
-  ])}`;
+  const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
+  const summary = `Postil could not complete this review, so no review verdict exists.${details}`;
   const errors: unknown[] = [];
   if (gateCheckRunId != null) {
     await completeCheckRun(
@@ -829,7 +857,7 @@ export async function failCheckRuns(
       gateCheckRunId,
       "failure",
       "Review did not complete",
-      `${summary}\n\nThe gate fails closed: an unreviewed head is not a passing head. Re-run by pushing or re-requesting the check.`,
+      `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`,
       signal,
     ).catch((error) => {
       errors.push(error);

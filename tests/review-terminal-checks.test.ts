@@ -116,6 +116,26 @@ describe("review terminal check-runs", () => {
       { id: 22, conclusion: "failure" },
       { id: 11, conclusion: "neutral" },
     ]);
+    expect(completions.every(({ summary }) => !summary.includes("worker stopped"))).toBe(true);
+    expect(completions[0]?.summary).toContain("no review verdict exists");
+  });
+
+  test("public failure output links the private run without exposing provider detail", async () => {
+    await failCheckRuns(
+      "test-token",
+      "postil-dev/postil",
+      11,
+      22,
+      "provider secret detail",
+      undefined,
+      false,
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+    );
+
+    expect(completions.every(({ summary }) => !summary.includes("provider secret detail"))).toBe(true);
+    expect(completions[0]?.summary).toContain(
+      "[Review details](https://postil.dev/orgs/postil-dev/runs/run-id)",
+    );
   });
 
   test("strict cleanup rejects when a check-run remains incomplete", async () => {

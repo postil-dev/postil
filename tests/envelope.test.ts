@@ -55,6 +55,56 @@ describe("envelope ingestion", () => {
     ).toBe(true);
   });
 
+  test("preserves retained suppressed findings and their policy reasons", () => {
+    const suppressedFinding = {
+      finding: {
+        path: "src/billing/invoice.ts",
+        line: 90,
+        severity: "info" as const,
+        kind: "risk" as const,
+        confidence: 0.45,
+        title: "Retry signal is ambiguous",
+        body: "The retry result does not distinguish a duplicate request.",
+      },
+      reason: "belowConfidence" as const,
+    };
+    const ingested = ingestEnvelope(
+      JSON.stringify(validEnvelope({ suppressedFindings: [suppressedFinding] })),
+    );
+    expect(ingested.envelope.suppressedFindings).toEqual([suppressedFinding]);
+  });
+
+  test("preserves safe structured model incidents", () => {
+    const modelIncidents = [
+      {
+        phase: "scorer" as const,
+        category: "invalidOutput" as const,
+        recovered: true,
+        recovery: "repair" as const,
+      },
+      {
+        phase: "review" as const,
+        category: "timeout" as const,
+        recovered: true,
+        recovery: "fallback" as const,
+      },
+    ];
+    const ingested = ingestEnvelope(JSON.stringify(validEnvelope({ modelIncidents })));
+    expect(ingested.envelope.modelIncidents).toEqual(modelIncidents);
+
+    expect(() =>
+      ingestEnvelope(
+        JSON.stringify(
+          validEnvelope({
+            modelIncidents: [
+              { phase: "scorer", category: "invalidOutput", recovered: true },
+            ],
+          }),
+        ),
+      ),
+    ).toThrow(/recovery must be present/);
+  });
+
   test("accepts exact per-model usage and rejects mismatched aggregates", () => {
     const exact = validEnvelope({
       modelUsage: [

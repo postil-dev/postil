@@ -296,8 +296,9 @@ export default async function OrgDashboardPage({
             </span>
           </div>
           <p className="mt-4 text-sm text-ink-soft">
-            A clean PR gets a green check and zero comments. This number is the
-            product working as designed.
+            Review yield, measured as how often Postil had no finding worth posting.
+            It describes reviewer output frequency, not commit quality. Read it with
+            finding precision and repository mix.
           </p>
         </div>
         <div className="card p-8">

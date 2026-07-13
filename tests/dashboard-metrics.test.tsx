@@ -36,4 +36,17 @@ describe("dashboard metric details", () => {
     expect(source).toContain("dropped · {shipped} reached pull requests");
     expect(source).not.toContain("candidate findings dropped");
   });
+
+  test("does not present silence rate as a commit-quality score", () => {
+    const source = readFileSync("src/app/orgs/[slug]/page.tsx", "utf8");
+    expect(source).toContain("reviewer output frequency, not commit quality");
+    expect(source).toContain("Review yield");
+  });
+
+  test("keeps suppressed details and admin overrides behind native disclosure controls", () => {
+    const source = readFileSync("src/app/orgs/[slug]/runs/[publicId]/page.tsx", "utf8");
+    expect(source).toContain("Suppressed findings ({envelope.counts.suppressed})");
+    expect(source).toContain("This review predates retained suppression details");
+    expect(source).toContain("Record a commit-scoped override");
+  });
 });

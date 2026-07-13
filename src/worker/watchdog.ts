@@ -82,7 +82,7 @@ export async function watchdogPass(
                THEN 'queued'::job_status
              ELSE 'failed'::job_status
            END,
-           locked_at = NULL, locked_by = NULL,
+           locked_at = NULL, locked_by = NULL, run_after = now(),
            last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
        WHERE status = 'running' AND locked_at < $1
        RETURNING kind, status, payload

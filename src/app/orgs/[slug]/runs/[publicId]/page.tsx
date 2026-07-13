@@ -8,7 +8,11 @@ import { and, eq, isNotNull } from "drizzle-orm";
 import { GateBadge } from "@/components/review-status";
 import { MODELS } from "@/data/models";
 import { schema } from "@/lib/db";
-import { envelopeSchema, type Finding } from "@/lib/envelope";
+import {
+  envelopeSchema,
+  type Finding,
+  type SuppressionReason,
+} from "@/lib/envelope";
 import {
   getReviewApprovalState,
   type FindingApprovalState,
@@ -134,6 +138,17 @@ function FindingMarkdown({ children }: { children: string }) {
   );
 }
 
+function findingKindLabel(kind: Finding["kind"]): string {
+  return kind === "humanEscalation" ? "Maintainer decision needed" : kind;
+}
+
+const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
+  ignored: "Ignored by repository policy",
+  belowSeverity: "Below the configured severity threshold",
+  belowConfidence: "Below the configured confidence threshold",
+  maxFindings: "Beyond the configured finding limit",
+};
+
 function FindingCard({
   finding,
   repoFullName,
@@ -153,7 +168,9 @@ function FindingCard({
         >
           severity: {finding.severity}
         </span>
-        <span className="font-mono text-[11px] text-charcoal/60">{finding.kind}</span>
+        <span className="font-mono text-[11px] text-charcoal/60">
+          {findingKindLabel(finding.kind)}
+        </span>
         <span className="font-mono text-[11px] text-charcoal/60">
           confidence {finding.confidence.toFixed(2)}
         </span>
@@ -194,10 +211,10 @@ function FindingCard({
 
 function ApprovalStatusBadge({ state }: { state: FindingApprovalState }) {
   const label = state.activeApproval
-    ? "Approved"
+    ? "Decision recorded"
     : state.latestApproval?.revokedAt
-      ? "Revoked"
-      : "Awaiting approval";
+      ? "Override withdrawn"
+      : "Needs maintainer decision";
   const classes = state.activeApproval
     ? "border-brand-secondary/40 bg-brand-secondary/10 text-[#166657]"
     : state.latestApproval?.revokedAt
@@ -228,17 +245,16 @@ function ApprovalPanel({
     <section className="mt-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="eyebrow">Kind-blocking escalations</p>
+          <p className="eyebrow">Maintainer decision needed</p>
           <p className="mt-1 text-sm text-ink-soft">
-            Human judgment is required before merge. Update the pull request and push again,
-            or have an organization admin approve an eligible judgment call with a rationale.
-            Approvals apply only to commit{" "}
+            Encode the intended behavior in code, tests, configuration, or the pull request,
+            then push again. That is the normal path to clearing the required check. For an
+            irreducible kind-only product decision, an organization admin can instead record a
+            commit-scoped override with a rationale.
+            {" "}Overrides apply only to commit{" "}
             <span className="font-mono text-charcoal">{headSha.slice(0, 12)}</span>.
           </p>
         </div>
-        <span className="rounded-full border border-charcoal/15 px-3 py-1 font-mono text-[10px] uppercase tracking-wide text-charcoal/65">
-          Requires admin
-        </span>
       </div>
       <div className="card mt-3 divide-y divide-stone/60">
         {states.map((state) => {
@@ -248,7 +264,7 @@ function ApprovalPanel({
               <div className="flex flex-wrap items-center gap-3">
                 <ApprovalStatusBadge state={state} />
                 <span className="font-mono text-[11px] text-charcoal/60">
-                  {state.finding.kind}
+                  {findingKindLabel(state.finding.kind)}
                 </span>
                 <span className="font-mono text-[11px] text-charcoal/60">
                   {state.findingId.slice(0, 16)}
@@ -269,10 +285,10 @@ function ApprovalPanel({
               {!state.activeApproval && !state.latestApproval?.revokedAt && (
                 <p className="mt-3 rounded-card border border-stone/70 bg-stone/20 px-3 py-2 text-xs text-charcoal/75">
                   {state.severityBlocking
-                    ? "Update the pull request and push again. This finding also blocks by severity, so an approval cannot clear it."
+                    ? "Fix or document the intended behavior and push again. This finding also blocks by severity, so an override cannot clear it."
                     : isAdmin
-                      ? "Update the pull request and push again, or approve this finding below with a rationale."
-                      : "Update the pull request and push again, or ask an organization admin to approve this finding with a rationale."}
+                      ? "Fix or encode the intended behavior and push again. Use the override only when no code or configuration change can express the decision."
+                      : "Fix or encode the intended behavior and push again. An organization admin can record an override only for a genuine product decision."}
                 </p>
               )}
               {approval && (
@@ -300,22 +316,27 @@ function ApprovalPanel({
                 </dl>
               )}
               {isAdmin && !state.activeApproval && !state.latestApproval?.revokedAt && !state.severityBlocking && (
-                <form action={approveFinding} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
-                  <input type="hidden" name="slug" value={slug} />
-                  <input type="hidden" name="publicId" value={publicId} />
-                  <input type="hidden" name="findingId" value={state.findingId} />
-                  <textarea
-                    name="rationale"
-                    required
-                    minLength={1}
-                    rows={2}
-                    className="min-h-16 rounded-md border border-stone bg-ivory px-3 py-2 text-sm text-charcoal outline-none focus:border-rust"
-                    placeholder="Approval rationale"
-                  />
-                  <button className="rounded-md bg-charcoal px-4 py-2 text-sm font-semibold text-ivory hover:bg-rust">
-                    Approve
-                  </button>
-                </form>
+                <details className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm">
+                  <summary className="cursor-pointer font-medium text-charcoal/75">
+                    Record a commit-scoped override
+                  </summary>
+                  <form action={approveFinding} className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
+                    <input type="hidden" name="slug" value={slug} />
+                    <input type="hidden" name="publicId" value={publicId} />
+                    <input type="hidden" name="findingId" value={state.findingId} />
+                    <textarea
+                      name="rationale"
+                      required
+                      minLength={1}
+                      rows={2}
+                      className="min-h-16 rounded-md border border-stone bg-ivory px-3 py-2 text-sm text-charcoal outline-none focus:border-rust"
+                      placeholder="Why no code or configuration change can resolve this decision"
+                    />
+                    <button className="rounded-md bg-charcoal px-4 py-2 text-sm font-semibold text-ivory hover:bg-rust">
+                      Record override
+                    </button>
+                  </form>
+                </details>
               )}
               {isAdmin && state.activeApproval && (
                 <form action={revokeFinding} className="mt-4">
@@ -323,7 +344,7 @@ function ApprovalPanel({
                   <input type="hidden" name="publicId" value={publicId} />
                   <input type="hidden" name="findingId" value={state.findingId} />
                   <button className="rounded-md border border-rust/40 px-4 py-2 text-sm font-semibold text-rust hover:bg-rust/5">
-                    Revoke
+                    Withdraw override
                   </button>
                 </form>
               )}
@@ -570,8 +591,8 @@ export default async function RunDetailPage({
           <>
             <section className="mt-8">
               <p className="eyebrow">
-                Findings ({findings.length}) · {envelope.counts.suppressed} suppressed below
-                threshold · {envelope.counts.ungrounded} dropped ungrounded
+                Findings ({findings.length}) · {envelope.counts.suppressed} suppressed by policy ·{" "}
+                {envelope.counts.ungrounded} dropped ungrounded
               </p>
               <div className="card mt-3 divide-y divide-stone/60">
                 {findings.slice(0, MAX_RENDERED_FINDINGS).map((finding, index) => (
@@ -595,6 +616,42 @@ export default async function RunDetailPage({
                 )}
               </div>
             </section>
+
+            {envelope.counts.suppressed > 0 && (
+              <details className="card mt-8 overflow-hidden">
+                <summary className="cursor-pointer px-5 py-4 font-mono text-xs uppercase tracking-wide text-charcoal/70 sm:px-6">
+                  Suppressed findings ({envelope.counts.suppressed})
+                </summary>
+                {envelope.suppressedFindings?.length ? (
+                  <div className="divide-y divide-stone/60 border-t border-stone/60">
+                    {envelope.suppressedFindings
+                      .slice(0, MAX_RENDERED_FINDINGS)
+                      .map((entry, index) => (
+                        <div key={`${entry.finding.path}:${entry.finding.line}:${index}`}>
+                          <p className="bg-stone/20 px-5 py-2 font-mono text-[10px] uppercase tracking-wide text-charcoal/60 sm:px-6">
+                            {SUPPRESSION_REASON_LABELS[entry.reason]}
+                          </p>
+                          <FindingCard
+                            finding={entry.finding}
+                            repoFullName={review.repoFullName}
+                            headSha={review.headSha}
+                            reviewUrl={reviewUrl}
+                          />
+                        </div>
+                      ))}
+                    {envelope.suppressedFindings.length > MAX_RENDERED_FINDINGS && (
+                      <p className="border-t border-stone/60 px-5 py-4 text-center text-sm text-charcoal/50">
+                        {envelope.suppressedFindings.length - MAX_RENDERED_FINDINGS} more suppressed findings not shown
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="border-t border-stone/60 px-5 py-4 text-sm text-charcoal/60 sm:px-6">
+                    This review predates retained suppression details. Only the count is available.
+                  </p>
+                )}
+              </details>
+            )}
 
             {resolved.length > 0 && (
               <section className="mt-8">

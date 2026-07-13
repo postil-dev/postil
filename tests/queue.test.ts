@@ -353,10 +353,14 @@ describeDb("postgres job queue", () => {
 
     const secondTry = await claimJob(pool, "w");
     expect(secondTry?.attempts).toBe(2);
+    const failedAfter = new Date();
     expect(await failJob(pool, secondTry!, "boom 2")).toBe("failed");
 
-    row = await pool.query("SELECT status FROM jobs");
+    row = await pool.query("SELECT status, run_after FROM jobs");
     expect(row.rows[0].status).toBe("failed");
+    expect(new Date(row.rows[0].run_after).getTime()).toBeGreaterThanOrEqual(
+      failedAfter.getTime(),
+    );
     expect(await claimJob(pool, "w")).toBeNull();
   });
 

@@ -40,6 +40,25 @@ export const findingSchema = z.object({
   body: z.string(),
 });
 
+export const suppressionReasonSchema = z.enum([
+  "ignored",
+  "belowSeverity",
+  "belowConfidence",
+  "maxFindings",
+]);
+
+export const suppressedFindingSchema = z.object({
+  finding: findingSchema,
+  reason: suppressionReasonSchema,
+});
+
+export const modelIncidentSchema = z.object({
+  phase: z.enum(["review", "scorer"]),
+  category: z.enum(["providerError", "invalidOutput", "timeout", "deadline"]),
+  recovered: z.boolean(),
+  recovery: z.enum(["repair", "fallback"]).optional(),
+});
+
 export const envelopeSchema = z
   .object({
     version: z.literal(1),
@@ -47,6 +66,9 @@ export const envelopeSchema = z
     silent: z.boolean(),
     findings: z.array(findingSchema),
     resolved: z.array(findingSchema),
+    // CLI >= v0.5.1 retains policy-suppressed details for the authenticated run
+    // page. Older envelopes expose only counts.suppressed.
+    suppressedFindings: z.array(suppressedFindingSchema).optional(),
     counts: z.object({
       info: z.number().int().nonnegative(),
       warn: z.number().int().nonnegative(),
@@ -86,6 +108,9 @@ export const envelopeSchema = z
         }),
       )
       .optional(),
+    // CLI >= v0.5.1 emits safe structured degradation signals. Raw provider
+    // responses and generated content never enter this monitoring field.
+    modelIncidents: z.array(modelIncidentSchema).optional(),
     usageAccountingComplete: z.boolean().optional(),
     // Engine wall-clock duration in milliseconds (0 when emitted by older CLIs).
     durationMs: z.number().int().nonnegative().optional().default(0),
@@ -128,11 +153,21 @@ export const envelopeSchema = z
         message: `duplicate finding id also used at findings.${firstIndex}.id`,
       });
     });
+    envelope.modelIncidents?.forEach((incident, index) => {
+      if (incident.recovered === Boolean(incident.recovery)) return;
+      ctx.addIssue({
+        code: "custom",
+        path: ["modelIncidents", index, "recovery"],
+        message: "recovery must be present exactly when the incident recovered",
+      });
+    });
   });
 
 export type Severity = z.infer<typeof severitySchema>;
 export type FindingKind = z.infer<typeof findingKindSchema>;
 export type Finding = z.infer<typeof findingSchema>;
+export type SuppressionReason = z.infer<typeof suppressionReasonSchema>;
+export type SuppressedFinding = z.infer<typeof suppressedFindingSchema>;
 export type Envelope = z.infer<typeof envelopeSchema>;
 
 const SEVERITY_RANK: Record<Severity, number> = { error: 0, warn: 1, info: 2 };

@@ -216,18 +216,20 @@ describeDb("watchdog stuck-review kill", () => {
         'running', 3, 3, now() - interval '20 minutes', 'dead-worker'
       )
     `);
-    const first = await watchdogPass(new Date());
+    const failedAfter = new Date();
+    const first = await watchdogPass(failedAfter);
     const second = await watchdogPass(new Date());
 
     expect(first.killed).toBe(0);
     expect(second.killed).toBe(0);
-    const jobs = await pool.query<{ kind: string; status: string }>(
-      "SELECT kind, status FROM jobs ORDER BY id",
+    const jobs = await pool.query<{ kind: string; status: string; run_after: Date }>(
+      "SELECT kind, status, run_after FROM jobs ORDER BY id",
     );
-    expect(jobs.rows).toEqual([
+    expect(jobs.rows.map(({ kind, status }) => ({ kind, status }))).toEqual([
       { kind: "respond", status: "failed" },
       { kind: "respond-failure-comment", status: "queued" },
     ]);
+    expect(jobs.rows[0]!.run_after.getTime()).toBeGreaterThanOrEqual(failedAfter.getTime());
   });
 
   test("requeues exhausted gate reconciliation until GitHub is synchronized", async () => {

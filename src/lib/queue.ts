@@ -217,7 +217,8 @@ export async function failJob(
   // effect (e.g. posting a user-facing failure comment).
   const res = await pool.query(
     `UPDATE jobs
-     SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2
+     SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2,
+         run_after = now()
      WHERE id = $1 AND status = 'running' AND locked_by = $3`,
     [job.id, redactedError, job.lockedBy],
   );
