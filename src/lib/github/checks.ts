@@ -140,8 +140,15 @@ export async function getPullRequestHeadSha(
   token: string,
   repoFullName: string,
   number: number,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const res = await githubFetch(token, "GET", `/repos/${repoFullName}/pulls/${number}`);
+  const res = await githubFetch(
+    token,
+    "GET",
+    `/repos/${repoFullName}/pulls/${number}`,
+    undefined,
+    signal,
+  );
   const data = (await res.json()) as { head?: { sha?: string } };
   const headSha = data.head?.sha;
   if (!headSha) throw new Error(`GitHub pull request ${repoFullName}#${number} has no head sha`);

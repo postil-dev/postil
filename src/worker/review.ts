@@ -19,7 +19,6 @@ import {
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
-import { qualifyingHumanEscalations } from "@/lib/escalation-notification";
 import { ingestEnvelope } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
@@ -619,9 +618,6 @@ export async function runReviewJob(
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
     // no longer owns the result. The CLI owns the success-path check-runs.
-    const qualifyingEscalationCount = qualifyingHumanEscalations(
-      ingested.envelope,
-    ).length;
     const completed = await persistReviewCompletion(db, {
       reviewId,
       envelope: ingested.envelope,
@@ -651,30 +647,9 @@ export async function runReviewJob(
       })),
       hostedUsageReservationId,
       usageAccountingComplete: ingested.usageAccountingComplete,
-      escalationJob:
-        qualifyingEscalationCount > 0 && detailsUrl
-          ? {
-              reviewPublicId: publicId,
-              repoFullName: payload.repoFullName,
-              prNumber: payload.prNumber,
-              runUrl: detailsUrl,
-            }
-          : undefined,
     });
 
-    if (completed) {
-      if (qualifyingEscalationCount > 0) {
-        if (!detailsUrl) {
-          reviewLog.line(
-            `human escalation email skipped (${qualifyingEscalationCount} qualifying finding(s), public run URL is unavailable)`,
-          );
-        } else {
-          reviewLog.line(
-            `human escalation email queued (${qualifyingEscalationCount} new qualifying finding(s))`,
-          );
-        }
-      }
-    } else {
+    if (!completed) {
       await releaseHostedReviewSpend(db, hostedUsageReservationId);
       const terminal = (
         await db

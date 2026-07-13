@@ -13,7 +13,7 @@
     "seed": "bun run scripts/seed.ts",
     "billing:grant-credit": "bun run scripts/grant-billing-credit.ts",
     "billing:set-entitlement": "bun run scripts/set-org-entitlement.ts",
-    "notifications:backfill-verification": "bun run scripts/backfill-escalation-email-verification.ts",
+    "notifications:quiesce": "bun run scripts/retire-escalation-email.ts --quiesce",
     "jobs:activate-release": "bun run scripts/activate-release-jobs.ts",
     "billing:backfill-contact-verification": "bun run scripts/backfill-billing-contact-verification.ts",
     "verify:dashboard": "bun run scripts/verify-dashboard.ts",

@@ -141,7 +141,7 @@ export const HUMAN_ESCALATION_GATE_MIN_CONFIDENCE = 0.3;
 
 /**
  * Human escalations are intentionally held to a separate, low confidence
- * floor before they can block or notify. Confidence is the calibrated signal
+ * floor before they can block. Confidence is the calibrated signal
  * shared by the generator and scorer; matching prose templates would be more
  * brittle and could suppress a terse but genuine request for human judgment.
  */

@@ -97,8 +97,15 @@ export async function sendVerificationEmail(input: {
     },
     body: JSON.stringify({
       sender: {
-        name: optionalEnv("POSTIL_ESCALATION_FROM_NAME", "Postil") as string,
-        email: optionalEnv("POSTIL_ESCALATION_FROM_EMAIL", "reviews@mail.postil.dev") as string,
+        name:
+          optionalEnv("POSTIL_EMAIL_FROM_NAME") ??
+          (optionalEnv("POSTIL_ESCALATION_FROM_NAME", "Postil") as string),
+        email:
+          optionalEnv("POSTIL_EMAIL_FROM_EMAIL") ??
+          (optionalEnv(
+            "POSTIL_ESCALATION_FROM_EMAIL",
+            "reviews@mail.postil.dev",
+          ) as string),
       },
       to: [{ email: input.recipient }],
       subject: input.subject,

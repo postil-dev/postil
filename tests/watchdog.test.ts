@@ -230,6 +230,24 @@ describeDb("watchdog stuck-review kill", () => {
     ]);
   });
 
+  test("requeues exhausted gate reconciliation until GitHub is synchronized", async () => {
+    await pool.query(`
+      INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
+      VALUES (
+        'gate-state-sync',
+        '{"reviewId":7,"reviewPublicId":"00000000-0000-4000-8000-000000000007"}',
+        'running', 5, 5, now() - interval '20 minutes', 'dead-worker'
+      )
+    `);
+
+    await watchdogPass(new Date());
+
+    const job = await pool.query<{ status: string }>(
+      "SELECT status FROM jobs WHERE kind = 'gate-state-sync'",
+    );
+    expect(job.rows[0]?.status).toBe("queued");
+  });
+
   test("a review within the deadline is left alone", async () => {
     const repositoryId = await seedRepo();
     const row = await pool.query<{ id: string }>(

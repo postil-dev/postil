@@ -412,7 +412,7 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals WHERE revoked_at IS NULL",
     );
     expect(approvals.rows[0]!.c).toBe(1);
-    expect(postedComments[0]?.body).toContain("Approved by @admin");
+    expect(postedComments[0]?.body).toContain("Approval recorded by @admin");
   });
 
   test("installation_repositories removed completes in-flight review check-runs then deletes", async () => {
@@ -507,8 +507,13 @@ describeDb("webhook handler behaviour", () => {
       [reviewId],
     );
     expect(review.rows[0]!.gate_failing).toBe(false);
-    expect(completedCheckRuns).toEqual([{ repoFullName: "octo/approvals", conclusion: "success" }]);
-    expect(postedComments[0]?.body).toContain("Approved by @admin");
+    expect(completedCheckRuns).toEqual([]);
+    const syncJobs = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM jobs WHERE kind = 'gate-state-sync'",
+    );
+    expect(syncJobs.rows[0]!.c).toBe(1);
+    expect(postedComments[0]?.body).toContain("Approval recorded by @admin");
+    expect(postedComments[0]?.body).toContain("gate update is queued");
     expect(postedComments[0]?.body).toContain("head-sha");
   });
 

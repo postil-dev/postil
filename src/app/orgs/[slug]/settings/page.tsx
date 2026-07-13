@@ -30,13 +30,10 @@ export const dynamic = "force-dynamic";
 
 export default async function OrgSettingsPage({
   params,
-  searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ emailVerification?: string }>;
 }) {
   const { slug } = await params;
-  const { emailVerification } = await searchParams;
   const { db, org, membership } = await requireOrgMembership(slug);
   const now = new Date();
   if (membership.role !== "admin") {
@@ -53,9 +50,6 @@ export default async function OrgSettingsPage({
         configYaml: schema.orgSettings.configYaml,
         guardrailsMd: schema.orgSettings.guardrailsMd,
         contentPolicyMd: schema.orgSettings.contentPolicyMd,
-        escalationEmail: schema.orgSettings.escalationEmail,
-        escalationEmailPending: schema.orgSettings.escalationEmailPending,
-        escalationEmailVerifiedAt: schema.orgSettings.escalationEmailVerifiedAt,
         hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
         hasAdditionalAuth: sql<boolean>`${schema.orgSettings.apiAuthHeaderCiphertext} IS NOT NULL AND ${schema.orgSettings.apiAuthValueCiphertext} IS NOT NULL`,
       })
@@ -197,16 +191,6 @@ export default async function OrgSettingsPage({
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
         <div>
           <p className="eyebrow">Organization settings</p>
-          {emailVerification === "success" && (
-            <p role="status" className="mt-3 rounded-card border border-gate/40 bg-gate/5 px-4 py-3 text-sm text-gate">
-              Notification email verified.
-            </p>
-          )}
-          {emailVerification === "invalid" && (
-            <p role="alert" className="mt-3 rounded-card border border-rust/40 bg-rust/5 px-4 py-3 text-sm text-rust">
-              This verification link is invalid or expired.
-            </p>
-          )}
           <SettingsForm
             slug={org.slug}
             settings={settings}

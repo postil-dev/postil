@@ -21,18 +21,10 @@ export interface ReviewCompletionInput {
   }>;
   hostedUsageReservationId?: string | null;
   usageAccountingComplete: boolean;
-  escalationJob?: {
-    reviewPublicId: string;
-    repoFullName: string;
-    prNumber: number;
-    runUrl: string;
-  };
 }
 
 /**
- * Persist the terminal review, its accounting, and its notification outbox
- * atomically. Nothing after this transaction can make the review job retry and
- * enqueue a second escalation for the same completed review.
+ * Persist the terminal review and its accounting atomically.
  */
 export async function persistReviewCompletion(
   db: Database,
@@ -116,16 +108,6 @@ export async function persistReviewCompletion(
       }
     }
     await tx.insert(schema.usageEvents).values(persistedUsageRows);
-    if (input.escalationJob) {
-      await tx.insert(schema.jobs).values({
-        kind: "escalation-notification",
-        payload: {
-          reviewId: input.reviewId,
-          ...input.escalationJob,
-        },
-        maxAttempts: 5,
-      });
-    }
     return true;
   });
 }

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -11,7 +12,12 @@ import {
   enqueueJob,
   failJob,
   queueDepth,
+  retryJobIndefinitely,
 } from "@/lib/queue";
+import {
+  finalizeEscalationEmailRetirement,
+  quiesceEscalationEmailJobs,
+} from "@/lib/escalation-email-retirement";
 import { activateReleaseJobs } from "@/lib/release-job-rollout";
 
 /**
@@ -46,8 +52,10 @@ describeDb("postgres job queue", () => {
           await pool.query(trimmed);
         } catch (err) {
           const code = (err as { code?: string }).code;
-          // 42P07 duplicate table, 42710 duplicate object (enum/index).
-          if (code !== "42P07" && code !== "42710") throw err;
+          // 42P07 duplicate table, 42710 duplicate object (enum/index/trigger),
+          // 42723 duplicate function. The CI database is shared by focused
+          // migration suites, so this runner tolerates their prior objects.
+          if (code !== "42P07" && code !== "42710" && code !== "42723") throw err;
         }
       }
     }
@@ -105,7 +113,7 @@ describeDb("postgres job queue", () => {
   });
 
   test("stages new job kinds until the post-deploy capability activation", async () => {
-    const id = await enqueueJob(pool, "escalation-email-verification", { orgId: 1 });
+    const id = await enqueueJob(pool, "billing-contact-verification", { orgId: 1 });
     const deliveryId = await enqueueJob(pool, "respond-delivery", { jobId: 9 });
     const staged = await pool.query<{ run_after: Date | string }>(
       "SELECT run_after FROM jobs WHERE id = $1",
@@ -137,6 +145,159 @@ describeDb("postgres job queue", () => {
       [laterId],
     );
     expect(later.rows[0]?.runnable).toBe(true);
+  });
+
+  test("retires staged escalation email work and clears recipient material", async () => {
+    const slug = `retirement-${randomUUID()}`;
+    const organization = await pool.query<{ id: string }>(
+      `INSERT INTO organizations (slug, name)
+       VALUES ($1, 'Retirement test')
+       RETURNING id`,
+      [slug],
+    );
+    const organizationId = organization.rows[0]!.id;
+    await pool.query(
+      `INSERT INTO org_settings (
+         org_id,
+         escalation_email,
+         escalation_email_pending,
+         escalation_email_verified_at,
+         escalation_email_verification_token_digest,
+         escalation_email_verification_token_ciphertext,
+         escalation_email_verification_expires_at
+       ) VALUES ($1, 'verified@example.test', 'pending@example.test', now(), $2, $3, now())`,
+      [organizationId, Buffer.from("digest"), Buffer.from("ciphertext")],
+    );
+    const jobId = await enqueueJob(pool, "escalation-notification", {
+      repository: "private/repository",
+      finding: "sensitive finding body",
+    });
+
+    const staged = await pool.query<{ run_after: Date | string }>(
+      "SELECT run_after FROM jobs WHERE id = $1",
+      [jobId],
+    );
+    expect(String(staged.rows[0]?.run_after).toLowerCase()).toContain("infinity");
+    expect(await quiesceEscalationEmailJobs(pool)).toMatchObject({ running: 0 });
+
+    const result = await finalizeEscalationEmailRetirement(pool);
+    expect(result).toMatchObject({
+      running: 0,
+      terminalized: 1,
+      redacted: 1,
+      clearedOrganizations: 1,
+    });
+    const job = await pool.query(
+      "SELECT status, payload, last_error FROM jobs WHERE id = $1",
+      [jobId],
+    );
+    expect(job.rows[0]).toMatchObject({
+      status: "done",
+      payload: {
+        retired: true,
+        reason: "human escalation uses the pull request gate",
+      },
+    });
+    expect(job.rows[0].last_error).toBeNull();
+    const settings = await pool.query(
+      `SELECT escalation_email, escalation_email_pending,
+              escalation_email_verified_at,
+              escalation_email_verification_token_digest,
+              escalation_email_verification_token_ciphertext,
+              escalation_email_verification_expires_at
+       FROM org_settings WHERE org_id = $1`,
+      [organizationId],
+    );
+    expect(Object.values(settings.rows[0] ?? {}).every((value) => value === null)).toBe(true);
+    await pool.query("DELETE FROM organizations WHERE id = $1", [organizationId]);
+  });
+
+  test("quiescence persists while an old escalation email delivery is running", async () => {
+    const queuedId = await enqueueJob(pool, "escalation-notification", { queued: true });
+    const runningId = await enqueueJob(pool, "escalation-email-verification", {
+      running: true,
+    });
+    await pool.query(
+      `UPDATE jobs
+       SET status = 'running', locked_at = now(), locked_by = 'old-worker'
+       WHERE id = $1`,
+      [runningId],
+    );
+
+    await expect(
+      quiesceEscalationEmailJobs(pool, { timeoutMs: 0 }),
+    ).rejects.toThrow(
+      "1 retired escalation email job(s) are still running after drain",
+    );
+    const queued = await pool.query<{ run_after: Date | string }>(
+      "SELECT run_after FROM jobs WHERE id = $1",
+      [queuedId],
+    );
+    expect(String(queued.rows[0]?.run_after).toLowerCase()).toContain("infinity");
+
+    expect(
+      await failJob(
+        pool,
+        { id: runningId, attempts: 1, maxAttempts: 3, lockedBy: "old-worker" },
+        "provider timeout",
+      ),
+    ).toBe("retried");
+    let retried = await pool.query<{ run_after: Date | string }>(
+      "SELECT run_after FROM jobs WHERE id = $1",
+      [runningId],
+    );
+    expect(String(retried.rows[0]?.run_after).toLowerCase()).toContain("infinity");
+
+    await pool.query(
+      `UPDATE jobs
+       SET status = 'running', locked_at = now(), locked_by = 'old-worker'
+       WHERE id = $1`,
+      [runningId],
+    );
+    await pool.query(
+      `UPDATE jobs
+       SET status = 'queued', locked_at = NULL, locked_by = NULL,
+           last_error = 'watchdog retry', run_after = now()
+       WHERE id = $1`,
+      [runningId],
+    );
+    retried = await pool.query<{ run_after: Date | string }>(
+      "SELECT run_after FROM jobs WHERE id = $1",
+      [runningId],
+    );
+    expect(String(retried.rows[0]?.run_after).toLowerCase()).toContain("infinity");
+  });
+
+  test("quiescence drains a bounded in-flight escalation email delivery", async () => {
+    const runningId = await enqueueJob(pool, "escalation-notification", {
+      running: true,
+    });
+    await pool.query(
+      `UPDATE jobs
+       SET status = 'running', locked_at = now(), locked_by = 'old-worker'
+       WHERE id = $1`,
+      [runningId],
+    );
+    const finish = new Promise<void>((resolve, reject) => {
+      setTimeout(() => {
+        pool
+          .query(
+            `UPDATE jobs
+             SET status = 'done', locked_at = NULL, locked_by = NULL
+             WHERE id = $1`,
+            [runningId],
+          )
+          .then(() => resolve(), reject);
+      }, 25);
+    });
+
+    const result = await quiesceEscalationEmailJobs(pool, {
+      timeoutMs: 1_000,
+      pollMs: 10,
+    });
+    await finish;
+
+    expect(result.running).toBe(0);
   });
 
   test("a locked row is skipped, not waited on (SKIP LOCKED)", async () => {
@@ -226,6 +387,25 @@ describeDb("postgres job queue", () => {
     expect(row.rows[0].attempts).toBe(1);
     expect(row.rows[0].last_error).toContain("No CA certificates");
     expect(await claimJob(pool, "w")).toBeNull();
+  });
+
+  test("durable reconciliation requeues after its ordinary retry budget", async () => {
+    await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    const job = await claimJob(pool, "reconciler");
+    expect(job?.attempts).toBe(1);
+
+    expect(
+      await retryJobIndefinitely(pool, job!, "GitHub unavailable"),
+    ).toBe("retried");
+    const row = await pool.query(
+      "SELECT status, max_attempts, last_error FROM jobs WHERE id = $1",
+      [job!.id],
+    );
+    expect(row.rows[0]).toMatchObject({
+      status: "queued",
+      max_attempts: 1,
+      last_error: "GitHub unavailable",
+    });
   });
 
   test("failJob {permanent} on an already-failed job returns 'lost' (single-post guard holds)", async () => {

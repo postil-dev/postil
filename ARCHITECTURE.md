@@ -49,26 +49,14 @@ the deploy workflow confirms that every managed web and worker Machine is runnin
 one image. Activation and inserts share a transaction advisory lock, so no job can
 become claimable between the fleet check and capability activation.
 
-Completed hosted reviews send one Brevo transactional email when their stored
-envelope contains a calibrated `humanEscalation` finding at or above the gate
-confidence floor. The notification targets only the organization-owned recipient
-whose address has a non-null verification timestamp. New and replacement addresses
-remain pending until a single-use, 24-hour token is consumed. Token digests bind the
-token to the organization and normalized address; sealed token material is available
-only to durable verification-email jobs. Verification-link GET requests render a
-no-store, no-referrer confirmation form and never consume tokens because mail
-scanners follow links. A same-origin POST performs the single-use transition.
-Replacing a pending address invalidates its
-old token without deactivating an existing verified recipient. A durable queue job retries transient provider
-failures using the public review ID as the provider idempotency key, so email
-delivery cannot change review storage, comments, checks, or gate state. Queue
-delivery is at-least-once: Brevo deduplicates ordinary retries, while a rare
-duplicate after an extended worker outage is preferred to a lost escalation.
-Verification jobs use the token digest as their provider idempotency key. The backfill
-command detects matching live jobs and restores missing or exhausted jobs without
-exposing addresses or token material. The post-deploy release activation runs the
-idempotent backfill while PostgreSQL keeps verification jobs staged, then atomically
-activates the release job kinds after the fleet compatibility check succeeds.
+`humanEscalation` is a GitHub-native, kind-blocking review outcome. The PR review
+contains the grounded finding and concrete next step, while `postil/gate` prevents
+merge until a new review resolves it or an organization admin records a rationale
+for an eligible judgment call. Dashboard approvals are bound to one reviewed commit
+and atomically enqueue a gate-state sync with the recorded rationale. Sync jobs
+serialize per review, recompute the latest decision, and idempotently publish it to
+the GitHub check. Severity-blocking findings require a code or configuration change
+and cannot be cleared by an approval.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 

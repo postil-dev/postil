@@ -164,6 +164,8 @@ try {
   await verifyPage(`${origin}/orgs/acme/runs/${review.public_id}`, headers, [
     review.full_name,
     "Summary",
+    "Human judgment is required before merge.",
+    "Update the pull request and push again",
     "Findings (",
   ]);
   await verifyPage(`${origin}/operator`, headers, ["Review and run ledger", "demo-dev"]);

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { seal, unseal } from "@/lib/crypto/seal";
 
-let sessionUser: { id: number } | null = { id: 10 };
+let sessionUser: { id: number; githubId?: string; login?: string } | null = { id: 10 };
 let orgRows: Array<{ id: number }> = [{ id: 20 }];
 let memberRows: Array<{ role: string }> = [{ role: "admin" }];
 let insertedValues: Record<string, unknown> | null = null;
@@ -14,6 +14,27 @@ let billingRows: Array<Record<string, unknown>> = [];
 let queuedJobs: Array<Record<string, unknown>> = [];
 let updatedValues: Record<string, unknown> | null = null;
 let updateResultRows: Array<Record<string, unknown>> = [];
+let approvalInserted = false;
+let gateSyncJobs = 0;
+let storedGateStates: boolean[] = [];
+let checkConclusions: string[] = [];
+let checkError: Error | null = null;
+
+const approvalReview = {
+  id: 7,
+  publicId: "11111111-1111-4111-8111-111111111111",
+  repositoryId: 2,
+  prNumber: 9,
+  headSha: "a".repeat(40),
+  status: "completed",
+  envelope: { version: 1 },
+  engineGateFailing: true,
+  gateFailing: true,
+  gateCheckRunId: 99,
+  repoFullName: "acme/repo",
+  orgId: 20,
+  githubInstallationId: 42,
+};
 
 const schema = {
   organizations: { id: "organizations.id", slug: "organizations.slug" },
@@ -26,21 +47,6 @@ const schema = {
     orgId: "org_settings.org_id",
     apiKeyCiphertext: "org_settings.api_key_ciphertext",
     apiAuthHeaderCiphertext: "org_settings.api_auth_header_ciphertext",
-    escalationEmail: "org_settings.escalation_email",
-    escalationEmailPending: "org_settings.escalation_email_pending",
-    escalationEmailVerifiedAt: "org_settings.escalation_email_verified_at",
-    escalationEmailVerificationRequestedAt:
-      "org_settings.escalation_email_verification_requested_at",
-    escalationEmailVerificationTokenDigest:
-      "org_settings.escalation_email_verification_token_digest",
-    escalationEmailVerificationTokenCiphertext:
-      "org_settings.escalation_email_verification_token_ciphertext",
-    escalationEmailVerificationExpiresAt:
-      "org_settings.escalation_email_verification_expires_at",
-    escalationEmailVerificationSentAt:
-      "org_settings.escalation_email_verification_sent_at",
-    escalationEmailVerificationMessageId:
-      "org_settings.escalation_email_verification_message_id",
     updatedAt: "org_settings.updated_at",
   },
   organizationEntitlements: {
@@ -78,10 +84,65 @@ mock.module("@/lib/db", () => ({
   schema,
 }));
 
+mock.module("@/lib/finding-approvals", () => ({
+  enqueueGateStateSync: async () => {
+    gateSyncJobs += 1;
+  },
+  findKindBlockingState: () => ({
+    finding: { id: "finding", severity: "warn", kind: "humanEscalation" },
+    findingId: "finding",
+    blocking: true,
+    activeApproval: approvalInserted ? { id: "approval-1" } : null,
+    latestApproval: null,
+    severityBlocking: false,
+  }),
+  formatRemainingGateBlockers: () => approvalInserted ? "No blocking findings remain." : "- finding",
+  getReviewApprovalState: async () => ({
+    effectiveGate: { failing: !approvalInserted, blockers: approvalInserted ? [] : [{}] },
+  }),
+  hasNewerCompletedReviewForHead: async () => false,
+  insertFindingApproval: async () => {
+    approvalInserted = true;
+    return "approval-1";
+  },
+  loadReviewForApprovalByPublicId: async () => approvalReview,
+  lockReviewApprovalState: async () => undefined,
+  revokeFindingApproval: async () => {
+    if (!approvalInserted) return null;
+    approvalInserted = false;
+    return "approval-1";
+  },
+  updateStoredEffectiveGate: async (_db: unknown, _reviewId: number, failing: boolean) => {
+    storedGateStates.push(failing);
+  },
+}));
+
+mock.module("@/lib/github/app-auth", () => ({
+  apiBase: () => "https://api.github.test",
+  getInstallationToken: async () => "installation-token",
+}));
+
+mock.module("@/lib/github/checks", () => ({
+  completeCheckRun: async (
+    _token: string,
+    _repo: string,
+    _checkRunId: number,
+    conclusion: string,
+  ) => {
+    checkConclusions.push(conclusion);
+    if (checkError) throw checkError;
+  },
+  getPullRequestHeadSha: async () => approvalReview.headSha,
+}));
+
+mock.module("@/worker/runner", () => ({
+  triggerQueueDrain: () => undefined,
+}));
+
 const {
   approveFinding,
   resendBillingContactVerification,
-  resendEscalationEmailVerification,
+  revokeFinding,
   saveBillingContact,
   saveOrgSettings,
 } = await import("@/app/orgs/[slug]/actions");
@@ -97,9 +158,7 @@ function fakeDb() {
           : "activeEmail" in selection ||
               selection.pendingEmail === schema.organizationEntitlements.billingContactPending
             ? billingRows
-          : "apiKeyCiphertext" in selection ||
-              "escalationEmail" in selection ||
-              "pendingEmail" in selection
+          : "apiKeyCiphertext" in selection || "pendingEmail" in selection
             ? settingsRows
             : orgRows;
       const chain = {
@@ -173,7 +232,6 @@ function settingsForm(overrides: Record<string, string> = {}): FormData {
   form.set("configYaml", "");
   form.set("guardrailsMd", "");
   form.set("contentPolicyMd", "");
-  form.set("escalationEmail", "");
   for (const [key, value] of Object.entries(overrides)) form.set(key, value);
   return form;
 }
@@ -210,6 +268,11 @@ beforeEach(() => {
   queuedJobs = [];
   updatedValues = null;
   updateResultRows = [];
+  approvalInserted = false;
+  gateSyncJobs = 0;
+  storedGateStates = [];
+  checkConclusions = [];
+  checkError = null;
 });
 
 function billingContactForm(email: string): FormData {
@@ -298,6 +361,38 @@ describe("saveOrgSettings", () => {
       "this action requires an organization admin",
     );
     expect(insertCount).toBe(0);
+  });
+
+  test("queues durable GitHub gate synchronization with a dashboard approval", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+
+    await approveFinding(approvalForm());
+
+    expect(storedGateStates).toEqual([false]);
+    expect(gateSyncJobs).toBe(1);
+  });
+
+  test("queues durable GitHub gate synchronization with a dashboard revocation", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+    approvalInserted = true;
+
+    await revokeFinding(approvalForm());
+
+    expect(storedGateStates).toEqual([true]);
+    expect(gateSyncJobs).toBe(1);
+    expect(checkConclusions).toEqual(["failure"]);
+  });
+
+  test("keeps the approval active when fail-closed revocation cannot reach GitHub", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+    approvalInserted = true;
+    checkError = new Error("GitHub unavailable");
+
+    await expect(revokeFinding(approvalForm())).rejects.toThrow("GitHub unavailable");
+
+    expect(approvalInserted).toBe(true);
+    expect(storedGateStates).toEqual([]);
+    expect(gateSyncJobs).toBe(0);
   });
 
   test("seals a replacement API key before storage", async () => {
@@ -500,107 +595,6 @@ describe("saveOrgSettings", () => {
     expect(insertCount).toBe(0);
   });
 
-  test("stores an organization-scoped escalation recipient", async () => {
-    const result = await saveOrgSettings(
-      null,
-      settingsForm({ escalationEmail: "owners@example.com" }),
-    );
-
-    expect(result).toEqual({
-      status: "success",
-      message: "Settings saved. Check your email to verify notifications.",
-    });
-    expect(conflictSet?.escalationEmailPending).toBe("owners@example.com");
-    expect(conflictSet?.escalationEmail).toBeNull();
-    expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({ kind: "escalation-email-verification" });
-    expect(JSON.stringify(queuedJobs[0])).not.toContain("owners@example.com");
-  });
-
-  test("rejects malformed escalation recipients", async () => {
-    const result = await saveOrgSettings(
-      null,
-      settingsForm({ escalationEmail: "not-an-email" }),
-    );
-
-    expect(result).toEqual({
-      status: "error",
-      message: "Enter a valid notification email.",
-    });
-    expect(insertCount).toBe(0);
-  });
-
-  test("keeps the verified address active while a replacement waits", async () => {
-    settingsRows = [
-      {
-        escalationEmail: "verified@example.com",
-        escalationEmailPending: null,
-        escalationEmailVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
-      },
-    ];
-    await saveOrgSettings(
-      null,
-      settingsForm({ escalationEmail: "Replacement@Example.com" }),
-    );
-
-    expect(conflictSet?.escalationEmail).toBeUndefined();
-    expect(conflictSet?.escalationEmailVerifiedAt).toBeUndefined();
-    expect(conflictSet?.escalationEmailPending).toBe("replacement@example.com");
-    expect(queuedJobs).toHaveLength(1);
-  });
-
-  test("removing an address clears active, pending, and token state", async () => {
-    settingsRows = [
-      {
-        escalationEmail: "verified@example.com",
-        escalationEmailPending: "replacement@example.com",
-        escalationEmailVerifiedAt: new Date("2026-07-01T00:00:00.000Z"),
-      },
-    ];
-    await saveOrgSettings(null, settingsForm({ escalationEmail: "" }));
-
-    expect(conflictSet).toMatchObject({
-      escalationEmail: null,
-      escalationEmailPending: null,
-      escalationEmailVerifiedAt: null,
-      escalationEmailVerificationTokenDigest: null,
-      escalationEmailVerificationTokenCiphertext: null,
-    });
-    expect(queuedJobs).toHaveLength(0);
-  });
-
-  test("does not queue another email when the same address is already pending", async () => {
-    settingsRows = [
-      {
-        escalationEmail: null,
-        escalationEmailPending: "pending@example.com",
-        escalationEmailVerifiedAt: null,
-      },
-    ];
-    await saveOrgSettings(
-      null,
-      settingsForm({ escalationEmail: "PENDING@example.com" }),
-    );
-    expect(queuedJobs).toHaveLength(0);
-    expect(conflictSet?.escalationEmailPending).toBeUndefined();
-  });
-
-  test("resend enforces cooldown without queuing", async () => {
-    settingsRows = [
-      {
-        pendingEmail: "pending@example.com",
-        requestedAt: new Date(),
-      },
-    ];
-    const form = new FormData();
-    form.set("slug", "acme");
-    expect(await resendEscalationEmailVerification(null, form)).toEqual({
-      status: "error",
-      message: "Wait a minute before sending another email.",
-    });
-    expect(queuedJobs).toHaveLength(0);
-    expect(updatedValues).toBeNull();
-  });
 });
 
 describe("SettingsForm API key handling", () => {
@@ -626,21 +620,12 @@ describe("SettingsForm API key handling", () => {
     expect(source).not.toContain("HOSTED_DEFAULT_MODEL_CHAIN");
   });
 
-  test("renders minimal pending and verified notification states", () => {
+  test("does not expose a second escalation channel outside the pull request", () => {
     const formSource = readFileSync("src/app/orgs/[slug]/settings-form.tsx", "utf8");
     const pageSource = readFileSync("src/app/orgs/[slug]/settings/page.tsx", "utf8");
 
-    expect(formSource).toContain("Check your email to verify this address.");
-    expect(formSource).toContain("Escalation emails");
-    expect(formSource).toContain(
-      "Get an email when a finding needs human attention.",
-    );
-    expect(formSource).toContain("Alerts continue to the verified address.");
-    expect(formSource).toContain("Resend");
-    expect(formSource).toContain("verified");
-    expect(pageSource).toContain('role="status"');
-    expect(pageSource).toContain('role="alert"');
-    expect(pageSource).toContain("Notification email verified.");
-    expect(pageSource).toContain("This verification link is invalid or expired.");
+    expect(formSource).not.toContain("Escalation emails");
+    expect(formSource).not.toContain("escalationEmail");
+    expect(pageSource).not.toContain("emailVerification");
   });
 });

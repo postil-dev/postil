@@ -547,7 +547,7 @@ export const orgSettings = pgTable("org_settings", {
   configYaml: text("config_yaml"),
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
-  /** Active only after possession of this address is verified. */
+  /** Retired compatibility columns; the post-deploy retirement clears every value. */
   escalationEmail: text("escalation_email"),
   escalationEmailPending: text("escalation_email_pending"),
   escalationEmailVerifiedAt: timestamp("escalation_email_verified_at", {

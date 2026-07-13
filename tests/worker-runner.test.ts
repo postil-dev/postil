@@ -8,15 +8,15 @@ const OLD_ENV = { ...process.env };
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
+const retriedIndefinitely: Array<{ id: number; error: string }> = [];
 let claimCalls = 0;
 const claimCapabilities: string[][] = [];
 let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
 let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
-let escalationRun: (() => Promise<void>) | undefined;
-let escalationVerificationRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
+let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
 
@@ -36,6 +36,10 @@ mock.module("@/lib/queue", () => ({
   failJob: async (_pool: unknown, job: ClaimedJob, error: string) => {
     failed.push({ id: job.id, error });
     return "failed";
+  },
+  retryJobIndefinitely: async (_pool: unknown, job: ClaimedJob, error: string) => {
+    retriedIndefinitely.push({ id: job.id, error });
+    return "retried";
   },
 }));
 
@@ -69,21 +73,15 @@ mock.module("@/worker/respond", () => ({
   },
 }));
 
-mock.module("@/worker/escalation-notification", () => ({
-  runEscalationNotificationJob: async () => {
-    await escalationRun?.();
-  },
-}));
-
-mock.module("@/worker/escalation-email-verification", () => ({
-  runEscalationEmailVerificationJob: async () => {
-    await escalationVerificationRun?.();
-  },
-}));
-
 mock.module("@/worker/billing-contact-verification", () => ({
   runBillingContactVerificationJob: async () => {
     await billingContactVerificationRun?.();
+  },
+}));
+
+mock.module("@/worker/gate-state-sync", () => ({
+  runGateStateSyncJob: async () => {
+    await gateStateSyncRun?.();
   },
 }));
 
@@ -113,15 +111,15 @@ beforeEach(() => {
   jobs.length = 0;
   completed.length = 0;
   failed.length = 0;
+  retriedIndefinitely.length = 0;
   claimCalls = 0;
   claimCapabilities.length = 0;
   reviewRun = async () => undefined;
   respondRun = async () => undefined;
   respondDeliveryRun = async () => undefined;
   respondFailureCommentRun = async () => undefined;
-  escalationRun = async () => undefined;
-  escalationVerificationRun = async () => undefined;
   billingContactVerificationRun = async () => undefined;
+  gateStateSyncRun = async () => undefined;
   cleanupRun = async () => undefined;
   reviewTiming = undefined;
 });
@@ -140,9 +138,8 @@ describe("drainQueueOnce", () => {
       "review",
       "respond",
       "respond-delivery",
-      "escalation-notification",
-      "escalation-email-verification",
       "billing-contact-verification",
+      "gate-state-sync",
       "check-run-cleanup",
       "respond-failure-comment",
     ]]);
@@ -154,42 +151,6 @@ describe("drainQueueOnce", () => {
     job.payload = { respondJobId: 7 };
     let called = false;
     respondDeliveryRun = async () => {
-      called = true;
-    };
-    jobs.push(job);
-
-    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
-    expect(called).toBe(true);
-    expect(completed).toEqual([1]);
-  });
-
-  test("dispatches durable escalation notification jobs", async () => {
-    const job = reviewJob(1);
-    job.kind = "escalation-notification";
-    job.payload = {
-      reviewId: 7,
-      reviewPublicId: "00000000-0000-0000-0000-000000000007",
-      repoFullName: "octo/repo",
-      prNumber: 7,
-      runUrl: "https://postil.dev/orgs/octo/runs/7",
-    };
-    let called = false;
-    escalationRun = async () => {
-      called = true;
-    };
-    jobs.push(job);
-
-    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
-    expect(called).toBe(true);
-    expect(completed).toEqual([1]);
-  });
-
-  test("dispatches durable escalation email verification jobs", async () => {
-    const job = reviewJob(1);
-    job.kind = "escalation-email-verification";
-    job.payload = { orgId: 7, tokenDigest: "a".repeat(43) };
-    let called = false;
-    escalationVerificationRun = async () => {
       called = true;
     };
     jobs.push(job);
@@ -212,6 +173,43 @@ describe("drainQueueOnce", () => {
     expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
     expect(called).toBe(true);
     expect(completed).toEqual([1]);
+  });
+
+  test("dispatches durable gate state synchronization jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "gate-state-sync";
+    job.payload = {
+      reviewId: 7,
+      reviewPublicId: "00000000-0000-4000-8000-000000000007",
+    };
+    let called = false;
+    gateStateSyncRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("retries gate state synchronization through transient outages", async () => {
+    const job = reviewJob(1);
+    job.kind = "gate-state-sync";
+    job.payload = {
+      reviewId: 7,
+      reviewPublicId: "00000000-0000-4000-8000-000000000007",
+    };
+    gateStateSyncRun = async () => {
+      throw new Error("GitHub PATCH timed out");
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(retriedIndefinitely).toEqual([
+      { id: 1, error: "GitHub PATCH timed out" },
+    ]);
+    expect(failed).toEqual([]);
   });
 
   test("dispatches durable check-run cleanup jobs", async () => {

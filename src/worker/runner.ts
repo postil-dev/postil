@@ -2,10 +2,12 @@ import { hostname } from "node:os";
 
 import { getPool } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
+import type { GateStateSyncJobPayload } from "@/lib/finding-approvals";
 import {
   claimJob,
   completeJob,
   failJob,
+  retryJobIndefinitely,
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
   type RespondDeliveryJobPayload,
@@ -18,6 +20,7 @@ import {
   type BillingContactVerificationJobPayload,
 } from "./billing-contact-verification";
 import { isPermanentFailure } from "./failure-classifier";
+import { runGateStateSyncJob } from "./gate-state-sync";
 import {
   postRespondFailureComment,
   runRespondDeliveryJob,
@@ -25,14 +28,6 @@ import {
   runRespondJob,
 } from "./respond";
 import { runCheckRunCleanupJob, runReviewJob } from "./review";
-import {
-  runEscalationNotificationJob,
-  type EscalationNotificationJobPayload,
-} from "./escalation-notification";
-import {
-  runEscalationEmailVerificationJob,
-  type EscalationEmailVerificationJobPayload,
-} from "./escalation-email-verification";
 import { watchdogPass } from "./watchdog";
 
 const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv("POSTIL_QUEUE_DRAIN_MAX_JOBS", 1);
@@ -47,9 +42,8 @@ export const PROCESSABLE_JOB_KINDS = [
   "review",
   "respond",
   "respond-delivery",
-  "escalation-notification",
-  "escalation-email-verification",
   "billing-contact-verification",
+  "gate-state-sync",
   "check-run-cleanup",
   "respond-failure-comment",
 ] as const;
@@ -68,20 +62,13 @@ async function handleJob(job: ClaimedJob): Promise<void> {
     case "respond-delivery":
       await runRespondDeliveryJob(job.payload as RespondDeliveryJobPayload);
       break;
-    case "escalation-notification":
-      await runEscalationNotificationJob(
-        job.payload as EscalationNotificationJobPayload,
-      );
-      break;
-    case "escalation-email-verification":
-      await runEscalationEmailVerificationJob(
-        job.payload as EscalationEmailVerificationJobPayload,
-      );
-      break;
     case "billing-contact-verification":
       await runBillingContactVerificationJob(
         job.payload as BillingContactVerificationJobPayload,
       );
+      break;
+    case "gate-state-sync":
+      await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
       break;
     case "check-run-cleanup":
       await runCheckRunCleanupJob(job.payload as CheckRunCleanupJobPayload);
@@ -103,8 +90,16 @@ export async function runClaimedJob(job: ClaimedJob, label: string): Promise<voi
     console.log(`[${label}] job ${job.id} done in ${Date.now() - started}ms`);
   } catch (err) {
     const message = redactSecrets(err);
-    const permanent = isPermanentFailure(message);
-    const outcome = await failJob(getPool(), job, message, { permanent });
+    const malformedGateSync =
+      job.kind === "gate-state-sync" &&
+      message.includes("gate state sync job payload is malformed");
+    const permanent =
+      malformedGateSync ||
+      (job.kind !== "gate-state-sync" && isPermanentFailure(message));
+    const outcome =
+      job.kind === "gate-state-sync" && !malformedGateSync
+        ? await retryJobIndefinitely(getPool(), job, message)
+        : await failJob(getPool(), job, message, { permanent });
     console.error(
       `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
     );
