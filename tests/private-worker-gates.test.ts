@@ -29,6 +29,8 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/respond.ts", "utf8");
     const respondStart = source.indexOf("runRespondJob");
     const failureStart = source.indexOf("postRespondFailureComment");
+    expect(respondStart).toBeGreaterThan(0);
+    expect(failureStart).toBeGreaterThan(respondStart);
     const respondGate = source.indexOf("await canProcessPrivateRepository", respondStart);
     expect(respondGate).toBeGreaterThan(respondStart);
     for (const sideEffect of [
@@ -60,6 +62,7 @@ describe("private repository worker defense in depth", () => {
       "await releaseHostedRespondSpend",
     );
     const failureGate = source.indexOf("await canProcessPrivateRepository", failureStart);
+    expect(failureGate).toBeGreaterThan(failureStart);
     expect(source.slice(failureStart, failureGate)).not.toContain("postIssueComment");
     expect(source.indexOf("await deliverPreparedRespond", failureStart)).toBeGreaterThan(
       failureGate,
