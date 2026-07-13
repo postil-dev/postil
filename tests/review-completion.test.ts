@@ -56,6 +56,7 @@ const base = {
   reviewId: 7,
   envelope,
   configFiles: [],
+  configProvenance: { entries: [], degraded: false },
   silent: false,
   gateFailing: true,
   usageAccountingComplete: true,

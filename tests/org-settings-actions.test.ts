@@ -410,6 +410,16 @@ describe("saveOrgSettings", () => {
       "sk-test-secret",
     );
     expect(conflictSet?.apiKeyCiphertext).toBe(sealed);
+    expect(conflictSet?.sharedConfigEnabled).toBe(true);
+  });
+
+  test("lets an admin disable shared owner configuration", async () => {
+    const form = byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" });
+    form.set("sharedConfigEnabled", "off");
+
+    await saveOrgSettings(null, form);
+
+    expect(conflictSet?.sharedConfigEnabled).toBe(false);
   });
 
   test("preserves an existing write-only key when no key action is requested", async () => {
@@ -615,6 +625,8 @@ describe("SettingsForm API key handling", () => {
     expect(source).toContain('disabled={billedMode === "byok"}');
     expect(source).toContain('disabled={billedMode === "hosted"}');
     expect(source).toContain("Private repositories remain inactive until a matching plan");
+    expect(source).toContain("Shared owner configuration is disabled. The stored snapshot is not used.");
+    expect(source).toContain("Protect its default branch with CODEOWNERS, a ruleset, and required review.");
     expect(source).not.toContain("defaultValue={settings?.apiKey");
     expect(source).not.toContain("value={settings?.apiKey");
     expect(source).not.toContain("HOSTED_DEFAULT_MODEL_CHAIN");

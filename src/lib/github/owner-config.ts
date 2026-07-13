@@ -1,0 +1,402 @@
+import { and, eq, sql } from "drizzle-orm";
+
+import type { Database } from "@/lib/db";
+import { schema } from "@/lib/db";
+import type { ConfigProvenanceEntry, ConfigSlot, OrgReviewConfig } from "./contents";
+import { apiBase } from "./app-auth";
+
+const SHARED_PATHS = [
+  ["root", ".postil.yaml", "configYaml"],
+  ["guardrails", ".postil/guardrails.md", "guardrailsMd"],
+  ["content-policy", ".postil/content-policy.md", "contentPolicyMd"],
+] as const;
+const MAX_CONFIG_FILE_BYTES = 64 * 1024;
+const GITHUB_CONFIG_TIMEOUT_MS = 10_000;
+
+type ResolutionStatus = "present" | "absent" | "inaccessible" | "transient";
+
+export interface OwnerConfigResolution {
+  config: OrgReviewConfig | null;
+  files: string[];
+  status: ResolutionStatus;
+  stale: boolean;
+  sourceRepositoryId: number | null;
+  sourceGithubRepoId: number | null;
+  sourceFullName: string;
+  visibility: string | null;
+  defaultBranch: string | null;
+  commitSha: string | null;
+  provenance: ConfigProvenanceEntry[];
+}
+
+interface RepositoryMetadata {
+  id: number;
+  full_name: string;
+  visibility: string;
+  default_branch: string;
+  fork: boolean;
+  archived: boolean;
+  owner: { id: number; login: string };
+}
+
+interface Snapshot {
+  orgId: number;
+  sourceRepositoryId: number | null;
+  sourceGithubRepoId: number;
+  sourceFullName: string;
+  visibility: string;
+  defaultBranch: string;
+  commitSha: string;
+  configYaml: string | null;
+  guardrailsMd: string | null;
+  contentPolicyMd: string | null;
+  files: string[];
+}
+
+export interface OwnerConfigStore {
+  findInstalledRepository(installationId: number, fullName: string): Promise<{
+    id: number;
+    githubRepoId: number;
+    fullName: string;
+  } | null>;
+  loadSnapshot(orgId: number): Promise<Snapshot | null>;
+  saveSnapshot(snapshot: Snapshot): Promise<void>;
+  markDegraded(orgId: number, status: "inaccessible" | "transient"): Promise<void>;
+}
+
+export function createOwnerConfigStore(db: Database): OwnerConfigStore {
+  return {
+    async findInstalledRepository(installationId, fullName) {
+      return (
+        await db
+          .select({
+            id: schema.repositories.id,
+            githubRepoId: schema.repositories.githubRepoId,
+            fullName: schema.repositories.fullName,
+          })
+          .from(schema.repositories)
+          .where(
+            and(
+              eq(schema.repositories.installationId, installationId),
+              sql`lower(${schema.repositories.fullName}) = lower(${fullName})`,
+            ),
+          )
+          .limit(1)
+      )[0] ?? null;
+    },
+    async loadSnapshot(orgId) {
+      return (
+        await db
+          .select({
+            orgId: schema.orgConfigSnapshots.orgId,
+            sourceRepositoryId: schema.orgConfigSnapshots.sourceRepositoryId,
+            sourceGithubRepoId: schema.orgConfigSnapshots.sourceGithubRepoId,
+            sourceFullName: schema.orgConfigSnapshots.sourceFullName,
+            visibility: schema.orgConfigSnapshots.visibility,
+            defaultBranch: schema.orgConfigSnapshots.defaultBranch,
+            commitSha: schema.orgConfigSnapshots.commitSha,
+            configYaml: schema.orgConfigSnapshots.configYaml,
+            guardrailsMd: schema.orgConfigSnapshots.guardrailsMd,
+            contentPolicyMd: schema.orgConfigSnapshots.contentPolicyMd,
+            files: schema.orgConfigSnapshots.files,
+          })
+          .from(schema.orgConfigSnapshots)
+          .where(eq(schema.orgConfigSnapshots.orgId, orgId))
+          .limit(1)
+      )[0] ?? null;
+    },
+    async saveSnapshot(snapshot) {
+      const now = new Date();
+      await db
+        .insert(schema.orgConfigSnapshots)
+        .values({ ...snapshot, stale: false, lastError: null, fetchedAt: now, updatedAt: now })
+        .onConflictDoUpdate({
+          target: schema.orgConfigSnapshots.orgId,
+          set: { ...snapshot, stale: false, lastError: null, fetchedAt: now, updatedAt: now },
+        });
+    },
+    async markDegraded(orgId, status) {
+      await db
+        .update(schema.orgConfigSnapshots)
+        .set({ stale: true, lastError: status, updatedAt: new Date() })
+        .where(eq(schema.orgConfigSnapshots.orgId, orgId));
+    },
+  };
+}
+
+function githubHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "postil-control-plane",
+  };
+}
+
+class GithubConfigError extends Error {
+  constructor(readonly status: "inaccessible" | "transient", message: string) {
+    super(message);
+  }
+}
+
+async function githubJson(token: string, path: string): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase()}${path}`, {
+      headers: githubHeaders(token),
+      signal: AbortSignal.timeout(GITHUB_CONFIG_TIMEOUT_MS),
+    });
+  } catch {
+    throw new GithubConfigError("transient", "GitHub request failed");
+  }
+  if (!response.ok) {
+    throw new GithubConfigError(
+      response.status === 403 || response.status === 404 ? "inaccessible" : "transient",
+      `GitHub request failed with HTTP ${response.status}`,
+    );
+  }
+  return response.json();
+}
+
+async function fetchMetadata(token: string, fullName: string): Promise<RepositoryMetadata> {
+  const value = (await githubJson(token, `/repos/${fullName}`)) as Partial<RepositoryMetadata>;
+  if (
+    typeof value.id !== "number" ||
+    typeof value.full_name !== "string" ||
+    typeof value.visibility !== "string" ||
+    typeof value.default_branch !== "string" ||
+    typeof value.fork !== "boolean" ||
+    typeof value.archived !== "boolean" ||
+    !value.owner ||
+    typeof value.owner.id !== "number" ||
+    typeof value.owner.login !== "string"
+  ) {
+    throw new GithubConfigError("transient", "GitHub repository metadata was invalid");
+  }
+  return value as RepositoryMetadata;
+}
+
+async function fetchCommitSha(token: string, fullName: string, branch: string): Promise<string> {
+  const value = (await githubJson(
+    token,
+    `/repos/${fullName}/commits/${encodeURIComponent(branch)}`,
+  )) as { sha?: unknown };
+  if (typeof value.sha !== "string" || !/^[0-9a-f]{40}$/i.test(value.sha)) {
+    throw new GithubConfigError("transient", "GitHub default branch commit was invalid");
+  }
+  return value.sha;
+}
+
+async function fetchFileAtCommit(
+  token: string,
+  fullName: string,
+  path: string,
+  commitSha: string,
+): Promise<string | null> {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBase()}/repos/${fullName}/contents/${encodedPath}?ref=${commitSha}`,
+      {
+        headers: githubHeaders(token),
+        signal: AbortSignal.timeout(GITHUB_CONFIG_TIMEOUT_MS),
+      },
+    );
+  } catch {
+    throw new GithubConfigError("transient", "GitHub contents request failed");
+  }
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new GithubConfigError(
+      response.status === 403 ? "inaccessible" : "transient",
+      `GitHub contents request failed with HTTP ${response.status}`,
+    );
+  }
+  const value = (await response.json()) as {
+    type?: unknown;
+    size?: unknown;
+    encoding?: unknown;
+    content?: unknown;
+  };
+  if (value.type !== "file") {
+    throw new GithubConfigError("inaccessible", `Shared config path ${path} is not a file`);
+  }
+  if (typeof value.size !== "number" || value.size > MAX_CONFIG_FILE_BYTES) {
+    throw new GithubConfigError("inaccessible", `Shared config path ${path} exceeds the size cap`);
+  }
+  if (value.encoding !== "base64" || typeof value.content !== "string") {
+    throw new GithubConfigError("transient", `Shared config path ${path} has no inline content`);
+  }
+  const body = Buffer.from(value.content.replace(/\s/g, ""), "base64").toString("utf8");
+  if (Buffer.byteLength(body) !== value.size) {
+    throw new GithubConfigError("transient", `Shared config path ${path} has invalid content`);
+  }
+  return body;
+}
+
+function fromSnapshot(
+  snapshot: Snapshot,
+  status: "inaccessible" | "transient",
+): OwnerConfigResolution {
+  return {
+    config: {
+      configYaml: snapshot.configYaml,
+      guardrailsMd: snapshot.guardrailsMd,
+      contentPolicyMd: snapshot.contentPolicyMd,
+    },
+    files: snapshot.files,
+    status,
+    stale: true,
+    sourceRepositoryId: snapshot.sourceRepositoryId,
+    sourceGithubRepoId: snapshot.sourceGithubRepoId,
+    sourceFullName: snapshot.sourceFullName,
+    visibility: snapshot.visibility,
+    defaultBranch: snapshot.defaultBranch,
+    commitSha: snapshot.commitSha,
+    provenance: provenance(snapshot, status, true),
+  };
+}
+
+function provenance(
+  snapshot: Pick<Snapshot, "sourceGithubRepoId" | "sourceFullName" | "commitSha" | "files">,
+  status: ResolutionStatus,
+  stale: boolean,
+): ConfigProvenanceEntry[] {
+  return SHARED_PATHS.map(([slot, path]) => ({
+    slot: slot as ConfigSlot,
+    source: "shared",
+    path: snapshot.files.includes(path) ? path : null,
+    repositoryId: snapshot.sourceGithubRepoId,
+    repository: snapshot.sourceFullName,
+    commitSha: snapshot.commitSha,
+    stale,
+    status: status === "present" || status === "absent"
+      ? (snapshot.files.includes(path) ? "present" : "absent")
+      : status,
+  }));
+}
+
+/** Resolve one authenticated, immutable owner `.github` snapshot with LKG fallback. */
+export async function resolveOwnerGithubConfig(
+  store: OwnerConfigStore,
+  input: {
+    token: string;
+    orgId: number;
+    githubOwnerId: number;
+    installationId: number;
+    owner: string;
+  },
+): Promise<OwnerConfigResolution> {
+  const sourceFullName = `${input.owner}/.github`;
+  const snapshot = await store.loadSnapshot(input.orgId);
+  const installed = await store.findInstalledRepository(input.installationId, sourceFullName);
+  if (!installed) {
+    if (snapshot) {
+      await store.markDegraded(input.orgId, "inaccessible");
+      return fromSnapshot(snapshot, "inaccessible");
+    }
+    return {
+      config: null,
+      files: [],
+      status: "inaccessible",
+      stale: false,
+      sourceRepositoryId: null,
+      sourceGithubRepoId: null,
+      sourceFullName,
+      visibility: null,
+      defaultBranch: null,
+      commitSha: null,
+      provenance: SHARED_PATHS.map(([slot]) => ({
+        slot: slot as ConfigSlot,
+        source: "shared",
+        path: null,
+        repository: sourceFullName,
+        stale: false,
+        status: "inaccessible",
+      })),
+    };
+  }
+
+  try {
+    const metadata = await fetchMetadata(input.token, installed.fullName);
+    if (
+      metadata.id !== installed.githubRepoId ||
+      metadata.owner.id !== input.githubOwnerId ||
+      metadata.full_name.toLowerCase() !== sourceFullName.toLowerCase() ||
+      metadata.fork ||
+      metadata.archived
+    ) {
+      throw new GithubConfigError("inaccessible", "Shared config repository identity is invalid");
+    }
+    const commitSha = await fetchCommitSha(
+      input.token,
+      metadata.full_name,
+      metadata.default_branch,
+    );
+    const config: OrgReviewConfig = {
+      configYaml: null,
+      guardrailsMd: null,
+      contentPolicyMd: null,
+    };
+    const files: string[] = [];
+    for (const [, path, property] of SHARED_PATHS) {
+      const body = await fetchFileAtCommit(input.token, metadata.full_name, path, commitSha);
+      config[property] = body;
+      if (body !== null) files.push(path);
+    }
+    const saved: Snapshot = {
+      orgId: input.orgId,
+      sourceRepositoryId: installed.id,
+      sourceGithubRepoId: installed.githubRepoId,
+      sourceFullName: metadata.full_name,
+      visibility: metadata.visibility,
+      defaultBranch: metadata.default_branch,
+      commitSha,
+      ...config,
+      files,
+    };
+    await store.saveSnapshot(saved);
+    const status = files.length > 0 ? "present" : "absent";
+    return {
+      config,
+      files,
+      status,
+      stale: false,
+      sourceRepositoryId: installed.id,
+      sourceGithubRepoId: installed.githubRepoId,
+      sourceFullName: metadata.full_name,
+      visibility: metadata.visibility,
+      defaultBranch: metadata.default_branch,
+      commitSha,
+      provenance: provenance(saved, status, false),
+    };
+  } catch (error) {
+    const status = error instanceof GithubConfigError ? error.status : "transient";
+    await store.markDegraded(input.orgId, status);
+    if (snapshot?.sourceGithubRepoId === installed.githubRepoId) {
+      return fromSnapshot(snapshot, status);
+    }
+    return {
+      config: null,
+      files: [],
+      status,
+      stale: false,
+      sourceRepositoryId: installed.id,
+      sourceGithubRepoId: installed.githubRepoId,
+      sourceFullName,
+      visibility: null,
+      defaultBranch: null,
+      commitSha: null,
+      provenance: SHARED_PATHS.map(([slot]) => ({
+        slot: slot as ConfigSlot,
+        source: "shared",
+        path: null,
+        repositoryId: installed.githubRepoId,
+        repository: sourceFullName,
+        stale: false,
+        status,
+      })),
+    };
+  }
+}

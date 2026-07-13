@@ -450,6 +450,9 @@ export async function saveOrgSettings(
   const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
   const contentPolicyMd =
     contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
+  const sharedConfigValues = formData.getAll("sharedConfigEnabled").map(String);
+  const sharedConfigEnabled =
+    sharedConfigValues.length === 0 || sharedConfigValues.includes("on");
   if (configYaml) {
     try {
       validateOrgConfigYaml(configYaml);
@@ -525,6 +528,7 @@ export async function saveOrgSettings(
     configYaml,
     guardrailsMd,
     contentPolicyMd,
+    sharedConfigEnabled,
     updatedAt: new Date(),
   };
 

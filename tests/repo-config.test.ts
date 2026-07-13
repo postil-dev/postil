@@ -6,8 +6,10 @@ import "./quiet-console";
 
 import {
   fetchRepoFile,
+  buildConfigProvenance,
   materializeOrgConfig,
   materializeRepoConfig,
+  materializeSharedConfig,
 } from "@/lib/github/contents";
 import { validateOrgConfigYaml, withoutOrgModelConfig } from "@/lib/org-review-config";
 
@@ -234,6 +236,69 @@ describe("materializeOrgConfig", () => {
         contentPolicyMd: null,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("shared owner config precedence", () => {
+  test("fills slots independently between repository and form fallback", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "postil-shared-config-"));
+    await mkdir(join(dir, ".postil"));
+    await writeFile(join(dir, ".postil", "guardrails.md"), "Repo rule.\n");
+
+    const shared = await materializeSharedConfig(
+      dir,
+      [".postil/guardrails.md"],
+      {
+        configYaml: "review:\n  minConfidence: 0.9\n",
+        guardrailsMd: "Shared rule.\n",
+        contentPolicyMd: null,
+      },
+      { allowModelSettings: false },
+    );
+    const organization = await materializeOrgConfig(
+      dir,
+      [".postil/guardrails.md", ...shared.map((file) => file.slice("shared:".length))],
+      {
+        configYaml: "review:\n  minConfidence: 0.4\n",
+        guardrailsMd: "Form rule.\n",
+        contentPolicyMd: "Form content policy.\n",
+      },
+    );
+
+    expect(shared).toEqual(["shared:.postil.yaml"]);
+    expect(organization).toEqual(["org:.postil/content-policy.md"]);
+    expect(await readFile(join(dir, ".postil.yaml"), "utf8")).toContain("0.9");
+    expect(await readFile(join(dir, ".postil", "guardrails.md"), "utf8")).toBe("Repo rule.\n");
+  });
+
+  test("strips shared model configuration in hosted mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "postil-shared-config-"));
+    await materializeSharedConfig(
+      dir,
+      [],
+      {
+        configYaml: "review:\n  minConfidence: 0.8\nmodel:\n  name: shared-model\n",
+        guardrailsMd: null,
+        contentPolicyMd: null,
+      },
+      { allowModelSettings: false },
+    );
+    expect(await readFile(join(dir, ".postil.yaml"), "utf8")).toBe(
+      "review:\n  minConfidence: 0.8\n",
+    );
+  });
+});
+
+test("records immutable GitHub repository IDs in review provenance", () => {
+  expect(
+    buildConfigProvenance([".postil.yaml"], [], {
+      id: 123456,
+      fullName: "acme/widgets",
+    }).entries[0],
+  ).toMatchObject({
+    source: "repository",
+    repositoryId: 123456,
+    repository: "acme/widgets",
   });
 });
 

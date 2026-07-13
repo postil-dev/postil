@@ -34,8 +34,15 @@ import {
 import {
   materializeOrgConfig,
   materializeRepoConfig,
+  materializeSharedConfig,
+  buildConfigProvenance,
+  type ConfigProvenanceEntry,
   type OrgReviewConfig,
 } from "@/lib/github/contents";
+import {
+  createOwnerConfigStore,
+  resolveOwnerGithubConfig,
+} from "@/lib/github/owner-config";
 import { configuredPublicOrigin } from "@/lib/oauth";
 import {
   releaseHostedReviewSpend,
@@ -197,6 +204,19 @@ export async function resolveOrgReviewConfig(
     .limit(1);
   const row = rows[0];
   return row ? { ...row, configYaml: withoutOrgModelConfig(row.configYaml) } : null;
+}
+
+/** Shared owner config defaults on even when the organization has no settings row. */
+export async function resolveSharedConfigEnabled(orgId: number | null): Promise<boolean> {
+  if (orgId == null) return false;
+  const row = (
+    await getDb()
+      .select({ enabled: schema.orgSettings.sharedConfigEnabled })
+      .from(schema.orgSettings)
+      .where(eq(schema.orgSettings.orgId, orgId))
+      .limit(1)
+  )[0];
+  return row?.enabled ?? true;
 }
 
 interface CliResult {
@@ -445,6 +465,7 @@ export async function runReviewJob(
         id: schema.installations.id,
         orgId: schema.installations.orgId,
         orgSlug: schema.organizations.slug,
+        githubOrgId: schema.organizations.githubOrgId,
         suspended: schema.installations.suspended,
       })
       .from(schema.installations)
@@ -674,9 +695,40 @@ export async function runReviewJob(
         `review ${reviewId}: using repo config from ${payload.repoFullName} (${repoConfigFiles.join(", ")})`,
       );
     }
+    let sharedConfigFiles: string[] = [];
+    let sharedProvenance: ConfigProvenanceEntry[] = [];
+    if (
+      installation.orgId !== null &&
+      installation.githubOrgId !== null &&
+      await resolveSharedConfigEnabled(installation.orgId)
+    ) {
+      const owner = currentRepository.full_name.split("/", 1)[0];
+      if (owner) {
+        const shared = await resolveOwnerGithubConfig(createOwnerConfigStore(db), {
+          token,
+          orgId: installation.orgId,
+          githubOwnerId: installation.githubOrgId,
+          installationId: installation.id,
+          owner,
+        });
+        sharedProvenance = shared.provenance;
+        sharedConfigFiles = await materializeSharedConfig(
+          workDir,
+          repoConfigFiles,
+          shared.config,
+          { allowModelSettings: llm.byok },
+        );
+        reviewLog.line(
+          `shared configuration ${shared.status}${shared.stale ? " (last known good snapshot)" : ""}`,
+        );
+      }
+    }
     const orgConfigFiles = await materializeOrgConfig(
       workDir,
-      repoConfigFiles,
+      [
+        ...repoConfigFiles,
+        ...sharedConfigFiles.map((file) => file.slice("shared:".length)),
+      ],
       await resolveOrgReviewConfig(installation.orgId),
     );
     if (orgConfigFiles.length > 0) {
@@ -686,7 +738,11 @@ export async function runReviewJob(
           .join(", ")})`,
       );
     }
-    const configFiles = [...repoConfigFiles, ...orgConfigFiles];
+    const configFiles = [...repoConfigFiles, ...sharedConfigFiles, ...orgConfigFiles];
+    const configProvenance = buildConfigProvenance(configFiles, sharedProvenance, {
+      id: currentRepository.id,
+      fullName: currentRepository.full_name,
+    });
     reviewLog.line(
       `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
     );
@@ -742,6 +798,7 @@ export async function runReviewJob(
       reviewId,
       envelope: ingested.envelope,
       configFiles,
+      configProvenance,
       silent: ingested.silent,
       gateFailing: ingested.gateFailing,
       usage: (ingested.modelUsage ?? [{

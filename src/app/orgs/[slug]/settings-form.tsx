@@ -19,11 +19,30 @@ interface SettingsFormProps {
         configYaml: string | null;
         guardrailsMd: string | null;
         contentPolicyMd: string | null;
+        sharedConfigEnabled: boolean;
       }
     | undefined;
+  sharedSnapshot:
+    | {
+        sourceFullName: string;
+        visibility: string;
+        defaultBranch: string;
+        commitSha: string;
+        files: string[];
+        stale: boolean;
+        lastError: string | null;
+      }
+    | undefined;
+  sharedSourceFullName: string;
 }
 
-export function SettingsForm({ slug, settings, billedMode }: SettingsFormProps) {
+export function SettingsForm({
+  slug,
+  settings,
+  billedMode,
+  sharedSnapshot,
+  sharedSourceFullName,
+}: SettingsFormProps) {
   const [state, formAction, pending] = useActionState(saveOrgSettings, null);
   const [bringOwnKey, setBringOwnKey] = useState(settings?.hasKey ?? false);
   const [apiKey, setApiKey] = useState("");
@@ -31,6 +50,7 @@ export function SettingsForm({ slug, settings, billedMode }: SettingsFormProps) 
   const [additionalAuth, setAdditionalAuth] = useState(settings?.hasAdditionalAuth ?? false);
   const [apiAuthHeader, setApiAuthHeader] = useState("");
   const [apiAuthValue, setApiAuthValue] = useState("");
+  const sharedConfigEnabled = settings?.sharedConfigEnabled ?? true;
   const textareaClass =
     "mt-1 min-h-36 w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs leading-relaxed focus:border-gate focus:outline-none";
   const apiKeyAction = bringOwnKey ? (apiKey ? "replace" : "keep") : "remove";
@@ -222,9 +242,61 @@ export function SettingsForm({ slug, settings, billedMode }: SettingsFormProps) 
       </div>
 
       <div className="border-t border-stone/60 pt-5">
-        <p className="font-medium">Hosted review configuration</p>
+        <label className="flex items-start justify-between gap-4 rounded-card border border-stone/80 p-4">
+          <span>
+            <span className="font-medium">Shared owner configuration</span>
+            <span className="mt-1 block text-xs leading-relaxed text-charcoal/60">
+              Read <code>.postil.yaml</code>, <code>.postil/guardrails.md</code>, and{" "}
+              <code>.postil/content-policy.md</code> from the default branch of the installed{" "}
+              <code>{sharedSourceFullName}</code> repository.
+            </span>
+          </span>
+          <input
+            type="hidden"
+            name="sharedConfigEnabled"
+            value="off"
+          />
+          <input
+            type="checkbox"
+            name="sharedConfigEnabled"
+            defaultChecked={sharedConfigEnabled}
+            value="on"
+            className="mt-1 h-4 w-4 shrink-0 accent-[#2F6F4E]"
+          />
+        </label>
+        <p className="mt-2 text-xs leading-relaxed text-charcoal/55">
+          Repository files win per path. Shared files then override the form fallbacks below.
+          The GitHub App must have access to the <code>.github</code> repository. Files in a
+          public repository are public; files in a private or internal repository are visible to
+          people with repository access. Add the repository to the App installation after creating
+          it. Policy text cannot be treated as secret because review output can reveal its effect.
+          Anyone who can merge to this repository can change policy for every inheriting
+          repository. Protect its default branch with CODEOWNERS, a ruleset, and required review.
+        </p>
+        {sharedSnapshot && (
+          <div className="mt-3 rounded-card border border-stone/70 bg-ivory px-3 py-2 text-xs">
+            <p className="font-mono text-[11px] text-charcoal">
+              {sharedSnapshot.sourceFullName} · {sharedSnapshot.visibility} ·{" "}
+              {sharedSnapshot.defaultBranch}@{sharedSnapshot.commitSha.slice(0, 7)}
+            </p>
+            <p className={`mt-1 ${sharedSnapshot.stale ? "text-rust" : "text-charcoal/55"}`}>
+              {!sharedConfigEnabled
+                ? "Shared owner configuration is disabled. The stored snapshot is not used."
+                : sharedSnapshot.stale
+                ? `Using the last known good snapshot because GitHub is ${sharedSnapshot.lastError ?? "unavailable"}.`
+                : sharedSnapshot.files.length > 0
+                  ? `${sharedSnapshot.files.length} shared file${sharedSnapshot.files.length === 1 ? "" : "s"} active.`
+                  : "The source repository has no shared Postil files."}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-stone/60 pt-5">
+        <p className="font-medium">Form fallbacks</p>
         <p className="mt-1 text-xs text-charcoal/70">
-          Used only when a repository does not provide the matching file. See the{" "}
+          Used only when neither the repository nor shared owner configuration provides the
+          matching file. See the{" "}
           <Link href="/docs/config" className="text-rust hover:underline">
             configuration reference
           </Link>

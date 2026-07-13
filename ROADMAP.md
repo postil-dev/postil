@@ -25,3 +25,5 @@
 - Evaluate a non-Postgres queue only if the product needs an edge-native database/runtime migration.
 - Add privacy-preserving conversion events for GitHub App install, OAuth login, org settings save, and first completed review.
 - Export analytics and metrics into a long-retention warehouse only after the PostHog dashboards prove which views are worth preserving.
+- Add team-scoped and mandatory configuration layers only with explicit conflict,
+  provenance, and policy-lock semantics.

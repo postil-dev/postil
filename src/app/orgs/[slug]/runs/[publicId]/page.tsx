@@ -26,6 +26,7 @@ import {
 } from "@/lib/finding-approvals";
 import { sortFindingsForDisplay } from "@/lib/findings";
 import { githubFileUrl, githubPrUrl } from "@/lib/github-links";
+import type { ConfigProvenanceEntry } from "@/lib/github/contents";
 import { requireOrgMembership } from "@/lib/org-access";
 
 import { approveFinding, revokeFinding } from "../../actions";
@@ -81,6 +82,13 @@ function formatEstimatedCost(cost: number): string {
 function formatTimestamp(value: Date | null): string {
   if (!value) return "Not recorded";
   return value.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+}
+
+function configSourceLabel(entry: ConfigProvenanceEntry): string {
+  if (entry.source === "repository") return "repository";
+  if (entry.source === "shared") return "owner .github";
+  if (entry.source === "organization") return "form fallback";
+  return "built-in";
 }
 
 function RunFact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -368,6 +376,7 @@ export default async function RunDetailPage({
         headSha: schema.reviews.headSha,
         status: schema.reviews.status,
         envelope: schema.reviews.envelope,
+        configProvenance: schema.reviews.configProvenance,
         engineGateFailing: schema.reviews.engineGateFailing,
         gateFailing: schema.reviews.gateFailing,
         errorMessage: schema.reviews.errorMessage,
@@ -447,6 +456,7 @@ export default async function RunDetailPage({
     ? `https://github.com/${review.repoFullName}/runs/${review.advisoryCheckRunId}`
     : prUrl;
   const MAX_RENDERED_FINDINGS = 200;
+  const configProvenance = review.configProvenance?.entries ?? [];
 
   return (
     <LiveRunProvider
@@ -558,6 +568,32 @@ export default async function RunDetailPage({
         )}
 
         <RunLogPane />
+
+        {configProvenance.length > 0 && (
+          <details className="card mt-6 overflow-hidden">
+            <summary className="cursor-pointer px-5 py-4 font-mono text-xs uppercase tracking-wide text-charcoal/70">
+              Configuration sources
+              {review.configProvenance?.degraded ? " · degraded" : ""}
+            </summary>
+            <div className="divide-y divide-stone/60 border-t border-stone/60">
+              {configProvenance.map((entry) => (
+                <div
+                  key={entry.slot}
+                  className="grid gap-1 px-5 py-3 text-xs sm:grid-cols-[9rem_9rem_1fr]"
+                >
+                  <span className="font-mono text-charcoal/55">{entry.slot}</span>
+                  <span>{configSourceLabel(entry)}</span>
+                  <span className="break-all font-mono text-charcoal/60">
+                    {entry.repository ? `${entry.repository}${entry.commitSha ? `@${entry.commitSha.slice(0, 12)}` : ""}:` : ""}
+                    {entry.path ?? "default"}
+                    {entry.stale ? " · last known good" : ""}
+                    {entry.status && entry.status !== "present" ? ` · ${entry.status}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
 
         {summary && (
           <section className="mt-8">

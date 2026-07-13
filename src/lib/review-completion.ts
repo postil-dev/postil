@@ -3,11 +3,13 @@ import { and, eq } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import type { Envelope } from "@/lib/envelope";
+import type { ReviewConfigProvenance } from "@/lib/github/contents";
 
 export interface ReviewCompletionInput {
   reviewId: number;
   envelope: Envelope;
   configFiles: string[];
+  configProvenance?: ReviewConfigProvenance;
   silent: boolean;
   gateFailing: boolean;
   usage: Array<{
@@ -37,6 +39,7 @@ export async function persistReviewCompletion(
         status: "completed",
         envelope: input.envelope,
         configFiles: input.configFiles,
+        configProvenance: input.configProvenance ?? { entries: [], degraded: false },
         silent: input.silent,
         engineGateFailing: input.gateFailing,
         gateFailing: input.gateFailing,

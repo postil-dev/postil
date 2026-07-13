@@ -163,6 +163,22 @@ since that enablement. Suspended installations and repositories with any
 completed review in the active enablement window do not produce first-review
 warnings.
 
+Hosted reviews resolve configuration independently per artifact. A target
+repository file wins, then the owner account's installed `.github` repository,
+then the organization settings form, then built-in defaults. Shared owner reads
+use the same installation token as the target repository, validate immutable
+owner and repository IDs, and fetch only `.postil.yaml`,
+`.postil/guardrails.md`, and `.postil/content-policy.md` from one pinned
+default-branch commit. A private, internal, or public source is eligible only
+when the GitHub App installation includes it. Access and network failures retain
+the last successful snapshot and mark review provenance degraded. Each completed
+review records the effective source, repository, commit, path, and stale state
+for every configuration slot. Hosted inference removes model settings after
+layer resolution; BYOK may use repository or shared model settings.
+Write access to the owner `.github` default branch is organization-wide policy
+administration. The source repository uses CODEOWNERS, a ruleset, and required
+review to constrain policy changes.
+
 Aggregates (silence rate, gate failures) read the denormalized `silent` and
 `gate_failing` columns; `engine_gate_failing` stores the immutable CLI gate
 result. Active rows in `finding_approvals` clear kind-based blockers for the

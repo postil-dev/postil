@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   isVisibleConfigArtifact,
   resolveConfigArtifacts,
+  ownerConfigRepositoryFullName,
 } from "@/app/orgs/[slug]/config-resolution";
 
 function root(
@@ -84,4 +85,26 @@ describe("resolveConfigArtifacts", () => {
       { state: "pending", liveSource: "repository" },
     ]);
   });
+
+  test("reports a shared owner artifact as the active source", () => {
+    expect(
+      resolveConfigArtifacts(
+        ["shared:.postil.yaml"],
+        { ok: true, files: [] },
+        ["org:.postil.yaml"],
+        ["shared:.postil.yaml"],
+      )[0],
+    ).toMatchObject({
+      state: "active",
+      liveSource: "shared",
+      recordedSource: "shared",
+      file: ".postil.yaml",
+    });
+  });
+});
+
+test("builds the shared repository name from the canonical GitHub account login", () => {
+  expect(ownerConfigRepositoryFullName("Acme-Engineering")).toBe(
+    "Acme-Engineering/.github",
+  );
 });

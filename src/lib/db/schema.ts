@@ -16,6 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type { Envelope } from "@/lib/envelope";
+import type { ReviewConfigProvenance } from "@/lib/github/contents";
 
 /** Raw bytes column for AES-256-GCM sealed secrets. */
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
@@ -196,6 +197,7 @@ export const reviews = pgTable(
     status: reviewStatus("status").notNull().default("queued"),
     envelope: jsonb("envelope").$type<Envelope>(),
     configFiles: text("config_files").array(),
+    configProvenance: jsonb("config_provenance").$type<ReviewConfigProvenance>(),
     silent: boolean("silent"),
     engineGateFailing: boolean("engine_gate_failing"),
     gateFailing: boolean("gate_failing"),
@@ -547,6 +549,7 @@ export const orgSettings = pgTable("org_settings", {
   configYaml: text("config_yaml"),
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
+  sharedConfigEnabled: boolean("shared_config_enabled").notNull().default(true),
   /** Retired compatibility columns; the post-deploy retirement clears every value. */
   escalationEmail: text("escalation_email"),
   escalationEmailPending: text("escalation_email_pending"),
@@ -574,5 +577,29 @@ export const orgSettings = pgTable("org_settings", {
   escalationEmailVerificationMessageId: text(
     "escalation_email_verification_message_id",
   ),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Last successful immutable snapshot of the owner's installed `.github` policy repo. */
+export const orgConfigSnapshots = pgTable("org_config_snapshots", {
+  orgId: bigint("org_id", { mode: "number" })
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  sourceRepositoryId: bigint("source_repository_id", { mode: "number" }).references(
+    () => repositories.id,
+    { onDelete: "set null" },
+  ),
+  sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }).notNull(),
+  sourceFullName: text("source_full_name").notNull(),
+  visibility: text("visibility").notNull(),
+  defaultBranch: text("default_branch").notNull(),
+  commitSha: text("commit_sha").notNull(),
+  configYaml: text("config_yaml"),
+  guardrailsMd: text("guardrails_md"),
+  contentPolicyMd: text("content_policy_md"),
+  files: text("files").array().notNull(),
+  stale: boolean("stale").notNull().default(false),
+  lastError: text("last_error"),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
