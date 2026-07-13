@@ -131,6 +131,7 @@ try {
     authenticated: true,
     login: "demo-dev",
     dashboardHref: "/reports",
+    hasActiveInstallation: true,
   });
   await verifyPage(`${origin}/orgs/acme`, headers, [
     "Acme Robotics",
@@ -154,7 +155,7 @@ try {
     "Credit balance",
     "$198.695",
     "$200.00",
-    "$1.31",
+    "$1.305",
     "charged across",
     "Owner launch credit",
     "morgaesis-2026-07-owner-credit",
