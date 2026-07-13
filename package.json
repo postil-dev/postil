@@ -10,6 +10,7 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
+    "release:prepare": "bun run db:migrate && bun run notifications:quiesce",
     "seed": "bun run scripts/seed.ts",
     "billing:grant-credit": "bun run scripts/grant-billing-credit.ts",
     "billing:set-entitlement": "bun run scripts/set-org-entitlement.ts",

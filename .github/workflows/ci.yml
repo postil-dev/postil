@@ -29,8 +29,7 @@ jobs:
       - name: Verify fresh database migrations
         run: |
           createdb postil_migrations
-          bun run db:migrate
-          bun run notifications:quiesce
+          bun run release:prepare
           bun run jobs:activate-release
         env:
           PGHOST: localhost

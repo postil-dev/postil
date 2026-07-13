@@ -32,7 +32,7 @@ primary_region = "lhr"
 NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 
 [deploy]
-release_command = "bun run db:migrate && bun run notifications:quiesce"
+release_command = "bun run release:prepare"
 
 [processes]
 web = "bun run start"
