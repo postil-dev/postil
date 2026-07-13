@@ -42,10 +42,12 @@ The free-tier operating profile keeps Postgres idle-capable by avoiding permanen
 The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods.
 
 Every queue consumer supplies its explicit supported job kinds to the claim query.
-The database leaves unknown kinds queued, so an older web or worker process in a
-rolling deployment cannot claim work introduced by a newer release. The bounded
-web drain and long-running worker share the handler capability list from the queue
-runner; adding a handler and adding its capability are one change.
+The bounded web drain and long-running worker share the handler capability list
+from the queue runner; adding a handler and adding its capability are one change.
+Release job kinds are also staged in PostgreSQL with an infinite `run_after` until
+the deploy workflow confirms that every managed web and worker Machine is running
+one image. Activation and inserts share a transaction advisory lock, so no job can
+become claimable between the fleet check and capability activation.
 
 Completed hosted reviews send one Brevo transactional email when their stored
 envelope contains a calibrated `humanEscalation` finding at or above the gate
@@ -64,9 +66,9 @@ delivery is at-least-once: Brevo deduplicates ordinary retries, while a rare
 duplicate after an extended worker outage is preferred to a lost escalation.
 Verification jobs use the token digest as their provider idempotency key. The backfill
 command detects matching live jobs and restores missing or exhausted jobs without
-exposing addresses or token material. Worker startup runs the same idempotent backfill
-after the new worker code is active, which queues verification for migrated recipients
-without exposing the new job kind to workers from the preceding release.
+exposing addresses or token material. The post-deploy release activation runs the
+idempotent backfill while PostgreSQL keeps verification jobs staged, then atomically
+activates the release job kinds after the fleet compatibility check succeeds.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
@@ -77,9 +79,9 @@ verified. Link GET requests only render confirmation; a same-origin POST consume
 the token. Verification tokens are bound to the organization, purpose, and
 normalized address, stored as a digest plus sealed delivery material, and sent
 through durable, provider-idempotent jobs. Resends rotate the token after a
-cooldown. The worker startup backfill queues verification for every migrated
-unverified contact without exposing addresses or tokens in output. Operator
-entitlement updates preserve the dashboard-managed billing contact.
+cooldown. The post-deploy release activation queues verification for every migrated
+unverified contact without exposing addresses or tokens in output. Operator entitlement
+updates preserve the dashboard-managed billing contact.
 
 Private-repository product access is organization-scoped and fail-closed.
 `organization_entitlements` records hosted or BYOK subscription mode, lifecycle
