@@ -80,7 +80,15 @@ export async function enqueueJob(
   return Number(row.id);
 }
 
-export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob | null> {
+export async function claimJob(
+  pool: Pool,
+  workerId: string,
+  allowedKinds: readonly string[],
+): Promise<ClaimedJob | null> {
+  const capabilities = [...new Set(allowedKinds.filter(Boolean))];
+  if (capabilities.length === 0) {
+    throw new Error("claimJob requires at least one allowed job kind");
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -94,10 +102,11 @@ export async function claimJob(pool: Pool, workerId: string): Promise<ClaimedJob
     }>(
       `SELECT id, kind, payload, attempts, max_attempts, created_at
        FROM jobs
-       WHERE status = 'queued' AND run_after <= now()
+       WHERE status = 'queued' AND run_after <= now() AND kind = ANY($1::text[])
        ORDER BY id
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
+      [capabilities],
     );
     const row = selected.rows[0];
     if (!row) {

@@ -6,7 +6,7 @@ import { Pool, type PoolClient } from "pg";
 
 import {
   backoffMs,
-  claimJob,
+  claimJob as claimJobWithCapabilities,
   completeJob,
   enqueueJob,
   failJob,
@@ -22,6 +22,11 @@ import {
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 
 const describeDb = TEST_URL ? describe : describe.skip;
+const TEST_JOB_KINDS = ["review", "respond"] as const;
+
+function claimJob(pool: Pool, workerId: string) {
+  return claimJobWithCapabilities(pool, workerId, TEST_JOB_KINDS);
+}
 
 describeDb("postgres job queue", () => {
   let pool: Pool;
@@ -75,6 +80,25 @@ describeDb("postgres job queue", () => {
     expect(row.rows[0].locked_by).toBe("worker-a");
     expect(job?.createdAt).toEqual(row.rows[0].created_at);
     expect(job?.lockedAt).toEqual(row.rows[0].locked_at);
+  });
+
+  test("leaves unsupported job kinds queued for a capable release", async () => {
+    const unknownId = await enqueueJob(pool, "future-release-job", { version: 2 });
+    const reviewId = await enqueueJob(pool, "review", { prNumber: 1 });
+
+    const claimed = await claimJobWithCapabilities(pool, "current-worker", ["review"]);
+    expect(claimed?.id).toBe(reviewId);
+    expect(claimed?.kind).toBe("review");
+
+    const unknown = await pool.query(
+      "SELECT status, attempts, locked_by FROM jobs WHERE id = $1",
+      [unknownId],
+    );
+    expect(unknown.rows[0]).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      locked_by: null,
+    });
   });
 
   test("a locked row is skipped, not waited on (SKIP LOCKED)", async () => {

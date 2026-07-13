@@ -41,6 +41,16 @@ const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
 
 let backgroundDrain: Promise<void> | undefined;
 
+export const PROCESSABLE_JOB_KINDS = [
+  "review",
+  "respond",
+  "escalation-notification",
+  "escalation-email-verification",
+  "billing-contact-verification",
+  "check-run-cleanup",
+  "respond-failure-comment",
+] as const;
+
 async function handleJob(job: ClaimedJob): Promise<void> {
   switch (job.kind) {
     case "review":
@@ -112,7 +122,7 @@ export async function drainQueueOnce(
   });
 
   while (drained < maxJobs && Date.now() < deadlineAt) {
-    const job = await claimJob(getPool(), workerId);
+    const job = await claimJob(getPool(), workerId, PROCESSABLE_JOB_KINDS);
     if (!job) break;
     await runClaimedJob(job, label);
     drained += 1;

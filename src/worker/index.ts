@@ -8,7 +8,7 @@ import { claimJob } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import { backfillBillingContactVerification } from "../../scripts/backfill-billing-contact-verification";
 import { backfillEscalationEmailVerification } from "../../scripts/backfill-escalation-email-verification";
-import { readPositiveIntEnv, runClaimedJob } from "./runner";
+import { PROCESSABLE_JOB_KINDS, readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
 
@@ -43,7 +43,7 @@ async function claimLoop(slot: number): Promise<void> {
   while (!shuttingDown) {
     let job;
     try {
-      job = await claimJob(getPool(), `${workerId}#${slot}`);
+      job = await claimJob(getPool(), `${workerId}#${slot}`, PROCESSABLE_JOB_KINDS);
     } catch (err) {
       console.error(`[worker ${slot}] claim error: ${redactSecrets(err)}`);
       await sleep(Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS));

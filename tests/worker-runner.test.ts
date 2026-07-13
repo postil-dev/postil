@@ -9,6 +9,7 @@ const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
 let claimCalls = 0;
+const claimCapabilities: string[][] = [];
 let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
@@ -23,8 +24,9 @@ mock.module("@/lib/db", () => ({
 }));
 
 mock.module("@/lib/queue", () => ({
-  claimJob: async () => {
+  claimJob: async (_pool: unknown, _workerId: string, allowedKinds: readonly string[]) => {
     claimCalls += 1;
+    claimCapabilities.push([...allowedKinds]);
     return jobs.shift();
   },
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
@@ -108,6 +110,7 @@ beforeEach(() => {
   completed.length = 0;
   failed.length = 0;
   claimCalls = 0;
+  claimCapabilities.length = 0;
   reviewRun = async () => undefined;
   respondRun = async () => undefined;
   respondFailureCommentRun = async () => undefined;
@@ -126,6 +129,19 @@ afterEach(() => {
 });
 
 describe("drainQueueOnce", () => {
+  test("claims only job kinds implemented by this web release", async () => {
+    expect(await drainQueueOnce("capability-drain", { maxJobs: 1 })).toBe(0);
+    expect(claimCapabilities).toEqual([[
+      "review",
+      "respond",
+      "escalation-notification",
+      "escalation-email-verification",
+      "billing-contact-verification",
+      "check-run-cleanup",
+      "respond-failure-comment",
+    ]]);
+  });
+
   test("dispatches durable escalation notification jobs", async () => {
     const job = reviewJob(1);
     job.kind = "escalation-notification";

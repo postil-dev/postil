@@ -41,13 +41,22 @@ The free-tier operating profile keeps Postgres idle-capable by avoiding permanen
 
 The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods.
 
+Every queue consumer supplies its explicit supported job kinds to the claim query.
+The database leaves unknown kinds queued, so an older web or worker process in a
+rolling deployment cannot claim work introduced by a newer release. The bounded
+web drain and long-running worker share the handler capability list from the queue
+runner; adding a handler and adding its capability are one change.
+
 Completed hosted reviews send one Brevo transactional email when their stored
 envelope contains a calibrated `humanEscalation` finding at or above the gate
 confidence floor. The notification targets only the organization-owned recipient
 whose address has a non-null verification timestamp. New and replacement addresses
 remain pending until a single-use, 24-hour token is consumed. Token digests bind the
 token to the organization and normalized address; sealed token material is available
-only to durable verification-email jobs. Replacing a pending address invalidates its
+only to durable verification-email jobs. Verification-link GET requests render a
+no-store, no-referrer confirmation form and never consume tokens because mail
+scanners follow links. A same-origin POST performs the single-use transition.
+Replacing a pending address invalidates its
 old token without deactivating an existing verified recipient. A durable queue job retries transient provider
 failures using the public review ID as the provider idempotency key, so email
 delivery cannot change review storage, comments, checks, or gate state. Queue
@@ -64,7 +73,8 @@ Billing credits are append-only rows in `billing_credit_grants`, granted through
 Organization administrators manage the billing contact on the billing page.
 New addresses remain pending until a single-use, 24-hour token is consumed;
 replacements leave the existing verified address active until the new address is
-verified. Verification tokens are bound to the organization, purpose, and
+verified. Link GET requests only render confirmation; a same-origin POST consumes
+the token. Verification tokens are bound to the organization, purpose, and
 normalized address, stored as a digest plus sealed delivery material, and sent
 through durable, provider-idempotent jobs. Resends rotate the token after a
 cooldown. The worker startup backfill queues verification for every migrated
