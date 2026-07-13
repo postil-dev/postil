@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && bun run scripts/verify-server-observability-bundle.ts",
     "start": "next start",
     "worker": "bun run src/worker/index.ts",
     "db:generate": "drizzle-kit generate",
@@ -23,11 +23,16 @@
     "test": "AGENT=1 bun test --isolate"
   },
   "dependencies": {
+    "@opentelemetry/api-logs": "^0.220.0",
+    "@opentelemetry/exporter-logs-otlp-http": "^0.220.0",
+    "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-logs": "^0.220.0",
     "drizzle-orm": "^0.45.2",
     "next": "^15",
     "pg": "^8.21.0",
     "pg-connection-string": "^2.14.0",
     "posthog-js": "^1.396.2",
+    "posthog-node": "^5.41.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",

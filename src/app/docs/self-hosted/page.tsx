@@ -342,6 +342,21 @@ ${doctorTranscript}`}</code>
           does not send IP addresses or protected dashboard paths.
         </li>
         <li>
+          Operational PostHog telemetry is separate and disabled by default. Set{" "}
+          <code>POSTHOG_ERROR_CAPTURE=1</code> for scrubbed exceptions at the web
+          request, worker boot, and exhausted job boundaries, plus fixed
+          classifications for typed model incidents and exact operational
+          sentinel findings after successful review ingestion. Set{" "}
+          <code>POSTHOG_LOG_CAPTURE=1</code> for allowlisted OTLP log events.
+          Sampling defaults to 1% for informational events and 10% for warnings;
+          errors are unsampled. <code>POSTHOG_LOG_MAX_PER_MINUTE</code> and{" "}
+          <code>POSTHOG_ERROR_MAX_PER_HOUR</code> impose per-process hard caps.
+          These paths exclude request data, identities, repository names, prompts,
+          diffs, code, findings, model output, raw error messages, and arbitrary
+          properties. Postil does not upload source maps because PostHog&apos;s
+          supported upload path includes application source content.
+        </li>
+        <li>
           Scrape <code>/api/metrics</code> conservatively on small database
           tiers, for example every few minutes rather than every few seconds.
           The endpoint is bearer-protected, but each scrape still performs

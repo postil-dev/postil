@@ -19,7 +19,10 @@ import {
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
-import { ingestEnvelope } from "@/lib/envelope";
+import {
+  classifyOperationalModelIncidents,
+  ingestEnvelope,
+} from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
@@ -44,6 +47,10 @@ import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { persistReviewCompletion } from "@/lib/review-completion";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
+import {
+  reportOperationalModelIncident,
+  type ObservabilityProcessGroup,
+} from "@/lib/server-observability";
 
 export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
 // Match postil-cli's hosted profile: a normal slow review gets up to seven
@@ -339,6 +346,7 @@ export async function runReviewJob(
     queuedAt: new Date(),
     startedAt: new Date(),
   },
+  observabilityProcessGroup: ObservabilityProcessGroup = "worker",
 ): Promise<void> {
   const db = getDb();
 
@@ -629,6 +637,9 @@ export async function runReviewJob(
     }
 
     const ingested = ingestEnvelope(result.stdout);
+    for (const incident of classifyOperationalModelIncidents(ingested.envelope)) {
+      reportOperationalModelIncident(observabilityProcessGroup, incident);
+    }
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { computeEffectiveGate, ingestEnvelope, type Envelope } from "@/lib/envelope";
+import {
+  classifyOperationalModelIncidents,
+  computeEffectiveGate,
+  ingestEnvelope,
+  type Envelope,
+} from "@/lib/envelope";
 
 function validEnvelope(overrides: Partial<Envelope> = {}): Envelope {
   return {
@@ -74,7 +79,7 @@ describe("envelope ingestion", () => {
     expect(ingested.envelope.suppressedFindings).toEqual([suppressedFinding]);
   });
 
-  test("preserves safe structured model incidents", () => {
+  test("preserves exact model incidents and enforces recovery consistency", () => {
     const modelIncidents = [
       {
         phase: "scorer" as const,
@@ -88,21 +93,127 @@ describe("envelope ingestion", () => {
         recovered: true,
         recovery: "fallback" as const,
       },
+      {
+        phase: "review" as const,
+        category: "deadline" as const,
+        recovered: false,
+      },
+      {
+        phase: "scorer" as const,
+        category: "providerError" as const,
+        recovered: false,
+      },
     ];
-    const ingested = ingestEnvelope(JSON.stringify(validEnvelope({ modelIncidents })));
-    expect(ingested.envelope.modelIncidents).toEqual(modelIncidents);
+    expect(
+      ingestEnvelope(JSON.stringify(validEnvelope({ modelIncidents }))).envelope
+        .modelIncidents,
+    ).toEqual(modelIncidents);
 
-    expect(() =>
-      ingestEnvelope(
-        JSON.stringify(
-          validEnvelope({
-            modelIncidents: [
-              { phase: "scorer", category: "invalidOutput", recovered: true },
-            ],
-          }),
+    for (const invalidIncident of [
+      { phase: "review", category: "timeout", recovered: true },
+      {
+        phase: "review",
+        category: "timeout",
+        recovered: false,
+        recovery: "fallback",
+      },
+    ]) {
+      expect(() =>
+        ingestEnvelope(
+          JSON.stringify({ ...validEnvelope(), modelIncidents: [invalidIncident] }),
         ),
-      ),
-    ).toThrow(/recovery must be present/);
+      ).toThrow(/recovery must be present exactly when the incident recovered/);
+    }
+  });
+
+  test("classifies only typed incidents and exact operational sentinel paths", () => {
+    const hostile = "private@example.test raw-provider raw-model raw-repo raw-finding";
+    const rawEnvelope = validEnvelope({
+      findings: [
+        {
+          path: ".postil/provider",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: hostile,
+          body: hostile,
+        },
+        {
+          path: ".postil/model-output",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: hostile,
+          body: hostile,
+        },
+        {
+          path: ".postil/operational",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: hostile,
+          body: hostile,
+        },
+        {
+          path: ".postil/provider-near-match",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: hostile,
+          body: hostile,
+        },
+      ],
+      modelIncidents: [
+        {
+          phase: "review",
+          category: "providerError",
+          recovered: false,
+        },
+        {
+          phase: "scorer",
+          category: "timeout",
+          recovered: true,
+          recovery: "fallback",
+        },
+      ],
+    }) as Envelope & { modelIncidents: Array<Record<string, unknown>> };
+    rawEnvelope.modelIncidents[1]!.provider = hostile;
+    rawEnvelope.modelIncidents[1]!.model = hostile;
+
+    const ingested = ingestEnvelope(JSON.stringify(rawEnvelope)).envelope;
+    const classifications = classifyOperationalModelIncidents(ingested);
+    expect(classifications).toEqual([
+      {
+        phase: "review",
+        category: "providerError",
+        recovered: false,
+        source: "model_incident",
+      },
+      {
+        phase: "scorer",
+        category: "timeout",
+        recovered: true,
+        recovery: "fallback",
+        source: "model_incident",
+      },
+      {
+        phase: "review",
+        category: "invalidOutput",
+        recovered: false,
+        source: "model_output_sentinel",
+      },
+      {
+        phase: "review",
+        category: "operational",
+        recovered: false,
+        source: "operational_sentinel",
+      },
+    ]);
+    expect(JSON.stringify(classifications)).not.toContain(hostile);
   });
 
   test("accepts exact per-model usage and rejects mismatched aggregates", () => {

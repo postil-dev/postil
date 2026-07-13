@@ -284,23 +284,23 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "POSTHOG_PROJECT_TOKEN",
     purpose:
-      "PostHog project token for server request telemetry and runtime-gated cookieless browser analytics",
+      "PostHog project token for privacy-scoped analytics and optional operational telemetry",
     example: "phc_...",
-    scope: ["web"],
+    scope: ["web", "worker"],
     optional: true,
   },
   {
     name: "NEXT_PUBLIC_POSTHOG_KEY",
     purpose: "Legacy runtime alias for POSTHOG_PROJECT_TOKEN; no value is compiled into the browser bundle",
     example: "phc_...",
-    scope: ["web"],
+    scope: ["web", "worker"],
     optional: true,
   },
   {
     name: "NEXT_PUBLIC_POSTHOG_HOST",
     purpose: "PostHog ingestion host matching the project region",
     example: "https://eu.i.posthog.com",
-    scope: ["web"],
+    scope: ["web", "worker"],
     optional: true,
   },
   {
@@ -316,6 +316,55 @@ const ENV_SPECS: EnvVarSpec[] = [
       "Set to 0 to disable cookieless public-page browser analytics while keeping server-side request telemetry",
     example: "1",
     scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "POSTHOG_ERROR_CAPTURE",
+    purpose: "Set to 1 to send scrubbed operational exceptions to PostHog Error Tracking",
+    example: "0",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "POSTHOG_LOG_CAPTURE",
+    purpose: "Set to 1 to export allowlisted operational events to PostHog Logs over OTLP",
+    example: "0",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "POSTHOG_LOG_WARN_SAMPLE_RATE",
+    purpose: "Deterministic sampling rate for warning-level operational logs",
+    example: "0.1",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "POSTHOG_LOG_INFO_SAMPLE_RATE",
+    purpose: "Deterministic sampling rate for informational operational logs",
+    example: "0.01",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "POSTHOG_LOG_MAX_PER_MINUTE",
+    purpose: "Hard per-process cap on exported operational log records",
+    example: "60",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "POSTHOG_ERROR_MAX_PER_HOUR",
+    purpose: "Hard per-process cap on exported operational exceptions",
+    example: "10",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_RELEASE_SHA",
+    purpose: "Git commit SHA attached to operational telemetry",
+    example: "0123456789abcdef0123456789abcdef01234567",
+    scope: ["web", "worker"],
     optional: true,
   },
 ];
@@ -352,6 +401,78 @@ export function validateEnv(processKind: "web" | "worker"): void {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`Postil web cannot start: invalid POSTIL_PUBLIC_URL. ${detail}`);
     }
+  }
+  validateOperationalTelemetryEnv(processKind);
+}
+
+function validateOperationalTelemetryEnv(processKind: "web" | "worker"): void {
+  for (const name of ["POSTHOG_ERROR_CAPTURE", "POSTHOG_LOG_CAPTURE"] as const) {
+    const value = process.env[name];
+    if (value !== undefined && value !== "0" && value !== "1") {
+      throw new Error(`Postil ${processKind} cannot start: ${name} must be 0 or 1.`);
+    }
+  }
+
+  const enabled =
+    process.env.POSTHOG_ERROR_CAPTURE === "1" || process.env.POSTHOG_LOG_CAPTURE === "1";
+  if (!enabled) return;
+
+  const token = process.env.POSTHOG_PROJECT_TOKEN ?? process.env.NEXT_PUBLIC_POSTHOG_KEY;
+  if (!token?.trim()) {
+    throw new Error(
+      `Postil ${processKind} cannot start: operational PostHog telemetry requires POSTHOG_PROJECT_TOKEN.`,
+    );
+  }
+
+  const host = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://eu.i.posthog.com";
+  let parsedHost: URL;
+  try {
+    parsedHost = new URL(host);
+  } catch {
+    throw new Error(
+      `Postil ${processKind} cannot start: NEXT_PUBLIC_POSTHOG_HOST must be an HTTP(S) origin.`,
+    );
+  }
+  if (
+    !["http:", "https:"].includes(parsedHost.protocol) ||
+    parsedHost.username ||
+    parsedHost.password ||
+    parsedHost.pathname !== "/" ||
+    parsedHost.search ||
+    parsedHost.hash ||
+    (process.env.NODE_ENV === "production" && parsedHost.protocol !== "https:")
+  ) {
+    throw new Error(
+      `Postil ${processKind} cannot start: NEXT_PUBLIC_POSTHOG_HOST must be a credential-free HTTPS origin in production.`,
+    );
+  }
+
+  for (const name of [
+    "POSTHOG_LOG_WARN_SAMPLE_RATE",
+    "POSTHOG_LOG_INFO_SAMPLE_RATE",
+  ] as const) {
+    const value = process.env[name];
+    if (value === undefined) continue;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+      throw new Error(`Postil ${processKind} cannot start: ${name} must be between 0 and 1.`);
+    }
+  }
+
+  for (const name of ["POSTHOG_LOG_MAX_PER_MINUTE", "POSTHOG_ERROR_MAX_PER_HOUR"] as const) {
+    const value = process.env[name];
+    if (value === undefined) continue;
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      throw new Error(`Postil ${processKind} cannot start: ${name} must be a positive integer.`);
+    }
+  }
+
+  const release = process.env.POSTIL_RELEASE_SHA;
+  if (release?.trim() && !/^[0-9a-f]{7,40}$/i.test(release)) {
+    throw new Error(
+      `Postil ${processKind} cannot start: POSTIL_RELEASE_SHA must be a 7-40 character hexadecimal commit SHA.`,
+    );
   }
 }
 

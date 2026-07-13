@@ -19,6 +19,18 @@ let billingContactVerificationRun: (() => Promise<void>) | undefined;
 let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
+let reviewProcessGroup: string | undefined;
+const operationalFailures: string[] = [];
+const operationalWarnings: string[] = [];
+
+mock.module("@/lib/server-observability", () => ({
+  reportOperationalFailure: (_processGroup: string, failureClass: string) => {
+    operationalFailures.push(failureClass);
+  },
+  reportOperationalWarning: (_processGroup: string, warning: string) => {
+    operationalWarnings.push(warning);
+  },
+}));
 
 mock.module("@/lib/db", () => ({
   getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
@@ -54,8 +66,10 @@ mock.module("@/worker/review", () => ({
   runReviewJob: async (
     _payload: unknown,
     timing: { queuedAt: Date; startedAt: Date },
+    processGroup: string,
   ) => {
     reviewTiming = timing;
+    reviewProcessGroup = processGroup;
     await reviewRun?.();
   },
 }));
@@ -122,6 +136,9 @@ beforeEach(() => {
   gateStateSyncRun = async () => undefined;
   cleanupRun = async () => undefined;
   reviewTiming = undefined;
+  reviewProcessGroup = undefined;
+  operationalFailures.length = 0;
+  operationalWarnings.length = 0;
 });
 
 afterEach(() => {
@@ -210,6 +227,7 @@ describe("drainQueueOnce", () => {
       { id: 1, error: "GitHub PATCH timed out" },
     ]);
     expect(failed).toEqual([]);
+    expect(operationalWarnings).toEqual(["job_retrying"]);
   });
 
   test("dispatches durable check-run cleanup jobs", async () => {
@@ -266,6 +284,7 @@ describe("drainQueueOnce", () => {
       queuedAt: new Date("2026-07-10T12:00:00.000Z"),
       startedAt: new Date("2026-07-10T12:00:05.000Z"),
     });
+    expect(reviewProcessGroup).toBe("web");
   });
 
   test("redacts secret-looking tokens from the error handed to failJob and the log", async () => {
@@ -289,6 +308,7 @@ describe("drainQueueOnce", () => {
     expect(failed[0]!.error).not.toContain(token);
     expect(failed[0]!.error).toContain("[redacted github token]");
     expect(logged.join("\n")).not.toContain(token);
+    expect(operationalFailures).toEqual(["job_permanently_failed"]);
   });
 
   test("stops after the drain deadline before claiming another job", async () => {

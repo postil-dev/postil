@@ -7,7 +7,7 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   [/\bgh[opsru]_[A-Za-z0-9_]{20,}\b/g, "[redacted github token]"],
   [/\bsk-or-v1-[A-Za-z0-9_-]{20,}\b/g, "[redacted api key]"],
   [/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[redacted api key]"],
-  [/\bph[cp]_[A-Za-z0-9_-]{20,}\b/g, "[redacted posthog token]"],
+  [/\bph[cpsx]_[A-Za-z0-9_-]{20,}\b/g, "[redacted posthog token]"],
   [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[redacted jwt]"],
   [/\bpostgres(?:ql)?:\/\/[^\s"'<>]+/gi, "[redacted database url]"],
 ];

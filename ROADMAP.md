@@ -12,6 +12,7 @@
   alerts, and in-app service notices.
 - Run the hosted service on a free-tier-compatible PostgreSQL profile: low per-process DB pools, single-job webhook queue drains, one low-frequency worker fallback, and explicit provider docs.
 - Stand up PostHog dashboards for traffic sources, docs/blog paths, install funnel events, and bot/automation breakdowns.
+- Activate scrubbed PostHog Error Tracking and sampled OTLP Logs only with zero-dollar billing caps, project and issue rate limits, alert destinations, and log drop rules configured.
 - Keep Prometheus metrics focused on operational health: database reachability, queue depth, stuck jobs, bounded review incidents, token usage, and webhook volume.
 
 ## Later
