@@ -26,7 +26,7 @@ BEGIN
       FROM "jobs"
      WHERE "kind" = 'review'
        AND "status" IN ('queued', 'running')
-       AND "id" <> NEW."id"
+       AND "id" IS DISTINCT FROM NEW."id"
        AND "payload"->>'repoFullName' = repo_full_name
        AND "payload"->>'prNumber' = pull_request_number
        AND "payload"->>'headSha' = head_sha

@@ -62,6 +62,15 @@ describe("validateRespondPublication", () => {
       "Inline `@person <img> ![image] | --- | # Summary` is code too.",
     ].join("\n");
     expect(validateRespondPublication(reply, "@postil explain the parser")).toBe(reply);
+    expect(validateRespondPublication("    @maintainer <details> ![image]", "@postil help")).toBe(
+      "    @maintainer <details> ![image]",
+    );
+    rejected("Paragraph text\n    @maintainer");
+  });
+
+  test("does not mask invalid fences or unmatched code spans", () => {
+    rejected("``` text`\n@victim\n```");
+    rejected("`@victim``");
   });
 
   test("rejects all Markdown image forms outside code", () => {
@@ -70,6 +79,7 @@ describe("validateRespondPublication", () => {
       "![full reference][image-id]",
       "![collapsed][]",
       "![shortcut]",
+      "![hello\nworld](https://example.test/image.png)",
     ]) {
       rejected(image);
     }
@@ -82,5 +92,7 @@ describe("validateRespondPublication", () => {
   test("rejects report sections outside code", () => {
     rejected("# What this PR does\nA long assessment follows.");
     rejected("## Verdict\nShip it.");
+    rejected("# Summary:\nA long assessment follows.");
+    rejected("Summary\n=======\nA long assessment follows.");
   });
 });
