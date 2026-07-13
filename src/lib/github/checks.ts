@@ -12,6 +12,9 @@ import { apiBase } from "./app-auth";
 
 export const ADVISORY_CHECK_NAME = "postil/review";
 export const GATE_CHECK_NAME = "postil/gate";
+export const RESPOND_MARKER_MAX_PAGES = 10;
+
+const ISSUE_COMMENTS_PAGE_SIZE = 100;
 
 type Conclusion = "success" | "failure" | "neutral";
 
@@ -108,19 +111,27 @@ export async function findIssueCommentByMarker(
   since: Date,
   signal?: AbortSignal,
 ): Promise<number | null> {
-  const query = new URLSearchParams({ per_page: "100", since: since.toISOString() });
-  const response = await githubFetch(
-    token,
-    "GET",
-    `/repos/${repoFullName}/issues/${number}/comments?${query}`,
-    undefined,
-    signal,
-  );
-  const comments = (await response.json()) as Array<{ id?: number; body?: string }>;
-  const match = comments.find(
-    (comment) => Number.isSafeInteger(comment.id) && comment.body?.includes(marker),
-  );
-  return match?.id ?? null;
+  for (let page = 1; page <= RESPOND_MARKER_MAX_PAGES; page += 1) {
+    const query = new URLSearchParams({
+      per_page: String(ISSUE_COMMENTS_PAGE_SIZE),
+      page: String(page),
+      since: since.toISOString(),
+    });
+    const response = await githubFetch(
+      token,
+      "GET",
+      `/repos/${repoFullName}/issues/${number}/comments?${query}`,
+      undefined,
+      signal,
+    );
+    const comments = (await response.json()) as Array<{ id?: number; body?: string }>;
+    const match = comments.find(
+      (comment) => Number.isSafeInteger(comment.id) && comment.body?.includes(marker),
+    );
+    if (match?.id !== undefined) return match.id;
+    if (comments.length < ISSUE_COMMENTS_PAGE_SIZE) return null;
+  }
+  return null;
 }
 
 export async function getPullRequestHeadSha(
