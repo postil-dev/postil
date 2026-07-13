@@ -6,11 +6,14 @@ local hosted-review harness before handoff. Use the pull request's actual base:
 ```sh
 POSTIL_API_BASE=https://openrouter.ai/api/v1 \
 POSTIL_API_FORMAT=openai-compatible \
-REVIEW_MODEL=mistralai/mistral-small-3.2-24b-instruct \
-REVIEW_MODEL_CASCADE=google/gemma-3-27b-it,qwen/qwen3-32b \
+REVIEW_MODEL=openai/gpt-5-mini \
+REVIEW_MODEL_CASCADE=openai/gpt-5-mini \
 POSTIL_DISABLE_SCORER=1 \
 bun run review:local -- --base origin/main --head HEAD --require-clean --repo-path .
 ```
+
+The repeated model ID deliberately resolves to a one-model chain. An empty
+cascade variable retains the CLI's embedded defaults.
 
 Replace `origin/main` when the pull request targets another branch. A missing
 binary or credential, provider failure, malformed response, or any surviving

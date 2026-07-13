@@ -852,8 +852,10 @@ async function ensureLocalModelCredential(): Promise<void> {
   process.env.POSTIL_API_BASE = "https://openrouter.ai/api/v1";
   process.env.POSTIL_API_FORMAT = "openai-compatible";
   process.env.POSTIL_HOSTED_MODE = "1";
-  process.env.REVIEW_MODEL = "mistralai/mistral-small-3.2-24b-instruct";
-  process.env.REVIEW_MODEL_CASCADE = "google/gemma-3-27b-it,qwen/qwen3-32b";
+  process.env.REVIEW_MODEL = "openai/gpt-5-mini";
+  // The CLI deduplicates the model chain. Repeating the primary model yields
+  // one attempt, while an empty cascade variable would retain built-in defaults.
+  process.env.REVIEW_MODEL_CASCADE = "openai/gpt-5-mini";
   process.env.POSTIL_DISABLE_SCORER = "1";
   delete process.env.REVIEW_SCORER_MODEL;
 }

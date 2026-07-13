@@ -68,15 +68,15 @@ describe("trusted local Postil pre-push hook", () => {
     expect(await readRecord(fixture)).toMatchObject({
       base: remoteBase,
       head: topicHead,
-      model: "mistralai/mistral-small-3.2-24b-instruct",
-      cascade: "google/gemma-3-27b-it,qwen/qwen3-32b",
+      model: "openai/gpt-5-mini",
+      cascade: "openai/gpt-5-mini",
       scorer: "",
       scorerDisabled: "1",
       hostedMode: "1",
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
       modelCredential: "present",
-      invocation: `review --base ${remoteBase} --no-post --output json --fail-on info --model mistralai/mistral-small-3.2-24b-instruct`,
+      invocation: `review --base ${remoteBase} --no-post --output json --fail-on info --model openai/gpt-5-mini`,
     });
     expect(await refExists(fixture.remote, "refs/heads/topic")).toBe(true);
   });
@@ -184,8 +184,8 @@ describe("trusted local Postil pre-push hook", () => {
 
     expect(result.exitCode).toBe(0);
     const record = await readRecord(fixture);
-    expect(record.model).toBe("mistralai/mistral-small-3.2-24b-instruct");
-    expect(record.cascade).toBe("google/gemma-3-27b-it,qwen/qwen3-32b");
+    expect(record.model).toBe("openai/gpt-5-mini");
+    expect(record.cascade).toBe("openai/gpt-5-mini");
     expect(record.scorer).toBe("");
     expect(record.scorerDisabled).toBe("1");
     expect(record.hostedMode).toBe("1");
