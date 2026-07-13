@@ -7,6 +7,7 @@ import "./quiet-console";
 import {
   fetchRepoFile,
   buildConfigProvenance,
+  missingRepositoryConfigSlots,
   materializeOrgConfig,
   materializeRepoConfig,
   materializeSharedConfig,
@@ -299,6 +300,52 @@ test("records immutable GitHub repository IDs in review provenance", () => {
     source: "repository",
     repositoryId: 123456,
     repository: "acme/widgets",
+  });
+});
+
+test("skips shared resolution when the target repository supplies every slot", () => {
+  expect(
+    missingRepositoryConfigSlots([
+      ".postil.yml",
+      ".postil/guardrails.md",
+      ".postil/content-policy.md",
+    ]),
+  ).toEqual([]);
+  expect(missingRepositoryConfigSlots([".postil.yaml"])).toEqual([
+    "guardrails",
+    "content-policy",
+  ]);
+});
+
+test("degrades only effective slots and explains shared-source fallback", () => {
+  const failedShared = ["root", "guardrails", "content-policy"].map((slot) => ({
+    slot: slot as "root" | "guardrails" | "content-policy",
+    source: "shared" as const,
+    path: null,
+    repository: "acme/.github",
+    stale: false,
+    status: "transient" as const,
+  }));
+  const overridden = buildConfigProvenance(
+    [".postil.yaml", ".postil/guardrails.md", ".postil/content-policy.md"],
+    failedShared,
+  );
+  expect(overridden.degraded).toBe(false);
+  expect(overridden.entries.every((entry) => entry.source === "repository")).toBe(true);
+
+  const fallback = buildConfigProvenance(["org:.postil.yaml"], failedShared);
+  expect(fallback.degraded).toBe(true);
+  expect(fallback.entries[0]).toMatchObject({
+    source: "organization",
+    fallback: {
+      source: "shared",
+      repository: "acme/.github",
+      status: "transient",
+    },
+  });
+  expect(fallback.entries[1]).toMatchObject({
+    source: "builtin",
+    fallback: { source: "shared", status: "transient" },
   });
 });
 

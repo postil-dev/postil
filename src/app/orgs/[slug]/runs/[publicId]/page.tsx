@@ -91,6 +91,15 @@ function configSourceLabel(entry: ConfigProvenanceEntry): string {
   return "built-in";
 }
 
+function configFallbackLabel(entry: ConfigProvenanceEntry): string | null {
+  if (!entry.fallback) return null;
+  const source = entry.fallback.repository ?? "owner .github";
+  const state = entry.fallback.status === "transient"
+    ? "temporarily unavailable"
+    : "unavailable";
+  return `${source} ${state}; ${configSourceLabel(entry)} used`;
+}
+
 function RunFact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0 border-l border-stone/70 pl-3">
@@ -588,6 +597,7 @@ export default async function RunDetailPage({
                     {entry.path ?? "default"}
                     {entry.stale ? " · last known good" : ""}
                     {entry.status && entry.status !== "present" ? ` · ${entry.status}` : ""}
+                    {configFallbackLabel(entry) ? ` · ${configFallbackLabel(entry)}` : ""}
                   </span>
                 </div>
               ))}

@@ -598,6 +598,7 @@ export const orgConfigSnapshots = pgTable("org_config_snapshots", {
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
   files: text("files").array().notNull(),
+  loadedFiles: text("loaded_files").array().notNull().default(sql`'{}'::text[]`),
   stale: boolean("stale").notNull().default(false),
   lastError: text("last_error"),
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),

@@ -156,6 +156,21 @@ describeDb("webhook handler behaviour", () => {
     return Number(repo.rows[0]!.id);
   }
 
+  async function seedSharedSnapshot(
+    orgId: number,
+    repositoryId: number,
+    githubRepoId: number,
+    fullName = "octo/.github",
+  ): Promise<void> {
+    await pool.query(
+      `INSERT INTO org_config_snapshots
+         (org_id, source_repository_id, source_github_repo_id, source_full_name,
+          visibility, default_branch, commit_sha, files, loaded_files, fetched_at)
+       VALUES ($1, $2, $3, $4, 'private', 'main', $5, $6, $6, now())`,
+      [orgId, repositoryId, githubRepoId, fullName, "a".repeat(40), [".postil.yaml"]],
+    );
+  }
+
   async function seedUser(
     githubId: number,
     login: string,
@@ -447,6 +462,56 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM repositories WHERE github_repo_id = 8888",
     );
     expect(repos.rows[0]!.c).toBe(0);
+  });
+
+  test("removing the shared source repository deletes its snapshot", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 301);
+    const repoId = await seedRepo(inst, 8889, "octo/.github");
+    await seedSharedSnapshot(orgId, repoId, 8889);
+
+    const res = await post(
+      "installation_repositories",
+      {
+        action: "removed",
+        installation: { id: 301 },
+        repositories_removed: [{ id: 8889, full_name: "octo/.github", private: true }],
+      },
+      "delivery-shared-removed",
+    );
+
+    expect(res.status).toBe(200);
+    const snapshots = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM org_config_snapshots WHERE org_id = $1",
+      [orgId],
+    );
+    expect(snapshots.rows[0]!.c).toBe(0);
+  });
+
+  test("uninstalling the App deletes the owner snapshot", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 302);
+    const repoId = await seedRepo(inst, 8890, "octo/.github");
+    await seedSharedSnapshot(orgId, repoId, 8890);
+
+    const res = await post(
+      "installation",
+      {
+        action: "deleted",
+        installation: {
+          id: 302,
+          account: { id: 999, login: "octo", type: "Organization" },
+        },
+      },
+      "delivery-shared-uninstalled",
+    );
+
+    expect(res.status).toBe(200);
+    const snapshots = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM org_config_snapshots WHERE org_id = $1",
+      [orgId],
+    );
+    expect(snapshots.rows[0]!.c).toBe(0);
   });
 
   test("respond jobs are rate-limited per installation per hour", async () => {

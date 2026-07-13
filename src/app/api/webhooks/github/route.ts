@@ -278,7 +278,19 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
       // revoked the moment it is uninstalled, so there is no way to complete
       // those check-runs from here; just delete.
       await db.transaction(async (tx) => {
+        const existing = (
+          await tx
+            .select({ orgId: schema.installations.orgId })
+            .from(schema.installations)
+            .where(eq(schema.installations.githubInstallationId, installation.id))
+            .limit(1)
+        )[0];
         await recordEnabledRepositoryRemovals(tx, installation.id, "github_uninstall");
+        if (existing?.orgId !== null && existing?.orgId !== undefined) {
+          await tx
+            .delete(schema.orgConfigSnapshots)
+            .where(eq(schema.orgConfigSnapshots.orgId, existing.orgId));
+        }
         await tx
           .delete(schema.installations)
           .where(eq(schema.installations.githubInstallationId, installation.id));
@@ -334,6 +346,14 @@ async function handleInstallationRepositories(
         "github_installation",
         removed.map((repo) => repo.id),
       );
+      await tx
+        .delete(schema.orgConfigSnapshots)
+        .where(
+          inArray(
+            schema.orgConfigSnapshots.sourceGithubRepoId,
+            removed.map((repo) => repo.id),
+          ),
+        );
       for (const repo of removed) {
         await tx
           .delete(schema.repositories)

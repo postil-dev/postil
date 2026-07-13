@@ -11,6 +11,8 @@ const files = new Map<string, string>();
 const requests: Request[] = [];
 const authorizationHeaders: Array<string | null> = [];
 let failContentsStatus: number | null = null;
+let metadataFailure: { status: number; headers?: HeadersInit } | null = null;
+let activeCommit = COMMIT;
 let snapshot: Parameters<OwnerConfigStore["saveSnapshot"]>[0] | null = null;
 let installed = true;
 let installedGithubRepoId = 99;
@@ -42,6 +44,7 @@ beforeAll(() => {
       authorizationHeaders.push(request.headers.get("authorization"));
       const url = new URL(request.url);
       if (url.pathname === "/repos/acme/.github") {
+        if (metadataFailure) return new Response("unavailable", metadataFailure);
         return Response.json({
           id: 99,
           full_name: "acme/.github",
@@ -53,7 +56,7 @@ beforeAll(() => {
         });
       }
       if (url.pathname === "/repos/acme/.github/commits/trunk") {
-        return Response.json({ sha: COMMIT });
+        return Response.json({ sha: activeCommit });
       }
       if (url.pathname === "/repos/acme/.github/contents") {
         if (failContentsStatus) return new Response("unavailable", { status: failContentsStatus });
@@ -75,7 +78,7 @@ beforeAll(() => {
       const prefix = "/repos/acme/.github/contents/";
       if (url.pathname.startsWith(prefix)) {
         if (failContentsStatus) return new Response("unavailable", { status: failContentsStatus });
-        if (url.searchParams.get("ref") !== COMMIT) return new Response("bad ref", { status: 400 });
+        if (url.searchParams.get("ref") !== activeCommit) return new Response("bad ref", { status: 400 });
         const path = decodeURIComponent(url.pathname.slice(prefix.length));
         const body = files.get(path);
         if (body === undefined) return new Response("not found", { status: 404 });
@@ -102,6 +105,8 @@ beforeEach(() => {
   requests.length = 0;
   authorizationHeaders.length = 0;
   failContentsStatus = null;
+  metadataFailure = null;
+  activeCommit = COMMIT;
   snapshot = null;
   installed = true;
   installedGithubRepoId = 99;
@@ -136,10 +141,43 @@ describe("owner .github configuration", () => {
     expect(resolved.provenance.map((entry) => entry.repositoryId)).toEqual([99, 99, 99]);
   });
 
+  test("revalidates identity and commit without refetching a matching snapshot", async () => {
+    files.set(".postil.yaml", "review:\n  minConfidence: 0.8\n");
+    await resolveOwnerGithubConfig(store, input);
+    requests.length = 0;
+
+    const resolved = await resolveOwnerGithubConfig(store, input);
+
+    expect(resolved.stale).toBe(false);
+    expect(requests).toHaveLength(2);
+    expect(requests.some((request) => request.url.includes("/contents"))).toBe(false);
+  });
+
+  test("hydrates only newly required slots at the same pinned commit", async () => {
+    files.set(".postil.yaml", "review:\n  minConfidence: 0.8\n");
+    files.set(".postil/guardrails.md", "Shared guardrail.\n");
+    files.set(".postil/content-policy.md", "Shared content policy.\n");
+
+    await resolveOwnerGithubConfig(store, { ...input, requiredSlots: ["root"] });
+    expect(snapshot?.files).toHaveLength(3);
+    expect(snapshot?.loadedFiles).toEqual([".postil.yaml"]);
+    requests.length = 0;
+
+    const resolved = await resolveOwnerGithubConfig(store, {
+      ...input,
+      requiredSlots: ["guardrails"],
+    });
+
+    expect(resolved.config?.guardrailsMd).toBe("Shared guardrail.\n");
+    expect(snapshot?.loadedFiles).toEqual([".postil.yaml", ".postil/guardrails.md"]);
+    expect(requests.filter((request) => request.url.includes("/contents"))).toHaveLength(1);
+  });
+
   test("uses the last known good snapshot on a transient GitHub failure", async () => {
     files.set(".postil/guardrails.md", "Known rule.\n");
     const fresh = await resolveOwnerGithubConfig(store, input);
     expect(fresh.stale).toBe(false);
+    activeCommit = "b".repeat(40);
     failContentsStatus = 503;
 
     const degraded = await resolveOwnerGithubConfig(store, input);
@@ -148,6 +186,22 @@ describe("owner .github configuration", () => {
     expect(degraded.stale).toBe(true);
     expect(degraded.config?.guardrailsMd).toBe("Known rule.\n");
     expect(degraded.provenance.every((entry) => entry.stale)).toBe(true);
+    expect(deletedSnapshots).toBe(0);
+  });
+
+  test("treats a rate-limited metadata response as transient", async () => {
+    files.set(".postil/guardrails.md", "Known rule.\n");
+    await resolveOwnerGithubConfig(store, input);
+    metadataFailure = {
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "9999999999" },
+    };
+
+    const resolved = await resolveOwnerGithubConfig(store, input);
+
+    expect(resolved.status).toBe("transient");
+    expect(resolved.stale).toBe(true);
+    expect(resolved.config?.guardrailsMd).toBe("Known rule.\n");
     expect(deletedSnapshots).toBe(0);
   });
 
@@ -215,6 +269,7 @@ describe("owner .github configuration", () => {
   test("removes cached policy after authenticated content access is denied", async () => {
     files.set(".postil/guardrails.md", "Cached rule.\n");
     await resolveOwnerGithubConfig(store, input);
+    activeCommit = "b".repeat(40);
     failContentsStatus = 403;
 
     const resolved = await resolveOwnerGithubConfig(store, input);

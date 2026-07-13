@@ -34,6 +34,7 @@ interface SettingsFormProps {
       }
     | undefined;
   sharedSourceFullName: string;
+  sharedSourceInstalled: boolean;
 }
 
 export function SettingsForm({
@@ -42,6 +43,7 @@ export function SettingsForm({
   billedMode,
   sharedSnapshot,
   sharedSourceFullName,
+  sharedSourceInstalled,
 }: SettingsFormProps) {
   const [state, formAction, pending] = useActionState(saveOrgSettings, null);
   const [bringOwnKey, setBringOwnKey] = useState(settings?.hasKey ?? false);
@@ -289,6 +291,13 @@ export function SettingsForm({
                   : "The source repository has no shared Postil files."}
             </p>
           </div>
+        )}
+        {!sharedSnapshot && sharedConfigEnabled && (
+          <p className="mt-3 rounded-card border border-stone/70 bg-ivory px-3 py-2 text-xs text-charcoal/60">
+            {sharedSourceInstalled
+              ? "No verified shared snapshot is available. Postil checks the source during reviews."
+              : `The App installation does not include ${sharedSourceFullName}.`}
+          </p>
         )}
       </div>
 

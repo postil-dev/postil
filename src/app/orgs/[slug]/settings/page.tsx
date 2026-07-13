@@ -186,6 +186,12 @@ export default async function OrgSettingsPage({
   const privateAccess = rawPrivateAccess
     ? requireMatchingProviderMode(rawPrivateAccess, settings?.hasKey ?? false)
     : null;
+  const sharedSourceFullName = ownerConfigRepositoryFullName(
+    installationAccount?.accountLogin ?? org.slug,
+  );
+  const sharedSourceInstalled = repos.some(
+    (repo) => repo.fullName.toLowerCase() === sharedSourceFullName.toLowerCase(),
+  );
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -225,11 +231,8 @@ export default async function OrgSettingsPage({
             slug={org.slug}
             settings={settings}
             sharedSnapshot={sharedSnapshot}
-            sharedSourceFullName={
-              sharedSnapshot?.sourceFullName ?? ownerConfigRepositoryFullName(
-                installationAccount?.accountLogin ?? org.slug,
-              )
-            }
+            sharedSourceFullName={sharedSnapshot?.sourceFullName ?? sharedSourceFullName}
+            sharedSourceInstalled={sharedSourceInstalled}
             billedMode={
               entitlement?.subscriptionMode === "hosted" ||
               entitlement?.subscriptionMode === "byok"
@@ -392,15 +395,20 @@ function configArtifactClass(artifact: VisibleConfigArtifact): string {
 
 function configArtifactDescription(artifact: VisibleConfigArtifact): string {
   if (artifact.state === "active") {
-    return artifact.liveSource === "repository"
-      ? `Repository supplies ${artifact.file}; the latest review used repository config.`
+    if (artifact.liveSource === "repository") {
+      return `Repository supplies ${artifact.file}; the latest review used repository config.`;
+    }
+    return artifact.liveSource === "shared"
+      ? `Shared owner configuration supplies ${artifact.file}; the latest review used it.`
       : `Hosted organization ${artifact.file} is active; the latest review used it.`;
   }
   if (artifact.state === "pending") {
     const source =
       artifact.liveSource === "repository"
         ? `Repository ${artifact.file}`
-        : `Hosted organization ${artifact.file}`;
+        : artifact.liveSource === "shared"
+          ? `Shared owner configuration ${artifact.file}`
+          : `Hosted organization ${artifact.file}`;
     return `${source} is set up but not yet exercised. It takes effect on the next review.`;
   }
   if (artifact.state === "removed") {

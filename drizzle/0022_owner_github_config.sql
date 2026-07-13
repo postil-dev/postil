@@ -16,6 +16,7 @@ CREATE TABLE "org_config_snapshots" (
   "guardrails_md" text,
   "content_policy_md" text,
   "files" text[] NOT NULL,
+  "loaded_files" text[] DEFAULT '{}' NOT NULL,
   "stale" boolean DEFAULT false NOT NULL,
   "last_error" text,
   "fetched_at" timestamp with time zone NOT NULL,

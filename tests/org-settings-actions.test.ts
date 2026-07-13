@@ -626,6 +626,8 @@ describe("SettingsForm API key handling", () => {
     expect(source).toContain('disabled={billedMode === "hosted"}');
     expect(source).toContain("Private repositories remain inactive until a matching plan");
     expect(source).toContain("Shared owner configuration is disabled. The stored snapshot is not used.");
+    expect(source).toContain("No verified shared snapshot is available.");
+    expect(source).toContain("The App installation does not include");
     expect(source).toContain("Protect its default branch with CODEOWNERS, a ruleset, and required review.");
     expect(source).not.toContain("defaultValue={settings?.apiKey");
     expect(source).not.toContain("value={settings?.apiKey");
@@ -639,5 +641,6 @@ describe("SettingsForm API key handling", () => {
     expect(formSource).not.toContain("Escalation emails");
     expect(formSource).not.toContain("escalationEmail");
     expect(pageSource).not.toContain("emailVerification");
+    expect(pageSource).toContain("Shared owner configuration supplies");
   });
 });

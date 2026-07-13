@@ -36,6 +36,7 @@ import {
   materializeRepoConfig,
   materializeSharedConfig,
   buildConfigProvenance,
+  missingRepositoryConfigSlots,
   type ConfigProvenanceEntry,
   type OrgReviewConfig,
 } from "@/lib/github/contents";
@@ -697,7 +698,9 @@ export async function runReviewJob(
     }
     let sharedConfigFiles: string[] = [];
     let sharedProvenance: ConfigProvenanceEntry[] = [];
+    const missingSharedSlots = missingRepositoryConfigSlots(repoConfigFiles);
     if (
+      missingSharedSlots.length > 0 &&
       installation.orgId !== null &&
       installation.githubOrgId !== null &&
       await resolveSharedConfigEnabled(installation.orgId)
@@ -710,6 +713,7 @@ export async function runReviewJob(
           githubOwnerId: installation.githubOrgId,
           installationId: installation.id,
           owner,
+          requiredSlots: missingSharedSlots,
         });
         sharedProvenance = shared.provenance;
         sharedConfigFiles = await materializeSharedConfig(

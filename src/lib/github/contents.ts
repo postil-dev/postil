@@ -48,11 +48,29 @@ export interface ConfigProvenanceEntry {
   commitSha?: string;
   stale?: boolean;
   status?: "present" | "absent" | "inaccessible" | "transient";
+  fallback?: {
+    source: "shared";
+    repository?: string;
+    commitSha?: string;
+    stale?: boolean;
+    status: "inaccessible" | "transient";
+  };
 }
 
 export interface ReviewConfigProvenance {
   entries: ConfigProvenanceEntry[];
   degraded: boolean;
+}
+
+/** Return the configuration slots not supplied by the target repository. */
+export function missingRepositoryConfigSlots(repoFiles: readonly string[]): ConfigSlot[] {
+  const missing: ConfigSlot[] = [];
+  if (!CONFIG_FILE_CANDIDATES.some((candidate) => repoFiles.includes(candidate))) {
+    missing.push("root");
+  }
+  if (!repoFiles.includes(PROSE_FILES[0]!)) missing.push("guardrails");
+  if (!repoFiles.includes(PROSE_FILES[1]!)) missing.push("content-policy");
+  return missing;
 }
 
 /**
@@ -248,22 +266,34 @@ export function buildConfigProvenance(
     if (sharedEntry?.source === "shared" && configFiles.includes(`shared:${path}`)) {
       return sharedEntry;
     }
+    const fallback =
+      sharedEntry?.status === "inaccessible" || sharedEntry?.status === "transient"
+        ? {
+            source: "shared" as const,
+            repository: sharedEntry.repository,
+            commitSha: sharedEntry.commitSha,
+            stale: sharedEntry.stale,
+            status: sharedEntry.status,
+          }
+        : undefined;
     if (configFiles.includes(`org:${path}`)) {
-      return { slot, source: "organization" as const, path };
+      return { slot, source: "organization" as const, path, ...(fallback ? { fallback } : {}) };
     }
     return {
       slot,
       source: "builtin" as const,
       path: null,
-      ...(sharedEntry?.status && sharedEntry.status !== "absent"
-        ? { status: sharedEntry.status, stale: sharedEntry.stale }
-        : {}),
+      ...(fallback ? { fallback } : {}),
     };
   });
   return {
     entries,
-    degraded: shared.some(
-      (entry) => entry.stale === true || entry.status === "inaccessible" || entry.status === "transient",
+    degraded: entries.some(
+      (entry) =>
+        entry.stale === true ||
+        entry.status === "inaccessible" ||
+        entry.status === "transient" ||
+        entry.fallback !== undefined,
     ),
   };
 }
