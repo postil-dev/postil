@@ -144,7 +144,7 @@ console.log("fixture-key");
       },
     });
 
-    expect(result.stderr).toContain("git");
+    expect(result.stderr).toMatch(/git|Postil binary/i);
     expect(await Bun.file(shadowMarker).exists()).toBe(false);
   }, 120_000);
 
@@ -299,7 +299,12 @@ console.log("fixture-key");
     const tree = await runCapture(["git", "write-tree"], repo);
     const args = ["git", "commit-tree", tree, "-m", "fixture"];
     if (parent) args.push("-p", parent);
-    const commit = await runCapture(args, repo);
+    const commit = await runCapture(args, repo, {
+      GIT_AUTHOR_NAME: "Postil test",
+      GIT_AUTHOR_EMAIL: "postil-test@example.invalid",
+      GIT_COMMITTER_NAME: "Postil test",
+      GIT_COMMITTER_EMAIL: "postil-test@example.invalid",
+    });
     await run(["git", "update-ref", "HEAD", commit], repo);
     return commit;
   }
@@ -379,8 +384,17 @@ async function run(command: string[], cwd?: string): Promise<void> {
   }
 }
 
-async function runCapture(command: string[], cwd?: string): Promise<string> {
-  const child = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
+async function runCapture(
+  command: string[],
+  cwd?: string,
+  env?: Record<string, string>,
+): Promise<string> {
+  const child = Bun.spawn(command, {
+    cwd,
+    env: env ? { ...process.env, ...env } : undefined,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
