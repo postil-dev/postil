@@ -115,7 +115,7 @@ describeDb("webhook handler behaviour", () => {
     pullRequestHeadSha = "head-sha";
     checkRunPatchFails = false;
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
-    await pool.query("TRUNCATE jobs RESTART IDENTITY");
+    await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
       "TRUNCATE reviews, repositories, installations, organizations RESTART IDENTITY CASCADE",
