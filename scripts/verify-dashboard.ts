@@ -101,10 +101,10 @@ try {
   );
   assertContains(grantOutput, "Billing credit grant applied.");
   assertContains(grantOutput, "grant_amount=$200.00");
-  assertContains(grantOutput, "usage_charged=$1.31");
-  assertContains(grantOutput, "remaining=$198.69");
+  assertContains(grantOutput, "usage_charged=$1.305");
+  assertContains(grantOutput, "remaining=$198.695");
   assertContains(grantOutput, "charged_usage_events=1");
-  console.log("morgaesis billing credit grant: $200.00 granted, $1.31 charged, $198.69 remaining");
+  console.log("morgaesis billing credit grant: $200.00 granted, $1.305 charged, $198.695 remaining");
 
   await mkdir(stateDir, { recursive: true });
   await writeFile(
@@ -152,7 +152,7 @@ try {
   await verifyPage(`${origin}/orgs/acme/billing`, headers, ["Organization billing"]);
   await verifyPage(`${origin}/orgs/morgaesis/billing`, headers, [
     "Credit balance",
-    "$198.69",
+    "$198.695",
     "$200.00",
     "$1.31",
     "charged across",
@@ -304,6 +304,7 @@ async function seedMorgaesisBillingFixture(client: Client): Promise<void> {
       prompt_tokens,
       completion_tokens,
       model_used,
+      cost_micros,
       cost_cents,
       created_at
     )
@@ -314,6 +315,7 @@ async function seedMorgaesisBillingFixture(client: Client): Promise<void> {
       2000000,
       500000,
       'deepseek/deepseek-v4-pro',
+      1305000,
       131,
       '2026-07-11T12:00:00.000Z'::timestamptz
     FROM installation, review;

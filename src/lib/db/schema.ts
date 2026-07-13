@@ -278,10 +278,17 @@ export const usageEvents = pgTable(
     promptTokens: integer("prompt_tokens").notNull().default(0),
     completionTokens: integer("completion_tokens").notNull().default(0),
     modelUsed: text("model_used"),
+    /** Exact provider-priced spend in millionths of one US dollar. */
+    costMicros: bigint("cost_micros", { mode: "number" }),
+    /** Rolling-deploy compatibility; new accounting reads costMicros. */
     costCents: integer("cost_cents"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check(
+      "usage_events_cost_micros_nonnegative",
+      sql`${t.costMicros} IS NULL OR ${t.costMicros} >= 0`,
+    ),
     check(
       "usage_events_cost_cents_nonnegative",
       sql`${t.costCents} IS NULL OR ${t.costCents} >= 0`,
@@ -334,6 +341,12 @@ export const organizationEntitlements = pgTable(
     pastDueGraceEndsAt: timestamp("past_due_grace_ends_at", { withTimezone: true }),
     periodStartsAt: timestamp("period_starts_at", { withTimezone: true }),
     periodEndsAt: timestamp("period_ends_at", { withTimezone: true }),
+    /** Allowance and cap use USD micros so sub-cent model calls remain exact. */
+    includedUsageMicros: bigint("included_usage_micros", { mode: "number" })
+      .notNull()
+      .default(0),
+    overageHardCapMicros: bigint("overage_hard_cap_micros", { mode: "number" }).default(0),
+    /** Rolling-deploy compatibility; new entitlement checks read the micros fields. */
     includedUsageCents: integer("included_usage_cents").notNull().default(0),
     overageHardCapCents: integer("overage_hard_cap_cents").default(0),
     billingContactEmail: text("billing_contact_email"),
@@ -355,6 +368,14 @@ export const organizationEntitlements = pgTable(
       sql`${t.status} IN ('active', 'trialing', 'past_due', 'suspended')`,
     ),
     check(
+      "organization_entitlements_included_usage_micros_nonnegative",
+      sql`${t.includedUsageMicros} >= 0`,
+    ),
+    check(
+      "organization_entitlements_overage_cap_micros_nonnegative",
+      sql`${t.overageHardCapMicros} IS NULL OR ${t.overageHardCapMicros} >= 0`,
+    ),
+    check(
       "organization_entitlements_included_usage_nonnegative",
       sql`${t.includedUsageCents} >= 0`,
     ),
@@ -365,6 +386,41 @@ export const organizationEntitlements = pgTable(
     check(
       "organization_entitlements_updated_by_nonempty",
       sql`length(btrim(${t.updatedBy})) > 0`,
+    ),
+  ],
+);
+
+/** Atomic hosted-inference budget holds. Expired active rows no longer consume capacity. */
+export const hostedUsageReservations = pgTable(
+  "hosted_usage_reservations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    reviewId: bigint("review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    reservedMicros: bigint("reserved_micros", { mode: "number" }).notNull(),
+    actualMicros: bigint("actual_micros", { mode: "number" }),
+    status: text("status").notNull().default("active"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("hosted_usage_reservations_review_idx").on(t.reviewId),
+    index("hosted_usage_reservations_active_org_expiry_idx")
+      .on(t.orgId, t.expiresAt)
+      .where(sql`${t.status} = 'active'`),
+    check(
+      "hosted_usage_reservations_status_check",
+      sql`${t.status} IN ('active', 'reconciled', 'released')`,
+    ),
+    check("hosted_usage_reservations_reserved_positive", sql`${t.reservedMicros} > 0`),
+    check(
+      "hosted_usage_reservations_actual_nonnegative",
+      sql`${t.actualMicros} IS NULL OR ${t.actualMicros} >= 0`,
     ),
   ],
 );

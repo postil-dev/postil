@@ -91,7 +91,7 @@ const usageRows = [
     promptTokens: 10_000_000,
     completionTokens: 1_000_000,
     modelUsed: "deepseek/deepseek-v4-pro",
-    costCents: 522,
+    costMicros: 5_220_000,
     createdAt: new Date("2026-07-11T12:00:00.000Z"),
   },
 ];
@@ -109,8 +109,8 @@ mock.module("@/lib/private-repository-entitlement", () => ({
     allowed: false,
     reason: "no_entitlement",
     entitlement: null,
-    usageCents: 0,
-    usageLimitCents: null,
+    usageMicros: 0,
+    usageLimitMicros: null,
   }),
 }));
 

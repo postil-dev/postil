@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { and, eq, sql } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
+import { centsToMicros } from "@/lib/billing-credits";
 import {
   parseApiFormat,
   validateAdditionalAuthHeader,
@@ -106,6 +107,37 @@ async function requireAdmin(slug: string): Promise<{ orgId: number; userId: numb
     throw new Error("this action requires an organization admin");
   }
   return { orgId, userId };
+}
+
+/** Owner-controlled hosted overage limit. BYOK spend remains provider-controlled. */
+export async function updateHostedOverageCap(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId } = await requireAdmin(slug);
+  const raw = String(formData.get("overageCapUsd") ?? "").trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(raw)) {
+    throw new Error("overage cap must be a nonnegative USD value with at most two decimals");
+  }
+  const [dollars, decimal = ""] = raw.split(".");
+  const cents = Number(dollars) * 100 + Number(decimal.padEnd(2, "0"));
+  if (!Number.isSafeInteger(cents) || cents < 0) throw new Error("overage cap is too large");
+  const updated = await getDb()
+    .update(schema.organizationEntitlements)
+    .set({
+      overageHardCapMicros: centsToMicros(cents),
+      overageHardCapCents: cents,
+      updatedBy: `org-admin:${orgId}`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(schema.organizationEntitlements.orgId, orgId),
+        eq(schema.organizationEntitlements.subscriptionMode, "hosted"),
+      ),
+    )
+    .returning({ orgId: schema.organizationEntitlements.orgId });
+  if (updated.length !== 1) throw new Error("an active hosted entitlement is required");
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/billing`);
 }
 
 export async function toggleRepository(formData: FormData): Promise<void> {

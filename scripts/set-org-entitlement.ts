@@ -1,6 +1,8 @@
 import { eq } from "drizzle-orm";
 
 import { closeDb, getDb, schema } from "@/lib/db";
+import { centsToMicros } from "@/lib/billing-credits";
+import { HOSTED_REVIEW_RESERVATION_MICROS } from "@/lib/hosted-usage-reservations";
 
 export interface EntitlementOptions {
   org: string;
@@ -45,6 +47,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       periodEndsAt: options.periodEndsAt,
       includedUsageCents: options.includedUsageCents,
       overageHardCapCents: options.overageHardCapCents,
+      includedUsageMicros: centsToMicros(options.includedUsageCents),
+      overageHardCapMicros:
+        options.overageHardCapCents === null
+          ? null
+          : centsToMicros(options.overageHardCapCents),
       billingContactEmail: options.billingContactEmail,
       billingContactVerifiedAt: options.billingContactVerifiedAt,
       promotionalEligible: options.promotionalEligible,
@@ -152,6 +159,19 @@ export function parseEntitlementArgs(args: string[]): EntitlementOptions {
   if (periodStartsAt && periodEndsAt && periodStartsAt >= periodEndsAt) {
     throw new Error("--period-starts-at must be before --period-ends-at");
   }
+  const includedUsageCents = nonnegativeInteger(
+    values.get("included-usage-cents") ?? "0",
+    "--included-usage-cents",
+  );
+  if (
+    mode === "hosted" &&
+    (status === "active" || status === "trialing" || promotionalEligible) &&
+    centsToMicros(includedUsageCents) < HOSTED_REVIEW_RESERVATION_MICROS
+  ) {
+    throw new Error(
+      `hosted active, trialing, or promotional access requires --included-usage-cents of at least ${HOSTED_REVIEW_RESERVATION_MICROS / 10_000}`,
+    );
+  }
   return {
     org,
     confirmOrg: optional(values, "confirm-org"),
@@ -161,7 +181,7 @@ export function parseEntitlementArgs(args: string[]): EntitlementOptions {
     pastDueGraceEndsAt: optionalDate(values, "past-due-grace-ends-at"),
     periodStartsAt,
     periodEndsAt,
-    includedUsageCents: nonnegativeInteger(values.get("included-usage-cents") ?? "0", "--included-usage-cents"),
+    includedUsageCents,
     overageHardCapCents: values.has("overage-hard-cap-cents")
       ? nonnegativeInteger(values.get("overage-hard-cap-cents")!, "--overage-hard-cap-cents")
       : mode === "hosted"
@@ -207,7 +227,7 @@ function nonnegativeInteger(value: string, flag: string): number {
 
 function printUsage(): void {
   console.log(`Usage:
-  bun run billing:set-entitlement -- --org acme --mode hosted --status active --actor ops@example --dry-run
+  bun run billing:set-entitlement -- --org acme --mode hosted --status active --included-usage-cents 600 --actor ops@example --dry-run
   bun run billing:set-entitlement -- --org acme --confirm-org acme --mode byok --status active --actor ops@example --yes
 
 Applies the complete organization entitlement state idempotently. This command never accepts payment or provider secrets.
@@ -228,7 +248,7 @@ Optional state:
   --past-due-grace-ends-at ISO  Exclusive grace expiry.
   --period-starts-at ISO        Usage period lower bound.
   --period-ends-at ISO          Usage period upper bound.
-  --included-usage-cents N      Included usage, default 0.
+  --included-usage-cents N      Included usage. At least 100 cents is required for hosted active, trialing, or promotional access.
   --overage-hard-cap-cents N    Maximum overage; hosted defaults to 0, BYOK omission means no provider-spend cap.
   --billing-contact-email EMAIL
   --billing-contact-verified-at ISO

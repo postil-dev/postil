@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
-import { calculateUsageCostCentsForModel } from "@/lib/billing-credits";
+import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 import {
   parseApiFormat,
   validateAdditionalAuthHeader,
@@ -35,6 +35,10 @@ import {
   type OrgReviewConfig,
 } from "@/lib/github/contents";
 import { configuredPublicOrigin } from "@/lib/oauth";
+import {
+  releaseHostedReviewSpend,
+  reserveHostedReviewSpend,
+} from "@/lib/hosted-usage-reservations";
 import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
@@ -453,8 +457,33 @@ export async function runReviewJob(
   let baselinePath: string | undefined;
   let workDir: string | undefined;
   let sensitiveValues: string[] = [];
+  let hostedUsageReservationId: string | null = null;
 
   try {
+    const spendReservation = currentRepository.private
+      ? await reserveHostedReviewSpend(db, {
+          orgId: installation.orgId,
+          reviewId,
+          usesByok: llm.byok,
+        })
+      : null;
+    if (spendReservation && !spendReservation.allowed) {
+      await db
+        .update(schema.reviews)
+        .set({
+          status: "failed",
+          errorMessage: "Hosted inference allowance is unavailable or fully reserved.",
+          finishedAt: new Date(),
+        })
+        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
+      reviewLog.line("hosted inference reservation denied before provider access");
+      console.warn(
+        `review job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
+      );
+      return;
+    }
+    hostedUsageReservationId = spendReservation?.reservationId ?? null;
+    if (hostedUsageReservationId) reviewLog.line("hosted inference spend reserved");
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
     const superseded = await supersedeActiveReviews({
@@ -605,12 +634,13 @@ export async function runReviewJob(
         promptTokens: ingested.promptTokens,
         completionTokens: ingested.completionTokens,
         modelUsed: ingested.modelUsed,
-        costCents: calculateUsageCostCentsForModel(
+        costMicros: calculateUsageCostMicrosForModel(
           ingested.modelUsed,
           ingested.promptTokens,
           ingested.completionTokens,
         ),
       },
+      hostedUsageReservationId,
       escalationJob:
         qualifyingEscalationCount > 0 && detailsUrl
           ? {
@@ -635,6 +665,7 @@ export async function runReviewJob(
         }
       }
     } else {
+      await releaseHostedReviewSpend(db, hostedUsageReservationId);
       const terminal = (
         await db
           .select({ status: schema.reviews.status })
@@ -669,6 +700,11 @@ export async function runReviewJob(
       })
       .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
       .returning({ id: schema.reviews.id });
+    await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
+      console.error(
+        `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
+      );
+    });
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).

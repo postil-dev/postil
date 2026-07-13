@@ -6,6 +6,7 @@ import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import {
   calculateBillingCreditBalance,
   formatCurrencyCents,
+  formatCurrencyMicros,
 } from "@/lib/billing-credits";
 import {
   calculateBillingUsage,
@@ -20,6 +21,7 @@ import {
   HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
 } from "@/lib/pricing-policy";
 import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
+import { updateHostedOverageCap } from "../actions";
 
 export const metadata: Metadata = {
   title: "Organization billing",
@@ -91,7 +93,7 @@ export default async function OrgBillingPage({
         promptTokens: schema.usageEvents.promptTokens,
         completionTokens: schema.usageEvents.completionTokens,
         modelUsed: schema.usageEvents.modelUsed,
-        costCents: schema.usageEvents.costCents,
+        costMicros: schema.usageEvents.costMicros,
         createdAt: schema.usageEvents.createdAt,
       })
       .from(schema.usageEvents)
@@ -131,8 +133,8 @@ export default async function OrgBillingPage({
     repositoryPrivate: true,
   });
   const entitlement = privateAccess.entitlement;
-  const effectiveOverageHardCapCents = entitlement
-    ? entitlement.overageHardCapCents ??
+  const effectiveOverageHardCapMicros = entitlement
+    ? entitlement.overageHardCapMicros ??
       (entitlement.subscriptionMode === "hosted" ? 0 : null)
     : null;
   const hasEntitlementPeriod = Boolean(
@@ -214,13 +216,13 @@ export default async function OrgBillingPage({
             )}
           </p>
           <p>
-            included usage: {formatCurrencyCents(entitlement?.includedUsageCents ?? 0)}
+            included usage: {formatCurrencyMicros(entitlement?.includedUsageMicros ?? 0)}
           </p>
           <p>
             overage hard cap:{" "}
-            {effectiveOverageHardCapCents == null
+            {effectiveOverageHardCapMicros == null
               ? "not set"
-              : formatCurrencyCents(effectiveOverageHardCapCents)}
+              : formatCurrencyMicros(effectiveOverageHardCapMicros)}
           </p>
           <p>active private PR authors: {activePrivateAuthorCount}</p>
         </div>
@@ -231,6 +233,31 @@ export default async function OrgBillingPage({
           >
             Contact us to activate
           </a>
+        )}
+        {entitlement?.subscriptionMode === "hosted" && (
+          <form action={updateHostedOverageCap} className="mt-5 flex flex-wrap items-end gap-3 border-t border-stone/60 pt-4">
+            <input type="hidden" name="slug" value={org.slug} />
+            <label className="text-xs">
+              <span className="block font-medium">Monthly overage hard cap (USD)</span>
+              <input
+                name="overageCapUsd"
+                inputMode="decimal"
+                pattern="[0-9]+(?:\.[0-9]{1,2})?"
+                required
+                defaultValue={((effectiveOverageHardCapMicros ?? 0) / 1_000_000).toFixed(2)}
+                className="mt-1 w-36 rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs"
+              />
+            </label>
+            <button type="submit" className="btn-secondary text-xs">Save hard cap</button>
+            <p className="max-w-xl text-xs text-charcoal/55">
+              Zero prevents charges beyond included hosted inference. Changes apply before the next provider request.
+            </p>
+          </form>
+        )}
+        {entitlement?.subscriptionMode === "byok" && (
+          <p className="mt-4 border-t border-stone/60 pt-4 text-xs text-charcoal/60">
+            Provider usage is billed directly to your provider account. Configure budgets, alerts, and hard limits there.
+          </p>
         )}
       </div>
 
@@ -260,13 +287,13 @@ export default async function OrgBillingPage({
         <div className="card p-6">
           <p className="eyebrow">Credit balance</p>
           <p className="serif-display mt-3 text-5xl">
-            {formatCurrencyCents(creditBalance.remainingCents)}
+            {formatCurrencyMicros(creditBalance.remainingMicros)}
           </p>
           <p className="mt-2 text-sm text-charcoal/70">
             remaining from {formatCurrencyCents(creditBalance.totalGrantedCents)} granted
           </p>
           <p className="mt-4 font-mono text-[11px] text-charcoal/55">
-            {formatCurrencyCents(creditBalance.usageCostCents)} charged across{" "}
+            {formatCurrencyMicros(creditBalance.usageCostMicros)} charged across{" "}
             {creditBalance.chargedUsageEvents.toLocaleString()} usage events
           </p>
         </div>

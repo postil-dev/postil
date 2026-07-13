@@ -3,6 +3,7 @@ import { and, asc, eq } from "drizzle-orm";
 import {
   calculateBillingCreditBalance,
   formatCurrencyCents,
+  formatCurrencyMicros,
   parseUsdToCents,
 } from "@/lib/billing-credits";
 import { closeDb, getDb, schema } from "@/lib/db";
@@ -131,7 +132,7 @@ async function main(): Promise<void> {
           promptTokens: schema.usageEvents.promptTokens,
           completionTokens: schema.usageEvents.completionTokens,
           modelUsed: schema.usageEvents.modelUsed,
-          costCents: schema.usageEvents.costCents,
+          costMicros: schema.usageEvents.costMicros,
           createdAt: schema.usageEvents.createdAt,
         })
         .from(schema.usageEvents)
@@ -151,8 +152,8 @@ async function main(): Promise<void> {
       `grant_amount=${formatCurrencyCents(grant.amountCents)} applies_at=${grant.appliesAt.toISOString()}`,
     );
     console.log(`total_granted=${formatCurrencyCents(balance.totalGrantedCents)}`);
-    console.log(`usage_charged=${formatCurrencyCents(balance.usageCostCents)}`);
-    console.log(`remaining=${formatCurrencyCents(balance.remainingCents)}`);
+    console.log(`usage_charged=${formatCurrencyMicros(balance.usageCostMicros)}`);
+    console.log(`remaining=${formatCurrencyMicros(balance.remainingMicros)}`);
     console.log(`charged_usage_events=${balance.chargedUsageEvents}`);
     console.log(`unpriced_usage_events=${balance.unpricedUsageEvents}`);
   } finally {

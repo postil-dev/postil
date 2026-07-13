@@ -21,8 +21,8 @@ export interface OrganizationEntitlementSnapshot {
   pastDueGraceEndsAt: Date | null;
   periodStartsAt: Date | null;
   periodEndsAt: Date | null;
-  includedUsageCents: number;
-  overageHardCapCents: number | null;
+  includedUsageMicros: number;
+  overageHardCapMicros: number | null;
   promotionalEligible: boolean;
   promotionalEndsAt: Date | null;
   billingContactEmail: string | null;
@@ -33,8 +33,8 @@ export interface PrivateRepositoryAccessDecision {
   allowed: boolean;
   reason: PrivateRepositoryAccessReason;
   entitlement: OrganizationEntitlementSnapshot | null;
-  usageCents: number;
-  usageLimitCents: number | null;
+  usageMicros: number;
+  usageLimitMicros: number | null;
 }
 
 /** Prevent a private BYOK subscription from silently spending hosted inference. */
@@ -51,7 +51,7 @@ export function providerModeMatchesPrivateAccess(
 export function evaluatePrivateRepositoryAccess(
   repositoryPrivate: boolean,
   entitlement: OrganizationEntitlementSnapshot | null,
-  usageCents: number,
+  usageMicros: number,
   now = new Date(),
 ): PrivateRepositoryAccessDecision {
   if (!repositoryPrivate) {
@@ -59,8 +59,8 @@ export function evaluatePrivateRepositoryAccess(
       allowed: true,
       reason: "public_repository",
       entitlement,
-      usageCents,
-      usageLimitCents: null,
+      usageMicros,
+      usageLimitMicros: null,
     };
   }
   if (!entitlement) {
@@ -68,19 +68,19 @@ export function evaluatePrivateRepositoryAccess(
       allowed: false,
       reason: "no_entitlement",
       entitlement: null,
-      usageCents,
-      usageLimitCents: null,
+      usageMicros,
+      usageLimitMicros: null,
     };
   }
-  const effectiveOverageHardCapCents =
-    entitlement.overageHardCapCents ??
+  const effectiveOverageHardCapMicros =
+    entitlement.overageHardCapMicros ??
     (entitlement.subscriptionMode === "hosted" ? 0 : null);
-  const usageLimitCents =
-    effectiveOverageHardCapCents === null
+  const usageLimitMicros =
+    effectiveOverageHardCapMicros === null
       ? null
-      : entitlement.includedUsageCents + effectiveOverageHardCapCents;
+      : entitlement.includedUsageMicros + effectiveOverageHardCapMicros;
   if (entitlement.status === "suspended") {
-    return { allowed: false, reason: "suspended", entitlement, usageCents, usageLimitCents };
+    return { allowed: false, reason: "suspended", entitlement, usageMicros, usageLimitMicros };
   }
   const trialActive = Boolean(entitlement.trialEndsAt && now < entitlement.trialEndsAt);
   const graceActive = Boolean(
@@ -103,18 +103,18 @@ export function evaluatePrivateRepositoryAccess(
             ? "operator_promotion"
             : null;
   if (!reason) {
-    return { allowed: false, reason: "inactive", entitlement, usageCents, usageLimitCents };
+    return { allowed: false, reason: "inactive", entitlement, usageMicros, usageLimitMicros };
   }
-  if (usageLimitCents !== null && usageCents >= usageLimitCents) {
+  if (usageLimitMicros !== null && usageMicros >= usageLimitMicros) {
     return {
       allowed: false,
       reason: "usage_cap_reached",
       entitlement,
-      usageCents,
-      usageLimitCents,
+      usageMicros,
+      usageLimitMicros,
     };
   }
-  return { allowed: true, reason, entitlement, usageCents, usageLimitCents };
+  return { allowed: true, reason, entitlement, usageMicros, usageLimitMicros };
 }
 
 /** Single product-entitlement gate for all private-repository processing. */
@@ -138,8 +138,8 @@ export async function canProcessPrivateRepository(
         pastDueGraceEndsAt: schema.organizationEntitlements.pastDueGraceEndsAt,
         periodStartsAt: schema.organizationEntitlements.periodStartsAt,
         periodEndsAt: schema.organizationEntitlements.periodEndsAt,
-        includedUsageCents: schema.organizationEntitlements.includedUsageCents,
-        overageHardCapCents: schema.organizationEntitlements.overageHardCapCents,
+        includedUsageMicros: schema.organizationEntitlements.includedUsageMicros,
+        overageHardCapMicros: schema.organizationEntitlements.overageHardCapMicros,
         promotionalEligible: schema.organizationEntitlements.promotionalEligible,
         promotionalEndsAt: schema.organizationEntitlements.promotionalEndsAt,
         billingContactEmail: schema.organizationEntitlements.billingContactEmail,
@@ -152,11 +152,17 @@ export async function canProcessPrivateRepository(
   )[0] as OrganizationEntitlementSnapshot | undefined;
   if (!entitlement) return evaluatePrivateRepositoryAccess(true, null, 0, now);
 
-  let usageCents = 0;
-  const effectiveOverageHardCapCents =
-    entitlement.overageHardCapCents ??
+  // BYOK provider charges never pass through Postil, so provider-side limits
+  // remain authoritative and Postil does not estimate or gate that spend.
+  if (entitlement.subscriptionMode === "byok") {
+    return evaluatePrivateRepositoryAccess(true, entitlement, 0, now);
+  }
+
+  let usageMicros = 0;
+  const effectiveOverageHardCapMicros =
+    entitlement.overageHardCapMicros ??
     (entitlement.subscriptionMode === "hosted" ? 0 : null);
-  if (effectiveOverageHardCapCents !== null) {
+  if (effectiveOverageHardCapMicros !== null) {
     const filters = [eq(schema.usageEvents.orgId, input.orgId)];
     if (entitlement.periodStartsAt) {
       filters.push(gte(schema.usageEvents.createdAt, entitlement.periodStartsAt));
@@ -167,18 +173,18 @@ export async function canProcessPrivateRepository(
     const usage = (
       await db
         .select({
-          costCents: sql<number>`COALESCE(SUM(${schema.usageEvents.costCents}), 0)::int`,
-          unpricedCount: sql<number>`COUNT(*) FILTER (WHERE ${schema.usageEvents.costCents} IS NULL)::int`,
+          costMicros: sql<number>`COALESCE(SUM(${schema.usageEvents.costMicros}), 0)::bigint`,
+          unpricedCount: sql<number>`COUNT(*) FILTER (WHERE ${schema.usageEvents.costMicros} IS NULL)::int`,
         })
         .from(schema.usageEvents)
         .where(and(...filters))
     )[0];
-    const pricedUsageCents = usage?.costCents ?? 0;
-    const usageLimitCents =
-      entitlement.includedUsageCents + effectiveOverageHardCapCents;
+    const pricedUsageMicros = usage?.costMicros ?? 0;
+    const usageLimitMicros =
+      entitlement.includedUsageMicros + effectiveOverageHardCapMicros;
     // A hard cap cannot be proven while an event in the period is unpriced.
     // Fail closed instead of silently treating unknown spend as free.
-    usageCents = (usage?.unpricedCount ?? 0) > 0 ? usageLimitCents : pricedUsageCents;
+    usageMicros = (usage?.unpricedCount ?? 0) > 0 ? usageLimitMicros : pricedUsageMicros;
   }
-  return evaluatePrivateRepositoryAccess(true, entitlement, usageCents, now);
+  return evaluatePrivateRepositoryAccess(true, entitlement, usageMicros, now);
 }

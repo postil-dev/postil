@@ -47,6 +47,7 @@ describe("set organization entitlement CLI", () => {
       parseEntitlementArgs([
         "--org", "acme", "--mode", "hosted", "--status", "active", "--actor", "ops",
         "--billing-contact-verified-at", "2026-07-12T00:00:00Z",
+        "--included-usage-cents", "600",
       ]),
     ).toThrow("requires --billing-contact-email");
   });
@@ -54,6 +55,7 @@ describe("set organization entitlement CLI", () => {
   test("requires both --yes and an exact organization confirmation for mutation", () => {
     const base = parseEntitlementArgs([
       "--org", "acme", "--mode", "hosted", "--status", "active", "--actor", "ops",
+      "--included-usage-cents", "600",
     ]);
     expect(() => assertMutationAuthorized(base)).toThrow("refusing to mutate acme");
     expect(() =>
@@ -68,11 +70,26 @@ describe("set organization entitlement CLI", () => {
   test("defaults hosted overage to zero and permits an uncapped BYOK provider budget", () => {
     const hosted = parseEntitlementArgs([
       "--org", "acme", "--mode", "hosted", "--status", "active", "--actor", "ops",
+      "--included-usage-cents", "600",
     ]);
     const byok = parseEntitlementArgs([
       "--org", "acme", "--mode", "byok", "--status", "active", "--actor", "ops",
     ]);
     expect(hosted.overageHardCapCents).toBe(0);
     expect(byok.overageHardCapCents).toBeNull();
+  });
+
+  test("rejects hosted activation without a positive explicit allowance", () => {
+    expect(() =>
+      parseEntitlementArgs([
+        "--org", "acme", "--mode", "hosted", "--status", "active", "--actor", "ops",
+      ]),
+    ).toThrow("requires --included-usage-cents of at least 100");
+    expect(() =>
+      parseEntitlementArgs([
+        "--org", "acme", "--mode", "hosted", "--status", "past_due", "--actor", "ops",
+        "--promotional-eligible",
+      ]),
+    ).toThrow("requires --included-usage-cents of at least 100");
   });
 });

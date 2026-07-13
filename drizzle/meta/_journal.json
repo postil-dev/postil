@@ -120,6 +120,13 @@
       "when": 1783898008812,
       "tag": "0016_verify_escalation_email",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783899000000,
+      "tag": "0017_precise_hosted_usage_reservations",
+      "breakpoints": true
     }
   ]
 }

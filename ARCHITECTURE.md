@@ -59,7 +59,7 @@ exposing addresses or token material. Worker startup runs the same idempotent ba
 after the new worker code is active, which queues verification for migrated recipients
 without exposing the new job kind to workers from the preceding release.
 
-Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog and computes the remaining credit balance shown on `/orgs/[slug]/billing`.
+Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices existing `usage_events` from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
 Private-repository product access is organization-scoped and fail-closed.
 `organization_entitlements` records hosted or BYOK subscription mode, lifecycle
@@ -73,10 +73,21 @@ because they update stored control state without code fetch or inference.
 Workers repeat the gate before token minting, code/config fetch, check creation,
 CLI spawn, or inference. Hosted subscriptions default to zero overage; only BYOK
 may omit the provider-spend cap. Public repositories bypass entitlement lookup.
+Before hosted private-repository inference, the worker locks the organization
+entitlement row and reserves the checked-in conservative maximum for one review.
+Committed precise usage plus every unexpired reservation must fit within the
+allowance and hard cap. Completion records actual provider-priced usage and
+reconciles the hold in one transaction; failure releases it, and abandoned holds
+expire after 15 minutes. The reservation maximum is part of a hosted model
+promotion: it must continue to bound the checked-in prompt, generation, fallback,
+and scorer roster. BYOK spend remains provider-direct and is never estimated or
+limited by Postil.
 Provider credentials do not grant product access. Operators apply the
 complete entitlement state idempotently through
 `scripts/set-org-entitlement.ts`; the billing page reports the stored state and
-does not represent a payment checkout. Review rows snapshot the pull request
+lets organization administrators set the hosted overage hard cap. BYOK billing
+copy directs administrators to provider-side budgets because Postil cannot
+enforce external charges. The page does not represent a payment checkout. Review rows snapshot the pull request
 author GitHub ID and login supplied by the reviewable pull-request webhook.
 Billing counts distinct GitHub author IDs on private pull requests within the
 entitlement period; bot and service identities count by the same ID rule.

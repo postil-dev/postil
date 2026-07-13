@@ -12,8 +12,8 @@ describe("private repository billing notice", () => {
           allowed: false,
           reason: "no_entitlement",
           entitlement: null,
-          usageCents: 0,
-          usageLimitCents: null,
+          usageMicros: 0,
+          usageLimitMicros: null,
         }}
       />,
     );
@@ -31,11 +31,35 @@ describe("private repository billing notice", () => {
             allowed: true,
             reason: "active_subscription",
             entitlement: null,
-            usageCents: 0,
-            usageLimitCents: null,
+            usageMicros: 0,
+            usageLimitMicros: null,
           }}
         />,
       ),
     ).toBe("");
+  });
+
+  test("surfaces past-due grace and approaching hosted cap", () => {
+    for (const decision of [
+      {
+        allowed: true as const,
+        reason: "past_due_grace" as const,
+        entitlement: null,
+        usageMicros: 10,
+        usageLimitMicros: 100,
+      },
+      {
+        allowed: true as const,
+        reason: "active_subscription" as const,
+        entitlement: null,
+        usageMicros: 80,
+        usageLimitMicros: 100,
+      },
+    ]) {
+      const markup = renderToStaticMarkup(
+        <PrivateBillingNotice orgSlug="acme" decision={decision} />,
+      );
+      expect(markup).toContain("View billing status");
+    }
   });
 });

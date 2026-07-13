@@ -2,40 +2,40 @@ import { describe, expect, test } from "bun:test";
 
 import {
   calculateBillingCreditBalance,
-  calculateUsageCostCentsForModel,
+  calculateUsageCostMicrosForModel,
   formatCurrencyCents,
   parseUsdToCents,
-  usageEventCostCents,
+  usageEventCostMicros,
 } from "@/lib/billing-credits";
 
 describe("billing credit calculations", () => {
-  test("snapshots usage events in whole cents from the model catalog", () => {
-    const costCents = calculateUsageCostCentsForModel(
+  test("snapshots sub-cent usage in USD micros from the model catalog", () => {
+    const costMicros = calculateUsageCostMicrosForModel(
       "deepseek/deepseek-v4-pro",
       2_000_000,
       500_000,
     );
-    expect(costCents).toBe(131);
+    expect(costMicros).toBe(1_305_000);
     expect(
-      usageEventCostCents({
+      usageEventCostMicros({
         id: 1,
         promptTokens: 2_000_000,
         completionTokens: 500_000,
         modelUsed: "deepseek/deepseek-v4-pro",
-        costCents,
+        costMicros,
         createdAt: new Date("2026-07-11T12:00:00.000Z"),
       }),
-    ).toBe(131);
+    ).toBe(1_305_000);
     expect(
-      usageEventCostCents({
+      usageEventCostMicros({
         id: 2,
         promptTokens: 2_000_000,
         completionTokens: 500_000,
         modelUsed: "deepseek/deepseek-v4-pro",
-        costCents: null,
+        costMicros: null,
         createdAt: new Date("2026-07-11T12:00:00.000Z"),
       }),
-    ).toBe(131);
+    ).toBe(1_305_000);
   });
 
   test("deducts post-grant usage from applied credit grants", () => {
@@ -56,7 +56,7 @@ describe("billing credit calculations", () => {
           promptTokens: 10_000_000,
           completionTokens: 0,
           modelUsed: "deepseek/deepseek-v4-pro",
-          costCents: 435,
+          costMicros: 4_350_000,
           createdAt: new Date("2026-06-30T23:59:00.000Z"),
         },
         {
@@ -64,7 +64,7 @@ describe("billing credit calculations", () => {
           promptTokens: 2_000_000,
           completionTokens: 500_000,
           modelUsed: "deepseek/deepseek-v4-pro",
-          costCents: 131,
+          costMicros: 1_310_000,
           createdAt: new Date("2026-07-11T12:00:00.000Z"),
         },
         {
@@ -72,7 +72,7 @@ describe("billing credit calculations", () => {
           promptTokens: 1,
           completionTokens: 1,
           modelUsed: "unknown/model",
-          costCents: null,
+          costMicros: null,
           createdAt: new Date("2026-07-11T12:01:00.000Z"),
         },
       ],
@@ -82,8 +82,8 @@ describe("billing credit calculations", () => {
     expect(balance).toEqual({
       creditStartsAt: new Date("2026-07-01T00:00:00.000Z"),
       totalGrantedCents: 20_000,
-      usageCostCents: 131,
-      remainingCents: 19_869,
+      usageCostMicros: 1_310_000,
+      remainingMicros: 198_690_000,
       chargedUsageEvents: 1,
       unpricedUsageEvents: 1,
     });
@@ -101,15 +101,15 @@ describe("billing credit calculations", () => {
           promptTokens: 0,
           completionTokens: 0,
           modelUsed: "test/model",
-          costCents: 150,
+          costMicros: 1_500_000,
           createdAt: new Date("2026-07-02T00:00:00.000Z"),
         },
       ],
       { asOf: new Date("2026-07-04T00:00:00.000Z") },
     );
 
-    expect(balance.usageCostCents).toBe(100);
-    expect(balance.remainingCents).toBe(100);
+    expect(balance.usageCostMicros).toBe(1_000_000);
+    expect(balance.remainingMicros).toBe(1_000_000);
     expect(balance.chargedUsageEvents).toBe(1);
   });
 

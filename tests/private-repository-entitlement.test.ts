@@ -18,8 +18,8 @@ function entitlement(
     pastDueGraceEndsAt: null,
     periodStartsAt: new Date("2026-07-01T00:00:00.000Z"),
     periodEndsAt: new Date("2026-08-01T00:00:00.000Z"),
-    includedUsageCents: 1_000,
-    overageHardCapCents: 500,
+    includedUsageMicros: 1_000_000,
+    overageHardCapMicros: 500_000,
     promotionalEligible: false,
     promotionalEndsAt: null,
     billingContactEmail: null,
@@ -128,34 +128,34 @@ describe("private repository entitlement matrix", () => {
   });
 
   test("the included-plus-overage hard cap blocks at the exact limit", () => {
-    const state = entitlement({ includedUsageCents: 1_000, overageHardCapCents: 500 });
-    expect(evaluatePrivateRepositoryAccess(true, state, 1_499, now).allowed).toBe(true);
-    expect(evaluatePrivateRepositoryAccess(true, state, 1_500, now)).toMatchObject({
+    const state = entitlement({ includedUsageMicros: 1_000_000, overageHardCapMicros: 500_000 });
+    expect(evaluatePrivateRepositoryAccess(true, state, 1_499_999, now).allowed).toBe(true);
+    expect(evaluatePrivateRepositoryAccess(true, state, 1_500_000, now)).toMatchObject({
       allowed: false,
       reason: "usage_cap_reached",
-      usageLimitCents: 1_500,
+      usageLimitMicros: 1_500_000,
     });
   });
 
   test("hosted null cap fails safe to zero overage while BYOK null remains uncapped", () => {
     const hosted = entitlement({
       subscriptionMode: "hosted",
-      includedUsageCents: 1_000,
-      overageHardCapCents: null,
+      includedUsageMicros: 1_000_000,
+      overageHardCapMicros: null,
     });
     const byok = entitlement({
       subscriptionMode: "byok",
-      includedUsageCents: 0,
-      overageHardCapCents: null,
+      includedUsageMicros: 0,
+      overageHardCapMicros: null,
     });
-    expect(evaluatePrivateRepositoryAccess(true, hosted, 999, now).allowed).toBe(true);
-    expect(evaluatePrivateRepositoryAccess(true, hosted, 1_000, now)).toMatchObject({
+    expect(evaluatePrivateRepositoryAccess(true, hosted, 999_999, now).allowed).toBe(true);
+    expect(evaluatePrivateRepositoryAccess(true, hosted, 1_000_000, now)).toMatchObject({
       allowed: false,
-      usageLimitCents: 1_000,
+      usageLimitMicros: 1_000_000,
     });
     expect(evaluatePrivateRepositoryAccess(true, byok, 1_000_000, now)).toMatchObject({
       allowed: true,
-      usageLimitCents: null,
+      usageLimitMicros: null,
     });
   });
 });

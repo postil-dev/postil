@@ -64,7 +64,7 @@ const base = {
     promptTokens: 100,
     completionTokens: 20,
     modelUsed: "model",
-    costCents: 1,
+    costMicros: 1_000,
   },
 };
 

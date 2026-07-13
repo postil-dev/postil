@@ -16,8 +16,9 @@ export interface ReviewCompletionInput {
     promptTokens: number;
     completionTokens: number;
     modelUsed: string;
-    costCents: number | null;
+    costMicros: number | null;
   };
+  hostedUsageReservationId?: string | null;
   escalationJob?: {
     reviewPublicId: string;
     repoFullName: string;
@@ -60,6 +61,30 @@ export async function persistReviewCompletion(
       ...input.usage,
       reviewId: input.reviewId,
     });
+    if (input.hostedUsageReservationId) {
+      const reservation = (
+        await tx
+          .select({ reservedMicros: schema.hostedUsageReservations.reservedMicros })
+          .from(schema.hostedUsageReservations)
+          .where(eq(schema.hostedUsageReservations.id, input.hostedUsageReservationId))
+          .limit(1)
+      )[0];
+      if (!reservation) throw new Error("hosted usage reservation not found");
+      const actualMicros = input.usage.costMicros ?? reservation.reservedMicros;
+      const reconciled = await tx
+        .update(schema.hostedUsageReservations)
+        .set({ status: "reconciled", actualMicros, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.hostedUsageReservations.id, input.hostedUsageReservationId),
+            eq(schema.hostedUsageReservations.status, "active"),
+          ),
+        )
+        .returning({ id: schema.hostedUsageReservations.id });
+      if (reconciled.length !== 1) {
+        throw new Error("hosted usage reservation is not active");
+      }
+    }
     if (input.escalationJob) {
       await tx.insert(schema.jobs).values({
         kind: "escalation-notification",
