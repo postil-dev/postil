@@ -140,6 +140,8 @@ function isNoindexRoute(pathname: string): boolean {
     pathname.startsWith("/operator/") ||
     pathname === "/reports" ||
     pathname.startsWith("/reports/") ||
+    pathname === "/verify" ||
+    pathname.startsWith("/verify/") ||
     pathname.startsWith("/orgs/") ||
     pathname.startsWith("/api/")
   );

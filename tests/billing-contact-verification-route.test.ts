@@ -44,26 +44,88 @@ describe("billing contact verification route", () => {
 
     expect(first.status).toBe(303);
     expect(first.headers.get("location")).toBe(
-      "https://postil.dev/orgs/acme/billing?contactVerification=success",
+      "https://postil.dev/verify/billing-contact?result=processed",
     );
+    expect(first.headers.get("location")).not.toContain("valid-token");
     expect(replay.headers.get("location")).toBe(
-      "https://postil.dev/orgs/acme/billing?contactVerification=invalid",
+      "https://postil.dev/verify/billing-contact?result=processed",
     );
     expect(verificationCalls).toBe(2);
   });
 
-  test("rejects cross-origin POST before token verification", async () => {
+  test("token authorization works without ambient browser credentials or origin headers", async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
-    const response = await POST(formRequest("https://evil.test"));
-    expect(response.status).toBe(403);
+    const response = await POST(formRequest());
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/verify/billing-contact?result=processed",
+    );
+    expect(verificationCalls).toBe(1);
+  });
+
+  test("token authorization accepts an opaque Origin from an incognito email flow", async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    const response = await POST(formRequest("null"));
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/verify/billing-contact?result=processed",
+    );
+    expect(verificationCalls).toBe(1);
+  });
+
+  test("malformed submissions fail closed without token verification", async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    const response = await POST(
+      new Request("https://postil.dev/verify/billing-contact", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ org: "not-an-org", token: "valid-token" }),
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/verify/billing-contact?result=processed",
+    );
+    expect(response.headers.get("location")).not.toContain("valid-token");
+    expect(verificationCalls).toBe(0);
+  });
+
+  test("renders an outcome-neutral public result without a session", async () => {
+    const response = await GET(
+      new Request("https://postil.dev/verify/billing-contact?result=processed"),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("Verification request processed");
+    expect(body).toContain("Open Postil");
+    expect(body).not.toContain("verified");
+    expect(body).not.toContain("valid-token");
+    expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    expect(verificationCalls).toBe(0);
+  });
+
+  test("does not trust unsigned result query values", async () => {
+    const response = await GET(
+      new Request("https://postil.dev/verify/billing-contact?status=success"),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toContain("Billing email verified");
     expect(verificationCalls).toBe(0);
   });
 });
 
-function formRequest(origin: string): Request {
+function formRequest(origin?: string): Request {
+  const headers: Record<string, string> = {
+    "content-type": "application/x-www-form-urlencoded",
+  };
+  if (origin) headers.origin = origin;
   return new Request("https://postil.dev/verify/billing-contact", {
     method: "POST",
-    headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+    headers,
     body: new URLSearchParams({ org: "7", token: "valid-token" }),
   });
 }
