@@ -13,6 +13,7 @@ import {
  * promotion must update this bound before deployment.
  */
 export const HOSTED_REVIEW_RESERVATION_MICROS = 1_000_000;
+export const HOSTED_RESPOND_RESERVATION_MICROS = 1_000_000;
 export const HOSTED_REVIEW_RESERVATION_TTL_MS = 15 * 60 * 1_000;
 
 export interface HostedUsageReservationDecision {
@@ -44,6 +45,36 @@ export function hasHostedReservationCapacity(input: {
 export async function reserveHostedReviewSpend(
   db: Database,
   input: { orgId: number | null; reviewId: number; usesByok: boolean; now?: Date },
+): Promise<HostedUsageReservationDecision> {
+  return reserveHostedSpend(db, {
+    ...input,
+    operation: "review",
+    requestedMicros: HOSTED_REVIEW_RESERVATION_MICROS,
+  });
+}
+
+export async function reserveHostedRespondSpend(
+  db: Database,
+  input: { orgId: number | null; usesByok: boolean; now?: Date },
+): Promise<HostedUsageReservationDecision> {
+  return reserveHostedSpend(db, {
+    ...input,
+    reviewId: null,
+    operation: "respond",
+    requestedMicros: HOSTED_RESPOND_RESERVATION_MICROS,
+  });
+}
+
+async function reserveHostedSpend(
+  db: Database,
+  input: {
+    orgId: number | null;
+    reviewId: number | null;
+    operation: "review" | "respond";
+    requestedMicros: number;
+    usesByok: boolean;
+    now?: Date;
+  },
 ): Promise<HostedUsageReservationDecision> {
   if (input.orgId === null) return emptyDecision("inactive");
   const orgId = input.orgId;
@@ -145,7 +176,7 @@ export async function reserveHostedReviewSpend(
       !hasHostedReservationCapacity({
         committedMicros,
         activeReservedMicros,
-        requestedMicros: HOSTED_REVIEW_RESERVATION_MICROS,
+        requestedMicros: input.requestedMicros,
         usageLimitMicros: access.usageLimitMicros,
       })
     ) {
@@ -164,7 +195,8 @@ export async function reserveHostedReviewSpend(
       .values({
         orgId,
         reviewId: input.reviewId,
-        reservedMicros: HOSTED_REVIEW_RESERVATION_MICROS,
+        operation: input.operation,
+        reservedMicros: input.requestedMicros,
         expiresAt,
         updatedAt: now,
       })
@@ -182,7 +214,7 @@ export async function reserveHostedReviewSpend(
   });
 }
 
-export async function releaseHostedReviewSpend(
+export async function releaseHostedSpend(
   db: Database,
   reservationId: string | null,
   now = new Date(),
@@ -197,6 +229,70 @@ export async function releaseHostedReviewSpend(
         eq(schema.hostedUsageReservations.status, "active"),
       ),
     );
+}
+
+export const releaseHostedReviewSpend = releaseHostedSpend;
+export const releaseHostedRespondSpend = releaseHostedSpend;
+
+export async function reconcileHostedRespondSpend(
+  db: Database,
+  input: {
+    reservationId: string;
+    repositoryId: number;
+    promptTokens: number;
+    completionTokens: number;
+    modelUsed: string;
+    actualMicros: number | null;
+    now?: Date;
+  },
+): Promise<number> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const reservation = (
+      await tx
+        .select({
+          orgId: schema.hostedUsageReservations.orgId,
+          operation: schema.hostedUsageReservations.operation,
+          status: schema.hostedUsageReservations.status,
+          reservedMicros: schema.hostedUsageReservations.reservedMicros,
+        })
+        .from(schema.hostedUsageReservations)
+        .where(eq(schema.hostedUsageReservations.id, input.reservationId))
+        .limit(1)
+    )[0];
+    if (!reservation || reservation.operation !== "respond" || reservation.status !== "active") {
+      throw new Error("hosted respond usage reservation is not active");
+    }
+    const chargedMicros = input.actualMicros ?? reservation.reservedMicros;
+    if (!Number.isSafeInteger(chargedMicros) || chargedMicros < 0) {
+      throw new Error("hosted respond usage cost is invalid");
+    }
+    const reconciled = await tx
+      .update(schema.hostedUsageReservations)
+      .set({ status: "reconciled", actualMicros: chargedMicros, updatedAt: now })
+      .where(
+        and(
+          eq(schema.hostedUsageReservations.id, input.reservationId),
+          eq(schema.hostedUsageReservations.status, "active"),
+          eq(schema.hostedUsageReservations.operation, "respond"),
+        ),
+      )
+      .returning({ id: schema.hostedUsageReservations.id });
+    if (reconciled.length !== 1) {
+      throw new Error("hosted respond usage reservation changed during reconciliation");
+    }
+    await tx.insert(schema.usageEvents).values({
+      orgId: reservation.orgId,
+      repositoryId: input.repositoryId,
+      reviewId: null,
+      promptTokens: input.promptTokens,
+      completionTokens: input.completionTokens,
+      modelUsed: input.modelUsed,
+      costMicros: chargedMicros,
+      createdAt: now,
+    });
+    return chargedMicros;
+  });
 }
 
 function emptyDecision(

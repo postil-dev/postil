@@ -415,9 +415,10 @@ export const hostedUsageReservations = pgTable(
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    reviewId: bigint("review_id", { mode: "number" })
-      .notNull()
-      .references(() => reviews.id, { onDelete: "cascade" }),
+    reviewId: bigint("review_id", { mode: "number" }).references(() => reviews.id, {
+      onDelete: "cascade",
+    }),
+    operation: text("operation").notNull().default("review"),
     reservedMicros: bigint("reserved_micros", { mode: "number" }).notNull(),
     actualMicros: bigint("actual_micros", { mode: "number" }),
     status: text("status").notNull().default("active"),
@@ -433,6 +434,14 @@ export const hostedUsageReservations = pgTable(
     check(
       "hosted_usage_reservations_status_check",
       sql`${t.status} IN ('active', 'reconciled', 'released')`,
+    ),
+    check(
+      "hosted_usage_reservations_operation_check",
+      sql`${t.operation} IN ('review', 'respond')`,
+    ),
+    check(
+      "hosted_usage_reservations_operation_reference_check",
+      sql`(${t.operation} = 'review' AND ${t.reviewId} IS NOT NULL) OR (${t.operation} = 'respond' AND ${t.reviewId} IS NULL)`,
     ),
     check("hosted_usage_reservations_reserved_positive", sql`${t.reservedMicros} > 0`),
     check(

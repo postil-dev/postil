@@ -84,14 +84,20 @@ Workers repeat the gate before token minting, code/config fetch, check creation,
 CLI spawn, or inference. Hosted subscriptions default to zero overage; only BYOK
 may omit the provider-spend cap. Public repositories bypass entitlement lookup.
 Before hosted private-repository inference, the worker locks the organization
-entitlement row and reserves the checked-in conservative maximum for one review.
+entitlement row and reserves the checked-in conservative maximum for one review
+or conversational response.
 Committed precise usage plus every unexpired reservation must fit within the
 allowance and hard cap. Completion records actual provider-priced usage and
 reconciles the hold in one transaction; failure releases it, and abandoned holds
 expire after 15 minutes. The reservation maximum is part of a hosted model
 promotion: it must continue to bound the checked-in prompt, generation, fallback,
-and scorer roster. BYOK spend remains provider-direct and is never estimated or
-limited by Postil.
+and scorer roster. Hosted responses receive a worker-owned receipt path inside
+their private work directory. The CLI writes a versioned `0600` receipt only
+after success, with aggregate and per-model token usage. The worker validates
+and prices every model entry before transactional reconciliation. A missing,
+malformed, or unpriceable successful receipt consumes the full reservation;
+CLI failure releases it. BYOK spend remains provider-direct and never creates a
+Postil reservation or receipt.
 Provider credentials do not grant product access. Operators apply the
 complete entitlement state idempotently through
 `scripts/set-org-entitlement.ts`; the billing page reports the stored state and

@@ -44,6 +44,21 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(respondStart, failureStart)).toContain(
       "allowModelSettings: llm.byok",
     );
+    const reservation = source.indexOf("await reserveHostedRespondSpend", respondStart);
+    const cliRun = source.indexOf("await runCli", respondStart);
+    const reconciliation = source.indexOf("await reconcileHostedRespondSpend", respondStart);
+    expect(reservation).toBeGreaterThan(respondGate);
+    expect(reservation).toBeLessThan(cliRun);
+    expect(reconciliation).toBeGreaterThan(cliRun);
+    expect(source.slice(respondStart, failureStart)).toContain(
+      "currentRepository.private && !llm.byok",
+    );
+    expect(source.slice(respondStart, failureStart)).toContain(
+      "POSTIL_USAGE_RECEIPT_PATH",
+    );
+    expect(source.slice(respondStart, failureStart)).toContain(
+      "await releaseHostedRespondSpend",
+    );
     const failureGate = source.indexOf("await canProcessPrivateRepository", failureStart);
     expect(source.indexOf("await postIssueComment", failureStart)).toBeGreaterThan(failureGate);
   });

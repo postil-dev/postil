@@ -7,7 +7,10 @@ import { Client, Pool } from "pg";
 
 import {
   hasHostedReservationCapacity,
+  reconcileHostedRespondSpend,
+  releaseHostedRespondSpend,
   reserveHostedReviewSpend,
+  reserveHostedRespondSpend,
 } from "@/lib/hosted-usage-reservations";
 import * as schema from "@/lib/db/schema";
 import type { Envelope } from "@/lib/envelope";
@@ -159,5 +162,127 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       [rejectedReviewId],
     );
     expect(usage.rows[0]).toEqual({ cost_micros: "1234" });
+  });
+
+  test("respond holds serialize, reconcile without a review, and release on failure", async () => {
+    const db = drizzle(pool!, { schema });
+    const fixture = await pool!.query<{ org_id: string; repository_id: string }>(`
+      WITH org AS (
+        INSERT INTO organizations (slug, name)
+        VALUES ('respond-metering', 'Respond Metering') RETURNING id
+      ), installation AS (
+        INSERT INTO installations (github_installation_id, account_login, account_type, org_id)
+        SELECT 99217, 'respond-metering', 'Organization', id FROM org RETURNING id, org_id
+      ), repository AS (
+        INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+        SELECT id, 99218, 'respond-metering/private', true, true FROM installation
+        RETURNING id
+      ), entitlement AS (
+        INSERT INTO organization_entitlements (
+          org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents,
+          updated_by
+        ) SELECT org_id, 'hosted', 'active', 1000000, 0, 100, 0, 'test'
+        FROM installation
+      )
+      SELECT installation.org_id, repository.id AS repository_id
+      FROM installation, repository;
+    `);
+    const respondOrgId = Number(fixture.rows[0]!.org_id);
+    const respondRepositoryId = Number(fixture.rows[0]!.repository_id);
+    const decisions = await Promise.all([
+      reserveHostedRespondSpend(db, { orgId: respondOrgId, usesByok: false }),
+      reserveHostedRespondSpend(db, { orgId: respondOrgId, usesByok: false }),
+    ]);
+    expect(decisions.map((decision) => decision.allowed).sort()).toEqual([false, true]);
+    const accepted = decisions.find((decision) => decision.allowed)!;
+    expect(accepted.reservationId).not.toBeNull();
+    await reconcileHostedRespondSpend(db, {
+      reservationId: accepted.reservationId!,
+      repositoryId: respondRepositoryId,
+      promptTokens: 120,
+      completionTokens: 20,
+      modelUsed: "z-ai/glm-5.2",
+      actualMicros: 987,
+    });
+    const reconciled = await pool!.query<{
+      operation: string;
+      review_id: string | null;
+      status: string;
+      actual_micros: string;
+    }>(
+      `SELECT operation, review_id, status, actual_micros
+       FROM hosted_usage_reservations WHERE id = $1`,
+      [accepted.reservationId],
+    );
+    expect(reconciled.rows[0]).toEqual({
+      operation: "respond",
+      review_id: null,
+      status: "reconciled",
+      actual_micros: "987",
+    });
+    const usage = await pool!.query<{
+      review_id: string | null;
+      prompt_tokens: number;
+      completion_tokens: number;
+      cost_micros: string;
+    }>(
+      `SELECT review_id, prompt_tokens, completion_tokens, cost_micros
+       FROM usage_events WHERE repository_id = $1 AND review_id IS NULL`,
+      [respondRepositoryId],
+    );
+    expect(usage.rows[0]).toEqual({
+      review_id: null,
+      prompt_tokens: 120,
+      completion_tokens: 20,
+      cost_micros: "987",
+    });
+
+    await pool!.query(
+      `UPDATE organization_entitlements SET included_usage_micros = 2000000 WHERE org_id = $1`,
+      [respondOrgId],
+    );
+    const failedAttempt = await reserveHostedRespondSpend(db, {
+      orgId: respondOrgId,
+      usesByok: false,
+    });
+    expect(failedAttempt.allowed).toBe(true);
+    await releaseHostedRespondSpend(db, failedAttempt.reservationId);
+    const released = await pool!.query<{ status: string }>(
+      `SELECT status FROM hosted_usage_reservations WHERE id = $1`,
+      [failedAttempt.reservationId],
+    );
+    expect(released.rows[0]?.status).toBe("released");
+
+    const unmetered = await reserveHostedRespondSpend(db, {
+      orgId: respondOrgId,
+      usesByok: false,
+    });
+    await reconcileHostedRespondSpend(db, {
+      reservationId: unmetered.reservationId!,
+      repositoryId: respondRepositoryId,
+      promptTokens: 0,
+      completionTokens: 0,
+      modelUsed: "respond (conservative reservation)",
+      actualMicros: null,
+    });
+    const conservative = await pool!.query<{ actual_micros: string }>(
+      `SELECT actual_micros FROM hosted_usage_reservations WHERE id = $1`,
+      [unmetered.reservationId],
+    );
+    expect(conservative.rows[0]?.actual_micros).toBe("1000000");
+  });
+
+  test("BYOK respond bypasses hosted reservations", async () => {
+    const db = drizzle(pool!, { schema });
+    await pool!.query(
+      `UPDATE organization_entitlements SET subscription_mode = 'byok' WHERE org_id = $1`,
+      [orgId],
+    );
+    const decision = await reserveHostedRespondSpend(db, {
+      orgId,
+      usesByok: true,
+    });
+    expect(decision).toMatchObject({ allowed: true, reason: "not_hosted", reservationId: null });
   });
 });

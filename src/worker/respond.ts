@@ -14,7 +14,13 @@ import {
   canProcessPrivateRepository,
   providerModeMatchesPrivateAccess,
 } from "@/lib/private-repository-entitlement";
+import {
+  reconcileHostedRespondSpend,
+  releaseHostedRespondSpend,
+  reserveHostedRespondSpend,
+} from "@/lib/hosted-usage-reservations";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
+import { readRespondUsageReceipt } from "@/lib/respond-usage-receipt";
 import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
 
 /**
@@ -119,17 +125,35 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
     ? `(asked on \`${payload.commentAnchor}\`)\n\n${payload.comment}`
     : payload.comment;
 
-  const cliEnv = buildCliEnv(llm, {
-    GITHUB_TOKEN: token,
-    POSTIL_COMMENT: comment,
-  });
-
   // Same repo-config materialization as review jobs, so replies honor the
   // repo's tone/guardrails/content-policy settings. See lib/github/contents.ts.
   const cacheDir = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
   await mkdir(resolve(cacheDir, "workdirs"), { recursive: true });
   const workDir = await mkdtemp(resolve(cacheDir, "workdirs", "respond-"));
+  let hostedUsageReservationId: string | null = null;
+  let cliSucceeded = false;
   try {
+    if (currentRepository.private && !llm.byok) {
+      const reservation = await reserveHostedRespondSpend(db, {
+        orgId: installation.orgId,
+        usesByok: false,
+      });
+      if (!reservation.allowed || !reservation.reservationId) {
+        console.warn(
+          `respond job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
+        );
+        return;
+      }
+      hostedUsageReservationId = reservation.reservationId;
+    }
+    const usageReceiptPath = resolve(workDir, "respond-usage.json");
+    const cliEnv = buildCliEnv(llm, {
+      GITHUB_TOKEN: token,
+      POSTIL_COMMENT: comment,
+      ...(hostedUsageReservationId
+        ? { POSTIL_USAGE_RECEIPT_PATH: usageReceiptPath }
+        : {}),
+    });
     await materializeRepoConfig(token, payload.repoFullName, workDir, {
       allowModelSettings: llm.byok,
     });
@@ -149,6 +173,32 @@ export async function runRespondJob(payload: RespondJobPayload): Promise<void> {
         `postil respond exited with code ${result.exitCode}: ${stderr}`,
       );
     }
+    cliSucceeded = true;
+    if (hostedUsageReservationId) {
+      let usage: Awaited<ReturnType<typeof readRespondUsageReceipt>> | null = null;
+      try {
+        usage = await readRespondUsageReceipt(usageReceiptPath);
+      } catch {
+        console.error("hosted respond usage receipt was missing or invalid; charging reservation");
+      }
+      await reconcileHostedRespondSpend(db, {
+        reservationId: hostedUsageReservationId,
+        repositoryId: repository.id,
+        promptTokens: usage?.promptTokens ?? 0,
+        completionTokens: usage?.completionTokens ?? 0,
+        modelUsed: usage?.modelUsed ?? "respond (conservative reservation)",
+        actualMicros: usage?.actualMicros ?? null,
+      });
+    }
+  } catch (error) {
+    if (hostedUsageReservationId && !cliSucceeded) {
+      await releaseHostedRespondSpend(db, hostedUsageReservationId).catch((releaseError) => {
+        console.error(
+          `failed to release hosted respond usage reservation: ${redactSecrets(releaseError)}`,
+        );
+      });
+    }
+    throw error;
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
