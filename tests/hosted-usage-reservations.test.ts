@@ -156,18 +156,19 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
           billingScope: "private_hosted",
         }],
         hostedUsageReservationId: recovered.reservationId,
+        usageAccountingComplete: false,
       }),
     ).toBe(true);
     const reconciled = await pool!.query<{ status: string; actual_micros: string }>(
       `SELECT status, actual_micros FROM hosted_usage_reservations WHERE id = $1`,
       [recovered.reservationId],
     );
-    expect(reconciled.rows[0]).toEqual({ status: "reconciled", actual_micros: "1234" });
+    expect(reconciled.rows[0]).toEqual({ status: "reconciled", actual_micros: "1000000" });
     const usage = await pool!.query<{ cost_micros: string }>(
-      `SELECT cost_micros FROM usage_events WHERE review_id = $1`,
+      `SELECT sum(cost_micros)::bigint AS cost_micros FROM usage_events WHERE review_id = $1`,
       [rejectedReviewId],
     );
-    expect(usage.rows[0]).toEqual({ cost_micros: "1234" });
+    expect(usage.rows[0]).toEqual({ cost_micros: "1000000" });
   });
 
   test("respond holds serialize, reconcile without a review, and release on failure", async () => {
@@ -210,6 +211,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       completionTokens: 20,
       modelUsed: "z-ai/glm-5.2",
       actualMicros: 987,
+      usageAccountingComplete: true,
     });
     const reconciled = await pool!.query<{
       operation: string;
@@ -271,6 +273,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       completionTokens: 0,
       modelUsed: "respond (conservative reservation)",
       actualMicros: null,
+      usageAccountingComplete: false,
     });
     const conservative = await pool!.query<{ actual_micros: string }>(
       `SELECT actual_micros FROM hosted_usage_reservations WHERE id = $1`,
@@ -344,6 +347,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       completionTokens: 3,
       modelUsed: "z-ai/glm-5.2",
       actualMicros: 321,
+      usageAccountingComplete: false,
       delivery: {
         jobId: Number(row.job_id),
         repoFullName: "delivery-metering/private",
@@ -352,13 +356,14 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       },
     });
     const durable = await pool!.query<{ cost_micros: string; state: string }>(`
-      SELECT usage.cost_micros, delivery.state
+      SELECT sum(usage.cost_micros)::bigint AS cost_micros, max(delivery.state) AS state
       FROM usage_events usage
       JOIN respond_deliveries delivery ON delivery.job_id = ${Number(row.job_id)}
       WHERE usage.repository_id = ${Number(row.repository_id)}
         AND usage.billing_scope = 'private_hosted'
+      GROUP BY delivery.job_id
     `);
-    expect(durable.rows[0]).toEqual({ cost_micros: "321", state: "prepared" });
+    expect(durable.rows[0]).toEqual({ cost_micros: "1000000", state: "prepared" });
 
     const claims = await Promise.all([
       claimRespondDelivery(db, Number(row.job_id)),

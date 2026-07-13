@@ -246,6 +246,7 @@ export async function reconcileHostedRespondSpend(
     completionTokens: number;
     modelUsed: string;
     actualMicros: number | null;
+    usageAccountingComplete: boolean;
     delivery?: {
       jobId: number;
       repoFullName: string;
@@ -272,7 +273,9 @@ export async function reconcileHostedRespondSpend(
     if (!reservation || reservation.operation !== "respond" || reservation.status !== "active") {
       throw new Error("hosted respond usage reservation is not active");
     }
-    const chargedMicros = input.actualMicros ?? reservation.reservedMicros;
+    const chargedMicros = input.usageAccountingComplete && input.actualMicros !== null
+      ? input.actualMicros
+      : Math.max(reservation.reservedMicros, input.actualMicros ?? 0);
     if (!Number.isSafeInteger(chargedMicros) || chargedMicros < 0) {
       throw new Error("hosted respond usage cost is invalid");
     }
@@ -297,10 +300,26 @@ export async function reconcileHostedRespondSpend(
       promptTokens: input.promptTokens,
       completionTokens: input.completionTokens,
       modelUsed: input.modelUsed,
-      costMicros: chargedMicros,
+      costMicros: input.actualMicros,
       billingScope: "private_hosted",
       createdAt: now,
     });
+    const unattributedMicros = input.actualMicros === null
+      ? 0
+      : chargedMicros - input.actualMicros;
+    if (unattributedMicros > 0) {
+      await tx.insert(schema.usageEvents).values({
+        orgId: reservation.orgId,
+        repositoryId: input.repositoryId,
+        reviewId: null,
+        promptTokens: 0,
+        completionTokens: 0,
+        modelUsed: "unattributed provider usage",
+        costMicros: unattributedMicros,
+        billingScope: "private_hosted",
+        createdAt: now,
+      });
+    }
     if (input.delivery) {
       await tx.insert(schema.respondDeliveries).values({
         jobId: input.delivery.jobId,

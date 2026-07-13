@@ -650,6 +650,7 @@ export async function runReviewJob(
           currentRepository.private && !llm.byok ? "private_hosted" : "analytics",
       })),
       hostedUsageReservationId,
+      usageAccountingComplete: ingested.usageAccountingComplete,
       escalationJob:
         qualifyingEscalationCount > 0 && detailsUrl
           ? {

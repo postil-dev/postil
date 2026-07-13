@@ -13,6 +13,7 @@ const VALID = {
   operation: "respond",
   promptTokens: 30,
   completionTokens: 5,
+  usageAccountingComplete: true,
   models: [
     { model: "z-ai/glm-5.2", promptTokens: 10, completionTokens: 2 },
     { model: "moonshotai/kimi-k2.7-code", promptTokens: 20, completionTokens: 3 },
@@ -26,9 +27,16 @@ describe("respond usage receipt", () => {
       promptTokens: 30,
       completionTokens: 5,
       modelUsed: "z-ai/glm-5.2, moonshotai/kimi-k2.7-code",
+      usageAccountingComplete: true,
     });
     expect(typeof parsed.actualMicros).toBe("number");
     expect(parsed.actualMicros!).toBeGreaterThan(0);
+  });
+
+  test("treats a missing completeness signal as incomplete compatibility data", () => {
+    const legacy = structuredClone(VALID) as Partial<typeof VALID>;
+    delete legacy.usageAccountingComplete;
+    expect(parseRespondUsageReceipt(JSON.stringify(legacy)).usageAccountingComplete).toBe(false);
   });
 
   test("fails closed on unknown fields, mismatched totals, and unknown pricing", () => {

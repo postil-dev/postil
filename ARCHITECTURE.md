@@ -114,6 +114,10 @@ hidden job marker lets retries discover a comment after an ambiguous POST rather
 than duplicating it. Missing, malformed, or unpriceable usage after CLI start
 consumes the full reservation; only failures before CLI start release it. BYOK
 spend remains provider-direct and never creates a Postil reservation or receipt.
+Both review envelopes and respond receipts carry `usageAccountingComplete`.
+Missing or false completeness consumes at least the full reservation while known
+per-model token and price rows remain available as analytics; an unattributed
+adjustment event makes committed billing equal the conservative charge.
 Provider credentials do not grant product access. Operators apply the
 complete entitlement state idempotently through
 `scripts/set-org-entitlement.ts`; the billing page reports the stored state and

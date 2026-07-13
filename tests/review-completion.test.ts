@@ -58,6 +58,7 @@ const base = {
   configFiles: [],
   silent: false,
   gateFailing: true,
+  usageAccountingComplete: true,
   usage: [
     {
       orgId: 1,

@@ -10,6 +10,7 @@ export interface RespondUsageReceipt {
   completionTokens: number;
   modelUsed: string;
   actualMicros: number | null;
+  usageAccountingComplete: boolean;
 }
 
 export async function readRespondUsageReceipt(path: string): Promise<RespondUsageReceipt> {
@@ -34,7 +35,21 @@ export function parseRespondUsageReceipt(source: string): RespondUsageReceipt {
     throw new Error("respond usage receipt is not valid JSON");
   }
   const receipt = record(value, "respond usage receipt");
-  exactKeys(receipt, ["version", "operation", "promptTokens", "completionTokens", "models"]);
+  const usageAccountingComplete = receipt.usageAccountingComplete === true;
+  if (
+    receipt.usageAccountingComplete !== undefined &&
+    typeof receipt.usageAccountingComplete !== "boolean"
+  ) {
+    throw new Error("respond usage receipt accounting completeness is invalid");
+  }
+  exactKeys(receipt, [
+    "version",
+    "operation",
+    "promptTokens",
+    "completionTokens",
+    "models",
+    ...(receipt.usageAccountingComplete === undefined ? [] : ["usageAccountingComplete"]),
+  ]);
   if (receipt.version !== 1 || receipt.operation !== "respond") {
     throw new Error("respond usage receipt version or operation is invalid");
   }
@@ -83,6 +98,7 @@ export function parseRespondUsageReceipt(source: string): RespondUsageReceipt {
     completionTokens,
     modelUsed: modelNames.join(", "),
     actualMicros: priced ? actualMicros : null,
+    usageAccountingComplete,
   };
 }
 

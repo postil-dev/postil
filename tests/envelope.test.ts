@@ -43,8 +43,16 @@ describe("envelope ingestion", () => {
     expect(ingested.completionTokens).toBe(310);
     expect(ingested.modelUsed).toBe("deepseek/deepseek-v4-pro");
     expect(ingested.modelUsage).toBeNull();
+    expect(ingested.usageAccountingComplete).toBe(false);
     // Stored verbatim.
     expect(ingested.envelope).toEqual(validEnvelope());
+  });
+
+  test("preserves explicit complete accounting", () => {
+    expect(
+      ingestEnvelope(JSON.stringify(validEnvelope({ usageAccountingComplete: true })))
+        .usageAccountingComplete,
+    ).toBe(true);
   });
 
   test("accepts exact per-model usage and rejects mismatched aggregates", () => {

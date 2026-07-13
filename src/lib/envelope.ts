@@ -86,6 +86,7 @@ export const envelopeSchema = z
         }),
       )
       .optional(),
+    usageAccountingComplete: z.boolean().optional(),
     // Engine wall-clock duration in milliseconds (0 when emitted by older CLIs).
     durationMs: z.number().int().nonnegative().optional().default(0),
     baseSha: z.string(),
@@ -175,6 +176,7 @@ export interface IngestedEnvelope {
   completionTokens: number;
   modelUsed: string;
   modelUsage: Array<{ model: string; promptTokens: number; completionTokens: number }> | null;
+  usageAccountingComplete: boolean;
 }
 
 /**
@@ -208,6 +210,7 @@ export function ingestEnvelope(raw: string): IngestedEnvelope {
     completionTokens: envelope.usage.completionTokens,
     modelUsed: envelope.modelUsed,
     modelUsage: envelope.modelUsage ?? null,
+    usageAccountingComplete: envelope.usageAccountingComplete === true,
   };
 }
 

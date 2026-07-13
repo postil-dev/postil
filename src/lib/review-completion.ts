@@ -20,6 +20,7 @@ export interface ReviewCompletionInput {
     billingScope: "analytics" | "private_hosted";
   }>;
   hostedUsageReservationId?: string | null;
+  usageAccountingComplete: boolean;
   escalationJob?: {
     reviewPublicId: string;
     repoFullName: string;
@@ -58,9 +59,7 @@ export async function persistReviewCompletion(
       .returning({ id: schema.reviews.id });
     if (rows.length === 0) return false;
 
-    await tx.insert(schema.usageEvents).values(
-      input.usage.map((usage) => ({ ...usage, reviewId: input.reviewId })),
-    );
+    const usageRows = input.usage.map((usage) => ({ ...usage, reviewId: input.reviewId }));
     if (input.hostedUsageReservationId) {
       const reservation = (
         await tx
@@ -71,9 +70,25 @@ export async function persistReviewCompletion(
       )[0];
       if (!reservation) throw new Error("hosted usage reservation not found");
       const priced = input.usage.every((usage) => usage.costMicros !== null);
-      const actualMicros = priced
+      const knownMicros = priced
         ? input.usage.reduce((total, usage) => total + (usage.costMicros ?? 0), 0)
-        : reservation.reservedMicros;
+        : null;
+      const actualMicros = input.usageAccountingComplete && knownMicros !== null
+        ? knownMicros
+        : Math.max(reservation.reservedMicros, knownMicros ?? 0);
+      const unattributedMicros = knownMicros === null ? 0 : actualMicros - knownMicros;
+      if (unattributedMicros > 0) {
+        const first = input.usage[0];
+        if (!first) throw new Error("hosted review usage is empty");
+        usageRows.push({
+          ...first,
+          promptTokens: 0,
+          completionTokens: 0,
+          modelUsed: "unattributed provider usage",
+          costMicros: unattributedMicros,
+          reviewId: input.reviewId,
+        });
+      }
       const reconciled = await tx
         .update(schema.hostedUsageReservations)
         .set({ status: "reconciled", actualMicros, updatedAt: new Date() })
@@ -88,6 +103,7 @@ export async function persistReviewCompletion(
         throw new Error("hosted usage reservation is not active");
       }
     }
+    await tx.insert(schema.usageEvents).values(usageRows);
     if (input.escalationJob) {
       await tx.insert(schema.jobs).values({
         kind: "escalation-notification",
