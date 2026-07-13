@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 import {
+  githubFailureStatus,
   resolveOwnerGithubConfig,
   type OwnerConfigStore,
 } from "@/lib/github/owner-config";
@@ -122,6 +123,25 @@ const input = {
 };
 
 describe("owner .github configuration", () => {
+  test("classifies only retryable GitHub failures as transient", () => {
+    for (const status of [400, 401, 403, 404, 409, 410, 422]) {
+      expect(githubFailureStatus(new Response(null, { status }))).toBe("inaccessible");
+    }
+    for (const status of [408, 429, 500, 502, 503]) {
+      expect(githubFailureStatus(new Response(null, { status }))).toBe("transient");
+    }
+    expect(
+      githubFailureStatus(
+        new Response(null, { status: 403, headers: { "x-ratelimit-remaining": "0" } }),
+      ),
+    ).toBe("transient");
+    expect(
+      githubFailureStatus(
+        new Response(null, { status: 403, headers: { "retry-after": "30" } }),
+      ),
+    ).toBe("transient");
+  });
+
   test("reads only explicit files from one authenticated default-branch commit", async () => {
     files.set(".postil.yaml", "review:\n  minConfidence: 0.8\n");
     files.set(".postil/guardrails.md", "No unsafe migrations.\n");

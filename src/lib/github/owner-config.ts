@@ -166,12 +166,18 @@ async function githubJson(token: string, path: string): Promise<unknown> {
   return response.json();
 }
 
-function githubFailureStatus(response: Response): "inaccessible" | "transient" {
-  if (response.status !== 403 && response.status !== 404) return "transient";
+export function githubFailureStatus(response: Response): "inaccessible" | "transient" {
   if (
     response.status === 403 &&
     (response.headers.get("x-ratelimit-remaining") === "0" ||
       response.headers.has("retry-after"))
+  ) {
+    return "transient";
+  }
+  if (
+    response.status === 408 ||
+    response.status === 429 ||
+    response.status >= 500
   ) {
     return "transient";
   }
