@@ -3,9 +3,8 @@
 ## Near Term
 
 - Add organization billing based on active private-repository pull-request
-  authors, with separate hosted and BYOK prices. Pool hosted inference allowance
-  at the organization level, disable overages by default, and require an explicit
-  organization hard limit before incurring additional usage charges.
+  authors, with separate hosted and BYOK prices. Keep hosted model-provider
+  costs inside the plan price rather than exposing inference metering.
 - Count the same GitHub identity separately for unrelated customer organizations
   and once across organizations consolidated under one enterprise account.
 - Add checkout, billing-manager roles, payment-processor state, invoices, usage

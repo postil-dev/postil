@@ -49,7 +49,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
   {
     feature: "Pricing model",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "Per active private-PR author" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
       { kind: "text", note: "Per-seat + per-review overage" },
       { kind: "text", note: "AI Credits + Actions minutes (Jun 2026)" },
@@ -163,9 +163,8 @@ const wedges: Wedge[] = [
           burned in two hours.
         </p>
         <p className="mt-3">
-          Postil Hosted is $15 per active private-PR author with a $6 pooled
-          inference allowance per author. BYOK is $9 per active author, with
-          provider usage billed directly. The closest comparable model we
+          Postil prices private plans by active author. BYOK provider usage is
+          billed directly. The closest comparable model we
           found is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">
             Kodus
@@ -221,8 +220,8 @@ const wedges: Wedge[] = [
           platform edge cases differ. The CLI's interactive{" "}
           <code>@postil</code> bot (<code>postil respond</code>) follows the
           same reach: GitHub and GitLab cover issues and PRs/MRs, Bitbucket and
-          Azure DevOps cover pull requests only. The hosted app is GitHub-only
-          today. Off GitHub the gate is enforced as a CI job that passes or
+          Azure DevOps cover pull requests only. The hosted app supports GitHub
+          only. Off GitHub the gate is enforced as a CI job that passes or
           fails, rather than a named external check-run like GitHub's{" "}
           <code>postil/gate</code>.
         </p>
@@ -329,7 +328,7 @@ export default function WhyPostilPage() {
         Every claim below links to its source: vendor pricing pages, public
         post-mortems, and independent audits. Where a
         competitor is better, we say so: CodeRabbit's platform coverage is more
-        battle-tested today, and Greptile's cross-file recall is genuinely
+        battle-tested, and Greptile's cross-file recall is genuinely
         strong. Here is where Postil is different.
       </p>
 

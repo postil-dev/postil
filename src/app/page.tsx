@@ -8,6 +8,10 @@ import { Section } from "@/components/section";
 import { StatusIcon } from "@/components/status-icon";
 import { Terminal } from "@/components/terminal";
 import { githubAppInstallUrl } from "@/lib/github-app";
+import {
+  BYOK_ACTIVE_AUTHOR_MONTHLY_USD,
+  HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
+} from "@/lib/pricing-policy";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/" },
@@ -448,10 +452,12 @@ export default function HomePage() {
             </p>
           </div>
           <div className="card border-gate p-6">
-            <p className="serif-display text-2xl">$15 / active author / mo</p>
+            <p className="serif-display text-2xl">
+              ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} / active author / mo
+            </p>
             <p className="mt-2 text-sm text-ink-soft">
-              Hosted includes a $6 inference allowance per active author,
-              pooled across the organization. Overage defaults to $0.
+              Hosted model access is included. Review volume is not a billing
+              unit.
             </p>
           </div>
           <div className="card p-6">
@@ -463,13 +469,14 @@ export default function HomePage() {
           </div>
         </div>
         <p className="mt-8 max-w-2xl text-ink-soft">
-          BYOK is $9 per active author per month, with inference billed directly
-          by your provider. A bot or service identity counts when Postil reviews
-          its private-repository pull request. Repositories are not billed.
+          BYOK is ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author per month,
+          with inference billed directly by your provider. A bot or service
+          identity counts when Postil reviews its private-repository pull request.
+          Repositories are not billed.
         </p>
         <p className="mt-6">
           <Link href="/pricing" className="link-arrow">
-            Run the cost calculator
+            See pricing
           </Link>
         </p>
       </Section>

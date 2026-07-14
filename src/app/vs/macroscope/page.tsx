@@ -40,7 +40,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "Per active private-PR author" },
       {
         kind: "text",
         note: "$0.05/KB of diff ($0.50 floor; $1.50 for a 30 KB medium feature)",
@@ -142,10 +142,8 @@ export default function VsMacroscopePage() {
           minimum, or $0.50, with a 30 KB medium feature at $1.50. Two pricing
           models in six months. To its credit, Macroscope offers spend caps, but
           the structure still charges you more for bigger changes and more PRs.
-          Postil Hosted is $15 per active private-PR author with a $6 pooled
-          inference allowance per author. BYOK is $9 per active author with
-          provider usage billed directly. Compare on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          Postil prices private plans by active author. BYOK provider usage is
+          billed directly. See the <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>Precision claims vs a standing metric</h2>
@@ -184,7 +182,7 @@ export default function VsMacroscopePage() {
           usage-priced competitors lack. If you are entirely on GitHub Cloud and want its
           codebase-understanding features, it is a serious product. If you are
           on GitLab, Bitbucket, self-managed anything, or need code to stay
-          inside your network, it is not currently an option.
+          inside your network, it is not an option.
         </p>
       </div>
 

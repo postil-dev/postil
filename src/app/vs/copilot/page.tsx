@@ -43,7 +43,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "Per active private-PR author" },
       {
         kind: "text",
         note: "Paid Copilot plan + AI Credits + Actions minutes per review",
@@ -162,10 +162,8 @@ export default function VsCopilotPage() {
             one who burned an entire month&apos;s included credits on a single
             automatic PR review
           </a>
-          . Postil Hosted is $15 per active private-PR author with a $6 pooled
-          inference allowance per author. BYOK is $9 per active author plus
-          direct provider charges. Run your numbers on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          . Postil prices private plans by active author. BYOK provider usage is
+          billed directly. See the <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>A silence rate tracked continuously, on your PRs</h2>

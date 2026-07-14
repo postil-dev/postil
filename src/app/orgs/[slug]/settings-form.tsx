@@ -238,6 +238,10 @@ export function SettingsForm({
               <p className="mt-3 text-xs text-charcoal/50">
                 Provider credentials are stored encrypted and never shown again.
               </p>
+              <p className="mt-2 text-xs leading-relaxed text-charcoal/60">
+                Postil sends review input, including private code, to this
+                endpoint. Use only a provider you trust with that code.
+              </p>
             </>
           )}
         </div>

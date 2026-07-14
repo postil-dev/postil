@@ -40,7 +40,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "Per active private-PR author" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
     ],
   },
@@ -79,7 +79,7 @@ export default function VsCodeRabbitPage() {
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         CodeRabbit is the most widely deployed AI reviewer and has the broadest
-        platform coverage today. Postil is a CodeRabbit alternative built around
+        platform coverage. Postil is a CodeRabbit alternative built around
         restraint and structure: a hard merge gate separate from advisory
         comments, a published silence rate, and pricing based on active
         private-PR authors rather than repositories.
@@ -129,10 +129,8 @@ export default function VsCodeRabbitPage() {
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             $24 per seat per month on the annual plan
           </a>
-          . Postil Hosted is $15 per active author with a $6 pooled inference
-          allowance per author. BYOK is $9 per active author, plus direct
-          provider charges. Run the numbers on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          . Postil prices private plans by active author. BYOK provider usage is
+          billed directly. See the <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>Where CodeRabbit is ahead</h2>

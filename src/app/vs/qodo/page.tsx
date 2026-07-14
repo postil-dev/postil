@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "Per active private-PR author" },
       { kind: "text", note: "Credit packs; $0.012/credit, $30 start" },
     ],
   },
@@ -125,11 +125,9 @@ export default function VsQodoPage() {
           <a href="https://docs.qodo.ai/pricing-and-usage" rel="noopener">
             usage docs
           </a>{" "}
-          describe shared workspace credits and overage caps. Postil Hosted is
-          $15 per active author with a $6 pooled inference allowance per author.
-          BYOK is $9 per active author with direct provider charges. Run the
-          numbers on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          describe shared workspace credits and overage caps. Postil prices
+          private plans by active author. BYOK provider usage is billed directly.
+          See the <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>A gate you can require</h2>
@@ -185,9 +183,8 @@ export default function VsQodoPage() {
         <div>
           <h2 className="serif-display text-2xl">One product, clear pricing.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Hosted is $15 and BYOK is $9 per active private-PR author.
-            Self-hosted stays free with the same gate and dashboard. Try it on
-            your next diff.
+            Private plans are priced by active author. Self-hosted is free with
+            the same gate and dashboard. Try it on your next diff.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

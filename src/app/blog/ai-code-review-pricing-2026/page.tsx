@@ -1,6 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import {
+  BYOK_ACTIVE_AUTHOR_MONTHLY_USD,
+  HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
+} from "@/lib/pricing-policy";
+
+const TEAM_SIZE = 20;
+const HOSTED_TEAM_MONTHLY_USD = TEAM_SIZE * HOSTED_ACTIVE_AUTHOR_MONTHLY_USD;
+const BYOK_TEAM_MONTHLY_USD = TEAM_SIZE * BYOK_ACTIVE_AUTHOR_MONTHLY_USD;
+
 export const metadata: Metadata = {
   title: "AI code review pricing in 2026: what a 20-developer team actually pays",
   description:
@@ -341,14 +350,15 @@ export default function PricingArticle() {
           </a>
         </p>
 
-        <h3>Postil: active-author pricing with a hosted allowance</h3>
+        <h3>Postil: active-author pricing</h3>
         <p>
-          Our row assumes all 20 developers open a private-repository PR that
-          Postil reviews. Hosted is 20 active authors × $15 ={" "}
-          <strong>$300 per month</strong>, including a $120 inference allowance
-          pooled across the organization. BYOK is 20 × $9 ={" "}
-          <strong>$180 per month</strong>, with provider usage billed directly.
-          Hosted public-repository reviews are free.
+          Our row assumes all {TEAM_SIZE} developers open a private-repository
+          PR that Postil reviews. Hosted is {TEAM_SIZE} active authors × $
+          {HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} ={" "}
+          <strong>${HOSTED_TEAM_MONTHLY_USD} per month</strong>. BYOK is{" "}
+          {TEAM_SIZE} × ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} ={" "}
+          <strong>${BYOK_TEAM_MONTHLY_USD} per month</strong>, with provider
+          usage billed directly. Hosted public-repository reviews are free.
           Source: <Link href="/pricing">postil.dev/pricing</Link>.
         </p>
 
@@ -410,8 +420,10 @@ export default function PricingArticle() {
             <tr>
               <td>Postil</td>
               <td className="hidden sm:table-cell">Active private-PR author</td>
-              <td>$300 Hosted / $180 BYOK</td>
-              <td>Hosted includes $120 pooled inference allowance</td>
+              <td>
+                ${HOSTED_TEAM_MONTHLY_USD} Hosted / ${BYOK_TEAM_MONTHLY_USD} BYOK
+              </td>
+              <td>Review volume is not a Postil billing unit</td>
             </tr>
           </tbody>
         </table>
@@ -459,13 +471,12 @@ export default function PricingArticle() {
           you can forecast within a few percent is worth something even when
           a metered bill might be lower, because budget surprises have
           organizational costs that unit prices do not capture. Our own
-          position follows from that: Postil charges $15 per active private-PR
-          author for Hosted, with a $6 pooled inference allowance per author,
-          or $9 per active author for BYOK. When you choose BYOK, provider
-          usage stays in your account and Postil has no lever to profit from
-          your volume. That
-          property comes from the pricing structure itself, and you can check
-          it on{" "}
+          position follows from that: Postil charges $
+          {HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} per active private-PR author for
+          Hosted, or ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author for
+          BYOK. When you choose BYOK, provider usage stays in your account and
+          Postil adds no per-review fee. That property comes from the pricing
+          structure itself, and you can check it on{" "}
           <Link href="/pricing">our pricing page</Link>.
         </p>
         <p>
@@ -576,8 +587,8 @@ export default function PricingArticle() {
             Run the math on your own numbers.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Compare $15 Hosted and $9 BYOK per active private-PR author.
-            The pricing calculator applies both models.
+            Postil prices private plans by active author, not by review or
+            repository.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

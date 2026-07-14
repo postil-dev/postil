@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "Per active private-PR author" },
       { kind: "text", note: "~$30/seat + ~$1 per review past 50" },
     ],
   },
@@ -105,10 +105,9 @@ export default function VsGreptilePage() {
             public backlash
           </a>
           . A developer pushing several hundred agent-driven PRs in a month can
-          owe hundreds of dollars. Postil Hosted is $15 per active author with
-          a $6 pooled inference allowance per author. BYOK is $9 per active
-          author plus direct provider charges. Compare on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          owe hundreds of dollars. Postil prices private plans by active author.
+          BYOK provider usage is billed directly. See the{" "}
+          <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>A gate that can block a merge</h2>

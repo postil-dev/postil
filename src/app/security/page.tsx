@@ -245,6 +245,10 @@ export default function SecurityPage() {
             repository clone on our infrastructure.
           </p>
           <p className="mt-4">
+            A configured BYOK endpoint receives review input, including private
+            code. Use only a provider you trust with that code.
+          </p>
+          <p className="mt-4">
             Full detail in the{" "}
             <Link href="/privacy" className="text-rust underline">
               privacy policy
@@ -367,8 +371,8 @@ export default function SecurityPage() {
             .
           </p>
           <p className="mt-4">
-            We do not publish a separate GPG release key today. That is
-            intentional: Sigstore keyless signing keeps release identity tied to
+            We do not publish a separate GPG release key. Sigstore keyless
+            signing keeps release identity tied to
             GitHub OIDC and avoids a static private key that would need storage,
             rotation, revocation, and out-of-band trust distribution.
           </p>

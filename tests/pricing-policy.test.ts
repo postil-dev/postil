@@ -4,9 +4,7 @@ import { join } from "node:path";
 
 import {
   BYOK_ACTIVE_AUTHOR_MONTHLY_USD,
-  calculatePostilPricing,
   HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
-  HOSTED_INFERENCE_ALLOWANCE_USD,
 } from "@/lib/pricing-policy";
 
 const root = join(import.meta.dir, "..");
@@ -16,43 +14,36 @@ function source(path: string): string {
 }
 
 describe("pricing policy", () => {
-  test("calculates Hosted and BYOK totals from active authors", () => {
-    expect(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD).toBe(15);
-    expect(HOSTED_INFERENCE_ALLOWANCE_USD).toBe(6);
-    expect(BYOK_ACTIVE_AUTHOR_MONTHLY_USD).toBe(9);
-    expect(calculatePostilPricing(20)).toEqual({
-      activeAuthors: 20,
-      hostedMonthlyUsd: 300,
-      hostedInferenceAllowanceUsd: 120,
-      byokMonthlyUsd: 180,
-    });
+  test("keeps commercial plan prices in one source of truth", () => {
+    expect(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD).toBeGreaterThan(0);
+    expect(BYOK_ACTIVE_AUTHOR_MONTHLY_USD).toBeGreaterThan(0);
   });
 
-  test("normalizes invalid author counts without fractional billing", () => {
-    expect(calculatePostilPricing(-1).activeAuthors).toBe(0);
-    expect(calculatePostilPricing(3.9).activeAuthors).toBe(3);
-  });
-
-  test("publishes the active-author definition and spend safeguards", () => {
+  test("publishes the billing unit without internal provider-cost metadata", () => {
     const pricing = source("src/app/pricing/page.tsx");
     const terms = source("src/app/terms/page.tsx");
+    const settings = source("src/app/orgs/[slug]/settings-form.tsx");
 
     expect(pricing).toContain("bot or service identity");
-    expect(pricing).toContain("There is no repository charge");
-    expect(pricing).toContain("$0 default overage");
-    expect(terms).toContain("pooled organization-wide");
-    expect(terms).toContain("explicitly choose a higher hard cap");
+    expect(pricing).toContain("Repositories are not billed");
+    expect(pricing).toContain("Review volume is not a billing unit");
+    expect(terms).toContain("Repository count and review count are not billing units");
     expect(terms).toContain("provider-side budgets and");
     expect(terms).toContain("hard limits where the provider supports them");
-    expect(terms).toContain("Hosted public-repository reviews are free");
+    expect(terms).toMatch(/Hosted\s+public-repository reviews are free/);
+    expect(settings).toContain("Use only a provider you trust with that code");
+
+    const publicPricingCopy = [pricing, terms, source("src/app/page.tsx")].join("\n");
+    expect(publicPricingCopy).not.toMatch(/inference allowance/i);
+    expect(publicPricingCopy).not.toMatch(/default overage/i);
   });
 
   test("structured metadata carries both commercial offers", () => {
     const layout = source("src/app/layout.tsx");
     expect(layout).toContain('name: "Hosted"');
-    expect(layout).toContain('price: "15"');
+    expect(layout).toContain("price: String(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD)");
     expect(layout).toContain('name: "BYOK"');
-    expect(layout).toContain('price: "9"');
+    expect(layout).toContain("price: String(BYOK_ACTIVE_AUTHOR_MONTHLY_USD)");
   });
 
   test("public Postil copy contains no superseded pricing claims", () => {
@@ -67,7 +58,6 @@ describe("pricing policy", () => {
       "src/app/vs/qodo/page.tsx",
       "src/app/blog/ai-code-review-pricing-2026/page.tsx",
       "src/app/blog/best-ai-code-review-tools-2026/page.tsx",
-      "src/components/pricing-calculator.tsx",
     ];
     const combined = files.map(source).join("\n");
     const staleClaims = [
@@ -77,6 +67,8 @@ describe("pricing policy", () => {
       /hosted reviews included/i,
       /bill stays independent of PR count/i,
       /price does not scale with PR count/i,
+      /inference allowance/i,
+      /cost calculator/i,
     ];
 
     for (const claim of staleClaims) {
