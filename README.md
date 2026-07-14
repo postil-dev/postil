@@ -11,7 +11,6 @@ This repository contains the hosted service at [postil.dev](https://postil.dev):
 ## Start here
 
 - [Install the GitHub App](https://postil.dev/install) for hosted reviews.
-- [Run Postil before pushing](https://postil.dev/docs/coding-agents) from a local agent or Git hook.
 - [Use the CLI](https://postil.dev/docs/cli) with GitHub, GitLab, Bitbucket, or Azure DevOps.
 - [Configure review policy](https://postil.dev/docs/config) in the repository.
 - [Read the security model](https://postil.dev/security) before self-hosting or granting repository access.
