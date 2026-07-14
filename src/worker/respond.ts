@@ -217,6 +217,7 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
         modelUsed: usage?.modelUsed ?? "respond (conservative reservation)",
         actualMicros: usage?.actualMicros ?? null,
         usageAccountingComplete: usage?.usageAccountingComplete ?? false,
+        triggerSource: payload.trigger?.source === "github_mention" ? "github_mention" : "unknown",
         delivery: {
           jobId,
           repoFullName: currentRepository.full_name,
@@ -248,6 +249,7 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
         modelUsed: "respond (conservative reservation)",
         actualMicros: null,
         usageAccountingComplete: false,
+        triggerSource: payload.trigger?.source === "github_mention" ? "github_mention" : "unknown",
       }).catch((reconcileError) => {
         console.error(
           `failed to conservatively reconcile hosted respond usage: ${redactSecrets(reconcileError)}`,

@@ -72,6 +72,8 @@ describeDb("paused hosted review claims", () => {
       headSha: "head-one",
       baseSha: "base",
       sinceSha: null,
+      triggerSource: "unknown" as const,
+      triggerContext: { source: "unknown" as const },
       queuedAt: new Date("2026-07-17T14:00:00Z"),
       startedAt: new Date("2026-07-17T14:00:01Z"),
     };

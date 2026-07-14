@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 
 import { redactAndTruncate } from "@/lib/redact";
+import type { ReviewTriggerContext } from "@/lib/review-trigger";
 
 /**
  * Postgres-native job queue.
@@ -41,6 +42,8 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   headSha: string;
   baseSha: string;
   sourceDeliveryId?: string;
+  /** Optional only for jobs queued by an older release during a rolling deploy. */
+  trigger?: ReviewTriggerContext;
 }
 
 /** An @postil mention on a PR or issue the bot should reply to. */
@@ -55,6 +58,16 @@ export interface RespondJobPayload extends Record<string, unknown> {
   // knows which code the question is about.
   commentAnchor?: string;
   sourceDeliveryId?: string;
+  trigger?: {
+    source: "github_mention";
+    webhookDeliveryId: string;
+    webhookEvent: "issue_comment" | "pull_request_review_comment" | "issues";
+    webhookAction: "created" | "opened";
+    sourceCommentId?: number;
+    sourceUrl?: string;
+    requestedByGithubId?: number;
+    requestedByLogin?: string;
+  };
 }
 
 /** A fixed webhook reply delivered through the marker-reconciled comment path. */

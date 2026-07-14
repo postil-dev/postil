@@ -55,6 +55,7 @@ import {
 import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
+import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { persistReviewCompletion } from "@/lib/review-completion";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
@@ -631,6 +632,7 @@ export async function runReviewJob(
   // deployment setting must not create a row that only the watchdog can close.
   const publicOrigin = configuredPublicOrigin();
 
+  const trigger = normalizeReviewTriggerContext(payload.trigger);
   const reviewValues = {
     repositoryId: repository.id,
     prNumber: payload.prNumber,
@@ -639,6 +641,8 @@ export async function runReviewJob(
     headSha: payload.headSha,
     baseSha: payload.baseSha,
     sinceSha: baseline?.headSha ?? null,
+    triggerSource: trigger.source,
+    triggerContext: trigger,
     queuedAt: timing.queuedAt,
     startedAt: timing.startedAt,
   };

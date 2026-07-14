@@ -17,6 +17,7 @@ import {
 
 import type { Envelope } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
+import type { ReviewTriggerContext } from "@/lib/review-trigger";
 
 /** Raw bytes column for AES-256-GCM sealed secrets. */
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
@@ -194,6 +195,8 @@ export const reviews = pgTable(
     headSha: text("head_sha").notNull(),
     baseSha: text("base_sha").notNull(),
     sinceSha: text("since_sha"),
+    triggerSource: text("trigger_source").notNull().default("unknown"),
+    triggerContext: jsonb("trigger_context").$type<ReviewTriggerContext>(),
     status: reviewStatus("status").notNull().default("queued"),
     envelope: jsonb("envelope").$type<Envelope>(),
     configFiles: text("config_files").array(),
@@ -215,6 +218,14 @@ export const reviews = pgTable(
     index("reviews_running_started_at_idx")
       .on(t.startedAt)
       .where(sql`${t.status} = 'running'`),
+    check(
+      "reviews_trigger_source_check",
+      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun')`,
+    ),
+    check(
+      "reviews_trigger_context_check",
+      sql`(${t.triggerSource} = 'unknown' AND (${t.triggerContext} IS NULL OR ${t.triggerContext}->>'source' = 'unknown')) OR (${t.triggerSource} <> 'unknown' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext}->>'source' = ${t.triggerSource} AND COALESCE(length(btrim(${t.triggerContext}->>'webhookDeliveryId')), 0) > 0)`,
+    ),
   ],
 );
 
@@ -280,6 +291,7 @@ export const usageEvents = pgTable(
     reviewId: bigint("review_id", { mode: "number" }).references(() => reviews.id, {
       onDelete: "set null",
     }),
+    triggerSource: text("trigger_source").notNull().default("unknown"),
     promptTokens: integer("prompt_tokens").notNull().default(0),
     completionTokens: integer("completion_tokens").notNull().default(0),
     modelUsed: text("model_used"),
@@ -304,6 +316,10 @@ export const usageEvents = pgTable(
     check(
       "usage_events_billing_scope_check",
       sql`${t.billingScope} IN ('analytics', 'private_hosted')`,
+    ),
+    check(
+      "usage_events_trigger_source_check",
+      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun', 'github_mention')`,
     ),
   ],
 );

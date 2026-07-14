@@ -4,6 +4,10 @@ import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import { checkRunExternalId } from "@/lib/github/checks";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
+import type {
+  ReviewTriggerContext,
+  ReviewTriggerSource,
+} from "@/lib/review-trigger";
 
 export interface HostedReviewPauseClaim {
   repositoryId: number;
@@ -13,6 +17,8 @@ export interface HostedReviewPauseClaim {
   headSha: string;
   baseSha: string;
   sinceSha: string | null;
+  triggerSource: ReviewTriggerSource;
+  triggerContext: ReviewTriggerContext;
   queuedAt: Date;
   startedAt: Date;
 }

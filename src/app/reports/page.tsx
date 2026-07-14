@@ -10,11 +10,13 @@ import {
   ReviewStatusBadge,
 } from "@/components/review-status";
 import { ReportsHeader } from "@/components/reports-header";
+import { ReviewTriggerBadge } from "@/components/review-trigger-badge";
 import { getDb, schema } from "@/lib/db";
 import { githubAppInstallUrl } from "@/lib/github-app";
 import { githubPrUrl } from "@/lib/github-links";
 import { reviewDisplayStatus } from "@/lib/review-outcome";
 import { getVerifiedSessionUser } from "@/lib/session";
+import type { ReviewTriggerSource } from "@/lib/review-trigger";
 
 export const metadata: Metadata = {
   title: "Reports",
@@ -90,6 +92,7 @@ export default async function ReportsPage() {
             queuedAt: schema.reviews.queuedAt,
             repoFullName: schema.repositories.fullName,
             orgSlug: schema.organizations.slug,
+            triggerSource: schema.reviews.triggerSource,
           })
           .from(schema.reviews)
           .innerJoin(
@@ -171,6 +174,7 @@ export default async function ReportsPage() {
               <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/50">
                 <th className="px-4 py-3 font-normal">repository</th>
                 <th className="px-4 py-3 font-normal">PR</th>
+                <th className="px-4 py-3 font-normal">trigger</th>
                 <th className="px-4 py-3 font-normal">status</th>
                 <th className="px-4 py-3 font-normal">gate</th>
                 <th className="px-4 py-3 font-normal">findings</th>
@@ -191,6 +195,9 @@ export default async function ReportsPage() {
                     >
                       #{r.prNumber}
                     </a>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <ReviewTriggerBadge source={r.triggerSource as ReviewTriggerSource} />
                   </td>
                   <td className="px-4 py-2.5">
                     <ReviewStatusBadge

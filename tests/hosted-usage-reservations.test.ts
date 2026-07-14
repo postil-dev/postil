@@ -88,10 +88,12 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     `);
     repositoryId = Number(repository.rows[0]?.id);
     const reviews = await migrationClient.query<{ id: string }>(`
-      INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status)
+      INSERT INTO reviews
+        (repository_id, pr_number, head_sha, base_sha, status, trigger_source, trigger_context)
       VALUES
-        (${repositoryId}, 1, 'head-1', 'base', 'running'),
-        (${repositoryId}, 2, 'head-2', 'base', 'running')
+        (${repositoryId}, 1, 'head-1', 'base', 'running', 'unknown', NULL),
+        (${repositoryId}, 2, 'head-2', 'base', 'running', 'requested_review',
+         '{"source":"requested_review","webhookDeliveryId":"billing-test"}'::jsonb)
       RETURNING id;
     `);
     reviewIds = reviews.rows.map((row) => Number(row.id));
@@ -166,11 +168,16 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       [recovered.reservationId],
     );
     expect(reconciled.rows[0]).toEqual({ status: "reconciled", actual_micros: "1000000" });
-    const usage = await pool!.query<{ cost_micros: string }>(
-      `SELECT sum(cost_micros)::bigint AS cost_micros FROM usage_events WHERE review_id = $1`,
+    const usage = await pool!.query<{ cost_micros: string; trigger_source: string }>(
+      `SELECT sum(cost_micros)::bigint AS cost_micros, max(trigger_source) AS trigger_source
+       FROM usage_events WHERE review_id = $1`,
       [rejectedReviewId],
     );
-    expect(usage.rows[0]).toEqual({ cost_micros: "1000000" });
+    expect(usage.rows[0]).toEqual({
+      cost_micros: "1000000",
+      trigger_source:
+        rejectedReviewId === reviewIds[1] ? "requested_review" : "unknown",
+    });
   });
 
   test("classifies omitted legacy usage scope without undercounting private hosted work", async () => {
@@ -267,6 +274,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       modelUsed: "z-ai/glm-5.2",
       actualMicros: 987,
       usageAccountingComplete: true,
+      triggerSource: "github_mention",
     });
     const reconciled = await pool!.query<{
       operation: string;
@@ -289,8 +297,9 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       prompt_tokens: number;
       completion_tokens: number;
       cost_micros: string;
+      trigger_source: string;
     }>(
-      `SELECT review_id, prompt_tokens, completion_tokens, cost_micros
+      `SELECT review_id, prompt_tokens, completion_tokens, cost_micros, trigger_source
        FROM usage_events WHERE repository_id = $1 AND review_id IS NULL`,
       [respondRepositoryId],
     );
@@ -299,6 +308,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       prompt_tokens: 120,
       completion_tokens: 20,
       cost_micros: "987",
+      trigger_source: "github_mention",
     });
 
     await pool!.query(

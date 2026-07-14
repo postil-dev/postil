@@ -394,7 +394,11 @@ describeDb("webhook handler behaviour", () => {
 
     // And the review job was enqueued (installation resolved, repo enabled).
     const jobs = await pool.query<{
-      payload: { authorGithubId: number; authorLogin: string };
+      payload: {
+        authorGithubId: number;
+        authorLogin: string;
+        trigger: Record<string, unknown>;
+      };
     }>(
       "SELECT payload FROM jobs WHERE kind = 'review'",
     );
@@ -402,6 +406,12 @@ describeDb("webhook handler behaviour", () => {
     expect(jobs.rows[0]!.payload).toMatchObject({
       authorGithubId: 4242,
       authorLogin: "dependabot[bot]",
+      trigger: {
+        source: "automatic_pull_request",
+        webhookDeliveryId: "delivery-transfer-1",
+        webhookEvent: "pull_request",
+        webhookAction: "opened",
+      },
     });
   });
 
@@ -813,11 +823,21 @@ describeDb("webhook handler behaviour", () => {
     const approvals = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
-    const jobs = await pool.query<{ c: number }>(
-      "SELECT count(*)::int AS c FROM jobs WHERE kind = 'respond'",
+    const jobs = await pool.query<{ payload: { trigger: Record<string, unknown> } }>(
+      "SELECT payload FROM jobs WHERE kind = 'respond'",
     );
     expect(approvals.rows[0]!.c).toBe(0);
-    expect(jobs.rows[0]!.c).toBe(1);
+    expect(jobs.rows).toHaveLength(1);
+    expect(jobs.rows[0]!.payload.trigger).toEqual({
+      source: "github_mention",
+      webhookDeliveryId: "approval-free-form",
+      webhookEvent: "issue_comment",
+      webhookAction: "created",
+      sourceCommentId: 123456,
+      sourceUrl: "https://github.com/octo/approvals/pull/9#issuecomment-123456",
+      requestedByGithubId: 501,
+      requestedByLogin: "admin",
+    });
   });
 
   test("exact PR review mentions enqueue the structured reviewer", async () => {
@@ -845,9 +865,61 @@ describeDb("webhook handler behaviour", () => {
           baseSha: "base-sha",
           authorGithubId: 501,
           authorLogin: "admin",
+          trigger: {
+            source: "requested_review",
+            webhookDeliveryId: "mention-review-current-head",
+            webhookEvent: "issue_comment",
+            webhookAction: "created",
+            sourceCommentId: 123456,
+            sourceUrl: "https://github.com/octo/approvals/pull/9#issuecomment-123456",
+            requestedByGithubId: 501,
+            requestedByLogin: "admin",
+          },
         }),
       },
     ]);
+  });
+
+  test("review-thread commands retain their comment origin", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 702);
+    await seedRepo(inst, 7002, "octo/threaded");
+
+    const res = await post(
+      "pull_request_review_comment",
+      {
+        action: "created",
+        installation: { id: 702 },
+        repository: { id: 7002, full_name: "octo/threaded", private: false },
+        sender: { id: 502, login: "reviewer", type: "User" },
+        comment: {
+          id: 654321,
+          html_url: "https://github.com/octo/threaded/pull/5#discussion_r654321",
+          body: "@postil review the current head",
+          user: { id: 502, login: "reviewer", type: "User" },
+          author_association: "MEMBER",
+          path: "src/app.ts",
+          line: 10,
+        },
+        pull_request: { number: 5 },
+      },
+      "review-thread-command",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{ payload: { trigger: Record<string, unknown> } }>(
+      "SELECT payload FROM jobs WHERE kind = 'review'",
+    );
+    expect(jobs.rows[0]!.payload.trigger).toEqual({
+      source: "requested_review",
+      webhookDeliveryId: "review-thread-command",
+      webhookEvent: "pull_request_review_comment",
+      webhookAction: "created",
+      sourceCommentId: 654321,
+      sourceUrl: "https://github.com/octo/threaded/pull/5#discussion_r654321",
+      requestedByGithubId: 502,
+      requestedByLogin: "reviewer",
+    });
   });
 
   test("issue review mentions cannot invoke the pull-request reviewer", async () => {
@@ -1269,12 +1341,62 @@ describeDb("webhook handler behaviour", () => {
     const res = await checkRunRerequestedEvent("delivery-rerequest-1");
     expect(res.status).toBe(200);
 
-    const jobs = await pool.query<{ payload: { prNumber: number; headSha: string } }>(
+    const jobs = await pool.query<{
+      payload: {
+        prNumber: number;
+        headSha: string;
+        trigger: Record<string, unknown>;
+      };
+    }>(
       "SELECT payload FROM jobs WHERE kind = 'review'",
     );
     expect(jobs.rows).toHaveLength(1);
     expect(jobs.rows[0]!.payload.prNumber).toBe(42);
     expect(jobs.rows[0]!.payload.headSha).toBe("deadbeef");
+    expect(jobs.rows[0]!.payload.trigger).toEqual({
+      source: "github_check_rerun",
+      webhookDeliveryId: "delivery-rerequest-1",
+      webhookEvent: "check_run",
+      webhookAction: "rerequested",
+      checkName: "postil/gate",
+    });
+  });
+
+  test("check_suite rerequested records a check rerun without guessing a check name", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 501);
+    await seedRepo(inst, 5556, "octo/suite");
+
+    const res = await post(
+      "check_suite",
+      {
+        action: "rerequested",
+        installation: { id: 501 },
+        repository: { id: 5556, full_name: "octo/suite", private: false },
+        check_suite: {
+          head_sha: "suite-head",
+          pull_requests: [
+            {
+              number: 43,
+              head: { sha: "suite-head" },
+              base: { sha: "suite-base" },
+            },
+          ],
+        },
+      },
+      "delivery-suite-rerequest",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{ payload: { trigger: Record<string, unknown> } }>(
+      "SELECT payload FROM jobs WHERE kind = 'review'",
+    );
+    expect(jobs.rows[0]!.payload.trigger).toEqual({
+      source: "github_check_rerun",
+      webhookDeliveryId: "delivery-suite-rerequest",
+      webhookEvent: "check_suite",
+      webhookAction: "rerequested",
+    });
   });
 
   test("check_run rerequested for an unknown/disabled repo is skipped", async () => {

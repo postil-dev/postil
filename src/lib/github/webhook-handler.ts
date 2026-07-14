@@ -559,6 +559,12 @@ async function handlePullRequest(
     headSha,
     baseSha,
     sourceDeliveryId,
+    trigger: {
+      source: "automatic_pull_request",
+      webhookDeliveryId: sourceDeliveryId,
+      webhookEvent: "pull_request",
+      webhookAction: action,
+    },
   }, triggerFollowupDrain);
 }
 
@@ -671,6 +677,13 @@ async function handleCheckRerequest(
     headSha,
     baseSha,
     sourceDeliveryId,
+    trigger: {
+      source: "github_check_rerun",
+      webhookDeliveryId: sourceDeliveryId,
+      webhookEvent: label,
+      webhookAction: "rerequested",
+      ...(checkName ? { checkName } : {}),
+    },
   }, triggerFollowupDrain);
 }
 
@@ -841,6 +854,7 @@ async function handleIssueComment(
         payload,
         payload.issue.number,
         sourceDeliveryId,
+        "issue_comment",
         triggerFollowupDrain,
       );
     } else {
@@ -863,6 +877,7 @@ async function handleIssueComment(
     isPr: payload.issue.pull_request != null,
     comment: body!,
     sourceDeliveryId,
+    trigger: respondTrigger(payload, sourceDeliveryId, "issue_comment"),
   }, triggerFollowupDrain);
 }
 
@@ -883,6 +898,7 @@ async function handleReviewComment(
       payload,
       payload.pull_request.number,
       sourceDeliveryId,
+      "pull_request_review_comment",
       triggerFollowupDrain,
     );
     return;
@@ -902,13 +918,38 @@ async function handleReviewComment(
     comment: body!,
     commentAnchor: anchor,
     sourceDeliveryId,
+    trigger: respondTrigger(payload, sourceDeliveryId, "pull_request_review_comment"),
   }, triggerFollowupDrain);
+}
+
+function respondTrigger(
+  payload: CommentEventPayload,
+  sourceDeliveryId: string,
+  webhookEvent: "issue_comment" | "pull_request_review_comment",
+): NonNullable<RespondJobPayload["trigger"]> {
+  return {
+    source: "github_mention",
+    webhookDeliveryId: sourceDeliveryId,
+    webhookEvent,
+    webhookAction: "created",
+    ...(typeof payload.comment?.id === "number"
+      ? { sourceCommentId: payload.comment.id }
+      : {}),
+    ...(payload.comment?.html_url ? { sourceUrl: payload.comment.html_url } : {}),
+    ...(typeof payload.comment?.user?.id === "number"
+      ? { requestedByGithubId: payload.comment.user.id }
+      : {}),
+    ...(payload.comment?.user?.login
+      ? { requestedByLogin: payload.comment.user.login }
+      : {}),
+  };
 }
 
 async function enqueueMentionReview(
   payload: CommentEventPayload,
   prNumber: number,
   sourceDeliveryId: string,
+  webhookEvent: "issue_comment" | "pull_request_review_comment",
   triggerFollowupDrain: boolean,
 ): Promise<void> {
   const installationId = payload.installation?.id;
@@ -929,6 +970,22 @@ async function enqueueMentionReview(
     headSha: context.headSha,
     baseSha: context.baseSha,
     sourceDeliveryId,
+    trigger: {
+      source: "requested_review",
+      webhookDeliveryId: sourceDeliveryId,
+      webhookEvent,
+      webhookAction: "created",
+      ...(typeof payload.comment?.id === "number"
+        ? { sourceCommentId: payload.comment.id }
+        : {}),
+      ...(payload.comment?.html_url ? { sourceUrl: payload.comment.html_url } : {}),
+      ...(typeof payload.comment?.user?.id === "number"
+        ? { requestedByGithubId: payload.comment.user.id }
+        : {}),
+      ...(payload.comment?.user?.login
+        ? { requestedByLogin: payload.comment.user.login }
+        : {}),
+    },
   }, triggerFollowupDrain);
 }
 
@@ -1158,5 +1215,15 @@ async function handleIssues(
     isPr: false,
     comment: body!,
     sourceDeliveryId,
+    trigger: {
+      source: "github_mention",
+      webhookDeliveryId: sourceDeliveryId,
+      webhookEvent: "issues",
+      webhookAction: "opened",
+      ...(typeof payload.sender?.id === "number"
+        ? { requestedByGithubId: payload.sender.id }
+        : {}),
+      ...(payload.sender?.login ? { requestedByLogin: payload.sender.login } : {}),
+    },
   }, triggerFollowupDrain);
 }
