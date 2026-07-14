@@ -15,8 +15,8 @@ function source(path: string): string {
 
 describe("pricing policy", () => {
   test("keeps commercial plan prices in one source of truth", () => {
-    expect(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD).toBeGreaterThan(0);
-    expect(BYOK_ACTIVE_AUTHOR_MONTHLY_USD).toBeGreaterThan(0);
+    expect(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD).toBe(15);
+    expect(BYOK_ACTIVE_AUTHOR_MONTHLY_USD).toBe(6);
   });
 
   test("publishes the billing unit without internal provider-cost metadata", () => {
