@@ -29,11 +29,10 @@ This repository contains the hosted service at [postil.dev](https://postil.dev):
 
 ## Development
 
-Postil uses Bun, Next.js, and PostgreSQL. Copy `.env.example` to `.env`, provide the required credentials for the path you are exercising, then run:
+Postil uses Bun, Next.js, and PostgreSQL. Copy `.env.example` to `.env`, point `DATABASE_URL` at a reachable PostgreSQL database, and provide the credentials required for the path you are exercising. Then run:
 
 ```sh
 bun install
-docker compose up -d db
 bun run db:migrate
 bun run dev
 ```
