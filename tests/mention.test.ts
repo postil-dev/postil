@@ -69,6 +69,8 @@ describe("isPostilReviewCommand", () => {
       "@postil re-review",
       "@postil rerun the review",
       "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
+      "@postil review this PR. The last review timed out.",
+      "@postil review this PR. Previous run produced no verdict.",
       "@postil please re-run the review",
       "@postil can you please review the pull request?",
     ]) {
