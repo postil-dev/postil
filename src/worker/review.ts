@@ -628,13 +628,30 @@ export async function runReviewJob(
         console.error(`failed to create unavailable gate check-run: ${redactSecrets(error, [token])}`);
         return undefined;
       });
-      await db
-        .update(schema.reviews)
-        .set({
-          advisoryCheckRunId,
-          gateCheckRunId,
-        })
-        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
+      await db.transaction(async (tx) => {
+        await tx
+          .update(schema.reviews)
+          .set({
+            advisoryCheckRunId,
+            gateCheckRunId,
+            status: "failed",
+            errorMessage: HOSTED_INFERENCE_DISABLED_MESSAGE,
+            finishedAt: new Date(),
+          })
+          .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
+        await tx.insert(schema.jobs).values({
+          kind: "check-run-cleanup",
+          payload: {
+            installationId: payload.installationId,
+            repoFullName: payload.repoFullName,
+            advisoryCheckRunId: advisoryCheckRunId ?? null,
+            gateCheckRunId: gateCheckRunId ?? null,
+            message: HOSTED_INFERENCE_DISABLED_MESSAGE,
+            intent: "neutralize",
+          },
+          maxAttempts: 5,
+        });
+      });
       const checksNeutralized = await completeHostedInferenceDisabledCheckRuns(
         token,
         payload.repoFullName,
@@ -642,39 +659,13 @@ export async function runReviewJob(
         gateCheckRunId,
       );
       if (checksNeutralized) {
-        await db
-          .update(schema.reviews)
-          .set({
-            status: "failed",
-            errorMessage: HOSTED_INFERENCE_DISABLED_MESSAGE,
-            finishedAt: new Date(),
-          })
-          .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
-        reviewLog.line("hosted inference disabled before CLI or provider access; checks neutralized");
+        reviewLog.line(
+          "hosted inference disabled before CLI or provider access; checks neutralized and durable cleanup queued",
+        );
       } else {
-        await db.transaction(async (tx) => {
-          await tx
-            .update(schema.reviews)
-            .set({
-              status: "failed",
-              errorMessage: HOSTED_INFERENCE_DISABLED_MESSAGE,
-              finishedAt: new Date(),
-            })
-            .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
-          await tx.insert(schema.jobs).values({
-            kind: "check-run-cleanup",
-            payload: {
-              installationId: payload.installationId,
-              repoFullName: payload.repoFullName,
-              advisoryCheckRunId: advisoryCheckRunId ?? null,
-              gateCheckRunId: gateCheckRunId ?? null,
-              message: HOSTED_INFERENCE_DISABLED_MESSAGE,
-              intent: "neutralize",
-            },
-            maxAttempts: 5,
-          });
-        });
-        reviewLog.line("hosted inference disabled before CLI or provider access; neutral cleanup queued");
+        reviewLog.line(
+          "hosted inference disabled before CLI or provider access; durable neutral cleanup queued",
+        );
       }
     } catch (error) {
       // Maintenance mode must never fall through to the generic gate-failure

@@ -45,6 +45,9 @@ describe("private repository worker defense in depth", () => {
     expect(guardBody).toContain('kind: "check-run-cleanup"');
     expect(guardBody).toContain('intent: "neutralize"');
     expect(guardBody).toContain("db.transaction");
+    expect(guardBody.indexOf("db.transaction")).toBeLessThan(
+      guardBody.indexOf("completeHostedInferenceDisabledCheckRuns"),
+    );
     expect(guardBody.indexOf("advisoryCheckRunId,")).toBeLessThan(
       guardBody.indexOf("completeHostedInferenceDisabledCheckRuns"),
     );
