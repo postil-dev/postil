@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { hostedInferenceEnabled, validateEnv } from "@/lib/env";
 
@@ -23,7 +25,9 @@ const MANAGED_ENV = [
   "POSTHOG_LOG_MAX_PER_MINUTE",
   "POSTIL_RELEASE_SHA",
 ] as const;
-const originalEnv = new Map(MANAGED_ENV.map((name) => [name, process.env[name]]));
+const originalEnv = new Map(
+  MANAGED_ENV.map((name) => [name, process.env[name]]),
+);
 const mutableEnv = process.env as Record<string, string | undefined>;
 
 afterEach(() => {
@@ -51,6 +55,22 @@ describe("worker startup environment validation", () => {
     expect(hostedInferenceEnabled()).toBe(false);
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
     expect(hostedInferenceEnabled()).toBe(true);
+  });
+
+  test("disables hosted inference in the managed deployment and verifies every worker", async () => {
+    const root = join(import.meta.dir, "..");
+    const [flyConfig, deployWorkflow] = await Promise.all([
+      readFile(join(root, "fly.toml"), "utf8"),
+      readFile(join(root, ".github/workflows/deploy.yml"), "utf8"),
+    ]);
+
+    expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "0"');
+    expect(deployWorkflow).toContain(
+      ".config.env.POSTIL_HOSTED_INFERENCE_ENABLED",
+    );
+    expect(deployWorkflow).toContain(
+      `worker_hosted_inference_modes}" != '["0"]'`,
+    );
   });
 });
 

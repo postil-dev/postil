@@ -235,12 +235,17 @@ jobs:
           ) | .config.image] | unique | length' <<<"${machines}")
           web_started=$(jq -r '[.[] | select(.config.metadata.fly_process_group == "web" and .state == "started")] | length' <<<"${machines}")
           worker_started=$(jq -r '[.[] | select(.config.metadata.fly_process_group == "worker" and .state == "started")] | length' <<<"${machines}")
+          worker_hosted_inference_modes=$(jq -r '[.[] | select(
+            .config.metadata.fly_process_group == "worker"
+          ) | .config.env.POSTIL_HOSTED_INFERENCE_ENABLED] | unique | @json' <<<"${machines}")
           if [ "${release_group_count}" -ne "${managed_count}" ] \
             || [ "${managed_count}" -lt 3 ] \
             || [ "${image_count}" -ne 1 ] \
             || [ "${web_started}" -lt 2 ] \
-            || [ "${worker_started}" -lt 1 ]; then
-            echo "::error::Refusing to activate release job kinds: the managed web/worker fleet is incomplete or uses mixed images."
+            || [ "${worker_started}" -lt 1 ] \
+            || [ "${worker_hosted_inference_modes}" != '["0"]' ]; then
+            echo "::error::Refusing to activate release job kinds: fleet image, process, or hosted-inference configuration is inconsistent."
+            echo "::error::Worker POSTIL_HOSTED_INFERENCE_ENABLED values: ${worker_hosted_inference_modes}"
             exit 1
           fi
           flyctl ssh console --app postil-web --command "bun run jobs:activate-release"
