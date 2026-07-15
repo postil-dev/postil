@@ -103,6 +103,12 @@ describe("worker startup environment validation", () => {
     ).not.toBe(0);
     expect(
       verifyManagedFleet(root, [
+        ...validFleet,
+        managedMachine("worker", "1", "stopped"),
+      ]).exitCode,
+    ).not.toBe(0);
+    expect(
+      verifyManagedFleet(root, [
         managedMachine("web", "0"),
         managedMachine("web", "0"),
         managedMachine("worker"),
@@ -117,9 +123,13 @@ describe("worker startup environment validation", () => {
   });
 });
 
-function managedMachine(group: "web" | "worker", hostedInferenceMode?: string) {
+function managedMachine(
+  group: "web" | "worker",
+  hostedInferenceMode?: string,
+  state = "started",
+) {
   return {
-    state: "started",
+    state,
     config: {
       image: "registry.fly.io/postil-web:verified",
       metadata: {

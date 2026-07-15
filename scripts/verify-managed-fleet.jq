@@ -11,15 +11,16 @@ release_group as $release
     .config.metadata.fly_process_group == "web" and .state == "started"
   )] as $web
 | [$managed[] | select(
-    .config.metadata.fly_process_group == "worker" and .state == "started"
-  )] as $workers
-| [$workers[].config.env.POSTIL_HOSTED_INFERENCE_ENABLED] | unique as $worker_modes
+    .config.metadata.fly_process_group == "worker"
+  )] as $all_workers
+| [$all_workers[] | select(.state == "started")] as $started_workers
+| [$all_workers[].config.env.POSTIL_HOSTED_INFERENCE_ENABLED] | unique as $worker_modes
 | {
     release_group_count: ($release | length),
     managed_count: ($managed | length),
     image_count: ($images | length),
     web_started: ($web | length),
-    worker_started: ($workers | length),
+    worker_started: ($started_workers | length),
     worker_hosted_inference_modes: $worker_modes
   } as $summary
 | if (
