@@ -142,6 +142,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_HOSTED_INFERENCE_ENABLED",
+    purpose:
+      "Set to 0 to pause the built-in hosted provider while keeping organization BYOK providers available",
+    example: "1",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
     name: "REVIEW_MODEL_CASCADE",
     purpose: "Comma-separated fallback models",
     example: "moonshotai/kimi-k2.7-code,deepseek/deepseek-v4-flash",
@@ -404,6 +412,16 @@ export function validateEnv(processKind: "web" | "worker"): void {
       );
     }
   }
+  if (
+    processKind === "worker" &&
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED !== undefined &&
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED !== "0" &&
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED !== "1"
+  ) {
+    throw new Error(
+      "Postil worker cannot start: POSTIL_HOSTED_INFERENCE_ENABLED must be 0 or 1.",
+    );
+  }
   validateOperationalTelemetryEnv(processKind);
 }
 
@@ -502,4 +520,9 @@ export function optionalEnv(name: string, fallback?: string): string | undefined
   const value = process.env[name];
   if (value && value.trim() !== "") return value;
   return fallback;
+}
+
+/** The hosted service opts in explicitly; self-hosted installs retain existing behavior. */
+export function hostedInferenceEnabled(): boolean {
+  return optionalEnv("POSTIL_HOSTED_INFERENCE_ENABLED", "1") === "1";
 }

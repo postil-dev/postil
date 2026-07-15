@@ -66,7 +66,11 @@ mock.module("@/lib/github/checks", () => ({
   },
 }));
 
-const { failCheckRuns, supersedeActiveReviews } = await import("@/worker/review");
+const {
+  completeHostedInferenceDisabledCheckRuns,
+  failCheckRuns,
+  supersedeActiveReviews,
+} = await import("@/worker/review");
 
 beforeEach(() => {
   transitions.length = 0;
@@ -75,6 +79,73 @@ beforeEach(() => {
 });
 
 describe("review terminal check-runs", () => {
+  test("disabled hosted inference leaves both checks neutral without provider detail", async () => {
+    await completeHostedInferenceDisabledCheckRuns(
+      "test-token",
+      "postil-dev/postil",
+      11,
+      22,
+    );
+
+    expect(completions).toEqual([
+      {
+        id: 11,
+        conclusion: "neutral",
+        title: "Review unavailable",
+        summary:
+          "Postil did not run a review for this commit. No review comment or verdict was published.",
+      },
+      {
+        id: 22,
+        conclusion: "neutral",
+        title: "Review unavailable",
+        summary:
+          "Postil did not run a review for this commit. No review comment or verdict was published.",
+      },
+    ]);
+    expect(JSON.stringify(completions)).not.toMatch(/provider|model/i);
+  });
+
+  test("disabled hosted inference attempts both neutral completions without throwing", async () => {
+    failingCompletionIds.add(11);
+
+    await expect(
+      completeHostedInferenceDisabledCheckRuns(
+        "test-token",
+        "postil-dev/postil",
+        11,
+        22,
+      ),
+    ).resolves.toBe(false);
+
+    expect(completions).toEqual([
+      {
+        id: 22,
+        conclusion: "neutral",
+        title: "Review unavailable",
+        summary:
+          "Postil did not run a review for this commit. No review comment or verdict was published.",
+      },
+    ]);
+  });
+
+  test("neutral cleanup fails closed so the queue retries unresolved checks", async () => {
+    failingCompletionIds.add(11);
+
+    await expect(
+      completeHostedInferenceDisabledCheckRuns(
+        "test-token",
+        "postil-dev/postil",
+        11,
+        22,
+        true,
+      ),
+    ).rejects.toThrow("could not neutralize unavailable review check-runs");
+    expect(completions.map(({ id, conclusion }) => ({ id, conclusion }))).toEqual([
+      { id: 22, conclusion: "neutral" },
+    ]);
+  });
+
   test("superseded reviews neutralize both checks with the replacement head", async () => {
     const count = await supersedeActiveReviews({
       repositoryId: 5,

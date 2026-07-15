@@ -69,6 +69,7 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   advisoryCheckRunId: number | null;
   gateCheckRunId: number | null;
   message: string;
+  intent?: "fail" | "neutralize";
 }
 
 export async function enqueueJob(
