@@ -641,17 +641,35 @@ export async function runReviewJob(
         .catch((error) => {
           console.error(`failed to record unavailable hosted review: ${redactSecrets(error, [token])}`);
         });
-      await completeHostedInferenceDisabledCheckRuns(
+      const checksNeutralized = await completeHostedInferenceDisabledCheckRuns(
         token,
         payload.repoFullName,
         advisoryCheckRunId,
         gateCheckRunId,
       );
-      reviewLog.line("hosted inference disabled before CLI or provider access; checks neutralized");
+      if (checksNeutralized) {
+        reviewLog.line("hosted inference disabled before CLI or provider access; checks neutralized");
+      } else {
+        await db.insert(schema.jobs).values({
+          kind: "check-run-cleanup",
+          payload: {
+            installationId: payload.installationId,
+            repoFullName: payload.repoFullName,
+            advisoryCheckRunId: advisoryCheckRunId ?? null,
+            gateCheckRunId: gateCheckRunId ?? null,
+            message: "Hosted review service is temporarily unavailable.",
+            intent: "neutralize",
+          },
+          maxAttempts: 5,
+        });
+        reviewLog.line("hosted inference disabled before CLI or provider access; neutral cleanup queued");
+      }
     } catch (error) {
       // Maintenance mode must never fall through to the generic gate-failure
-      // handler. The provider remains disabled even if cleanup is degraded.
+      // handler. Retrying the queue job is safe because the provider remains
+      // disabled and the next attempt supersedes this review.
       console.error(`failed to settle unavailable hosted review: ${redactSecrets(error, [token])}`);
+      throw error;
     } finally {
       await reviewLog.close();
     }
@@ -1062,9 +1080,11 @@ export async function completeHostedInferenceDisabledCheckRuns(
   repoFullName: string,
   advisoryCheckRunId: number | undefined,
   gateCheckRunId: number | undefined,
-): Promise<void> {
+  throwOnError = false,
+): Promise<boolean> {
   const summary =
     "Postil did not run a review for this commit. No review comment or verdict was published.";
+  const errors: unknown[] = [];
   for (const [kind, checkRunId] of [
     ["advisory", advisoryCheckRunId],
     ["gate", gateCheckRunId],
@@ -1078,11 +1098,16 @@ export async function completeHostedInferenceDisabledCheckRuns(
       "Review unavailable",
       summary,
     ).catch((error) => {
+      errors.push(error);
       console.error(
         `failed to neutralize unavailable ${kind} check-run: ${redactSecrets(error, [token])}`,
       );
     });
   }
+  if (throwOnError && errors.length > 0) {
+    throw new AggregateError(errors, "could not neutralize unavailable review check-runs");
+  }
+  return errors.length === 0;
 }
 
 /**
@@ -1145,6 +1170,16 @@ export async function runCheckRunCleanupJob(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const token = await getInstallationToken(payload.installationId, controller.signal);
+    if (payload.intent === "neutralize") {
+      await completeHostedInferenceDisabledCheckRuns(
+        token,
+        payload.repoFullName,
+        payload.advisoryCheckRunId ?? undefined,
+        payload.gateCheckRunId ?? undefined,
+        true,
+      );
+      return;
+    }
     await failCheckRuns(
       token,
       payload.repoFullName,

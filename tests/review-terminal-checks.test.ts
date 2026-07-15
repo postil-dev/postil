@@ -116,7 +116,7 @@ describe("review terminal check-runs", () => {
         11,
         22,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
 
     expect(completions).toEqual([
       {
@@ -126,6 +126,23 @@ describe("review terminal check-runs", () => {
         summary:
           "Postil did not run a review for this commit. No review comment or verdict was published.",
       },
+    ]);
+  });
+
+  test("neutral cleanup fails closed so the queue retries unresolved checks", async () => {
+    failingCompletionIds.add(11);
+
+    await expect(
+      completeHostedInferenceDisabledCheckRuns(
+        "test-token",
+        "postil-dev/postil",
+        11,
+        22,
+        true,
+      ),
+    ).rejects.toThrow("could not neutralize unavailable review check-runs");
+    expect(completions.map(({ id, conclusion }) => ({ id, conclusion }))).toEqual([
+      { id: 22, conclusion: "neutral" },
     ]);
   });
 

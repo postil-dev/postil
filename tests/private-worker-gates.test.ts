@@ -42,6 +42,8 @@ describe("private repository worker defense in depth", () => {
     const guardBody = source.slice(gate, reservation);
     expect(guardBody).toContain("completeHostedInferenceDisabledCheckRuns");
     expect(guardBody).toContain("supersedeActiveReviews");
+    expect(guardBody).toContain('kind: "check-run-cleanup"');
+    expect(guardBody).toContain('intent: "neutralize"');
     expect(guardBody).toContain("return;");
     expect(guardBody).not.toContain("postReview");
     expect(guardBody).not.toContain("failCheckRuns");
