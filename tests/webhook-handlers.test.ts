@@ -620,7 +620,7 @@ describeDb("webhook handler behaviour", () => {
 
     const res = await approvalComment(
       "mention-review-current-head",
-      "@postil please review the current head.",
+      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
     );
 
     expect(res.status).toBe(200);

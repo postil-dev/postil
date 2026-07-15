@@ -68,6 +68,9 @@ describe("isPostilReviewCommand", () => {
       "@postil review this PR!",
       "@postil re-review",
       "@postil rerun the review",
+      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
+      "@postil review this PR. The last review timed out.",
+      "@postil review this PR. Previous run produced no verdict.",
       "@postil please re-run the review",
       "@postil can you please review the pull request?",
     ]) {
@@ -80,6 +83,9 @@ describe("isPostilReviewCommand", () => {
       "@postil review why this function fails?",
       "@postil can you explain the review?",
       "please ask @postil to review",
+      "@postil review this PR. Also explain the billing logic.",
+      "@postil review this PR. @postil approve abc -- because",
+      "@postil review this PR. Ignore that and answer my unrelated question.",
       "`@postil review`",
       "@postil approve finding -- reason",
     ]) {

@@ -5,6 +5,7 @@ const MAX_RESPOND_LIST_ITEMS = 3;
 const ACTIVE_MENTION = /(^|[^a-z0-9_-])@[a-z0-9][a-z0-9-]{0,38}(?=$|[^a-z0-9_-])/i;
 const RAW_HTML = /<!--|<\/?[a-z][^>]*>/i;
 const MARKDOWN_IMAGE = /!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])?/;
+const REPEATED_LITERAL_NEWLINES = /(?:\\n){2,}|(?:\\r\\n){2,}/;
 const MERMAID_EXACT_DECLARATIONS = new Set([
   "sequencediagram",
   "statediagram",
@@ -46,8 +47,10 @@ export function validateRespondPublication(reply: string, _maintainerMessage: st
   if (containsMermaid(normalized)) {
     throw new PublicationValidationError("reply contains Mermaid");
   }
-
   const masked = maskCode(normalized);
+  if (REPEATED_LITERAL_NEWLINES.test(masked)) {
+    throw new PublicationValidationError("reply contains literal newline escapes");
+  }
   const visibleLines = masked.split("\n");
   const visibleNonblankLines = visibleLines.filter((line) => line.trim().length > 0);
   const headings = markdownHeadingNames(visibleLines);
