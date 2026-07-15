@@ -303,7 +303,8 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
          WHERE finished_at >= now() - interval '30 minutes'
            AND (
              (status = 'failed'
-              AND error_message IS DISTINCT FROM 'Hosted inference allowance is unavailable or fully reserved.')
+              AND error_message IS DISTINCT FROM 'Hosted inference allowance is unavailable or fully reserved.'
+              AND error_message IS DISTINCT FROM 'Hosted review service is temporarily unavailable.')
              OR (
                status = 'completed'
                AND EXISTS (

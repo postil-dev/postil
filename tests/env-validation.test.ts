@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { validateEnv } from "@/lib/env";
+import { hostedInferenceEnabled, validateEnv } from "@/lib/env";
 
 const MANAGED_ENV = [
   "DATABASE_URL",
@@ -42,6 +42,15 @@ describe("worker startup environment validation", () => {
     expect(() => validateEnv("worker")).not.toThrow();
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "false";
     expect(() => validateEnv("worker")).toThrow(/must be 0 or 1/);
+  });
+
+  test("keeps hosted inference enabled by default and honors an explicit pause", () => {
+    delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
+    expect(hostedInferenceEnabled()).toBe(true);
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
+    expect(hostedInferenceEnabled()).toBe(false);
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    expect(hostedInferenceEnabled()).toBe(true);
   });
 });
 

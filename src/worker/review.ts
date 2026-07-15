@@ -598,42 +598,68 @@ export async function runReviewJob(
   let sensitiveValues: string[] = [];
   let hostedUsageReservationId: string | null = null;
 
-  try {
-    reviewLog.line(await postilCliVersionLogLine());
-    if (!llm.byok && !hostedInferenceEnabled()) {
+  if (!llm.byok && !hostedInferenceEnabled()) {
+    try {
+      await supersedeActiveReviews({
+        repositoryId: repository.id,
+        prNumber: payload.prNumber,
+        newHeadSha: payload.headSha,
+        repoFullName: payload.repoFullName,
+        token,
+        excludeReviewId: reviewId,
+      }).catch((error) => {
+        console.error(`failed to supersede unavailable hosted review: ${redactSecrets(error, [token])}`);
+      });
       advisoryCheckRunId = await createCheckRun(
         token,
         payload.repoFullName,
         ADVISORY_CHECK_NAME,
         payload.headSha,
-      );
+      ).catch((error) => {
+        console.error(`failed to create unavailable advisory check-run: ${redactSecrets(error, [token])}`);
+        return undefined;
+      });
       gateCheckRunId = await createCheckRun(
         token,
         payload.repoFullName,
         GATE_CHECK_NAME,
         payload.headSha,
-      );
+      ).catch((error) => {
+        console.error(`failed to create unavailable gate check-run: ${redactSecrets(error, [token])}`);
+        return undefined;
+      });
       await db
         .update(schema.reviews)
-        .set({ advisoryCheckRunId, gateCheckRunId })
-        .where(eq(schema.reviews.id, reviewId));
+        .set({
+          advisoryCheckRunId,
+          gateCheckRunId,
+          status: "failed",
+          errorMessage: HOSTED_INFERENCE_DISABLED_MESSAGE,
+          finishedAt: new Date(),
+        })
+        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
+        .catch((error) => {
+          console.error(`failed to record unavailable hosted review: ${redactSecrets(error, [token])}`);
+        });
       await completeHostedInferenceDisabledCheckRuns(
         token,
         payload.repoFullName,
         advisoryCheckRunId,
         gateCheckRunId,
       );
-      await db
-        .update(schema.reviews)
-        .set({
-          status: "failed",
-          errorMessage: "Hosted review service is temporarily unavailable.",
-          finishedAt: new Date(),
-        })
-        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
-      reviewLog.line("hosted inference disabled before provider access; check-runs completed");
-      return;
+      reviewLog.line("hosted inference disabled before CLI or provider access; checks neutralized");
+    } catch (error) {
+      // Maintenance mode must never fall through to the generic gate-failure
+      // handler. The provider remains disabled even if cleanup is degraded.
+      console.error(`failed to settle unavailable hosted review: ${redactSecrets(error, [token])}`);
+    } finally {
+      await reviewLog.close();
     }
+    return;
+  }
+
+  try {
+    reviewLog.line(await postilCliVersionLogLine());
     const spendReservation = currentRepository.private
       ? await reserveHostedReviewSpend(db, {
           orgId: installation.orgId,
@@ -1028,32 +1054,35 @@ async function neutralizeSupersededCheckRuns(
   }
 }
 
+export const HOSTED_INFERENCE_DISABLED_MESSAGE =
+  "Hosted review service is temporarily unavailable.";
+
 export async function completeHostedInferenceDisabledCheckRuns(
   token: string,
   repoFullName: string,
-  advisoryCheckRunId: number,
-  gateCheckRunId: number,
+  advisoryCheckRunId: number | undefined,
+  gateCheckRunId: number | undefined,
 ): Promise<void> {
   const summary =
     "Postil did not run a review for this commit. No review comment or verdict was published.";
-  await Promise.all([
-    completeCheckRun(
+  for (const [kind, checkRunId] of [
+    ["advisory", advisoryCheckRunId],
+    ["gate", gateCheckRunId],
+  ] as const) {
+    if (checkRunId === undefined) continue;
+    await completeCheckRun(
       token,
       repoFullName,
-      advisoryCheckRunId,
+      checkRunId,
       "neutral",
       "Review unavailable",
       summary,
-    ),
-    completeCheckRun(
-      token,
-      repoFullName,
-      gateCheckRunId,
-      "neutral",
-      "Review unavailable",
-      summary,
-    ),
-  ]);
+    ).catch((error) => {
+      console.error(
+        `failed to neutralize unavailable ${kind} check-run: ${redactSecrets(error, [token])}`,
+      );
+    });
+  }
 }
 
 /**

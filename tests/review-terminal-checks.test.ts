@@ -106,6 +106,29 @@ describe("review terminal check-runs", () => {
     expect(JSON.stringify(completions)).not.toMatch(/provider|model/i);
   });
 
+  test("disabled hosted inference attempts both neutral completions without throwing", async () => {
+    failingCompletionIds.add(11);
+
+    await expect(
+      completeHostedInferenceDisabledCheckRuns(
+        "test-token",
+        "postil-dev/postil",
+        11,
+        22,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(completions).toEqual([
+      {
+        id: 22,
+        conclusion: "neutral",
+        title: "Review unavailable",
+        summary:
+          "Postil did not run a review for this commit. No review comment or verdict was published.",
+      },
+    ]);
+  });
+
   test("superseded reviews neutralize both checks with the replacement head", async () => {
     const count = await supersedeActiveReviews({
       repositoryId: 5,

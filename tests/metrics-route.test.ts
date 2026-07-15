@@ -115,6 +115,7 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
     expect(sql).toContain(".postil/provider");
     expect(sql).toContain(".postil/model-output");
     expect(sql).toContain("Hosted inference allowance is unavailable or fully reserved.");
+    expect(sql).toContain("Hosted review service is temporarily unavailable.");
     expect(sql).toContain("run_after >= now() - interval '30 minutes'");
     return {
       rows: [

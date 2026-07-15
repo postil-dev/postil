@@ -32,15 +32,19 @@ describe("private repository worker defense in depth", () => {
     const reservation = source.indexOf("await reserveHostedReviewSpend", start);
     const materialization = source.indexOf("await materializeRepoConfig", start);
     const cli = source.indexOf("await runCli", start);
+    const versionProbe = source.indexOf("postilCliVersionLogLine()", start);
 
     expect(gate).toBeGreaterThan(start);
+    expect(versionProbe).toBeGreaterThan(gate);
     expect(reservation).toBeGreaterThan(gate);
     expect(materialization).toBeGreaterThan(gate);
     expect(cli).toBeGreaterThan(gate);
     const guardBody = source.slice(gate, reservation);
     expect(guardBody).toContain("completeHostedInferenceDisabledCheckRuns");
+    expect(guardBody).toContain("supersedeActiveReviews");
     expect(guardBody).toContain("return;");
     expect(guardBody).not.toContain("postReview");
+    expect(guardBody).not.toContain("failCheckRuns");
   });
 
   test("respond worker gates before token mint, config fetch, inference, and failure comments", () => {
