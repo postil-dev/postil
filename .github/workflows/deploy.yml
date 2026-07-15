@@ -144,14 +144,16 @@ jobs:
           # The pinned CLI release owns the hosted roster. Remove legacy
           # runtime overrides so a release promotion cannot be shadowed by
           # stale repository variables or Fly secrets.
-          legacy_model_secrets=()
+          runtime_override_secrets=()
+          fly_secrets=$(flyctl secrets list --json)
+          secret_names=$(jq -r '[.[] | .Name // .name // empty] | .[]' <<<"${fly_secrets}")
           while IFS= read -r name; do
             case "${name}" in
-              REVIEW_MODEL|REVIEW_MODEL_CASCADE) legacy_model_secrets+=("${name}") ;;
+              POSTIL_HOSTED_INFERENCE_ENABLED|REVIEW_MODEL|REVIEW_MODEL_CASCADE) runtime_override_secrets+=("${name}") ;;
             esac
-          done < <(flyctl secrets list --json | jq -r '.[] | .Name // .name // empty')
-          if (( ${#legacy_model_secrets[@]} > 0 )); then
-            flyctl secrets unset --stage "${legacy_model_secrets[@]}"
+          done <<<"${secret_names}"
+          if (( ${#runtime_override_secrets[@]} > 0 )); then
+            flyctl secrets unset --stage "${runtime_override_secrets[@]}"
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -222,27 +224,11 @@ jobs:
         run: |
           set -euo pipefail
           machines=$(flyctl machine list --app postil-web --json)
-          release_group_count=$(jq -r '[.[] | select(
-            .config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker"
-          )] | length' <<<"${machines}")
-          managed_count=$(jq -r '[.[] | select(
-            (.config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker")
-            and .config.metadata.fly_platform_version == "v2"
-          )] | length' <<<"${machines}")
-          image_count=$(jq -r '[.[] | select(
-            (.config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker")
-            and .config.metadata.fly_platform_version == "v2"
-          ) | .config.image] | unique | length' <<<"${machines}")
-          web_started=$(jq -r '[.[] | select(.config.metadata.fly_process_group == "web" and .state == "started")] | length' <<<"${machines}")
-          worker_started=$(jq -r '[.[] | select(.config.metadata.fly_process_group == "worker" and .state == "started")] | length' <<<"${machines}")
-          if [ "${release_group_count}" -ne "${managed_count}" ] \
-            || [ "${managed_count}" -lt 3 ] \
-            || [ "${image_count}" -ne 1 ] \
-            || [ "${web_started}" -lt 2 ] \
-            || [ "${worker_started}" -lt 1 ]; then
-            echo "::error::Refusing to activate release job kinds: the managed web/worker fleet is incomplete or uses mixed images."
+          if ! fleet_summary=$(jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}"); then
+            echo "::error::Refusing to activate release job kinds: fleet image, process, or hosted-inference configuration is inconsistent."
             exit 1
           fi
+          echo "managed fleet verified: ${fleet_summary}"
           flyctl ssh console --app postil-web --command "bun run jobs:activate-release"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { hostedInferenceEnabled, validateEnv } from "@/lib/env";
 
@@ -23,7 +25,9 @@ const MANAGED_ENV = [
   "POSTHOG_LOG_MAX_PER_MINUTE",
   "POSTIL_RELEASE_SHA",
 ] as const;
-const originalEnv = new Map(MANAGED_ENV.map((name) => [name, process.env[name]]));
+const originalEnv = new Map(
+  MANAGED_ENV.map((name) => [name, process.env[name]]),
+);
 const mutableEnv = process.env as Record<string, string | undefined>;
 
 afterEach(() => {
@@ -52,7 +56,100 @@ describe("worker startup environment validation", () => {
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
     expect(hostedInferenceEnabled()).toBe(true);
   });
+
+  test("disables hosted inference in the managed deployment and verifies every worker", async () => {
+    const root = join(import.meta.dir, "..");
+    const [flyConfig, deployWorkflow] = await Promise.all([
+      readFile(join(root, "fly.toml"), "utf8"),
+      readFile(join(root, ".github/workflows/deploy.yml"), "utf8"),
+    ]);
+
+    expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "0"');
+    expect(deployWorkflow).toContain(
+      "jq -ce -f scripts/verify-managed-fleet.jq",
+    );
+    expect(deployWorkflow).toContain(
+      "fly_secrets=$(flyctl secrets list --json)",
+    );
+    expect(deployWorkflow).not.toContain("done < <(flyctl secrets list --json");
+    expect(deployWorkflow).toContain(
+      "POSTIL_HOSTED_INFERENCE_ENABLED|REVIEW_MODEL|REVIEW_MODEL_CASCADE",
+    );
+    expect(deployWorkflow).toContain(
+      'flyctl secrets unset --stage "${runtime_override_secrets[@]}"',
+    );
+    const failedSecretList = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        "set -euo pipefail; flyctl() { return 37; }; fly_secrets=$(flyctl secrets list --json); printf continued",
+      ],
+      { stderr: "pipe", stdout: "pipe" },
+    );
+    expect(failedSecretList.exitCode).toBe(37);
+    expect(failedSecretList.stdout.toString()).toBe("");
+
+    const validFleet = [
+      managedMachine("web", "1"),
+      managedMachine("web"),
+      managedMachine("worker", "0"),
+    ];
+    expect(verifyManagedFleet(root, validFleet).exitCode).toBe(0);
+    expect(
+      verifyManagedFleet(root, [...validFleet, managedMachine("worker", "1")])
+        .exitCode,
+    ).not.toBe(0);
+    expect(
+      verifyManagedFleet(root, [
+        ...validFleet,
+        managedMachine("worker", "1", "stopped"),
+      ]).exitCode,
+    ).not.toBe(0);
+    expect(
+      verifyManagedFleet(root, [
+        managedMachine("web", "0"),
+        managedMachine("web", "0"),
+        managedMachine("worker"),
+      ]).exitCode,
+    ).not.toBe(0);
+    expect(
+      verifyManagedFleet(root, [
+        managedMachine("web", "0"),
+        managedMachine("web", "0"),
+      ]).exitCode,
+    ).not.toBe(0);
+  });
 });
+
+function managedMachine(
+  group: "web" | "worker",
+  hostedInferenceMode?: string,
+  state = "started",
+) {
+  return {
+    state,
+    config: {
+      image: "registry.fly.io/postil-web:verified",
+      metadata: {
+        fly_platform_version: "v2",
+        fly_process_group: group,
+      },
+      env:
+        hostedInferenceMode === undefined
+          ? {}
+          : { POSTIL_HOSTED_INFERENCE_ENABLED: hostedInferenceMode },
+    },
+  };
+}
+
+function verifyManagedFleet(root: string, machines: unknown[]) {
+  return Bun.spawnSync({
+    cmd: ["jq", "-ce", "-f", join(root, "scripts/verify-managed-fleet.jq")],
+    stdin: new Blob([JSON.stringify(machines)]),
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+}
 
 describe("web startup environment validation", () => {
   test("requires POSTIL_PUBLIC_URL in production", () => {

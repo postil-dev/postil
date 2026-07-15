@@ -44,6 +44,9 @@ POSTIL_PUBLIC_URL = "https://postil.dev"
 GITHUB_APP_SLUG = "postil-dev"
 POSTIL_BIN = "/usr/local/bin/postil"
 POSTIL_DB_POOL_MAX = "2"
+# Hosted inference is disabled for the managed service. Organization BYOK
+# providers continue to run.
+POSTIL_HOSTED_INFERENCE_ENABLED = "0"
 POSTIL_WEBHOOK_DRAIN_ENABLED = "1"
 POSTIL_QUEUE_DRAIN_MAX_JOBS = "1"
 POSTIL_QUEUE_DRAIN_DEADLINE_MS = "720000"
