@@ -69,7 +69,17 @@ describe("worker startup environment validation", () => {
       ".config.env.POSTIL_HOSTED_INFERENCE_ENABLED",
     );
     expect(deployWorkflow).toContain(
+      '.config.metadata.fly_process_group == "worker"',
+    );
+    expect(deployWorkflow).toContain("| unique | @json");
+    expect(deployWorkflow).toContain(
       `worker_hosted_inference_modes}" != '["0"]'`,
+    );
+    expect(deployWorkflow).toContain(
+      "POSTIL_HOSTED_INFERENCE_ENABLED|REVIEW_MODEL|REVIEW_MODEL_CASCADE",
+    );
+    expect(deployWorkflow).toContain(
+      'flyctl secrets unset --stage "${runtime_override_secrets[@]}"',
     );
   });
 });

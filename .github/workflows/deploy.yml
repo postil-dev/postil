@@ -144,14 +144,14 @@ jobs:
           # The pinned CLI release owns the hosted roster. Remove legacy
           # runtime overrides so a release promotion cannot be shadowed by
           # stale repository variables or Fly secrets.
-          legacy_model_secrets=()
+          runtime_override_secrets=()
           while IFS= read -r name; do
             case "${name}" in
-              REVIEW_MODEL|REVIEW_MODEL_CASCADE) legacy_model_secrets+=("${name}") ;;
+              POSTIL_HOSTED_INFERENCE_ENABLED|REVIEW_MODEL|REVIEW_MODEL_CASCADE) runtime_override_secrets+=("${name}") ;;
             esac
           done < <(flyctl secrets list --json | jq -r '.[] | .Name // .name // empty')
-          if (( ${#legacy_model_secrets[@]} > 0 )); then
-            flyctl secrets unset --stage "${legacy_model_secrets[@]}"
+          if (( ${#runtime_override_secrets[@]} > 0 )); then
+            flyctl secrets unset --stage "${runtime_override_secrets[@]}"
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
