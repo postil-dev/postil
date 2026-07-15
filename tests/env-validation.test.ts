@@ -12,6 +12,9 @@ const MANAGED_ENV = [
   "POSTIL_SEALING_KEY",
   "POSTIL_SESSION_SECRET",
   "POSTIL_WEBHOOK_DRAIN_ENABLED",
+  "POSTIL_HOSTED_INFERENCE_ENABLED",
+  "GITHUB_APP_ID",
+  "GITHUB_APP_PRIVATE_KEY",
   "POSTHOG_ERROR_CAPTURE",
   "POSTHOG_LOG_CAPTURE",
   "POSTHOG_PROJECT_TOKEN",
@@ -28,6 +31,18 @@ afterEach(() => {
     if (value === undefined) delete mutableEnv[name];
     else mutableEnv[name] = value;
   }
+});
+
+describe("worker startup environment validation", () => {
+  test("accepts only explicit binary hosted inference switch values", () => {
+    configureRequiredWorkerEnvironment();
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
+    expect(() => validateEnv("worker")).not.toThrow();
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    expect(() => validateEnv("worker")).not.toThrow();
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "false";
+    expect(() => validateEnv("worker")).toThrow(/must be 0 or 1/);
+  });
 });
 
 describe("web startup environment validation", () => {
@@ -129,4 +144,11 @@ function configureRequiredWebEnvironment(): void {
   process.env.GITHUB_OAUTH_CLIENT_SECRET = "test-client-secret";
   process.env.POSTIL_SEALING_KEY = "00".repeat(32);
   process.env.POSTIL_WEBHOOK_DRAIN_ENABLED = "0";
+}
+
+function configureRequiredWorkerEnvironment(): void {
+  process.env.DATABASE_URL = "postgres://postil:postil@localhost:5432/postil";
+  process.env.GITHUB_APP_ID = "123";
+  process.env.GITHUB_APP_PRIVATE_KEY = "test-private-key";
+  process.env.POSTIL_SEALING_KEY = "00".repeat(32);
 }

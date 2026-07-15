@@ -18,7 +18,7 @@ import {
 } from "@/lib/private-repository-entitlement";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
-import { optionalEnv } from "@/lib/env";
+import { hostedInferenceEnabled, optionalEnv } from "@/lib/env";
 import {
   classifyOperationalModelIncidents,
   ingestEnvelope,
@@ -600,6 +600,40 @@ export async function runReviewJob(
 
   try {
     reviewLog.line(await postilCliVersionLogLine());
+    if (!llm.byok && !hostedInferenceEnabled()) {
+      advisoryCheckRunId = await createCheckRun(
+        token,
+        payload.repoFullName,
+        ADVISORY_CHECK_NAME,
+        payload.headSha,
+      );
+      gateCheckRunId = await createCheckRun(
+        token,
+        payload.repoFullName,
+        GATE_CHECK_NAME,
+        payload.headSha,
+      );
+      await db
+        .update(schema.reviews)
+        .set({ advisoryCheckRunId, gateCheckRunId })
+        .where(eq(schema.reviews.id, reviewId));
+      await completeHostedInferenceDisabledCheckRuns(
+        token,
+        payload.repoFullName,
+        advisoryCheckRunId,
+        gateCheckRunId,
+      );
+      await db
+        .update(schema.reviews)
+        .set({
+          status: "failed",
+          errorMessage: "Hosted review service is temporarily unavailable.",
+          finishedAt: new Date(),
+        })
+        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
+      reviewLog.line("hosted inference disabled before provider access; check-runs completed");
+      return;
+    }
     const spendReservation = currentRepository.private
       ? await reserveHostedReviewSpend(db, {
           orgId: installation.orgId,
@@ -992,6 +1026,34 @@ async function neutralizeSupersededCheckRuns(
       ),
     );
   }
+}
+
+export async function completeHostedInferenceDisabledCheckRuns(
+  token: string,
+  repoFullName: string,
+  advisoryCheckRunId: number,
+  gateCheckRunId: number,
+): Promise<void> {
+  const summary =
+    "Postil did not run a review for this commit. No review comment or verdict was published.";
+  await Promise.all([
+    completeCheckRun(
+      token,
+      repoFullName,
+      advisoryCheckRunId,
+      "neutral",
+      "Review unavailable",
+      summary,
+    ),
+    completeCheckRun(
+      token,
+      repoFullName,
+      gateCheckRunId,
+      "neutral",
+      "Review unavailable",
+      summary,
+    ),
+  ]);
 }
 
 /**
