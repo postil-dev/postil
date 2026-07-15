@@ -44,6 +44,10 @@ describe("private repository worker defense in depth", () => {
     expect(guardBody).toContain("supersedeActiveReviews");
     expect(guardBody).toContain('kind: "check-run-cleanup"');
     expect(guardBody).toContain('intent: "neutralize"');
+    expect(guardBody).toContain("db.transaction");
+    expect(guardBody.indexOf("advisoryCheckRunId,")).toBeLessThan(
+      guardBody.indexOf("completeHostedInferenceDisabledCheckRuns"),
+    );
     expect(guardBody).toContain("return;");
     expect(guardBody).not.toContain("postReview");
     expect(guardBody).not.toContain("failCheckRuns");

@@ -633,14 +633,8 @@ export async function runReviewJob(
         .set({
           advisoryCheckRunId,
           gateCheckRunId,
-          status: "failed",
-          errorMessage: HOSTED_INFERENCE_DISABLED_MESSAGE,
-          finishedAt: new Date(),
         })
-        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
-        .catch((error) => {
-          console.error(`failed to record unavailable hosted review: ${redactSecrets(error, [token])}`);
-        });
+        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
       const checksNeutralized = await completeHostedInferenceDisabledCheckRuns(
         token,
         payload.repoFullName,
@@ -648,19 +642,37 @@ export async function runReviewJob(
         gateCheckRunId,
       );
       if (checksNeutralized) {
+        await db
+          .update(schema.reviews)
+          .set({
+            status: "failed",
+            errorMessage: HOSTED_INFERENCE_DISABLED_MESSAGE,
+            finishedAt: new Date(),
+          })
+          .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
         reviewLog.line("hosted inference disabled before CLI or provider access; checks neutralized");
       } else {
-        await db.insert(schema.jobs).values({
-          kind: "check-run-cleanup",
-          payload: {
-            installationId: payload.installationId,
-            repoFullName: payload.repoFullName,
-            advisoryCheckRunId: advisoryCheckRunId ?? null,
-            gateCheckRunId: gateCheckRunId ?? null,
-            message: "Hosted review service is temporarily unavailable.",
-            intent: "neutralize",
-          },
-          maxAttempts: 5,
+        await db.transaction(async (tx) => {
+          await tx
+            .update(schema.reviews)
+            .set({
+              status: "failed",
+              errorMessage: HOSTED_INFERENCE_DISABLED_MESSAGE,
+              finishedAt: new Date(),
+            })
+            .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
+          await tx.insert(schema.jobs).values({
+            kind: "check-run-cleanup",
+            payload: {
+              installationId: payload.installationId,
+              repoFullName: payload.repoFullName,
+              advisoryCheckRunId: advisoryCheckRunId ?? null,
+              gateCheckRunId: gateCheckRunId ?? null,
+              message: HOSTED_INFERENCE_DISABLED_MESSAGE,
+              intent: "neutralize",
+            },
+            maxAttempts: 5,
+          });
         });
         reviewLog.line("hosted inference disabled before CLI or provider access; neutral cleanup queued");
       }
@@ -669,6 +681,12 @@ export async function runReviewJob(
       // handler. Retrying the queue job is safe because the provider remains
       // disabled and the next attempt supersedes this review.
       console.error(`failed to settle unavailable hosted review: ${redactSecrets(error, [token])}`);
+      await completeHostedInferenceDisabledCheckRuns(
+        token,
+        payload.repoFullName,
+        advisoryCheckRunId,
+        gateCheckRunId,
+      );
       throw error;
     } finally {
       await reviewLog.close();
