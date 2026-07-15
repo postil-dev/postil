@@ -81,10 +81,8 @@ describe("worker startup environment validation", () => {
     const failedSecretList = Bun.spawnSync(
       [
         "bash",
-        "-euo",
-        "pipefail",
         "-c",
-        "flyctl() { return 37; }; fly_secrets=$(flyctl secrets list --json); printf continued",
+        "set -euo pipefail; flyctl() { return 37; }; fly_secrets=$(flyctl secrets list --json); printf continued",
       ],
       { stderr: "pipe", stdout: "pipe" },
     );
