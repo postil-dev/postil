@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build && bun run scripts/verify-server-observability-bundle.ts",
-    "start": "next start",
-    "worker": "bun run src/worker/index.ts",
+    "start": "bun scripts/start-web.ts",
+    "worker": "bun src/worker/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",

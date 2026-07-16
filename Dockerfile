@@ -1,5 +1,5 @@
 # Postil control plane: one image serving both the web app (Next.js) and the
-# worker (bun run worker); docker-compose selects the command per service.
+# worker; docker-compose selects the command per service.
 #
 # The postil CLI is baked into the runtime image at a pinned revision so the
 # reviewer version is an image property, not a runtime download. Production
@@ -71,5 +71,6 @@ RUN set -eu; \
     fi; \
     /usr/local/bin/postil --version
 EXPOSE 3000
-# Web by default; the worker service overrides with: bun run worker
-CMD ["bun", "run", "start"]
+# Run the server in the container's signal-receiving process. Package-script
+# wrappers can orphan the Next server when the wrapper receives SIGTERM.
+CMD ["bun", "scripts/start-web.ts"]
