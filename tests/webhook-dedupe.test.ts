@@ -8,11 +8,9 @@ import { POST } from "@/app/api/webhooks/github/route";
 import { signWebhookBody } from "@/lib/crypto/webhook";
 
 /**
- * Webhook delivery dedupe durability (M1) against a real Postgres. The dedupe
- * row is committed before the handler dispatches its side effect; if dispatch
- * throws after the dedupe insert, the row MUST be rolled back so GitHub's
- * redelivery (same X-GitHub-Delivery) is reprocessed instead of being swallowed
- * as a duplicate. Set POSTIL_TEST_DATABASE_URL to run; skipped otherwise.
+ * Webhook delivery schema preparation against a real Postgres. New web
+ * processes retain the signed payload until synchronous dispatch succeeds;
+ * older web processes remain valid during the rolling deployment.
  */
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
@@ -123,16 +121,55 @@ describeDb("webhook delivery dedupe durability", () => {
     expect(okBody.duplicate).toBeUndefined();
 
     // Exactly one review job was enqueued (the redelivery, not a phantom from
-    // the failed first attempt), and the dedupe row is now durably present.
+    // the failed first attempt), and the completed row no longer retains the
+    // signed payload.
     const jobs = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM jobs WHERE kind = 'review'",
     );
     expect(jobs.rows[0]?.c).toBe(1);
-    const dedupe = await pool.query(
-      "SELECT count(*)::int AS c FROM webhook_deliveries WHERE delivery_id = $1",
+    const dedupe = await pool.query<{
+      completed: boolean;
+      payload_cleared: boolean;
+    }>(
+      `SELECT completed_at IS NOT NULL AS completed, payload IS NULL AS payload_cleared
+         FROM webhook_deliveries WHERE delivery_id = $1`,
       [DELIVERY_ID],
     );
-    expect(dedupe.rows[0]?.c).toBe(1);
+    expect(dedupe.rows[0]).toEqual({ completed: true, payload_cleared: true });
+  });
+
+  test("old and prepared writers coexist during a rolling deployment", async () => {
+    const legacyDeliveryId = "00000000-dead-beef-0000-000000000099";
+    await pool.query(
+      `INSERT INTO webhook_deliveries (delivery_id, event, action)
+       VALUES ($1, 'ping', NULL)`,
+      [legacyDeliveryId],
+    );
+    const legacy = await pool.query<{
+      completed: boolean;
+      payload_cleared: boolean;
+    }>(
+      `SELECT completed_at IS NOT NULL AS completed, payload IS NULL AS payload_cleared
+         FROM webhook_deliveries WHERE delivery_id = $1`,
+      [legacyDeliveryId],
+    );
+    expect(legacy.rows[0]).toEqual({ completed: true, payload_cleared: true });
+
+    const pendingDeliveryId = "00000000-dead-beef-0000-000000000098";
+    await pool.query(
+      `INSERT INTO webhook_deliveries (delivery_id, event, action, payload, completed_at)
+       VALUES ($1, 'ping', NULL, '{"zen":"keep it logically awesome"}'::jsonb, NULL)`,
+      [pendingDeliveryId],
+    );
+    const pending = await pool.query<{
+      completed: boolean;
+      payload_retained: boolean;
+    }>(
+      `SELECT completed_at IS NOT NULL AS completed, payload IS NOT NULL AS payload_retained
+         FROM webhook_deliveries WHERE delivery_id = $1`,
+      [pendingDeliveryId],
+    );
+    expect(pending.rows[0]).toEqual({ completed: false, payload_retained: true });
   });
 
   test("a genuine duplicate delivery is still skipped (happy-path dedupe intact)", async () => {
