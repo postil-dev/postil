@@ -57,7 +57,7 @@ services:
       args:
         POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.2.1}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
-    command: ["bun", "run", "worker"]
+    command: ["bun", "src/worker/index.ts"]
     env_file: .env
     environment:
       DATABASE_URL: postgres://postil:postil@db:5432/postil
