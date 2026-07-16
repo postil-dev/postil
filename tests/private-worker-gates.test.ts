@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 describe("private repository worker defense in depth", () => {
   test("review worker gates before review rows, GitHub tokens, checks, config fetch, or CLI spawn", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
+    const installationSync = readFileSync("src/lib/github/installation-sync.ts", "utf8");
     const gate = source.indexOf("await canProcessPrivateRepository", source.indexOf("runReviewJob"));
     expect(gate).toBeGreaterThan(0);
     expect(source).toContain("authorGithubId: payload.authorGithubId");
@@ -22,6 +23,9 @@ describe("private repository worker defense in depth", () => {
     );
     expect(source.indexOf("fetchRepositorySummary", gate)).toBeLessThan(
       source.indexOf("insert(schema.reviews)", gate),
+    );
+    expect(installationSync).toContain(
+      "AbortSignal.any([signal, AbortSignal.timeout(10_000)])",
     );
   });
 
@@ -80,6 +84,58 @@ describe("private repository worker defense in depth", () => {
     );
     expect(denialBody).toContain("return;");
     expect(denialBody).not.toContain("await runCli");
+  });
+
+  test("operational review failures durably queue terminal check cleanup", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const catchStart = source.indexOf("} catch (err) {", source.indexOf("await persistReviewCompletion"));
+    const catchEnd = source.indexOf("} finally {", catchStart);
+    const failureBody = source.slice(catchStart, catchEnd);
+
+    expect(failureBody).toContain("err instanceof WorkerShutdownError");
+    expect(failureBody.indexOf("err instanceof WorkerShutdownError")).toBeLessThan(
+      failureBody.indexOf("db.transaction"),
+    );
+    expect(failureBody.slice(0, failureBody.indexOf("const message"))).not.toContain(
+      'kind: "check-run-cleanup"',
+    );
+    expect(failureBody.slice(0, failureBody.indexOf("const message"))).toContain(
+      '.set({ status: "stale", finishedAt: new Date() })',
+    );
+    expect(failureBody).toContain("db.transaction");
+    expect(failureBody).toContain('kind: "check-run-cleanup"');
+    expect(failureBody).toContain('intent: "fail"');
+    expect(failureBody.indexOf("db.transaction")).toBeLessThan(
+      failureBody.indexOf("await failCheckRuns"),
+    );
+
+    const reviewStart = source.indexOf("export async function runReviewJob");
+    const unavailableCheckCreation = source.indexOf(
+      "advisoryCheckRunId = await createCheckRun",
+      reviewStart,
+    );
+    const checkCreation = source.indexOf(
+      "advisoryCheckRunId = await createCheckRun",
+      unavailableCheckCreation + 1,
+    );
+    const publicationBoundary = source.lastIndexOf(
+      "onPublicationStarted?.()",
+      checkCreation,
+    );
+    const cliCompletion = source.indexOf("const result = await runCli", checkCreation);
+    const persistence = source.indexOf("const completed = await persistReviewCompletion", cliCompletion);
+    expect(publicationBoundary).toBeGreaterThan(reviewStart);
+    expect(publicationBoundary).toBeLessThan(checkCreation);
+    const advisoryPersistence = source.indexOf(".set({ advisoryCheckRunId })", checkCreation);
+    const gateCreation = source.indexOf("gateCheckRunId = await createCheckRun", checkCreation);
+    const gatePersistence = source.indexOf(".set({ gateCheckRunId })", gateCreation);
+    expect(advisoryPersistence).toBeGreaterThan(checkCreation);
+    expect(advisoryPersistence).toBeLessThan(gateCreation);
+    expect(gatePersistence).toBeGreaterThan(gateCreation);
+    expect(source.slice(checkCreation, gatePersistence)).toContain("signal,");
+    expect(source.slice(cliCompletion, persistence)).not.toContain(
+      "throwIfWorkerStopping(signal)",
+    );
   });
 
   test("respond worker gates before token mint, config fetch, inference, and failure comments", () => {

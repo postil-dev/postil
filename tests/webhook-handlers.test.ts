@@ -45,11 +45,13 @@ let pullRequestReviewContext = {
   authorLogin: "admin",
 };
 const realAppAuth = await import("@/lib/github/app-auth");
+const realChecks = await import("@/lib/github/checks");
 mock.module("@/lib/github/app-auth", () => ({
   ...realAppAuth,
   getInstallationToken: async () => "fake-installation-token",
 }));
 mock.module("@/lib/github/checks", () => ({
+  ...realChecks,
   ADVISORY_CHECK_NAME: "postil/review",
   GATE_CHECK_NAME: "postil/gate",
   createCheckRun: async () => 1,

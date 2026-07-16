@@ -41,6 +41,17 @@ The free-tier operating profile keeps Postgres idle-capable by avoiding permanen
 
 The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods.
 
+The long-running worker stops claiming on `SIGINT` or `SIGTERM` and gives active
+jobs a bounded drain window. Review work can be interrupted and requeued without
+consuming an attempt until GitHub publication begins; its unpublished review row
+is marked stale first. Publication begins before superseding or creating a check
+run. From that boundary, the worker settles the review instead of force-requeueing
+it. Each created check-run ID is stored immediately. Stable external IDs let the
+cleanup worker reconcile an ambiguous GitHub response, complete every known
+check first, and retry any check that may exist but is not visible yet. The
+watchdog carries the same reconciliation identity when recovering a worker that
+exits before terminal cleanup is queued.
+
 Every queue consumer supplies its explicit supported job kinds to the claim query.
 The bounded web drain and long-running worker share the handler capability list
 from the queue runner; adding a handler and adding its capability are one change.

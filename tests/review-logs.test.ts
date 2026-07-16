@@ -40,6 +40,28 @@ describe("runCli log observation", () => {
       else process.env.POSTIL_BIN = oldBin;
     }
   });
+
+  test("interrupts a running CLI when worker shutdown is requested", async () => {
+    const oldBin = process.env.POSTIL_BIN;
+    process.env.POSTIL_BIN = process.execPath;
+    const controller = new AbortController();
+    try {
+      const started = Date.now();
+      const run = runCli(
+        ["-e", "setInterval(() => undefined, 1000)"],
+        {},
+        undefined,
+        { signal: controller.signal },
+      );
+      setTimeout(() => controller.abort(), 20);
+
+      await expect(run).rejects.toThrow("review interrupted by worker shutdown");
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      if (oldBin === undefined) delete process.env.POSTIL_BIN;
+      else process.env.POSTIL_BIN = oldBin;
+    }
+  });
 });
 
 async function versionFixture(source: string): Promise<{ directory: string; executable: string }> {

@@ -68,6 +68,11 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   repoFullName: string;
   advisoryCheckRunId: number | null;
   gateCheckRunId: number | null;
+  headSha?: string;
+  advisoryCheckExternalId?: string;
+  gateCheckExternalId?: string;
+  advisoryCheckRunMayExist?: boolean;
+  gateCheckRunMayExist?: boolean;
   message: string;
   detailsUrl?: string;
   intent?: "fail" | "neutralize";
@@ -196,6 +201,35 @@ export async function completeJob(
      WHERE id = $1 AND status = 'running' AND locked_by = $2`,
     [job.id, job.lockedBy],
   );
+}
+
+/** Requeue claims owned by one stopping worker without consuming an attempt. */
+export async function requeueJobsOwnedBy(
+  pool: Pool,
+  lockedByPrefix: string,
+  reason: string,
+  kinds: readonly string[],
+  jobIds: readonly number[],
+): Promise<number> {
+  if (!lockedByPrefix) throw new Error("requeueJobsOwnedBy requires a lock-owner prefix");
+  const allowedKinds = [...new Set(kinds.filter(Boolean))];
+  if (allowedKinds.length === 0) {
+    throw new Error("requeueJobsOwnedBy requires at least one safe job kind");
+  }
+  const ownedJobIds = [...new Set(jobIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (ownedJobIds.length === 0) return 0;
+  const redactedReason = redactAndTruncate(reason, 2000);
+  const result = await pool.query(
+    `UPDATE jobs
+     SET status = 'queued', attempts = GREATEST(attempts - 1, 0),
+         locked_at = NULL, locked_by = NULL, last_error = $2, run_after = now()
+     WHERE status = 'running'
+       AND left(locked_by, length($1)) = $1
+       AND kind = ANY($3::text[])
+       AND id = ANY($4::bigint[])`,
+    [lockedByPrefix, redactedReason, allowedKinds, ownedJobIds],
+  );
+  return result.rowCount ?? 0;
 }
 
 export function backoffMs(attempts: number): number {

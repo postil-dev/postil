@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import type { ClaimedJob } from "@/lib/queue";
 import "./quiet-console";
@@ -9,6 +10,7 @@ const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
 const retriedIndefinitely: Array<{ id: number; error: string }> = [];
+const shutdownRequeues: number[] = [];
 let claimCalls = 0;
 const claimCapabilities: string[][] = [];
 let reviewRun: (() => Promise<void>) | undefined;
@@ -20,8 +22,12 @@ let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
 let reviewProcessGroup: string | undefined;
+let reviewSignal: AbortSignal | undefined;
+let reviewPublicationStartedCallback: (() => void) | undefined;
 const operationalFailures: string[] = [];
 const operationalWarnings: string[] = [];
+
+class MockWorkerShutdownError extends Error {}
 
 mock.module("@/lib/server-observability", () => ({
   reportOperationalFailure: (_processGroup: string, failureClass: string) => {
@@ -53,6 +59,16 @@ mock.module("@/lib/queue", () => ({
     retriedIndefinitely.push({ id: job.id, error });
     return "retried";
   },
+  requeueJobsOwnedBy: async (
+    _pool: unknown,
+    _lockedByPrefix: string,
+    _reason: string,
+    _kinds: readonly string[],
+    jobIds: readonly number[],
+  ) => {
+    shutdownRequeues.push(...jobIds);
+    return jobIds.length;
+  },
 }));
 
 mock.module("@/worker/watchdog", () => ({
@@ -60,6 +76,7 @@ mock.module("@/worker/watchdog", () => ({
 }));
 
 mock.module("@/worker/review", () => ({
+  WorkerShutdownError: MockWorkerShutdownError,
   runCheckRunCleanupJob: async () => {
     await cleanupRun?.();
   },
@@ -67,9 +84,13 @@ mock.module("@/worker/review", () => ({
     _payload: unknown,
     timing: { queuedAt: Date; startedAt: Date },
     processGroup: string,
+    signal?: AbortSignal,
+    onPublicationStarted?: () => void,
   ) => {
     reviewTiming = timing;
     reviewProcessGroup = processGroup;
+    reviewSignal = signal;
+    reviewPublicationStartedCallback = onPublicationStarted;
     await reviewRun?.();
   },
 }));
@@ -99,7 +120,7 @@ mock.module("@/worker/gate-state-sync", () => ({
   },
 }));
 
-const { drainQueueOnce, triggerQueueDrain } = await import("@/worker/runner");
+const { drainQueueOnce, runClaimedJob, triggerQueueDrain } = await import("@/worker/runner");
 
 function reviewJob(id: number): ClaimedJob {
   return {
@@ -126,6 +147,7 @@ beforeEach(() => {
   completed.length = 0;
   failed.length = 0;
   retriedIndefinitely.length = 0;
+  shutdownRequeues.length = 0;
   claimCalls = 0;
   claimCapabilities.length = 0;
   reviewRun = async () => undefined;
@@ -137,6 +159,8 @@ beforeEach(() => {
   cleanupRun = async () => undefined;
   reviewTiming = undefined;
   reviewProcessGroup = undefined;
+  reviewSignal = undefined;
+  reviewPublicationStartedCallback = undefined;
   operationalFailures.length = 0;
   operationalWarnings.length = 0;
 });
@@ -149,6 +173,82 @@ afterEach(() => {
 });
 
 describe("drainQueueOnce", () => {
+  test("forwards worker cancellation to review execution", async () => {
+    const controller = new AbortController();
+    const onPublicationStarted = () => undefined;
+    await runClaimedJob(
+      reviewJob(1),
+      "worker 0",
+      "worker",
+      controller.signal,
+      onPublicationStarted,
+    );
+
+    expect(reviewSignal).toBe(controller.signal);
+    expect(reviewPublicationStartedCallback).toBe(onPublicationStarted);
+  });
+
+  test("requeues an interrupted review without consuming an attempt", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    reviewRun = async () => {
+      throw new MockWorkerShutdownError("review interrupted by worker shutdown");
+    };
+
+    await runClaimedJob(reviewJob(7), "worker 0", "worker", controller.signal);
+
+    expect(shutdownRequeues).toEqual([7]);
+    expect(failed).toEqual([]);
+    expect(completed).toEqual([]);
+    expect(operationalWarnings).toEqual([]);
+  });
+
+  test("does not mask an ordinary failure that races with shutdown", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    reviewRun = async () => {
+      throw new Error("provider rejected the request");
+    };
+
+    await runClaimedJob(reviewJob(8), "worker 0", "worker", controller.signal);
+
+    expect(shutdownRequeues).toEqual([]);
+    expect(failed).toEqual([{ id: 8, error: "provider rejected the request" }]);
+    expect(completed).toEqual([]);
+  });
+
+  test("worker shutdown drains, interrupts, and requeues only owned claims", () => {
+    const worker = readFileSync("src/worker/index.ts", "utf8");
+    const fly = readFileSync("fly.toml", "utf8");
+    const shutdown = worker.slice(
+      worker.indexOf("async function shutdown"),
+      worker.indexOf("function jitter"),
+    );
+
+    expect(worker).toContain('readPositiveIntEnv("WORKER_SHUTDOWN_DRAIN_MS", 10_000)');
+    expect(worker).toContain('readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000)');
+    expect(worker).toContain("activeControllers.set(job.id, controller)");
+    expect(worker).toContain("requeueableReviewIds.add(job.id)");
+    expect(worker).toContain("requeueableReviewIds.delete(job.id)");
+    expect(worker).toContain("if (shuttingDown && job)");
+    expect(worker).toContain("[job.id]");
+    expect(shutdown).toContain("controller.abort()");
+    expect(shutdown).toContain("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)");
+    expect(shutdown).toContain("const activeReviewJobIds = [...activeControllers.keys()]");
+    expect(shutdown).toContain("requeueableReviewIds.has(jobId)");
+    expect(shutdown).toContain("await requeueJobsOwnedBy(");
+    expect(shutdown).toContain("`${workerId}#`");
+    expect(shutdown).toContain('["review"]');
+    expect(shutdown.indexOf("controller.abort()")).toBeLessThan(
+      shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)"),
+    );
+    expect(shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)")).toBeLessThan(
+      shutdown.indexOf("await requeueJobsOwnedBy("),
+    );
+    expect(fly).toContain('kill_signal = "SIGTERM"');
+    expect(fly).toContain('kill_timeout = "30s"');
+  });
+
   test("claims only job kinds implemented by this web release", async () => {
     expect(await drainQueueOnce("capability-drain", { maxJobs: 1 })).toBe(0);
     expect(claimCapabilities).toEqual([[
