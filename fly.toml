@@ -37,8 +37,8 @@ NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 release_command = "bun run release:prepare"
 
 [processes]
-web = "exec bun scripts/start-web.ts"
-worker = "exec bun src/worker/index.ts"
+web = "bun scripts/start-web.ts"
+worker = "bun src/worker/index.ts"
 
 [env]
 NODE_ENV = "production"
