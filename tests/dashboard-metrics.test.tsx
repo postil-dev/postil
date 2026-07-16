@@ -49,4 +49,22 @@ describe("dashboard metric details", () => {
     expect(source).toContain("This review predates retained suppression details");
     expect(source).toContain("Record a commit-scoped override");
   });
+
+  test("keeps dashboard and run metadata above the AA contrast floor", () => {
+    const sources = [
+      "src/app/orgs/[slug]/page.tsx",
+      "src/app/orgs/[slug]/reviews-table.tsx",
+      "src/app/orgs/[slug]/runs/[publicId]/live-run.tsx",
+      "src/app/orgs/[slug]/runs/[publicId]/page.tsx",
+      "src/components/finding-confidence.tsx",
+      "src/components/review-time-distribution.tsx",
+    ].map((path) => readFileSync(path, "utf8"));
+
+    for (const source of sources) {
+      expect(source).not.toMatch(
+        /(?<!placeholder:)text-charcoal\/(?:[1-6][0-9]|[1-9])(?!\d)/,
+      );
+      expect(source).not.toMatch(/\bopacity-(?:[1-9]|[1-6][0-9])\b/);
+    }
+  });
 });

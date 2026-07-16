@@ -141,7 +141,7 @@ export function ReviewsTable({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <p className="eyebrow">Recent reviews</p>
         {hasVisibleActiveReview && (
-          <p className="font-mono text-[11px] text-charcoal/50" role="status">
+          <p className="font-mono text-[11px] text-charcoal/70" role="status">
             updating live
           </p>
         )}
@@ -182,7 +182,7 @@ export function ReviewsTable({
         <div className="max-h-96 overflow-auto">
           <table className="w-full min-w-[64rem] text-sm">
             <thead className="sticky top-0 z-10 bg-paper">
-              <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/50">
+              <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/70">
                 <th className="px-4 py-3 font-normal">repository</th>
                 <th className="px-4 py-3 font-normal">PR</th>
                 <th className="px-4 py-3 font-normal">status</th>
@@ -262,7 +262,7 @@ export function ReviewsTable({
               })}
               {visibleReviews.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-sm text-charcoal/50">
+                  <td colSpan={9} className="px-4 py-8 text-center text-sm text-charcoal/70">
                     {reviews.length === 0
                       ? "No reviews yet. Open a pull request on an enabled repository."
                       : "No reviews match these filters."}
