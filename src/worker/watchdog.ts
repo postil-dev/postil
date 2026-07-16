@@ -1,6 +1,7 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 
 import { getDb, getPool, schema } from "@/lib/db";
+import { checkRunExternalId } from "@/lib/github/checks";
 import { REVIEW_DEADLINE_MS } from "./review";
 
 export const WATCHDOG_ERROR_PREFIX = "watchdog:";
@@ -24,6 +25,8 @@ export async function watchdogPass(
   const stuck = await db
     .select({
       id: schema.reviews.id,
+      publicId: schema.reviews.publicId,
+      headSha: schema.reviews.headSha,
       startedAt: schema.reviews.startedAt,
       advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
       gateCheckRunId: schema.reviews.gateCheckRunId,
@@ -59,6 +62,12 @@ export async function watchdogPass(
           repoFullName: review.repoFullName,
           advisoryCheckRunId: review.advisoryCheckRunId,
           gateCheckRunId: review.gateCheckRunId,
+          headSha: review.headSha,
+          advisoryCheckExternalId: checkRunExternalId(review.publicId, "review"),
+          gateCheckExternalId: checkRunExternalId(review.publicId, "gate"),
+          advisoryCheckRunMayExist: review.advisoryCheckRunId == null,
+          gateCheckRunMayExist:
+            review.gateCheckRunId == null && review.advisoryCheckRunId != null,
           message,
         },
         maxAttempts: 5,

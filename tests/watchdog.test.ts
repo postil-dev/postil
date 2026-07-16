@@ -139,6 +139,8 @@ describeDb("watchdog stuck-review kill", () => {
     expect(cleanup.rows[0]!.payload).toMatchObject({
       installationId: 42,
       repoFullName: "octo/repo",
+      headSha: "head",
+      advisoryCheckRunMayExist: true,
       message: expect.stringContaining("watchdog:"),
     });
     const timestamps = await pool.query<{

@@ -14,6 +14,8 @@
 - Stand up PostHog dashboards for traffic sources, docs/blog paths, install funnel events, and bot/automation breakdowns.
 - Activate scrubbed PostHog Error Tracking and sampled OTLP Logs only with zero-dollar billing caps, project and issue rate limits, alert destinations, and log drop rules configured.
 - Keep Prometheus metrics focused on operational health: database reachability, queue depth, stuck jobs, bounded review incidents, token usage, and webhook volume.
+- Rehearse worker termination during a sandbox review and assert that every
+  owned GitHub check reaches a terminal state within a bounded window.
 
 ## Later
 

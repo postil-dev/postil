@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const realDb = await import("@/lib/db");
 const realChecks = await import("@/lib/github/checks");
+const realAppAuth = await import("@/lib/github/app-auth");
 
 const activeReviews = [
   { id: 10, advisoryCheckRunId: 11, gateCheckRunId: 22 },
@@ -14,6 +15,7 @@ const completions: Array<{
   summary: string;
 }> = [];
 const failingCompletionIds = new Set<number>();
+let reconciledCheckRunId: number | null = null;
 
 function fakeDb() {
   return {
@@ -51,8 +53,14 @@ mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
 }));
 
+mock.module("@/lib/github/app-auth", () => ({
+  ...realAppAuth,
+  getInstallationToken: async () => "test-token",
+}));
+
 mock.module("@/lib/github/checks", () => ({
   ...realChecks,
+  findCheckRunByExternalId: async () => reconciledCheckRunId,
   completeCheckRun: async (
     _token: string,
     _repo: string,
@@ -69,6 +77,7 @@ mock.module("@/lib/github/checks", () => ({
 const {
   completeHostedInferenceDisabledCheckRuns,
   failCheckRuns,
+  runCheckRunCleanupJob,
   supersedeActiveReviews,
 } = await import("@/worker/review");
 
@@ -76,6 +85,7 @@ beforeEach(() => {
   transitions.length = 0;
   completions.length = 0;
   failingCompletionIds.clear();
+  reconciledCheckRunId = null;
 });
 
 describe("review terminal check-runs", () => {
@@ -224,5 +234,24 @@ describe("review terminal check-runs", () => {
       ),
     ).rejects.toThrow("could not complete failed review check-runs");
     expect(completions.map(({ id }) => id)).toEqual([11]);
+  });
+
+  test("cleanup completes known checks before retrying an unresolved ambiguous peer", async () => {
+    await expect(
+      runCheckRunCleanupJob({
+        installationId: 42,
+        repoFullName: "postil-dev/postil",
+        advisoryCheckRunId: 11,
+        gateCheckRunId: null,
+        headSha: "head-sha",
+        gateCheckExternalId: "postil:run:gate",
+        gateCheckRunMayExist: true,
+        message: "worker stopped",
+      }),
+    ).rejects.toThrow("check-run cleanup remains incomplete");
+
+    expect(completions.map(({ id, conclusion }) => ({ id, conclusion }))).toEqual([
+      { id: 11, conclusion: "neutral" },
+    ]);
   });
 });

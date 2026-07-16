@@ -7,6 +7,7 @@ import {
   claimJob,
   completeJob,
   failJob,
+  requeueJobsOwnedBy,
   retryJobIndefinitely,
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
@@ -33,7 +34,7 @@ import {
   runRespondFailureCommentJob,
   runRespondJob,
 } from "./respond";
-import { runCheckRunCleanupJob, runReviewJob } from "./review";
+import { runCheckRunCleanupJob, runReviewJob, WorkerShutdownError } from "./review";
 import { watchdogPass } from "./watchdog";
 
 const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv("POSTIL_QUEUE_DRAIN_MAX_JOBS", 1);
@@ -57,6 +58,8 @@ export const PROCESSABLE_JOB_KINDS = [
 async function handleJob(
   job: ClaimedJob,
   processGroup: ObservabilityProcessGroup,
+  signal?: AbortSignal,
+  onReviewPublicationStarted?: () => void,
 ): Promise<void> {
   switch (job.kind) {
     case "review":
@@ -67,6 +70,8 @@ async function handleJob(
           startedAt: job.lockedAt,
         },
         processGroup,
+        signal,
+        onReviewPublicationStarted,
       );
       break;
     case "respond":
@@ -98,15 +103,28 @@ export async function runClaimedJob(
   job: ClaimedJob,
   label: string,
   processGroup: ObservabilityProcessGroup = "worker",
+  signal?: AbortSignal,
+  onReviewPublicationStarted?: () => void,
 ): Promise<void> {
   const started = Date.now();
   console.log(`[${label}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
   try {
-    await handleJob(job, processGroup);
+    await handleJob(job, processGroup, signal, onReviewPublicationStarted);
     await completeJob(getPool(), job);
     console.log(`[${label}] job ${job.id} done in ${Date.now() - started}ms`);
   } catch (err) {
     const message = redactSecrets(err);
+    if (err instanceof WorkerShutdownError && job.kind === "review") {
+      const requeued = await requeueJobsOwnedBy(
+        getPool(),
+        job.lockedBy,
+        "worker shutdown interrupted the claim",
+        ["review"],
+        [job.id],
+      );
+      console.warn(`[${label}] job ${job.id} requeued after worker shutdown (${requeued})`);
+      return;
+    }
     const malformedGateSync =
       job.kind === "gate-state-sync" &&
       message.includes("gate state sync job payload is malformed");

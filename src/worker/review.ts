@@ -27,9 +27,12 @@ import { getInstallationToken } from "@/lib/github/app-auth";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
+  AmbiguousCheckRunCreationError,
   GATE_CHECK_NAME,
+  checkRunExternalId,
   completeCheckRun,
   createCheckRun,
+  findCheckRunByExternalId,
 } from "@/lib/github/checks";
 import {
   materializeOrgConfig,
@@ -70,6 +73,29 @@ const HOSTED_LLM_TOTAL_TIMEOUT_SECS = "540";
 const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 
 class OperationalError extends Error {}
+
+export class WorkerShutdownError extends OperationalError {
+  constructor() {
+    super("review interrupted by worker shutdown");
+    this.name = "WorkerShutdownError";
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+async function translateWorkerAbort<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  try {
+    return await operation;
+  } catch (error) {
+    if (signal?.aborted && isAbortError(error)) throw new WorkerShutdownError();
+    throw error;
+  }
+}
 
 interface CliEnvConfig {
   byok: boolean;
@@ -229,6 +255,7 @@ interface CliResult {
 
 interface CliObservers {
   onStderrLine?: (line: string) => void;
+  signal?: AbortSignal;
 }
 
 const POSTIL_CLI_VERSION_TIMEOUT_MS = 3_000;
@@ -416,18 +443,37 @@ export function runCli(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let interrupted = false;
+    let settled = false;
+    let abortKillTimer: ReturnType<typeof setTimeout> | undefined;
     const stderrLines = createLineObserver(observers.onStderrLine);
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (abortKillTimer) clearTimeout(abortKillTimer);
+      observers.signal?.removeEventListener("abort", abort);
+    };
+    const abort = () => {
+      if (settled || interrupted) return;
+      interrupted = true;
+      child.kill("SIGTERM");
+      abortKillTimer = setTimeout(() => child.kill("SIGKILL"), 1_000);
+      abortKillTimer.unref?.();
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
     }, REVIEW_DEADLINE_MS);
+    if (observers.signal?.aborted) abort();
+    else observers.signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
       stderrLines.push(chunk);
     });
     child.on("error", (err) => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      cleanup();
       reject(
         new OperationalError(
           `failed to spawn postil CLI (${bin}): ${err.message}. Set POSTIL_BIN or put 'postil' on PATH.`,
@@ -435,11 +481,23 @@ export function runCli(
       );
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      cleanup();
       stderrLines.end();
+      if (interrupted) {
+        reject(new WorkerShutdownError());
+        return;
+      }
       resolvePromise({ exitCode: code, stdout, stderr, timedOut });
     });
   });
+}
+
+function throwIfWorkerStopping(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new WorkerShutdownError();
+  }
 }
 
 /**
@@ -457,7 +515,10 @@ export async function runReviewJob(
     startedAt: new Date(),
   },
   observabilityProcessGroup: ObservabilityProcessGroup = "worker",
+  signal?: AbortSignal,
+  onPublicationStarted?: () => void,
 ): Promise<void> {
+  throwIfWorkerStopping(signal);
   const db = getDb();
 
   const installation = (
@@ -515,8 +576,14 @@ export async function runReviewJob(
     );
     return;
   }
-  const token = await getInstallationToken(payload.installationId);
-  const currentRepository = await fetchRepositorySummary(token, payload.repoFullName);
+  const token = await translateWorkerAbort(
+    getInstallationToken(payload.installationId, signal),
+    signal,
+  );
+  const currentRepository = await translateWorkerAbort(
+    fetchRepositorySummary(token, payload.repoFullName, signal),
+    signal,
+  );
   await db
     .update(schema.repositories)
     .set({ fullName: currentRepository.full_name, private: currentRepository.private })
@@ -597,9 +664,16 @@ export async function runReviewJob(
   let workDir: string | undefined;
   let sensitiveValues: string[] = [];
   let hostedUsageReservationId: string | null = null;
+  let publicationStarted = false;
+  let advisoryCheckRunMayExist = false;
+  let gateCheckRunMayExist = false;
+  const advisoryCheckExternalId = checkRunExternalId(publicId, "review");
+  const gateCheckExternalId = checkRunExternalId(publicId, "gate");
 
   if (!llm.byok && !hostedInferenceEnabled()) {
     try {
+      publicationStarted = true;
+      onPublicationStarted?.();
       await supersedeActiveReviews({
         repositoryId: repository.id,
         prNumber: payload.prNumber,
@@ -615,19 +689,35 @@ export async function runReviewJob(
         payload.repoFullName,
         ADVISORY_CHECK_NAME,
         payload.headSha,
+        { externalId: advisoryCheckExternalId },
       ).catch((error) => {
+        advisoryCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
         console.error(`failed to create unavailable advisory check-run: ${redactSecrets(error, [token])}`);
         return undefined;
       });
+      if (advisoryCheckRunId !== undefined) {
+        await db
+          .update(schema.reviews)
+          .set({ advisoryCheckRunId })
+          .where(eq(schema.reviews.id, reviewId));
+      }
       gateCheckRunId = await createCheckRun(
         token,
         payload.repoFullName,
         GATE_CHECK_NAME,
         payload.headSha,
+        { externalId: gateCheckExternalId },
       ).catch((error) => {
+        gateCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
         console.error(`failed to create unavailable gate check-run: ${redactSecrets(error, [token])}`);
         return undefined;
       });
+      if (gateCheckRunId !== undefined) {
+        await db
+          .update(schema.reviews)
+          .set({ gateCheckRunId })
+          .where(eq(schema.reviews.id, reviewId));
+      }
       await db.transaction(async (tx) => {
         await tx
           .update(schema.reviews)
@@ -646,6 +736,11 @@ export async function runReviewJob(
             repoFullName: payload.repoFullName,
             advisoryCheckRunId: advisoryCheckRunId ?? null,
             gateCheckRunId: gateCheckRunId ?? null,
+            headSha: payload.headSha,
+            advisoryCheckExternalId,
+            gateCheckExternalId,
+            advisoryCheckRunMayExist,
+            gateCheckRunMayExist,
             message: HOSTED_INFERENCE_DISABLED_MESSAGE,
             intent: "neutralize",
           },
@@ -686,8 +781,11 @@ export async function runReviewJob(
   }
 
   try {
+    throwIfWorkerStopping(signal);
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
+    publicationStarted = true;
+    onPublicationStarted?.();
     const superseded = await supersedeActiveReviews({
       repositoryId: repository.id,
       prNumber: payload.prNumber,
@@ -703,19 +801,32 @@ export async function runReviewJob(
       payload.repoFullName,
       ADVISORY_CHECK_NAME,
       payload.headSha,
-    );
+      { signal, externalId: advisoryCheckExternalId },
+    ).catch((error) => {
+      advisoryCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
+      throw error;
+    });
+    await db
+      .update(schema.reviews)
+      .set({ advisoryCheckRunId })
+      .where(eq(schema.reviews.id, reviewId));
     gateCheckRunId = await createCheckRun(
       token,
       payload.repoFullName,
       GATE_CHECK_NAME,
       payload.headSha,
-    );
+      { signal, externalId: gateCheckExternalId },
+    ).catch((error) => {
+      gateCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
+      throw error;
+    });
     await db
       .update(schema.reviews)
-      .set({ advisoryCheckRunId, gateCheckRunId })
+      .set({ gateCheckRunId })
       .where(eq(schema.reviews.id, reviewId));
     reviewLog.line("forge check-runs created");
 
+    throwIfWorkerStopping(signal);
     reviewLog.line(await postilCliVersionLogLine());
     const spendReservation = currentRepository.private
       ? await reserveHostedReviewSpend(db, {
@@ -744,6 +855,11 @@ export async function runReviewJob(
             repoFullName: payload.repoFullName,
             advisoryCheckRunId,
             gateCheckRunId,
+            headSha: payload.headSha,
+            advisoryCheckExternalId,
+            gateCheckExternalId,
+            advisoryCheckRunMayExist,
+            gateCheckRunMayExist,
             message,
             detailsUrl,
             intent: "fail",
@@ -874,6 +990,7 @@ export async function runReviewJob(
       (value): value is string => Boolean(value),
     );
     reviewLog.setSensitiveValues(sensitiveValues);
+    throwIfWorkerStopping(signal);
     const cliEnv = buildCliEnv(llm, {
       GITHUB_TOKEN: token,
       ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
@@ -888,6 +1005,7 @@ export async function runReviewJob(
     reviewLog.line("postil CLI spawned");
     const result = await runCli(args, cliEnv, workDir, {
       onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
+      signal,
     });
     reviewLog.line(
       `postil CLI exited with code ${result.exitCode}${result.timedOut ? " after timeout" : ""}`,
@@ -974,17 +1092,55 @@ export async function runReviewJob(
       console.warn(`review ${reviewId} completed after it was already superseded or failed`);
     }
   } catch (err) {
-    const message = redactSecrets(err, sensitiveValues);
+    if (err instanceof WorkerShutdownError && !publicationStarted) {
+      reviewLog.line(err.message);
+      await db
+        .update(schema.reviews)
+        .set({ status: "stale", finishedAt: new Date() })
+        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
+      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
+        console.error(
+          `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
+        );
+      });
+      throw err;
+    }
+    const interruptedAfterPublication = err instanceof WorkerShutdownError;
+    const message = interruptedAfterPublication
+      ? "review interrupted after GitHub publication began"
+      : redactSecrets(err, sensitiveValues);
     reviewLog.line(`review failed: ${message}`);
-    const failedRows = await db
-      .update(schema.reviews)
-      .set({
-        status: "failed",
-        errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
-        finishedAt: new Date(),
-      })
-      .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
-      .returning({ id: schema.reviews.id });
+    const failedRows = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(schema.reviews)
+        .set({
+          status: "failed",
+          errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
+          finishedAt: new Date(),
+        })
+        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
+        .returning({ id: schema.reviews.id });
+      if (rows.length === 0) return rows;
+      await tx.insert(schema.jobs).values({
+        kind: "check-run-cleanup",
+        payload: {
+          installationId: payload.installationId,
+          repoFullName: payload.repoFullName,
+          advisoryCheckRunId: advisoryCheckRunId ?? null,
+          gateCheckRunId: gateCheckRunId ?? null,
+          headSha: payload.headSha,
+          advisoryCheckExternalId,
+          gateCheckExternalId,
+          advisoryCheckRunMayExist,
+          gateCheckRunMayExist,
+          message,
+          detailsUrl,
+          intent: "fail",
+        },
+        maxAttempts: 5,
+      });
+      return rows;
+    });
     await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
       console.error(
         `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
@@ -1006,7 +1162,7 @@ export async function runReviewJob(
       );
       reviewLog.line("forge check-runs updated for review failure");
     }
-    throw err;
+    throw interruptedAfterPublication ? new OperationalError(message) : err;
   } finally {
     if (baselinePath) await rm(baselinePath, { force: true }).catch(() => undefined);
     if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
@@ -1211,26 +1367,89 @@ export async function runCheckRunCleanupJob(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const token = await getInstallationToken(payload.installationId, controller.signal);
-    if (payload.intent === "neutralize") {
-      await completeHostedInferenceDisabledCheckRuns(
+    const errors: unknown[] = [];
+    const complete = async (
+      advisoryCheckRunId: number | null | undefined,
+      gateCheckRunId: number | null | undefined,
+    ) => {
+      if (payload.intent === "neutralize") {
+        await completeHostedInferenceDisabledCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? undefined,
+          gateCheckRunId ?? undefined,
+          true,
+        );
+        return;
+      }
+      await failCheckRuns(
         token,
         payload.repoFullName,
-        payload.advisoryCheckRunId ?? undefined,
-        payload.gateCheckRunId ?? undefined,
+        advisoryCheckRunId,
+        gateCheckRunId,
+        payload.message,
+        controller.signal,
         true,
+        payload.detailsUrl,
       );
-      return;
+    };
+
+    await complete(payload.advisoryCheckRunId, payload.gateCheckRunId).catch((error) => {
+      errors.push(error);
+    });
+
+    let reconciledAdvisoryCheckRunId: number | null = null;
+    let reconciledGateCheckRunId: number | null = null;
+    if (
+      payload.advisoryCheckRunId == null &&
+      payload.advisoryCheckRunMayExist &&
+      payload.headSha &&
+      payload.advisoryCheckExternalId
+    ) {
+      try {
+        reconciledAdvisoryCheckRunId = await findCheckRunByExternalId(
+          token,
+          payload.repoFullName,
+          payload.headSha,
+          ADVISORY_CHECK_NAME,
+          payload.advisoryCheckExternalId,
+          controller.signal,
+        );
+        if (reconciledAdvisoryCheckRunId === null) {
+          errors.push(new Error("ambiguous advisory check-run is not visible yet"));
+        }
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    await failCheckRuns(
-      token,
-      payload.repoFullName,
-      payload.advisoryCheckRunId,
-      payload.gateCheckRunId,
-      payload.message,
-      controller.signal,
-      true,
-      payload.detailsUrl,
-    );
+    if (
+      payload.gateCheckRunId == null &&
+      payload.gateCheckRunMayExist &&
+      payload.headSha &&
+      payload.gateCheckExternalId
+    ) {
+      try {
+        reconciledGateCheckRunId = await findCheckRunByExternalId(
+          token,
+          payload.repoFullName,
+          payload.headSha,
+          GATE_CHECK_NAME,
+          payload.gateCheckExternalId,
+          controller.signal,
+        );
+        if (reconciledGateCheckRunId === null) {
+          errors.push(new Error("ambiguous gate check-run is not visible yet"));
+        }
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    await complete(reconciledAdvisoryCheckRunId, reconciledGateCheckRunId).catch((error) => {
+      errors.push(error);
+    });
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "check-run cleanup remains incomplete");
+    }
   } finally {
     clearTimeout(timer);
   }

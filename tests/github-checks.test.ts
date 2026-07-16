@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  createCheckRun,
+  findCheckRunByExternalId,
   findIssueCommentByMarker,
   getPullRequestReviewContext,
   RESPOND_MARKER_MAX_PAGES,
@@ -106,5 +108,70 @@ describe("pull-request review context", () => {
     await expect(getPullRequestReviewContext("token", "octo/repo", 7)).rejects.toThrow(
       "incomplete refs",
     );
+  });
+});
+
+describe("check-run creation", () => {
+  test("forwards a bounded caller cancellation signal", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const requestSignals: AbortSignal[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const requestSignal = init?.signal as AbortSignal | undefined;
+      if (requestSignal) requestSignals.push(requestSignal);
+      if (requestSignal?.aborted) throw requestSignal.reason;
+      return Response.json({ id: 1 });
+    }) as typeof fetch;
+
+    await expect(
+      createCheckRun("token", "octo/repo", "postil/review", "head-sha", {
+        signal: controller.signal,
+        externalId: "postil:run:review",
+      }),
+    ).rejects.toBeDefined();
+    expect(requestSignals[0]?.aborted).toBe(true);
+  });
+
+  test("reconciles an ambiguous create by external id", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (init?.method === "POST") throw new TypeError("connection reset");
+      return Response.json({
+        total_count: 1,
+        check_runs: [
+          { id: 42, name: "postil/review", external_id: "postil:run:review" },
+        ],
+      });
+    }) as typeof fetch;
+
+    await expect(
+      createCheckRun("token", "octo/repo", "postil/review", "head-sha", {
+        externalId: "postil:run:review",
+      }),
+    ).resolves.toBe(42);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toContain("/commits/head-sha/check-runs?");
+  });
+
+  test("finds a check run by its stable external id", async () => {
+    globalThis.fetch = (async (_input, _init) =>
+      Response.json({
+        total_count: 2,
+        check_runs: [
+          { id: 1, name: "postil/review", external_id: "another-run" },
+          { id: 2, name: "postil/review", external_id: "postil:run:review" },
+        ],
+      })) as typeof fetch;
+
+    await expect(
+      findCheckRunByExternalId(
+        "token",
+        "octo/repo",
+        "head-sha",
+        "postil/review",
+        "postil:run:review",
+      ),
+    ).resolves.toBe(2);
   });
 });

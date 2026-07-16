@@ -40,15 +40,18 @@ export interface RepoSummary {
 export async function fetchRepositorySummary(
   token: string,
   repoFullName: string,
-  signal: AbortSignal = AbortSignal.timeout(10_000),
+  signal?: AbortSignal,
 ): Promise<RepoSummary> {
+  const requestSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+    : AbortSignal.timeout(10_000);
   const response = await fetch(`${apiBase()}/repos/${repoFullName}`, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
     },
-    signal,
+    signal: requestSignal,
   });
   if (!response.ok) {
     throw new Error(`GitHub repository lookup failed with HTTP ${response.status}`);
