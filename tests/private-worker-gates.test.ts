@@ -56,6 +56,32 @@ describe("private repository worker defense in depth", () => {
     expect(guardBody).not.toContain("failCheckRuns");
   });
 
+  test("hosted reservation denial leaves durable forge-visible terminal checks", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const start = source.indexOf("export async function runReviewJob");
+    const reservation = source.indexOf("await reserveHostedReviewSpend", start);
+    const denial = source.indexOf("if (spendReservation && !spendReservation.allowed)", reservation);
+    const denialEnd = source.indexOf("hostedUsageReservationId =", denial);
+    const denialBody = source.slice(denial, denialEnd);
+
+    expect(source.lastIndexOf("await createCheckRun", reservation)).toBeGreaterThan(start);
+    expect(source.lastIndexOf("await createCheckRun", reservation)).toBeLessThan(reservation);
+    expect(source.lastIndexOf("postilCliVersionLogLine()", reservation)).toBeLessThan(reservation);
+    expect(denialBody).toContain("db.transaction");
+    expect(denialBody).toContain('kind: "check-run-cleanup"');
+    expect(denialBody).toContain('intent: "fail"');
+    expect(denialBody).toContain("detailsUrl");
+    expect(denialBody).toContain("returning({ id: schema.reviews.id })");
+    expect(denialBody).toContain("if (failedRows.length === 0) return false");
+    expect(denialBody).toContain("if (settled)");
+    expect(denialBody).toContain("await failCheckRuns");
+    expect(denialBody.indexOf("db.transaction")).toBeLessThan(
+      denialBody.indexOf("await failCheckRuns"),
+    );
+    expect(denialBody).toContain("return;");
+    expect(denialBody).not.toContain("await runCli");
+  });
+
   test("respond worker gates before token mint, config fetch, inference, and failure comments", () => {
     const source = readFileSync("src/worker/respond.ts", "utf8");
     const respondStart = source.indexOf("runRespondJob");

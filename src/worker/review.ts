@@ -686,31 +686,6 @@ export async function runReviewJob(
   }
 
   try {
-    reviewLog.line(await postilCliVersionLogLine());
-    const spendReservation = currentRepository.private
-      ? await reserveHostedReviewSpend(db, {
-          orgId: installation.orgId,
-          reviewId,
-          usesByok: llm.byok,
-        })
-      : null;
-    if (spendReservation && !spendReservation.allowed) {
-      await db
-        .update(schema.reviews)
-        .set({
-          status: "failed",
-          errorMessage: "Hosted inference allowance is unavailable or fully reserved.",
-          finishedAt: new Date(),
-        })
-        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
-      reviewLog.line("hosted inference reservation denied before provider access");
-      console.warn(
-        `review job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
-      );
-      return;
-    }
-    hostedUsageReservationId = spendReservation?.reservationId ?? null;
-    if (hostedUsageReservationId) reviewLog.line("hosted inference spend reserved");
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
     const superseded = await supersedeActiveReviews({
@@ -740,6 +715,63 @@ export async function runReviewJob(
       .set({ advisoryCheckRunId, gateCheckRunId })
       .where(eq(schema.reviews.id, reviewId));
     reviewLog.line("forge check-runs created");
+
+    reviewLog.line(await postilCliVersionLogLine());
+    const spendReservation = currentRepository.private
+      ? await reserveHostedReviewSpend(db, {
+          orgId: installation.orgId,
+          reviewId,
+          usesByok: llm.byok,
+        })
+      : null;
+    if (spendReservation && !spendReservation.allowed) {
+      const message = "Hosted inference allowance is unavailable or fully reserved.";
+      const settled = await db.transaction(async (tx) => {
+        const failedRows = await tx
+          .update(schema.reviews)
+          .set({
+            status: "failed",
+            errorMessage: message,
+            finishedAt: new Date(),
+          })
+          .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
+          .returning({ id: schema.reviews.id });
+        if (failedRows.length === 0) return false;
+        await tx.insert(schema.jobs).values({
+          kind: "check-run-cleanup",
+          payload: {
+            installationId: payload.installationId,
+            repoFullName: payload.repoFullName,
+            advisoryCheckRunId,
+            gateCheckRunId,
+            message,
+            detailsUrl,
+            intent: "fail",
+          },
+          maxAttempts: 5,
+        });
+        return true;
+      });
+      if (settled) {
+        await failCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId,
+          gateCheckRunId,
+          message,
+          undefined,
+          false,
+          detailsUrl,
+        );
+      }
+      reviewLog.line("hosted inference reservation denied before provider access");
+      console.warn(
+        `review job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
+      );
+      return;
+    }
+    hostedUsageReservationId = spendReservation?.reservationId ?? null;
+    if (hostedUsageReservationId) reviewLog.line("hosted inference spend reserved");
 
     const args = [
       "review",
@@ -1197,6 +1229,7 @@ export async function runCheckRunCleanupJob(
       payload.message,
       controller.signal,
       true,
+      payload.detailsUrl,
     );
   } finally {
     clearTimeout(timer);

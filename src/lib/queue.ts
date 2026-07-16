@@ -69,6 +69,7 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   advisoryCheckRunId: number | null;
   gateCheckRunId: number | null;
   message: string;
+  detailsUrl?: string;
   intent?: "fail" | "neutralize";
 }
 
