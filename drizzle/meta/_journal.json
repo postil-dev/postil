@@ -169,6 +169,13 @@
       "when": 1783964372399,
       "tag": "0023_atomic_review_job_dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784238346511,
+      "tag": "0024_prepare_durable_webhook_inbox",
+      "breakpoints": true
     }
   ]
 }

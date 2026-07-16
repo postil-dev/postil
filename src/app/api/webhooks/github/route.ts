@@ -198,7 +198,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const db = getDb();
   const dedupe = await db
     .insert(schema.webhookDeliveries)
-    .values({ deliveryId, event, action })
+    .values({ deliveryId, event, action, payload, completedAt: null })
     .onConflictDoNothing()
     .returning({ deliveryId: schema.webhookDeliveries.deliveryId });
   if (dedupe.length === 0) {
@@ -261,6 +261,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
     return NextResponse.json({ error: "dispatch failed" }, { status: 500 });
   }
+
+  await db
+    .update(schema.webhookDeliveries)
+    .set({ payload: null, completedAt: new Date() })
+    .where(eq(schema.webhookDeliveries.deliveryId, deliveryId));
 
   return NextResponse.json({ ok: true });
 }

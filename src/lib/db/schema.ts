@@ -460,12 +460,16 @@ export const hostedUsageReservations = pgTable(
   ],
 );
 
-/** Webhook delivery dedupe: insert-or-skip keyed by X-GitHub-Delivery. */
+/** Webhook delivery dedupe and staged durable-inbox state. */
 export const webhookDeliveries = pgTable("webhook_deliveries", {
   deliveryId: text("delivery_id").primaryKey(),
   event: text("event").notNull(),
   action: text("action"),
+  payload: jsonb("payload").$type<unknown>(),
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  // The default keeps inserts from an older web process valid during the
+  // schema-preparation rollout. Prepared writers explicitly store NULL.
+  completedAt: timestamp("completed_at", { withTimezone: true }).defaultNow(),
 });
 
 export type JobPayload = Record<string, unknown>;
