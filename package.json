@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build && bun run scripts/verify-server-observability-bundle.ts",
-    "start": "bun scripts/start-web.ts",
+    "start": "next start",
     "worker": "bun src/worker/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
@@ -28,7 +28,7 @@
     "@opentelemetry/resources": "^2.9.0",
     "@opentelemetry/sdk-logs": "^0.220.0",
     "drizzle-orm": "^0.45.2",
-    "next": "^15",
+    "next": "15.5.19",
     "pg": "^8.21.0",
     "pg-connection-string": "^2.14.0",
     "posthog-js": "^1.396.2",
