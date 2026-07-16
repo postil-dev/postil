@@ -1,55 +1,45 @@
 # Migration safety rules
 
-This directory is applied against a live production database while web and
-worker keep serving traffic. There is no maintenance window, so every
-migration has to be safe to run concurrently with normal read/write load.
+Fly applies this directory to the production database while the existing web
+and worker machines keep serving traffic. Every migration must remain safe
+under normal read and write load and compatible with the deployed application.
 
 ## Indexes on existing tables
 
-`CREATE INDEX` (and `CREATE UNIQUE INDEX`) takes a table-level lock for the
-duration of the build when run inside a transaction, which is how
-drizzle-kit applies migrations by default. On a table with any real traffic
-this blocks writes for as long as the build takes.
+`CREATE INDEX` and `CREATE UNIQUE INDEX` block writes to an existing table for
+the duration of the build. The migration lint rejects those statements on an
+existing table. An index created in the same migration as its table is exempt.
 
-- Add new indexes with `CREATE INDEX CONCURRENTLY`, which does not hold a
-  blocking lock but also cannot run inside a transaction.
-- drizzle-kit wraps every migration file in a transaction unless you opt
-  out. Use the no-transaction escape for the migration file (see
-  drizzle-kit docs for `--custom` / the `sql.raw` + non-transactional
-  migration pattern), or apply the `CREATE INDEX CONCURRENTLY` statement
-  by hand and keep the migration file as a paired, checked-in record of
-  what ran.
+- Use `CREATE INDEX CONCURRENTLY` to avoid blocking writes to an existing live
+  table.
+- Drizzle's PostgreSQL migrator wraps pending migration statements in a
+  transaction, where PostgreSQL rejects `CREATE INDEX CONCURRENTLY`.
+- A change that adds an index to an existing table must include an idempotent,
+  non-transactional release step and its verification. Do not place the
+  concurrent statement in the ordinary Drizzle migration stream.
 - If a concurrent build fails partway, it can leave an invalid index
-  behind (`\d+ <table>` will show it as `INVALID` in psql). Drop it and
-  retry rather than assuming the next migration run will fix it.
+  behind. The release step must detect and remove that invalid index before a
+  retry and must record successful completion durably.
+
+Run the focused policy check with `bun test tests/migration-lint.test.ts`.
 
 ## Bulk UPDATE/DELETE dedup work
 
-Row rewrites (backfills, dedup passes, data cleanup) should not run as one
-unbounded statement against a live table:
+Row rewrites must not run as one unbounded statement against a live table:
 
-- Batch the work (e.g. loop over a bounded id range or `LIMIT`/`OFFSET`
-  chunks, committing between batches) so no single statement holds locks
-  or generates WAL for more than a few thousand rows at a time.
-- If batching isn't practical, run the migration in a quiet window
-  (announce it, or schedule it for low-traffic hours) instead of at
-  arbitrary deploy time.
-- Prefer writing one-off dedup/backfill logic as a script under `scripts/`
-  that can be re-run and observed, rather than folding it into a
-  drizzle-kit migration file, unless it must be transactionally tied to a
-  schema change.
+- Put bounded, resumable backfill logic under `scripts/`.
+- Commit between batches so each statement holds locks and generates WAL for
+  a bounded number of rows.
+- Add the script to `release:prepare` before code that depends on its result.
+- Keep schema changes backward-compatible with the application serving during
+  the release command.
 
 ## Applying migrations
 
-Migrations are not run automatically on deploy. Apply them manually:
-
-```
-fly ssh console -C "bun run db:migrate"
-```
-
-Run this while `POSTIL_DB_POOL_MAX=2` (set in `fly.toml`) so the migration
-connection doesn't compete with web/worker for the small production
-connection pool.
+Fly runs `bun run release:prepare` as the deployment `release_command`. That
+command runs `bun run db:migrate` before the application machines update. A
+non-zero exit aborts the deployment. The release machine receives the deployed
+database connection settings and secrets.
 
 ## Already-applied migrations
 
