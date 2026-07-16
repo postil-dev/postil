@@ -54,7 +54,7 @@ export function confidenceExplanation(finding: Finding): ConfidenceExplanation {
 export function FindingConfidenceLabel({ finding }: { finding: Finding }) {
   return (
     <span
-      className="font-mono text-[11px] text-charcoal/60"
+      className="font-mono text-[11px] text-charcoal/70"
       title="Final confidence used for policy filtering and gating."
     >
       confidence {formatConfidence(finding.confidence)}
@@ -66,7 +66,7 @@ export function FindingConfidenceDetails({ finding }: { finding: Finding }) {
   const explanation = confidenceExplanation(finding);
 
   return (
-    <details className="mt-3 text-xs text-charcoal/60">
+    <details className="mt-3 text-xs text-charcoal/70">
       <summary className="cursor-pointer font-medium">Confidence details</summary>
       <p className="mt-1">{explanation.calculation}</p>
       {explanation.assessment && (

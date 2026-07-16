@@ -103,7 +103,7 @@ function configFallbackLabel(entry: ConfigProvenanceEntry): string | null {
 function RunFact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0 border-l border-stone/70 pl-3">
-      <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+      <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/70">
         {label}
       </dt>
       <dd className="mt-1 min-w-0 truncate text-xs text-charcoal" title={typeof children === "string" ? children : undefined}>
@@ -191,7 +191,7 @@ function FindingCard({
         >
           severity: {finding.severity}
         </span>
-        <span className="font-mono text-[11px] text-charcoal/60">
+        <span className="font-mono text-[11px] text-charcoal/70">
           {findingKindLabel(finding.kind)}
         </span>
         <FindingConfidenceLabel finding={finding} />
@@ -226,7 +226,7 @@ function ApprovalStatusBadge({ state }: { state: FindingApprovalState }) {
   const classes = state.activeApproval
     ? "border-brand-secondary/40 bg-brand-secondary/10 text-[#166657]"
     : state.latestApproval?.revokedAt
-      ? "border-charcoal/20 bg-stone/40 text-charcoal/55"
+      ? "border-charcoal/20 bg-stone/40 text-charcoal/70"
       : "border-rust/35 bg-rust/5 text-rust";
   return (
     <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${classes}`}>
@@ -271,10 +271,10 @@ function ApprovalPanel({
             <article key={state.findingId} className="px-5 py-5 sm:px-6">
               <div className="flex flex-wrap items-center gap-3">
                 <ApprovalStatusBadge state={state} />
-                <span className="font-mono text-[11px] text-charcoal/60">
+                <span className="font-mono text-[11px] text-charcoal/70">
                   {findingKindLabel(state.finding.kind)}
                 </span>
-                <span className="font-mono text-[11px] text-charcoal/60">
+                <span className="font-mono text-[11px] text-charcoal/70">
                   {state.findingId.slice(0, 16)}
                 </span>
                 {state.severityBlocking && (
@@ -284,7 +284,7 @@ function ApprovalPanel({
                 )}
               </div>
               <h2 className="mt-3 text-base font-semibold leading-snug">{state.finding.title}</h2>
-              <p className="mt-2 font-mono text-[11px] text-charcoal/60">
+              <p className="mt-2 font-mono text-[11px] text-charcoal/70">
                 {state.finding.path}:{state.finding.line}
               </p>
               <div className="mt-2 text-sm leading-relaxed text-ink-soft">
@@ -302,23 +302,23 @@ function ApprovalPanel({
               {approval && (
                 <dl className="mt-3 grid gap-2 text-xs text-charcoal/70 sm:grid-cols-2">
                   <div>
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Actor</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Actor</dt>
                     <dd>@{approval.actorLoginSnapshot}</dd>
                   </div>
                   <div>
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Source</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Source</dt>
                     <dd>{approval.source}</dd>
                   </div>
                   <div>
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Recorded</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Recorded</dt>
                     <dd>{formatTimestamp(approval.createdAt)}</dd>
                   </div>
                   <div>
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Head SHA</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Head SHA</dt>
                     <dd className="font-mono">{headSha.slice(0, 12)}</dd>
                   </div>
                   <div className="sm:col-span-2">
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/45">Rationale</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Rationale</dt>
                     <dd className="mt-1 whitespace-pre-wrap">{approval.rationale}</dd>
                   </div>
                 </dl>
@@ -590,9 +590,9 @@ export default async function RunDetailPage({
                   key={entry.slot}
                   className="grid gap-1 px-5 py-3 text-xs sm:grid-cols-[9rem_9rem_1fr]"
                 >
-                  <span className="font-mono text-charcoal/55">{entry.slot}</span>
+                  <span className="font-mono text-charcoal/70">{entry.slot}</span>
                   <span>{configSourceLabel(entry)}</span>
-                  <span className="break-all font-mono text-charcoal/60">
+                  <span className="break-all font-mono text-charcoal/70">
                     {entry.repository ? `${entry.repository}${entry.commitSha ? `@${entry.commitSha.slice(0, 12)}` : ""}:` : ""}
                     {entry.path ?? "default"}
                     {entry.stale ? " · last known good" : ""}
@@ -642,12 +642,12 @@ export default async function RunDetailPage({
                   />
                 ))}
                 {findings.length > MAX_RENDERED_FINDINGS && (
-                  <p className="px-5 py-4 text-center text-sm text-charcoal/50">
+                  <p className="px-5 py-4 text-center text-sm text-charcoal/70">
                     {findings.length - MAX_RENDERED_FINDINGS} more findings not shown
                   </p>
                 )}
                 {findings.length === 0 && (
-                  <p className="px-5 py-8 text-center text-sm text-charcoal/50">
+                  <p className="px-5 py-8 text-center text-sm text-charcoal/70">
                     No findings shipped on this review.
                   </p>
                 )}
@@ -665,7 +665,7 @@ export default async function RunDetailPage({
                       .slice(0, MAX_RENDERED_FINDINGS)
                       .map((entry, index) => (
                         <div key={`${entry.finding.path}:${entry.finding.line}:${index}`}>
-                          <p className="bg-stone/20 px-5 py-2 font-mono text-[10px] uppercase tracking-wide text-charcoal/60 sm:px-6">
+                          <p className="bg-stone/20 px-5 py-2 font-mono text-[10px] uppercase tracking-wide text-charcoal/70 sm:px-6">
                             {SUPPRESSION_REASON_LABELS[entry.reason]}
                           </p>
                           <FindingCard
@@ -677,13 +677,13 @@ export default async function RunDetailPage({
                         </div>
                       ))}
                     {envelope.suppressedFindings.length > MAX_RENDERED_FINDINGS && (
-                      <p className="border-t border-stone/60 px-5 py-4 text-center text-sm text-charcoal/50">
+                      <p className="border-t border-stone/60 px-5 py-4 text-center text-sm text-charcoal/70">
                         {envelope.suppressedFindings.length - MAX_RENDERED_FINDINGS} more suppressed findings not shown
                       </p>
                     )}
                   </div>
                 ) : (
-                  <p className="border-t border-stone/60 px-5 py-4 text-sm text-charcoal/60 sm:px-6">
+                  <p className="border-t border-stone/60 px-5 py-4 text-sm text-charcoal/70 sm:px-6">
                     This review predates retained suppression details. Only the count is available.
                   </p>
                 )}
@@ -693,7 +693,7 @@ export default async function RunDetailPage({
             {resolved.length > 0 && (
               <section className="mt-8">
                 <p className="eyebrow">Resolved since the previous review ({resolved.length})</p>
-                <div className="card mt-3 divide-y divide-stone/60 opacity-70">
+                <div className="card mt-3 divide-y divide-stone/60">
                   {resolved.slice(0, MAX_RENDERED_FINDINGS).map((finding, index) => (
                     <FindingCard
                       key={`${finding.path}:${finding.line}:${index}`}
@@ -704,7 +704,7 @@ export default async function RunDetailPage({
                     />
                   ))}
                   {resolved.length > MAX_RENDERED_FINDINGS && (
-                    <p className="px-5 py-4 text-center text-sm text-charcoal/50">
+                    <p className="px-5 py-4 text-center text-sm text-charcoal/70">
                       {resolved.length - MAX_RENDERED_FINDINGS} more findings not shown
                     </p>
                   )}
@@ -720,7 +720,7 @@ export default async function RunDetailPage({
             <div className="card mt-3 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/50">
+                  <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/70">
                     <th className="px-4 py-3 font-normal">model</th>
                     <th className="px-4 py-3 font-normal">input tokens</th>
                     <th className="px-4 py-3 font-normal">output tokens</th>
@@ -759,7 +759,7 @@ export default async function RunDetailPage({
                 </p>
               )}
               {envelope && hasLegacyCombinedModelUsage(envelope) && (
-                <p className="border-t border-stone px-4 py-3 text-xs text-charcoal/60">
+                <p className="border-t border-stone px-4 py-3 text-xs text-charcoal/70">
                   {LEGACY_COMBINED_USAGE_NOTICE}
                 </p>
               )}
@@ -768,14 +768,14 @@ export default async function RunDetailPage({
         )}
 
         {envelopeInvalid && (
-          <p className="card mt-8 p-8 text-center text-sm text-charcoal/50">
+          <p className="card mt-8 p-8 text-center text-sm text-charcoal/70">
             The stored envelope does not match the current envelope contract and cannot be
             displayed.
           </p>
         )}
 
         {!envelope && !envelopeInvalid && !review.errorMessage && (
-          <p className="card mt-8 p-8 text-center text-sm text-charcoal/50">
+          <p className="card mt-8 p-8 text-center text-sm text-charcoal/70">
             {review.status === "stale"
               ? "Superseded by a later push to the pull request; this review never completed."
               : "No envelope stored yet; the review has not completed."}
