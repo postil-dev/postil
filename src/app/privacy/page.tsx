@@ -53,6 +53,11 @@ export default function PrivacyPage() {
             <strong>Webhook delivery ids</strong>, kept for 30 days to deduplicate
             retries and redeliveries. Completed payloads are cleared immediately.
           </li>
+          <li>
+            <strong>Webhook recovery metadata</strong>: GitHub delivery ids,
+            event names, response status, and bounded redelivery outcomes, kept
+            for 30 days. Recovery scans do not fetch webhook request payloads.
+          </li>
         </ul>
 
         <h2>Envelope retention</h2>

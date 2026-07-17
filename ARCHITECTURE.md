@@ -39,6 +39,8 @@ Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Post
 
 The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
 
+The worker scans GitHub's App delivery summaries through a leased, cursor-paginated pass inside GitHub's three-day recovery window. It records payload-free delivery identity, event, response status, and bounded request outcome before asking GitHub to redeliver a failed attempt. A newer successful delivery closes every older failure with the same GUID. Ambiguous requests receive one delayed retry, each GUID has a three-request ceiling, and API rate-limit state pauses the shared scanner. Recovery metadata expires after 30 days; webhook payloads remain confined to the signed durable inbox.
+
 The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods.
 
 The long-running worker stops claiming on `SIGINT` or `SIGTERM` and gives active

@@ -55,6 +55,14 @@ jobs:
       - run: bun test tests/watchdog.test.ts
         env:
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      - name: Verify GitHub webhook recovery on fresh Postgres
+        run: |
+          createdb postil_webhook_recovery
+          bun test --isolate tests/github-webhook-redelivery.test.ts
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postil_webhook_recovery
       - name: Verify review dedupe migration with preexisting jobs
         run: |
           createdb postil_review_dedupe

@@ -36,6 +36,12 @@ interface DatabaseMetrics {
   webhookDeliveries24h: number;
   webhookPending: number;
   oldestWebhookPendingAge: number;
+  webhookRecoveryRequests: number;
+  webhookRecoveryAccepted: number;
+  webhookRecoveryRecovered: number;
+  webhookRecoveryUnresolved: number;
+  webhookRecoveryTerminal: number;
+  webhookRecoveryLastScanAge: number;
   webhookDeliveries24hByEvent: Array<{ event: string; count: number }>;
   jobCounts: Array<{ kind: string; status: string; count: number }>;
   oldestJobAges: Map<string, number>;
@@ -129,6 +135,24 @@ export async function GET(request: Request): Promise<NextResponse> {
       "# HELP postil_oldest_webhook_dispatch_age_seconds Age of the oldest incomplete webhook delivery.",
       "# TYPE postil_oldest_webhook_dispatch_age_seconds gauge",
       `postil_oldest_webhook_dispatch_age_seconds ${dbMetrics.oldestWebhookPendingAge}`,
+      "# HELP postil_github_webhook_recovery_requests_30d GitHub App redelivery requests attempted in retained recovery metadata.",
+      "# TYPE postil_github_webhook_recovery_requests_30d gauge",
+      `postil_github_webhook_recovery_requests_30d ${dbMetrics.webhookRecoveryRequests}`,
+      "# HELP postil_github_webhook_recovery_accepted_30d Redelivery requests accepted by GitHub in retained recovery metadata.",
+      "# TYPE postil_github_webhook_recovery_accepted_30d gauge",
+      `postil_github_webhook_recovery_accepted_30d ${dbMetrics.webhookRecoveryAccepted}`,
+      "# HELP postil_github_webhook_recovery_recovered_30d Failed deliveries followed by a successful delivery in retained recovery metadata.",
+      "# TYPE postil_github_webhook_recovery_recovered_30d gauge",
+      `postil_github_webhook_recovery_recovered_30d ${dbMetrics.webhookRecoveryRecovered}`,
+      "# HELP postil_github_webhook_recovery_unresolved Failed deliveries awaiting recovery.",
+      "# TYPE postil_github_webhook_recovery_unresolved gauge",
+      `postil_github_webhook_recovery_unresolved ${dbMetrics.webhookRecoveryUnresolved}`,
+      "# HELP postil_github_webhook_recovery_terminal Failed deliveries whose bounded recovery stopped.",
+      "# TYPE postil_github_webhook_recovery_terminal gauge",
+      `postil_github_webhook_recovery_terminal ${dbMetrics.webhookRecoveryTerminal}`,
+      "# HELP postil_github_webhook_recovery_last_scan_age_seconds Age of the last successful App delivery API page.",
+      "# TYPE postil_github_webhook_recovery_last_scan_age_seconds gauge",
+      `postil_github_webhook_recovery_last_scan_age_seconds ${dbMetrics.webhookRecoveryLastScanAge}`,
       "# HELP postil_webhook_deliveries_24h_by_event Webhook deliveries received in the last 24 hours by event.",
       "# TYPE postil_webhook_deliveries_24h_by_event gauge",
       ...dbMetrics.webhookDeliveries24hByEvent.map(
@@ -226,6 +250,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       webhook_deliveries_24h: string;
       webhook_pending: string;
       oldest_webhook_pending_age_seconds: string;
+      webhook_recovery_requests: string;
+      webhook_recovery_accepted: string;
+      webhook_recovery_recovered: string;
+      webhook_recovery_unresolved: string;
+      webhook_recovery_terminal: string;
+      webhook_recovery_last_scan_age_seconds: string;
       watchdog_kills: string;
     }>(`
       SELECT
@@ -242,6 +272,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         (SELECT count(*)::text FROM webhook_deliveries WHERE received_at >= now() - interval '24 hours') AS webhook_deliveries_24h,
         (SELECT count(*)::text FROM webhook_deliveries WHERE completed_at IS NULL) AS webhook_pending,
         (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(received_at)), 0)::int::text FROM webhook_deliveries WHERE completed_at IS NULL) AS oldest_webhook_pending_age_seconds,
+        (SELECT COALESCE(sum(request_attempts), 0)::text FROM github_webhook_delivery_recoveries WHERE delivered_at >= now() - interval '30 days') AS webhook_recovery_requests,
+        (SELECT count(*)::text FROM github_webhook_delivery_recoveries WHERE delivered_at >= now() - interval '30 days' AND request_status_code = 202) AS webhook_recovery_accepted,
+        (SELECT count(*)::text FROM github_webhook_delivery_recoveries WHERE delivered_at >= now() - interval '30 days' AND recovery_delivery_id IS NOT NULL) AS webhook_recovery_recovered,
+        (SELECT count(*)::text FROM github_webhook_delivery_recoveries WHERE outcome = 'failure' AND recovery_delivery_id IS NULL AND COALESCE(request_state, '') NOT IN ('terminal', 'exhausted')) AS webhook_recovery_unresolved,
+        (SELECT count(*)::text FROM github_webhook_delivery_recoveries WHERE request_state IN ('terminal', 'exhausted')) AS webhook_recovery_terminal,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM now() - last_page_at), 0)::int::text FROM github_webhook_redelivery_state WHERE id = 1) AS webhook_recovery_last_scan_age_seconds,
         (SELECT count(*)::text FROM reviews WHERE status = 'failed' AND error_message LIKE 'watchdog:%') AS watchdog_kills
     `),
     pool.query<{ status: string; count: string }>(`
@@ -415,6 +451,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     webhookDeliveries24h: toNumber(row.webhook_deliveries_24h),
     webhookPending: toNumber(row.webhook_pending),
     oldestWebhookPendingAge: toNumber(row.oldest_webhook_pending_age_seconds),
+    webhookRecoveryRequests: toNumber(row.webhook_recovery_requests),
+    webhookRecoveryAccepted: toNumber(row.webhook_recovery_accepted),
+    webhookRecoveryRecovered: toNumber(row.webhook_recovery_recovered),
+    webhookRecoveryUnresolved: toNumber(row.webhook_recovery_unresolved),
+    webhookRecoveryTerminal: toNumber(row.webhook_recovery_terminal),
+    webhookRecoveryLastScanAge: toNumber(row.webhook_recovery_last_scan_age_seconds),
     webhookDeliveries24hByEvent: webhooks24hByEvent.rows.map((eventRow) => ({
       event: eventRow.event,
       count: toNumber(eventRow.count),

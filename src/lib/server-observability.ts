@@ -15,15 +15,18 @@ export type ObservabilityProcessGroup = "web" | "worker";
 export type OperationalFailureClass =
   | "web_request_failed"
   | "worker_boot_failed"
-  | "job_permanently_failed";
+  | "job_permanently_failed"
+  | "webhook_recovery_failed";
 export type OperationalState = "worker_started";
-export type OperationalWarning = "job_retrying";
+export type OperationalWarning = "job_retrying" | "webhook_recovery_retrying";
 
 type OperationalLogEvent =
   | "postil.web.request.failed"
   | "postil.worker.boot.failed"
   | "postil.job.permanently_failed"
   | "postil.job.retrying"
+  | "postil.webhook.recovery.failed"
+  | "postil.webhook.recovery.retrying"
   | "postil.model.incident"
   | "postil.worker.started";
 
@@ -71,6 +74,11 @@ const FAILURE_EVENTS: Record<OperationalFailureClass, OperationalEventDefinition
     severityNumber: SeverityNumber.ERROR,
     severityText: "ERROR",
   },
+  webhook_recovery_failed: {
+    event: "postil.webhook.recovery.failed",
+    severityNumber: SeverityNumber.ERROR,
+    severityText: "ERROR",
+  },
 };
 
 const STATE_EVENTS: Record<OperationalState, OperationalLogEvent> = {
@@ -79,6 +87,7 @@ const STATE_EVENTS: Record<OperationalState, OperationalLogEvent> = {
 
 const WARNING_EVENTS: Record<OperationalWarning, OperationalLogEvent> = {
   job_retrying: "postil.job.retrying",
+  webhook_recovery_retrying: "postil.webhook.recovery.retrying",
 };
 
 const SYSTEM_DISTINCT_ID = "postil-system";

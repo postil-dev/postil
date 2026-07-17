@@ -4,6 +4,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 
 import { closeDb, getDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
+import { runWebhookRedeliveryPass } from "@/lib/github/webhook-redelivery";
 import {
   claimJob,
   pruneCompletedWebhookDeliveries,
@@ -15,6 +16,7 @@ import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
 import {
   reportOperationalFailure,
   reportOperationalState,
+  reportOperationalWarning,
   shutdownServerObservability,
 } from "@/lib/server-observability";
 import { PROCESSABLE_JOB_KINDS, readPositiveIntEnv, runClaimedJob } from "./runner";
@@ -41,6 +43,10 @@ const IDLE_POLL_MAX_MS = Math.max(
 const WATCHDOG_INTERVAL_MS = readPositiveIntEnv("WORKER_WATCHDOG_INTERVAL_MS", 60_000);
 const WEBHOOK_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 const WEBHOOK_RETENTION_MAX_BATCHES = 10;
+const WEBHOOK_REDELIVERY_INTERVAL_MS = readPositiveIntEnv(
+  "WORKER_WEBHOOK_REDELIVERY_INTERVAL_MS",
+  15 * 60 * 1_000,
+);
 const SHUTDOWN_DRAIN_MS = readPositiveIntEnv("WORKER_SHUTDOWN_DRAIN_MS", 10_000);
 const SHUTDOWN_SETTLE_MS = readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000);
 
@@ -48,7 +54,9 @@ const workerId = `${hostname()}-${process.pid}`;
 let shuttingDown = false;
 let shutdownPromise: Promise<void> | undefined;
 let wakeWebhookRetention: (() => void) | undefined;
-const activeRuns = new Set<Promise<void>>();
+let wakeWebhookRedelivery: (() => void) | undefined;
+let activeWebhookRedeliveryController: AbortController | undefined;
+const activeRuns = new Set<Promise<unknown>>();
 const activeControllers = new Map<number, AbortController>();
 const requeueableReviewIds = new Set<number>();
 let pendingClaims = 0;
@@ -69,6 +77,21 @@ function sleepUntilWebhookRetention(ms: number): Promise<void> {
     };
     const timer = setTimeout(finish, ms);
     wakeWebhookRetention = finish;
+  });
+}
+
+function sleepUntilWebhookRedelivery(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (wakeWebhookRedelivery === finish) wakeWebhookRedelivery = undefined;
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    wakeWebhookRedelivery = finish;
   });
 }
 
@@ -140,6 +163,7 @@ async function shutdown(signal: string): Promise<void> {
     console.log(`received ${signal}, draining ${activeRuns.size} active job(s)...`);
     shuttingDown = true;
     wakeWebhookRetention?.();
+    wakeWebhookRedelivery?.();
 
     const drained = await waitForWorkerIdle(SHUTDOWN_DRAIN_MS);
     if (!drained) {
@@ -147,6 +171,7 @@ async function shutdown(signal: string): Promise<void> {
         `shutdown drain expired with ${activeRuns.size} active job(s); interrupting active reviews`,
       );
       for (const controller of activeControllers.values()) controller.abort();
+      activeWebhookRedeliveryController?.abort();
       const settled = await waitForWorkerIdle(SHUTDOWN_SETTLE_MS);
       if (!settled) {
         const activeReviewJobIds = [...activeControllers.keys()].filter((jobId) =>
@@ -205,6 +230,51 @@ async function webhookRetentionLoop(): Promise<void> {
   }
 }
 
+async function webhookRedeliveryLoop(): Promise<void> {
+  while (!shuttingDown) {
+    const controller = new AbortController();
+    activeWebhookRedeliveryController = controller;
+    const pass = runWebhookRedeliveryPass(getPool(), {
+      owner: workerId,
+      signal: controller.signal,
+    });
+    activeRuns.add(pass);
+    try {
+      const result = await pass;
+      if (result.accepted > 0 || result.recovered > 0) {
+        console.log(
+          `[webhook recovery] accepted=${result.accepted} recovered=${result.recovered}`,
+        );
+      }
+      if (result.retryable > 0) {
+        reportOperationalWarning("worker", "webhook_recovery_retrying");
+      }
+      if (result.terminal > 0 || result.exhausted > 0) {
+        reportOperationalFailure(
+          "worker",
+          "webhook_recovery_failed",
+          new Error(
+            `GitHub webhook recovery stopped for ${result.terminal + result.exhausted} delivery attempt(s)`,
+          ),
+        );
+      }
+    } catch (err) {
+      if (!(controller.signal.aborted && shuttingDown)) {
+        reportOperationalFailure("worker", "webhook_recovery_failed", err);
+        console.error(`[webhook recovery] pass failed: ${redactSecrets(err)}`);
+      }
+    } finally {
+      activeRuns.delete(pass);
+      if (activeWebhookRedeliveryController === controller) {
+        activeWebhookRedeliveryController = undefined;
+      }
+    }
+    if (!shuttingDown) {
+      await sleepUntilWebhookRedelivery(WEBHOOK_REDELIVERY_INTERVAL_MS);
+    }
+  }
+}
+
 /**
  * Fail fast if the postil CLI the worker spawns is missing or not
  * executable. Compose sets POSTIL_BIN unconditionally, so an image built
@@ -257,6 +327,7 @@ async function main(): Promise<void> {
   const loops = Array.from({ length: CONCURRENCY }, (_, i) => claimLoop(i));
   loops.push(watchdogLoop());
   loops.push(webhookRetentionLoop());
+  loops.push(webhookRedeliveryLoop());
   await Promise.all(loops);
 }
 
