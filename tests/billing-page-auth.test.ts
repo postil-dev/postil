@@ -144,7 +144,7 @@ describe("organization billing page auth", () => {
     );
   });
 
-  test("renders public-only billing state, usage, credits, and current coverage", async () => {
+  test("renders public-only billing state and current coverage", async () => {
     role = "admin";
 
     const page = await OrgBillingPage({ params: Promise.resolve({ slug: "acme" }), searchParams: Promise.resolve({}) });
@@ -163,12 +163,11 @@ describe("organization billing page auth", () => {
     expect(markup).not.toContain("overage hard cap: not set");
     expect(markup).toContain("Private authors");
     expect(markup).toContain("reviewed on private PRs this period");
-    expect(markup).toContain("$194.78");
-    expect(markup).toContain("remaining from $200.00 granted");
-    expect(markup).toContain("$5.22 charged across");
-    expect(markup).toContain("Available after a hosted private plan is active");
-    expect(markup).toContain("Owner credit grant");
-    expect(markup).toContain("acme-2026-07-owner-credit");
+    expect(markup).not.toContain("$194.78");
+    expect(markup).not.toContain("remaining from $200.00 granted");
+    expect(markup).not.toContain("$5.22 charged across");
+    expect(markup).not.toContain("Owner credit grant");
+    expect(markup).not.toContain("acme-2026-07-owner-credit");
     expect(markup).toContain("acme/public");
     expect(markup).toContain("acme/private-now");
     expect(markup).toContain("Jun 20, 2026");
