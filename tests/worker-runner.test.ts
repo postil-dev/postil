@@ -30,6 +30,7 @@ const operationalFailures: string[] = [];
 const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
+class MockWebhookDeliveryStateError extends Error {}
 
 mock.module("@/lib/server-observability", () => ({
   reportOperationalFailure: (_processGroup: string, failureClass: string) => {
@@ -45,6 +46,7 @@ mock.module("@/lib/db", () => ({
 }));
 
 mock.module("@/lib/queue", () => ({
+  WebhookDeliveryStateError: MockWebhookDeliveryStateError,
   claimJob: async (_pool: unknown, _workerId: string, allowedKinds: readonly string[]) => {
     claimCalls += 1;
     claimCapabilities.push([...allowedKinds]);
@@ -329,6 +331,21 @@ describe("drainQueueOnce", () => {
     ]);
     expect(failed).toEqual([]);
     expect(operationalWarnings).toEqual(["job_retrying"]);
+  });
+
+  test("fails an orphaned webhook dispatch instead of retrying forever", async () => {
+    const job = reviewJob(10);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-10" };
+    webhookDeliveryLoadError = new MockWebhookDeliveryStateError(
+      "webhook delivery delivery-10 is missing",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(failed).toEqual([{ id: 10, error: "webhook delivery delivery-10 is missing" }]);
+    expect(retriedIndefinitely).toEqual([]);
+    expect(operationalFailures).toEqual(["job_permanently_failed"]);
   });
 
   test("dispatches durable respond delivery jobs independently", async () => {

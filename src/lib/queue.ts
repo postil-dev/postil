@@ -100,6 +100,11 @@ export interface StoredWebhookDelivery {
   payload: unknown;
 }
 
+/** A dispatch job refers to inbox state that cannot become valid through retry. */
+export class WebhookDeliveryStateError extends Error {
+  override name = "WebhookDeliveryStateError";
+}
+
 /**
  * Commit a signed GitHub delivery and its dispatch job together. The advisory
  * transaction lock serializes concurrent attempts for one delivery without
@@ -178,10 +183,12 @@ export async function loadWebhookDelivery(
     [deliveryId],
   );
   const row = result.rows[0];
-  if (!row) throw new Error(`webhook delivery ${deliveryId} is missing`);
+  if (!row) throw new WebhookDeliveryStateError(`webhook delivery ${deliveryId} is missing`);
   if (row.completed_at) return null;
   if (row.payload === null) {
-    throw new Error(`webhook delivery ${deliveryId} has no dispatch payload`);
+    throw new WebhookDeliveryStateError(
+      `webhook delivery ${deliveryId} has no dispatch payload`,
+    );
   }
   return {
     deliveryId,

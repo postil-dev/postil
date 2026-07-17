@@ -298,6 +298,24 @@ describeDb("webhook delivery dedupe durability", () => {
     });
   });
 
+  test("an orphaned dispatch fails permanently instead of retrying forever", async () => {
+    expect((await POST(prRequest())).status).toBe(200);
+    await pool.query("DELETE FROM webhook_deliveries WHERE delivery_id = $1", [DELIVERY_ID]);
+
+    expect(await drainQueueOnce("webhook-orphan-test", { maxJobs: 1 })).toBe(1);
+    const result = await pool.query<{ status: string; last_error: string }>(
+      `SELECT status::text, last_error
+         FROM jobs
+        WHERE kind = 'webhook-dispatch'
+          AND payload->>'deliveryId' = $1`,
+      [DELIVERY_ID],
+    );
+    expect(result.rows[0]).toEqual({
+      status: "failed",
+      last_error: `webhook delivery ${DELIVERY_ID} is missing`,
+    });
+  });
+
   test("a crash after review enqueue does not enqueue the delivery twice", async () => {
     expect((await POST(prRequest())).status).toBe(200);
     const delivery = await loadWebhookDelivery(pool, DELIVERY_ID);

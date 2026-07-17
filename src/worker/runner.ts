@@ -18,6 +18,7 @@ import {
   type RespondJobPayload,
   type ReviewJobPayload,
   type WebhookCommentJobPayload,
+  WebhookDeliveryStateError,
   type WebhookDispatchJobPayload,
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
@@ -156,12 +157,14 @@ export async function runClaimedJob(
     const malformedWebhookDispatch =
       job.kind === "webhook-dispatch" &&
       message.includes("webhook dispatch job payload is malformed");
+    const invalidWebhookDelivery = err instanceof WebhookDeliveryStateError;
     const malformedWebhookComment =
       job.kind === "webhook-comment" &&
       message.includes("webhook comment job payload malformed");
     const permanent =
       malformedGateSync ||
       malformedWebhookDispatch ||
+      invalidWebhookDelivery ||
       malformedWebhookComment ||
       (job.kind !== "gate-state-sync" &&
         job.kind !== "webhook-dispatch" &&
@@ -169,7 +172,7 @@ export async function runClaimedJob(
         isPermanentFailure(message));
     const reconcileIndefinitely =
       (job.kind === "gate-state-sync" && !malformedGateSync) ||
-      (job.kind === "webhook-dispatch" && !malformedWebhookDispatch) ||
+      (job.kind === "webhook-dispatch" && !malformedWebhookDispatch && !invalidWebhookDelivery) ||
       (job.kind === "webhook-comment" && !malformedWebhookComment);
     const outcome =
       reconcileIndefinitely
