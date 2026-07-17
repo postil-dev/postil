@@ -238,6 +238,10 @@ describe("drainQueueOnce", () => {
       worker.indexOf("async function shutdown"),
       worker.indexOf("function jitter"),
     );
+    const webhookRedeliveryLoop = worker.slice(
+      worker.indexOf("async function webhookRedeliveryLoop"),
+      worker.indexOf("function validatePostilBin"),
+    );
 
     expect(worker).toContain('readPositiveIntEnv("WORKER_SHUTDOWN_DRAIN_MS", 10_000)');
     expect(worker).toContain('readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000)');
@@ -258,6 +262,9 @@ describe("drainQueueOnce", () => {
     );
     expect(shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)")).toBeLessThan(
       shutdown.indexOf("await requeueJobsOwnedBy("),
+    );
+    expect(webhookRedeliveryLoop).toContain(
+      "if (!shuttingDown) {\n      await sleepUntilWebhookRedelivery",
     );
     expect(fly).toContain('kill_signal = "SIGTERM"');
     expect(fly).toContain('kill_timeout = "30s"');

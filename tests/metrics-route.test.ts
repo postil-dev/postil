@@ -52,6 +52,12 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
           webhook_deliveries_24h: "9",
           webhook_pending: "2",
           oldest_webhook_pending_age_seconds: "75",
+          webhook_recovery_requests: "8",
+          webhook_recovery_accepted: "5",
+          webhook_recovery_recovered: "4",
+          webhook_recovery_unresolved: "2",
+          webhook_recovery_terminal: "1",
+          webhook_recovery_last_scan_age_seconds: "42",
           watchdog_kills: "5",
         },
       ],
@@ -203,6 +209,12 @@ describe("/api/metrics", () => {
     expect(text).toContain("postil_webhook_deliveries_24h 9");
     expect(text).toContain("postil_webhook_dispatch_pending 2");
     expect(text).toContain("postil_oldest_webhook_dispatch_age_seconds 75");
+    expect(text).toContain("postil_github_webhook_recovery_requests_30d 8");
+    expect(text).toContain("postil_github_webhook_recovery_accepted_30d 5");
+    expect(text).toContain("postil_github_webhook_recovery_recovered_30d 4");
+    expect(text).toContain("postil_github_webhook_recovery_unresolved 2");
+    expect(text).toContain("postil_github_webhook_recovery_terminal 1");
+    expect(text).toContain("postil_github_webhook_recovery_last_scan_age_seconds 42");
     expect(text).toContain('postil_webhook_deliveries_24h_by_event{event="pull_request"} 7');
     expect(text).toContain('postil_jobs_current{kind="review",status="queued"} 7');
     expect(text).toContain('postil_jobs_current{kind="respond",status="failed"} 1');

@@ -41,6 +41,13 @@ export function buildAppJwt(appId: string, privateKeyPem: string, now = Date.now
   return `${header}.${payload}.${signature}`;
 }
 
+/** Mint a short-lived App JWT for App-owner endpoints. */
+export function getAppJwt(now = Date.now()): string {
+  const appId = requireEnv("GITHUB_APP_ID");
+  const privateKey = normalizePrivateKey(requireEnv("GITHUB_APP_PRIVATE_KEY"));
+  return buildAppJwt(appId, privateKey, now);
+}
+
 interface CachedToken {
   token: string;
   expiresAt: number; // epoch ms
@@ -58,9 +65,7 @@ export async function getInstallationToken(
   if (cached && cached.expiresAt - Date.now() > 5 * 60 * 1000) {
     return cached.token;
   }
-  const appId = requireEnv("GITHUB_APP_ID");
-  const privateKey = normalizePrivateKey(requireEnv("GITHUB_APP_PRIVATE_KEY"));
-  const jwt = buildAppJwt(appId, privateKey);
+  const jwt = getAppJwt();
   const res = await fetch(
     `${apiBase()}/app/installations/${githubInstallationId}/access_tokens`,
     {

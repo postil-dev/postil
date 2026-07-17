@@ -269,6 +269,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "WORKER_WEBHOOK_REDELIVERY_INTERVAL_MS",
+    purpose: "Interval between bounded GitHub App failed-delivery recovery passes",
+    example: "300000",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
     name: "METRICS_TOKEN",
     purpose: "Bearer token protecting /api/metrics",
     example: "openssl rand -hex 24",

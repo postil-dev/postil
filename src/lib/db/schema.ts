@@ -485,6 +485,67 @@ export const webhookDeliveries = pgTable(
   ],
 );
 
+/** Payload-free observations and recovery receipts from GitHub's App delivery API. */
+export const githubWebhookDeliveryRecoveries = pgTable(
+  "github_webhook_delivery_recoveries",
+  {
+    deliveryId: text("delivery_id").primaryKey(),
+    deliveryGuid: text("delivery_guid").notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }).notNull(),
+    event: text("event").notNull(),
+    redelivery: boolean("redelivery").notNull(),
+    outcome: text("outcome").notNull(),
+    statusCode: integer("status_code"),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+    requestState: text("request_state"),
+    requestAttempts: integer("request_attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    lastRequestedAt: timestamp("last_requested_at", { withTimezone: true }),
+    requestStatusCode: integer("request_status_code"),
+    recoveryDeliveryId: text("recovery_delivery_id"),
+    lastErrorCategory: text("last_error_category"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("github_webhook_delivery_recoveries_guid_idx").on(
+      t.deliveryGuid,
+      t.deliveredAt,
+    ),
+    index("github_webhook_delivery_recoveries_retry_idx")
+      .on(t.nextAttemptAt, t.deliveredAt)
+      .where(sql`${t.outcome} = 'failure' AND ${t.recoveryDeliveryId} IS NULL`),
+    check(
+      "github_webhook_delivery_recoveries_outcome_check",
+      sql`${t.outcome} IN ('success', 'failure', 'pending')`,
+    ),
+    check(
+      "github_webhook_delivery_recoveries_request_state_check",
+      sql`${t.requestState} IS NULL OR ${t.requestState} IN ('requesting', 'retryable', 'accepted', 'terminal', 'exhausted', 'recovered')`,
+    ),
+    check(
+      "github_webhook_delivery_recoveries_attempts_check",
+      sql`${t.requestAttempts} >= 0 AND ${t.requestAttempts} <= 2`,
+    ),
+  ],
+);
+
+/** Singleton cursor and lease for bounded App delivery recovery sweeps. */
+export const githubWebhookRedeliveryState = pgTable(
+  "github_webhook_redelivery_state",
+  {
+    id: integer("id").primaryKey(),
+    cursor: text("cursor"),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    sweepStartedAt: timestamp("sweep_started_at", { withTimezone: true }),
+    lastPageAt: timestamp("last_page_at", { withTimezone: true }),
+    lastSweepCompletedAt: timestamp("last_sweep_completed_at", { withTimezone: true }),
+    rateLimitedUntil: timestamp("rate_limited_until", { withTimezone: true }),
+    lastErrorCategory: text("last_error_category"),
+  },
+  (t) => [check("github_webhook_redelivery_state_singleton_check", sql`${t.id} = 1`)],
+);
+
 /** Durable receipts for idempotent non-transactional release operations. */
 export const releaseSteps = pgTable("release_steps", {
   name: text("name").primaryKey(),
