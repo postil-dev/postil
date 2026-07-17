@@ -188,7 +188,7 @@ describe("private repository worker defense in depth", () => {
   });
 
   test("all webhook review, rerequest, mention, and approval paths pass through the gate before side effects", () => {
-    const source = readFileSync("src/app/api/webhooks/github/route.ts", "utf8");
+    const source = readFileSync("src/lib/github/webhook-handler.ts", "utf8");
     const pullStart = source.indexOf("async function handlePullRequest");
     const pullGate = source.indexOf("await canProcessPrivateRepository", pullStart);
     expect(source.indexOf("await supersedeActiveReviews", pullStart)).toBeGreaterThan(pullGate);

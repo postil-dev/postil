@@ -460,17 +460,24 @@ export const hostedUsageReservations = pgTable(
   ],
 );
 
-/** Webhook delivery dedupe and staged durable-inbox state. */
-export const webhookDeliveries = pgTable("webhook_deliveries", {
-  deliveryId: text("delivery_id").primaryKey(),
-  event: text("event").notNull(),
-  action: text("action"),
-  payload: jsonb("payload").$type<unknown>(),
-  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
-  // The default keeps inserts from an older web process valid during the
-  // schema-preparation rollout. Prepared writers explicitly store NULL.
-  completedAt: timestamp("completed_at", { withTimezone: true }).defaultNow(),
-});
+/** Durable webhook inbox keyed by X-GitHub-Delivery. */
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    deliveryId: text("delivery_id").primaryKey(),
+    event: text("event").notNull(),
+    action: text("action"),
+    payload: jsonb("payload").$type<unknown>(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "webhook_deliveries_payload_completion_check",
+      sql`(${t.payload} IS NULL) = (${t.completedAt} IS NOT NULL)`,
+    ),
+  ],
+);
 
 export type JobPayload = Record<string, unknown>;
 

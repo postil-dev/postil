@@ -34,6 +34,8 @@ interface DatabaseMetrics {
   installationCounts: Map<string, number>;
   repositoryCounts: Map<string, number>;
   webhookDeliveries24h: number;
+  webhookPending: number;
+  oldestWebhookPendingAge: number;
   webhookDeliveries24hByEvent: Array<{ event: string; count: number }>;
   jobCounts: Array<{ kind: string; status: string; count: number }>;
   oldestJobAges: Map<string, number>;
@@ -121,6 +123,12 @@ export async function GET(request: Request): Promise<NextResponse> {
       "# HELP postil_webhook_deliveries_24h Webhook deliveries received in the last 24 hours.",
       "# TYPE postil_webhook_deliveries_24h gauge",
       `postil_webhook_deliveries_24h ${dbMetrics.webhookDeliveries24h}`,
+      "# HELP postil_webhook_dispatch_pending Durable webhook deliveries awaiting successful dispatch.",
+      "# TYPE postil_webhook_dispatch_pending gauge",
+      `postil_webhook_dispatch_pending ${dbMetrics.webhookPending}`,
+      "# HELP postil_oldest_webhook_dispatch_age_seconds Age of the oldest incomplete webhook delivery.",
+      "# TYPE postil_oldest_webhook_dispatch_age_seconds gauge",
+      `postil_oldest_webhook_dispatch_age_seconds ${dbMetrics.oldestWebhookPendingAge}`,
       "# HELP postil_webhook_deliveries_24h_by_event Webhook deliveries received in the last 24 hours by event.",
       "# TYPE postil_webhook_deliveries_24h_by_event gauge",
       ...dbMetrics.webhookDeliveries24hByEvent.map(
@@ -216,6 +224,8 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       reviews_started_24h: string;
       reviews_finished_24h: string;
       webhook_deliveries_24h: string;
+      webhook_pending: string;
+      oldest_webhook_pending_age_seconds: string;
       watchdog_kills: string;
     }>(`
       SELECT
@@ -230,6 +240,8 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         (SELECT count(*)::text FROM reviews WHERE started_at >= now() - interval '24 hours') AS reviews_started_24h,
         (SELECT count(*)::text FROM reviews WHERE finished_at >= now() - interval '24 hours') AS reviews_finished_24h,
         (SELECT count(*)::text FROM webhook_deliveries WHERE received_at >= now() - interval '24 hours') AS webhook_deliveries_24h,
+        (SELECT count(*)::text FROM webhook_deliveries WHERE completed_at IS NULL) AS webhook_pending,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(received_at)), 0)::int::text FROM webhook_deliveries WHERE completed_at IS NULL) AS oldest_webhook_pending_age_seconds,
         (SELECT count(*)::text FROM reviews WHERE status = 'failed' AND error_message LIKE 'watchdog:%') AS watchdog_kills
     `),
     pool.query<{ status: string; count: string }>(`
@@ -401,6 +413,8 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       ["false", toNumber(row.disabled_repositories)],
     ]),
     webhookDeliveries24h: toNumber(row.webhook_deliveries_24h),
+    webhookPending: toNumber(row.webhook_pending),
+    oldestWebhookPendingAge: toNumber(row.oldest_webhook_pending_age_seconds),
     webhookDeliveries24hByEvent: webhooks24hByEvent.rows.map((eventRow) => ({
       event: eventRow.event,
       count: toNumber(eventRow.count),
