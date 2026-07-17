@@ -384,14 +384,6 @@ async function handleInstallationRepositories(
         "github_installation",
         removed.map((repo) => repo.id),
       );
-      await tx
-        .delete(schema.orgConfigSnapshots)
-        .where(
-          inArray(
-            schema.orgConfigSnapshots.sourceGithubRepoId,
-            removed.map((repo) => repo.id),
-          ),
-        );
       for (const repo of removed) {
         await tx
           .delete(schema.repositories)

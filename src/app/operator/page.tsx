@@ -9,7 +9,7 @@ import {
 } from "@/components/review-status";
 import { envelopeSchema, type Finding } from "@/lib/envelope";
 import { sortFindingsForDisplay } from "@/lib/findings";
-import { githubFileUrl, githubPrUrl } from "@/lib/github-links";
+import { githubFindingLocationUrl, githubPrUrl } from "@/lib/github-links";
 import { requireOperatorAccess } from "@/lib/operator-access";
 import {
   getOperatorReviewRows,
@@ -129,6 +129,16 @@ function FindingRow({
   repoFullName: string;
   headSha: string;
 }) {
+  const location = `${finding.path}:${finding.line}${
+    finding.endLine && finding.endLine > finding.line ? `-${finding.endLine}` : ""
+  }`;
+  const locationUrl = githubFindingLocationUrl(
+    repoFullName,
+    headSha,
+    finding.path,
+    finding.line,
+    finding.endLine,
+  );
   return (
     <div className="border-t border-stone/60 py-4 first:border-t-0 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-center gap-3">
@@ -141,14 +151,17 @@ function FindingRow({
         <span className="font-mono text-[11px] text-charcoal/60">
           confidence {finding.confidence.toFixed(2)}
         </span>
-        <a
-          href={githubFileUrl(repoFullName, headSha, finding.path, finding.line, finding.endLine)}
-          rel="noopener"
-          className="font-mono text-[11px] text-rust hover:underline"
-        >
-          {finding.path}:{finding.line}
-          {finding.endLine && finding.endLine > finding.line ? `-${finding.endLine}` : ""}
-        </a>
+        {locationUrl ? (
+          <a
+            href={locationUrl}
+            rel="noopener"
+            className="font-mono text-[11px] text-rust hover:underline"
+          >
+            {location}
+          </a>
+        ) : (
+          <span className="font-mono text-[11px] text-charcoal/60">{location}</span>
+        )}
       </div>
       <h3 className="mt-3 text-sm font-semibold leading-snug">{finding.title}</h3>
       <div className="mt-2 text-sm leading-relaxed text-ink-soft">

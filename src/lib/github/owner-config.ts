@@ -419,7 +419,28 @@ export async function resolveOwnerGithubConfig(
   const snapshot = await store.loadSnapshot(input.orgId);
   const installed = await store.findInstalledRepository(input.installationId, sourceFullName);
   if (!installed) {
-    if (snapshot) await store.deleteSnapshot(input.orgId);
+    if (!snapshot) {
+      return {
+        config: null,
+        files: [],
+        status: "absent",
+        stale: false,
+        sourceRepositoryId: null,
+        sourceGithubRepoId: null,
+        sourceFullName,
+        visibility: null,
+        defaultBranch: null,
+        commitSha: null,
+        provenance: SHARED_PATHS.map(([slot]) => ({
+          slot: slot as ConfigSlot,
+          source: "shared",
+          path: null,
+          repository: sourceFullName,
+          stale: false,
+          status: "absent",
+        })),
+      };
+    }
     return {
       config: null,
       files: [],

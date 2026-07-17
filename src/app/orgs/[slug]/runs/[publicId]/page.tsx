@@ -25,7 +25,7 @@ import {
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
 import { sortFindingsForDisplay } from "@/lib/findings";
-import { githubFileUrl, githubPrUrl } from "@/lib/github-links";
+import { githubFindingLocationUrl, githubPrUrl } from "@/lib/github-links";
 import type { ConfigProvenanceEntry } from "@/lib/github/contents";
 import { requireOrgMembership } from "@/lib/org-access";
 
@@ -183,6 +183,16 @@ function FindingCard({
   headSha: string;
   reviewUrl: string;
 }) {
+  const location = `${finding.path}:${finding.line}${
+    finding.endLine && finding.endLine > finding.line ? `-${finding.endLine}` : ""
+  }`;
+  const locationUrl = githubFindingLocationUrl(
+    repoFullName,
+    headSha,
+    finding.path,
+    finding.line,
+    finding.endLine,
+  );
   return (
     <article className="px-5 py-5 sm:px-6">
       <div className="flex flex-wrap items-center gap-3">
@@ -195,14 +205,17 @@ function FindingCard({
           {findingKindLabel(finding.kind)}
         </span>
         <FindingConfidenceLabel finding={finding} />
-        <a
-          href={githubFileUrl(repoFullName, headSha, finding.path, finding.line, finding.endLine)}
-          rel="noopener"
-          className="font-mono text-[11px] text-rust hover:underline"
-        >
-          {finding.path}:{finding.line}
-          {finding.endLine && finding.endLine > finding.line ? `-${finding.endLine}` : ""}
-        </a>
+        {locationUrl ? (
+          <a
+            href={locationUrl}
+            rel="noopener"
+            className="font-mono text-[11px] text-rust hover:underline"
+          >
+            {location}
+          </a>
+        ) : (
+          <span className="font-mono text-[11px] text-charcoal/70">{location}</span>
+        )}
       </div>
       <h2 className="mt-3 text-base font-semibold leading-snug">
         <a href={reviewUrl} rel="noopener" className="hover:text-rust hover:underline">

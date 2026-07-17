@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { Finding } from "@/lib/envelope";
 import { sortFindingsForDisplay } from "@/lib/findings";
-import { githubFileUrl, githubPrUrl } from "@/lib/github-links";
+import { githubFileUrl, githubFindingLocationUrl, githubPrUrl } from "@/lib/github-links";
 import { formatAbsoluteTimestamp, formatRelativeTime } from "@/lib/time";
 
 function finding(overrides: Partial<Finding>): Finding {
@@ -37,6 +37,21 @@ describe("GitHub links", () => {
     );
     expect(githubFileUrl("o/r", "abc", "a.ts", 7, 7)).toBe(
       "https://github.com/o/r/blob/abc/a.ts#L7",
+    );
+  });
+
+  test("does not link virtual review anchors as repository files", () => {
+    for (const path of [
+      ".postil/diff",
+      ".postil/model-output",
+      ".postil/operational",
+      ".postil/pr-description",
+      ".postil/provider",
+    ]) {
+      expect(githubFindingLocationUrl("o/r", "abc", path, 1)).toBeNull();
+    }
+    expect(githubFindingLocationUrl("o/r", "abc", ".postil/content-policy.md", 3)).toBe(
+      "https://github.com/o/r/blob/abc/.postil/content-policy.md#L3",
     );
   });
 });

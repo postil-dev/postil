@@ -281,7 +281,19 @@ describe("owner .github configuration", () => {
     }
   });
 
-  test("removes cached policy when the source is no longer installed", async () => {
+  test("treats an owner config repository that was never installed as absent", async () => {
+    installed = false;
+
+    const resolved = await resolveOwnerGithubConfig(store, input);
+
+    expect(resolved.status).toBe("absent");
+    expect(resolved.provenance.every((entry) => entry.status === "absent")).toBe(true);
+    expect(buildConfigProvenance([], resolved.provenance).degraded).toBe(false);
+    expect(requests).toHaveLength(0);
+    expect(deletedSnapshots).toBe(0);
+  });
+
+  test("keeps shared-policy revocation degraded across repeated resolutions", async () => {
     files.set(".postil/guardrails.md", "Cached rule.\n");
     await resolveOwnerGithubConfig(store, input);
     requests.length = 0;
@@ -293,8 +305,12 @@ describe("owner .github configuration", () => {
     expect(resolved.provenance.every((entry) => entry.status === "inaccessible")).toBe(true);
     expect(buildConfigProvenance([], resolved.provenance).degraded).toBe(true);
     expect(requests).toHaveLength(0);
-    expect(snapshot).toBeNull();
-    expect(deletedSnapshots).toBe(1);
+    expect(snapshot).not.toBeNull();
+    expect(deletedSnapshots).toBe(0);
+
+    const repeated = await resolveOwnerGithubConfig(store, input);
+    expect(repeated.status).toBe("inaccessible");
+    expect(buildConfigProvenance([], repeated.provenance).degraded).toBe(true);
   });
 
   test("rejects a repository owned by a different GitHub account", async () => {
