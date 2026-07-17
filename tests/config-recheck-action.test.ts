@@ -36,11 +36,22 @@ mock.module("next/cache", () => ({
 
 mock.module("@/lib/session", () => ({
   getSessionUser: async () => ({ id: 7 }),
+  getVerifiedSessionUser: async () => ({ ok: true, user: { id: 7 } }),
 }));
 
 mock.module("@/lib/db", () => ({
   schema,
   getDb: () => fakeDb(),
+}));
+
+mock.module("@/lib/org-access", () => ({
+  getOrgMembership: async () => ({
+    ok: true,
+    db: fakeDb(),
+    user: { id: 7 },
+    org: { id: 20 },
+    membership: { id: 1, role: "admin" },
+  }),
 }));
 
 mock.module("@/lib/github/config-probe", () => ({

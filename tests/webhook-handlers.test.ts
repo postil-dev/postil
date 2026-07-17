@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { Pool } from "pg";
 
+import { getSealingKey, seal } from "@/lib/crypto/seal";
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   signWebhookBody,
@@ -32,6 +33,7 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 const WEBHOOK_SECRET = "test-webhook-secret-for-handlers";
+const ORIGINAL_FETCH = globalThis.fetch;
 
 // Record check-run completions the removal path drives, and hand back a fake
 // installation token so no real GitHub App credentials are needed. Spread the
@@ -40,6 +42,10 @@ const WEBHOOK_SECRET = "test-webhook-secret-for-handlers";
 const completedCheckRuns: Array<{ repoFullName: string; conclusion: string }> = [];
 const postedComments: Array<{ repoFullName: string; number: number; body: string }> = [];
 let pullRequestHeadSha = "head-sha";
+let liveMembershipStatus = 200;
+let liveMembershipRole: "admin" | "member" = "admin";
+let liveMembershipState = "active";
+let membershipFetchCount = 0;
 let pullRequestReviewContext = {
   headSha: "head-sha",
   baseSha: "base-sha",
@@ -125,6 +131,7 @@ describeDb("webhook handler behaviour", () => {
     process.env.DATABASE_URL = TEST_URL;
     process.env.GITHUB_WEBHOOK_SECRET = WEBHOOK_SECRET;
     process.env.POSTIL_WEBHOOK_DRAIN_ENABLED = "0";
+    process.env.POSTIL_SEALING_KEY = "cd".repeat(32);
     pool = new Pool({ connectionString: TEST_URL, max: 4 });
     const dir = join(import.meta.dir, "..", "drizzle");
     const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
@@ -147,6 +154,30 @@ describeDb("webhook handler behaviour", () => {
     completedCheckRuns.length = 0;
     postedComments.length = 0;
     pullRequestHeadSha = "head-sha";
+    liveMembershipStatus = 200;
+    liveMembershipRole = "admin";
+    liveMembershipState = "active";
+    membershipFetchCount = 0;
+    globalThis.fetch = Object.assign(
+      async (input: string | URL | Request) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (!url.includes("/user/memberships/orgs/")) {
+          throw new Error(`unexpected GitHub request: ${url}`);
+        }
+        membershipFetchCount += 1;
+        return new Response(
+          liveMembershipStatus === 200
+            ? JSON.stringify({ state: liveMembershipState, role: liveMembershipRole })
+            : "unavailable",
+          {
+            status: liveMembershipStatus,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
     pullRequestReviewContext = {
       headSha: "head-sha",
       baseSha: "base-sha",
@@ -158,11 +189,12 @@ describeDb("webhook handler behaviour", () => {
     await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
-      "TRUNCATE reviews, repositories, installations, organizations RESTART IDENTITY CASCADE",
+      "TRUNCATE reviews, repositories, installations, organizations, users RESTART IDENTITY CASCADE",
     );
   });
 
   afterAll(async () => {
+    globalThis.fetch = ORIGINAL_FETCH;
     await pool?.end();
   });
 
@@ -238,6 +270,19 @@ describeDb("webhook handler behaviour", () => {
       `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)
        ON CONFLICT (org_id, user_id) DO UPDATE SET role = excluded.role`,
       [orgId, userId, role],
+    );
+    liveMembershipRole = role;
+    const ciphertext = seal("approval-oauth-token", getSealingKey());
+    await pool.query(
+      `INSERT INTO sessions
+         (id, user_id, expires_at, github_access_token_ciphertext, membership_checked_at)
+       VALUES ($1, $2, now() + interval '1 hour', $3, now())
+       ON CONFLICT (id) DO UPDATE SET
+         user_id = excluded.user_id,
+         expires_at = excluded.expires_at,
+         github_access_token_ciphertext = excluded.github_access_token_ciphertext,
+         membership_checked_at = excluded.membership_checked_at`,
+      [`approval-session-${userId}`, userId, ciphertext],
     );
     return userId;
   }
@@ -796,6 +841,107 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
     expect(approvals.rows[0]!.c).toBe(0);
+  });
+
+  test("approval command revokes a cached actor who left the organization", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    liveMembershipStatus = 404;
+
+    expect((await approvalComment("approval-left-org")).status).toBe(200);
+
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals",
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM org_members WHERE org_id = $1",
+          [orgId],
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not be verified");
+  });
+
+  test("approval command applies a live admin demotion before authorizing", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    liveMembershipRole = "member";
+
+    expect((await approvalComment("approval-demoted")).status).toBe(200);
+
+    expect(
+      (
+        await pool.query<{ role: string }>(
+          "SELECT role FROM org_members WHERE org_id = $1",
+          [orgId],
+        )
+      ).rows[0]!.role,
+    ).toBe("member");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "requires an organization admin",
+    );
+  });
+
+  test("approval command fails closed without deleting cached access during a GitHub outage", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    liveMembershipStatus = 503;
+
+    expect((await approvalComment("approval-membership-outage")).status).toBe(200);
+
+    expect(
+      (
+        await pool.query<{ role: string }>(
+          "SELECT role FROM org_members WHERE org_id = $1",
+          [orgId],
+        )
+      ).rows[0]!.role,
+    ).toBe("admin");
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals",
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+  });
+
+  test("approval command recognizes a personal-account owner without an organization lookup", async () => {
+    const orgId = await seedOrg();
+    await pool.query("UPDATE organizations SET github_org_id = 501 WHERE id = $1", [orgId]);
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "admin/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await pool.query("DELETE FROM sessions");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+    liveMembershipStatus = 503;
+
+    expect((await approvalComment("approval-personal-owner")).status).toBe(200);
+
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+          [reviewId],
+        )
+      ).rows[0]!.c,
+    ).toBe(1);
+    expect(membershipFetchCount).toBe(0);
   });
 
   test("approval command rejects severity-blocking findings", async () => {

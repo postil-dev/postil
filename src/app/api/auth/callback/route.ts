@@ -6,6 +6,7 @@ import {
   type AccountRef,
   syncInstallationsFromGithub,
 } from "@/lib/github/installation-sync";
+import { fetchAllActiveOrgMemberships } from "@/lib/github/user-memberships";
 import { oauthCallbackUrl, OAUTH_STATE_COOKIE, publicOrigin } from "@/lib/oauth";
 import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
 import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/lib/session";
@@ -19,51 +20,6 @@ interface GithubUser {
   name: string | null;
   email: string | null;
   avatar_url: string | null;
-}
-
-interface GithubOrgMembership {
-  role?: string;
-  state?: string;
-  organization?: { id?: number; login?: string };
-}
-
-/**
- * Page through GET /user/memberships/orgs, which returns the authenticated
- * user's org memberships WITH role (admin/member) and paginates via the Link
- * rel="next" header. Returns the complete list, or null if any page fails. The
- * callback rejects sign-in on null rather than reconciling from a truncated set
- * that could silently hide or revoke accounts.
- */
-async function fetchAllOrgMemberships(
-  headers: Record<string, string>,
-): Promise<GithubOrgMembership[] | null> {
-  const memberships: GithubOrgMembership[] = [];
-  // Active memberships only: a pending invite is not a membership yet.
-  let next: string | null = "https://api.github.com/user/memberships/orgs?per_page=100&state=active";
-  // Bound the loop defensively against a malformed Link header cycle.
-  for (let page = 0; next && page < 100; page++) {
-    try {
-      const res: Response = await fetch(next, { headers });
-      if (!res.ok) return null;
-      const batch: unknown = await res.json();
-      if (!Array.isArray(batch)) return null;
-      memberships.push(...(batch as GithubOrgMembership[]));
-      next = nextPageUrl(res.headers.get("link"));
-    } catch {
-      return null;
-    }
-  }
-  return next === null ? memberships : null;
-}
-
-/** Extract the rel="next" URL from a GitHub Link header, or null when absent. */
-function nextPageUrl(link: string | null): string | null {
-  if (!link) return null;
-  for (const part of link.split(",")) {
-    const m = /<([^>]+)>\s*;\s*rel="next"/.exec(part.trim());
-    if (m) return m[1]!;
-  }
-  return null;
 }
 
 function getCookie(request: Request, name: string): string | undefined {
@@ -152,20 +108,19 @@ export async function GET(request: Request): Promise<NextResponse> {
   // we cannot tell "left every org" from a temporary GitHub failure or a
   // truncated page. Sign-in fails with a retryable error instead of creating a
   // session from stale or incomplete account access.
-  const memberships = await fetchAllOrgMemberships(ghHeaders);
-  if (!memberships) {
+  const membershipResult = await fetchAllActiveOrgMemberships(accessToken);
+  if (!membershipResult.ok) {
     const response = NextResponse.redirect(
       new URL("/login?error=organization_memberships", origin),
     );
     response.cookies.delete(OAUTH_STATE_COOKIE);
     return response;
   }
+  const memberships = membershipResult.memberships;
 
-  // Bring installation rows in line with GitHub before linking memberships:
-  // an installation that predates this database (or whose webhooks were
-  // missed) would otherwise never materialize as an organization, and the
-  // dashboard would greet an installed, signed-in user with "no
-  // organizations". Best-effort by design; login never fails on it.
+  // Synchronize installation rows before linking memberships so every
+  // installed account can materialize as an organization. This best-effort
+  // repair does not block sign-in.
   const syncAccounts: AccountRef[] = [
     { githubId: ghUser.id, login: ghUser.login, type: "User" },
   ];
@@ -189,7 +144,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
   await reconcileOrgMemberships(db, userId, accounts);
 
-  const sessionToken = await createSession(userId);
+  const sessionToken = await createSession(userId, accessToken, new Date());
   const response = NextResponse.redirect(new URL("/reports", origin));
   response.cookies.set(SESSION_COOKIE, sessionToken, {
     httpOnly: true,

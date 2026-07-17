@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 /**
- * AES-256-GCM sealing for org BYO API keys.
+ * AES-256-GCM sealing for stored credentials.
  *
  * Wire format: [12-byte IV][16-byte auth tag][ciphertext]. The sealing key
  * comes from POSTIL_SEALING_KEY (32 bytes, hex or base64). Plaintext keys
@@ -50,7 +50,7 @@ export function getSealingKey(): Buffer {
   const raw = process.env.POSTIL_SEALING_KEY;
   if (!raw) {
     throw new Error(
-      "POSTIL_SEALING_KEY is not set; cannot seal or unseal org API keys (try: openssl rand -hex 32)",
+      "POSTIL_SEALING_KEY is not set; cannot seal or unseal stored credentials (try: openssl rand -hex 32)",
     );
   }
   return parseSealingKey(raw);

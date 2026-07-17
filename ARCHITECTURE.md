@@ -162,14 +162,14 @@ noindexed:
   model, token usage, timing, and kind-blocking override state.
 
 Authorization is uniform: every page and server action re-derives access from
-the session. An `org_members` row grants read access; the `admin` role gates
-writes (settings save, repository toggle). Rows and aggregates are always
-scoped through `installations.org_id`, so an id belonging to another
-organization returns 404 rather than leaking. Membership and roles mirror
-GitHub: login reconciles them (`src/lib/org-sync.ts`) and backfills
-organizations, installations, and repositories from the GitHub API for
-installations whose webhooks predate the database
-(`src/lib/github/installation-sync.ts`).
+the session. A sealed GitHub OAuth credential refreshes the complete active
+organization membership set every 15 minutes during the seven-day session.
+Refreshes use a database lease, revoke removed memberships, apply role changes,
+and fail closed without deleting known membership state when GitHub is
+unavailable. An `org_members` row grants read access; the `admin` role gates
+writes. Rows and aggregates are scoped through `installations.org_id`, so an id
+belonging to another organization returns 404. Sign-in also synchronizes known
+GitHub App installations (`src/lib/github/installation-sync.ts`).
 
 Repository config status crosses the latest completed review's recorded
 `config_files` with a cached default-branch GitHub contents probe. The settings

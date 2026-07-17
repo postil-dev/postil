@@ -13,7 +13,7 @@ import { ReportsHeader } from "@/components/reports-header";
 import { getDb, schema } from "@/lib/db";
 import { githubAppInstallUrl } from "@/lib/github-app";
 import { githubPrUrl } from "@/lib/github-links";
-import { getSessionUser } from "@/lib/session";
+import { getVerifiedSessionUser } from "@/lib/session";
 
 export const metadata: Metadata = {
   title: "Reports",
@@ -22,8 +22,15 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function ReportsPage() {
-  const user = await getSessionUser();
-  if (!user) redirect("/login");
+  const verification = await getVerifiedSessionUser();
+  if (!verification.ok) {
+    redirect(
+      verification.reason === "unauthenticated"
+        ? "/login"
+        : "/login?error=membership_verification",
+    );
+  }
+  const user = verification.user;
 
   const db = getDb();
   const memberships = await db

@@ -18,6 +18,12 @@ export async function GET(
   const { slug, publicId } = await params;
   const access = await getOrgMembership(slug);
   if (!access.ok) {
+    if (access.reason === "verification_unavailable") {
+      return NextResponse.json(
+        { error: "membership verification unavailable" },
+        { status: 503, headers: { "retry-after": "30" } },
+      );
+    }
     return NextResponse.json(
       { error: access.reason === "unauthenticated" ? "unauthorized" : "not found" },
       { status: access.reason === "unauthenticated" ? 401 : 404 },

@@ -111,6 +111,7 @@ export function ReviewsTable({
     let controller: AbortController | undefined;
 
     const refresh = async () => {
+      let nextPollDelayMs = POLL_INTERVAL_MS;
       controller = new AbortController();
       try {
         const response = await fetch(`/api/orgs/${encodeURIComponent(orgSlug)}/reviews?limit=50`, {
@@ -120,11 +121,16 @@ export function ReviewsTable({
         if (response.ok) {
           const nextReviews = (await response.json()) as OrgReviewRow[];
           if (!stopped && Array.isArray(nextReviews)) setReviews(nextReviews);
+        } else if (response.status === 503) {
+          const retryAfterSeconds = Number(response.headers.get("retry-after"));
+          if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+            nextPollDelayMs = Math.min(retryAfterSeconds * 1000, 60_000);
+          }
         }
       } catch {
         // A transient refresh failure leaves the last known rows in place.
       } finally {
-        if (!stopped) timeout = window.setTimeout(refresh, POLL_INTERVAL_MS);
+        if (!stopped) timeout = window.setTimeout(refresh, nextPollDelayMs);
       }
     };
 

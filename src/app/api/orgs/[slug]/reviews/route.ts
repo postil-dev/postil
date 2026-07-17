@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { requireOrgMembership } from "@/lib/org-access";
+import { getOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 
 export const runtime = "nodejs";
@@ -14,7 +14,20 @@ export async function GET(
   { params }: { params: Promise<{ slug: string }> },
 ): Promise<NextResponse> {
   const { slug } = await params;
-  const { db, org } = await requireOrgMembership(slug);
+  const access = await getOrgMembership(slug);
+  if (!access.ok) {
+    if (access.reason === "verification_unavailable") {
+      return NextResponse.json(
+        { error: "membership verification unavailable" },
+        { status: 503, headers: { "retry-after": "30" } },
+      );
+    }
+    return NextResponse.json(
+      { error: access.reason === "unauthenticated" ? "unauthorized" : "not found" },
+      { status: access.reason === "unauthenticated" ? 401 : 404 },
+    );
+  }
+  const { db, org } = access;
   const requestedLimit = Number.parseInt(
     new URL(request.url).searchParams.get("limit") ?? "",
     10,

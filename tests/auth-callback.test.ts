@@ -20,7 +20,11 @@ const ORIGINAL_CLIENT_SECRET = process.env.GITHUB_OAUTH_CLIENT_SECRET;
 
 const syncCalls: AccountRef[][] = [];
 const reconciliationCalls: Array<{ userId: number; accounts: AccountMembership[] }> = [];
-const sessionCalls: number[] = [];
+const sessionCalls: Array<{
+  userId: number;
+  accessToken: string;
+  membershipCheckedAt: Date;
+}> = [];
 const requestedUrls: string[] = [];
 let githubResponses: Array<Response | Error> = [];
 
@@ -46,8 +50,12 @@ mock.module("@/lib/org-sync", () => ({
 }));
 
 mock.module("@/lib/session", () => ({
-  createSession: async (userId: number) => {
-    sessionCalls.push(userId);
+  createSession: async (
+    userId: number,
+    accessToken: string,
+    membershipCheckedAt: Date,
+  ) => {
+    sessionCalls.push({ userId, accessToken, membershipCheckedAt });
     return "signed-session";
   },
   SESSION_COOKIE: "postil_session",
@@ -174,7 +182,12 @@ describe("GET /api/auth/callback", () => {
         ],
       },
     ]);
-    expect(sessionCalls).toEqual([77]);
+    expect(sessionCalls).toHaveLength(1);
+    expect(sessionCalls[0]).toMatchObject({
+      userId: 77,
+      accessToken: "user-access-token",
+    });
+    expect(sessionCalls[0]?.membershipCheckedAt).toBeInstanceOf(Date);
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("https://postil.dev/reports");
     expect(response.headers.get("set-cookie")).toContain("postil_session=signed-session");
