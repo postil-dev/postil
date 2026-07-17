@@ -5,8 +5,9 @@
  *   DATABASE_URL=... bun run seed
  *
  * If POSTIL_SESSION_SECRET is set, a signed session cookie value is printed
- * so you can browse /reports and /orgs/acme without going through OAuth:
- * set it as the `postil_session` cookie.
+ * so you can browse /reports and /orgs/acme without going through OAuth. The
+ * seeded membership proof is valid for 15 minutes; rerun the seed to refresh
+ * it, then set the value as the `postil_session` cookie.
  */
 import { randomBytes } from "node:crypto";
 
@@ -307,9 +308,10 @@ async function main(): Promise<void> {
       id: sessionId,
       userId: user.id,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      membershipCheckedAt: new Date(),
     });
     const cookie = await signSessionToken(sessionId, secret);
-    console.log(`Demo session cookie (7 days):\n  postil_session=${cookie}`);
+    console.log(`Demo session cookie (membership verified for 15 minutes):\n  postil_session=${cookie}`);
   } else {
     console.log("Set POSTIL_SESSION_SECRET to also mint a demo session cookie.");
   }

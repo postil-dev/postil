@@ -558,6 +558,11 @@ export const sessions = pgTable("sessions", {
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  githubAccessTokenCiphertext: bytea("github_access_token_ciphertext"),
+  membershipCheckedAt: timestamp("membership_checked_at", { withTimezone: true }),
+  membershipCheckAvailableAt: timestamp("membership_check_available_at", {
+    withTimezone: true,
+  }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

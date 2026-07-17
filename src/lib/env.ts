@@ -79,7 +79,8 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "POSTIL_SEALING_KEY",
-    purpose: "AES-256-GCM key (32 bytes, hex or base64) sealing org BYOK credentials",
+    purpose:
+      "AES-256-GCM key (32 bytes, hex or base64) sealing OAuth sessions and org BYOK credentials",
     example: "openssl rand -hex 32",
     scope: ["web", "worker"],
   },

@@ -6,6 +6,11 @@ let logRows: unknown[] = [];
 
 mock.module("@/lib/org-access", () => ({
   getOrgMembership: async () => accessState,
+  requireOrgMembership: async () => {
+    const access = accessState as { ok: boolean; reason?: string };
+    if (!access.ok) throw new Error(access.reason);
+    return accessState;
+  },
 }));
 
 const { GET } = await import("@/app/api/orgs/[slug]/runs/[publicId]/logs/route");
@@ -77,6 +82,16 @@ describe("GET run logs", () => {
     const response = await invoke();
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not found" });
+  });
+
+  test("returns a retryable error while GitHub membership verification is unavailable", async () => {
+    accessState = { ok: false, reason: "verification_unavailable" };
+    const response = await invoke();
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(await response.json()).toEqual({
+      error: "membership verification unavailable",
+    });
   });
 
   test("rejects numeric run ids and invalid after cursors", async () => {

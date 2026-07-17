@@ -2,21 +2,26 @@ import { and, eq } from "drizzle-orm";
 import { notFound, redirect } from "next/navigation";
 
 import { getDb, schema } from "@/lib/db";
-import { getSessionUser } from "@/lib/session";
+import { getVerifiedSessionUser, type SessionUser } from "@/lib/session";
 
 export type OrgAccessResult =
   | {
       ok: true;
       db: ReturnType<typeof getDb>;
+      user: SessionUser;
       org: typeof schema.organizations.$inferSelect;
       membership: { id: number; role: string };
     }
-  | { ok: false; reason: "unauthenticated" | "not_found" };
+  | {
+      ok: false;
+      reason: "unauthenticated" | "verification_unavailable" | "not_found";
+    };
 
 /** Resolve organization access without invoking Next.js page control flow. */
 export async function getOrgMembership(slug: string): Promise<OrgAccessResult> {
-  const user = await getSessionUser();
-  if (!user) return { ok: false, reason: "unauthenticated" };
+  const verification = await getVerifiedSessionUser();
+  if (!verification.ok) return verification;
+  const user = verification.user;
 
   const db = getDb();
   const org = (
@@ -37,7 +42,7 @@ export async function getOrgMembership(slug: string): Promise<OrgAccessResult> {
   )[0];
   if (!membership) return { ok: false, reason: "not_found" };
 
-  return { ok: true, db, org, membership };
+  return { ok: true, db, user, org, membership };
 }
 
 /**
@@ -49,6 +54,9 @@ export async function requireOrgMembership(slug: string) {
   const access = await getOrgMembership(slug);
   if (!access.ok) {
     if (access.reason === "unauthenticated") redirect("/login");
+    if (access.reason === "verification_unavailable") {
+      redirect("/login?error=membership_verification");
+    }
     notFound();
   }
   return access;

@@ -77,11 +77,32 @@ mock.module("next/cache", () => ({
 
 mock.module("@/lib/session", () => ({
   getSessionUser: async () => sessionUser,
+  getVerifiedSessionUser: async () =>
+    sessionUser
+      ? { ok: true, user: sessionUser }
+      : { ok: false, reason: "unauthenticated" },
 }));
 
 mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
   schema,
+}));
+
+mock.module("@/lib/org-access", () => ({
+  getOrgMembership: async () => {
+    if (!sessionUser) return { ok: false, reason: "unauthenticated" };
+    const org = orgRows[0];
+    if (!org) return { ok: false, reason: "not_found" };
+    const membership = memberRows[0];
+    if (!membership) return { ok: false, reason: "not_found" };
+    return {
+      ok: true,
+      db: fakeDb(),
+      user: sessionUser,
+      org,
+      membership: { id: 1, role: membership.role },
+    };
+  },
 }));
 
 mock.module("@/lib/finding-approvals", () => ({

@@ -118,6 +118,14 @@ mock.module("@/lib/private-repository-entitlement", () => ({
 mock.module("@/lib/org-access", () => ({
   requireOrgMembership: async () => ({
     db: fakeDb(),
+    user: { id: 7, login: "octocat" },
+    org: { id: 20, slug: "acme", name: "Acme", plan: "beta" },
+    membership: { id: 1, role },
+  }),
+  getOrgMembership: async () => ({
+    ok: true,
+    db: fakeDb(),
+    user: { id: 7, login: "octocat" },
     org: { id: 20, slug: "acme", name: "Acme", plan: "beta" },
     membership: { id: 1, role },
   }),

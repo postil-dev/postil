@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 
 import { getDb, schema } from "@/lib/db";
-import { getSessionUser } from "@/lib/session";
+import { getVerifiedSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,10 +15,19 @@ export const dynamic = "force-dynamic";
  * is useful, never session or profile internals.
  */
 export async function GET(): Promise<NextResponse> {
-  const user = await getSessionUser();
-  if (!user) {
-    return NextResponse.json({ authenticated: false }, { status: 401 });
+  const verification = await getVerifiedSessionUser();
+  if (!verification.ok) {
+    return NextResponse.json(
+      {
+        authenticated: false,
+        ...(verification.reason === "verification_unavailable"
+          ? { reason: "membership_verification_unavailable" }
+          : {}),
+      },
+      { status: verification.reason === "unauthenticated" ? 401 : 503 },
+    );
   }
+  const user = verification.user;
 
   const db = getDb();
   const memberships = await db

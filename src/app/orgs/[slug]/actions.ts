@@ -19,6 +19,7 @@ import {
 } from "@/lib/byok-provider";
 import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
+import { getOrgMembership } from "@/lib/org-access";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
 import { getSessionUser } from "@/lib/session";
@@ -70,35 +71,28 @@ export type ConfigProbeRefreshState =
 async function requireMembership(
   slug: string,
 ): Promise<{ orgId: number; role: string; userId: number }> {
-  const user = await getSessionUser();
-  if (!user) throw new Error("not signed in");
-  const db = getDb();
-  const org = (
-    await db
-      .select({ id: schema.organizations.id })
-      .from(schema.organizations)
-      .where(eq(schema.organizations.slug, slug))
-      .limit(1)
-  )[0];
-  if (!org) throw new Error("organization not found");
-  const member = (
-    await db
-      .select({ role: schema.orgMembers.role })
-      .from(schema.orgMembers)
-      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)))
-      .limit(1)
-  )[0];
-  if (!member) throw new Error("not a member of this organization");
-  return { orgId: org.id, role: member.role, userId: user.id };
+  const access = await getOrgMembership(slug);
+  if (!access.ok) {
+    if (access.reason === "verification_unavailable") {
+      throw new Error("GitHub membership verification is temporarily unavailable");
+    }
+    if (access.reason === "unauthenticated") throw new Error("not signed in");
+    throw new Error("organization not found");
+  }
+  return {
+    orgId: access.org.id,
+    role: access.membership.role,
+    userId: access.user.id,
+  };
 }
 
 /**
  * Resolve org by slug and assert the current user is an admin of it. Gates the
  * write actions (settings save, repository toggle): hosted review config, the
  * BYO LLM API key, and per-repo review coverage are org-wide controls, so a
- * plain member must not be able to overwrite or clear them. Roles are sourced
- * from GitHub org membership at login (admin/member); personal accounts are
- * always admin.
+ * plain member must not be able to overwrite or clear them. GitHub membership
+ * verification supplies organization roles; personal accounts are always
+ * admin.
  */
 async function requireAdmin(slug: string): Promise<{ orgId: number; userId: number }> {
   const { orgId, role, userId } = await requireMembership(slug);

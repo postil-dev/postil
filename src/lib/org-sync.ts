@@ -3,6 +3,8 @@ import { and, eq, inArray, notInArray } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
 
+type OrgMembershipDatabase = Pick<Database, "delete" | "insert" | "select">;
+
 /**
  * One GitHub account (an org or the user's personal account) the signed-in
  * user currently belongs to, paired with the role they should hold.
@@ -17,13 +19,9 @@ export interface GithubAccountMembership {
  * currently belong to.
  *
  * org_members is the single source of truth for dashboard read and write
- * access (see orgs/[slug]/page.tsx and orgs/[slug]/actions.ts). The `role`
- * column authorizes the write actions (settings save, repository toggle),
- * which require the admin role; read access only needs a row. Every row is
- * sourced from GitHub membership at login — nothing else inserts into the
- * table. Login previously only ever INSERTed, so a user removed from a GitHub
- * org kept dashboard access until their (up to 30-day) session expired. This
- * reconciles in both directions:
+ * access. The `role` column authorizes organization-wide write actions, while
+ * read access requires a row. Sign-in and periodic session verification source
+ * every row from GitHub and reconcile in both directions:
  *
  *   - insert/keep a membership (with its current role) for every GitHub
  *     account the user still has, and
@@ -34,7 +32,7 @@ export interface GithubAccountMembership {
  * rows whose org is NOT in the current set).
  */
 export async function reconcileOrgMemberships(
-  db: Database,
+  db: OrgMembershipDatabase,
   userId: number,
   accounts: GithubAccountMembership[],
 ): Promise<void> {
@@ -53,11 +51,8 @@ export async function reconcileOrgMemberships(
 
   const currentOrgIds = knownOrgs.map((o) => o.id);
 
-  // Insert any memberships the user is missing for orgs they currently belong
-  // to, and update the role on ones that already exist. The write actions
-  // authorize on org_members.role, and this is the only writer of the table,
-  // so "reconcile in both directions" must also land a GitHub-side demotion
-  // (admin -> member) here, not just new/removed memberships.
+  // Insert missing memberships and apply the current GitHub role to existing
+  // rows. Organization-wide writes authorize on org_members.role.
   for (const org of knownOrgs) {
     if (org.githubOrgId === null) continue;
     const role = byGithubId.get(org.githubOrgId) ?? "member";

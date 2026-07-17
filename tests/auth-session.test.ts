@@ -7,9 +7,15 @@ let sessionUser: { id: number; login: string } | null;
 let membershipSlugs: string[];
 let activeInstallation: boolean;
 let queryCount: number;
+let verificationUnavailable: boolean;
 
 mock.module("@/lib/session", () => ({
-  getSessionUser: async () => sessionUser,
+  getVerifiedSessionUser: async () =>
+    verificationUnavailable
+      ? { ok: false, reason: "verification_unavailable" }
+      : sessionUser
+      ? { ok: true, user: sessionUser }
+      : { ok: false, reason: "unauthenticated" },
 }));
 
 mock.module("@/lib/db", () => ({
@@ -24,6 +30,7 @@ beforeEach(() => {
   membershipSlugs = [];
   activeInstallation = false;
   queryCount = 0;
+  verificationUnavailable = false;
 });
 
 describe("GET /api/auth/session", () => {
@@ -34,6 +41,19 @@ describe("GET /api/auth/session", () => {
 
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ authenticated: false });
+    expect(queryCount).toBe(0);
+  });
+
+  test("fails closed while GitHub membership verification is unavailable", async () => {
+    verificationUnavailable = true;
+
+    const response = await GET();
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      authenticated: false,
+      reason: "membership_verification_unavailable",
+    });
     expect(queryCount).toBe(0);
   });
 

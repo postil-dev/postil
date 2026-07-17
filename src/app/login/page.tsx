@@ -13,6 +13,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   token_exchange: "GitHub did not accept the sign-in. Try again.",
   profile: "Could not load your GitHub profile. Try again.",
   organization_memberships: "GitHub did not return your organizations. Try signing in again.",
+  membership_verification:
+    "GitHub could not verify your organization access. Try again in a moment.",
 };
 
 export default async function LoginPage({

@@ -7,6 +7,7 @@ import { readBoundedWebhookBody, verifyWebhookSignature } from "@/lib/crypto/web
 import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
 import {
   ADVISORY_CHECK_NAME,
   GATE_CHECK_NAME,
@@ -29,8 +30,6 @@ import {
   lockReviewApprovalState,
   loadLatestCompletedReviewForPr,
   updateStoredEffectiveGate,
-  type ApprovalActor,
-  type ReviewForApproval,
 } from "@/lib/finding-approvals";
 import {
   isPostilReviewCommand,
@@ -995,7 +994,7 @@ async function handleApproveCommand(
     return true;
   }
 
-  const actor = await loadApprovalActor(review, payload.comment?.user);
+  const actor = await loadLiveApprovalActor(review, payload.comment?.user, repo.full_name);
   if (!actor) {
     await queueWebhookComment(
       payload,
@@ -1097,33 +1096,6 @@ async function handleApproveCommand(
     triggerQueueDrain("webhook-comment");
   }
   return true;
-}
-
-async function loadApprovalActor(
-  review: ReviewForApproval,
-  user: GithubUser | undefined,
-): Promise<ApprovalActor | null> {
-  if (!user?.id || !user.login || review.orgId == null) return null;
-  const row = (
-    await getDb()
-      .select({
-        userId: schema.users.id,
-        githubId: schema.users.githubId,
-        login: schema.users.login,
-        role: schema.orgMembers.role,
-      })
-      .from(schema.users)
-      .innerJoin(schema.orgMembers, eq(schema.orgMembers.userId, schema.users.id))
-      .where(and(eq(schema.users.githubId, user.id), eq(schema.orgMembers.orgId, review.orgId)))
-      .limit(1)
-  )[0];
-  if (!row || (row.role !== "member" && row.role !== "admin")) return null;
-  return {
-    userId: row.userId,
-    githubId: String(row.githubId),
-    login: user.login,
-    role: row.role,
-  };
 }
 
 async function queueWebhookComment(
