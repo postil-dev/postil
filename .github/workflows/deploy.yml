@@ -58,6 +58,11 @@ jobs:
             echo "::error::POSTIL_CLI_TAG must be a stable vMAJOR.MINOR.PATCH release."
             exit 1
           fi
+          expected_tag="$(node -e 'process.stdout.write(require("./src/data/public-cli-release.json").cliRelease)')"
+          if [[ "${TAG}" != "${expected_tag}" ]]; then
+            echo "::error::POSTIL_CLI_TAG ${TAG} differs from the repository release authority ${expected_tag}."
+            exit 1
+          fi
           major="${BASH_REMATCH[1]}"
           minor="${BASH_REMATCH[2]}"
           if (( major == 0 && minor < 5 )); then
