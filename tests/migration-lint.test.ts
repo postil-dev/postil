@@ -200,6 +200,13 @@ describe("migration lint", () => {
       "utf8",
     );
     expect(migration).toContain('CREATE FUNCTION "suppress_duplicate_webhook_source_job"');
+    expect(migration).toContain(
+      '("payload" IS NULL) IS DISTINCT FROM ("completed_at" IS NOT NULL)',
+    );
+    expect(migration).toContain(
+      "jsonb_build_object('deliveryId', \"delivery\".\"delivery_id\")",
+    );
+    expect(migration).toContain("\"job\".\"kind\" = 'webhook-dispatch'");
     expect(migration).toContain("pg_advisory_xact_lock");
     expect(migration).toContain("NEW.\"payload\"->>'sourceDeliveryId'");
     expect(migration).toContain('CREATE TRIGGER "jobs_suppress_duplicate_webhook_source_trigger"');

@@ -1,7 +1,32 @@
 ALTER TABLE "webhook_deliveries" ALTER COLUMN "completed_at" DROP DEFAULT;
 --> statement-breakpoint
+UPDATE "webhook_deliveries"
+SET "completed_at" = CASE
+  WHEN "payload" IS NULL THEN COALESCE("completed_at", "received_at")
+  ELSE NULL
+END
+WHERE ("payload" IS NULL) IS DISTINCT FROM ("completed_at" IS NOT NULL);
+--> statement-breakpoint
 ALTER TABLE "webhook_deliveries" ADD CONSTRAINT "webhook_deliveries_payload_completion_check"
 CHECK (("payload" IS NULL) = ("completed_at" IS NOT NULL));
+--> statement-breakpoint
+INSERT INTO "jobs" ("kind", "payload", "status", "run_after", "max_attempts")
+SELECT
+  'webhook-dispatch',
+  jsonb_build_object('deliveryId', "delivery"."delivery_id"),
+  'queued',
+  now(),
+  5
+FROM "webhook_deliveries" AS "delivery"
+WHERE "delivery"."payload" IS NOT NULL
+  AND "delivery"."completed_at" IS NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM "jobs" AS "job"
+    WHERE "job"."kind" = 'webhook-dispatch'
+      AND "job"."status" IN ('queued', 'running')
+      AND "job"."payload"->>'deliveryId' = "delivery"."delivery_id"
+  );
 --> statement-breakpoint
 CREATE FUNCTION "suppress_duplicate_webhook_source_job"() RETURNS trigger
 LANGUAGE plpgsql AS $$
