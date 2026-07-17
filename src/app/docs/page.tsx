@@ -1,6 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import {
+  PUBLIC_POSTIL_ACTION_SHA,
+  PUBLIC_POSTIL_CLI_RELEASE,
+  PUBLIC_POSTIL_CLI_SHA,
+} from "@/lib/public-cli-example";
+
 export const metadata: Metadata = {
   title: "Docs",
   description: "Postil documentation: quickstart, configuration, the gate, self-hosting, and the envelope schema.",
@@ -100,9 +106,10 @@ postil doctor            # verify endpoint, key, and model
 postil review --staged
 
 # CI (GitHub Actions)
-- uses: postil-dev/postil-action@7451c6380dba0da92758f7ddcdf383d1501e57b2 # example tested SHA
+- uses: postil-dev/postil-action@${PUBLIC_POSTIL_ACTION_SHA} # tested pair
   with:
-    cli-ref: 3f3c48b85019e9a0d7fbcde9cb0d63c186ca8401 # postil-cli v0.2.1`}</code>
+    cli-ref: ${PUBLIC_POSTIL_CLI_SHA}
+    cli-release: ${PUBLIC_POSTIL_CLI_RELEASE}`}</code>
         </pre>
         <p>
           Exit codes: <code>0</code> clean or below the gate threshold,{" "}
