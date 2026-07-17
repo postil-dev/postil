@@ -215,6 +215,38 @@ describe("migration lint", () => {
     expect(migration).not.toContain("CREATE UNIQUE INDEX");
   });
 
+  test("creates operational indexes outside the transactional migration stream", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0026_operational_indexes.sql"),
+      "utf8",
+    );
+    const releaseScript = await readFile(
+      join(import.meta.dir, "..", "scripts", "ensure-operational-indexes.ts"),
+      "utf8",
+    );
+    const packageJson = JSON.parse(
+      await readFile(join(import.meta.dir, "..", "package.json"), "utf8"),
+    ) as { scripts: Record<string, string> };
+
+    expect(migration).toContain('CREATE TABLE "release_steps"');
+    expect(migration).not.toContain("CREATE INDEX");
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_running_started_at_idx"',
+    );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_locked_at_idx"',
+    );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "webhook_deliveries_completed_at_idx"',
+    );
+    expect(releaseScript).toContain("!state.indisvalid || !state.indisready");
+    expect(releaseScript).toContain("DROP INDEX CONCURRENTLY IF EXISTS");
+    expect(releaseScript).toContain("pg_try_advisory_lock($1, $2)");
+    expect(releaseScript).toContain("pg_advisory_unlock($1, $2)");
+    expect(releaseScript).toContain("INSERT INTO release_steps");
+    expect(packageJson.scripts["release:prepare"]).toContain("operational:indexes");
+  });
+
   test("BYOK provider migration preserves legacy rows and constrains new fields", async () => {
     const migration = await readFile(
       join(import.meta.dir, "..", "drizzle", "0014_byok_provider_settings.sql"),

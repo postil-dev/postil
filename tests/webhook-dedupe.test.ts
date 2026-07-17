@@ -7,7 +7,12 @@ import { Pool } from "pg";
 import { POST } from "@/app/api/webhooks/github/route";
 import { signWebhookBody } from "@/lib/crypto/webhook";
 import { dispatchWebhookDelivery } from "@/lib/github/webhook-handler";
-import { claimJob, enqueueRespondJobOnce, loadWebhookDelivery } from "@/lib/queue";
+import {
+  claimJob,
+  enqueueRespondJobOnce,
+  loadWebhookDelivery,
+  pruneCompletedWebhookDeliveries,
+} from "@/lib/queue";
 import { drainQueueOnce, drainWebhookDispatch } from "@/worker/runner";
 
 /**
@@ -118,6 +123,25 @@ describeDb("webhook delivery dedupe durability", () => {
       },
     });
   }
+
+  test("prunes only completed delivery ids beyond the retention window", async () => {
+    const now = new Date("2026-07-17T00:00:00.000Z");
+    await pool.query(
+      `INSERT INTO webhook_deliveries
+         (delivery_id, event, payload, received_at, completed_at)
+       VALUES
+         ('expired', 'ping', NULL, $1, $1),
+         ('recent', 'ping', NULL, $2, $2),
+         ('pending', 'ping', '{}'::jsonb, $1, NULL)`,
+      [new Date("2026-06-01T00:00:00.000Z"), new Date("2026-07-16T00:00:00.000Z")],
+    );
+
+    expect(await pruneCompletedWebhookDeliveries(pool, { now, batchSize: 1 })).toBe(1);
+    const remaining = await pool.query<{ delivery_id: string }>(
+      "SELECT delivery_id FROM webhook_deliveries ORDER BY delivery_id",
+    );
+    expect(remaining.rows.map((row) => row.delivery_id)).toEqual(["pending", "recent"]);
+  });
 
   test("acceptance failure rolls back both the inbox row and dispatch job", async () => {
     // Break the atomic inbox transaction before either durable record commits.

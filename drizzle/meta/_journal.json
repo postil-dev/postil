@@ -183,6 +183,13 @@
       "when": 1784244680000,
       "tag": "0025_activate_durable_webhook_inbox",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1784266977452,
+      "tag": "0026_operational_indexes",
+      "breakpoints": true
     }
   ]
 }

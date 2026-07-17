@@ -212,6 +212,9 @@ export const reviews = pgTable(
     uniqueIndex("reviews_public_id_idx").on(t.publicId),
     index("reviews_repo_pr_idx").on(t.repositoryId, t.prNumber),
     index("reviews_status_idx").on(t.status),
+    index("reviews_running_started_at_idx")
+      .on(t.startedAt)
+      .where(sql`${t.status} = 'running'`),
   ],
 );
 
@@ -472,12 +475,22 @@ export const webhookDeliveries = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (t) => [
+    index("webhook_deliveries_completed_at_idx")
+      .on(t.completedAt)
+      .where(sql`${t.completedAt} IS NOT NULL`),
     check(
       "webhook_deliveries_payload_completion_check",
       sql`(${t.payload} IS NULL) = (${t.completedAt} IS NOT NULL)`,
     ),
   ],
 );
+
+/** Durable receipts for idempotent non-transactional release operations. */
+export const releaseSteps = pgTable("release_steps", {
+  name: text("name").primaryKey(),
+  completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
+  details: jsonb("details").$type<Record<string, unknown>>().notNull(),
+});
 
 export type JobPayload = Record<string, unknown>;
 
@@ -499,6 +512,9 @@ export const jobs = pgTable(
   },
   (t) => [
     index("jobs_claim_idx").on(t.status, t.runAfter),
+    index("jobs_running_locked_at_idx")
+      .on(t.lockedAt)
+      .where(sql`${t.status} = 'running'`),
   ],
 );
 

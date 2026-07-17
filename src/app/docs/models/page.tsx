@@ -6,7 +6,7 @@ import { ModelCatalog } from "@/components/model-catalog";
 export const metadata: Metadata = {
   title: "Models",
   description:
-    "Recommended models for Postil, public OpenRouter price snapshots, capability badges, local inference setup, and measured bench results.",
+    "Model options for Postil, public OpenRouter price snapshots, capability badges, local inference setup, and measured bench results.",
   alternates: { canonical: "/docs/models" },
 };
 
@@ -38,10 +38,9 @@ export default function ModelsPage() {
           <a href="https://openrouter.ai/models" rel="noopener noreferrer" className="text-rust underline">
             OpenRouter catalog
           </a>
-          . <code>default</code> marks the model Postil uses out of the box;
-          the rest are a curated set spanning cost and locally-runnable
-          open-weights options. Re-check live provider pricing before
-          committing to a procurement number.
+          . The list spans cost and locally-runnable open-weights options.
+          Bench-tested badges refer to the checked-in results below. Re-check
+          live provider pricing before committing to a procurement number.
         </p>
         <div className="mt-4">
           <ModelCatalog />
@@ -137,7 +136,7 @@ postil review --staged --output-json`}</code>
           <code>{`cd postil-cli/bench
 export MODEL_API_KEY=...
 export POSTIL_API_KEY="$MODEL_API_KEY"
-export POSTIL_BENCH_MODELS=z-ai/glm-5.2,moonshotai/kimi-k2.7-code,deepseek/deepseek-v4-flash
+export POSTIL_BENCH_MODELS=deepseek/deepseek-v4-pro,mistralai/mistral-small-3.2-24b-instruct,google/gemma-3-27b-it
 bun run bench:live-models -- --json-out .runs/live-models.json`}</code>
         </pre>
         <p>

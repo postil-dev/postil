@@ -23,6 +23,11 @@ existing table. An index created in the same migration as its table is exempt.
 
 Run the focused policy check with `bun test tests/migration-lint.test.ts`.
 
+The schema and Drizzle snapshot describe the final released database. The
+`operational:indexes` release step installs indexes that cannot run inside the
+transactional migration stream and records their verified state in
+`release_steps`.
+
 ## Bulk UPDATE/DELETE dedup work
 
 Row rewrites must not run as one unbounded statement against a live table:

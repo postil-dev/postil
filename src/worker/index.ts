@@ -4,7 +4,12 @@ import { delimiter, isAbsolute, join } from "node:path";
 
 import { closeDb, getDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
-import { claimJob, requeueJobsOwnedBy } from "@/lib/queue";
+import {
+  claimJob,
+  pruneCompletedWebhookDeliveries,
+  requeueJobsOwnedBy,
+  WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE,
+} from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
 import {
@@ -34,12 +39,15 @@ const IDLE_POLL_MAX_MS = Math.max(
   readPositiveIntEnv("WORKER_IDLE_POLL_MAX_MS", POLL_INTERVAL_MS),
 );
 const WATCHDOG_INTERVAL_MS = readPositiveIntEnv("WORKER_WATCHDOG_INTERVAL_MS", 60_000);
+const WEBHOOK_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+const WEBHOOK_RETENTION_MAX_BATCHES = 10;
 const SHUTDOWN_DRAIN_MS = readPositiveIntEnv("WORKER_SHUTDOWN_DRAIN_MS", 10_000);
 const SHUTDOWN_SETTLE_MS = readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000);
 
 const workerId = `${hostname()}-${process.pid}`;
 let shuttingDown = false;
 let shutdownPromise: Promise<void> | undefined;
+let wakeWebhookRetention: (() => void) | undefined;
 const activeRuns = new Set<Promise<void>>();
 const activeControllers = new Map<number, AbortController>();
 const requeueableReviewIds = new Set<number>();
@@ -47,6 +55,21 @@ let pendingClaims = 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sleepUntilWebhookRetention(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (wakeWebhookRetention === finish) wakeWebhookRetention = undefined;
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    wakeWebhookRetention = finish;
+  });
 }
 
 async function claimLoop(slot: number): Promise<void> {
@@ -116,6 +139,7 @@ async function shutdown(signal: string): Promise<void> {
   shutdownPromise = (async () => {
     console.log(`received ${signal}, draining ${activeRuns.size} active job(s)...`);
     shuttingDown = true;
+    wakeWebhookRetention?.();
 
     const drained = await waitForWorkerIdle(SHUTDOWN_DRAIN_MS);
     if (!drained) {
@@ -161,6 +185,23 @@ async function watchdogLoop(): Promise<void> {
       console.error(`[watchdog] pass failed: ${redactSecrets(err)}`);
     }
     await sleep(WATCHDOG_INTERVAL_MS);
+  }
+}
+
+async function webhookRetentionLoop(): Promise<void> {
+  while (!shuttingDown) {
+    try {
+      let pruned = 0;
+      for (let batch = 0; batch < WEBHOOK_RETENTION_MAX_BATCHES; batch += 1) {
+        const count = await pruneCompletedWebhookDeliveries(getPool());
+        pruned += count;
+        if (count < WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE) break;
+      }
+      if (pruned > 0) console.log(`[retention] pruned ${pruned} completed webhook delivery id(s)`);
+    } catch (err) {
+      console.error(`[retention] webhook delivery prune failed: ${redactSecrets(err)}`);
+    }
+    await sleepUntilWebhookRetention(WEBHOOK_RETENTION_INTERVAL_MS);
   }
 }
 
@@ -215,6 +256,7 @@ async function main(): Promise<void> {
 
   const loops = Array.from({ length: CONCURRENCY }, (_, i) => claimLoop(i));
   loops.push(watchdogLoop());
+  loops.push(webhookRetentionLoop());
   await Promise.all(loops);
 }
 
