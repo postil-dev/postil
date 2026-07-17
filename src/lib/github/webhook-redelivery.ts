@@ -684,10 +684,13 @@ export async function runWebhookRedeliveryPass(
   const now = options.now ?? new Date();
   const owner = options.owner ?? `worker-${process.pid}`;
   const fetchImpl = options.fetchImpl ?? fetch;
-  const maxPages = Math.min(Math.max(options.maxPages ?? MAX_PAGES_PER_PASS, 1), 10);
+  const maxPages = Math.min(
+    Math.max(options.maxPages ?? MAX_PAGES_PER_PASS, 1),
+    MAX_PAGES_PER_PASS,
+  );
   const maxRedeliveries = Math.min(
     Math.max(options.maxRedeliveries ?? MAX_REDELIVERIES_PER_PASS, 0),
-    25,
+    MAX_REDELIVERIES_PER_PASS,
   );
   const claim = await claimSweep(pool, owner, now);
   if (claim === null) return emptyResult(false);

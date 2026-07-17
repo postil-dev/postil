@@ -320,6 +320,53 @@ describeDb("GitHub App webhook redelivery", () => {
     expect(state.rows[0]?.cursor).toBeNull();
   });
 
+  test("caps caller overrides below the scan lease budget", async () => {
+    const deliveries = Array.from({ length: 12 }, (_, index) =>
+      failedDelivery({ id: 1_000 + index, guid: `failure-guid-${index}` })
+    );
+    const requestCalls: Array<{ url: string; method: string }> = [];
+    const requested = await runWebhookRedeliveryPass(pool, {
+      now: NOW,
+      owner: "worker-a",
+      appJwt: "test-jwt",
+      maxRedeliveries: 25,
+      fetchImpl: fetchQueue(
+        [page(deliveries), ...Array.from({ length: 10 }, () => new Response(null, { status: 202 }))],
+        requestCalls,
+      ),
+    });
+    expect(requested.requested).toBe(10);
+    expect(requestCalls.filter((entry) => entry.method === "POST")).toHaveLength(10);
+
+    await pool.query(
+      "TRUNCATE github_webhook_delivery_recoveries, github_webhook_redelivery_state",
+    );
+    const pageCalls: Array<{ url: string; method: string }> = [];
+    const link = (cursor: string) =>
+      `<https://api.github.com/app/hook/deliveries?per_page=100&cursor=${cursor}>; rel="next"`;
+    const paged = await runWebhookRedeliveryPass(pool, {
+      now: NOW,
+      owner: "worker-b",
+      appJwt: "test-jwt",
+      maxPages: 10,
+      maxRedeliveries: 0,
+      fetchImpl: fetchQueue(
+        [
+          page([failedDelivery({ id: 2_001 })], { link: link("page-2") }),
+          page([failedDelivery({ id: 2_002 })], { link: link("page-3") }),
+          page([failedDelivery({ id: 2_003 })], { link: link("page-4") }),
+        ],
+        pageCalls,
+      ),
+    });
+    expect(paged.pages).toBe(3);
+    expect(pageCalls).toHaveLength(3);
+    const state = await pool.query<{ cursor: string | null }>(
+      "SELECT cursor FROM github_webhook_redelivery_state WHERE id = 1",
+    );
+    expect(state.rows[0]?.cursor).toBe("page-4");
+  });
+
   test("reconciles from the head before retrying an ambiguous request", async () => {
     await pool.query(
       `INSERT INTO github_webhook_redelivery_state (id, cursor, sweep_started_at)
