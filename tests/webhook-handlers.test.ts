@@ -500,7 +500,7 @@ describeDb("webhook handler behaviour", () => {
     expect(repos.rows[0]!.c).toBe(0);
   });
 
-  test("removing the shared source repository deletes its snapshot", async () => {
+  test("removing the shared source repository retains its revocation marker", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 301);
     const repoId = await seedRepo(inst, 8889, "octo/.github");
@@ -517,11 +517,13 @@ describeDb("webhook handler behaviour", () => {
     );
 
     expect(res.status).toBe(200);
-    const snapshots = await pool.query<{ c: number }>(
-      "SELECT count(*)::int AS c FROM org_config_snapshots WHERE org_id = $1",
+    const snapshots = await pool.query<{ c: number; source_repository_id: string | null }>(
+      `SELECT count(*)::int AS c, max(source_repository_id)::text AS source_repository_id
+         FROM org_config_snapshots WHERE org_id = $1`,
       [orgId],
     );
-    expect(snapshots.rows[0]!.c).toBe(0);
+    expect(snapshots.rows[0]!.c).toBe(1);
+    expect(snapshots.rows[0]!.source_repository_id).toBeNull();
   });
 
   test("uninstalling the App deletes the owner snapshot", async () => {

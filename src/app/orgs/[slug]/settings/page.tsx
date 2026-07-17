@@ -17,6 +17,7 @@ import {
   isVisibleConfigArtifact,
   ownerConfigRepositoryFullName,
   resolveConfigArtifacts,
+  sharedConfigFilesAvailableToReviews,
   type VisibleConfigArtifact,
 } from "../config-resolution";
 import { ConfigRecheckButton } from "../config-recheck-button";
@@ -134,9 +135,17 @@ export default async function OrgSettingsPage({
     settings?.guardrailsMd ? "org:.postil/guardrails.md" : null,
     settings?.contentPolicyMd ? "org:.postil/content-policy.md" : null,
   ].filter((file): file is string => file !== null);
-  const liveSharedConfigFiles = settings?.sharedConfigEnabled === false
-    ? []
-    : (sharedSnapshot?.files ?? []).map((file) => `shared:${file}`);
+  const sharedSourceFullName = ownerConfigRepositoryFullName(
+    installationAccount?.accountLogin ?? org.slug,
+  );
+  const sharedSourceInstalled = repos.some(
+    (repo) => repo.fullName.toLowerCase() === sharedSourceFullName.toLowerCase(),
+  );
+  const liveSharedConfigFiles = sharedConfigFilesAvailableToReviews(
+    sharedSnapshot?.files,
+    settings?.sharedConfigEnabled !== false,
+    sharedSourceInstalled,
+  );
 
   const latestRepoReviews = await db
     .selectDistinctOn([schema.reviews.repositoryId], {
@@ -186,13 +195,6 @@ export default async function OrgSettingsPage({
   const privateAccess = rawPrivateAccess
     ? requireMatchingProviderMode(rawPrivateAccess, settings?.hasKey ?? false)
     : null;
-  const sharedSourceFullName = ownerConfigRepositoryFullName(
-    installationAccount?.accountLogin ?? org.slug,
-  );
-  const sharedSourceInstalled = repos.some(
-    (repo) => repo.fullName.toLowerCase() === sharedSourceFullName.toLowerCase(),
-  );
-
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
       <div className="flex flex-wrap items-end justify-between gap-4">

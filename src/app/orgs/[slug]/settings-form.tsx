@@ -284,6 +284,8 @@ export function SettingsForm({
             <p className={`mt-1 ${sharedSnapshot.stale ? "text-rust" : "text-charcoal/55"}`}>
               {!sharedConfigEnabled
                 ? "Shared owner configuration is disabled. The stored snapshot is not used."
+                : !sharedSourceInstalled
+                ? `The App installation does not include ${sharedSourceFullName}. The stored snapshot is not used.`
                 : sharedSnapshot.stale
                 ? `Using the last known good snapshot because GitHub is ${sharedSnapshot.lastError ?? "unavailable"}.`
                 : sharedSnapshot.files.length > 0

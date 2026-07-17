@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 
 import {
   isVisibleConfigArtifact,
-  resolveConfigArtifacts,
   ownerConfigRepositoryFullName,
+  resolveConfigArtifacts,
+  sharedConfigFilesAvailableToReviews,
 } from "@/app/orgs/[slug]/config-resolution";
 
 function root(
@@ -107,4 +108,14 @@ test("builds the shared repository name from the canonical GitHub account login"
   expect(ownerConfigRepositoryFullName("Acme-Engineering")).toBe(
     "Acme-Engineering/.github",
   );
+});
+
+test("excludes a retained snapshot after its source repository is removed", () => {
+  const files = [".postil.yaml", ".postil/guardrails.md"];
+  expect(sharedConfigFilesAvailableToReviews(files, true, false)).toEqual([]);
+  expect(sharedConfigFilesAvailableToReviews(files, false, true)).toEqual([]);
+  expect(sharedConfigFilesAvailableToReviews(files, true, true)).toEqual([
+    "shared:.postil.yaml",
+    "shared:.postil/guardrails.md",
+  ]);
 });

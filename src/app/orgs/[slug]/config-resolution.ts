@@ -52,6 +52,15 @@ export function ownerConfigRepositoryFullName(accountLogin: string): string {
   return `${accountLogin}/.github`;
 }
 
+export function sharedConfigFilesAvailableToReviews(
+  snapshotFiles: readonly string[] | null | undefined,
+  enabled: boolean,
+  sourceInstalled: boolean,
+): string[] {
+  if (!enabled || !sourceInstalled) return [];
+  return (snapshotFiles ?? []).map((file) => `shared:${file}`);
+}
+
 export function isVisibleConfigArtifact(
   artifact: ResolvedConfigArtifact,
 ): artifact is VisibleConfigArtifact {
