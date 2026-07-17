@@ -21,7 +21,7 @@ const ROUTES: {
   { path: "/pricing", priority: 0.9, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/install", priority: 0.8, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/security", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-07-08" },
-  { path: "/changelog", priority: 0.6, changeFrequency: "weekly", lastModified: "2026-06-12" },
+  { path: "/changelog", priority: 0.6, changeFrequency: "weekly", lastModified: "2026-07-17" },
   { path: "/contact", priority: 0.5, changeFrequency: "yearly", lastModified: "2026-07-11" },
   { path: "/vs/coderabbit", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/vs/greptile", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-07-08" },

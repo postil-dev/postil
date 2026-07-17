@@ -35,6 +35,102 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.6.0–0.6.3",
+    date: "July 13–14, 2026",
+    summary:
+      "Review delivery has time and output bounds, hosted reviews handle large changes in bounded batches, and GitHub reviews fetch every changed-file page.",
+    changes: [
+      {
+        label: "Changed",
+        text: "Hosted reviews process large changes in bounded batches; local reviews can opt in with postil review --bounded.",
+      },
+      {
+        label: "Fixed",
+        text: "GitHub reviews fetch every changed-file page and recover when a model spends its response on reasoning without returning review content.",
+      },
+      {
+        label: "Fixed",
+        text: "Provider recovery and review publication have explicit limits, so a completed review cannot turn into an unbounded retry or oversized comment.",
+      },
+    ],
+  },
+  {
+    version: "0.5.0",
+    date: "July 13, 2026",
+    summary:
+      "Bring-your-own-key setups can call Anthropic-compatible APIs directly.",
+    changes: [
+      {
+        label: "Added",
+        text: "Native Anthropic request and authentication support alongside the OpenAI-compatible API format.",
+      },
+    ],
+  },
+  {
+    version: "0.4.1–0.4.6",
+    date: "July 11–12, 2026",
+    summary:
+      "Scoring, model fallback, and blocking rules became configurable and time-bounded.",
+    changes: [
+      {
+        label: "Added",
+        text: "An independent scorer records its assessment separately from the review model, and gate policy can block selected finding kinds.",
+      },
+      {
+        label: "Changed",
+        text: "Model cascades live in configuration and report progress while a review is running.",
+      },
+      {
+        label: "Fixed",
+        text: "Timeouts retry before advancing the cascade; gate replay, GitHub links, and review-comment formatting stay consistent.",
+      },
+    ],
+  },
+  {
+    version: "0.2.0–0.2.1",
+    date: "July 10, 2026",
+    summary:
+      "Content-policy checks, accurate run states, and reliable re-runs became defaults.",
+    changes: [
+      {
+        label: "Changed",
+        text: "Content-policy review is enabled by default, with plain gate output and truthful queued, running, completed, and failed states.",
+      },
+      {
+        label: "Fixed",
+        text: "Re-runs can resolve carried findings, annotations use the changed side of the diff, and transient forge failures retain the completed review.",
+      },
+      {
+        label: "Changed",
+        text: "Parallel source fetches and bounded model output reduce review latency without shortening the review prompt.",
+      },
+    ],
+  },
+  {
+    version: "0.1.1–0.1.2",
+    date: "June 13–July 2, 2026",
+    summary:
+      "Multi-forge replies, benchmark coverage, content-policy checks, and security hardening extend the first CLI releases.",
+    changes: [
+      {
+        label: "Added",
+        text: "Interactive replies work across GitHub, GitLab, Bitbucket, and Azure DevOps, with end-to-end coverage for each forge.",
+      },
+      {
+        label: "Added",
+        text: "The benchmark harness runs in CI and supports bounded live-model comparisons with detection, severity, concurrency, and retry measurements.",
+      },
+      {
+        label: "Security",
+        text: "Cargo audit runs in CI, known dependency advisories are closed, model output is stripped of terminal control sequences, and diff plus check-run output is capped.",
+      },
+      {
+        label: "Fixed",
+        text: "Ambiguous incremental baselines fail closed, disabled review stays disabled, and PR-description findings must cite the relevant text.",
+      },
+    ],
+  },
+  {
     version: "0.1.0",
     date: "June 13, 2026",
     summary:
@@ -182,7 +278,7 @@ export default function ChangelogPage() {
       </div>
 
       <p className="mt-14 font-mono text-xs text-charcoal/70">
-        Release notes and signed binaries are published on{" "}
+        Signed binaries and source archives are published on{" "}
         <a
           href="https://github.com/postil-dev/postil-cli/releases"
           className="text-rust underline"
