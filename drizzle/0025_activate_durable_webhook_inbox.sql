@@ -46,6 +46,8 @@ BEGIN
     hashtextextended('postil:webhook-source:' || NEW."kind" || ':' || source_delivery_id, 0)
   );
   IF EXISTS (
+    -- sourceDeliveryId is a lifetime idempotency key. Terminal downstream
+    -- work must not be recreated when inbox dispatch resumes after a crash.
     SELECT 1
       FROM "jobs"
      WHERE "kind" = NEW."kind"

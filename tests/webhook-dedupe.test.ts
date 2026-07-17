@@ -400,4 +400,31 @@ describeDb("webhook delivery dedupe durability", () => {
     );
     expect(jobs.rows[0]?.c).toBe(1);
   });
+
+  test("source-delivery dedupe survives terminal downstream job states", async () => {
+    const payload = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      number: 7,
+      isPr: true,
+      comment: "@postil what changed?",
+      sourceDeliveryId: DELIVERY_ID,
+    };
+    const jobId = await enqueueRespondJobOnce(pool, payload);
+    expect(jobId).not.toBeNull();
+
+    for (const status of ["done", "failed"] as const) {
+      await pool.query("UPDATE jobs SET status = $1 WHERE id = $2", [status, jobId]);
+      expect(await enqueueRespondJobOnce(pool, payload)).toBeNull();
+    }
+
+    const jobs = await pool.query<{ c: number }>(
+      `SELECT count(*)::int AS c
+         FROM jobs
+        WHERE kind = 'respond'
+          AND payload->>'sourceDeliveryId' = $1`,
+      [DELIVERY_ID],
+    );
+    expect(jobs.rows[0]?.c).toBe(1);
+  });
 });
