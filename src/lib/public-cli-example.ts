@@ -1,6 +1,6 @@
-export const PUBLIC_POSTIL_ACTION_SHA =
-  "77a3349f41799facba618371fb19726d163ba520";
-export const PUBLIC_POSTIL_CLI_SHA =
-  "3c5a1b8a0f24a0d71d342b44c6ce64c638830da6";
-export const PUBLIC_POSTIL_CLI_RELEASE = "v0.6.2";
-export const PUBLIC_SELF_HOSTED_CLI_RELEASE = "v0.6.3";
+import release from "@/data/public-cli-release.json";
+
+export const PUBLIC_POSTIL_ACTION_SHA = release.actionCommit;
+export const PUBLIC_POSTIL_CLI_SHA = release.cliCommit;
+export const PUBLIC_POSTIL_CLI_RELEASE = release.cliRelease;
+export const PUBLIC_SELF_HOSTED_CLI_RELEASE = release.cliRelease;
