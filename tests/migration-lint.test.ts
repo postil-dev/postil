@@ -210,6 +210,8 @@ describe("migration lint", () => {
     expect(migration).toContain("pg_advisory_xact_lock");
     expect(migration).toContain("NEW.\"payload\"->>'sourceDeliveryId'");
     expect(migration).toContain('CREATE TRIGGER "jobs_suppress_duplicate_webhook_source_trigger"');
+    expect(migration).toContain('BEFORE INSERT ON "jobs"');
+    expect(migration).not.toContain('BEFORE INSERT OR UPDATE OF "kind", "payload" ON "jobs"');
     expect(migration).not.toContain("CREATE UNIQUE INDEX");
   });
 

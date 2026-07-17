@@ -59,7 +59,7 @@ END;
 $$;
 --> statement-breakpoint
 CREATE TRIGGER "jobs_suppress_duplicate_webhook_source_trigger"
-BEFORE INSERT OR UPDATE OF "kind", "payload" ON "jobs"
+BEFORE INSERT ON "jobs"
 FOR EACH ROW EXECUTE FUNCTION "suppress_duplicate_webhook_source_job"();
 --> statement-breakpoint
 CREATE OR REPLACE FUNCTION "stage_unactivated_release_job"() RETURNS trigger
