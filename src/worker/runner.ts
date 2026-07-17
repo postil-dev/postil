@@ -5,8 +5,10 @@ import { optionalEnv } from "@/lib/env";
 import type { GateStateSyncJobPayload } from "@/lib/finding-approvals";
 import {
   claimJob,
+  completeWebhookDelivery,
   completeJob,
   failJob,
+  loadWebhookDelivery,
   requeueJobsOwnedBy,
   retryJobIndefinitely,
   type CheckRunCleanupJobPayload,
@@ -15,6 +17,8 @@ import {
   type RespondFailureCommentJobPayload,
   type RespondJobPayload,
   type ReviewJobPayload,
+  type WebhookCommentJobPayload,
+  type WebhookDispatchJobPayload,
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import {
@@ -33,6 +37,7 @@ import {
   runRespondDeliveryJob,
   runRespondFailureCommentJob,
   runRespondJob,
+  runWebhookCommentJob,
 } from "./respond";
 import { runCheckRunCleanupJob, runReviewJob, WorkerShutdownError } from "./review";
 import { watchdogPass } from "./watchdog";
@@ -46,6 +51,7 @@ const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
 let backgroundDrain: Promise<void> | undefined;
 
 export const PROCESSABLE_JOB_KINDS = [
+  "webhook-dispatch",
   "review",
   "respond",
   "respond-delivery",
@@ -53,6 +59,7 @@ export const PROCESSABLE_JOB_KINDS = [
   "gate-state-sync",
   "check-run-cleanup",
   "respond-failure-comment",
+  "webhook-comment",
 ] as const;
 
 async function handleJob(
@@ -62,6 +69,21 @@ async function handleJob(
   onReviewPublicationStarted?: () => void,
 ): Promise<void> {
   switch (job.kind) {
+    case "webhook-dispatch": {
+      const payload = job.payload as WebhookDispatchJobPayload;
+      if (typeof payload.deliveryId !== "string" || !payload.deliveryId) {
+        throw new Error("webhook dispatch job payload is malformed");
+      }
+      const delivery = await loadWebhookDelivery(getPool(), payload.deliveryId);
+      if (!delivery) break;
+      const { dispatchWebhookDelivery } = await import("@/lib/github/webhook-handler");
+      await dispatchWebhookDelivery(delivery.event, delivery.payload, {
+        deliveryId: delivery.deliveryId,
+        triggerFollowupDrain: processGroup === "web",
+      });
+      await completeWebhookDelivery(getPool(), delivery.deliveryId);
+      break;
+    }
     case "review":
       await runReviewJob(
         job.payload as ReviewJobPayload,
@@ -93,6 +115,9 @@ async function handleJob(
       break;
     case "respond-failure-comment":
       await runRespondFailureCommentJob(job.payload as RespondFailureCommentJobPayload);
+      break;
+    case "webhook-comment":
+      await runWebhookCommentJob(job.payload as WebhookCommentJobPayload, job.id);
       break;
     default:
       throw new Error(`unknown job kind: ${job.kind}`);
@@ -128,11 +153,26 @@ export async function runClaimedJob(
     const malformedGateSync =
       job.kind === "gate-state-sync" &&
       message.includes("gate state sync job payload is malformed");
+    const malformedWebhookDispatch =
+      job.kind === "webhook-dispatch" &&
+      message.includes("webhook dispatch job payload is malformed");
+    const malformedWebhookComment =
+      job.kind === "webhook-comment" &&
+      message.includes("webhook comment job payload malformed");
     const permanent =
       malformedGateSync ||
-      (job.kind !== "gate-state-sync" && isPermanentFailure(message));
+      malformedWebhookDispatch ||
+      malformedWebhookComment ||
+      (job.kind !== "gate-state-sync" &&
+        job.kind !== "webhook-dispatch" &&
+        job.kind !== "webhook-comment" &&
+        isPermanentFailure(message));
+    const reconcileIndefinitely =
+      (job.kind === "gate-state-sync" && !malformedGateSync) ||
+      (job.kind === "webhook-dispatch" && !malformedWebhookDispatch) ||
+      (job.kind === "webhook-comment" && !malformedWebhookComment);
     const outcome =
-      job.kind === "gate-state-sync" && !malformedGateSync
+      reconcileIndefinitely
         ? await retryJobIndefinitely(getPool(), job, message)
         : await failJob(getPool(), job, message, { permanent });
     console.error(
@@ -176,6 +216,20 @@ export async function drainQueueOnce(
   }
 
   return drained;
+}
+
+/** Process the exact durable inbox job accepted by one webhook request. */
+export async function drainWebhookDispatch(
+  deliveryId: string,
+  label = "webhook-dispatch",
+): Promise<boolean> {
+  const workerId = `${label}-${hostname()}-${process.pid}`;
+  const job = await claimJob(getPool(), workerId, ["webhook-dispatch"], {
+    webhookDeliveryId: deliveryId,
+  });
+  if (!job) return false;
+  await runClaimedJob(job, label, "web");
+  return true;
 }
 
 export function triggerQueueDrain(reason: string): void {

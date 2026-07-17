@@ -17,9 +17,11 @@ let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
 let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
+let webhookCommentRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
 let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
+let webhookDeliveryLoadError: Error | undefined;
 let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
 let reviewProcessGroup: string | undefined;
 let reviewSignal: AbortSignal | undefined;
@@ -50,6 +52,11 @@ mock.module("@/lib/queue", () => ({
   },
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
     completed.push(job.id);
+  },
+  completeWebhookDelivery: async () => undefined,
+  loadWebhookDelivery: async () => {
+    if (webhookDeliveryLoadError) throw webhookDeliveryLoadError;
+    return null;
   },
   failJob: async (_pool: unknown, job: ClaimedJob, error: string) => {
     failed.push({ id: job.id, error });
@@ -106,6 +113,9 @@ mock.module("@/worker/respond", () => ({
   runRespondJob: async () => {
     await respondRun?.();
   },
+  runWebhookCommentJob: async () => {
+    await webhookCommentRun?.();
+  },
 }));
 
 mock.module("@/worker/billing-contact-verification", () => ({
@@ -154,9 +164,11 @@ beforeEach(() => {
   respondRun = async () => undefined;
   respondDeliveryRun = async () => undefined;
   respondFailureCommentRun = async () => undefined;
+  webhookCommentRun = async () => undefined;
   billingContactVerificationRun = async () => undefined;
   gateStateSyncRun = async () => undefined;
   cleanupRun = async () => undefined;
+  webhookDeliveryLoadError = undefined;
   reviewTiming = undefined;
   reviewProcessGroup = undefined;
   reviewSignal = undefined;
@@ -249,9 +261,28 @@ describe("drainQueueOnce", () => {
     expect(fly).toContain('kill_timeout = "30s"');
   });
 
+  test("hosted process entrypoints receive termination signals directly", () => {
+    const fly = readFileSync("fly.toml", "utf8");
+    const dockerfile = readFileSync("Dockerfile", "utf8");
+    const compose = readFileSync("docker-compose.yml", "utf8");
+    const web = readFileSync("scripts/start-web.ts", "utf8");
+    const webhook = readFileSync("src/lib/github/webhook-handler.ts", "utf8");
+
+    expect(fly).toContain('web = "bun scripts/start-web.ts"');
+    expect(fly).toContain('worker = "bun src/worker/index.ts"');
+    expect(dockerfile).toContain('CMD ["bun", "scripts/start-web.ts"]');
+    expect(compose).toContain('command: ["bun", "src/worker/index.ts"]');
+    expect(web).toContain("await startServer({");
+    expect(web).toContain('process.env.POSTIL_BIND_HOST?.trim() || "0.0.0.0"');
+    expect(web).not.toContain("process.env.HOSTNAME");
+    expect(webhook).toContain("after(async () => {");
+    expect(webhook).toContain("await drainWebhookDispatch(deliveryId");
+  });
+
   test("claims only job kinds implemented by this web release", async () => {
     expect(await drainQueueOnce("capability-drain", { maxJobs: 1 })).toBe(0);
     expect(claimCapabilities).toEqual([[
+      "webhook-dispatch",
       "review",
       "respond",
       "respond-delivery",
@@ -259,7 +290,45 @@ describe("drainQueueOnce", () => {
       "gate-state-sync",
       "check-run-cleanup",
       "respond-failure-comment",
+      "webhook-comment",
     ]]);
+  });
+
+  test("dispatches fixed webhook comments through a durable job", async () => {
+    const job = reviewJob(2);
+    job.kind = "webhook-comment";
+    job.payload = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      number: 7,
+      body: "Review commands only work on pull requests.",
+      sourceDeliveryId: "delivery-2",
+    };
+    let called = false;
+    webhookCommentRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([2]);
+  });
+
+  test("retries durable webhook dispatch until the delivery completes", async () => {
+    const job = reviewJob(9);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-9" };
+    job.attempts = job.maxAttempts;
+    webhookDeliveryLoadError = new Error("database temporarily unavailable");
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(retriedIndefinitely).toEqual([
+      { id: 9, error: "database temporarily unavailable" },
+    ]);
+    expect(failed).toEqual([]);
+    expect(operationalWarnings).toEqual(["job_retrying"]);
   });
 
   test("dispatches durable respond delivery jobs independently", async () => {

@@ -259,6 +259,35 @@ describeDb("watchdog stuck-review kill", () => {
     expect(job.rows[0]?.status).toBe("queued");
   });
 
+  test("requeues exhausted durable webhook work until its side effects complete", async () => {
+    await pool.query(`
+      INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
+      VALUES
+        (
+          'webhook-dispatch', '{"deliveryId":"delivery-7"}',
+          'running', 5, 5, now() - interval '20 minutes', 'dead-worker'
+        ),
+        (
+          'webhook-comment',
+          '{"installationId":42,"repoFullName":"octo/repo","number":7,"body":"reply","sourceDeliveryId":"delivery-8"}',
+          'running', 5, 5, now() - interval '20 minutes', 'dead-worker'
+        )
+    `);
+
+    await watchdogPass(new Date());
+
+    const jobs = await pool.query<{ kind: string; status: string }>(
+      `SELECT kind, status
+         FROM jobs
+        WHERE kind IN ('webhook-dispatch', 'webhook-comment')
+        ORDER BY kind`,
+    );
+    expect(jobs.rows).toEqual([
+      { kind: "webhook-comment", status: "queued" },
+      { kind: "webhook-dispatch", status: "queued" },
+    ]);
+  });
+
   test("a review within the deadline is left alone", async () => {
     const repositoryId = await seedRepo();
     const row = await pool.query<{ id: string }>(

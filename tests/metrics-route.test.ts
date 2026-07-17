@@ -50,6 +50,8 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
           reviews_started_24h: "3",
           reviews_finished_24h: "2",
           webhook_deliveries_24h: "9",
+          webhook_pending: "2",
+          oldest_webhook_pending_age_seconds: "75",
           watchdog_kills: "5",
         },
       ],
@@ -199,6 +201,8 @@ describe("/api/metrics", () => {
     expect(text).toContain("postil_silence_rate 0.2500");
     expect(text).toContain("postil_watchdog_kills_total 5");
     expect(text).toContain("postil_webhook_deliveries_24h 9");
+    expect(text).toContain("postil_webhook_dispatch_pending 2");
+    expect(text).toContain("postil_oldest_webhook_dispatch_age_seconds 75");
     expect(text).toContain('postil_webhook_deliveries_24h_by_event{event="pull_request"} 7');
     expect(text).toContain('postil_jobs_current{kind="review",status="queued"} 7');
     expect(text).toContain('postil_jobs_current{kind="respond",status="failed"} 1');

@@ -37,7 +37,7 @@ or publishes the private dataset.
 
 Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
 
-The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling. Webhook intake enqueues work and can trigger a bounded web-process drain. The worker remains a fallback with configurable idle backoff.
+The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
 
 The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods.
 
@@ -51,6 +51,12 @@ cleanup worker reconcile an ambiguous GitHub response, complete every known
 check first, and retry any check that may exist but is not visible yet. The
 watchdog carries the same reconciliation identity when recovering a worker that
 exits before terminal cleanup is queued.
+
+The self-hosted Next.js server handles `SIGINT` and `SIGTERM`, stops accepting
+connections, finishes in-flight requests, and waits for registered `after`
+callbacks before exit. Fly gives the process a bounded termination window. A
+forced exit during webhook dispatch leaves the inbox job recoverable by the
+queue watchdog; completed delivery IDs remain durable dedupe records.
 
 Every queue consumer supplies its explicit supported job kinds to the claim query.
 The bounded web drain and long-running worker share the handler capability list
