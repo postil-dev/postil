@@ -160,7 +160,9 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
-      - id: deploy
+      - name: Deploy managed fleet
+        id: deploy
+        timeout-minutes: 10
         run: |
           flyctl deploy \
             --remote-only \
@@ -172,6 +174,7 @@ jobs:
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
           POSTIL_CLI_TAG: ${{ vars.POSTIL_CLI_TAG }}
       - name: Restart any machines left stopped by the deploy
+        id: recover
         # The worker process group has no http health check to auto-wake it
         # (only the web group does), so a deploy that leaves a machine in
         # `stopped` - seen on the first cutover - needs an explicit restart
@@ -214,6 +217,7 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Activate release job kinds after fleet replacement
+        id: activate
         # Migration 0020 stages new job kinds with an infinite
         # run_after. This runs only after flyctl deploy has replaced the managed
         # fleet, so no pre-capability worker can claim them. It retires the
@@ -230,5 +234,49 @@ jobs:
           fi
           echo "managed fleet verified: ${fleet_summary}"
           flyctl ssh console --app postil-web --command "bun run jobs:activate-release"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Collect failed rollout diagnostics
+        if: ${{ always() && ((steps.deploy.outcome != 'success' && steps.deploy.outcome != 'skipped') || (steps.recover.outcome != 'success' && steps.recover.outcome != 'skipped') || (steps.activate.outcome != 'success' && steps.activate.outcome != 'skipped')) }}
+        timeout-minutes: 3
+        run: |
+          set +e
+          echo "::group::Managed machine summary"
+          machines=$(flyctl machine list --app postil-web --json)
+          list_status=$?
+          if [ "${list_status}" -ne 0 ]; then
+            echo "flyctl machine list failed with status ${list_status}."
+          else
+            summary_command_token="postil-machine-summary-$(< /proc/sys/kernel/random/uuid)"
+            echo "::stop-commands::${summary_command_token}"
+            if ! jq -r '.[] | [
+              (.id // "unknown"),
+              (.state // "unknown"),
+              (.region // "unknown"),
+              (.config.metadata.fly_process_group // "unknown"),
+              (.config.image // "unknown")
+            ] | @tsv' <<<"${machines}"; then
+              echo "Machine inventory could not be summarized."
+            fi
+            echo "::${summary_command_token}::"
+          fi
+          echo "::endgroup::"
+
+          if [ "${list_status}" -eq 0 ]; then
+            while IFS= read -r id; do
+              [ -n "${id}" ] || continue
+              echo "::group::Buffered logs for machine ${id}"
+              log_command_token="postil-machine-logs-$(< /proc/sys/kernel/random/uuid)"
+              echo "::stop-commands::${log_command_token}"
+              flyctl logs --app postil-web --machine "${id}" --no-tail 2>&1 | tail -n 200
+              echo "::${log_command_token}::"
+              echo "::endgroup::"
+            done < <(jq -r '[.[] | select(
+              (.config.metadata.fly_process_group == "web" or
+              .config.metadata.fly_process_group == "worker") and
+              ((.id // "") | test("^[A-Za-z0-9_-]+$"))
+            ) | .id] | .[:6][]' <<<"${machines}")
+          fi
+          exit 0
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

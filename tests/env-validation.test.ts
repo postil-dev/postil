@@ -68,6 +68,30 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).toContain(
       "jq -ce -f scripts/verify-managed-fleet.jq",
     );
+    expect(deployWorkflow).toMatch(
+      /- name: Deploy managed fleet\n\s+id: deploy\n\s+timeout-minutes: 10/,
+    );
+    expect(deployWorkflow).toContain(
+      "always() && steps.deploy.outcome != 'skipped'",
+    );
+    expect(deployWorkflow).toContain(
+      "steps.deploy.outcome != 'success' && steps.deploy.outcome != 'skipped'",
+    );
+    expect(deployWorkflow).toContain(
+      "steps.recover.outcome != 'success' && steps.recover.outcome != 'skipped'",
+    );
+    expect(deployWorkflow).toContain(
+      "steps.activate.outcome != 'success' && steps.activate.outcome != 'skipped'",
+    );
+    expect(deployWorkflow).toContain(
+      'flyctl logs --app postil-web --machine "${id}" --no-tail',
+    );
+    expect(deployWorkflow).toContain("tail -n 200");
+    expect(deployWorkflow).toContain(
+      "::stop-commands::${summary_command_token}",
+    );
+    expect(deployWorkflow).toContain("::stop-commands::${log_command_token}");
+    expect(deployWorkflow).toContain("] | .[:6][]");
     expect(deployWorkflow).toContain(
       "fly_secrets=$(flyctl secrets list --json)",
     );
@@ -101,6 +125,13 @@ describe("worker startup environment validation", () => {
     ).not.toBe(0);
     expect(
       verifyManagedFleet(root, [
+        managedMachine("web", "1"),
+        managedMachine("web", undefined, "started", "registry.fly.io/postil-web:other"),
+        managedMachine("worker", "0"),
+      ]).exitCode,
+    ).not.toBe(0);
+    expect(
+      verifyManagedFleet(root, [
         ...validFleet,
         managedMachine("worker", "1", "stopped"),
       ]).exitCode,
@@ -125,11 +156,12 @@ function managedMachine(
   group: "web" | "worker",
   hostedInferenceMode?: string,
   state = "started",
+  image = "registry.fly.io/postil-web:verified",
 ) {
   return {
     state,
     config: {
-      image: "registry.fly.io/postil-web:verified",
+      image,
       metadata: {
         fly_platform_version: "v2",
         fly_process_group: group,
