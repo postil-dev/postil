@@ -4,7 +4,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 
 import { closeDb, getDb, getPool } from "@/lib/db";
 import { optionalEnv, validateEnv } from "@/lib/env";
-import { claimJob } from "@/lib/queue";
+import { claimJob, requeueJobsOwnedBy } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
 import {
@@ -34,9 +34,16 @@ const IDLE_POLL_MAX_MS = Math.max(
   readPositiveIntEnv("WORKER_IDLE_POLL_MAX_MS", POLL_INTERVAL_MS),
 );
 const WATCHDOG_INTERVAL_MS = readPositiveIntEnv("WORKER_WATCHDOG_INTERVAL_MS", 60_000);
+const SHUTDOWN_DRAIN_MS = readPositiveIntEnv("WORKER_SHUTDOWN_DRAIN_MS", 10_000);
+const SHUTDOWN_SETTLE_MS = readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000);
 
 const workerId = `${hostname()}-${process.pid}`;
 let shuttingDown = false;
+let shutdownPromise: Promise<void> | undefined;
+const activeRuns = new Set<Promise<void>>();
+const activeControllers = new Map<number, AbortController>();
+const requeueableReviewIds = new Set<number>();
+let pendingClaims = 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,13 +53,27 @@ async function claimLoop(slot: number): Promise<void> {
   let idleDelayMs = POLL_INTERVAL_MS;
   while (!shuttingDown) {
     let job;
+    pendingClaims += 1;
     try {
       job = await claimJob(getPool(), `${workerId}#${slot}`, PROCESSABLE_JOB_KINDS);
+      if (shuttingDown && job) {
+        await requeueJobsOwnedBy(
+          getPool(),
+          `${workerId}#${slot}`,
+          "worker stopped before starting the claim",
+          [job.kind],
+          [job.id],
+        );
+        return;
+      }
     } catch (err) {
       console.error(`[worker ${slot}] claim error: ${redactSecrets(err)}`);
+      if (shuttingDown) return;
       await sleep(Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS));
       idleDelayMs = Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS);
       continue;
+    } finally {
+      pendingClaims -= 1;
     }
     if (!job) {
       await sleep(jitter(idleDelayMs));
@@ -60,8 +81,71 @@ async function claimLoop(slot: number): Promise<void> {
       continue;
     }
     idleDelayMs = POLL_INTERVAL_MS;
-    await runClaimedJob(job, `worker ${slot}`);
+    const controller = new AbortController();
+    if (job.kind === "review") requeueableReviewIds.add(job.id);
+    const run = runClaimedJob(
+      job,
+      `worker ${slot}`,
+      "worker",
+      controller.signal,
+      () => requeueableReviewIds.delete(job.id),
+    );
+    activeRuns.add(run);
+    activeControllers.set(job.id, controller);
+    try {
+      await run;
+    } finally {
+      activeRuns.delete(run);
+      activeControllers.delete(job.id);
+      requeueableReviewIds.delete(job.id);
+    }
   }
+}
+
+async function waitForWorkerIdle(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (activeRuns.size > 0 || pendingClaims > 0) {
+    if (Date.now() >= deadline) return false;
+    await sleep(Math.min(25, Math.max(1, deadline - Date.now())));
+  }
+  return true;
+}
+
+async function shutdown(signal: string): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    console.log(`received ${signal}, draining ${activeRuns.size} active job(s)...`);
+    shuttingDown = true;
+
+    const drained = await waitForWorkerIdle(SHUTDOWN_DRAIN_MS);
+    if (!drained) {
+      console.warn(
+        `shutdown drain expired with ${activeRuns.size} active job(s); interrupting active reviews`,
+      );
+      for (const controller of activeControllers.values()) controller.abort();
+      const settled = await waitForWorkerIdle(SHUTDOWN_SETTLE_MS);
+      if (!settled) {
+        const activeReviewJobIds = [...activeControllers.keys()].filter((jobId) =>
+          requeueableReviewIds.has(jobId),
+        );
+        const requeued = await requeueJobsOwnedBy(
+          getPool(),
+          `${workerId}#`,
+          "worker shutdown interrupted the claim",
+          ["review"],
+          activeReviewJobIds,
+        ).catch((error) => {
+          console.error(`failed to requeue shutdown claims: ${redactSecrets(error)}`);
+          return 0;
+        });
+        console.warn(`requeued ${requeued} interrupted review job(s)`);
+      }
+    }
+
+    await Promise.allSettled([closeDb(), shutdownServerObservability("worker")]);
+    process.exit(0);
+  })();
+  return shutdownPromise;
 }
 
 function jitter(delayMs: number): number {
@@ -126,17 +210,8 @@ async function main(): Promise<void> {
   );
   reportOperationalState("worker", "worker_started");
 
-  const shutdown = (signal: string) => {
-    console.log(`received ${signal}, draining...`);
-    shuttingDown = true;
-    // Give in-flight jobs a moment, then close.
-    setTimeout(async () => {
-      await Promise.allSettled([closeDb(), shutdownServerObservability("worker")]);
-      process.exit(0);
-    }, 5000);
-  };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   const loops = Array.from({ length: CONCURRENCY }, (_, i) => claimLoop(i));
   loops.push(watchdogLoop());

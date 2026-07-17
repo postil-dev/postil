@@ -40,6 +40,7 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   authorLogin?: string;
   headSha: string;
   baseSha: string;
+  sourceDeliveryId?: string;
 }
 
 /** An @postil mention on a PR or issue the bot should reply to. */
@@ -53,6 +54,16 @@ export interface RespondJobPayload extends Record<string, unknown> {
   // "path:line" anchor when the mention is a PR review comment, so the bot
   // knows which code the question is about.
   commentAnchor?: string;
+  sourceDeliveryId?: string;
+}
+
+/** A fixed webhook reply delivered through the marker-reconciled comment path. */
+export interface WebhookCommentJobPayload extends Record<string, unknown> {
+  installationId: number;
+  repoFullName: string;
+  number: number;
+  body: string;
+  sourceDeliveryId: string;
 }
 
 export interface RespondDeliveryJobPayload extends Record<string, unknown> {
@@ -68,7 +79,136 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   repoFullName: string;
   advisoryCheckRunId: number | null;
   gateCheckRunId: number | null;
+  headSha?: string;
+  advisoryCheckExternalId?: string;
+  gateCheckExternalId?: string;
+  advisoryCheckRunMayExist?: boolean;
+  gateCheckRunMayExist?: boolean;
   message: string;
+  detailsUrl?: string;
+  intent?: "fail" | "neutralize";
+}
+
+export interface WebhookDispatchJobPayload extends Record<string, unknown> {
+  deliveryId: string;
+}
+
+export interface StoredWebhookDelivery {
+  deliveryId: string;
+  event: string;
+  action: string | null;
+  payload: unknown;
+}
+
+/** A dispatch job refers to inbox state that cannot become valid through retry. */
+export class WebhookDeliveryStateError extends Error {
+  override name = "WebhookDeliveryStateError";
+}
+
+/**
+ * Commit a signed GitHub delivery and its dispatch job together. The advisory
+ * transaction lock serializes concurrent attempts for one delivery without
+ * holding a database connection while the event is processed. A manual
+ * redelivery revives an incomplete delivery after its prior job exhausts.
+ */
+export async function acceptWebhookDelivery(
+  pool: Pool,
+  input: StoredWebhookDelivery,
+): Promise<"queued" | "inflight" | "duplicate"> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `postil:webhook-delivery:${input.deliveryId}`,
+    ]);
+    const existing = await client.query<{ completed_at: Date | null }>(
+      `SELECT completed_at FROM webhook_deliveries WHERE delivery_id = $1`,
+      [input.deliveryId],
+    );
+    if (existing.rows[0]?.completed_at) {
+      await client.query("COMMIT");
+      return "duplicate";
+    }
+    if (existing.rowCount === 0) {
+      await client.query(
+        `INSERT INTO webhook_deliveries (delivery_id, event, action, payload, completed_at)
+         VALUES ($1, $2, $3, $4::jsonb, NULL)`,
+        [input.deliveryId, input.event, input.action, JSON.stringify(input.payload)],
+      );
+    }
+
+    const active = await client.query<{ id: string }>(
+      `SELECT id
+         FROM jobs
+        WHERE kind = 'webhook-dispatch'
+          AND status IN ('queued', 'running')
+          AND payload->>'deliveryId' = $1
+        LIMIT 1`,
+      [input.deliveryId],
+    );
+    if ((active.rowCount ?? 0) > 0) {
+      await client.query("COMMIT");
+      return "inflight";
+    }
+    if (active.rowCount === 0) {
+      await client.query(
+        `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         VALUES ('webhook-dispatch', jsonb_build_object('deliveryId', $1::text), 'queued', now(), 5)`,
+        [input.deliveryId],
+      );
+    }
+    await client.query("COMMIT");
+    return "queued";
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function loadWebhookDelivery(
+  pool: Pool,
+  deliveryId: string,
+): Promise<StoredWebhookDelivery | null> {
+  const result = await pool.query<{
+    event: string;
+    action: string | null;
+    payload: unknown;
+    completed_at: Date | null;
+  }>(
+    `SELECT event, action, payload, completed_at
+       FROM webhook_deliveries
+      WHERE delivery_id = $1`,
+    [deliveryId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new WebhookDeliveryStateError(`webhook delivery ${deliveryId} is missing`);
+  if (row.completed_at) return null;
+  if (row.payload === null) {
+    throw new WebhookDeliveryStateError(
+      `webhook delivery ${deliveryId} has no dispatch payload`,
+    );
+  }
+  return {
+    deliveryId,
+    event: row.event,
+    action: row.action,
+    payload: row.payload,
+  };
+}
+
+/** Clear retained payload data only after every dispatch side effect succeeds. */
+export async function completeWebhookDelivery(pool: Pool, deliveryId: string): Promise<void> {
+  const result = await pool.query(
+    `UPDATE webhook_deliveries
+        SET payload = NULL, completed_at = now()
+      WHERE delivery_id = $1 AND completed_at IS NULL`,
+    [deliveryId],
+  );
+  if ((result.rowCount ?? 0) !== 1) {
+    throw new Error(`webhook delivery ${deliveryId} could not be completed`);
+  }
 }
 
 export async function enqueueJob(
@@ -88,6 +228,21 @@ export async function enqueueJob(
   return Number(row.id);
 }
 
+/** Enqueue one model-generated response for one signed webhook delivery. */
+export async function enqueueRespondJobOnce(
+  pool: Pool,
+  payload: RespondJobPayload,
+): Promise<number | null> {
+  const result = await pool.query<{ id: string }>(
+    `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+     VALUES ('respond', $1, 'queued', now(), 2)
+     ON CONFLICT DO NOTHING
+     RETURNING id`,
+    [JSON.stringify(payload)],
+  );
+  return result.rows[0] ? Number(result.rows[0].id) : null;
+}
+
 /** Atomically enqueue one active review for an exact repository, PR, and head. */
 export async function enqueueReviewJobOnce(
   pool: Pool,
@@ -105,6 +260,7 @@ export async function enqueueReviewJobOnce(
     const result = await client.query<{ id: string }>(
       `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
        VALUES ('review', $1, 'queued', now(), 3)
+       ON CONFLICT DO NOTHING
        RETURNING id`,
       [JSON.stringify(payload)],
     );
@@ -122,6 +278,7 @@ export async function claimJob(
   pool: Pool,
   workerId: string,
   allowedKinds: readonly string[],
+  options: { webhookDeliveryId?: string } = {},
 ): Promise<ClaimedJob | null> {
   const capabilities = [...new Set(allowedKinds.filter(Boolean))];
   if (capabilities.length === 0) {
@@ -140,11 +297,14 @@ export async function claimJob(
     }>(
       `SELECT id, kind, payload, attempts, max_attempts, created_at
        FROM jobs
-       WHERE status = 'queued' AND run_after <= now() AND kind = ANY($1::text[])
+       WHERE status = 'queued'
+         AND run_after <= now()
+         AND kind = ANY($1::text[])
+         AND ($2::text IS NULL OR payload->>'deliveryId' = $2)
        ORDER BY id
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
-      [capabilities],
+      [capabilities, options.webhookDeliveryId ?? null],
     );
     const row = selected.rows[0];
     if (!row) {
@@ -194,6 +354,35 @@ export async function completeJob(
      WHERE id = $1 AND status = 'running' AND locked_by = $2`,
     [job.id, job.lockedBy],
   );
+}
+
+/** Requeue claims owned by one stopping worker without consuming an attempt. */
+export async function requeueJobsOwnedBy(
+  pool: Pool,
+  lockedByPrefix: string,
+  reason: string,
+  kinds: readonly string[],
+  jobIds: readonly number[],
+): Promise<number> {
+  if (!lockedByPrefix) throw new Error("requeueJobsOwnedBy requires a lock-owner prefix");
+  const allowedKinds = [...new Set(kinds.filter(Boolean))];
+  if (allowedKinds.length === 0) {
+    throw new Error("requeueJobsOwnedBy requires at least one safe job kind");
+  }
+  const ownedJobIds = [...new Set(jobIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (ownedJobIds.length === 0) return 0;
+  const redactedReason = redactAndTruncate(reason, 2000);
+  const result = await pool.query(
+    `UPDATE jobs
+     SET status = 'queued', attempts = GREATEST(attempts - 1, 0),
+         locked_at = NULL, locked_by = NULL, last_error = $2, run_after = now()
+     WHERE status = 'running'
+       AND left(locked_by, length($1)) = $1
+       AND kind = ANY($3::text[])
+       AND id = ANY($4::bigint[])`,
+    [lockedByPrefix, redactedReason, allowedKinds, ownedJobIds],
+  );
+  return result.rowCount ?? 0;
 }
 
 export function backoffMs(attempts: number): number {

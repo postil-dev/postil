@@ -226,12 +226,13 @@ console.log("fixture-key");
 
     const result = await runLocalReview(repo, "0", 0, {
       args: ["--base", base, "--head", head],
-      env: { POSTIL_FAKE_READ_PATH: "app.txt" },
+      env: { POSTIL_FAKE_READ_PATH: "app.txt", POSTIL_FAKE_READ_PR_TITLE: "1" },
       includeTarget: false,
     });
 
     expect(result.stdout).toContain(`head=${head}`);
     expect(result.stdout).toContain("served_content=selected-head");
+    expect(result.stdout).toContain("served_pr_title=fixture");
     expect(result.stdout).not.toContain("dirty-worktree");
   }, 120_000);
 
@@ -465,6 +466,11 @@ if (process.env.POSTIL_FAKE_READ_PATH) {
   const response = await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/contents/\${process.env.POSTIL_FAKE_READ_PATH}?ref=\${sha}\`);
   servedContent = (await response.text()).trim();
 }
+let servedPrTitle;
+if (process.env.POSTIL_FAKE_READ_PR_TITLE === "1") {
+  const response = await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}\`);
+  servedPrTitle = (await response.json()).title;
+}
 const finding = {
   id: "local-finding-1",
   path: "app.txt",
@@ -481,9 +487,12 @@ const finding = {
   body: "The local fixture intentionally fails the gate."
 };
 const findings = hasFinding ? [finding] : [];
-const summary = servedContent === undefined
-  ? (hasFinding ? "Local fixture found an issue." : "Local fixture passed.")
-  : \`served_content=\${servedContent}\`;
+const observations = [];
+if (servedContent !== undefined) observations.push(\`served_content=\${servedContent}\`);
+if (servedPrTitle !== undefined) observations.push(\`served_pr_title=\${servedPrTitle}\`);
+const summary = observations.length > 0
+  ? observations.join("\\n")
+  : (hasFinding ? "Local fixture found an issue." : "Local fixture passed.");
 const envelope = {
   version: 1,
   summary,

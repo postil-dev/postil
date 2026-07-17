@@ -299,11 +299,11 @@ export default async function OrgDashboardPage({
         </div>
         <div className="card p-8">
           <p className="eyebrow">Confidence distribution</p>
-          <p className="mt-2 text-xs text-charcoal/60">
+          <p className="mt-2 text-xs text-charcoal/70">
             Higher confidence is better. Each bar is the share of shipped findings.
           </p>
           <div className="mt-6 grid grid-cols-[2.5rem_1fr] gap-3">
-            <div className="flex h-32 flex-col justify-between border-r border-stone/80 pr-2 text-right font-mono text-[10px] text-charcoal/55">
+            <div className="flex h-32 flex-col justify-between border-r border-stone/80 pr-2 text-right font-mono text-[10px] text-charcoal/70">
               {bucketTicks.map((tick, index) => (
                 <span key={`${tick}-${index}`}>{tick}</span>
               ))}
@@ -311,7 +311,7 @@ export default async function OrgDashboardPage({
             <div className="flex h-32 items-end gap-3">
               {buckets.map((v, i) => (
                 <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-1">
-                  <span className="font-mono text-[10px] text-charcoal/60">
+                  <span className="font-mono text-[10px] text-charcoal/70">
                     {bucketPercentages[i]}%
                   </span>
                   <div
@@ -339,7 +339,7 @@ export default async function OrgDashboardPage({
             {shippedConfidenceFindings} shipped findings across the latest{" "}
             {bucketRows.length} completed reviews.
           </p>
-          <details className="mt-3 text-xs text-charcoal/60">
+          <details className="mt-3 text-xs text-charcoal/70">
             <summary className="cursor-pointer font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gate">
               Raw counts
             </summary>
@@ -411,7 +411,7 @@ export default async function OrgDashboardPage({
                       className={
                         repo.enabled
                           ? "rounded-card border border-gate px-3 py-1 font-mono text-xs text-gate hover:bg-gate hover:text-ivory"
-                          : "rounded-card border border-stone px-3 py-1 font-mono text-xs text-charcoal/50 hover:border-charcoal hover:text-charcoal"
+                          : "rounded-card border border-stone px-3 py-1 font-mono text-xs text-charcoal/70 hover:border-charcoal hover:text-charcoal"
                       }
                     >
                       {repo.enabled ? "enabled" : "disabled"}
@@ -422,7 +422,7 @@ export default async function OrgDashboardPage({
                     className={
                       repo.enabled
                         ? "rounded-card border border-gate px-3 py-1 font-mono text-xs text-gate"
-                        : "rounded-card border border-stone px-3 py-1 font-mono text-xs text-charcoal/50"
+                        : "rounded-card border border-stone px-3 py-1 font-mono text-xs text-charcoal/70"
                     }
                   >
                     {repo.enabled ? "enabled" : "disabled"}
@@ -431,7 +431,7 @@ export default async function OrgDashboardPage({
               </div>
             ))}
             {repos.length === 0 && (
-              <p className="px-4 py-8 text-center text-sm text-charcoal/50">
+              <p className="px-4 py-8 text-center text-sm text-charcoal/70">
                 No repositories. Install the GitHub App on this organization.
               </p>
             )}
@@ -455,7 +455,7 @@ export default async function OrgDashboardPage({
                 Open settings
               </Link>
             ) : (
-              <p className="font-mono text-xs text-charcoal/50">
+              <p className="font-mono text-xs text-charcoal/70">
                 Changing organization settings requires the admin role.
               </p>
             )}
@@ -477,7 +477,7 @@ export default async function OrgDashboardPage({
                 className={
                   m.role === "admin"
                     ? "rounded-full border border-gate px-2.5 py-0.5 font-mono text-[11px] text-gate"
-                    : "rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/60"
+                    : "rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/70"
                 }
               >
                 {m.role}
@@ -485,7 +485,7 @@ export default async function OrgDashboardPage({
             </div>
           ))}
         </div>
-        <p className="mt-2 text-xs text-charcoal/50">
+        <p className="mt-2 text-xs text-charcoal/70">
           Membership and roles mirror GitHub and refresh each time a member signs
           in. Admins can change settings and repository coverage; members can
           view everything on this page.

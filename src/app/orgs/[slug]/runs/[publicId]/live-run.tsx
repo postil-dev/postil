@@ -190,7 +190,7 @@ export function RunLogPane() {
         <p id="run-log-heading" className="eyebrow">
           Run log
         </p>
-        <span className="font-mono text-[10px] uppercase tracking-wider text-charcoal/50">
+        <span className="font-mono text-[10px] uppercase tracking-wider text-charcoal/70">
           {isActive(status) ? "live" : `${lines.length.toLocaleString()} lines`}
         </span>
       </div>

@@ -452,7 +452,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     (cd "$worktree_path" && /usr/bin/env -i HOME="$TRUSTED_HOME" PATH="$TRUSTED_PATH" \
       POSTIL_API_BASE=https://openrouter.ai/api/v1 \
       POSTIL_API_FORMAT=openai-compatible \
-      POSTIL_HOSTED_MODE=1 \
+      POSTIL_HOSTED_MODE=0 \
       REVIEW_MODEL_CASCADE="$local_cascade_override" \
       REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \
       "$CREDENTIAL_WRAPPER" "$POSTIL_EXECUTABLE" review --base "$base_sha" --no-post \
@@ -469,7 +469,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
       HOME="$temporary_root/home" PATH="$TRUSTED_PATH" \
       POSTIL_API_BASE=https://openrouter.ai/api/v1 \
       POSTIL_API_FORMAT=openai-compatible \
-      POSTIL_HOSTED_MODE=1 \
+      POSTIL_HOSTED_MODE=0 \
       REVIEW_MODEL="$local_primary_model" \
       REVIEW_MODEL_CASCADE="$local_cascade_override" \
       REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \

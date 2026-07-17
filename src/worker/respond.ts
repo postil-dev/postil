@@ -16,6 +16,7 @@ import type {
   RespondDeliveryJobPayload,
   RespondFailureCommentJobPayload,
   RespondJobPayload,
+  WebhookCommentJobPayload,
 } from "@/lib/queue";
 import {
   canProcessPrivateRepository,
@@ -274,6 +275,70 @@ export async function runRespondDeliveryJob(
   if (!delivery || delivery.state === "delivered") return;
   const token = await getInstallationToken(delivery.githubInstallationId);
   await deliverPreparedRespond(db, token, payload.respondJobId);
+}
+
+/** Deliver a fixed webhook reply through the same marker-reconciled path as a model response. */
+export async function runWebhookCommentJob(
+  payload: WebhookCommentJobPayload,
+  jobId: number,
+): Promise<void> {
+  if (
+    typeof payload.installationId !== "number" ||
+    typeof payload.repoFullName !== "string" ||
+    typeof payload.number !== "number" ||
+    typeof payload.body !== "string" ||
+    payload.body.trim() === "" ||
+    typeof payload.sourceDeliveryId !== "string" ||
+    payload.sourceDeliveryId === "" ||
+    !Number.isSafeInteger(jobId) ||
+    jobId <= 0
+  ) {
+    throw new Error("webhook comment job payload malformed");
+  }
+
+  const db = getDb();
+  const installation = (
+    await db
+      .select()
+      .from(schema.installations)
+      .where(eq(schema.installations.githubInstallationId, payload.installationId))
+      .limit(1)
+  )[0];
+  if (!installation || installation.suspended) {
+    console.warn(
+      `webhook comment skipped: installation ${payload.installationId} missing/suspended`,
+    );
+    return;
+  }
+  const repository = (
+    await db
+      .select()
+      .from(schema.repositories)
+      .where(
+        and(
+          eq(schema.repositories.installationId, installation.id),
+          eq(schema.repositories.fullName, payload.repoFullName),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!repository || !repository.enabled) {
+    console.warn(`webhook comment skipped: repository ${payload.repoFullName} missing/disabled`);
+    return;
+  }
+
+  const existing = await getRespondDelivery(db, jobId);
+  if (existing?.state === "delivered") return;
+  if (!existing) {
+    await prepareUnmeteredRespondDelivery(db, {
+      jobId,
+      repositoryId: repository.id,
+      repoFullName: repository.fullName,
+      issueNumber: payload.number,
+      body: `${payload.body}\n\n${respondDeliveryMarker(jobId)}`,
+    });
+  }
+  await runRespondDeliveryJob({ respondJobId: jobId });
 }
 
 async function deliverPreparedRespond(

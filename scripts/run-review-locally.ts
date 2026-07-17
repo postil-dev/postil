@@ -162,6 +162,11 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     ["rev-parse", `${selectedHead}^{commit}`],
     syntheticSha("1"),
   );
+  const pullRequestTitle = await gitMaybe(
+    options.repoPath,
+    ["show", "-s", "--format=%s", selectedHead],
+    "Proposed code change",
+  );
   const baseSha =
     options.target.kind === "base"
       ? await gitMaybe(
@@ -185,6 +190,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     diffText,
     headSha,
     baseSha,
+    pullRequestTitle,
     repositorySource,
   });
 
@@ -350,6 +356,7 @@ function createLocalGitHubServer(input: {
   diffText: string;
   headSha: string;
   baseSha: string;
+  pullRequestTitle: string;
   repositorySource: RepositorySource;
 }): LocalGitHubServer {
   const events: LocalGitHubEvent[] = [];
@@ -384,7 +391,7 @@ function createLocalGitHubServer(input: {
           });
         }
         return json({
-          title: "Local Postil review",
+          title: input.pullRequestTitle,
           body: "",
           head: { sha: input.headSha },
           base: { sha: input.baseSha },

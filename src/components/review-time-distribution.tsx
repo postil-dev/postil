@@ -96,11 +96,11 @@ export function ReviewTimeDistribution({ durations }: { durations: readonly numb
             title={`Median ${formatMs(median)}`}
           />
         </div>
-        <div className="mt-1 flex justify-between font-mono text-[10px] text-charcoal/55">
+        <div className="mt-1 flex justify-between font-mono text-[10px] text-charcoal/70">
           <span>{formatMs(bins[0]!.fromMs)}</span>
           <span>{formatMs(bins.at(-1)!.toMs)}</span>
         </div>
-        <p className="mt-2 text-[11px] text-charcoal/60">
+        <p className="mt-2 text-[11px] text-charcoal/70">
           {validDurations.length} reviews with recorded engine time. The rust marker is the{" "}
           {formatMs(median)} median.
         </p>

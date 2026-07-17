@@ -17,17 +17,28 @@ export function mentionsPostil(text: string | undefined | null): boolean {
  * An exact request to run the structured pull-request reviewer.
  *
  * Keep this grammar deliberately narrow. A question which happens to contain
- * "review" belongs to the bounded interactive-answer path; only a whole
- * comment whose post-mention text is a review command starts another review.
+ * "review" belongs to the bounded interactive-answer path. A leading,
+ * standalone review command starts another review; a later sentence may
+ * explain why the review was requested.
  */
 export function isPostilReviewCommand(text: string | undefined | null): boolean {
   if (!text) return false;
   const prose = stripCode(text)
     .trim()
-    .replace(/[.!?]+$/, "")
     .replace(/\s+/g, " ");
-  return /^@postil\s+(?:(?:please|can you(?: please)?)\s+)?(?:re-?review(?:\s+(?:this|this pr|the pull request|the current head|current head))?|re-?run(?:\s+the)?\s+review|review(?:\s+(?:this|this pr|the pull request|the current head|current head))?)$/i.test(
-    prose,
+  const boundary = prose.search(/[.!?]\s+/u);
+  const firstSentence = (boundary === -1 ? prose : prose.slice(0, boundary + 1)).replace(
+    /[.!?]+$/,
+    "",
+  );
+  const explanation = boundary === -1 ? "" : prose.slice(boundary + 1).trim();
+  if (explanation && !isReviewFailureExplanation(explanation)) return false;
+  return /^@postil\s+(?:(?:please|can you(?: please)?)\s+)?(?:re-?review(?:\s+(?:this|this pr|the pull request|the current head|current head))?|re-?run(?:\s+the)?\s+review(?:\s+for\s+(?:the\s+)?current\s+head)?|review(?:\s+(?:this|this pr|the pull request|the current head|current head))?)$/i.test(firstSentence);
+}
+
+function isReviewFailureExplanation(text: string): boolean {
+  return /^(?:the )?(?:previous|last) (?:hosted )?(?:review|run) (?:(?:ended without|produced no) (?:a )?(?:review )?verdict|(?:did not|didn't) (?:finish|post (?:a )?(?:review|verdict)|produce (?:a )?(?:review|verdict))|(?:failed|timed out|stopped)(?: before (?:posting|producing) (?:a )?(?:review|verdict))?)\.$/i.test(
+    text,
   );
 }
 

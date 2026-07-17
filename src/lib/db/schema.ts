@@ -460,13 +460,24 @@ export const hostedUsageReservations = pgTable(
   ],
 );
 
-/** Webhook delivery dedupe: insert-or-skip keyed by X-GitHub-Delivery. */
-export const webhookDeliveries = pgTable("webhook_deliveries", {
-  deliveryId: text("delivery_id").primaryKey(),
-  event: text("event").notNull(),
-  action: text("action"),
-  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
-});
+/** Durable webhook inbox keyed by X-GitHub-Delivery. */
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    deliveryId: text("delivery_id").primaryKey(),
+    event: text("event").notNull(),
+    action: text("action"),
+    payload: jsonb("payload").$type<unknown>(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "webhook_deliveries_payload_completion_check",
+      sql`(${t.payload} IS NULL) = (${t.completedAt} IS NOT NULL)`,
+    ),
+  ],
+);
 
 export type JobPayload = Record<string, unknown>;
 

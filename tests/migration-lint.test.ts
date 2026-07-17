@@ -194,6 +194,27 @@ describe("migration lint", () => {
     expect(migration).not.toContain("CREATE UNIQUE INDEX");
   });
 
+  test("webhook cutover serializes durable source dedupe without blocking indexes", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0025_activate_durable_webhook_inbox.sql"),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE FUNCTION "suppress_duplicate_webhook_source_job"');
+    expect(migration).toContain(
+      '("payload" IS NULL) IS DISTINCT FROM ("completed_at" IS NOT NULL)',
+    );
+    expect(migration).toContain(
+      "jsonb_build_object('deliveryId', \"delivery\".\"delivery_id\")",
+    );
+    expect(migration).toContain("\"job\".\"kind\" = 'webhook-dispatch'");
+    expect(migration).toContain("pg_advisory_xact_lock");
+    expect(migration).toContain("NEW.\"payload\"->>'sourceDeliveryId'");
+    expect(migration).toContain('CREATE TRIGGER "jobs_suppress_duplicate_webhook_source_trigger"');
+    expect(migration).toContain('BEFORE INSERT ON "jobs"');
+    expect(migration).not.toContain('BEFORE INSERT OR UPDATE OF "kind", "payload" ON "jobs"');
+    expect(migration).not.toContain("CREATE UNIQUE INDEX");
+  });
+
   test("BYOK provider migration preserves legacy rows and constrains new fields", async () => {
     const migration = await readFile(
       join(import.meta.dir, "..", "drizzle", "0014_byok_provider_settings.sql"),

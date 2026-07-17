@@ -93,7 +93,7 @@ describe("trusted local Postil pre-push hook", () => {
       cascade: "openai/gpt-5-mini",
       scorer: "",
       scorerDisabled: "1",
-      hostedMode: "1",
+      hostedMode: "0",
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
       modelCredential: "present",
@@ -209,7 +209,7 @@ describe("trusted local Postil pre-push hook", () => {
     expect(record.cascade).toBe("openai/gpt-5-mini");
     expect(record.scorer).toBe("");
     expect(record.scorerDisabled).toBe("1");
-    expect(record.hostedMode).toBe("1");
+    expect(record.hostedMode).toBe("0");
     expect(record.apiBase).toBe("https://openrouter.ai/api/v1");
     expect(record.apiFormat).toBe("openai-compatible");
     expect(record.awsCredential).toBe("absent");

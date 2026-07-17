@@ -45,11 +45,13 @@ let pullRequestReviewContext = {
   authorLogin: "admin",
 };
 const realAppAuth = await import("@/lib/github/app-auth");
+const realChecks = await import("@/lib/github/checks");
 mock.module("@/lib/github/app-auth", () => ({
   ...realAppAuth,
   getInstallationToken: async () => "fake-installation-token",
 }));
 mock.module("@/lib/github/checks", () => ({
+  ...realChecks,
   ADVISORY_CHECK_NAME: "postil/review",
   GATE_CHECK_NAME: "postil/gate",
   createCheckRun: async () => 1,
@@ -72,12 +74,14 @@ mock.module("@/lib/github/checks", () => ({
 
 // Imported after the mocks are registered so the route picks up the stubs.
 const { POST } = await import("@/app/api/webhooks/github/route");
-const { getDb } = await import("@/lib/db");
+const { getDb, getPool } = await import("@/lib/db");
 const { hasNewerCompletedReviewForHead } = await import("@/lib/finding-approvals");
+const { claimJob } = await import("@/lib/queue");
+const { runClaimedJob } = await import("@/worker/runner");
 
-function post(event: string, body: object, deliveryId: string): Promise<Response> {
+async function post(event: string, body: object, deliveryId: string): Promise<Response> {
   const raw = JSON.stringify(body);
-  return POST(
+  const response = await POST(
     new Request("https://postil.dev/api/webhooks/github", {
       method: "POST",
       body: raw,
@@ -89,6 +93,13 @@ function post(event: string, body: object, deliveryId: string): Promise<Response
       },
     }),
   );
+  const result = (await response.clone().json()) as { queued?: boolean };
+  if (result.queued) {
+    const job = await claimJob(getPool(), "webhook-handler-test", ["webhook-dispatch"]);
+    expect(job?.kind).toBe("webhook-dispatch");
+    await runClaimedJob(job!, "webhook-handler-test", "web");
+  }
+  return response;
 }
 
 describeDb("webhook handler behaviour", () => {
@@ -97,6 +108,7 @@ describeDb("webhook handler behaviour", () => {
   beforeAll(async () => {
     process.env.DATABASE_URL = TEST_URL;
     process.env.GITHUB_WEBHOOK_SECRET = WEBHOOK_SECRET;
+    process.env.POSTIL_WEBHOOK_DRAIN_ENABLED = "0";
     pool = new Pool({ connectionString: TEST_URL, max: 4 });
     const dir = join(import.meta.dir, "..", "drizzle");
     const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
@@ -143,6 +155,16 @@ describeDb("webhook handler behaviour", () => {
       "INSERT INTO organizations (slug, name, github_org_id) VALUES ('octo', 'octo', 999) RETURNING id",
     );
     return Number(org.rows[0]!.id);
+  }
+
+  async function queuedWebhookCommentBodies(): Promise<string[]> {
+    const result = await pool.query<{ body: string }>(
+      `SELECT payload->>'body' AS body
+         FROM jobs
+        WHERE kind = 'webhook-comment'
+        ORDER BY id`,
+    );
+    return result.rows.map((row) => row.body);
   }
 
   async function seedInstallation(orgId: number, githubInstallationId: number): Promise<number> {
@@ -418,7 +440,9 @@ describeDb("webhook handler behaviour", () => {
       issue: { number: 8, body: "@postil please help", author_association: "MEMBER" },
     }, "private-issue")).status).toBe(200);
     const [jobs, reviews] = await Promise.all([
-      pool.query<{ c: number }>("SELECT count(*)::int AS c FROM jobs"),
+      pool.query<{ c: number }>(
+        "SELECT count(*)::int AS c FROM jobs WHERE kind <> 'webhook-dispatch'",
+      ),
       pool.query<{ c: number }>("SELECT count(*)::int AS c FROM reviews"),
     ]);
     expect(jobs.rows[0]!.c).toBe(0);
@@ -439,7 +463,7 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals WHERE revoked_at IS NULL",
     );
     expect(approvals.rows[0]!.c).toBe(1);
-    expect(postedComments[0]?.body).toContain("Approval recorded by @admin");
+    expect((await queuedWebhookCommentBodies())[0]).toContain("Approval recorded by @admin");
   });
 
   test("installation_repositories removed completes in-flight review check-runs then deletes", async () => {
@@ -589,9 +613,10 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM jobs WHERE kind = 'gate-state-sync'",
     );
     expect(syncJobs.rows[0]!.c).toBe(1);
-    expect(postedComments[0]?.body).toContain("Approval recorded by @admin");
-    expect(postedComments[0]?.body).toContain("gate update is queued");
-    expect(postedComments[0]?.body).toContain("head-sha");
+    const replies = await queuedWebhookCommentBodies();
+    expect(replies[0]).toContain("Approval recorded by @admin");
+    expect(replies[0]).toContain("gate update is queued");
+    expect(replies[0]).toContain("head-sha");
   });
 
   test("free-form mentions continue through respond path without approvals", async () => {
@@ -620,12 +645,12 @@ describeDb("webhook handler behaviour", () => {
 
     const res = await approvalComment(
       "mention-review-current-head",
-      "@postil please review the current head.",
+      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
     );
 
     expect(res.status).toBe(200);
     const jobs = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
-      "SELECT kind, payload FROM jobs ORDER BY id",
+      "SELECT kind, payload FROM jobs WHERE kind <> 'webhook-dispatch' ORDER BY id",
     );
     expect(jobs.rows).toEqual([
       {
@@ -666,15 +691,37 @@ describeDb("webhook handler behaviour", () => {
     );
 
     expect(res.status).toBe(200);
-    const jobs = await pool.query<{ kind: string }>("SELECT kind FROM jobs ORDER BY id");
-    expect(jobs.rows).toEqual([]);
-    expect(postedComments).toEqual([
+    const jobs = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+      "SELECT kind, payload FROM jobs WHERE kind <> 'webhook-dispatch' ORDER BY id",
+    );
+    expect(jobs.rows).toEqual([
       {
-        repoFullName: "octo/issues",
-        number: 4,
-        body: "Review commands only work on pull requests.",
+        kind: "webhook-comment",
+        payload: expect.objectContaining({
+          repoFullName: "octo/issues",
+          number: 4,
+          body: "Review commands only work on pull requests.",
+          sourceDeliveryId: "issue-review-command",
+        }),
       },
     ]);
+    expect(postedComments).toEqual([]);
+
+    await pool.query(
+      "UPDATE jobs SET run_after = now() WHERE kind = 'webhook-comment'",
+    );
+    const commentJob = await claimJob(getPool(), "webhook-comment-test", [
+      "webhook-comment",
+    ]);
+    expect(commentJob?.kind).toBe("webhook-comment");
+    await runClaimedJob(commentJob!, "webhook-comment-test", "worker");
+    expect(postedComments).toHaveLength(1);
+    expect(postedComments[0]).toEqual({
+      repoFullName: "octo/issues",
+      number: 4,
+      body: expect.stringContaining("Review commands only work on pull requests."),
+    });
+    expect(postedComments[0]?.body).toContain("<!-- postil-respond-job:");
   });
 
   test("approval command rejects head mismatches", async () => {
@@ -692,7 +739,7 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
     expect(approvals.rows[0]!.c).toBe(0);
-    expect(postedComments[0]?.body).toContain("head is new-head");
+    expect((await queuedWebhookCommentBodies())[0]).toContain("head is new-head");
   });
 
   test("approval command rejects missing findings", async () => {
@@ -709,7 +756,7 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
     expect(approvals.rows[0]!.c).toBe(0);
-    expect(postedComments[0]?.body).toContain("absent");
+    expect((await queuedWebhookCommentBodies())[0]).toContain("absent");
   });
 
   test("approval command rejects unverified and non-admin commenters", async () => {
@@ -719,11 +766,13 @@ describeDb("webhook handler behaviour", () => {
     await seedCompletedApprovalReview(repoId);
 
     expect((await approvalComment("approval-unverified")).status).toBe(200);
-    expect(postedComments.at(-1)?.body).toContain("could not be verified");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not be verified");
 
     await seedUser(501, "admin", orgId, "member");
     expect((await approvalComment("approval-member")).status).toBe(200);
-    expect(postedComments.at(-1)?.body).toContain("requires an organization admin");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "requires an organization admin",
+    );
 
     const approvals = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM finding_approvals",
@@ -762,7 +811,7 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
     expect(approvals.rows[0]!.c).toBe(0);
-    expect(postedComments[0]?.body).toContain("severity-blocking");
+    expect((await queuedWebhookCommentBodies())[0]).toContain("severity-blocking");
   });
 
   test("approval command rejects previously revoked approvals", async () => {
@@ -786,7 +835,7 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals WHERE revoked_at IS NULL",
     );
     expect(active.rows[0]!.c).toBe(0);
-    expect(postedComments[0]?.body).toContain("revoked");
+    expect((await queuedWebhookCommentBodies())[0]).toContain("revoked");
   });
 
   test("approval for an old head does not carry to a new commit review", async () => {
@@ -887,8 +936,9 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(syncJobs.rows[0]!.c).toBe(1);
     expect(completedCheckRuns).toEqual([]);
-    expect(postedComments[0]?.body).toContain("Approval recorded");
-    expect(postedComments[0]?.body).toContain("gate update is queued");
+    const replies = await queuedWebhookCommentBodies();
+    expect(replies[0]).toContain("Approval recorded");
+    expect(replies[0]).toContain("gate update is queued");
   });
 
   function checkRunRerequestedEvent(

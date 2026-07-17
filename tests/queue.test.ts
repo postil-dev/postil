@@ -13,6 +13,7 @@ import {
   enqueueReviewJobOnce,
   failJob,
   queueDepth,
+  requeueJobsOwnedBy,
   retryJobIndefinitely,
 } from "@/lib/queue";
 import {
@@ -328,6 +329,59 @@ describeDb("postgres job queue", () => {
     expect(a).not.toBeNull();
     expect(b).not.toBeNull();
     expect(a?.id).not.toBe(b?.id);
+  });
+
+  test("worker shutdown requeues only its claims without consuming attempts", async () => {
+    const first = await enqueueJob(pool, "review", { n: 1 });
+    const second = await enqueueJob(pool, "review", { n: 2 });
+    const sideEffect = await enqueueJob(pool, "respond", { n: 3 });
+    const owned = await claimJob(pool, "worker-a#0");
+    const foreign = await claimJob(pool, "worker-b#0");
+    const ownedSideEffect = await claimJob(pool, "worker-a#1");
+    expect(owned?.id).toBe(first);
+    expect(foreign?.id).toBe(second);
+    expect(ownedSideEffect?.id).toBe(sideEffect);
+
+    expect(
+      await requeueJobsOwnedBy(
+        pool,
+        "worker-a#",
+        "worker shutdown interrupted the claim",
+        ["review"],
+        [first, sideEffect],
+      ),
+    ).toBe(1);
+
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      attempts: number;
+      locked_by: string | null;
+      last_error: string | null;
+    }>("SELECT id, status, attempts, locked_by, last_error FROM jobs ORDER BY id");
+    expect(rows.rows).toEqual([
+      {
+        id: String(first),
+        status: "queued",
+        attempts: 0,
+        locked_by: null,
+        last_error: "worker shutdown interrupted the claim",
+      },
+      {
+        id: String(second),
+        status: "running",
+        attempts: 1,
+        locked_by: "worker-b#0",
+        last_error: null,
+      },
+      {
+        id: String(sideEffect),
+        status: "running",
+        attempts: 1,
+        locked_by: "worker-a#1",
+        last_error: null,
+      },
+    ]);
   });
 
   test("concurrent review enqueue creates one active job per repository PR head", async () => {

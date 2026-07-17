@@ -15,6 +15,18 @@ describe("validateRespondPublication", () => {
     expect(validateRespondPublication(reply, "@postil is this safe?")).toBe(
       "`src/auth.ts:41` passes unsanitized input to the query.\n\nParameterize it before merging.",
     );
+    expect(
+      validateRespondPublication(
+        "The parser receives `first\\n\\nsecond` as one string.",
+        "@postil explain this",
+      ),
+    ).toBe("The parser receives `first\\n\\nsecond` as one string.");
+    expect(
+      validateRespondPublication(
+        "The fixture is:\n\n```text\nfirst\\n\\nsecond\n```",
+        "@postil explain this",
+      ),
+    ).toBe("The fixture is:\n\n```text\nfirst\\n\\nsecond\n```");
   });
 
   test("rejects article-sized and report-shaped output", () => {
@@ -24,6 +36,10 @@ describe("validateRespondPublication", () => {
       rejected(`# ${heading}\nLong-form report prose.`);
     }
     rejected(Array.from({ length: 4 }, (_, index) => `${index + 1}. item`).join("\n"));
+    rejected(
+      "- First inventory item.\\n\\n- Second inventory item.\\n\\n- Third inventory item.\\n\\n- Fourth inventory item.",
+      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
+    );
   });
 
   test("rejects active mentions, HTML, tables, and images", () => {

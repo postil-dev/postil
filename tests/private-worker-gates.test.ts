@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 describe("private repository worker defense in depth", () => {
   test("review worker gates before review rows, GitHub tokens, checks, config fetch, or CLI spawn", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
+    const installationSync = readFileSync("src/lib/github/installation-sync.ts", "utf8");
     const gate = source.indexOf("await canProcessPrivateRepository", source.indexOf("runReviewJob"));
     expect(gate).toBeGreaterThan(0);
     expect(source).toContain("authorGithubId: payload.authorGithubId");
@@ -22,6 +23,118 @@ describe("private repository worker defense in depth", () => {
     );
     expect(source.indexOf("fetchRepositorySummary", gate)).toBeLessThan(
       source.indexOf("insert(schema.reviews)", gate),
+    );
+    expect(installationSync).toContain(
+      "AbortSignal.any([signal, AbortSignal.timeout(10_000)])",
+    );
+  });
+
+  test("disabled hosted inference stops before reservation, config fetch, or CLI spawn", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const start = source.indexOf("export async function runReviewJob");
+    const gate = source.indexOf("if (!llm.byok && !hostedInferenceEnabled())", start);
+    const reservation = source.indexOf("await reserveHostedReviewSpend", start);
+    const materialization = source.indexOf("await materializeRepoConfig", start);
+    const cli = source.indexOf("await runCli", start);
+    const versionProbe = source.indexOf("postilCliVersionLogLine()", start);
+
+    expect(gate).toBeGreaterThan(start);
+    expect(versionProbe).toBeGreaterThan(gate);
+    expect(reservation).toBeGreaterThan(gate);
+    expect(materialization).toBeGreaterThan(gate);
+    expect(cli).toBeGreaterThan(gate);
+    const guardBody = source.slice(gate, reservation);
+    expect(guardBody).toContain("completeHostedInferenceDisabledCheckRuns");
+    expect(guardBody).toContain("supersedeActiveReviews");
+    expect(guardBody).toContain('kind: "check-run-cleanup"');
+    expect(guardBody).toContain('intent: "neutralize"');
+    expect(guardBody).toContain("db.transaction");
+    expect(guardBody.indexOf("db.transaction")).toBeLessThan(
+      guardBody.indexOf("completeHostedInferenceDisabledCheckRuns"),
+    );
+    expect(guardBody.indexOf("advisoryCheckRunId,")).toBeLessThan(
+      guardBody.indexOf("completeHostedInferenceDisabledCheckRuns"),
+    );
+    expect(guardBody).toContain("return;");
+    expect(guardBody).not.toContain("postReview");
+    expect(guardBody).not.toContain("failCheckRuns");
+  });
+
+  test("hosted reservation denial leaves durable forge-visible terminal checks", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const start = source.indexOf("export async function runReviewJob");
+    const reservation = source.indexOf("await reserveHostedReviewSpend", start);
+    const denial = source.indexOf("if (spendReservation && !spendReservation.allowed)", reservation);
+    const denialEnd = source.indexOf("hostedUsageReservationId =", denial);
+    const denialBody = source.slice(denial, denialEnd);
+
+    expect(source.lastIndexOf("await createCheckRun", reservation)).toBeGreaterThan(start);
+    expect(source.lastIndexOf("await createCheckRun", reservation)).toBeLessThan(reservation);
+    expect(source.lastIndexOf("postilCliVersionLogLine()", reservation)).toBeLessThan(reservation);
+    expect(denialBody).toContain("db.transaction");
+    expect(denialBody).toContain('kind: "check-run-cleanup"');
+    expect(denialBody).toContain('intent: "fail"');
+    expect(denialBody).toContain("detailsUrl");
+    expect(denialBody).toContain("returning({ id: schema.reviews.id })");
+    expect(denialBody).toContain("if (failedRows.length === 0) return false");
+    expect(denialBody).toContain("if (settled)");
+    expect(denialBody).toContain("await failCheckRuns");
+    expect(denialBody.indexOf("db.transaction")).toBeLessThan(
+      denialBody.indexOf("await failCheckRuns"),
+    );
+    expect(denialBody).toContain("return;");
+    expect(denialBody).not.toContain("await runCli");
+  });
+
+  test("operational review failures durably queue terminal check cleanup", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const catchStart = source.indexOf("} catch (err) {", source.indexOf("await persistReviewCompletion"));
+    const catchEnd = source.indexOf("} finally {", catchStart);
+    const failureBody = source.slice(catchStart, catchEnd);
+
+    expect(failureBody).toContain("err instanceof WorkerShutdownError");
+    expect(failureBody.indexOf("err instanceof WorkerShutdownError")).toBeLessThan(
+      failureBody.indexOf("db.transaction"),
+    );
+    expect(failureBody.slice(0, failureBody.indexOf("const message"))).not.toContain(
+      'kind: "check-run-cleanup"',
+    );
+    expect(failureBody.slice(0, failureBody.indexOf("const message"))).toContain(
+      '.set({ status: "stale", finishedAt: new Date() })',
+    );
+    expect(failureBody).toContain("db.transaction");
+    expect(failureBody).toContain('kind: "check-run-cleanup"');
+    expect(failureBody).toContain('intent: "fail"');
+    expect(failureBody.indexOf("db.transaction")).toBeLessThan(
+      failureBody.indexOf("await failCheckRuns"),
+    );
+
+    const reviewStart = source.indexOf("export async function runReviewJob");
+    const unavailableCheckCreation = source.indexOf(
+      "advisoryCheckRunId = await createCheckRun",
+      reviewStart,
+    );
+    const checkCreation = source.indexOf(
+      "advisoryCheckRunId = await createCheckRun",
+      unavailableCheckCreation + 1,
+    );
+    const publicationBoundary = source.lastIndexOf(
+      "onPublicationStarted?.()",
+      checkCreation,
+    );
+    const cliCompletion = source.indexOf("const result = await runCli", checkCreation);
+    const persistence = source.indexOf("const completed = await persistReviewCompletion", cliCompletion);
+    expect(publicationBoundary).toBeGreaterThan(reviewStart);
+    expect(publicationBoundary).toBeLessThan(checkCreation);
+    const advisoryPersistence = source.indexOf(".set({ advisoryCheckRunId })", checkCreation);
+    const gateCreation = source.indexOf("gateCheckRunId = await createCheckRun", checkCreation);
+    const gatePersistence = source.indexOf(".set({ gateCheckRunId })", gateCreation);
+    expect(advisoryPersistence).toBeGreaterThan(checkCreation);
+    expect(advisoryPersistence).toBeLessThan(gateCreation);
+    expect(gatePersistence).toBeGreaterThan(gateCreation);
+    expect(source.slice(checkCreation, gatePersistence)).toContain("signal,");
+    expect(source.slice(cliCompletion, persistence)).not.toContain(
+      "throwIfWorkerStopping(signal)",
     );
   });
 
@@ -75,7 +188,7 @@ describe("private repository worker defense in depth", () => {
   });
 
   test("all webhook review, rerequest, mention, and approval paths pass through the gate before side effects", () => {
-    const source = readFileSync("src/app/api/webhooks/github/route.ts", "utf8");
+    const source = readFileSync("src/lib/github/webhook-handler.ts", "utf8");
     const pullStart = source.indexOf("async function handlePullRequest");
     const pullGate = source.indexOf("await canProcessPrivateRepository", pullStart);
     expect(source.indexOf("await supersedeActiveReviews", pullStart)).toBeGreaterThan(pullGate);

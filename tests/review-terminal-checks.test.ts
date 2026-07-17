@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const realDb = await import("@/lib/db");
 const realChecks = await import("@/lib/github/checks");
+const realAppAuth = await import("@/lib/github/app-auth");
 
 const activeReviews = [
   { id: 10, advisoryCheckRunId: 11, gateCheckRunId: 22 },
@@ -14,6 +15,7 @@ const completions: Array<{
   summary: string;
 }> = [];
 const failingCompletionIds = new Set<number>();
+let reconciledCheckRunId: number | null = null;
 
 function fakeDb() {
   return {
@@ -51,8 +53,14 @@ mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
 }));
 
+mock.module("@/lib/github/app-auth", () => ({
+  ...realAppAuth,
+  getInstallationToken: async () => "test-token",
+}));
+
 mock.module("@/lib/github/checks", () => ({
   ...realChecks,
+  findCheckRunByExternalId: async () => reconciledCheckRunId,
   completeCheckRun: async (
     _token: string,
     _repo: string,
@@ -66,15 +74,88 @@ mock.module("@/lib/github/checks", () => ({
   },
 }));
 
-const { failCheckRuns, supersedeActiveReviews } = await import("@/worker/review");
+const {
+  completeHostedInferenceDisabledCheckRuns,
+  failCheckRuns,
+  runCheckRunCleanupJob,
+  supersedeActiveReviews,
+} = await import("@/worker/review");
 
 beforeEach(() => {
   transitions.length = 0;
   completions.length = 0;
   failingCompletionIds.clear();
+  reconciledCheckRunId = null;
 });
 
 describe("review terminal check-runs", () => {
+  test("disabled hosted inference leaves both checks neutral without provider detail", async () => {
+    await completeHostedInferenceDisabledCheckRuns(
+      "test-token",
+      "postil-dev/postil",
+      11,
+      22,
+    );
+
+    expect(completions).toEqual([
+      {
+        id: 11,
+        conclusion: "neutral",
+        title: "Review unavailable",
+        summary:
+          "Postil did not run a review for this commit. No review comment or verdict was published.",
+      },
+      {
+        id: 22,
+        conclusion: "neutral",
+        title: "Review unavailable",
+        summary:
+          "Postil did not run a review for this commit. No review comment or verdict was published.",
+      },
+    ]);
+    expect(JSON.stringify(completions)).not.toMatch(/provider|model/i);
+  });
+
+  test("disabled hosted inference attempts both neutral completions without throwing", async () => {
+    failingCompletionIds.add(11);
+
+    await expect(
+      completeHostedInferenceDisabledCheckRuns(
+        "test-token",
+        "postil-dev/postil",
+        11,
+        22,
+      ),
+    ).resolves.toBe(false);
+
+    expect(completions).toEqual([
+      {
+        id: 22,
+        conclusion: "neutral",
+        title: "Review unavailable",
+        summary:
+          "Postil did not run a review for this commit. No review comment or verdict was published.",
+      },
+    ]);
+  });
+
+  test("neutral cleanup fails closed so the queue retries unresolved checks", async () => {
+    failingCompletionIds.add(11);
+
+    await expect(
+      completeHostedInferenceDisabledCheckRuns(
+        "test-token",
+        "postil-dev/postil",
+        11,
+        22,
+        true,
+      ),
+    ).rejects.toThrow("could not neutralize unavailable review check-runs");
+    expect(completions.map(({ id, conclusion }) => ({ id, conclusion }))).toEqual([
+      { id: 22, conclusion: "neutral" },
+    ]);
+  });
+
   test("superseded reviews neutralize both checks with the replacement head", async () => {
     const count = await supersedeActiveReviews({
       repositoryId: 5,
@@ -153,5 +234,24 @@ describe("review terminal check-runs", () => {
       ),
     ).rejects.toThrow("could not complete failed review check-runs");
     expect(completions.map(({ id }) => id)).toEqual([11]);
+  });
+
+  test("cleanup completes known checks before retrying an unresolved ambiguous peer", async () => {
+    await expect(
+      runCheckRunCleanupJob({
+        installationId: 42,
+        repoFullName: "postil-dev/postil",
+        advisoryCheckRunId: 11,
+        gateCheckRunId: null,
+        headSha: "head-sha",
+        gateCheckExternalId: "postil:run:gate",
+        gateCheckRunMayExist: true,
+        message: "worker stopped",
+      }),
+    ).rejects.toThrow("check-run cleanup remains incomplete");
+
+    expect(completions.map(({ id, conclusion }) => ({ id, conclusion }))).toEqual([
+      { id: 11, conclusion: "neutral" },
+    ]);
   });
 });
