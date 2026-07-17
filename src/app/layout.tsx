@@ -6,10 +6,7 @@ import { CodeCopyEnhancer } from "@/components/code-copy-enhancer";
 import { PostHogPageview } from "@/components/posthog-pageview";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import {
-  BYOK_ACTIVE_AUTHOR_MONTHLY_USD,
-  HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
-} from "@/lib/pricing-policy";
+import { BYOK_ACTIVE_AUTHOR_MONTHLY_USD } from "@/lib/pricing-policy";
 
 import "./globals.css";
 
@@ -35,14 +32,14 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://postil.dev"),
   title: {
-    default: "Postil — AI review that can block a merge.",
-    template: "%s — Postil",
+    default: "Postil: AI review that can block a merge.",
+    template: "%s | Postil",
   },
   description:
     "Postil is a low-noise pull-request review gate: silent on clean PRs, a hard CI gate on findings that matter.",
   openGraph: {
     type: "website",
-    title: "Postil — AI review that can block a merge.",
+    title: "Postil: AI review that can block a merge.",
     description:
       "A low-noise review gate for teams shipping at agent speed. Silent on clean PRs, hard gate on what matters.",
     url: "https://postil.dev",
@@ -84,13 +81,6 @@ const softwareApplicationJsonLd = {
       name: "Public repositories",
       price: "0",
       priceCurrency: "USD",
-    },
-    {
-      "@type": "Offer",
-      name: "Hosted",
-      price: String(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD),
-      priceCurrency: "USD",
-      description: "Per active private-PR author per month",
     },
     {
       "@type": "Offer",

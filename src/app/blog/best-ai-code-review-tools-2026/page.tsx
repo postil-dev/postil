@@ -51,7 +51,7 @@ export default function BestToolsArticle() {
       <div className="prose-postil blog-prose mt-10">
         <p>
           Two things make &quot;best AI code review tool&quot; a hard question
-          to answer honestly in 2026. First, the pricing landscape moved four
+          to answer in 2026. First, the pricing landscape moved four
           times in roughly ninety days: Greptile added per-review overage,
           Macroscope and Cursor Bugbot switched to usage billing, and GitHub
           Copilot moved to consumption-based AI Credits. Most comparison pages
@@ -487,7 +487,8 @@ export default function BestToolsArticle() {
           hosted, with Ollama support. The hosted app is GitHub-only today; the
           CLI covers GitHub and GitLab, with Bitbucket and Azure DevOps support
           on a best-effort CI gate. The CLI and Action are Apache-2.0, and the
-          control plane stores review envelopes, never code. We make no
+          control plane stores review envelopes, which can contain relevant code
+          excerpts, but not full diffs or repository snapshots. We make no
           peer-run benchmark claim; you can{" "}
           <Link href="/evidence">see it run</Link> across public evidence cases
           and judge the output yourself.

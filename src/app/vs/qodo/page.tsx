@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Postil vs Qodo",
     description:
-      "Active-author pricing instead of credit packs, a hard merge gate, and a published silence metric. The honest comparison.",
+      "A feature and pricing comparison covering active authors, credit packs, merge gates, and silence metrics.",
     url: "https://postil.dev/vs/qodo",
     images: ["/opengraph-image"],
   },
@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "Per active private-PR author" },
+      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
       { kind: "text", note: "Credit packs; $0.012/credit, $30 start" },
     ],
   },
@@ -51,7 +51,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "BYOK and local models (Ollama)",
     cells: [
-      { kind: "yes", note: "every deployment mode" },
+      { kind: "yes", note: "GitHub App, CLI/CI, and self-hosted" },
       { kind: "partial", note: "via open-source PR-Agent" },
     ],
   },
@@ -60,7 +60,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
+        note: "GitHub App: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       {
         kind: "text",
@@ -125,9 +125,10 @@ export default function VsQodoPage() {
           <a href="https://docs.qodo.ai/pricing-and-usage" rel="noopener">
             usage docs
           </a>{" "}
-          describe shared workspace credits and overage caps. Postil prices
-          private plans by active author. BYOK provider usage is billed directly.
-          See the <Link href="/pricing">pricing details</Link>.
+          describe shared workspace credits and overage caps. Postil prices BYOK
+          by active author, with provider usage billed directly. Hosted
+          enrollment is paused. See the{" "}
+          <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>A gate you can require</h2>
@@ -183,8 +184,8 @@ export default function VsQodoPage() {
         <div>
           <h2 className="serif-display text-2xl">One product, clear pricing.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Private plans are priced by active author. Self-hosted is free with
-            the same gate and dashboard. Try it on your next diff.
+            BYOK is priced by active author. Self-hosted is free with the same
+            gate and dashboard. Hosted enrollment is paused.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

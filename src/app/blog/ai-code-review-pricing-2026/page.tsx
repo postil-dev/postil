@@ -157,7 +157,7 @@ export default function PricingArticle() {
             >
               consumption-based &quot;AI Credits&quot;
             </a>
-            , and code review now also{" "}
+            , and code review{" "}
             <a
               href="https://github.blog/changelog/2026-04-27-github-copilot-code-review-will-start-consuming-github-actions-minutes-on-june-1-2026/"
               rel="noopener"
@@ -353,12 +353,13 @@ export default function PricingArticle() {
         <h3>Postil: active-author pricing</h3>
         <p>
           Our row assumes all {TEAM_SIZE} developers open a private-repository
-          PR that Postil reviews. Hosted is {TEAM_SIZE} active authors × $
-          {HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} ={" "}
+          PR that Postil reviews. Hosted enrollment is paused. Its listed price
+          is {TEAM_SIZE} active authors × ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} ={" "}
           <strong>${HOSTED_TEAM_MONTHLY_USD} per month</strong>. BYOK is{" "}
           {TEAM_SIZE} × ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} ={" "}
           <strong>${BYOK_TEAM_MONTHLY_USD} per month</strong>, with provider
-          usage billed directly. Hosted public-repository reviews are free.
+          usage billed directly. Public-repository App reviews are free with
+          your model provider.
           Source: <Link href="/pricing">postil.dev/pricing</Link>.
         </p>
 
@@ -437,8 +438,7 @@ export default function PricingArticle() {
 
         <h2>When usage-based pricing actually wins</h2>
         <p>
-          It would be convenient for us to declare flat pricing always better.
-          It is not, and the honest version of the argument has three parts.
+          Flat pricing has three practical advantages in this comparison.
         </p>
         <p>
           Usage billing wins when volume is low, spiky, or unevenly

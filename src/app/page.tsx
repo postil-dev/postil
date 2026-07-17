@@ -443,21 +443,29 @@ export default function HomePage() {
         eyebrow="Pricing"
         title="Pricing follows active private-PR authors."
       >
-        <div className="grid gap-8 md:grid-cols-3">
+        <div className="grid gap-8 md:grid-cols-2 xl:grid-cols-4">
           <div className="card p-6">
             <p className="serif-display text-2xl">Free</p>
             <p className="mt-2 text-sm text-ink-soft">
-              Hosted public-repository reviews are free. The local CLI is
-              Apache-2.0.
+              Public-repository App reviews are free with your model provider.
+              The local CLI is Apache-2.0.
             </p>
           </div>
           <div className="card border-gate p-6">
             <p className="serif-display text-2xl">
-              ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} / active author / mo
+              BYOK ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} / author / mo
             </p>
             <p className="mt-2 text-sm text-ink-soft">
-              Hosted model access is included. Review volume is not a billing
-              unit.
+              Use your provider and models. Provider usage is billed directly
+              to you.
+            </p>
+          </div>
+          <div className="card p-6">
+            <p className="serif-display text-2xl">
+              Hosted ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} / author / mo
+            </p>
+            <p className="mt-2 text-sm text-ink-soft">
+              Enrollment is paused. Review volume is not a billing unit.
             </p>
           </div>
           <div className="card p-6">
@@ -469,10 +477,8 @@ export default function HomePage() {
           </div>
         </div>
         <p className="mt-8 max-w-2xl text-ink-soft">
-          BYOK is ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author per month,
-          with inference billed directly by your provider. A bot or service
-          identity counts when Postil reviews its private-repository pull request.
-          Repositories are not billed.
+          An active author is a person, bot, or service identity whose private
+          pull request Postil reviews that month. Repositories are not billed.
         </p>
         <p className="mt-6">
           <Link href="/pricing" className="link-arrow">
@@ -489,8 +495,9 @@ export default function HomePage() {
               Put a real gate on your next PR.
             </h2>
             <p className="mt-2 max-w-xl text-sm text-ivory/70">
-              Install the GitHub App or run the CLI on your next diff. If we
-              have nothing to say, you will hear nothing.
+              Install the GitHub App with your model provider, or run the CLI
+              on your next diff. If we have nothing to say, you will hear
+              nothing.
             </p>
           </div>
           <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

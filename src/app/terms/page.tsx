@@ -62,30 +62,30 @@ export default function TermsPage() {
           The organization is the customer. Private plans are billed monthly by
           active private-PR author at the rates on the{" "}
           <Link href="/pricing">pricing page</Link>.{" "}
-          Hosted model access is part of the listed plan price. A configured
-          BYOK provider bills its model usage separately.
+          Hosted enrollment is paused. A configured BYOK provider bills its
+          model usage separately.
         </p>
         <p>
           An active author is a GitHub identity, including a bot or service
           identity, whose private-repository pull request Postil reviews during
           the billing month. An identity counts once per organization, with no
           repository charge. The same identity counts separately for unrelated
-          organization customers. Organizations covered by one contracted
-          enterprise account deduplicate the identity across that account.
+          organization customers.
         </p>
         <p>
-          Repository count and review count are not billing units. Hosted
-          public-repository reviews are free. Automated or coordinated activity
-          intended to exhaust shared capacity, evade safeguards, or materially
-          impair the service is not fair use and can be rate-limited or suspended.
+          Repository count and review count are not billing units.
+          Public-repository App reviews are free when the organization supplies
+          its model provider. Automated or coordinated activity intended to
+          exhaust shared capacity, evade safeguards, or materially impair the
+          service is not fair use and can be rate-limited or suspended.
+          Sustained automated volume materially beyond ordinary interactive
+          development may also be rate-limited to protect shared capacity.
         </p>
         <p>
           Prohibited activity includes reselling or proxying hosted inference,
           deliberately circumventing safeguards, and load testing without prior
-          approval. When practicable, we provide notice and an opportunity to
-          reduce usage before restricting service. Urgent security or
-          availability incidents may require immediate restriction. Questions or
-          appeals can be sent to{" "}
+          approval. Security or availability incidents may require immediate
+          restriction. Questions or appeals can be sent to{" "}
           <a href="mailto:hello@postil.dev">hello@postil.dev</a>.
         </p>
 
@@ -115,12 +115,14 @@ export default function TermsPage() {
         <h2>Data and export</h2>
         <p>
           What the service stores and what it never stores is described in the{" "}
-          <Link href="/privacy">privacy policy</Link>: source code is never
-          persisted; review envelopes and account metadata are. You can request
-          an export of your organization&apos;s stored data, and you can delete
-          it by deleting your organization or uninstalling the GitHub App. For an
-          export, email{" "}
-          <a href="mailto:hello@postil.dev">hello@postil.dev</a>.
+          <Link href="/privacy">privacy policy</Link>: full diffs, repository
+          snapshots, and clones are not persisted; review, operational, account,
+          installation, usage, and billing records are, and review output can
+          contain relevant code excerpts. A verified organization administrator
+          can request an export or deletion by emailing{" "}
+          <a href="mailto:hello@postil.dev">hello@postil.dev</a>. Uninstalling
+          the GitHub App revokes repository access and stops future processing,
+          but does not delete review history.
         </p>
 
         <h2>Limitation of liability</h2>

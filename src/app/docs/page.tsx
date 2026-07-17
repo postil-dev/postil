@@ -17,7 +17,7 @@ const CARDS = [
   {
     href: "/docs/quickstart",
     title: "Quickstart",
-    body: "Install the hosted GitHub App for immediate reviews with no configuration, then add local and CI workflows if you need them.",
+    body: "Install the GitHub App, connect your model provider, then add local and CI workflows if you need them.",
   },
   {
     href: "/docs/coding-agents",
@@ -81,8 +81,8 @@ export default function DocsIndexPage() {
     <div>
       <h1 className="serif-display text-4xl">Documentation</h1>
       <p className="prose-postil mt-4 text-lg">
-        Install the hosted GitHub App to review new pull requests immediately.
-        These pages also cover the open-source CLI, CI merge gating,
+        Install the GitHub App and connect your model provider to review new
+        pull requests. These pages also cover the open-source CLI, CI merge gating,
         configuration, and running the whole stack on your own hardware.
       </p>
       <div className="mt-10 grid gap-5 sm:grid-cols-2">
@@ -96,8 +96,8 @@ export default function DocsIndexPage() {
       <div className="prose-postil mt-12">
         <h2>The short version</h2>
         <pre tabIndex={0} aria-label="Code sample">
-          <code>{`# hosted: install the GitHub App and choose repositories
-# every new non-draft PR is reviewed with no configuration
+          <code>{`# GitHub App: install, choose repositories, and configure BYOK
+# new non-draft PRs are reviewed after provider setup
 
 # local
 curl -fsSL https://postil.dev/install.sh | sh

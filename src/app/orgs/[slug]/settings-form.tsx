@@ -46,7 +46,7 @@ export function SettingsForm({
   sharedSourceInstalled,
 }: SettingsFormProps) {
   const [state, formAction, pending] = useActionState(saveOrgSettings, null);
-  const [bringOwnKey, setBringOwnKey] = useState(settings?.hasKey ?? false);
+  const [bringOwnKey, setBringOwnKey] = useState(billedMode !== "hosted");
   const [apiKey, setApiKey] = useState("");
   const [apiFormat, setApiFormat] = useState(settings?.apiFormat ?? "openai-compatible");
   const [additionalAuth, setAdditionalAuth] = useState(settings?.hasAdditionalAuth ?? false);
@@ -78,13 +78,19 @@ export function SettingsForm({
                 name="providerMode"
                 value="hosted"
                 checked={!bringOwnKey}
-                disabled={billedMode === "byok"}
+                disabled={billedMode !== "hosted"}
                 onChange={() => setBringOwnKey(false)}
                 className="h-4 w-4 accent-[#2F6F4E]"
               />
               <span>
-                <span className="block font-medium">Hosted by Postil</span>
-                <span className="text-xs text-charcoal/55">Postil chooses and operates the models.</span>
+                <span className="block font-medium">
+                  Hosted by Postil{billedMode === "hosted" ? "" : " (paused)"}
+                </span>
+                <span className="text-xs text-charcoal/70">
+                  {billedMode === "hosted"
+                    ? "Postil chooses and operates the models."
+                    : "New hosted inference setup is unavailable."}
+                </span>
               </span>
             </label>
             <label className="flex cursor-pointer items-center gap-3 rounded-card border border-stone/70 px-3 py-2 text-sm">
@@ -99,7 +105,7 @@ export function SettingsForm({
               />
               <span>
                 <span className="block font-medium">Use your provider</span>
-                <span className="text-xs text-charcoal/55">Connect your API, models, and key.</span>
+                <span className="text-xs text-charcoal/70">Connect your API, models, and key.</span>
               </span>
             </label>
           </div>
@@ -238,7 +244,7 @@ export function SettingsForm({
               <p className="mt-3 text-xs text-charcoal/50">
                 Provider credentials are stored encrypted and never shown again.
               </p>
-              <p className="mt-2 text-xs leading-relaxed text-charcoal/60">
+              <p className="mt-2 text-xs font-medium leading-relaxed text-charcoal/80">
                 Postil sends review input, including private code, to this
                 endpoint. Use only a provider you trust with that code.
               </p>

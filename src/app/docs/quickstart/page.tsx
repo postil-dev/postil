@@ -11,7 +11,7 @@ import {
 export const metadata: Metadata = {
   title: "Quickstart",
   description:
-    "Install the hosted GitHub App for zero-configuration reviews, then add the CLI and Action when your team needs them.",
+    "Install the GitHub App with your model provider, then add the CLI and Action for local reviews and merge gating.",
   alternates: { canonical: "/docs/quickstart" },
 };
 
@@ -20,16 +20,16 @@ export default function QuickstartPage() {
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">Quickstart</h1>
       <p className="mt-4 text-lg">
-        Start with the hosted GitHub App. It reviews new non-draft pull requests
-        immediately with no repository configuration. Add the CLI and GitHub
-        Action when you want local reviews and merge blocking.
+        Start with the GitHub App and your model provider. It reviews new
+        non-draft pull requests after provider setup. Add the CLI and GitHub
+        Action for local reviews and merge blocking.
       </p>
 
-      <h2>1. Hosted GitHub App</h2>
+      <h2>1. GitHub App with BYOK</h2>
       <p>
-        Install the App, select all repositories or a chosen set, and Postil
-        reviews every new non-draft pull request in those repositories from
-        then on. No configuration or model key is required.
+        Install the App, select all repositories or a chosen set, then add your
+        provider credentials in organization settings. Postil reviews new
+        non-draft pull requests in those repositories after setup.
       </p>
       <p>
         Draft pull requests are skipped until marked ready. Existing open pull
@@ -46,7 +46,7 @@ export default function QuickstartPage() {
         </a>
       </p>
       <p>
-        The hosted app also handles <code>@postil</code> mentions. Exact review
+        The GitHub App also handles <code>@postil</code> mentions. Exact review
         commands on a pull request run the structured reviewer; questions get
         a compact thread reply. It reviews and answers only: it never opens PRs
         or pushes commits. GitHub only today.

@@ -9,7 +9,7 @@ import { githubAppInstallUrl } from "@/lib/github-app";
 export const metadata: Metadata = {
   title: "Install",
   description:
-    "Install Postil for GitHub, GitLab, Bitbucket, or Azure DevOps. Use the hosted GitHub App or run the CLI in your forge's CI.",
+    "Install Postil for GitHub with your model provider, or run the CLI in GitLab, Bitbucket, and Azure DevOps CI.",
   alternates: { canonical: "/install" },
   openGraph: {
     title: "Install Postil",
@@ -28,7 +28,7 @@ export default function InstallPage() {
         Choose your forge. Start reviewing pull requests.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        GitHub starts with the hosted App and no configuration. GitLab,
+        On GitHub, install the App and connect your model provider. GitLab,
         Bitbucket, and Azure DevOps run the Postil CLI inside their own CI.
       </p>
 

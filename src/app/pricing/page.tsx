@@ -9,12 +9,12 @@ import {
 
 export const metadata: Metadata = {
   title: "Pricing",
-  description: `Public repositories are free. Hosted is $${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} and BYOK is $${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active private-PR author each month.`,
+  description: `Public repositories are free with BYOK. Hosted enrollment is paused. BYOK is $${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active private-PR author each month.`,
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
     description:
-      "Private-repository plans are priced by active author, with no repository charge.",
+      "BYOK is available for public and private repositories. Hosted enrollment is paused.",
     url: "https://postil.dev/pricing",
     images: ["/opengraph-image"],
   },
@@ -47,8 +47,9 @@ export default function PricingPage() {
         Private code, priced by active authors.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        Public repositories are free. Private plans count only authors whose
-        pull requests Postil reviews. Repositories are not billed.
+        Public repositories are free with your model provider. Private plans
+        count only authors whose pull requests Postil reviews. Repositories are
+        not billed.
       </p>
 
       <section
@@ -62,32 +63,16 @@ export default function PricingPage() {
             for public repositories
           </p>
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
-            <li>Hosted reviews</li>
+            <li>GitHub App with your model provider</li>
             <li>CLI and GitHub Action</li>
             <li>Service-protection fair use</li>
           </ul>
           <Link href="/install" className="btn-secondary mt-8 text-center">
-            Install the App
+            Install with BYOK
           </Link>
         </div>
 
         <div className="card flex flex-col border-gate p-7">
-          <h2 className="eyebrow">Hosted</h2>
-          <p className="serif-display mt-3 text-4xl">
-            ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD}
-          </p>
-          <ActiveAuthorUnit id="hosted-active-author" />
-          <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
-            <li>Private-repository reviews</li>
-            <li>Postil operates model access</li>
-            <li>Review volume is not a billing unit</li>
-          </ul>
-          <Link href="/install" className="btn-primary mt-8 text-center">
-            Install the App
-          </Link>
-        </div>
-
-        <div className="card flex flex-col p-7">
           <h2 className="eyebrow">BYOK</h2>
           <p className="serif-display mt-3 text-4xl">
             ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD}
@@ -96,10 +81,26 @@ export default function PricingPage() {
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>Your provider, models, and credentials</li>
             <li>Provider usage billed directly to you</li>
-            <li>Review volume is not a Postil billing unit</li>
+            <li>Review volume is not a billing unit</li>
           </ul>
-          <Link href="/install" className="btn-secondary mt-8 text-center">
-            Install the App
+          <Link href="/contact" className="btn-primary mt-8 text-center">
+            Contact us to activate
+          </Link>
+        </div>
+
+        <div className="card flex flex-col p-7">
+          <h2 className="eyebrow">Hosted</h2>
+          <p className="serif-display mt-3 text-4xl">
+            ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD}
+          </p>
+          <ActiveAuthorUnit id="hosted-active-author" />
+          <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
+            <li>Enrollment is paused</li>
+            <li>Postil operates model access</li>
+            <li>Review volume is not a billing unit</li>
+          </ul>
+          <Link href="/contact" className="btn-secondary mt-8 text-center">
+            Ask about hosted access
           </Link>
         </div>
 

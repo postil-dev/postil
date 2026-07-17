@@ -87,19 +87,19 @@ function GitHubPanel({ githubAppUrl }: { githubAppUrl: string }) {
       <section className="rule grid gap-8 pt-10 md:grid-cols-[1fr_2fr]">
         <div>
           <p className="font-mono text-sm text-charcoal/70">01</p>
-          <h2 className="serif-display mt-1 text-2xl">Hosted GitHub App</h2>
+          <h2 className="serif-display mt-1 text-2xl">GitHub App with BYOK</h2>
           <p className="mt-2 text-sm text-ink-soft">
-            Automatic reviews on every new non-draft PR. Zero configuration.
+            Automatic reviews after you connect your model provider.
           </p>
         </div>
         <div className="min-w-0">
           <p className="text-ink-soft">
-            Choose all repositories or a selected set during installation. New
-            non-draft pull requests in those repositories are reviewed
-            automatically with Postil&apos;s hosted default model. Draft pull
-            requests are skipped until they are marked ready. Existing open
-            pull requests are not reviewed retroactively unless a review is
-            requested again.
+            Choose all repositories or a selected set during installation.
+            Then open organization settings and configure the provider API,
+            model, and key. New non-draft pull requests are reviewed after
+            setup. Draft pull requests are skipped until they are marked ready.
+            Existing open pull requests are not reviewed retroactively unless
+            a review is requested again.
           </p>
           <p className="mt-3 text-sm text-ink-soft">
             You can disable individual repositories from the organization
@@ -109,8 +109,8 @@ function GitHubPanel({ githubAppUrl }: { githubAppUrl: string }) {
             pushes commits.
           </p>
           <p className="mt-3 text-sm text-ink-soft">
-            Hosted access uses the same review engine as the CLI, GitHub Action,
-            and self-hosted stack.
+            The App uses the same review engine as the CLI, GitHub Action, and
+            self-hosted stack.
           </p>
           <div className="mt-5 flex flex-wrap items-center gap-4">
             <a href={githubAppUrl} className="btn-primary">
@@ -175,8 +175,8 @@ jobs:
             The action requires a full 40-character commit SHA for{" "}
             <code className="font-mono text-xs">cli-ref</code>. Require{" "}
             <code className="font-mono text-xs">postil/gate</code> in branch
-            protection when review failures should block merges. The hosted App
-            starts reviewing without this CI workflow.
+            protection when review failures should block merges. The GitHub App
+            starts reviewing after BYOK setup without this CI workflow.
           </p>
         </div>
       </section>

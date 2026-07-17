@@ -15,13 +15,13 @@ export default function PrivacyPage() {
           What we store, and what we don&apos;t.
         </h1>
 
-        <h2>Source code is never persisted</h2>
+        <h2>Full diffs and repository snapshots are not persisted</h2>
         <p>
-          The hosted control plane does not store your code. When a hosted
-          review runs, the worker fetches the pull-request diff with a
-          short-lived installation token, sends it through either Postil&apos;s
-          configured provider path or the BYOK provider path configured for your
-          organization, and exits. CLI and self-hosted reviews send diffs
+          When a GitHub App review runs, the worker fetches the pull-request
+          diff with a short-lived installation token. BYOK reviews send it to
+          the provider configured for the organization. Existing hosted plans
+          send it through Postil&apos;s configured provider path. New hosted
+          enrollment is paused. CLI and self-hosted reviews send diffs
           directly to the endpoint you configure. The diff lives in process
           memory for the duration of the review and is gone with the process.
           There is no code cache, no embedding index, and no repository clone on
@@ -34,20 +34,22 @@ export default function PrivacyPage() {
             <strong>Review envelopes</strong>: the JSON verdict of each review,
             covering summary, findings (file path, line number, severity, confidence,
             title, body), token counts, model id, and commit SHAs. Findings
-            quote at most the few words needed to identify the issue.
+            can contain relevant code excerpts needed to explain the issue.
           </li>
           <li>
             <strong>Account data</strong>: your GitHub user id, login, name,
             email, and avatar, provided during OAuth sign-in.
           </li>
           <li>
-            <strong>Installation metadata</strong>: which repositories the App
-            is installed on, by id and name.
+            <strong>Installation and settings data</strong>: GitHub installation
+            and repository identifiers, names, access state, review configuration,
+            and sealed provider credentials configured by the organization.
           </li>
           <li>
-            <strong>Usage events</strong>: prompt and completion token counts
-            per review, for dashboards, operations, abuse prevention, and
-            internal cost monitoring.
+            <strong>Usage and billing records</strong>: model-call attempt records
+            when accounting data is available, including purpose, model, token
+            counts, and accounting provenance. The organization&apos;s entitlement
+            and verified billing contact are also retained.
           </li>
           <li>
             <strong>Webhook delivery ids</strong>, kept for 30 days to deduplicate
@@ -60,14 +62,15 @@ export default function PrivacyPage() {
           </li>
         </ul>
 
-        <h2>Envelope retention</h2>
+        <h2>Retention, export, and deletion</h2>
         <p>
           Envelopes are retained while your organization has an account, both
           because they power the dashboard and because incremental re-review
-          uses the previous envelope as its baseline. Deleting your
-          organization deletes its envelopes, usage events, and settings.
-          Uninstalling the GitHub App deletes the installation and its
-          repository records.
+          uses the previous envelope as its baseline. Uninstalling the GitHub
+          App revokes repository access and stops future processing. It does
+          not delete review history. A verified organization administrator can
+          request an export or deletion of organization data by emailing{" "}
+          <a href="mailto:hello@postil.dev">hello@postil.dev</a>.
         </p>
 
         <h2>Bring-your-own API keys</h2>
@@ -76,8 +79,9 @@ export default function PrivacyPage() {
           the database and are decrypted only inside the worker, at the moment
           a review starts. The settings form is write-only: a stored key can
           be replaced or removed, never displayed. Keys are never logged and
-          never leave the worker except as the Authorization header to the
-          endpoint you configured.
+          are sent only in the provider authentication headers required by the
+          configured API interface. An optional private-gateway credential is
+          sent in the additional header configured by the organization.
         </p>
 
         <h2>Tokens and credentials</h2>
@@ -96,12 +100,10 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Model providers</strong> receive the diff for the duration
-            of a model call. Hosted BYOK reviews route through the Postil worker
-            to your configured provider under your own provider relationship.
-            Hosted reviews without BYOK settings use Postil&apos;s configured
-            OpenRouter-compatible provider path; the default is{" "}
-            <strong>OpenRouter</strong>, which forwards the request to a
-            downstream model provider. CLI and self-hosted deployments send
+            of a model call. BYOK reviews route through the Postil worker to the
+            provider configured by the organization. Existing hosted plans use
+            Postil&apos;s configured provider path; new hosted enrollment is paused.
+            CLI and self-hosted deployments send
             diffs directly to the endpoint you configure. For sensitive code we
             recommend BYOK pointed directly at your chosen provider, or
             self-hosting (below).
@@ -155,11 +157,9 @@ export default function PrivacyPage() {
           European region, so your account data and review envelopes are
           processed and stored in the UK/EU. PostHog analytics should use EU
           Cloud for the hosted service. Review inference is separate from that
-          account-data boundary: hosted reviews without BYOK model settings send
-          diffs from the worker to Postil&apos;s configured OpenRouter-compatible
-          provider path and downstream model providers, so inference has no
-          fixed UK/EU residency guarantee. When your org uses BYOK,
-          diffs go to whatever provider and region you configure. A self-hosted
+          account-data boundary. BYOK diffs go to the provider and region the
+          organization configures. Existing hosted plans use Postil&apos;s configured
+          provider path. Neither route has a fixed UK/EU residency guarantee. A self-hosted
           deployment keeps all data on your own infrastructure, wherever you run
           it. We make no SOC 2 or ISO certification claim.
         </p>
@@ -173,7 +173,7 @@ export default function PrivacyPage() {
 
         <h2>Contact</h2>
         <p>
-          Privacy questions: hello@postil.dev. Security reports: see{" "}
+          Privacy and verified data requests: hello@postil.dev. Security reports: see{" "}
           <a href="/.well-known/security.txt">security.txt</a>.
         </p>
       </div>
