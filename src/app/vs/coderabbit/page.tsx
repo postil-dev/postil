@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Postil vs CodeRabbit",
     description:
-      "A hard merge gate, a published silence metric, active-author pricing, and free self-hosting. The honest comparison.",
+      "A feature and pricing comparison covering merge gates, silence metrics, active authors, and self-hosting.",
     url: "https://postil.dev/vs/coderabbit",
     images: ["/opengraph-image"],
   },
@@ -40,7 +40,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
     ],
   },
@@ -56,7 +56,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
+        note: "GitHub App: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       { kind: "text", note: "GitHub, GitLab, Azure DevOps, Bitbucket" },
     ],
@@ -79,7 +79,7 @@ export default function VsCodeRabbitPage() {
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         CodeRabbit is the most widely deployed AI reviewer and has the broadest
-        platform coverage today. Postil is a CodeRabbit alternative built around
+        platform coverage. Postil is a CodeRabbit alternative built around
         restraint and structure: a hard merge gate separate from advisory
         comments, a published silence rate, and pricing based on active
         private-PR authors rather than repositories.
@@ -129,10 +129,9 @@ export default function VsCodeRabbitPage() {
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             $24 per seat per month on the annual plan
           </a>
-          . Postil Hosted is $15 per active author with a $6 pooled inference
-          allowance per author. BYOK is $9 per active author, plus direct
-          provider charges. Run the numbers on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          . Postil prices BYOK by active author, with provider usage billed
+          directly. Hosted enrollment is paused. See the{" "}
+          <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>Where CodeRabbit is ahead</h2>
@@ -151,7 +150,8 @@ export default function VsCodeRabbitPage() {
             Keep your <code className="font-mono text-xl">.coderabbit.yaml</code>.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Postil reads it. Install the CLI and run a review on your next diff.
+            Postil reads it. Connect BYOK or install the CLI and run a review on
+            your next diff. Hosted enrollment is paused.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

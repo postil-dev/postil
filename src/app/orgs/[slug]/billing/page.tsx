@@ -1,13 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
 
-import {
-  calculateBillingCreditBalance,
-  formatCurrencyCents,
-  formatCurrencyMicros,
-} from "@/lib/billing-credits";
 import {
   calculateBillingUsage,
   currentMonthBillingPeriod,
@@ -24,7 +19,6 @@ import {
   canProcessPrivateRepository,
   requireMatchingProviderMode,
 } from "@/lib/private-repository-entitlement";
-import { updateHostedOverageCap } from "../actions";
 import { BillingContactForm } from "./billing-contact-form";
 
 export const metadata: Metadata = {
@@ -47,7 +41,7 @@ export default async function OrgBillingPage({
     throw new Error("this page requires an organization admin");
   }
 
-  const [eventRows, currentRepoRows, creditGrantRows, usageRows] = await Promise.all([
+  const [eventRows, currentRepoRows] = await Promise.all([
     db
       .select({
         id: schema.repositoryEnablementEvents.id,
@@ -77,40 +71,6 @@ export default async function OrgBillingPage({
         eq(schema.installations.id, schema.repositories.installationId),
       )
       .where(eq(schema.installations.orgId, org.id)),
-    db
-      .select({
-        id: schema.billingCreditGrants.id,
-        amountCents: schema.billingCreditGrants.amountCents,
-        reason: schema.billingCreditGrants.reason,
-        actor: schema.billingCreditGrants.actor,
-        source: schema.billingCreditGrants.source,
-        idempotencyKey: schema.billingCreditGrants.idempotencyKey,
-        appliesAt: schema.billingCreditGrants.appliesAt,
-        createdAt: schema.billingCreditGrants.createdAt,
-      })
-      .from(schema.billingCreditGrants)
-      .where(eq(schema.billingCreditGrants.orgId, org.id))
-      .orderBy(
-        desc(schema.billingCreditGrants.createdAt),
-        desc(schema.billingCreditGrants.id),
-      ),
-    db
-      .select({
-        id: schema.usageEvents.id,
-        promptTokens: schema.usageEvents.promptTokens,
-        completionTokens: schema.usageEvents.completionTokens,
-        modelUsed: schema.usageEvents.modelUsed,
-        costMicros: schema.usageEvents.costMicros,
-        createdAt: schema.usageEvents.createdAt,
-      })
-      .from(schema.usageEvents)
-      .where(
-        and(
-          eq(schema.usageEvents.orgId, org.id),
-          eq(schema.usageEvents.billingScope, "private_hosted"),
-        ),
-      )
-      .orderBy(asc(schema.usageEvents.createdAt), asc(schema.usageEvents.id)),
   ]);
   const currentRepoById = new Map(currentRepoRows.map((repo) => [repo.id, repo]));
 
@@ -135,7 +95,6 @@ export default async function OrgBillingPage({
   const enabledPrivateCount = currentEnabledRepositories.filter(
     (repo) => repo.repositoryPrivate,
   ).length;
-  const creditBalance = calculateBillingCreditBalance(creditGrantRows, usageRows);
   const rawPrivateAccess = await canProcessPrivateRepository(db, {
     orgId: org.id,
     repositoryPrivate: true,
@@ -165,10 +124,6 @@ export default async function OrgBillingPage({
           .limit(1)
       )[0]
     : undefined;
-  const effectiveOverageHardCapMicros = entitlement
-    ? entitlement.overageHardCapMicros ??
-      (entitlement.subscriptionMode === "hosted" ? 0 : null)
-    : null;
   const hasEntitlementPeriod = Boolean(
     entitlement?.periodStartsAt && entitlement.periodEndsAt,
   );
@@ -250,7 +205,7 @@ export default async function OrgBillingPage({
               {privateAccess.allowed
                 ? `${entitlement?.subscriptionMode === "byok" ? "BYOK" : "Hosted"} private-repository reviews are enabled.`
                 : entitlement
-                  ? "Check the plan status, provider setup, and spend limit below."
+                  ? "Check the plan status and provider setup below."
                   : "Add a private plan before Postil reviews or responds in private repositories. Public reviews remain free."}
             </p>
           </div>
@@ -259,7 +214,7 @@ export default async function OrgBillingPage({
           </span>
         </div>
         {entitlement && (
-          <div className="mt-4 grid gap-3 font-mono text-xs sm:grid-cols-4">
+          <div className="mt-4 grid gap-3 font-mono text-xs sm:grid-cols-2">
             <p>
               billing contact: {entitlement.billingContactEmail ?? "not set"}
               {entitlement.billingContactEmail && (
@@ -267,13 +222,6 @@ export default async function OrgBillingPage({
                   ({entitlement.billingContactVerifiedAt ? "verified" : "unverified"})
                 </span>
               )}
-            </p>
-            <p>included usage: {formatCurrencyMicros(entitlement.includedUsageMicros)}</p>
-            <p>
-              overage hard cap:{" "}
-              {effectiveOverageHardCapMicros == null
-                ? "not set"
-                : formatCurrencyMicros(effectiveOverageHardCapMicros)}
             </p>
             <p>private PR authors: {activePrivateAuthorCount}</p>
           </div>
@@ -287,24 +235,9 @@ export default async function OrgBillingPage({
           </a>
         )}
         {entitlement?.subscriptionMode === "hosted" && (
-          <form action={updateHostedOverageCap} className="mt-5 flex flex-wrap items-end gap-3 border-t border-stone/60 pt-4">
-            <input type="hidden" name="slug" value={org.slug} />
-            <label className="text-xs">
-              <span className="block font-medium">Monthly overage hard cap (USD)</span>
-              <input
-                name="overageCapUsd"
-                inputMode="decimal"
-                pattern="[0-9]+(?:\.[0-9]{1,2})?"
-                required
-                defaultValue={((effectiveOverageHardCapMicros ?? 0) / 1_000_000).toFixed(2)}
-                className="mt-1 w-36 rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs"
-              />
-            </label>
-            <button type="submit" className="btn-secondary text-xs">Save hard cap</button>
-            <p className="max-w-xl text-xs text-charcoal/55">
-              Zero prevents charges beyond included hosted inference. Changes apply before the next provider request.
-            </p>
-          </form>
+          <p className="mt-4 border-t border-stone/60 pt-4 text-xs text-charcoal/60">
+            Model access is included in the hosted plan price.
+          </p>
         )}
         {entitlement?.subscriptionMode === "byok" && (
           <p className="mt-4 border-t border-stone/60 pt-4 text-xs text-charcoal/60">
@@ -321,7 +254,7 @@ export default async function OrgBillingPage({
         )}
       </div>
 
-      <div className="mt-8 grid gap-6 lg:grid-cols-4">
+      <div className="mt-8 grid gap-6 lg:grid-cols-3">
         <div className="card p-6">
           <p className="eyebrow">Plan</p>
           <p className="serif-display mt-3 text-3xl">
@@ -349,85 +282,12 @@ export default async function OrgBillingPage({
           </p>
         </div>
         <div className="card p-6">
-          <p className="eyebrow">Credit balance</p>
-          <p className="serif-display mt-3 text-5xl">
-            {formatCurrencyMicros(creditBalance.remainingMicros)}
-          </p>
-          <p className="mt-2 text-sm text-charcoal/70">
-            remaining from {formatCurrencyCents(creditBalance.totalGrantedCents)} granted
-          </p>
-          <p className="mt-4 font-mono text-[11px] text-charcoal/55">
-            {formatCurrencyMicros(creditBalance.usageCostMicros)} charged across{" "}
-            {creditBalance.chargedUsageEvents.toLocaleString()} usage events
-          </p>
-          <p className="mt-2 font-mono text-[11px] text-charcoal/55">
-            {!entitlement
-              ? "Available after a hosted private plan is active. Public reviews remain free."
-              : entitlement.subscriptionMode === "byok"
-                ? "BYOK reviews bill your provider, so Postil credits remain untouched."
-                : "Applied to hosted private reviews. Public reviews remain free."}
-          </p>
-        </div>
-        <div className="card p-6">
           <p className="eyebrow">Repository coverage</p>
           <p className="serif-display mt-3 text-5xl">{currentEnabledRepositories.length}</p>
           <p className="mt-2 text-sm text-charcoal/70">enabled, with no per-repo fee</p>
           <p className="mt-4 font-mono text-[11px] text-charcoal/55">
             {enabledPublicCount} public · {enabledPrivateCount} private
           </p>
-        </div>
-      </div>
-
-      <div className="mt-10">
-        <p className="eyebrow">Credit grants</p>
-        <div className="card mt-3 overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-stone/70 font-mono text-[11px] uppercase tracking-[0.12em] text-charcoal/55">
-              <tr>
-                <th className="px-4 py-3">Amount</th>
-                <th className="px-4 py-3">Reason</th>
-                <th className="px-4 py-3">Actor</th>
-                <th className="px-4 py-3">Key</th>
-                <th className="px-4 py-3">Applies from</th>
-                <th className="px-4 py-3">Recorded</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-stone/60">
-              {creditGrantRows.map((grant) => (
-                <tr key={grant.id}>
-                  <td className="px-4 py-3 font-mono text-xs">
-                    {formatCurrencyCents(grant.amountCents)}
-                  </td>
-                  <td className="px-4 py-3 text-sm">{grant.reason}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
-                    {grant.actor} / {grant.source}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
-                    {grant.idempotencyKey}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
-                    {formatDateTime(grant.appliesAt)}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
-                    {formatDateTime(grant.createdAt)}
-                  </td>
-                </tr>
-              ))}
-              {creditGrantRows.length === 0 && (
-                <tr>
-                  <td className="px-4 py-8 text-center text-sm text-charcoal/50" colSpan={6}>
-                    No credits have been granted for this organization.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-          {creditBalance.unpricedUsageEvents > 0 && (
-            <p className="border-t border-stone px-4 py-3 font-mono text-xs text-rust">
-              {creditBalance.unpricedUsageEvents.toLocaleString()} usage events have no priced model
-              and are excluded from credit charges.
-            </p>
-          )}
         </div>
       </div>
 

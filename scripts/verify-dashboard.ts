@@ -157,13 +157,10 @@ try {
   ]);
   await verifyPage(`${origin}/orgs/acme/billing`, headers, ["Organization billing"]);
   await verifyPage(`${origin}/orgs/morgaesis/billing`, headers, [
-    "Credit balance",
-    "$198.695",
-    "$200.00",
-    "$1.305",
-    "charged across",
-    "Owner launch credit",
-    "morgaesis-2026-07-owner-credit",
+    "Public only",
+    "Private authors",
+    "Repository coverage",
+    "morgaesis/postil",
   ]);
   await verifyPage(`${origin}/reports`, headers, ["Recent reviews", "demo-dev", "Acme Robotics"]);
   await verifyPage(`${origin}/orgs/acme/runs/${review.public_id}`, headers, [

@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     "Postil as a CodeRabbit alternative: a hard merge gate, a published silence metric, active-author pricing, BYOK, and self-hosting.",
   alternates: { canonical: "/why-postil" },
   openGraph: {
-    title: "Why Postil: the honest comparison",
+    title: "Why Postil: product comparison",
     description:
       "Hard merge gate, a published silence metric, active-author pricing, BYOK, and real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
     url: "https://postil.dev/why-postil",
@@ -49,7 +49,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
   {
     feature: "Pricing model",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
       { kind: "text", note: "Per-seat + per-review overage" },
       { kind: "text", note: "AI Credits + Actions minutes (Jun 2026)" },
@@ -69,7 +69,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate; off GitHub the gate is a CI job pass/fail, not a named check-run",
+        note: "GitHub App: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate; off GitHub the gate is a CI job pass/fail, not a named check-run",
       },
       { kind: "text", note: "GitHub, GitLab, Azure DevOps, Bitbucket" },
       { kind: "text", note: "GitHub, GitLab" },
@@ -163,10 +163,8 @@ const wedges: Wedge[] = [
           burned in two hours.
         </p>
         <p className="mt-3">
-          Postil Hosted is $15 per active private-PR author with a $6 pooled
-          inference allowance per author. BYOK is $9 per active author, with
-          provider usage billed directly. The closest comparable model we
-          found is{" "}
+          Postil prices BYOK by active author, with provider usage billed
+          directly. Hosted enrollment is paused. A comparable model is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">
             Kodus
           </a>
@@ -221,8 +219,8 @@ const wedges: Wedge[] = [
           platform edge cases differ. The CLI's interactive{" "}
           <code>@postil</code> bot (<code>postil respond</code>) follows the
           same reach: GitHub and GitLab cover issues and PRs/MRs, Bitbucket and
-          Azure DevOps cover pull requests only. The hosted app is GitHub-only
-          today. Off GitHub the gate is enforced as a CI job that passes or
+          Azure DevOps cover pull requests only. The hosted app supports GitHub
+          only. Off GitHub the gate is enforced as a CI job that passes or
           fails, rather than a named external check-run like GitHub's{" "}
           <code>postil/gate</code>.
         </p>
@@ -323,13 +321,13 @@ export default function WhyPostilPage() {
     <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
       <p className="eyebrow">Why Postil</p>
       <h1 className="serif-display mt-4 max-w-3xl text-4xl md:text-5xl">
-        The honest comparison.
+        Compare Postil with other AI reviewers.
       </h1>
       <p className="mt-6 max-w-3xl text-lg text-ink-soft">
         Every claim below links to its source: vendor pricing pages, public
         post-mortems, and independent audits. Where a
         competitor is better, we say so: CodeRabbit's platform coverage is more
-        battle-tested today, and Greptile's cross-file recall is genuinely
+        battle-tested, and Greptile's cross-file recall is genuinely
         strong. Here is where Postil is different.
       </p>
 
@@ -398,7 +396,7 @@ export default function WhyPostilPage() {
       </div>
 
       <div className="card mt-16 p-8">
-        <h2 className="serif-display text-2xl">Where we are honest about trade-offs</h2>
+        <h2 className="serif-display text-2xl">Trade-offs</h2>
         <ul className="mt-4 space-y-2 text-[15px] text-ink-soft">
           <li>
             Bitbucket and Azure DevOps support in the CLI is best effort:
@@ -421,7 +419,7 @@ export default function WhyPostilPage() {
         </ul>
         <p className="mt-6">
           <Link href="/pricing" className="link-arrow">
-            Compare costs with the calculator
+            See pricing
           </Link>
         </p>
       </div>

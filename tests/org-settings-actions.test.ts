@@ -643,8 +643,10 @@ describe("SettingsForm API key handling", () => {
     expect(source).toContain('value="anthropic"');
     expect(source).toContain('type="checkbox"');
     expect(source).toContain('type="radio"');
-    expect(source).toContain('disabled={billedMode === "byok"}');
+    expect(source).toContain('disabled={billedMode !== "hosted"}');
     expect(source).toContain('disabled={billedMode === "hosted"}');
+    expect(source).toContain("New hosted inference setup is unavailable.");
+    expect(source).toContain("Use only a provider you trust with that code.");
     expect(source).toContain("Private repositories remain inactive until a matching plan");
     expect(source).toContain("Shared owner configuration is disabled. The stored snapshot is not used.");
     expect(source).toContain("No verified shared snapshot is available.");

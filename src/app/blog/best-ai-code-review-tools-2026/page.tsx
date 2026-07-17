@@ -51,7 +51,7 @@ export default function BestToolsArticle() {
       <div className="prose-postil blog-prose mt-10">
         <p>
           Two things make &quot;best AI code review tool&quot; a hard question
-          to answer honestly in 2026. First, the pricing landscape moved four
+          to answer in 2026. First, the pricing landscape moved four
           times in roughly ninety days: Greptile added per-review overage,
           Macroscope and Cursor Bugbot switched to usage billing, and GitHub
           Copilot moved to consumption-based AI Credits. Most comparison pages
@@ -206,8 +206,8 @@ export default function BestToolsArticle() {
             <tr>
               <td>Postil</td>
               <td className="hidden sm:table-cell">Active private-PR author</td>
-              <td>$15 Hosted or $9 BYOK per active author</td>
-              <td>Hosted includes a pooled inference allowance</td>
+              <td>See current pricing</td>
+              <td>Review volume is not a billing unit</td>
             </tr>
           </tbody>
         </table>
@@ -480,15 +480,15 @@ export default function BestToolsArticle() {
           restraint is measured and reported: the first number on the
           dashboard is the silence rate, the share of PRs where Postil said
           nothing, alongside the confidence distribution of every finding it
-          shipped. Hosted is $15 per active private-PR author with a $6 pooled
-          inference allowance per author. BYOK is $9 per active author, with
-          provider usage billed directly.
+          shipped. Private plans are priced by active author. BYOK provider
+          usage is billed directly.
           Self-hosting is free via{" "}
           <Link href="/docs/self-hosted">Docker Compose</Link>, same product as
           hosted, with Ollama support. The hosted app is GitHub-only today; the
           CLI covers GitHub and GitLab, with Bitbucket and Azure DevOps support
           on a best-effort CI gate. The CLI and Action are Apache-2.0, and the
-          control plane stores review envelopes, never code. We make no
+          control plane stores review envelopes, which can contain relevant code
+          excerpts, but not full diffs or repository snapshots. We make no
           peer-run benchmark claim; you can{" "}
           <Link href="/evidence">see it run</Link> across public evidence cases
           and judge the output yourself.

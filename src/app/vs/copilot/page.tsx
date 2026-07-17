@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Postil vs GitHub Copilot code review",
     description:
-      "A blocking merge gate where Copilot is comment-only, active-author pricing, BYOK, and free self-hosting. The honest comparison.",
+      "A feature and pricing comparison covering merge gates, active-author pricing, BYOK, and self-hosting.",
     url: "https://postil.dev/vs/copilot",
     images: ["/opengraph-image"],
   },
@@ -43,7 +43,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
       {
         kind: "text",
         note: "Paid Copilot plan + AI Credits + Actions minutes per review",
@@ -53,7 +53,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Cost predictability",
     cells: [
-      { kind: "text", note: "Hosted owner cap; BYOK provider controls" },
+      { kind: "text", note: "BYOK provider controls; Hosted enrollment paused" },
       { kind: "no", note: "usage-billed since June 2026" },
     ],
   },
@@ -70,7 +70,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
+        note: "GitHub App: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       { kind: "text", note: "GitHub; Azure DevOps in preview" },
     ],
@@ -140,7 +140,7 @@ export default function VsCopilotPage() {
           >
             &quot;AI Credits&quot; billing
           </a>{" "}
-          on June 1, 2026, and code review now also{" "}
+          on June 1, 2026, and code review{" "}
           <a
             href="https://github.blog/changelog/2026-04-27-github-copilot-code-review-will-start-consuming-github-actions-minutes-on-june-1-2026/"
             rel="noopener"
@@ -162,10 +162,9 @@ export default function VsCopilotPage() {
             one who burned an entire month&apos;s included credits on a single
             automatic PR review
           </a>
-          . Postil Hosted is $15 per active private-PR author with a $6 pooled
-          inference allowance per author. BYOK is $9 per active author plus
-          direct provider charges. Run your numbers on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          . Postil prices BYOK by active author, with provider usage billed
+          directly. Hosted enrollment is paused. See the{" "}
+          <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>A silence rate tracked continuously, on your PRs</h2>
@@ -195,11 +194,11 @@ export default function VsCopilotPage() {
             policy since April 2025
           </a>
           ); Business and Enterprise plans are excluded. There is no model
-          choice and no BYOK on any tier. With Postil, hosted BYOK reviews go
-          through the worker to the provider you configured, hosted default
-          reviews use Postil&apos;s configured provider path, and self-hosted keeps
-          inference inside your network. The control plane stores review
-          envelopes, never code.
+          choice and no BYOK on any tier. With Postil, GitHub App BYOK reviews
+          go through the worker to the provider you configured, while
+          self-hosted inference stays inside your network. Hosted enrollment is
+          paused. The control plane stores review envelopes, which can contain
+          relevant code excerpts, but not full diffs or repository snapshots.
         </p>
 
         <h2>Where Copilot is ahead</h2>
@@ -231,7 +230,8 @@ export default function VsCopilotPage() {
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
             Require postil/gate in branch protection and keep Copilot if you
-            like it. Install the CLI and try it on your next diff.
+            like it. Connect BYOK or try the CLI on your next diff. Hosted
+            enrollment is paused.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

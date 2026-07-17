@@ -11,12 +11,11 @@ export default function NotFound() {
     <div className="mx-auto flex max-w-6xl flex-col items-start px-6 py-24 md:py-32">
       <p className="eyebrow">404</p>
       <h1 className="serif-display mt-4 max-w-2xl text-4xl md:text-5xl">
-        Nothing here. And we will not pretend otherwise.
+        That page is not here.
       </h1>
       <p className="mt-6 max-w-xl text-lg text-ink-soft">
-        This URL has no page behind it. A reviewer that fabricates findings is
-        worse than one that says nothing, so here is the honest version: the
-        page you asked for does not exist.
+        The URL may be outdated, or the page may have moved. Try the home page,
+        documentation, or the links below.
       </p>
       <div className="mt-8 flex flex-wrap gap-4">
         <Link href="/" className="btn-primary">

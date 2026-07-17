@@ -180,9 +180,10 @@ export default function SecurityPage() {
               <strong>AES-256-GCM</strong> before they touch the database and are
               decrypted only inside the worker, at the moment a review starts. The
               settings form is write-only: a stored key can be replaced or
-              removed, never read back out. Keys are never logged and never leave
-              the worker except as the Authorization header to the endpoint you
-              configured.
+              removed, never read back out. Keys are never logged and are sent
+              only in the provider authentication headers required by the
+              configured API interface. An optional private-gateway credential
+              is sent in the additional configured header.
             </p>
             <p>
               GitHub installation tokens are minted on demand from the App key,
@@ -219,8 +220,8 @@ export default function SecurityPage() {
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt>Source code</dt>
-                <dd className="text-right font-mono text-xs">never persisted</dd>
+                <dt>Full diff or repository snapshot</dt>
+                <dd className="text-right font-mono text-xs">not persisted</dd>
               </div>
             </dl>
           </div>
@@ -230,19 +231,31 @@ export default function SecurityPage() {
       <Section
         number="04"
         eyebrow="Data handling"
-        title="Only the review envelope persists."
+        title="The full diff is ephemeral; review records persist."
       >
         <div className="max-w-2xl text-ink-soft">
           <p>
-            The control plane persists one artifact per review: the envelope, a
-            JSON document with the summary, findings, token usage, and gate
-            verdict. The diff is fetched at review time, sent to the applicable
-            model endpoint, and discarded with the process. Hosted BYOK reviews
-            route through the worker to your configured provider, hosted default
-            reviews use Postil&apos;s configured provider path, and self-hosted
-            deployments send nothing to us: no telemetry, no license pings, no
-            update checks. There is no code cache, embedding index, or
-            repository clone on our infrastructure.
+            The retained source-derived review artifact is the envelope, a JSON
+            document with the summary, findings, token usage, and gate verdict.
+            The control plane also keeps the operational records required for
+            check delivery, trigger audit, per-attempt usage accounting, account
+            access, installations, and billing. The full diff is fetched at
+            review time, sent to the applicable model endpoint, and discarded
+            with the process. GitHub App BYOK reviews route through the worker
+            to your configured provider. Existing hosted plans use Postil&apos;s
+            configured provider path; new hosted enrollment is paused.
+            Self-hosted deployments send nothing to us: no telemetry, no
+            license pings, no update checks.
+            There is no full diff cache, embedding index, or repository clone
+            on our infrastructure.
+          </p>
+          <p className="mt-4">
+            The persisted envelope can include a relevant code excerpt in review
+            output when it is needed to explain a finding.
+          </p>
+          <p className="mt-4">
+            A configured BYOK endpoint receives review input, including private
+            code. Use only a provider you trust with that code.
           </p>
           <p className="mt-4">
             Full detail in the{" "}
@@ -367,8 +380,8 @@ export default function SecurityPage() {
             .
           </p>
           <p className="mt-4">
-            We do not publish a separate GPG release key today. That is
-            intentional: Sigstore keyless signing keeps release identity tied to
+            We do not publish a separate GPG release key. Sigstore keyless
+            signing keeps release identity tied to
             GitHub OIDC and avoids a static private key that would need storage,
             rotation, revocation, and out-of-band trust distribution.
           </p>

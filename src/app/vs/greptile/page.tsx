@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Postil vs Greptile",
     description:
-      "Active-author pricing, a hard merge gate, BYOK, and a published silence metric. The honest comparison.",
+      "A feature and pricing comparison covering active authors, merge gates, BYOK, and silence metrics.",
     url: "https://postil.dev/vs/greptile",
     images: ["/opengraph-image"],
   },
@@ -37,14 +37,14 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "$15 Hosted or $9 BYOK per active author" },
+      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
       { kind: "text", note: "~$30/seat + ~$1 per review past 50" },
     ],
   },
   {
     feature: "Cost at high PR volume",
     cells: [
-      { kind: "text", note: "Hosted owner cap; BYOK provider controls" },
+      { kind: "text", note: "BYOK provider controls; Hosted enrollment paused" },
       { kind: "no", note: "scales with review count" },
     ],
   },
@@ -60,7 +60,7 @@ const ROWS: ComparisonRow[] = [
     cells: [
       {
         kind: "text",
-        note: "Hosted app: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
+        note: "GitHub App: GitHub. CLI/CI: GitHub, GitLab, Bitbucket + Azure DevOps on a best-effort CI gate",
       },
       { kind: "text", note: "GitHub, GitLab" },
     ],
@@ -105,10 +105,9 @@ export default function VsGreptilePage() {
             public backlash
           </a>
           . A developer pushing several hundred agent-driven PRs in a month can
-          owe hundreds of dollars. Postil Hosted is $15 per active author with
-          a $6 pooled inference allowance per author. BYOK is $9 per active
-          author plus direct provider charges. Compare on the{" "}
-          <Link href="/pricing">cost calculator</Link>.
+          owe hundreds of dollars. Postil prices BYOK by active author, with
+          provider usage billed directly. Hosted enrollment is paused. See the{" "}
+          <Link href="/pricing">pricing details</Link>.
         </p>
 
         <h2>A gate that can block a merge</h2>
@@ -146,8 +145,8 @@ export default function VsGreptilePage() {
         <div>
           <h2 className="serif-display text-2xl">Pay for active private-PR authors.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Choose Hosted or BYOK. Install the CLI and
-            try it on your next diff.
+            Connect BYOK and try the CLI on your next diff. Hosted enrollment
+            is paused.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">
