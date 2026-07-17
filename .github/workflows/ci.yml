@@ -30,6 +30,8 @@ jobs:
         run: |
           createdb postil_migrations
           bun run release:prepare
+          # A release retry must recognize every valid concurrent index.
+          bun run operational:indexes
           bun run jobs:activate-release
         env:
           PGHOST: localhost

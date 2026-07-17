@@ -1,6 +1,8 @@
 // Curated model list for /docs/models. Facts and public price snapshots are
 // maintained in this repo so public docs do not depend on a third-party request
-// at render time. Prices captured from OpenRouter on 2026-07-13.
+// at render time.
+
+export const MODEL_CATALOG_CAPTURE_DATE = "2026-07-13";
 
 export type ParamClass = "unknown" | "<40B" | "40B-200B" | ">200B";
 
@@ -18,7 +20,6 @@ export interface CatalogModel {
   paramClass: ParamClass;
   /** <40B open-weights models are the ones worth calling out as locally runnable. */
   locallyRunnable: boolean;
-  recommended: boolean;
   /** True once bench-results.json has a scored entry for this id. */
   tested: boolean;
   /** Public OpenRouter price per token for docs display. */
@@ -34,7 +35,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: ">200B",
     locallyRunnable: false,
-    recommended: true,
     tested: false,
     pricePerToken: { input: 0.00000042, output: 0.00000132 },
   },
@@ -46,7 +46,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: ">200B",
     locallyRunnable: false,
-    recommended: false,
     tested: false,
     pricePerToken: { input: 0.00000072, output: 0.0000035 },
   },
@@ -58,7 +57,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: ">200B",
     locallyRunnable: false,
-    recommended: false,
     tested: true,
     pricePerToken: { input: 0.000000435, output: 0.00000087 },
   },
@@ -70,7 +68,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: ">200B",
     locallyRunnable: false,
-    recommended: false,
     tested: true,
     pricePerToken: { input: 0.00000066, output: 0.00000341 },
   },
@@ -82,7 +79,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: "40B-200B",
     locallyRunnable: false,
-    recommended: false,
     tested: true,
     pricePerToken: { input: 0.000000077, output: 0.000000154 },
   },
@@ -94,7 +90,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: false,
     paramClass: "unknown",
     locallyRunnable: false,
-    recommended: false,
     tested: false,
     pricePerToken: { input: 0.000001, output: 0.000005 },
   },
@@ -106,7 +101,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: false,
     paramClass: "unknown",
     locallyRunnable: false,
-    recommended: false,
     tested: false,
     pricePerToken: { input: 0.00000025, output: 0.000002 },
   },
@@ -118,7 +112,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: "<40B",
     locallyRunnable: true,
-    recommended: false,
     tested: true,
     pricePerToken: { input: 0.00000008, output: 0.00000028 },
   },
@@ -130,7 +123,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: "<40B",
     locallyRunnable: true,
-    recommended: false,
     tested: true,
     pricePerToken: { input: 0.000000075, output: 0.0000002 },
   },
@@ -142,7 +134,6 @@ export const MODELS: CatalogModel[] = [
     openWeights: true,
     paramClass: "<40B",
     locallyRunnable: true,
-    recommended: false,
     tested: true,
     pricePerToken: { input: 0.00000008, output: 0.00000016 },
   },

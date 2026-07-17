@@ -211,6 +211,46 @@ export async function completeWebhookDelivery(pool: Pool, deliveryId: string): P
   }
 }
 
+export const WEBHOOK_DELIVERY_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+export const WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE = 1_000;
+
+/** Delete one bounded batch of completed delivery ids after the dedupe window. */
+export async function pruneCompletedWebhookDeliveries(
+  pool: Pool,
+  options: {
+    now?: Date;
+    retentionMs?: number;
+    batchSize?: number;
+  } = {},
+): Promise<number> {
+  const now = options.now ?? new Date();
+  const retentionMs = options.retentionMs ?? WEBHOOK_DELIVERY_RETENTION_MS;
+  const batchSize = options.batchSize ?? WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE;
+  if (!Number.isSafeInteger(retentionMs) || retentionMs <= 0) {
+    throw new Error("webhook delivery retention must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(batchSize) || batchSize <= 0 || batchSize > 10_000) {
+    throw new Error("webhook delivery retention batch size must be in 1..10000");
+  }
+
+  const cutoff = new Date(now.getTime() - retentionMs);
+  const result = await pool.query(
+    `WITH expired AS (
+       SELECT ctid
+         FROM webhook_deliveries
+        WHERE completed_at IS NOT NULL AND completed_at < $1
+        ORDER BY completed_at
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
+     )
+     DELETE FROM webhook_deliveries AS delivery
+      USING expired
+      WHERE delivery.ctid = expired.ctid`,
+    [cutoff, batchSize],
+  );
+  return result.rowCount ?? 0;
+}
+
 export async function enqueueJob(
   pool: Pool,
   kind: string,

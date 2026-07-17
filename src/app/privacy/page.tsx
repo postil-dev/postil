@@ -50,7 +50,8 @@ export default function PrivacyPage() {
             internal cost monitoring.
           </li>
           <li>
-            <strong>Webhook delivery ids</strong>, kept for deduplication.
+            <strong>Webhook delivery ids</strong>, kept for 30 days to deduplicate
+            retries and redeliveries. Completed payloads are cleared immediately.
           </li>
         </ul>
 

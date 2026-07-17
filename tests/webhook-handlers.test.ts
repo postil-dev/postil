@@ -4,7 +4,10 @@ import { join } from "node:path";
 
 import { Pool } from "pg";
 
-import { signWebhookBody } from "@/lib/crypto/webhook";
+import {
+  GITHUB_WEBHOOK_MAX_BODY_BYTES,
+  signWebhookBody,
+} from "@/lib/crypto/webhook";
 
 /**
  * Behavioural coverage for the webhook route beyond delivery dedupe:
@@ -101,6 +104,19 @@ async function post(event: string, body: object, deliveryId: string): Promise<Re
   }
   return response;
 }
+
+test("rejects an oversized declared webhook before reading or authenticating it", async () => {
+  const request = new Request("https://postil.dev/api/webhooks/github", {
+    method: "POST",
+    body: "{}",
+    headers: { "content-length": String(GITHUB_WEBHOOK_MAX_BODY_BYTES + 1) },
+  });
+
+  const response = await POST(request);
+  expect(response.status).toBe(413);
+  expect(await response.json()).toEqual({ error: "payload too large" });
+  expect(request.bodyUsed).toBe(false);
+});
 
 describeDb("webhook handler behaviour", () => {
   let pool: Pool;

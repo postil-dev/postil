@@ -1,4 +1,8 @@
-import { MODELS, type CatalogModel } from "@/data/models";
+import {
+  MODEL_CATALOG_CAPTURE_DATE,
+  MODELS,
+  type CatalogModel,
+} from "@/data/models";
 
 type ModelPrice = CatalogModel["pricePerToken"];
 
@@ -56,7 +60,9 @@ function ModelBadges({ model }: { model: CatalogModel }) {
           {model.locallyRunnable ? " · locally runnable" : ""}
         </Badge>
       )}
-      {!model.tested && <Badge tone="muted">untested</Badge>}
+      <Badge tone={model.tested ? "accent" : "muted"}>
+        {model.tested ? "bench-tested" : "untested"}
+      </Badge>
     </div>
   );
 }
@@ -70,6 +76,11 @@ function PriceCell({ price }: { price: ModelPrice }) {
 }
 
 export function ModelCatalog() {
+  const captureDate = new Intl.DateTimeFormat("en-US", {
+    dateStyle: "long",
+    timeZone: "UTC",
+  }).format(new Date(`${MODEL_CATALOG_CAPTURE_DATE}T00:00:00Z`));
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-sm">
@@ -97,11 +108,6 @@ export function ModelCatalog() {
                 >
                   {model.name}
                 </a>
-                {model.recommended && (
-                  <span className="ml-2">
-                    <Badge tone="accent">default</Badge>
-                  </span>
-                )}
                 <br />
                 <code className="text-xs text-charcoal/70">{model.id}</code>
               </td>
@@ -120,7 +126,7 @@ export function ModelCatalog() {
         <a href="https://openrouter.ai/models" rel="noopener noreferrer" className="text-rust underline">
           OpenRouter catalog
         </a>
-        , captured July 12, 2026. Re-check provider pricing before committing to
+        , captured {captureDate}. Re-check provider pricing before committing to
         a procurement number. Capability badges are maintained in this repo.
       </p>
     </div>

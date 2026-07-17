@@ -3,7 +3,7 @@ import { after, NextResponse } from "next/server";
 
 import { and, eq, inArray } from "drizzle-orm";
 
-import { verifyWebhookSignature } from "@/lib/crypto/webhook";
+import { readBoundedWebhookBody, verifyWebhookSignature } from "@/lib/crypto/webhook";
 import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
@@ -174,7 +174,14 @@ interface IssuesEventPayload {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const rawBody = await request.text();
+  const bodyResult = await readBoundedWebhookBody(request);
+  if (!bodyResult.ok) {
+    return NextResponse.json(
+      { error: bodyResult.status === 413 ? "payload too large" : "invalid body" },
+      { status: bodyResult.status },
+    );
+  }
+  const rawBody = bodyResult.body;
   const signature = request.headers.get("x-hub-signature-256");
   if (!verifyWebhookSignature(rawBody, signature, requireEnv("GITHUB_WEBHOOK_SECRET"))) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
@@ -188,7 +195,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   let payload: unknown;
   try {
-    payload = JSON.parse(rawBody);
+    payload = JSON.parse(rawBody.toString("utf8"));
   } catch {
     return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
   }

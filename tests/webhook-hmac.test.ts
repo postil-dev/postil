@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { signWebhookBody, verifyWebhookSignature } from "@/lib/crypto/webhook";
+import {
+  readBoundedWebhookBody,
+  signWebhookBody,
+  verifyWebhookSignature,
+} from "@/lib/crypto/webhook";
 
 const SECRET = "test-webhook-secret";
 
@@ -40,5 +44,45 @@ describe("webhook signature verification", () => {
     const spaced = '{ "a": 1 }';
     const header = signWebhookBody(compact, SECRET);
     expect(verifyWebhookSignature(spaced, header, SECRET)).toBe(false);
+  });
+
+  test("rejects an oversized declared body before reading it", async () => {
+    const request = new Request("https://postil.dev/api/webhooks/github", {
+      method: "POST",
+      body: "{}",
+      headers: { "content-length": "9" },
+    });
+
+    expect(await readBoundedWebhookBody(request, 8)).toEqual({ ok: false, status: 413 });
+    expect(request.bodyUsed).toBe(false);
+  });
+
+  test("bounds streamed bodies when Content-Length is absent or understated", async () => {
+    const absent = new Request("https://postil.dev/api/webhooks/github", {
+      method: "POST",
+      body: "123456789",
+    });
+    const understated = new Request("https://postil.dev/api/webhooks/github", {
+      method: "POST",
+      body: "123456789",
+      headers: { "content-length": "4" },
+    });
+
+    expect(await readBoundedWebhookBody(absent, 8)).toEqual({ ok: false, status: 413 });
+    expect(await readBoundedWebhookBody(understated, 8)).toEqual({ ok: false, status: 413 });
+  });
+
+  test("returns the exact signed bytes inside the bound", async () => {
+    const body = Buffer.from('{"message":"héllo"}', "utf8");
+    const request = new Request("https://postil.dev/api/webhooks/github", {
+      method: "POST",
+      body,
+    });
+    const result = await readBoundedWebhookBody(request, body.byteLength);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected a bounded body");
+    expect(result.body.equals(body)).toBe(true);
+    expect(verifyWebhookSignature(result.body, signWebhookBody(body, SECRET), SECRET)).toBe(true);
   });
 });

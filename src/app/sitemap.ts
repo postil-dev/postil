@@ -1,5 +1,7 @@
 import type { MetadataRoute } from "next";
 
+import { MODEL_CATALOG_CAPTURE_DATE } from "@/data/models";
+
 const SITE_URL = "https://postil.dev";
 
 // Public, indexable marketing and documentation routes only. Private and API
@@ -66,7 +68,7 @@ const ROUTES: {
     changeFrequency: "monthly",
     lastModified: "2026-07-08",
   },
-  { path: "/privacy", priority: 0.4, changeFrequency: "yearly", lastModified: "2026-07-08" },
+  { path: "/privacy", priority: 0.4, changeFrequency: "yearly", lastModified: "2026-07-17" },
   { path: "/terms", priority: 0.4, changeFrequency: "yearly", lastModified: "2026-07-08" },
   { path: "/docs", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/docs/quickstart", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-08" },
@@ -84,7 +86,7 @@ const ROUTES: {
   { path: "/docs/forges/bitbucket", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/docs/forges/azure", priority: 0.5, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/docs/self-hosted", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-08" },
-  { path: "/docs/models", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-07-08" },
+  { path: "/docs/models", priority: 0.6, changeFrequency: "monthly", lastModified: MODEL_CATALOG_CAPTURE_DATE },
 ];
 
 export default function sitemap(): MetadataRoute.Sitemap {

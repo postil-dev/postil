@@ -43,9 +43,9 @@ ENV NODE_ENV=production \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-COPY --from=build /app/.next ./.next
+COPY --chown=bun:bun --from=deps /app/node_modules ./node_modules
+COPY --chown=bun:bun . .
+COPY --chown=bun:bun --from=build /app/.next ./.next
 # Bake the pinned postil CLI into the image. This stage only installs a
 # binary that is already present at vendor/postil; it does not fetch or
 # verify one itself. Production (deploy.yml) always populates vendor/postil
@@ -70,6 +70,7 @@ RUN set -eu; \
       exit 1; \
     fi; \
     /usr/local/bin/postil --version
+USER bun
 EXPOSE 3000
 # Run the server in the container's signal-receiving process. Package-script
 # wrappers can orphan the Next server when the wrapper receives SIGTERM.
