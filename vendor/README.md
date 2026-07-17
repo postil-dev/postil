@@ -8,7 +8,7 @@ Dockerfile itself never fetches a release: it fails the build if
 image.
 
 In deploy.yml, `vendor/postil` is populated by fetching a `postil-dev/postil-cli`
-release tag (named by the `POSTIL_CLI_TAG` repo variable, default `v0.2.0`)
+release tag named by the required `POSTIL_CLI_TAG` repository variable
 and verifying its Sigstore signature before the Docker build runs. The
 `POSTIL_CLI_REV` build arg only records which release the binary should match,
 for provenance/labels. For local/dev builds, build `postil` from source

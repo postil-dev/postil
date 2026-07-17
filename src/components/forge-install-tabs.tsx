@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { Terminal } from "@/components/terminal";
+import {
+  PUBLIC_POSTIL_ACTION_SHA,
+  PUBLIC_POSTIL_CLI_RELEASE,
+  PUBLIC_POSTIL_CLI_SHA,
+} from "@/lib/public-cli-example";
 
 type ForgeId = "github" | "gitlab" | "bitbucket" | "azure";
 
@@ -154,11 +159,12 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: postil-dev/postil-action@7451c6380dba0da92758f7ddcdf383d1501e57b2
+      - uses: postil-dev/postil-action@${PUBLIC_POSTIL_ACTION_SHA}
         with:
           cli-ref: `}
-              <span className="t-rust">3f3c48b85019e9a0d7fbcde9cb0d63c186ca8401</span>
+              <span className="t-rust">{PUBLIC_POSTIL_CLI_SHA}</span>
               {`
+          cli-release: ${PUBLIC_POSTIL_CLI_RELEASE}
         env:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           MODEL_API_KEY: \${{ secrets.MODEL_API_KEY }}
