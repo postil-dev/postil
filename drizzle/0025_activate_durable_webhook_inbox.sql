@@ -16,6 +16,7 @@ BEGIN
     RETURN NEW;
   END IF;
 
+  -- Postil requires PostgreSQL 16; hashtextextended is a core PostgreSQL function.
   PERFORM pg_advisory_xact_lock(
     hashtextextended('postil:webhook-source:' || NEW."kind" || ':' || source_delivery_id, 0)
   );

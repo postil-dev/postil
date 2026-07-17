@@ -225,7 +225,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       reviews_finished_24h: string;
       webhook_deliveries_24h: string;
       webhook_pending: string;
-      oldest_webhook_pending_age_seconds: string | null;
+      oldest_webhook_pending_age_seconds: string;
       watchdog_kills: string;
     }>(`
       SELECT
@@ -241,7 +241,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         (SELECT count(*)::text FROM reviews WHERE finished_at >= now() - interval '24 hours') AS reviews_finished_24h,
         (SELECT count(*)::text FROM webhook_deliveries WHERE received_at >= now() - interval '24 hours') AS webhook_deliveries_24h,
         (SELECT count(*)::text FROM webhook_deliveries WHERE completed_at IS NULL) AS webhook_pending,
-        (SELECT EXTRACT(EPOCH FROM now() - MIN(received_at))::int::text FROM webhook_deliveries WHERE completed_at IS NULL) AS oldest_webhook_pending_age_seconds,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(received_at)), 0)::int::text FROM webhook_deliveries WHERE completed_at IS NULL) AS oldest_webhook_pending_age_seconds,
         (SELECT count(*)::text FROM reviews WHERE status = 'failed' AND error_message LIKE 'watchdog:%') AS watchdog_kills
     `),
     pool.query<{ status: string; count: string }>(`

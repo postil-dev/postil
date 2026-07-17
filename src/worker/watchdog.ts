@@ -82,6 +82,9 @@ export async function watchdogPass(
   // its retries here in the same statement. The conditional
   // `status = 'running'` guard means only this transition wins the row; the
   // runner's failJob would affect 0 rows and stay silent (no double-post).
+  // Reconciliation jobs ignore max_attempts here because a dead worker is not
+  // a handled attempt. Their runner rejects malformed or impossible durable
+  // state permanently and retries only recoverable delivery failures.
   const pool = getPool();
   await pool.query(
     `WITH updated AS (

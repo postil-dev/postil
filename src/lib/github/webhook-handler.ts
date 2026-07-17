@@ -586,11 +586,8 @@ async function enqueueReviewJob(
 
 /**
  * Resolve an enabled, non-suspended repository row for a check_run/check_suite
- * rerequest. Mirrors the installation + repo-enabled gate in handlePullRequest,
- * but does not upsert the repo row: a rerequest only ever targets a repo the
- * app already knows (the check-run was created by a prior pull_request
- * delivery), so if the repo is missing here something is inconsistent and
- * skipping is the safe default rather than materializing a new row.
+ * rerequest. The signed repository snapshot updates stored name and visibility
+ * before the same entitlement check used by pull_request deliveries.
  */
 async function enabledRepoForRerequest(
   installationId: number | undefined,
