@@ -136,31 +136,37 @@ describe("organization billing page auth", () => {
     );
   });
 
-  test("renders admin billing usage, visibility counts, enabled-since, and history", async () => {
+  test("renders public-only billing state, usage, credits, and current coverage", async () => {
     role = "admin";
 
     const page = await OrgBillingPage({ params: Promise.resolve({ slug: "acme" }), searchParams: Promise.resolve({}) });
     const markup = renderToStaticMarkup(page);
 
     expect(markup).toContain("Repositories are not billing units");
-    expect(markup).toContain("per active private-PR author");
+    expect(markup).toContain("for public repositories");
     expect(markup).toContain("enabled, with no per-repo fee");
     expect(markup).toContain("Private repository access");
-    expect(markup).toContain("Billing required");
+    expect(markup).toContain("Public only");
+    expect(markup).toContain("public · free");
+    expect(markup).toContain("$0");
     expect(markup).toContain("Contact us to activate");
-    expect(markup).toContain("active private PR authors: 3");
+    expect(markup).not.toContain("billing contact: not set");
+    expect(markup).not.toContain("included usage: $0.00");
+    expect(markup).not.toContain("overage hard cap: not set");
+    expect(markup).toContain("Private authors");
+    expect(markup).toContain("reviewed on private PRs this period");
     expect(markup).toContain("$194.78");
     expect(markup).toContain("remaining from $200.00 granted");
     expect(markup).toContain("$5.22 charged across");
+    expect(markup).toContain("Available after a hosted private plan is active");
     expect(markup).toContain("Owner credit grant");
     expect(markup).toContain("acme-2026-07-owner-credit");
     expect(markup).toContain("acme/public");
     expect(markup).toContain("acme/private-now");
-    expect(markup).toContain("acme/disabled");
     expect(markup).toContain("Jun 20, 2026");
     expect(markup).toContain("Jul 9, 2026");
-    expect(markup).toContain("disable");
-    expect(markup).toContain("migration_baseline");
+    expect(markup).not.toContain("Repository coverage history");
+    expect(markup).toContain("/orgs/acme/settings/audit");
   });
 });
 

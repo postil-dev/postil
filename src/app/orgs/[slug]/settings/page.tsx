@@ -208,6 +208,9 @@ export default async function OrgSettingsPage({
           <h1 className="serif-display mt-2 text-3xl">{org.name} settings</h1>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <Link href={`/orgs/${org.slug}/settings/audit`} className="btn-secondary text-xs">
+            Audit log
+          </Link>
           <Link href={`/orgs/${org.slug}/billing`} className="btn-secondary text-xs">
             Billing
           </Link>

@@ -121,10 +121,6 @@ export default async function OrgBillingPage({
       action: event.action as RepositoryEnablementAction,
     }));
   const usage = calculateBillingUsage(billingEvents, currentMonthBillingPeriod());
-  const historyRows = [...eventRows].sort((a, b) => {
-    const time = b.occurredAt.getTime() - a.occurredAt.getTime();
-    return time === 0 ? b.id - a.id : time;
-  });
   const currentEnabledRepositories = usage.currentEnabledRepositories.map((repo) => {
     const current = repo.repositoryId === null ? undefined : currentRepoById.get(repo.repositoryId);
     return {
@@ -216,6 +212,9 @@ export default async function OrgBillingPage({
           <h1 className="serif-display mt-2 text-3xl">{org.name} billing</h1>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <Link href={`/orgs/${org.slug}/settings/audit`} className="btn-secondary text-xs">
+            Audit log
+          </Link>
           <Link href={`/orgs/${org.slug}/settings`} className="btn-secondary text-xs">
             Settings
           </Link>
@@ -241,38 +240,44 @@ export default async function OrgBillingPage({
           <div>
             <p className="eyebrow">Private repository access</p>
             <p className="mt-2 text-lg font-medium">
-              {privateAccess.allowed ? "Eligible" : "Billing required"}
+              {privateAccess.allowed
+                ? "Private access ready"
+                : entitlement
+                  ? "Private access paused"
+                  : "Public only"}
             </p>
             <p className="mt-1 max-w-2xl text-sm text-ink-soft">
               {privateAccess.allowed
-                ? `Private repository processing is enabled through ${privateAccess.reason.replaceAll("_", " ")}.`
-                : "Postil does not review or respond in private repositories without an active entitlement. Public repositories are unaffected."}
+                ? `${entitlement?.subscriptionMode === "byok" ? "BYOK" : "Hosted"} private-repository reviews are enabled.`
+                : entitlement
+                  ? "Check the plan status, provider setup, and spend limit below."
+                  : "Add a private plan before Postil reviews or responds in private repositories. Public reviews remain free."}
             </p>
           </div>
           <span className="rounded-full border border-stone px-3 py-1 font-mono text-[11px] text-charcoal/70">
-            {entitlement ? `${entitlement.subscriptionMode} · ${entitlement.status}` : "none"}
+            {entitlement ? `${entitlement.subscriptionMode} · ${entitlement.status}` : "public · free"}
           </span>
         </div>
-        <div className="mt-4 grid gap-3 font-mono text-xs sm:grid-cols-4">
-          <p>
-            billing contact: {entitlement?.billingContactEmail ?? "not set"}
-            {entitlement?.billingContactEmail && (
-              <span className="ml-1 text-charcoal/55">
-                ({entitlement.billingContactVerifiedAt ? "verified" : "unverified"})
-              </span>
-            )}
-          </p>
-          <p>
-            included usage: {formatCurrencyMicros(entitlement?.includedUsageMicros ?? 0)}
-          </p>
-          <p>
-            overage hard cap:{" "}
-            {effectiveOverageHardCapMicros == null
-              ? "not set"
-              : formatCurrencyMicros(effectiveOverageHardCapMicros)}
-          </p>
-          <p>active private PR authors: {activePrivateAuthorCount}</p>
-        </div>
+        {entitlement && (
+          <div className="mt-4 grid gap-3 font-mono text-xs sm:grid-cols-4">
+            <p>
+              billing contact: {entitlement.billingContactEmail ?? "not set"}
+              {entitlement.billingContactEmail && (
+                <span className="ml-1 text-charcoal/55">
+                  ({entitlement.billingContactVerifiedAt ? "verified" : "unverified"})
+                </span>
+              )}
+            </p>
+            <p>included usage: {formatCurrencyMicros(entitlement.includedUsageMicros)}</p>
+            <p>
+              overage hard cap:{" "}
+              {effectiveOverageHardCapMicros == null
+                ? "not set"
+                : formatCurrencyMicros(effectiveOverageHardCapMicros)}
+            </p>
+            <p>private PR authors: {activePrivateAuthorCount}</p>
+          </div>
+        )}
         {!entitlement && (
           <a
             className="btn-primary mt-4 inline-flex text-xs"
@@ -320,21 +325,25 @@ export default async function OrgBillingPage({
         <div className="card p-6">
           <p className="eyebrow">Plan</p>
           <p className="serif-display mt-3 text-3xl">
-            {`$${
-              entitlement?.subscriptionMode === "byok"
-                ? BYOK_ACTIVE_AUTHOR_MONTHLY_USD
-                : HOSTED_ACTIVE_AUTHOR_MONTHLY_USD
-            }`}
+            {entitlement
+              ? `$${
+                  entitlement.subscriptionMode === "byok"
+                    ? BYOK_ACTIVE_AUTHOR_MONTHLY_USD
+                    : HOSTED_ACTIVE_AUTHOR_MONTHLY_USD
+                }`
+              : "$0"}
           </p>
-          <p className="mt-2 text-sm text-charcoal/70">per active private-PR author</p>
+          <p className="mt-2 text-sm text-charcoal/70">
+            {entitlement ? "per billed private-PR author" : "for public repositories"}
+          </p>
           <p className="mt-4 font-mono text-[11px] text-charcoal/55">
             Public repositories are free. Repositories are not billing units.
           </p>
         </div>
         <div className="card p-6">
-          <p className="eyebrow">Active authors</p>
+          <p className="eyebrow">Private authors</p>
           <p className="serif-display mt-3 text-5xl">{activePrivateAuthorCount}</p>
-          <p className="mt-2 text-sm text-charcoal/70">private-PR authors this period</p>
+          <p className="mt-2 text-sm text-charcoal/70">reviewed on private PRs this period</p>
           <p className="mt-4 font-mono text-[11px] text-charcoal/55">
             Human and automation identities each count when their private PR is reviewed.
           </p>
@@ -350,6 +359,13 @@ export default async function OrgBillingPage({
           <p className="mt-4 font-mono text-[11px] text-charcoal/55">
             {formatCurrencyMicros(creditBalance.usageCostMicros)} charged across{" "}
             {creditBalance.chargedUsageEvents.toLocaleString()} usage events
+          </p>
+          <p className="mt-2 font-mono text-[11px] text-charcoal/55">
+            {!entitlement
+              ? "Available after a hosted private plan is active. Public reviews remain free."
+              : entitlement.subscriptionMode === "byok"
+                ? "BYOK reviews bill your provider, so Postil credits remain untouched."
+                : "Applied to hosted private reviews. Public reviews remain free."}
           </p>
         </div>
         <div className="card p-6">
@@ -450,58 +466,6 @@ export default async function OrgBillingPage({
         </div>
       </div>
 
-      <div className="mt-10">
-        <p className="eyebrow">Repository coverage history</p>
-        <div className="card mt-3 overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-stone/70 font-mono text-[11px] uppercase tracking-[0.12em] text-charcoal/55">
-              <tr>
-                <th className="px-4 py-3">Time</th>
-                <th className="px-4 py-3">Action</th>
-                <th className="px-4 py-3">Repository</th>
-                <th className="px-4 py-3">Visibility</th>
-                <th className="px-4 py-3">Source</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-stone/60">
-              {historyRows.map((event) => (
-                <tr key={event.id}>
-                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
-                    {formatDateTime(event.occurredAt)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={
-                        event.action === "enable"
-                          ? "rounded-full border border-gate px-2.5 py-0.5 font-mono text-[11px] text-gate"
-                          : "rounded-full border border-rust px-2.5 py-0.5 font-mono text-[11px] text-rust"
-                      }
-                    >
-                      {event.action}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs">
-                    {event.repositoryFullName}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
-                    {event.repositoryPrivate ? "private" : "public"}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
-                    {event.source}
-                  </td>
-                </tr>
-              ))}
-              {historyRows.length === 0 && (
-                <tr>
-                  <td className="px-4 py-8 text-center text-sm text-charcoal/50" colSpan={5}>
-                    No enablement events have been recorded.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
   );
 }
