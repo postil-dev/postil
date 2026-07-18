@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { GateBadge, formatMs, ReviewStatusBadge } from "@/components/review-status";
+import { ReviewTriggerBadge } from "@/components/review-trigger-badge";
 import { githubPrUrl } from "@/lib/github-links";
 import type { OrgReviewRow } from "@/lib/org-reviews";
+import { reviewTriggerLabel, reviewTriggerSearchTerms } from "@/lib/review-trigger";
 import { formatAbsoluteTimestamp, formatRelativeTime } from "@/lib/time";
 
 const POLL_INTERVAL_MS = 5_000;
@@ -46,6 +48,8 @@ function matchesTextFilter(review: OrgReviewRow, query: string): boolean {
     review.status,
     gate,
     review.modelUsed ?? "",
+    reviewTriggerLabel(review.triggerSource),
+    reviewTriggerSearchTerms(review.triggerSource),
   ]
     .join(" ")
     .toLocaleLowerCase();
@@ -161,7 +165,7 @@ export function ReviewsTable({
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Filter repository, PR, status, gate, or model"
+              placeholder="Filter repository, PR, trigger, status, gate, or model"
               className="w-full rounded-card border border-stone bg-ivory px-3 py-2 font-mono text-xs text-charcoal placeholder:text-charcoal/40 focus:border-gate focus:outline-none"
             />
           </label>
@@ -192,6 +196,7 @@ export function ReviewsTable({
               <tr className="border-b border-stone text-left font-mono text-xs text-charcoal/70">
                 <th className="px-4 py-3 font-normal">repository</th>
                 <th className="px-4 py-3 font-normal">PR</th>
+                <th className="px-4 py-3 font-normal">trigger</th>
                 <th className="px-4 py-3 font-normal">status</th>
                 <th className="px-4 py-3 font-normal">gate</th>
                 <th className="px-4 py-3 font-normal">findings</th>
@@ -222,6 +227,9 @@ export function ReviewsTable({
                       >
                         #{review.prNumber}
                       </a>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <ReviewTriggerBadge source={review.triggerSource} />
                     </td>
                     <td className="px-4 py-2.5">
                       <ReviewStatusBadge
@@ -269,7 +277,7 @@ export function ReviewsTable({
               })}
               {visibleReviews.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-sm text-charcoal/70">
+                  <td colSpan={10} className="px-4 py-8 text-center text-sm text-charcoal/70">
                     {reviews.length === 0
                       ? "No reviews yet. Open a pull request on an enabled repository."
                       : "No reviews match these filters."}

@@ -32,6 +32,11 @@ import {
   isHostedReviewUnavailable,
   reviewDisplayStatus,
 } from "@/lib/review-outcome";
+import {
+  normalizeReviewTriggerContext,
+  reviewTriggerLabel,
+  type ReviewTriggerSource,
+} from "@/lib/review-trigger";
 
 import { approveFinding, revokeFinding } from "../../actions";
 import {
@@ -411,6 +416,8 @@ export default async function RunDetailPage({
         queuedAt: schema.reviews.queuedAt,
         startedAt: schema.reviews.startedAt,
         finishedAt: schema.reviews.finishedAt,
+        triggerSource: schema.reviews.triggerSource,
+        triggerContext: schema.reviews.triggerContext,
         repoFullName: schema.repositories.fullName,
         orgId: schema.installations.orgId,
         githubInstallationId: schema.installations.githubInstallationId,
@@ -488,6 +495,8 @@ export default async function RunDetailPage({
     review.status,
     review.errorMessage,
   );
+  const triggerSource = review.triggerSource as ReviewTriggerSource;
+  const triggerContext = normalizeReviewTriggerContext(review.triggerContext);
 
   return (
     <LiveRunProvider
@@ -541,6 +550,22 @@ export default async function RunDetailPage({
             >
               {review.headSha.slice(0, 12)}
             </a>
+          </RunFact>
+          <RunFact label="Trigger">
+            {triggerContext?.source === "requested_review" && triggerContext.sourceUrl ? (
+              <a
+                href={triggerContext.sourceUrl}
+                rel="noopener"
+                className="text-rust hover:underline"
+              >
+                {reviewTriggerLabel(triggerSource)}
+                {triggerContext.requestedByLogin
+                  ? ` by @${triggerContext.requestedByLogin}`
+                  : ""}
+              </a>
+            ) : (
+              reviewTriggerLabel(triggerSource)
+            )}
           </RunFact>
           <RunFact label="Model">{envelope?.modelUsed ?? "Not recorded"}</RunFact>
           {(envelope?.scorerModel || envelope?.scorerError) && (

@@ -148,6 +148,15 @@ author GitHub ID and login supplied by the reviewable pull-request webhook.
 Billing counts distinct GitHub author IDs on private pull requests within the
 entitlement period; bot and service identities count by the same ID rule.
 
+Each review snapshots a closed trigger class and its signed-webhook context at
+creation: automatic pull-request event, explicit review command, GitHub check
+rerun, or unknown. Historical rows and rolling-deploy jobs without evidence use
+unknown; the system does not infer an origin. A database trigger makes review
+provenance immutable. Usage events copy the trigger class so billing attribution
+survives removal of the related repository or review row. Conversational replies
+remain `respond` jobs, record their GitHub mention context in the job payload,
+and use the separate `github_mention` usage class.
+
 ## Dashboard
 
 The signed-in product surface is three pages, all server-rendered and
@@ -168,7 +177,9 @@ noindexed:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file
   links), resolved findings, retained policy-suppressed findings in collapsed
   detail, suppressed/ungrounded counts, gate verdict,
-  model, token usage, timing, and kind-blocking override state.
+  model, token usage, timing, immutable trigger provenance, and kind-blocking
+  override state. The recent-review table exposes the same trigger class and
+  includes it in text filtering.
 
 Authorization is uniform: every page and server action re-derives access from
 the session. A sealed GitHub OAuth credential refreshes the complete active

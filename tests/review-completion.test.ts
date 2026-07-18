@@ -22,7 +22,9 @@ function fakeDb(reviewUpdated = true): {
           return chain;
         },
         returning() {
-          return Promise.resolve(reviewUpdated ? [{ id: 7 }] : []);
+          return Promise.resolve(
+            reviewUpdated ? [{ id: 7, triggerSource: "requested_review" }] : [],
+          );
         },
       };
       return chain;
@@ -92,8 +94,8 @@ describe("review completion transaction", () => {
     expect(state.inserted.filter((row) => row.table === schema.usageEvents)).toHaveLength(1);
     const usageInsert = state.inserted.find((row) => row.table === schema.usageEvents);
     expect(usageInsert?.values).toEqual([
-      { ...base.usage[0], reviewId: 7 },
-      { ...base.usage[1], reviewId: 7 },
+      { ...base.usage[0], reviewId: 7, triggerSource: "requested_review" },
+      { ...base.usage[1], reviewId: 7, triggerSource: "requested_review" },
     ]);
     expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(0);
   });
@@ -110,8 +112,8 @@ describe("review completion transaction", () => {
     ).toBe(true);
     const usageInsert = state.inserted.find((row) => row.table === schema.usageEvents);
     expect(usageInsert?.values).toEqual([
-      { ...sameModelUsage[0], reviewId: 7 },
-      { ...sameModelUsage[1], reviewId: 7 },
+      { ...sameModelUsage[0], reviewId: 7, triggerSource: "requested_review" },
+      { ...sameModelUsage[1], reviewId: 7, triggerSource: "requested_review" },
     ]);
   });
 

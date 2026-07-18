@@ -8,6 +8,7 @@ import {
   reviewDisplayStatus,
   type ReviewDisplayStatus,
 } from "@/lib/review-outcome";
+import type { ReviewTriggerSource } from "@/lib/review-trigger";
 
 export type OrgReviewStatus = ReviewDisplayStatus;
 
@@ -23,6 +24,7 @@ export interface OrgReviewRow {
   startedAt: string | null;
   finishedAt: string | null;
   repoFullName: string;
+  triggerSource: ReviewTriggerSource;
 }
 
 /**
@@ -49,6 +51,7 @@ export async function getOrgReviewRows(
       startedAt: schema.reviews.startedAt,
       finishedAt: schema.reviews.finishedAt,
       repoFullName: schema.repositories.fullName,
+      triggerSource: schema.reviews.triggerSource,
     })
     .from(schema.reviews)
     .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
@@ -70,6 +73,7 @@ export async function getOrgReviewRows(
       return {
         ...row,
         status: reviewDisplayStatus(row.status, errorMessage),
+        triggerSource: row.triggerSource as ReviewTriggerSource,
         gateFailing: envelope
           ? computeEffectiveGate(
               envelope,

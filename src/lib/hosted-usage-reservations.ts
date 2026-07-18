@@ -248,6 +248,7 @@ export async function reconcileHostedRespondSpend(
     modelUsed: string;
     actualMicros: number | null;
     usageAccountingComplete: boolean;
+    triggerSource?: "github_mention" | "unknown";
     delivery?: {
       jobId: number;
       repoFullName: string;
@@ -303,6 +304,7 @@ export async function reconcileHostedRespondSpend(
       modelUsed: input.modelUsed,
       costMicros: input.actualMicros ?? 0,
       billingScope: "private_hosted",
+      triggerSource: input.triggerSource ?? "unknown",
       createdAt: now,
     });
     const unattributedMicros = chargedMicros - (input.actualMicros ?? 0);
@@ -316,6 +318,7 @@ export async function reconcileHostedRespondSpend(
         modelUsed: "unattributed provider usage",
         costMicros: unattributedMicros,
         billingScope: "private_hosted",
+        triggerSource: input.triggerSource ?? "unknown",
         createdAt: now,
       });
     }

@@ -51,12 +51,16 @@ export async function persistReviewCompletion(
           eq(schema.reviews.status, "running"),
         ),
       )
-      .returning({ id: schema.reviews.id });
+      .returning({
+        id: schema.reviews.id,
+        triggerSource: schema.reviews.triggerSource,
+      });
     if (rows.length === 0) return false;
 
     const persistedUsageRows = input.usage.map((usage) => ({
       ...usage,
       reviewId: input.reviewId,
+      triggerSource: rows[0]!.triggerSource,
     }));
     if (input.hostedUsageReservationId) {
       const reservation = (
@@ -94,6 +98,7 @@ export async function persistReviewCompletion(
           modelUsed: "unattributed provider usage",
           costMicros: unattributedMicros,
           reviewId: input.reviewId,
+          triggerSource: rows[0]!.triggerSource,
         });
       }
       const reconciled = await tx

@@ -17,6 +17,7 @@ import {
 
 import type { Envelope } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
+import type { ReviewTriggerContext } from "@/lib/review-trigger";
 
 /** Raw bytes column for AES-256-GCM sealed secrets. */
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
@@ -194,6 +195,8 @@ export const reviews = pgTable(
     headSha: text("head_sha").notNull(),
     baseSha: text("base_sha").notNull(),
     sinceSha: text("since_sha"),
+    triggerSource: text("trigger_source").notNull().default("unknown"),
+    triggerContext: jsonb("trigger_context").$type<ReviewTriggerContext>(),
     status: reviewStatus("status").notNull().default("queued"),
     envelope: jsonb("envelope").$type<Envelope>(),
     configFiles: text("config_files").array(),
@@ -215,6 +218,14 @@ export const reviews = pgTable(
     index("reviews_running_started_at_idx")
       .on(t.startedAt)
       .where(sql`${t.status} = 'running'`),
+    check(
+      "reviews_trigger_source_check",
+      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun')`,
+    ),
+    check(
+      "reviews_trigger_context_check",
+      sql`(${t.triggerSource} = 'unknown' AND (${t.triggerContext} IS NULL OR ${t.triggerContext} = '{"source":"unknown"}'::jsonb)) OR (${t.triggerSource} <> 'unknown' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext} - ARRAY['source', 'webhookDeliveryId', 'webhookEvent', 'webhookAction', 'sourceCommentId', 'sourceUrl', 'requestedByGithubId', 'requestedByLogin', 'checkName']::text[] = '{}'::jsonb AND ${t.triggerContext}->>'source' = ${t.triggerSource} AND jsonb_typeof(${t.triggerContext}->'webhookDeliveryId') = 'string' AND COALESCE(length(btrim(${t.triggerContext}->>'webhookDeliveryId')), 0) > 0 AND length(${t.triggerContext}->>'webhookDeliveryId') <= 200 AND ((${t.triggerSource} = 'automatic_pull_request' AND ${t.triggerContext}->>'webhookEvent' = 'pull_request') OR (${t.triggerSource} = 'requested_review' AND ${t.triggerContext}->>'webhookEvent' IN ('issue_comment', 'pull_request_review_comment')) OR (${t.triggerSource} = 'github_check_rerun' AND ${t.triggerContext}->>'webhookEvent' IN ('check_run', 'check_suite'))) AND (NOT ${t.triggerContext} ? 'webhookAction' OR (jsonb_typeof(${t.triggerContext}->'webhookAction') = 'string' AND length(${t.triggerContext}->>'webhookAction') <= 100)) AND (NOT ${t.triggerContext} ? 'sourceCommentId' OR (jsonb_typeof(${t.triggerContext}->'sourceCommentId') = 'number' AND (${t.triggerContext}->>'sourceCommentId')::numeric = trunc((${t.triggerContext}->>'sourceCommentId')::numeric) AND (${t.triggerContext}->>'sourceCommentId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'sourceUrl' OR (jsonb_typeof(${t.triggerContext}->'sourceUrl') = 'string' AND length(${t.triggerContext}->>'sourceUrl') <= 2048 AND ${t.triggerContext}->>'sourceUrl' ~* '^https://github[.]com([/?#]|$)')) AND (NOT ${t.triggerContext} ? 'requestedByGithubId' OR (jsonb_typeof(${t.triggerContext}->'requestedByGithubId') = 'number' AND (${t.triggerContext}->>'requestedByGithubId')::numeric = trunc((${t.triggerContext}->>'requestedByGithubId')::numeric) AND (${t.triggerContext}->>'requestedByGithubId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'requestedByLogin' OR (jsonb_typeof(${t.triggerContext}->'requestedByLogin') = 'string' AND length(${t.triggerContext}->>'requestedByLogin') <= 100)) AND (NOT ${t.triggerContext} ? 'checkName' OR (jsonb_typeof(${t.triggerContext}->'checkName') = 'string' AND length(${t.triggerContext}->>'checkName') <= 200)))`,
+    ),
   ],
 );
 
@@ -280,6 +291,7 @@ export const usageEvents = pgTable(
     reviewId: bigint("review_id", { mode: "number" }).references(() => reviews.id, {
       onDelete: "set null",
     }),
+    triggerSource: text("trigger_source").notNull().default("unknown"),
     promptTokens: integer("prompt_tokens").notNull().default(0),
     completionTokens: integer("completion_tokens").notNull().default(0),
     modelUsed: text("model_used"),
@@ -304,6 +316,10 @@ export const usageEvents = pgTable(
     check(
       "usage_events_billing_scope_check",
       sql`${t.billingScope} IN ('analytics', 'private_hosted')`,
+    ),
+    check(
+      "usage_events_trigger_source_check",
+      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun', 'github_mention')`,
     ),
   ],
 );
