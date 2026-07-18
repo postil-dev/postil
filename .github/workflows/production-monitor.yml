@@ -213,6 +213,51 @@ jobs:
               echo "Operator email delivery is stale or its metric is missing"
               stale_found=1
             fi
+            billing_failures=$(awk \
+              '$1 == "postil_billing_settlement_failures_current" { print $2 }' \
+              .cache/metrics.out)
+            echo "Billing settlements requiring attention: ${billing_failures:-missing}"
+            if [[ -z "${billing_failures:-}" ]] || \
+               (( $(printf '%.0f' "${billing_failures:-0}") > 0 )); then
+              echo "A billing settlement failed or its metric is missing"
+              stale_found=1
+            fi
+            billing_age=$(awk \
+              '$1 == "postil_oldest_billing_settlement_pending_age_seconds" { print $2 }' \
+              .cache/metrics.out)
+            echo "Oldest incomplete billing settlement age: ${billing_age:-missing}s"
+            if [[ -z "${billing_age:-}" ]] || \
+               (( $(printf '%.0f' "${billing_age:-0}") > 3600 )); then
+              echo "Billing settlement reconciliation is stale or its metric is missing"
+              stale_found=1
+            fi
+            unmatched_billing_events=$(awk \
+              '$1 == "postil_unmatched_billing_provider_events_24h" { print $2 }' \
+              .cache/metrics.out)
+            echo "Unmatched billing events: ${unmatched_billing_events:-missing}"
+            if [[ -z "${unmatched_billing_events:-}" ]] || \
+               (( $(printf '%.0f' "${unmatched_billing_events:-0}") > 0 )); then
+              echo "A verified billing event could not be mapped or its metric is missing"
+              stale_found=1
+            fi
+            billing_checkout_age=$(awk \
+              '$1 == "postil_oldest_billing_checkout_open_age_seconds" { print $2 }' \
+              .cache/metrics.out)
+            echo "Oldest incomplete billing checkout age: ${billing_checkout_age:-missing}s"
+            if [[ -z "${billing_checkout_age:-}" ]] || \
+               (( $(printf '%.0f' "${billing_checkout_age:-0}") > 3600 )); then
+              echo "A self-service checkout is stale or its metric is missing"
+              stale_found=1
+            fi
+            billing_checkout_failures=$(awk \
+              '$1 == "postil_billing_checkout_failures_24h" { print $2 }' \
+              .cache/metrics.out)
+            echo "Failed billing checkouts: ${billing_checkout_failures:-missing}"
+            if [[ -z "${billing_checkout_failures:-}" ]] || \
+               (( $(printf '%.0f' "${billing_checkout_failures:-0}") > 0 )); then
+              echo "A self-service checkout failed or its metric is missing"
+              stale_found=1
+            fi
             incident_found=0
             for category in operational_failure scorer_failure scorer_fallback model_fallback invalid_output failed_job; do
               count=$(awk -v metric="postil_review_incidents_30m{category=\"${category}\"}" \

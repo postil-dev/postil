@@ -16,7 +16,9 @@ export default function TermsPage() {
         <h1 className="serif-display mt-3 text-4xl text-charcoal">
           Terms of service.
         </h1>
-        <p className="mt-4 text-sm text-charcoal/50">Terms for hosted Postil.</p>
+        <p className="mt-4 text-sm text-charcoal/50">
+          Terms for hosted Postil.
+        </p>
 
         <div className="mt-6 rounded-card border border-gate bg-gate/5 p-5 text-[15px] text-ink-soft">
           <p>
@@ -50,20 +52,20 @@ export default function TermsPage() {
           There is no uptime or availability commitment. We do not guarantee
           that reviews will run, complete, or complete within any particular
           time. Do not rely on the hosted service as the sole gate on a
-          production-critical workflow; the{" "}
-          <code>postil/gate</code> check fails closed by default, so a service
-          interruption surfaces as a failing gate rather than a silent pass.
-          Repositories can opt into <code>gate.onError: advisory</code>, which
-          fails open on provider outages only; the default remains fail-closed.
+          production-critical workflow; the <code>postil/gate</code> check fails
+          closed by default, so a service interruption surfaces as a failing
+          gate rather than a silent pass. Repositories can opt into{" "}
+          <code>gate.onError: advisory</code>, which fails open on provider
+          outages only; the default remains fail-closed.
         </p>
 
         <h2 id="billing-and-fair-use">Billing and fair use</h2>
         <p>
           The organization is the customer. Private plans are billed monthly by
           active private-PR author at the rates on the{" "}
-          <Link href="/pricing">pricing page</Link>.{" "}
-          New GitHub owners receive one 30-day BYOK trial. A configured BYOK
-          provider bills its model usage separately. Hosted enrollment is paused.
+          <Link href="/pricing">pricing page</Link>. New GitHub owners receive
+          one 30-day BYOK trial. A configured BYOK provider bills its model
+          usage separately. Hosted enrollment is paused.
         </p>
         <p>
           An active author is a GitHub identity, including a bot or service
@@ -71,6 +73,15 @@ export default function TermsPage() {
           the billing month. An identity counts once per organization, with no
           repository charge. The same identity counts separately for unrelated
           organization customers.
+        </p>
+        <p>
+          Paddle processes self-service payments, tax, invoices, payment-method
+          changes, and cancellation. Postil does not receive card details. A
+          paid BYOK subscription continues monthly until canceled. Each closed
+          period is charged from the distinct active-author count recorded for
+          that organization. Provider-confirmed past-due, paused, or canceled
+          subscriptions can pause private-repository access after any stated
+          grace period.
         </p>
         <p>
           Repository count and review count are not billing units.
@@ -102,11 +113,12 @@ export default function TermsPage() {
             model provider bills against them. BYOK provider usage is billed by
             your provider outside Postil. Configure provider-side budgets and
             alerts, plus hard limits where the provider supports them, because
-            Postil cannot enforce spending limits in an external provider account.
+            Postil cannot enforce spending limits in an external provider
+            account.
           </li>
           <li>
-            Do not attempt to disrupt, reverse-engineer the hosted control plane,
-            probe it for vulnerabilities outside our{" "}
+            Do not attempt to disrupt, reverse-engineer the hosted control
+            plane, probe it for vulnerabilities outside our{" "}
             <Link href="/security">coordinated disclosure</Link> process, or use
             the service to violate the law or a third party&apos;s rights.
           </li>
@@ -147,8 +159,8 @@ export default function TermsPage() {
         <p>
           These terms are governed by the laws of Iceland, without regard to
           conflict-of-law rules. Any dispute arising from them is subject to the
-          exclusive jurisdiction of the District Court of Reykjavík
-          (Héraðsdómur Reykjavíkur).
+          exclusive jurisdiction of the District Court of Reykjavík (Héraðsdómur
+          Reykjavíkur).
         </p>
 
         <h2>Contact</h2>

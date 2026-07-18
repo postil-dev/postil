@@ -7,9 +7,14 @@ import { optionalEnv } from "@/lib/env";
 export type OperatorAlertEvent =
   | "trial_started"
   | "trial_expired"
-  | "installation_removed";
+  | "installation_removed"
+  | "subscription_started"
+  | "subscription_past_due"
+  | "subscription_paused"
+  | "subscription_canceled"
+  | "billing_anomaly";
 
-interface OperatorAlertBasePayload extends Record<string, unknown> {
+interface OperatorAlertBasePayload {
   event: OperatorAlertEvent;
   eventKey: string;
   orgId: number;
@@ -36,10 +41,37 @@ export interface InstallationRemovedAlertPayload extends OperatorAlertBasePayloa
   githubInstallationId: number;
 }
 
+export interface SubscriptionAlertPayload extends OperatorAlertBasePayload {
+  event:
+    | "subscription_started"
+    | "subscription_past_due"
+    | "subscription_paused"
+    | "subscription_canceled";
+  providerSubscriptionId: string;
+  periodEndsAt: string | null;
+}
+
+export interface BillingAnomalyAlertPayload {
+  event: "billing_anomaly";
+  eventKey: string;
+  orgId: number | null;
+  orgSlug: string | null;
+  accountLogin: string | null;
+  githubOwnerId: number | null;
+  providerObjectId: string;
+  category:
+    | "unmatched_provider_event"
+    | "checkout_failed"
+    | "settlement_stale"
+    | "settlement_failed";
+}
+
 export type OperatorAlertJobPayload =
   | TrialStartedAlertPayload
   | TrialExpiredAlertPayload
-  | InstallationRemovedAlertPayload;
+  | InstallationRemovedAlertPayload
+  | SubscriptionAlertPayload
+  | BillingAnomalyAlertPayload;
 
 type AlertWriteDatabase = Pick<Database, "insert">;
 
@@ -57,7 +89,10 @@ export async function enqueueOperatorAlert(
       event: payload.event,
       orgId: payload.orgId,
       githubInstallationId:
-        payload.event === "trial_expired" ? null : payload.githubInstallationId,
+        payload.event === "trial_started" ||
+        payload.event === "installation_removed"
+          ? payload.githubInstallationId
+          : null,
     })
     .onConflictDoNothing({ target: schema.operatorAlertDeliveries.eventKey })
     .returning({ eventKey: schema.operatorAlertDeliveries.eventKey });
@@ -65,7 +100,7 @@ export async function enqueueOperatorAlert(
 
   await db.insert(schema.jobs).values({
     kind: "operator-alert",
-    payload,
+    payload: { ...payload },
     maxAttempts: 5,
   });
   return true;
@@ -84,7 +119,10 @@ export async function ensureOperatorAlertDelivery(
       event: payload.event,
       orgId: payload.orgId,
       githubInstallationId:
-        payload.event === "trial_expired" ? null : payload.githubInstallationId,
+        payload.event === "trial_started" ||
+        payload.event === "installation_removed"
+          ? payload.githubInstallationId
+          : null,
       createdAt,
       updatedAt: createdAt,
     })
@@ -205,7 +243,9 @@ export async function sweepExpiredSelfServiceTrials(
 }
 
 /** Restore audit consistency across retries and rolling deployments. */
-export async function reconcileOperatorAlertDeliveries(db: Database): Promise<void> {
+export async function reconcileOperatorAlertDeliveries(
+  db: Database,
+): Promise<void> {
   await db.execute(sql`
     WITH recent_jobs AS MATERIALIZED (
       SELECT
@@ -236,8 +276,16 @@ export async function reconcileOperatorAlertDeliveries(db: Database): Promise<vo
       SELECT event_key, event, org_id, github_installation_id, 'queued', created_at, created_at
       FROM recent_jobs
       WHERE event_key IS NOT NULL
-        AND event IN ('trial_started', 'trial_expired', 'installation_removed')
-        AND org_id IS NOT NULL
+        AND event IN (
+          'trial_started',
+          'trial_expired',
+          'installation_removed',
+          'subscription_started',
+          'subscription_past_due',
+          'subscription_paused',
+          'subscription_canceled',
+          'billing_anomaly'
+        )
       ON CONFLICT (event_key) DO NOTHING
     )
     UPDATE operator_alert_deliveries AS delivery
@@ -265,7 +313,7 @@ export function normalizeLegacyOperatorAlertPayload(
 ): OperatorAlertJobPayload | null {
   if (value.event !== "trial_started") {
     return typeof value.eventKey === "string" && value.eventKey
-      ? (value as OperatorAlertJobPayload)
+      ? (value as unknown as OperatorAlertJobPayload)
       : null;
   }
   if (

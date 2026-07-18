@@ -97,4 +97,56 @@ describe("operator alert job", () => {
     ).rejects.toThrow("operator alert job payload is malformed");
     expect(sentInput).toBeUndefined();
   });
+
+  test("sends concise subscription lifecycle and anomaly alerts", async () => {
+    const base = {
+      orgId: 7,
+      orgSlug: "acme",
+      accountLogin: "Acme",
+      githubOwnerId: 700,
+      providerSubscriptionId: "sub_01test",
+    };
+    await runOperatorAlertJob({
+      ...base,
+      event: "subscription_started",
+      eventKey: "subscription-started:sub_01test:evt_1",
+      periodEndsAt: "2026-09-18T00:00:00.000Z",
+    });
+    expect(sentInput).toMatchObject({
+      subject: "Postil subscription active: Acme",
+    });
+
+    await runOperatorAlertJob({
+      ...base,
+      event: "subscription_past_due",
+      eventKey: "subscription-past-due:sub_01test:evt_2",
+      periodEndsAt: null,
+    });
+    expect(sentInput).toMatchObject({
+      subject: "Postil payment past due: Acme",
+    });
+    expect((sentInput?.text as string[]).join("\n")).toContain(
+      "Provider subscription: sub_01test",
+    );
+
+    await runOperatorAlertJob({
+      orgId: base.orgId,
+      orgSlug: base.orgSlug,
+      accountLogin: base.accountLogin,
+      githubOwnerId: base.githubOwnerId,
+      event: "billing_anomaly",
+      eventKey: "billing-anomaly:settlement-1:settlement_stale",
+      providerObjectId: base.providerSubscriptionId,
+      category: "settlement_stale",
+    });
+    expect(sentInput).toMatchObject({
+      subject: "Postil billing needs attention: Acme",
+    });
+    expect((sentInput?.text as string[]).join("\n")).toContain(
+      "Category: settlement_stale",
+    );
+    expect((sentInput?.text as string[]).join("\n")).toContain(
+      "Provider reference: sub_01test",
+    );
+  });
 });

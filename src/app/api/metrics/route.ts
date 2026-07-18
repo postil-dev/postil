@@ -47,9 +47,19 @@ interface DatabaseMetrics {
   operatorAlertCounts: Array<{ event: string; status: string; count: number }>;
   operatorAlertFailuresCurrent: number;
   oldestOperatorAlertPendingAge: number;
+  billingSettlementFailuresCurrent: number;
+  billingSettlementsReconcilingCurrent: number;
+  oldestBillingSettlementPendingAge: number;
+  unmatchedBillingProviderEvents24h: number;
+  oldestBillingCheckoutOpenAge: number;
+  billingCheckoutFailures24h: number;
   oldestJobAges: Map<string, number>;
   oldestRunningReviewAge: number;
-  usageTokens: Array<{ model: string; type: "prompt" | "completion"; tokens: number }>;
+  usageTokens: Array<{
+    model: string;
+    type: "prompt" | "completion";
+    tokens: number;
+  }>;
   reviewIncidents30m: Map<string, number>;
 }
 
@@ -105,7 +115,8 @@ export async function GET(request: Request): Promise<NextResponse> {
       "# HELP postil_reviews_total Reviews by status.",
       "# TYPE postil_reviews_total gauge",
       ...STATUSES.map(
-        (s) => `postil_reviews_total{status="${s}"} ${dbMetrics.reviewStatusCounts.get(s) ?? 0}`,
+        (s) =>
+          `postil_reviews_total{status="${s}"} ${dbMetrics.reviewStatusCounts.get(s) ?? 0}`,
       ),
       "# HELP postil_reviews_24h Reviews queued in the last 24 hours by current status.",
       "# TYPE postil_reviews_24h gauge",
@@ -186,6 +197,24 @@ export async function GET(request: Request): Promise<NextResponse> {
       "# HELP postil_oldest_operator_alert_pending_age_seconds Age of the oldest queued or retrying operator email alert.",
       "# TYPE postil_oldest_operator_alert_pending_age_seconds gauge",
       `postil_oldest_operator_alert_pending_age_seconds ${dbMetrics.oldestOperatorAlertPendingAge}`,
+      "# HELP postil_billing_settlement_failures_current Closed billing periods that require operator resolution.",
+      "# TYPE postil_billing_settlement_failures_current gauge",
+      `postil_billing_settlement_failures_current ${dbMetrics.billingSettlementFailuresCurrent}`,
+      "# HELP postil_billing_settlements_reconciling_current Provider charges whose outcome is being reconciled without a retry.",
+      "# TYPE postil_billing_settlements_reconciling_current gauge",
+      `postil_billing_settlements_reconciling_current ${dbMetrics.billingSettlementsReconcilingCurrent}`,
+      "# HELP postil_oldest_billing_settlement_pending_age_seconds Age of the oldest pending, charging, or reconciling settlement.",
+      "# TYPE postil_oldest_billing_settlement_pending_age_seconds gauge",
+      `postil_oldest_billing_settlement_pending_age_seconds ${dbMetrics.oldestBillingSettlementPendingAge}`,
+      "# HELP postil_unmatched_billing_provider_events_24h Verified billing events that could not be mapped to a customer organization.",
+      "# TYPE postil_unmatched_billing_provider_events_24h gauge",
+      `postil_unmatched_billing_provider_events_24h ${dbMetrics.unmatchedBillingProviderEvents24h}`,
+      "# HELP postil_oldest_billing_checkout_open_age_seconds Age of the oldest checkout that has not completed or failed.",
+      "# TYPE postil_oldest_billing_checkout_open_age_seconds gauge",
+      `postil_oldest_billing_checkout_open_age_seconds ${dbMetrics.oldestBillingCheckoutOpenAge}`,
+      "# HELP postil_billing_checkout_failures_24h Self-service checkout attempts that failed before completion.",
+      "# TYPE postil_billing_checkout_failures_24h gauge",
+      `postil_billing_checkout_failures_24h ${dbMetrics.billingCheckoutFailures24h}`,
       "# HELP postil_oldest_job_age_seconds Age in seconds of the oldest queued or running job.",
       "# TYPE postil_oldest_job_age_seconds gauge",
       ...JOB_AGE_STATUSES.map(
@@ -276,6 +305,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       webhook_recovery_last_scan_age_seconds: string;
       operator_alert_failures_current: string;
       oldest_operator_alert_pending_age_seconds: string;
+      billing_settlement_failures_current: string;
+      billing_settlements_reconciling_current: string;
+      oldest_billing_settlement_pending_age_seconds: string;
+      unmatched_billing_provider_events_24h: string;
+      oldest_billing_checkout_open_age_seconds: string;
+      billing_checkout_failures_24h: string;
       watchdog_kills: string;
     }>(`
       SELECT
@@ -300,6 +335,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         (SELECT COALESCE(EXTRACT(EPOCH FROM now() - last_page_at), 0)::int::text FROM github_webhook_redelivery_state WHERE id = 1) AS webhook_recovery_last_scan_age_seconds,
         (SELECT count(*)::text FROM operator_alert_deliveries WHERE status = 'failed') AS operator_alert_failures_current,
         (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text FROM operator_alert_deliveries WHERE status IN ('queued', 'retrying')) AS oldest_operator_alert_pending_age_seconds,
+        (SELECT count(*)::text FROM billing_author_settlements WHERE status = 'failed') AS billing_settlement_failures_current,
+        (SELECT count(*)::text FROM billing_author_settlements WHERE status = 'reconciling') AS billing_settlements_reconciling_current,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text FROM billing_author_settlements WHERE status IN ('pending', 'charging', 'reconciling')) AS oldest_billing_settlement_pending_age_seconds,
+        (SELECT count(*)::text FROM billing_provider_events WHERE outcome = 'unmatched' AND occurred_at >= now() - interval '24 hours') AS unmatched_billing_provider_events_24h,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text FROM billing_checkout_transactions WHERE status IN ('creating', 'pending')) AS oldest_billing_checkout_open_age_seconds,
+        (SELECT count(*)::text FROM billing_checkout_transactions WHERE status = 'failed' AND updated_at >= now() - interval '24 hours') AS billing_checkout_failures_24h,
         (SELECT count(*)::text FROM reviews WHERE status = 'failed' AND error_message LIKE 'watchdog:%') AS watchdog_kills
     `),
     pool.query<{ status: string; count: string }>(`
@@ -356,7 +397,11 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       FROM reviews
       WHERE status = 'running'
     `),
-    pool.query<{ model: string; prompt_tokens: string; completion_tokens: string }>(`
+    pool.query<{
+      model: string;
+      prompt_tokens: string;
+      completion_tokens: string;
+    }>(`
       SELECT
         COALESCE(NULLIF(model_used, ''), 'unknown') AS model,
         COALESCE(sum(prompt_tokens), 0)::text AS prompt_tokens,
@@ -484,7 +529,9 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     webhookRecoveryRecovered: toNumber(row.webhook_recovery_recovered),
     webhookRecoveryUnresolved: toNumber(row.webhook_recovery_unresolved),
     webhookRecoveryTerminal: toNumber(row.webhook_recovery_terminal),
-    webhookRecoveryLastScanAge: toNumber(row.webhook_recovery_last_scan_age_seconds),
+    webhookRecoveryLastScanAge: toNumber(
+      row.webhook_recovery_last_scan_age_seconds,
+    ),
     webhookDeliveries24hByEvent: webhooks24hByEvent.rows.map((eventRow) => ({
       event: eventRow.event,
       count: toNumber(eventRow.count),
@@ -500,9 +547,30 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       count: toNumber(alertRow.count),
     })),
     operatorAlertFailuresCurrent: toNumber(row.operator_alert_failures_current),
-    oldestOperatorAlertPendingAge: toNumber(row.oldest_operator_alert_pending_age_seconds),
+    oldestOperatorAlertPendingAge: toNumber(
+      row.oldest_operator_alert_pending_age_seconds,
+    ),
+    billingSettlementFailuresCurrent: toNumber(
+      row.billing_settlement_failures_current,
+    ),
+    billingSettlementsReconcilingCurrent: toNumber(
+      row.billing_settlements_reconciling_current,
+    ),
+    oldestBillingSettlementPendingAge: toNumber(
+      row.oldest_billing_settlement_pending_age_seconds,
+    ),
+    unmatchedBillingProviderEvents24h: toNumber(
+      row.unmatched_billing_provider_events_24h,
+    ),
+    oldestBillingCheckoutOpenAge: toNumber(
+      row.oldest_billing_checkout_open_age_seconds,
+    ),
+    billingCheckoutFailures24h: toNumber(row.billing_checkout_failures_24h),
     oldestJobAges: new Map(
-      oldestJobs.rows.map((jobRow) => [jobRow.status, toNumber(jobRow.age_seconds)]),
+      oldestJobs.rows.map((jobRow) => [
+        jobRow.status,
+        toNumber(jobRow.age_seconds),
+      ]),
     ),
     oldestRunningReviewAge: toNumber(oldestRunningReview.rows[0]?.age_seconds),
     usageTokens: usageByModel.rows.flatMap((usageRow) => [
@@ -526,10 +594,10 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
   };
 }
 
-function countMap<T extends Record<K, string> & { count: string }, K extends keyof T>(
-  rows: T[],
-  key: K,
-): Map<string, number> {
+function countMap<
+  T extends Record<K, string> & { count: string },
+  K extends keyof T,
+>(rows: T[], key: K): Map<string, number> {
   return new Map(rows.map((row) => [row[key], toNumber(row.count)]));
 }
 
@@ -540,5 +608,8 @@ function toNumber(value: string | number | null | undefined): number {
 }
 
 function escapeLabelValue(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/"/g, '\\"');
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/"/g, '\\"');
 }

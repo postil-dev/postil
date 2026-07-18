@@ -34,6 +34,10 @@ import {
   recordOperatorAlertFailure,
 } from "@/lib/operator-alerts";
 import {
+  runBillingSettlement,
+  type BillingSettlementJobPayload,
+} from "@/lib/paddle-billing";
+import {
   runBillingContactVerificationJob,
   type BillingContactVerificationJobPayload,
 } from "./billing-contact-verification";
@@ -51,10 +55,17 @@ import {
   runRespondJob,
   runWebhookCommentJob,
 } from "./respond";
-import { runCheckRunCleanupJob, runReviewJob, WorkerShutdownError } from "./review";
+import {
+  runCheckRunCleanupJob,
+  runReviewJob,
+  WorkerShutdownError,
+} from "./review";
 import { watchdogPass } from "./watchdog";
 
-const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv("POSTIL_QUEUE_DRAIN_MAX_JOBS", 1);
+const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv(
+  "POSTIL_QUEUE_DRAIN_MAX_JOBS",
+  1,
+);
 const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
   "POSTIL_QUEUE_DRAIN_DEADLINE_MS",
   12 * 60 * 1000,
@@ -69,6 +80,7 @@ export const PROCESSABLE_JOB_KINDS = [
   "respond",
   "respond-delivery",
   "billing-contact-verification",
+  "billing-settlement",
   "operator-alert",
   "gate-state-sync",
   "check-run-cleanup",
@@ -90,7 +102,8 @@ async function handleJob(
       }
       const delivery = await loadWebhookDelivery(getPool(), payload.deliveryId);
       if (!delivery) break;
-      const { dispatchWebhookDelivery } = await import("@/lib/github/webhook-handler");
+      const { dispatchWebhookDelivery } =
+        await import("@/lib/github/webhook-handler");
       await dispatchWebhookDelivery(delivery.event, delivery.payload, {
         deliveryId: delivery.deliveryId,
         triggerFollowupDrain: processGroup === "web",
@@ -121,6 +134,12 @@ async function handleJob(
         job.payload as BillingContactVerificationJobPayload,
       );
       break;
+    case "billing-settlement":
+      await runBillingSettlement(
+        getDb(),
+        job.payload as unknown as BillingSettlementJobPayload,
+      );
+      break;
     case "operator-alert": {
       const payload = normalizeLegacyOperatorAlertPayload(job.payload);
       if (!payload) throw new Error("operator alert job payload is malformed");
@@ -137,10 +156,15 @@ async function handleJob(
       await runCheckRunCleanupJob(job.payload as CheckRunCleanupJobPayload);
       break;
     case "respond-failure-comment":
-      await runRespondFailureCommentJob(job.payload as RespondFailureCommentJobPayload);
+      await runRespondFailureCommentJob(
+        job.payload as RespondFailureCommentJobPayload,
+      );
       break;
     case "webhook-comment":
-      await runWebhookCommentJob(job.payload as WebhookCommentJobPayload, job.id);
+      await runWebhookCommentJob(
+        job.payload as WebhookCommentJobPayload,
+        job.id,
+      );
       break;
     default:
       throw new Error(`unknown job kind: ${job.kind}`);
@@ -170,7 +194,9 @@ export async function runClaimedJob(
         ["review"],
         [job.id],
       );
-      console.warn(`[${label}] job ${job.id} requeued after worker shutdown (${requeued})`);
+      console.warn(
+        `[${label}] job ${job.id} requeued after worker shutdown (${requeued})`,
+      );
       return;
     }
     const malformedGateSync =
@@ -194,12 +220,13 @@ export async function runClaimedJob(
         isPermanentFailure(message));
     const reconcileIndefinitely =
       (job.kind === "gate-state-sync" && !malformedGateSync) ||
-      (job.kind === "webhook-dispatch" && !malformedWebhookDispatch && !invalidWebhookDelivery) ||
+      (job.kind === "webhook-dispatch" &&
+        !malformedWebhookDispatch &&
+        !invalidWebhookDelivery) ||
       (job.kind === "webhook-comment" && !malformedWebhookComment);
-    const outcome =
-      reconcileIndefinitely
-        ? await retryJobIndefinitely(getPool(), job, message)
-        : await failJob(getPool(), job, message, { permanent });
+    const outcome = reconcileIndefinitely
+      ? await retryJobIndefinitely(getPool(), job, message)
+      : await failJob(getPool(), job, message, { permanent });
     if (job.kind === "operator-alert") {
       const payload = normalizeLegacyOperatorAlertPayload(job.payload);
       if (payload) {
@@ -240,12 +267,15 @@ export async function drainQueueOnce(
   opts: { maxJobs?: number; deadlineMs?: number } = {},
 ): Promise<number> {
   const maxJobs = Math.max(1, opts.maxJobs ?? DEFAULT_DRAIN_MAX_JOBS);
-  const deadlineAt = Date.now() + Math.max(1_000, opts.deadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS);
+  const deadlineAt =
+    Date.now() + Math.max(1_000, opts.deadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS);
   const workerId = `${label}-${hostname()}-${process.pid}`;
   let drained = 0;
 
   await watchdogPass().catch((err) => {
-    console.error(`[${label}] watchdog pass failed before drain: ${redactSecrets(err)}`);
+    console.error(
+      `[${label}] watchdog pass failed before drain: ${redactSecrets(err)}`,
+    );
   });
 
   while (drained < maxJobs && Date.now() < deadlineAt) {

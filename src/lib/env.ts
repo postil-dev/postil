@@ -29,14 +29,16 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "POSTIL_PUBLIC_URL",
-    purpose: "Canonical HTTPS origin used for browser URLs and proxy-safe request telemetry",
+    purpose:
+      "Canonical HTTPS origin used for browser URLs and proxy-safe request telemetry",
     example: "https://postil.example.com",
     scope: ["web"],
     productionOnly: true,
   },
   {
     name: "POSTIL_DB_POOL_MAX",
-    purpose: "Maximum Postgres connections per process; keep low for free-tier hosted Postgres",
+    purpose:
+      "Maximum Postgres connections per process; keep low for free-tier hosted Postgres",
     example: "2",
     scope: ["web", "worker"],
     optional: true,
@@ -49,7 +51,8 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "GITHUB_WEBHOOK_SECRET",
-    purpose: "Shared secret for verifying X-Hub-Signature-256 on GitHub webhooks",
+    purpose:
+      "Shared secret for verifying X-Hub-Signature-256 on GitHub webhooks",
     example: "openssl rand -hex 32",
     scope: ["web"],
   },
@@ -116,14 +119,16 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "POSTIL_ALLOW_PRIVATE_API_BASE",
-    purpose: "Explicit opt-in for a self-hosted model endpoint on a private network",
+    purpose:
+      "Explicit opt-in for a self-hosted model endpoint on a private network",
     example: "1",
     scope: ["worker"],
     optional: true,
   },
   {
     name: "POSTIL_ENDPOINT_AUTH_HEADER",
-    purpose: "Optional additional authentication header for a private provider gateway",
+    purpose:
+      "Optional additional authentication header for a private provider gateway",
     example: "CF-Access-Client-Secret",
     scope: ["worker"],
     optional: true,
@@ -202,6 +207,60 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_PADDLE_BILLING_ENABLED",
+    purpose:
+      "Explicitly enable self-service Paddle checkout, webhooks, and settlement",
+    example: "0",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "PADDLE_API_KEY",
+    purpose:
+      "Paddle Billing API key for checkout creation and active-author settlement",
+    example: "from Paddle > Developer tools > Authentication",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
+    name: "PADDLE_WEBHOOK_SECRET",
+    purpose: "Paddle notification destination secret for webhook verification",
+    example: "from Paddle > Developer tools > Notifications",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "PADDLE_CLIENT_TOKEN",
+    purpose:
+      "Public Paddle.js client token returned only to authenticated billing admins",
+    example: "test_... or live_...",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "PADDLE_ZERO_BASE_PRICE_ID",
+    purpose:
+      "Zero-dollar monthly recurring price used to retain the payment method",
+    example: "pri_01...",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "PADDLE_ACTIVE_AUTHOR_PRICE_ID",
+    purpose:
+      "Six-dollar one-time price charged once per active private-PR author period",
+    example: "pri_01...",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "PADDLE_ENVIRONMENT",
+    purpose: "Paddle API and checkout environment",
+    example: "sandbox",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
     name: "POSTIL_ESCALATION_FROM_EMAIL",
     purpose: "Legacy alias for POSTIL_EMAIL_FROM_EMAIL",
     example: "reviews@mail.postil.dev",
@@ -232,7 +291,8 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "POSTIL_QUEUE_DRAIN_MAX_JOBS",
-    purpose: "Maximum jobs a webhook-triggered web drain processes before yielding",
+    purpose:
+      "Maximum jobs a webhook-triggered web drain processes before yielding",
     example: "1",
     scope: ["web"],
     optional: true,
@@ -277,7 +337,8 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "WORKER_WEBHOOK_REDELIVERY_INTERVAL_MS",
-    purpose: "Interval between bounded GitHub App failed-delivery recovery passes",
+    purpose:
+      "Interval between bounded GitHub App failed-delivery recovery passes",
     example: "300000",
     scope: ["worker"],
     optional: true,
@@ -314,7 +375,8 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "NEXT_PUBLIC_POSTHOG_KEY",
-    purpose: "Legacy runtime alias for POSTHOG_PROJECT_TOKEN; no value is compiled into the browser bundle",
+    purpose:
+      "Legacy runtime alias for POSTHOG_PROJECT_TOKEN; no value is compiled into the browser bundle",
     example: "phc_...",
     scope: ["web", "worker"],
     optional: true,
@@ -328,7 +390,8 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "POSTHOG_SERVER_CAPTURE",
-    purpose: "Set to 0 to disable server-side request telemetry while keeping browser analytics",
+    purpose:
+      "Set to 0 to disable server-side request telemetry while keeping browser analytics",
     example: "1",
     scope: ["web"],
     optional: true,
@@ -343,14 +406,16 @@ const ENV_SPECS: EnvVarSpec[] = [
   },
   {
     name: "POSTHOG_ERROR_CAPTURE",
-    purpose: "Set to 1 to send scrubbed operational exceptions to PostHog Error Tracking",
+    purpose:
+      "Set to 1 to send scrubbed operational exceptions to PostHog Error Tracking",
     example: "0",
     scope: ["web", "worker"],
     optional: true,
   },
   {
     name: "POSTHOG_LOG_CAPTURE",
-    purpose: "Set to 1 to export allowlisted operational events to PostHog Logs over OTLP",
+    purpose:
+      "Set to 1 to export allowlisted operational events to PostHog Logs over OTLP",
     example: "0",
     scope: ["web", "worker"],
     optional: true,
@@ -400,8 +465,15 @@ export function validateEnv(processKind: "web" | "worker"): void {
     const value = process.env[spec.name];
     if (!value || value.trim() === "") missing.push(spec);
   }
-  if (processKind === "web" && process.env.POSTIL_WEBHOOK_DRAIN_ENABLED === "1") {
-    for (const name of ["GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "POSTIL_BIN"]) {
+  if (
+    processKind === "web" &&
+    process.env.POSTIL_WEBHOOK_DRAIN_ENABLED === "1"
+  ) {
+    for (const name of [
+      "GITHUB_APP_ID",
+      "GITHUB_APP_PRIVATE_KEY",
+      "POSTIL_BIN",
+    ]) {
       const spec = ENV_SPECS.find((s) => s.name === name);
       const value = process.env[name];
       if (spec && (!value || value.trim() === "")) missing.push(spec);
@@ -409,7 +481,8 @@ export function validateEnv(processKind: "web" | "worker"): void {
   }
   if (missing.length > 0) {
     const lines = missing.map(
-      (s) => `  ${s.name}\n    purpose: ${s.purpose}\n    example: ${s.example}`,
+      (s) =>
+        `  ${s.name}\n    purpose: ${s.purpose}\n    example: ${s.example}`,
     );
     throw new Error(
       `Postil ${processKind} cannot start: ${missing.length} required environment variable(s) missing.\n` +
@@ -432,6 +505,65 @@ export function validateEnv(processKind: "web" | "worker"): void {
   }
   validateOperationalTelemetryEnv(processKind);
   validateOperatorAlertEnv(processKind);
+  validatePaddleEnv(processKind);
+}
+
+function validatePaddleEnv(processKind: "web" | "worker"): void {
+  const enabled = process.env.POSTIL_PADDLE_BILLING_ENABLED;
+  if (enabled !== undefined && enabled !== "0" && enabled !== "1") {
+    throw new Error(
+      `Postil ${processKind} cannot start: POSTIL_PADDLE_BILLING_ENABLED must be 0 or 1.`,
+    );
+  }
+  if (enabled !== "1") return;
+
+  const required =
+    processKind === "web"
+      ? [
+          "PADDLE_API_KEY",
+          "PADDLE_WEBHOOK_SECRET",
+          "PADDLE_CLIENT_TOKEN",
+          "PADDLE_ZERO_BASE_PRICE_ID",
+          "PADDLE_ENVIRONMENT",
+        ]
+      : [
+          "PADDLE_API_KEY",
+          "PADDLE_ACTIVE_AUTHOR_PRICE_ID",
+          "PADDLE_ENVIRONMENT",
+        ];
+  const missing = required.filter((name) => !process.env[name]?.trim());
+  if (missing.length > 0) {
+    throw new Error(
+      `Postil ${processKind} cannot start: Paddle Billing is partially configured; missing ${missing.join(", ")}.`,
+    );
+  }
+  if (!process.env.POSTIL_PUBLIC_URL?.trim()) {
+    throw new Error(
+      `Postil ${processKind} cannot start: Paddle Billing requires POSTIL_PUBLIC_URL.`,
+    );
+  }
+  const environment = process.env.PADDLE_ENVIRONMENT;
+  if (environment !== "sandbox" && environment !== "production") {
+    throw new Error(
+      `Postil ${processKind} cannot start: PADDLE_ENVIRONMENT must be sandbox or production.`,
+    );
+  }
+  if (process.env.NODE_ENV === "production" && environment !== "production") {
+    throw new Error(
+      `Postil ${processKind} cannot start: production requires PADDLE_ENVIRONMENT=production.`,
+    );
+  }
+  for (const name of [
+    "PADDLE_ZERO_BASE_PRICE_ID",
+    "PADDLE_ACTIVE_AUTHOR_PRICE_ID",
+  ] as const) {
+    const value = process.env[name]?.trim();
+    if (value && !/^pri_[a-z0-9]{26}$/.test(value)) {
+      throw new Error(
+        `Postil ${processKind} cannot start: ${name} must be a Paddle price ID.`,
+      );
+    }
+  }
 }
 
 function validateOperatorAlertEnv(processKind: "web" | "worker"): void {
@@ -476,25 +608,33 @@ function safePublicUrlValidationDetail(error: unknown): string | undefined {
 }
 
 function validateOperationalTelemetryEnv(processKind: "web" | "worker"): void {
-  for (const name of ["POSTHOG_ERROR_CAPTURE", "POSTHOG_LOG_CAPTURE"] as const) {
+  for (const name of [
+    "POSTHOG_ERROR_CAPTURE",
+    "POSTHOG_LOG_CAPTURE",
+  ] as const) {
     const value = process.env[name];
     if (value !== undefined && value !== "0" && value !== "1") {
-      throw new Error(`Postil ${processKind} cannot start: ${name} must be 0 or 1.`);
+      throw new Error(
+        `Postil ${processKind} cannot start: ${name} must be 0 or 1.`,
+      );
     }
   }
 
   const enabled =
-    process.env.POSTHOG_ERROR_CAPTURE === "1" || process.env.POSTHOG_LOG_CAPTURE === "1";
+    process.env.POSTHOG_ERROR_CAPTURE === "1" ||
+    process.env.POSTHOG_LOG_CAPTURE === "1";
   if (!enabled) return;
 
-  const token = process.env.POSTHOG_PROJECT_TOKEN ?? process.env.NEXT_PUBLIC_POSTHOG_KEY;
+  const token =
+    process.env.POSTHOG_PROJECT_TOKEN ?? process.env.NEXT_PUBLIC_POSTHOG_KEY;
   if (!token?.trim()) {
     throw new Error(
       `Postil ${processKind} cannot start: operational PostHog telemetry requires POSTHOG_PROJECT_TOKEN.`,
     );
   }
 
-  const host = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://eu.i.posthog.com";
+  const host =
+    process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://eu.i.posthog.com";
   let parsedHost: URL;
   try {
     parsedHost = new URL(host);
@@ -525,16 +665,23 @@ function validateOperationalTelemetryEnv(processKind: "web" | "worker"): void {
     if (value === undefined) continue;
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-      throw new Error(`Postil ${processKind} cannot start: ${name} must be between 0 and 1.`);
+      throw new Error(
+        `Postil ${processKind} cannot start: ${name} must be between 0 and 1.`,
+      );
     }
   }
 
-  for (const name of ["POSTHOG_LOG_MAX_PER_MINUTE", "POSTHOG_ERROR_MAX_PER_HOUR"] as const) {
+  for (const name of [
+    "POSTHOG_LOG_MAX_PER_MINUTE",
+    "POSTHOG_ERROR_MAX_PER_HOUR",
+  ] as const) {
     const value = process.env[name];
     if (value === undefined) continue;
     const parsed = Number(value);
     if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-      throw new Error(`Postil ${processKind} cannot start: ${name} must be a positive integer.`);
+      throw new Error(
+        `Postil ${processKind} cannot start: ${name} must be a positive integer.`,
+      );
     }
   }
 
@@ -557,7 +704,10 @@ export function requireEnv(name: string): string {
   return value;
 }
 
-export function optionalEnv(name: string, fallback?: string): string | undefined {
+export function optionalEnv(
+  name: string,
+  fallback?: string,
+): string | undefined {
   const value = process.env[name];
   if (value && value.trim() !== "") return value;
   return fallback;

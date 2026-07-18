@@ -41,7 +41,10 @@ export const jobStatus = pgEnum("job_status", [
   "failed",
 ]);
 
-export const findingApprovalRole = pgEnum("finding_approval_role", ["member", "admin"]);
+export const findingApprovalRole = pgEnum("finding_approval_role", [
+  "member",
+  "admin",
+]);
 export const findingApprovalSource = pgEnum("finding_approval_source", [
   "github",
   "dashboard",
@@ -54,18 +57,24 @@ export const users = pgTable("users", {
   name: text("name"),
   email: text("email"),
   avatarUrl: text("avatar_url"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const organizations = pgTable(
   "organizations",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     slug: text("slug").notNull().unique(),
     name: text("name").notNull(),
     githubOrgId: bigint("github_org_id", { mode: "number" }),
     plan: text("plan").notNull().default("beta"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   // Nullable column, plain unique index: Postgres treats each NULL as
   // distinct, so orgs with no linked GitHub org (githubOrgId is null) never
@@ -78,7 +87,9 @@ export const organizations = pgTable(
 export const orgMembers = pgTable(
   "org_members",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
@@ -99,17 +110,24 @@ export const orgMembers = pgTable(
 export const installations = pgTable(
   "installations",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     githubInstallationId: bigint("github_installation_id", { mode: "number" })
       .notNull()
       .unique(),
-    orgId: bigint("org_id", { mode: "number" }).references(() => organizations.id, {
-      onDelete: "set null",
-    }),
+    orgId: bigint("org_id", { mode: "number" }).references(
+      () => organizations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     accountLogin: text("account_login").notNull(),
     accountType: text("account_type").notNull(),
     suspended: boolean("suspended").notNull().default(false),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [index("installations_org_idx").on(t.orgId)],
 );
@@ -123,7 +141,9 @@ export const repositories = pgTable("repositories", {
   fullName: text("full_name").notNull(),
   private: boolean("private").notNull().default(false),
   enabled: boolean("enabled").notNull().default(true),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const repoConfigProbes = pgTable("repo_config_probes", {
@@ -145,7 +165,9 @@ export const orgConfigProbeRefreshes = pgTable("org_config_probe_refreshes", {
 export const repositoryEnablementEvents = pgTable(
   "repository_enablement_events",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
@@ -157,14 +179,23 @@ export const repositoryEnablementEvents = pgTable(
     repositoryFullName: text("repository_full_name").notNull(),
     repositoryPrivate: boolean("repository_private").notNull(),
     action: text("action").notNull(),
-    actorUserId: bigint("actor_user_id", { mode: "number" }).references(() => users.id, {
-      onDelete: "set null",
-    }),
+    actorUserId: bigint("actor_user_id", { mode: "number" }).references(
+      () => users.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     source: text("source").notNull().default("dashboard"),
-    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
-    index("repository_enablement_events_org_time_idx").on(t.orgId, t.occurredAt, t.id),
+    index("repository_enablement_events_org_time_idx").on(
+      t.orgId,
+      t.occurredAt,
+      t.id,
+    ),
     index("repository_enablement_events_repo_time_idx").on(
       t.repositoryId,
       t.occurredAt,
@@ -184,7 +215,9 @@ export const repositoryEnablementEvents = pgTable(
 export const reviews = pgTable(
   "reviews",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     publicId: uuid("public_id").notNull().defaultRandom(),
     repositoryId: bigint("repository_id", { mode: "number" })
       .notNull()
@@ -200,14 +233,17 @@ export const reviews = pgTable(
     status: reviewStatus("status").notNull().default("queued"),
     envelope: jsonb("envelope").$type<Envelope>(),
     configFiles: text("config_files").array(),
-    configProvenance: jsonb("config_provenance").$type<ReviewConfigProvenance>(),
+    configProvenance:
+      jsonb("config_provenance").$type<ReviewConfigProvenance>(),
     silent: boolean("silent"),
     engineGateFailing: boolean("engine_gate_failing"),
     gateFailing: boolean("gate_failing"),
     errorMessage: text("error_message"),
     advisoryCheckRunId: bigint("advisory_check_run_id", { mode: "number" }),
     gateCheckRunId: bigint("gate_check_run_id", { mode: "number" }),
-    queuedAt: timestamp("queued_at", { withTimezone: true }).notNull().defaultNow(),
+    queuedAt: timestamp("queued_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
@@ -247,26 +283,32 @@ export const findingApprovals = pgTable(
     source: findingApprovalSource("source").notNull(),
     sourceCommentId: uuid("source_comment_id"),
     sourceUrl: text("source_url"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    revokedByUserId: bigint("revoked_by_user_id", { mode: "number" }).references(
-      () => users.id,
-      { onDelete: "set null" },
-    ),
+    revokedByUserId: bigint("revoked_by_user_id", {
+      mode: "number",
+    }).references(() => users.id, { onDelete: "set null" }),
   },
   (t) => [
     uniqueIndex("finding_approvals_active_idx")
       .on(t.reviewId, t.findingId)
       .where(sql`${t.revokedAt} IS NULL`),
     index("finding_approvals_review_idx").on(t.reviewId),
-    check("finding_approvals_rationale_nonempty", sql`length(btrim(${t.rationale})) > 0`),
+    check(
+      "finding_approvals_rationale_nonempty",
+      sql`length(btrim(${t.rationale})) > 0`,
+    ),
   ],
 );
 
 export const reviewLogs = pgTable(
   "review_logs",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     reviewId: bigint("review_id", { mode: "number" })
       .notNull()
       .references(() => reviews.id, { onDelete: "cascade" }),
@@ -280,17 +322,25 @@ export const reviewLogs = pgTable(
 export const usageEvents = pgTable(
   "usage_events",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-    orgId: bigint("org_id", { mode: "number" }).references(() => organizations.id, {
-      onDelete: "set null",
-    }),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    orgId: bigint("org_id", { mode: "number" }).references(
+      () => organizations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     repositoryId: bigint("repository_id", { mode: "number" }).references(
       () => repositories.id,
       { onDelete: "set null" },
     ),
-    reviewId: bigint("review_id", { mode: "number" }).references(() => reviews.id, {
-      onDelete: "set null",
-    }),
+    reviewId: bigint("review_id", { mode: "number" }).references(
+      () => reviews.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     triggerSource: text("trigger_source").notNull().default("unknown"),
     promptTokens: integer("prompt_tokens").notNull().default(0),
     completionTokens: integer("completion_tokens").notNull().default(0),
@@ -302,7 +352,9 @@ export const usageEvents = pgTable(
     // Required from current writers. The database trigger classifies omitted
     // values only for pre-0020 processes during the migration rollout.
     billingScope: text("billing_scope").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     check(
@@ -327,7 +379,9 @@ export const usageEvents = pgTable(
 export const billingCreditGrants = pgTable(
   "billing_credit_grants",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
@@ -336,19 +390,39 @@ export const billingCreditGrants = pgTable(
     actor: text("actor").notNull(),
     source: text("source").notNull().default("admin_script"),
     idempotencyKey: text("idempotency_key").notNull(),
-    appliesAt: timestamp("applies_at", { withTimezone: true }).notNull().defaultNow(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    appliesAt: timestamp("applies_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
-    index("billing_credit_grants_org_created_idx").on(t.orgId, t.createdAt, t.id),
+    index("billing_credit_grants_org_created_idx").on(
+      t.orgId,
+      t.createdAt,
+      t.id,
+    ),
     uniqueIndex("billing_credit_grants_org_idempotency_idx").on(
       t.orgId,
       t.idempotencyKey,
     ),
-    check("billing_credit_grants_amount_cents_positive", sql`${t.amountCents} > 0`),
-    check("billing_credit_grants_reason_nonempty", sql`length(btrim(${t.reason})) > 0`),
-    check("billing_credit_grants_actor_nonempty", sql`length(btrim(${t.actor})) > 0`),
-    check("billing_credit_grants_source_nonempty", sql`length(btrim(${t.source})) > 0`),
+    check(
+      "billing_credit_grants_amount_cents_positive",
+      sql`${t.amountCents} > 0`,
+    ),
+    check(
+      "billing_credit_grants_reason_nonempty",
+      sql`length(btrim(${t.reason})) > 0`,
+    ),
+    check(
+      "billing_credit_grants_actor_nonempty",
+      sql`length(btrim(${t.actor})) > 0`,
+    ),
+    check(
+      "billing_credit_grants_source_nonempty",
+      sql`length(btrim(${t.source})) > 0`,
+    ),
     check(
       "billing_credit_grants_idempotency_key_nonempty",
       sql`length(btrim(${t.idempotencyKey})) > 0`,
@@ -366,14 +440,18 @@ export const organizationEntitlements = pgTable(
     subscriptionMode: text("subscription_mode").notNull(),
     status: text("status").notNull(),
     trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
-    pastDueGraceEndsAt: timestamp("past_due_grace_ends_at", { withTimezone: true }),
+    pastDueGraceEndsAt: timestamp("past_due_grace_ends_at", {
+      withTimezone: true,
+    }),
     periodStartsAt: timestamp("period_starts_at", { withTimezone: true }),
     periodEndsAt: timestamp("period_ends_at", { withTimezone: true }),
     /** Allowance and cap use USD micros so sub-cent model calls remain exact. */
     includedUsageMicros: bigint("included_usage_micros", { mode: "number" })
       .notNull()
       .default(0),
-    overageHardCapMicros: bigint("overage_hard_cap_micros", { mode: "number" }).default(0),
+    overageHardCapMicros: bigint("overage_hard_cap_micros", {
+      mode: "number",
+    }).default(0),
     /** Rolling-deploy compatibility; new entitlement checks read the micros fields. */
     includedUsageCents: integer("included_usage_cents").notNull().default(0),
     overageHardCapCents: integer("overage_hard_cap_cents").default(0),
@@ -382,7 +460,9 @@ export const organizationEntitlements = pgTable(
       withTimezone: true,
     }),
     billingContactPending: text("billing_contact_pending"),
-    billingContactVerificationTokenDigest: bytea("billing_contact_verification_token_digest"),
+    billingContactVerificationTokenDigest: bytea(
+      "billing_contact_verification_token_digest",
+    ),
     billingContactVerificationTokenCiphertext: bytea(
       "billing_contact_verification_token_ciphertext",
     ),
@@ -394,14 +474,23 @@ export const organizationEntitlements = pgTable(
       "billing_contact_verification_requested_at",
       { withTimezone: true },
     ),
-    billingContactVerificationSentAt: timestamp("billing_contact_verification_sent_at", {
-      withTimezone: true,
-    }),
-    billingContactVerificationMessageId: text("billing_contact_verification_message_id"),
-    promotionalEligible: boolean("promotional_eligible").notNull().default(false),
+    billingContactVerificationSentAt: timestamp(
+      "billing_contact_verification_sent_at",
+      {
+        withTimezone: true,
+      },
+    ),
+    billingContactVerificationMessageId: text(
+      "billing_contact_verification_message_id",
+    ),
+    promotionalEligible: boolean("promotional_eligible")
+      .notNull()
+      .default(false),
     promotionalEndsAt: timestamp("promotional_ends_at", { withTimezone: true }),
     updatedBy: text("updated_by").notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     check(
@@ -435,30 +524,258 @@ export const organizationEntitlements = pgTable(
   ],
 );
 
+/** One server-created Paddle transaction per self-service checkout attempt. */
+export const billingCheckoutTransactions = pgTable(
+  "billing_checkout_transactions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    requestedByUserId: bigint("requested_by_user_id", { mode: "number" })
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    provider: text("provider").notNull().default("paddle"),
+    providerTransactionId: text("provider_transaction_id"),
+    checkoutUrl: text("checkout_url"),
+    status: text("status").notNull().default("creating"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastErrorCategory: text("last_error_category"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("billing_checkout_transactions_provider_transaction_idx").on(
+      t.providerTransactionId,
+    ),
+    uniqueIndex("billing_checkout_transactions_open_org_idx")
+      .on(t.orgId)
+      .where(sql`${t.status} IN ('creating', 'pending')`),
+    index("billing_checkout_transactions_status_expiry_idx").on(
+      t.status,
+      t.expiresAt,
+    ),
+    check(
+      "billing_checkout_transactions_provider_check",
+      sql`${t.provider} = 'paddle'`,
+    ),
+    check(
+      "billing_checkout_transactions_status_check",
+      sql`${t.status} IN ('creating', 'pending', 'completed', 'failed', 'expired', 'canceled')`,
+    ),
+    check(
+      "billing_checkout_transactions_provider_transaction_nonempty",
+      sql`${t.providerTransactionId} IS NULL OR length(btrim(${t.providerTransactionId})) > 0`,
+    ),
+  ],
+);
+
+/** Minimal local projection of the provider subscription that grants access. */
+export const billingProviderSubscriptions = pgTable(
+  "billing_provider_subscriptions",
+  {
+    orgId: bigint("org_id", { mode: "number" })
+      .primaryKey()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull().default("paddle"),
+    providerSubscriptionId: text("provider_subscription_id").notNull(),
+    providerCustomerId: text("provider_customer_id").notNull(),
+    status: text("status").notNull(),
+    currentPeriodStartsAt: timestamp("current_period_starts_at", {
+      withTimezone: true,
+    }),
+    currentPeriodEndsAt: timestamp("current_period_ends_at", {
+      withTimezone: true,
+    }),
+    latestEventOccurredAt: timestamp("latest_event_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    latestEventId: text("latest_event_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("billing_provider_subscriptions_provider_id_idx").on(
+      t.provider,
+      t.providerSubscriptionId,
+    ),
+    index("billing_provider_subscriptions_status_period_idx").on(
+      t.status,
+      t.currentPeriodEndsAt,
+    ),
+    check(
+      "billing_provider_subscriptions_provider_check",
+      sql`${t.provider} = 'paddle'`,
+    ),
+    check(
+      "billing_provider_subscriptions_status_check",
+      sql`${t.status} IN ('active', 'trialing', 'past_due', 'paused', 'canceled')`,
+    ),
+    check(
+      "billing_provider_subscriptions_provider_subscription_nonempty",
+      sql`length(btrim(${t.providerSubscriptionId})) > 0`,
+    ),
+    check(
+      "billing_provider_subscriptions_provider_customer_nonempty",
+      sql`length(btrim(${t.providerCustomerId})) > 0`,
+    ),
+  ],
+);
+
+/** Content-free, idempotent receipt for each verified provider webhook. */
+export const billingProviderEvents = pgTable(
+  "billing_provider_events",
+  {
+    eventId: text("event_id").primaryKey(),
+    provider: text("provider").notNull().default("paddle"),
+    eventType: text("event_type").notNull(),
+    providerObjectId: text("provider_object_id"),
+    orgId: bigint("org_id", { mode: "number" }).references(
+      () => organizations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    outcome: text("outcome").notNull(),
+    processedAt: timestamp("processed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("billing_provider_events_org_occurred_idx").on(t.orgId, t.occurredAt),
+    index("billing_provider_events_type_occurred_idx").on(
+      t.eventType,
+      t.occurredAt,
+    ),
+    check(
+      "billing_provider_events_provider_check",
+      sql`${t.provider} = 'paddle'`,
+    ),
+    check(
+      "billing_provider_events_outcome_check",
+      sql`${t.outcome} IN ('processing', 'applied', 'stale', 'ignored', 'unmatched')`,
+    ),
+    check(
+      "billing_provider_events_event_type_nonempty",
+      sql`length(btrim(${t.eventType})) > 0`,
+    ),
+  ],
+);
+
+/** One immutable active-author count and one provider charge per closed period. */
+export const billingAuthorSettlements = pgTable(
+  "billing_author_settlements",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    providerSubscriptionId: text("provider_subscription_id").notNull(),
+    periodStartsAt: timestamp("period_starts_at", {
+      withTimezone: true,
+    }).notNull(),
+    periodEndsAt: timestamp("period_ends_at", {
+      withTimezone: true,
+    }).notNull(),
+    activeAuthorCount: integer("active_author_count").notNull(),
+    unitAmountCents: integer("unit_amount_cents").notNull().default(600),
+    totalAmountCents: integer("total_amount_cents").notNull(),
+    status: text("status").notNull().default("pending"),
+    providerTransactionId: text("provider_transaction_id"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    attemptStartedAt: timestamp("attempt_started_at", { withTimezone: true }),
+    nextReconcileAt: timestamp("next_reconcile_at", { withTimezone: true }),
+    lastErrorCategory: text("last_error_category"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("billing_author_settlements_org_period_idx").on(
+      t.orgId,
+      t.periodStartsAt,
+      t.periodEndsAt,
+    ),
+    uniqueIndex("billing_author_settlements_provider_transaction_idx").on(
+      t.providerTransactionId,
+    ),
+    index("billing_author_settlements_status_reconcile_idx").on(
+      t.status,
+      t.nextReconcileAt,
+    ),
+    check(
+      "billing_author_settlements_period_check",
+      sql`${t.periodStartsAt} < ${t.periodEndsAt}`,
+    ),
+    check(
+      "billing_author_settlements_author_count_check",
+      sql`${t.activeAuthorCount} >= 0`,
+    ),
+    check(
+      "billing_author_settlements_amount_check",
+      sql`${t.unitAmountCents} = 600 AND ${t.totalAmountCents} = ${t.activeAuthorCount} * ${t.unitAmountCents}`,
+    ),
+    check(
+      "billing_author_settlements_status_check",
+      sql`${t.status} IN ('pending', 'charging', 'reconciling', 'charged', 'no_charge', 'failed')`,
+    ),
+    check(
+      "billing_author_settlements_attempt_count_check",
+      sql`${t.attemptCount} >= 0`,
+    ),
+    check(
+      "billing_author_settlements_subscription_nonempty",
+      sql`length(btrim(${t.providerSubscriptionId})) > 0`,
+    ),
+  ],
+);
+
 /** Durable, content-free audit state for email sent to the Postil operator. */
 export const operatorAlertDeliveries = pgTable(
   "operator_alert_deliveries",
   {
     eventKey: text("event_key").primaryKey(),
     event: text("event").notNull(),
-    orgId: bigint("org_id", { mode: "number" }).references(() => organizations.id, {
-      onDelete: "set null",
-    }),
+    orgId: bigint("org_id", { mode: "number" }).references(
+      () => organizations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     githubInstallationId: bigint("github_installation_id", { mode: "number" }),
     status: text("status").notNull().default("queued"),
     messageId: text("message_id"),
     lastError: text("last_error"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
-    index("operator_alert_deliveries_status_created_idx").on(t.status, t.createdAt),
+    index("operator_alert_deliveries_status_created_idx").on(
+      t.status,
+      t.createdAt,
+    ),
     index("operator_alert_deliveries_org_created_idx").on(t.orgId, t.createdAt),
     check(
       "operator_alert_deliveries_event_check",
-      sql`${t.event} IN ('trial_started', 'trial_expired', 'installation_removed')`,
+      sql`${t.event} IN ('trial_started', 'trial_expired', 'installation_removed', 'subscription_started', 'subscription_past_due', 'subscription_paused', 'subscription_canceled', 'billing_anomaly')`,
     ),
     check(
       "operator_alert_deliveries_status_check",
@@ -479,16 +796,23 @@ export const hostedUsageReservations = pgTable(
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    reviewId: bigint("review_id", { mode: "number" }).references(() => reviews.id, {
-      onDelete: "cascade",
-    }),
+    reviewId: bigint("review_id", { mode: "number" }).references(
+      () => reviews.id,
+      {
+        onDelete: "cascade",
+      },
+    ),
     operation: text("operation").notNull().default("review"),
     reservedMicros: bigint("reserved_micros", { mode: "number" }).notNull(),
     actualMicros: bigint("actual_micros", { mode: "number" }),
     status: text("status").notNull().default("active"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("hosted_usage_reservations_review_idx").on(t.reviewId),
@@ -507,7 +831,10 @@ export const hostedUsageReservations = pgTable(
       "hosted_usage_reservations_operation_reference_check",
       sql`(${t.operation} = 'review' AND ${t.reviewId} IS NOT NULL) OR (${t.operation} = 'respond' AND ${t.reviewId} IS NULL)`,
     ),
-    check("hosted_usage_reservations_reserved_positive", sql`${t.reservedMicros} > 0`),
+    check(
+      "hosted_usage_reservations_reserved_positive",
+      sql`${t.reservedMicros} > 0`,
+    ),
     check(
       "hosted_usage_reservations_actual_nonnegative",
       sql`${t.actualMicros} IS NULL OR ${t.actualMicros} >= 0`,
@@ -523,7 +850,9 @@ export const webhookDeliveries = pgTable(
     event: text("event").notNull(),
     action: text("action"),
     payload: jsonb("payload").$type<unknown>(),
-    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (t) => [
@@ -548,7 +877,9 @@ export const githubWebhookDeliveryRecoveries = pgTable(
     redelivery: boolean("redelivery").notNull(),
     outcome: text("outcome").notNull(),
     statusCode: integer("status_code"),
-    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     requestState: text("request_state"),
     requestAttempts: integer("request_attempts").notNull().default(0),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
@@ -556,7 +887,9 @@ export const githubWebhookDeliveryRecoveries = pgTable(
     requestStatusCode: integer("request_status_code"),
     recoveryDeliveryId: text("recovery_delivery_id"),
     lastErrorCategory: text("last_error_category"),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     index("github_webhook_delivery_recoveries_guid_idx").on(
@@ -591,11 +924,15 @@ export const githubWebhookRedeliveryState = pgTable(
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     sweepStartedAt: timestamp("sweep_started_at", { withTimezone: true }),
     lastPageAt: timestamp("last_page_at", { withTimezone: true }),
-    lastSweepCompletedAt: timestamp("last_sweep_completed_at", { withTimezone: true }),
+    lastSweepCompletedAt: timestamp("last_sweep_completed_at", {
+      withTimezone: true,
+    }),
     rateLimitedUntil: timestamp("rate_limited_until", { withTimezone: true }),
     lastErrorCategory: text("last_error_category"),
   },
-  (t) => [check("github_webhook_redelivery_state_singleton_check", sql`${t.id} = 1`)],
+  (t) => [
+    check("github_webhook_redelivery_state_singleton_check", sql`${t.id} = 1`),
+  ],
 );
 
 /** Durable receipts for idempotent non-transactional release operations. */
@@ -611,17 +948,23 @@ export type JobPayload = Record<string, unknown>;
 export const jobs = pgTable(
   "jobs",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     kind: text("kind").notNull(),
     payload: jsonb("payload").$type<JobPayload>().notNull(),
     status: jobStatus("status").notNull().default("queued"),
     attempts: integer("attempts").notNull().default(0),
     maxAttempts: integer("max_attempts").notNull().default(3),
-    runAfter: timestamp("run_after", { withTimezone: true }).notNull().defaultNow(),
+    runAfter: timestamp("run_after", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     lockedAt: timestamp("locked_at", { withTimezone: true }),
     lockedBy: text("locked_by"),
     lastError: text("last_error"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     index("jobs_claim_idx").on(t.status, t.runAfter),
@@ -641,27 +984,45 @@ export const respondDeliveries = pgTable(
     repositoryId: bigint("repository_id", { mode: "number" })
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
-    reservationId: uuid("reservation_id").references(() => hostedUsageReservations.id, {
-      onDelete: "set null",
-    }),
+    reservationId: uuid("reservation_id").references(
+      () => hostedUsageReservations.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     repoFullName: text("repo_full_name").notNull(),
     issueNumber: integer("issue_number").notNull(),
     body: text("body").notNull(),
     state: text("state").notNull().default("prepared"),
-    deliveryLeaseExpiresAt: timestamp("delivery_lease_expires_at", { withTimezone: true }),
+    deliveryLeaseExpiresAt: timestamp("delivery_lease_expires_at", {
+      withTimezone: true,
+    }),
     githubCommentId: bigint("github_comment_id", { mode: "number" }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
-    index("respond_deliveries_pending_idx").on(t.state, t.deliveryLeaseExpiresAt),
+    index("respond_deliveries_pending_idx").on(
+      t.state,
+      t.deliveryLeaseExpiresAt,
+    ),
     check(
       "respond_deliveries_state_check",
       sql`${t.state} IN ('prepared', 'delivering', 'delivered')`,
     ),
-    check("respond_deliveries_issue_number_positive", sql`${t.issueNumber} > 0`),
-    check("respond_deliveries_body_nonempty", sql`length(btrim(${t.body})) > 0`),
+    check(
+      "respond_deliveries_issue_number_positive",
+      sql`${t.issueNumber} > 0`,
+    ),
+    check(
+      "respond_deliveries_body_nonempty",
+      sql`length(btrim(${t.body})) > 0`,
+    ),
   ],
 );
 
@@ -672,11 +1033,15 @@ export const sessions = pgTable("sessions", {
     .references(() => users.id, { onDelete: "cascade" }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   githubAccessTokenCiphertext: bytea("github_access_token_ciphertext"),
-  membershipCheckedAt: timestamp("membership_checked_at", { withTimezone: true }),
+  membershipCheckedAt: timestamp("membership_checked_at", {
+    withTimezone: true,
+  }),
   membershipCheckAvailableAt: timestamp("membership_check_available_at", {
     withTimezone: true,
   }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 /** Per-org review configuration and write-only BYOK provider settings. */
@@ -722,7 +1087,9 @@ export const orgSettings = pgTable("org_settings", {
   escalationEmailVerificationMessageId: text(
     "escalation_email_verification_message_id",
   ),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 /** Last successful immutable snapshot of the owner's installed `.github` policy repo. */
@@ -730,11 +1097,12 @@ export const orgConfigSnapshots = pgTable("org_config_snapshots", {
   orgId: bigint("org_id", { mode: "number" })
     .primaryKey()
     .references(() => organizations.id, { onDelete: "cascade" }),
-  sourceRepositoryId: bigint("source_repository_id", { mode: "number" }).references(
-    () => repositories.id,
-    { onDelete: "set null" },
-  ),
-  sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }).notNull(),
+  sourceRepositoryId: bigint("source_repository_id", {
+    mode: "number",
+  }).references(() => repositories.id, { onDelete: "set null" }),
+  sourceGithubRepoId: bigint("source_github_repo_id", {
+    mode: "number",
+  }).notNull(),
   sourceFullName: text("source_full_name").notNull(),
   visibility: text("visibility").notNull(),
   defaultBranch: text("default_branch").notNull(),
@@ -743,9 +1111,14 @@ export const orgConfigSnapshots = pgTable("org_config_snapshots", {
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
   files: text("files").array().notNull(),
-  loadedFiles: text("loaded_files").array().notNull().default(sql`'{}'::text[]`),
+  loadedFiles: text("loaded_files")
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
   stale: boolean("stale").notNull().default(false),
   lastError: text("last_error"),
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });

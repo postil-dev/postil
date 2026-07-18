@@ -6,6 +6,7 @@ import {
   reconcileOperatorAlertDeliveries,
   sweepExpiredSelfServiceTrials,
 } from "@/lib/operator-alerts";
+import { scheduleBillingSettlementJobs } from "@/lib/paddle-billing";
 import { REVIEW_DEADLINE_MS } from "./review";
 
 export const WATCHDOG_ERROR_PREFIX = "watchdog:";
@@ -38,16 +39,26 @@ export async function watchdogPass(
       githubInstallationId: schema.installations.githubInstallationId,
     })
     .from(schema.reviews)
-    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+    .innerJoin(
+      schema.repositories,
+      eq(schema.repositories.id, schema.reviews.repositoryId),
+    )
     .innerJoin(
       schema.installations,
       eq(schema.installations.id, schema.repositories.installationId),
     )
-    .where(and(eq(schema.reviews.status, "running"), lt(schema.reviews.startedAt, cutoff)));
+    .where(
+      and(
+        eq(schema.reviews.status, "running"),
+        lt(schema.reviews.startedAt, cutoff),
+      ),
+    );
 
   let killed = 0;
   for (const review of stuck) {
-    const elapsedMs = review.startedAt ? Math.max(0, now.getTime() - review.startedAt.getTime()) : 0;
+    const elapsedMs = review.startedAt
+      ? Math.max(0, now.getTime() - review.startedAt.getTime())
+      : 0;
     const message = `${WATCHDOG_ERROR_PREFIX} review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline after ${formatElapsed(elapsedMs)} of worker runtime`;
     // `returning()` turns the update into the compare-and-swap that decides
     // the race. A normal completion or superseding push that wins first means
@@ -56,7 +67,12 @@ export async function watchdogPass(
       const rows = await tx
         .update(schema.reviews)
         .set({ status: "failed", errorMessage: message, finishedAt: now })
-        .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")))
+        .where(
+          and(
+            eq(schema.reviews.id, review.id),
+            eq(schema.reviews.status, "running"),
+          ),
+        )
         .returning({ id: schema.reviews.id });
       if (rows.length === 0) return false;
       await tx.insert(schema.jobs).values({
@@ -67,7 +83,10 @@ export async function watchdogPass(
           advisoryCheckRunId: review.advisoryCheckRunId,
           gateCheckRunId: review.gateCheckRunId,
           headSha: review.headSha,
-          advisoryCheckExternalId: checkRunExternalId(review.publicId, "review"),
+          advisoryCheckExternalId: checkRunExternalId(
+            review.publicId,
+            "review",
+          ),
           gateCheckExternalId: checkRunExternalId(review.publicId, "gate"),
           advisoryCheckRunMayExist: review.advisoryCheckRunId == null,
           gateCheckRunMayExist:
@@ -120,6 +139,10 @@ export async function watchdogPass(
     console.log(
       `[trial expiry] transitioned=${expiredTrials.transitioned} alerted=${expiredTrials.alerted}`,
     );
+  }
+  const scheduledSettlements = await scheduleBillingSettlementJobs(db, now);
+  if (scheduledSettlements > 0) {
+    console.log(`[billing settlement] scheduled=${scheduledSettlements}`);
   }
 
   return { killed };

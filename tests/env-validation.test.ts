@@ -26,6 +26,13 @@ const MANAGED_ENV = [
   "POSTIL_RELEASE_SHA",
   "POSTIL_OPERATOR_ALERT_EMAIL",
   "BREVO_API_KEY",
+  "POSTIL_PADDLE_BILLING_ENABLED",
+  "PADDLE_API_KEY",
+  "PADDLE_WEBHOOK_SECRET",
+  "PADDLE_CLIENT_TOKEN",
+  "PADDLE_ZERO_BASE_PRICE_ID",
+  "PADDLE_ACTIVE_AUTHOR_PRICE_ID",
+  "PADDLE_ENVIRONMENT",
 ] as const;
 const originalEnv = new Map(
   MANAGED_ENV.map((name) => [name, process.env[name]]),
@@ -128,7 +135,12 @@ describe("worker startup environment validation", () => {
     expect(
       verifyManagedFleet(root, [
         managedMachine("web", "1"),
-        managedMachine("web", undefined, "started", "registry.fly.io/postil-web:other"),
+        managedMachine(
+          "web",
+          undefined,
+          "started",
+          "registry.fly.io/postil-web:other",
+        ),
         managedMachine("worker", "0"),
       ]).exitCode,
     ).not.toBe(0);
@@ -303,6 +315,57 @@ describe("web startup environment validation", () => {
     );
 
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    expect(() => validateEnv("worker")).not.toThrow();
+  });
+
+  test("keeps Paddle billing inert unless explicitly and completely enabled", () => {
+    configureRequiredWebEnvironment();
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.PADDLE_API_KEY = "pdl_test";
+    expect(() => validateEnv("web")).not.toThrow();
+
+    process.env.POSTIL_PADDLE_BILLING_ENABLED = "yes";
+    expect(() => validateEnv("web")).toThrow(/must be 0 or 1/);
+
+    process.env.POSTIL_PADDLE_BILLING_ENABLED = "1";
+    expect(() => validateEnv("web")).toThrow(/partially configured/);
+
+    process.env.PADDLE_WEBHOOK_SECRET = "pdl_webhook_test";
+    process.env.PADDLE_CLIENT_TOKEN = "test_client_token";
+    process.env.PADDLE_ZERO_BASE_PRICE_ID = `pri_${"a".repeat(26)}`;
+    process.env.PADDLE_ENVIRONMENT = "sandbox";
+    expect(() => validateEnv("web")).not.toThrow();
+  });
+
+  test("rejects sandbox Paddle credentials in the production service", () => {
+    configureRequiredWebEnvironment();
+    mutableEnv.NODE_ENV = "production";
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.POSTIL_PADDLE_BILLING_ENABLED = "1";
+    process.env.PADDLE_API_KEY = "pdl_test";
+    process.env.PADDLE_WEBHOOK_SECRET = "pdl_webhook_test";
+    process.env.PADDLE_CLIENT_TOKEN = "test_client_token";
+    process.env.PADDLE_ZERO_BASE_PRICE_ID = `pri_${"a".repeat(26)}`;
+    process.env.PADDLE_ENVIRONMENT = "sandbox";
+
+    expect(() => validateEnv("web")).toThrow(
+      /production requires PADDLE_ENVIRONMENT=production/,
+    );
+    process.env.PADDLE_ENVIRONMENT = "production";
+    expect(() => validateEnv("web")).not.toThrow();
+  });
+
+  test("requires the settlement price in a Paddle-enabled worker", () => {
+    configureRequiredWorkerEnvironment();
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.POSTIL_PADDLE_BILLING_ENABLED = "1";
+    process.env.PADDLE_API_KEY = "pdl_test";
+    process.env.PADDLE_ENVIRONMENT = "production";
+    expect(() => validateEnv("worker")).toThrow(
+      /PADDLE_ACTIVE_AUTHOR_PRICE_ID/,
+    );
+
+    process.env.PADDLE_ACTIVE_AUTHOR_PRICE_ID = `pri_${"b".repeat(26)}`;
     expect(() => validateEnv("worker")).not.toThrow();
   });
 });

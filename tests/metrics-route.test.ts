@@ -33,7 +33,9 @@ afterEach(() => {
   delete process.env.METRICS_API_KEY;
 });
 
-function queryResponse(text: string): { rows: Array<Record<string, string | null>> } {
+function queryResponse(text: string): {
+  rows: Array<Record<string, string | null>>;
+} {
   const sql = text.replace(/\s+/g, " ");
   if (sql.includes("pg_database_size(current_database())")) {
     return {
@@ -60,6 +62,12 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
           webhook_recovery_last_scan_age_seconds: "42",
           operator_alert_failures_current: "1",
           oldest_operator_alert_pending_age_seconds: "90",
+          billing_settlement_failures_current: "2",
+          billing_settlements_reconciling_current: "3",
+          oldest_billing_settlement_pending_age_seconds: "120",
+          unmatched_billing_provider_events_24h: "4",
+          oldest_billing_checkout_open_age_seconds: "150",
+          billing_checkout_failures_24h: "5",
           watchdog_kills: "5",
         },
       ],
@@ -79,7 +87,10 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
   if (sql.includes("count(*) FILTER (WHERE status = 'completed')")) {
     return { rows: [{ completed: "4", silent: "1" }] };
   }
-  if (sql.includes("FROM webhook_deliveries") && sql.includes("GROUP BY event")) {
+  if (
+    sql.includes("FROM webhook_deliveries") &&
+    sql.includes("GROUP BY event")
+  ) {
     return {
       rows: [
         { event: "issues", count: "2" },
@@ -129,13 +140,18 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
       ],
     };
   }
-  if (sql.includes("AS operational_failure") && sql.includes("AS scorer_fallback")) {
+  if (
+    sql.includes("AS operational_failure") &&
+    sql.includes("AS scorer_fallback")
+  ) {
     expect(sql).toContain("jsonb_array_elements");
     expect(sql).toContain("modelIncidents");
     expect(sql).not.toContain("JOIN review_logs");
     expect(sql).toContain(".postil/provider");
     expect(sql).toContain(".postil/model-output");
-    expect(sql).toContain("Hosted inference allowance is unavailable or fully reserved.");
+    expect(sql).toContain(
+      "Hosted inference allowance is unavailable or fully reserved.",
+    );
     expect(sql).toContain("Hosted review service is temporarily unavailable.");
     expect(sql).toContain("run_after >= now() - interval '30 minutes'");
     return {
@@ -191,7 +207,9 @@ describe("/api/metrics", () => {
     const text = await response.text();
 
     expect(response.status).toBe(200);
-    expect(text).toContain("# TYPE postil_database_up gauge\npostil_database_up 1\n");
+    expect(text).toContain(
+      "# TYPE postil_database_up gauge\npostil_database_up 1\n",
+    );
     expect(getPoolCalls).toBe(1);
   });
 
@@ -203,7 +221,9 @@ describe("/api/metrics", () => {
     expect(response.headers.get("content-type")).toBe(
       "text/plain; version=0.0.4; charset=utf-8",
     );
-    expect(text).toContain("# TYPE postil_database_up gauge\npostil_database_up 1\n");
+    expect(text).toContain(
+      "# TYPE postil_database_up gauge\npostil_database_up 1\n",
+    );
     expect(text).toContain("postil_database_size_bytes 123456");
     expect(text).toContain("postil_sessions_active 2");
     expect(text).toContain("postil_queue_depth 7");
@@ -227,17 +247,41 @@ describe("/api/metrics", () => {
     expect(text).toContain("postil_github_webhook_recovery_recovered_30d 4");
     expect(text).toContain("postil_github_webhook_recovery_unresolved 2");
     expect(text).toContain("postil_github_webhook_recovery_terminal 1");
-    expect(text).toContain("postil_github_webhook_recovery_last_scan_age_seconds 42");
-    expect(text).toContain('postil_webhook_deliveries_24h_by_event{event="pull_request"} 7');
-    expect(text).toContain('postil_jobs_current{kind="review",status="queued"} 7');
-    expect(text).toContain('postil_jobs_current{kind="respond",status="failed"} 1');
+    expect(text).toContain(
+      "postil_github_webhook_recovery_last_scan_age_seconds 42",
+    );
+    expect(text).toContain(
+      'postil_webhook_deliveries_24h_by_event{event="pull_request"} 7',
+    );
+    expect(text).toContain(
+      'postil_jobs_current{kind="review",status="queued"} 7',
+    );
+    expect(text).toContain(
+      'postil_jobs_current{kind="respond",status="failed"} 1',
+    );
     expect(text).toContain(
       'postil_operator_alerts_current{event="trial_started",status="delivered"} 2',
     );
     expect(text).toContain("postil_operator_alert_failures_current 1");
-    expect(text).toContain("postil_oldest_operator_alert_pending_age_seconds 90");
-    expect(text).toContain('postil_oldest_job_age_seconds{status="queued"} 300');
-    expect(text).toContain('postil_oldest_job_age_seconds{status="running"} 45');
+    expect(text).toContain(
+      "postil_oldest_operator_alert_pending_age_seconds 90",
+    );
+    expect(text).toContain("postil_billing_settlement_failures_current 2");
+    expect(text).toContain("postil_billing_settlements_reconciling_current 3");
+    expect(text).toContain(
+      "postil_oldest_billing_settlement_pending_age_seconds 120",
+    );
+    expect(text).toContain("postil_unmatched_billing_provider_events_24h 4");
+    expect(text).toContain(
+      "postil_oldest_billing_checkout_open_age_seconds 150",
+    );
+    expect(text).toContain("postil_billing_checkout_failures_24h 5");
+    expect(text).toContain(
+      'postil_oldest_job_age_seconds{status="queued"} 300',
+    );
+    expect(text).toContain(
+      'postil_oldest_job_age_seconds{status="running"} 45',
+    );
     expect(text).toContain("postil_oldest_running_review_age_seconds 720");
     expect(text).toContain(
       'postil_usage_tokens_total{model="qwen/\\"coder\\"",type="prompt"} 1000',
@@ -248,11 +292,21 @@ describe("/api/metrics", () => {
     expect(text).toContain(
       'postil_review_incidents_30m{category="operational_failure"} 1',
     );
-    expect(text).toContain('postil_review_incidents_30m{category="scorer_failure"} 2');
-    expect(text).toContain('postil_review_incidents_30m{category="scorer_fallback"} 3');
-    expect(text).toContain('postil_review_incidents_30m{category="model_fallback"} 4');
-    expect(text).toContain('postil_review_incidents_30m{category="invalid_output"} 5');
-    expect(text).toContain('postil_review_incidents_30m{category="failed_job"} 6');
+    expect(text).toContain(
+      'postil_review_incidents_30m{category="scorer_failure"} 2',
+    );
+    expect(text).toContain(
+      'postil_review_incidents_30m{category="scorer_fallback"} 3',
+    );
+    expect(text).toContain(
+      'postil_review_incidents_30m{category="model_fallback"} 4',
+    );
+    expect(text).toContain(
+      'postil_review_incidents_30m{category="invalid_output"} 5',
+    );
+    expect(text).toContain(
+      'postil_review_incidents_30m{category="failed_job"} 6',
+    );
     expect(getPoolCalls).toBe(1);
     expect(queryCalls).toBe(11);
   });
@@ -264,7 +318,9 @@ describe("/api/metrics", () => {
     const text = await response.text();
 
     expect(response.status).toBe(200);
-    expect(text).toContain("# TYPE postil_database_up gauge\npostil_database_up 0\n");
+    expect(text).toContain(
+      "# TYPE postil_database_up gauge\npostil_database_up 0\n",
+    );
     expect(text).not.toContain("postil_database_size_bytes");
     expect(text).not.toContain("postil_queue_depth");
     expect(getPoolCalls).toBe(1);

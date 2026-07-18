@@ -127,7 +127,8 @@ mock.module("@/lib/org-access", () => ({
   }),
 }));
 
-const { default: OrgBillingPage } = await import("@/app/orgs/[slug]/billing/page");
+const { default: OrgBillingPage } =
+  await import("@/app/orgs/[slug]/billing/page");
 
 beforeEach(() => {
   role = "member";
@@ -142,15 +143,21 @@ beforeEach(() => {
 
 describe("organization billing page auth", () => {
   test("denies non-admin members before loading billing data", async () => {
-    await expect(OrgBillingPage({ params: Promise.resolve({ slug: "acme" }), searchParams: Promise.resolve({}) })).rejects.toThrow(
-      "this page requires an organization admin",
-    );
+    await expect(
+      OrgBillingPage({
+        params: Promise.resolve({ slug: "acme" }),
+        searchParams: Promise.resolve({}),
+      }),
+    ).rejects.toThrow("this page requires an organization admin");
   });
 
   test("renders public-only billing state and current coverage", async () => {
     role = "admin";
 
-    const page = await OrgBillingPage({ params: Promise.resolve({ slug: "acme" }), searchParams: Promise.resolve({}) });
+    const page = await OrgBillingPage({
+      params: Promise.resolve({ slug: "acme" }),
+      searchParams: Promise.resolve({}),
+    });
     const markup = renderToStaticMarkup(page);
 
     expect(markup).toContain("Repositories are not billing units");
@@ -217,7 +224,9 @@ describe("organization billing page auth", () => {
     expect(markup).toContain("Private access paused");
     expect(markup).toContain('data-trial-state="ended"');
     expect(markup).toContain('dateTime="2026-07-17T12:00:00.000Z"');
-    expect(markup).toContain("Private reviews are paused until a paid plan is active");
+    expect(markup).toContain(
+      "Private reviews are paused until a paid plan is active",
+    );
   });
 });
 
@@ -256,29 +265,39 @@ function fakeDb(): any {
           ? "provider"
           : "activeEmail" in selection
             ? "contact"
-          : "count" in selection
-          ? "activeAuthors"
-          : "repositoryFullName" in selection
-          ? "events"
-          : "amountCents" in selection
-            ? "credits"
-            : "promptTokens" in selection
-              ? "usage"
-              : "repositories";
+            : "status" in selection && "currentPeriodEndsAt" in selection
+              ? "subscription"
+              : "count" in selection
+                ? "activeAuthors"
+                : "repositoryFullName" in selection
+                  ? "events"
+                  : "amountCents" in selection
+                    ? "credits"
+                    : "promptTokens" in selection
+                      ? "usage"
+                      : "repositories";
       const rows =
         kind === "activeAuthors"
           ? [{ count: 3 }]
           : kind === "events"
-          ? eventRows
-          : kind === "credits"
-            ? creditGrantRows
-            : kind === "usage"
-              ? usageRows
-              : kind === "provider"
-                ? [{ hasKey: false }]
-                : kind === "contact"
-                  ? [{ activeEmail: null, pendingEmail: null, verifiedAt: null }]
-              : currentRepoRows;
+            ? eventRows
+            : kind === "credits"
+              ? creditGrantRows
+              : kind === "usage"
+                ? usageRows
+                : kind === "provider"
+                  ? [{ hasKey: false }]
+                  : kind === "contact"
+                    ? [
+                        {
+                          activeEmail: null,
+                          pendingEmail: null,
+                          verifiedAt: null,
+                        },
+                      ]
+                    : kind === "subscription"
+                      ? []
+                      : currentRepoRows;
       const chain = {
         from() {
           return chain;

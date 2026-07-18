@@ -29,6 +29,8 @@
     "@opentelemetry/exporter-logs-otlp-http": "^0.220.0",
     "@opentelemetry/resources": "^2.9.0",
     "@opentelemetry/sdk-logs": "^0.220.0",
+    "@paddle/paddle-js": "^1.6.4",
+    "@paddle/paddle-node-sdk": "^3.8.0",
     "drizzle-orm": "^0.45.2",
     "next": "15.5.19",
     "pg": "^8.21.0",
