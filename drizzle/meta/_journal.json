@@ -225,6 +225,13 @@
       "when": 1784398738632,
       "tag": "0031_operator_alert_delivery_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1784409902747,
+      "tag": "0032_self_service_billing",
+      "breakpoints": true
     }
   ]
 }

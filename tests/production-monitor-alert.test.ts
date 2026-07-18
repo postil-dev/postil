@@ -19,14 +19,28 @@ const baseEnvironment: ProductionMonitorAlertEnvironment = {
 
 describe("production monitor email", () => {
   test("runs only for monitor failure or an explicit test dispatch", () => {
-    const workflow = readFileSync(".github/workflows/production-monitor.yml", "utf8");
+    const workflow = readFileSync(
+      ".github/workflows/production-monitor.yml",
+      "utf8",
+    );
     expect(workflow).toContain(
       "needs.smoke.result == 'failure' || inputs.test_email == true",
     );
     expect(workflow).toContain("vars.POSTIL_OPERATOR_ALERT_EMAIL");
     expect(workflow).toContain("secret-path: /postil");
     expect(workflow).toContain("postil_operator_alert_failures_current");
-    expect(workflow).toContain("postil_oldest_operator_alert_pending_age_seconds");
+    expect(workflow).toContain(
+      "postil_oldest_operator_alert_pending_age_seconds",
+    );
+    expect(workflow).toContain("postil_billing_settlement_failures_current");
+    expect(workflow).toContain(
+      "postil_oldest_billing_settlement_pending_age_seconds",
+    );
+    expect(workflow).toContain("postil_unmatched_billing_provider_events_24h");
+    expect(workflow).toContain(
+      "postil_oldest_billing_checkout_open_age_seconds",
+    );
+    expect(workflow).toContain("postil_billing_checkout_failures_24h");
   });
 
   test("sends a bounded idempotent failure alert without production output", async () => {
@@ -46,7 +60,9 @@ describe("production monitor email", () => {
     expect(body.textContent).toContain(
       "Run: https://github.com/postil-dev/postil/actions/runs/29654572437",
     );
-    expect(body.textContent).not.toMatch(/metrics|repository content|secret|token/i);
+    expect(body.textContent).not.toMatch(
+      /metrics|repository content|secret|token/i,
+    );
     expect(body.headers).toEqual({
       "Idempotency-Key": "production-monitor-failure-29654572437-1",
     });
@@ -57,7 +73,8 @@ describe("production monitor email", () => {
     await sendProductionMonitorAlert(
       { ...baseEnvironment, POSTIL_MONITOR_ALERT_KIND: "test" },
       async (_input, init) => {
-        subject = (JSON.parse(String(init?.body)) as { subject: string }).subject;
+        subject = (JSON.parse(String(init?.body)) as { subject: string })
+          .subject;
         return Response.json({ messageId: "monitor-message-2" });
       },
     );

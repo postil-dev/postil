@@ -19,6 +19,7 @@ let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let webhookCommentRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
+let billingSettlementRun: (() => Promise<void>) | undefined;
 let operatorAlertRun: (() => Promise<void>) | undefined;
 let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
@@ -55,9 +56,19 @@ mock.module("@/lib/operator-alerts", () => ({
   recordOperatorAlertFailure: async () => undefined,
 }));
 
+mock.module("@/lib/paddle-billing", () => ({
+  runBillingSettlement: async () => {
+    await billingSettlementRun?.();
+  },
+}));
+
 mock.module("@/lib/queue", () => ({
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
-  claimJob: async (_pool: unknown, _workerId: string, allowedKinds: readonly string[]) => {
+  claimJob: async (
+    _pool: unknown,
+    _workerId: string,
+    allowedKinds: readonly string[],
+  ) => {
     claimCalls += 1;
     claimCapabilities.push([...allowedKinds]);
     return jobs.shift();
@@ -74,7 +85,11 @@ mock.module("@/lib/queue", () => ({
     failed.push({ id: job.id, error });
     return "failed";
   },
-  retryJobIndefinitely: async (_pool: unknown, job: ClaimedJob, error: string) => {
+  retryJobIndefinitely: async (
+    _pool: unknown,
+    job: ClaimedJob,
+    error: string,
+  ) => {
     retriedIndefinitely.push({ id: job.id, error });
     return "retried";
   },
@@ -150,7 +165,8 @@ mock.module("@/worker/gate-state-sync", () => ({
   },
 }));
 
-const { drainQueueOnce, runClaimedJob, triggerQueueDrain } = await import("@/worker/runner");
+const { drainQueueOnce, runClaimedJob, triggerQueueDrain } =
+  await import("@/worker/runner");
 
 function reviewJob(id: number): ClaimedJob {
   return {
@@ -186,6 +202,7 @@ beforeEach(() => {
   respondFailureCommentRun = async () => undefined;
   webhookCommentRun = async () => undefined;
   billingContactVerificationRun = async () => undefined;
+  billingSettlementRun = async () => undefined;
   operatorAlertRun = async () => undefined;
   gateStateSyncRun = async () => undefined;
   cleanupRun = async () => undefined;
@@ -225,7 +242,9 @@ describe("drainQueueOnce", () => {
     const controller = new AbortController();
     controller.abort();
     reviewRun = async () => {
-      throw new MockWorkerShutdownError("review interrupted by worker shutdown");
+      throw new MockWorkerShutdownError(
+        "review interrupted by worker shutdown",
+      );
     };
 
     await runClaimedJob(reviewJob(7), "worker 0", "worker", controller.signal);
@@ -262,8 +281,12 @@ describe("drainQueueOnce", () => {
       worker.indexOf("function validatePostilBin"),
     );
 
-    expect(worker).toContain('readPositiveIntEnv("WORKER_SHUTDOWN_DRAIN_MS", 10_000)');
-    expect(worker).toContain('readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000)');
+    expect(worker).toContain(
+      'readPositiveIntEnv("WORKER_SHUTDOWN_DRAIN_MS", 10_000)',
+    );
+    expect(worker).toContain(
+      'readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000)',
+    );
     expect(worker).toContain("activeControllers.set(job.id, controller)");
     expect(worker).toContain("requeueableReviewIds.add(job.id)");
     expect(worker).toContain("requeueableReviewIds.delete(job.id)");
@@ -271,7 +294,9 @@ describe("drainQueueOnce", () => {
     expect(worker).toContain("[job.id]");
     expect(shutdown).toContain("controller.abort()");
     expect(shutdown).toContain("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)");
-    expect(shutdown).toContain("const activeReviewJobIds = [...activeControllers.keys()]");
+    expect(shutdown).toContain(
+      "const activeReviewJobIds = [...activeControllers.keys()]",
+    );
     expect(shutdown).toContain("requeueableReviewIds.has(jobId)");
     expect(shutdown).toContain("await requeueJobsOwnedBy(");
     expect(shutdown).toContain("`${workerId}#`");
@@ -279,9 +304,9 @@ describe("drainQueueOnce", () => {
     expect(shutdown.indexOf("controller.abort()")).toBeLessThan(
       shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)"),
     );
-    expect(shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)")).toBeLessThan(
-      shutdown.indexOf("await requeueJobsOwnedBy("),
-    );
+    expect(
+      shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)"),
+    ).toBeLessThan(shutdown.indexOf("await requeueJobsOwnedBy("));
     expect(webhookRedeliveryLoop).toContain(
       "if (!shuttingDown) {\n      await sleepUntilWebhookRedelivery",
     );
@@ -313,18 +338,21 @@ describe("drainQueueOnce", () => {
 
   test("claims only job kinds implemented by this web release", async () => {
     expect(await drainQueueOnce("capability-drain", { maxJobs: 1 })).toBe(0);
-    expect(claimCapabilities).toEqual([[
-      "webhook-dispatch",
-      "review",
-      "respond",
-      "respond-delivery",
-      "billing-contact-verification",
-      "operator-alert",
-      "gate-state-sync",
-      "check-run-cleanup",
-      "respond-failure-comment",
-      "webhook-comment",
-    ]]);
+    expect(claimCapabilities).toEqual([
+      [
+        "webhook-dispatch",
+        "review",
+        "respond",
+        "respond-delivery",
+        "billing-contact-verification",
+        "billing-settlement",
+        "operator-alert",
+        "gate-state-sync",
+        "check-run-cleanup",
+        "respond-failure-comment",
+        "webhook-comment",
+      ],
+    ]);
   });
 
   test("dispatches fixed webhook comments through a durable job", async () => {
@@ -374,7 +402,9 @@ describe("drainQueueOnce", () => {
 
     await runClaimedJob(job, "worker 0", "worker");
 
-    expect(failed).toEqual([{ id: 10, error: "webhook delivery delivery-10 is missing" }]);
+    expect(failed).toEqual([
+      { id: 10, error: "webhook delivery delivery-10 is missing" },
+    ]);
     expect(retriedIndefinitely).toEqual([]);
     expect(operationalFailures).toEqual(["job_permanently_failed"]);
   });
@@ -412,9 +442,28 @@ describe("drainQueueOnce", () => {
   test("dispatches durable operator alert jobs", async () => {
     const job = reviewJob(1);
     job.kind = "operator-alert";
-    job.payload = { event: "trial_started", eventKey: "trial-started:7", orgId: 7 };
+    job.payload = {
+      event: "trial_started",
+      eventKey: "trial-started:7",
+      orgId: 7,
+    };
     let called = false;
     operatorAlertRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("dispatches durable billing settlement jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "billing-settlement";
+    job.payload = { settlementId: "00000000-0000-4000-8000-000000000001" };
+    let called = false;
+    billingSettlementRun = async () => {
       called = true;
     };
     jobs.push(job);
@@ -507,7 +556,10 @@ describe("drainQueueOnce", () => {
   test("processes no more than maxJobs", async () => {
     jobs.push(reviewJob(1), reviewJob(2));
 
-    const drained = await drainQueueOnce("test-drain", { maxJobs: 1, deadlineMs: 60_000 });
+    const drained = await drainQueueOnce("test-drain", {
+      maxJobs: 1,
+      deadlineMs: 60_000,
+    });
 
     expect(drained).toBe(1);
     expect(completed).toEqual([1]);
@@ -552,7 +604,10 @@ describe("drainQueueOnce", () => {
       now = 2_000;
     };
     try {
-      const drained = await drainQueueOnce("deadline-drain", { maxJobs: 2, deadlineMs: 1_000 });
+      const drained = await drainQueueOnce("deadline-drain", {
+        maxJobs: 2,
+        deadlineMs: 1_000,
+      });
       expect(drained).toBe(1);
       expect(completed).toEqual([1]);
       expect(jobs.map((job) => job.id)).toEqual([2]);

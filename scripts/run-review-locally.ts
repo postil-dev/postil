@@ -24,6 +24,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 
 import { Client } from "pg";
 
+import { seal } from "@/lib/crypto/seal";
 import type { Envelope, Finding } from "@/lib/envelope";
 
 const root = join(import.meta.dir, "..");
@@ -83,6 +84,13 @@ interface LocalGitHubServer {
   origin: string;
   events: LocalGitHubEvent[];
   stop(): void;
+}
+
+interface LocalPullFile {
+  filename: string;
+  status: "added" | "removed" | "modified" | "renamed";
+  previous_filename?: string;
+  changes: number;
 }
 
 interface DatabaseHandle {
@@ -181,6 +189,10 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
       : options.target.kind === "base"
         ? { kind: "tree", ref: selectedHead }
         : { kind: "working-tree" };
+  const baseRepositorySource: RepositorySource =
+    options.target.kind === "base"
+      ? { kind: "tree", ref: options.target.base }
+      : repositorySource;
 
   const database = await createDisposableDatabase(options.repoFullName, options.keepDatabase);
   const github = createLocalGitHubServer({
@@ -192,12 +204,16 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     baseSha,
     pullRequestTitle,
     repositorySource,
+    baseRepositorySource,
   });
 
   const cacheDir = await mkdtemp(join(tmpdir(), "postil-local-review-cache-"));
   const oldEnv = { ...process.env };
   let closeDatabasePool: (() => Promise<void>) | undefined;
   try {
+    const modelApiKey = process.env.MODEL_API_KEY?.trim();
+    if (!modelApiKey) throw new Error("local review model credential is unavailable");
+    const sealingKey = randomBytes(32);
     const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
       .privateKey.export({ type: "pkcs1", format: "pem" })
       .toString();
@@ -207,6 +223,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     process.env.GITHUB_API_URL = github.origin;
     process.env.GITHUB_APP_ID = "1";
     process.env.GITHUB_APP_PRIVATE_KEY = privateKey;
+    process.env.POSTIL_SEALING_KEY = sealingKey.toString("hex");
     process.env.POSTIL_QUEUE_DRAIN_MAX_JOBS = "1";
     process.env.POSTIL_QUEUE_DRAIN_DEADLINE_MS = "720000";
 
@@ -218,6 +235,26 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     closeDatabasePool = closeDb;
 
     const pool = getPool();
+    await pool.query(
+      `INSERT INTO org_settings (
+         org_id,
+         api_base,
+         api_key_ciphertext,
+         api_format,
+         model,
+         model_cascade
+       )
+       SELECT id, $1, $2, $3, $4, $5
+       FROM organizations
+       WHERE slug = 'local'`,
+      [
+        process.env.POSTIL_API_BASE,
+        seal(modelApiKey, sealingKey),
+        process.env.POSTIL_API_FORMAT,
+        process.env.REVIEW_MODEL,
+        process.env.REVIEW_MODEL_CASCADE,
+      ],
+    );
     const payload = {
       installationId: DEFAULT_INSTALLATION_ID,
       repoFullName: options.repoFullName,
@@ -358,8 +395,10 @@ function createLocalGitHubServer(input: {
   baseSha: string;
   pullRequestTitle: string;
   repositorySource: RepositorySource;
+  baseRepositorySource: RepositorySource;
 }): LocalGitHubServer {
   const events: LocalGitHubEvent[] = [];
+  const pullFiles = pullFilesFromDiff(input.diffText);
   let nextCheckRunId = 1000;
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -393,20 +432,37 @@ function createLocalGitHubServer(input: {
         return json({
           title: input.pullRequestTitle,
           body: "",
+          state: "open",
+          merged: false,
           head: { sha: input.headSha },
           base: { sha: input.baseSha },
+          changed_files: pullFiles.length,
         });
       }
 
       if (request.method === "GET" && suffix.startsWith("compare/")) {
+        const accept = request.headers.get("accept") ?? "";
+        if (!accept.includes("diff")) {
+          return json({ merge_base_commit: { sha: input.baseSha } });
+        }
         return new Response(input.diffText, {
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
       }
 
+      if (
+        request.method === "GET" &&
+        suffix.startsWith(`pulls/${input.prNumber}/files`)
+      ) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return json(page === 1 ? pullFiles : []);
+      }
+
       if (request.method === "GET" && suffix.startsWith("contents/")) {
         const relative = decodeURIComponent(suffix.slice("contents/".length));
-        return serveRepoFile(input.repoPath, input.repositorySource, relative);
+        const ref = url.searchParams.get("ref");
+        const source = ref === input.baseSha ? input.baseRepositorySource : input.repositorySource;
+        return serveRepoFile(input.repoPath, source, relative);
       }
 
       if (request.method === "POST" && suffix === "check-runs") {
@@ -464,6 +520,47 @@ function createLocalGitHubServer(input: {
     events,
     stop: () => server.stop(true),
   };
+}
+
+export function pullFilesFromDiff(diffText: string): LocalPullFile[] {
+  const sections = diffText.split(/^diff --git /m).slice(1);
+  return sections.flatMap((section) => {
+    const lines = section.split("\n");
+    const oldMarker = lines.find((line) => line.startsWith("--- "))?.slice(4);
+    const newMarker = lines.find((line) => line.startsWith("+++ "))?.slice(4);
+    const renamedFrom = lines.find((line) => line.startsWith("rename from "))?.slice(12);
+    const renamedTo = lines.find((line) => line.startsWith("rename to "))?.slice(10);
+    const oldPath = renamedFrom ?? repositoryPathFromMarker(oldMarker);
+    const newPath = renamedTo ?? repositoryPathFromMarker(newMarker);
+    const filename = newPath ?? oldPath;
+    if (!filename) return [];
+    const status =
+      oldMarker === "/dev/null"
+        ? "added"
+        : newMarker === "/dev/null"
+          ? "removed"
+          : renamedFrom && renamedTo
+            ? "renamed"
+            : "modified";
+    const changes = lines.filter(
+      (line) =>
+        (line.startsWith("+") && !line.startsWith("+++")) ||
+        (line.startsWith("-") && !line.startsWith("---")),
+    ).length;
+    return [
+      {
+        filename,
+        status,
+        ...(status === "renamed" && oldPath ? { previous_filename: oldPath } : {}),
+        changes,
+      },
+    ];
+  });
+}
+
+function repositoryPathFromMarker(marker: string | undefined): string | undefined {
+  if (!marker || marker === "/dev/null") return undefined;
+  return marker.startsWith("a/") || marker.startsWith("b/") ? marker.slice(2) : marker;
 }
 
 async function createDisposableDatabase(
@@ -858,11 +955,15 @@ async function ensureLocalModelCredential(): Promise<void> {
   delete process.env.POSTIL_ALLOW_CONFIG_API_BASE;
   process.env.POSTIL_API_BASE = "https://openrouter.ai/api/v1";
   process.env.POSTIL_API_FORMAT = "openai-compatible";
-  process.env.POSTIL_HOSTED_MODE = "1";
-  process.env.REVIEW_MODEL = "openai/gpt-5-mini";
+  // This harness uses the maintainer's own OpenRouter credential and an
+  // explicit review model. Hosted mode accepts only a promoted qualification
+  // profile and therefore must remain disabled for this local BYOK path.
+  process.env.POSTIL_HOSTED_MODE = "0";
+  process.env.REVIEW_MODEL =
+    process.env.POSTIL_LOCAL_REVIEW_MODEL?.trim() || "openai/gpt-5-mini";
   // The CLI deduplicates the model chain. Repeating the primary model yields
   // one attempt, while an empty cascade variable would retain built-in defaults.
-  process.env.REVIEW_MODEL_CASCADE = "openai/gpt-5-mini";
+  process.env.REVIEW_MODEL_CASCADE = process.env.REVIEW_MODEL;
   process.env.POSTIL_DISABLE_SCORER = "1";
   delete process.env.REVIEW_SCORER_MODEL;
 }
@@ -925,6 +1026,9 @@ async function ensureTrustedPostilExecutable(): Promise<void> {
       `local review requires Postil v0.6.0 or newer; ${executable} reported ${JSON.stringify((stdout || stderr).trim())}`,
     );
   }
+  const supportsBoundedReview =
+    Number(versionMatch[1]) > 0 || Number(versionMatch[2]) >= 7;
+  process.env.POSTIL_LOCAL_REVIEW_BOUNDED = supportsBoundedReview ? "1" : "0";
   process.env.POSTIL_BIN = executable;
   process.env.PATH = trustedPath;
 }

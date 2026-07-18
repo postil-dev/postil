@@ -943,6 +943,9 @@ export async function runReviewJob(
       "--gate-check-run-id",
       String(gateCheckRunId),
     ];
+    if (optionalEnv("POSTIL_LOCAL_REVIEW_BOUNDED") === "1") {
+      args.push("--bounded");
+    }
     if (baseline?.envelope) {
       await mkdir(join(CACHE_DIR, "baselines"), { recursive: true });
       baselinePath = join(CACHE_DIR, "baselines", `review-${reviewId}.json`);

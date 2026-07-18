@@ -3,7 +3,45 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { pullFilesFromDiff } from "../scripts/run-review-locally";
+
 import "./quiet-console";
+
+test("derives the immutable GitHub file manifest from a local diff", () => {
+  expect(
+    pullFilesFromDiff(`diff --git a/old.ts b/new.ts
+similarity index 90%
+rename from old.ts
+rename to new.ts
+--- a/old.ts
++++ b/new.ts
+@@ -1 +1 @@
+-old
++new
+diff --git a/added.ts b/added.ts
+new file mode 100644
+--- /dev/null
++++ b/added.ts
+@@ -0,0 +1 @@
++added
+diff --git a/removed.ts b/removed.ts
+deleted file mode 100644
+--- a/removed.ts
++++ /dev/null
+@@ -1 +0,0 @@
+-removed
+`),
+  ).toEqual([
+    {
+      filename: "new.ts",
+      status: "renamed",
+      previous_filename: "old.ts",
+      changes: 2,
+    },
+    { filename: "added.ts", status: "added", changes: 1 },
+    { filename: "removed.ts", status: "removed", changes: 1 },
+  ]);
+});
 
 const canRunHarness =
   Boolean(process.env.POSTIL_TEST_DATABASE_URL) || (await commandSucceeds(["podman", "--version"]));
@@ -63,6 +101,7 @@ console.log("fixture-key");
         "1000",
         "--gate-check-run-id",
         "1001",
+        "--bounded",
         "--output",
         "json",
       ],
@@ -76,7 +115,7 @@ console.log("fixture-key");
       cascade: "openai/gpt-5-mini",
       scorer: undefined,
       scorerDisabled: "1",
-      hostedMode: "1",
+      hostedMode: "0",
       endpointAuthPresent: false,
       configApiBaseAllowed: false,
     });
@@ -429,7 +468,7 @@ function fakePostilSource(): string {
   return `#!/usr/bin/env bun
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
-  console.log("postil 0.6.0");
+  console.log("postil 0.7.0");
   process.exit(0);
 }
 if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {

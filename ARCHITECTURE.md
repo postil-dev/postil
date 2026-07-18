@@ -149,13 +149,29 @@ complete post-trial entitlement state idempotently through
 `scripts/set-org-entitlement.ts`; the billing page reports the stored state and
 lets organization administrators set the hosted overage hard cap. BYOK billing
 copy directs administrators to provider-side budgets because Postil cannot
-enforce external charges. The page does not represent a payment checkout. Before
+enforce external charges. Before
 a private review row can run, the worker resolves the pull request's author ID,
 login, head, and base from GitHub. A rollout-activated database trigger rejects
 anonymous active reviews and makes the recorded author identity immutable.
 Historical rows remain unknown rather than receiving a guessed identity.
 Billing counts distinct GitHub author IDs on private pull requests within the
 entitlement period; bot and service identities count by the same ID rule.
+
+Self-service BYOK billing uses Paddle as merchant of record and remains inert
+unless `POSTIL_PADDLE_BILLING_ENABLED=1` and the complete process-specific
+configuration passes startup validation. Organization admins create one
+server-side transaction and open Paddle's overlay checkout with a client token;
+the browser never receives an API key. Checkout attempts carry a durable ID in
+provider custom data. An uncertain create call is reconciled against provider
+transactions before another attempt is admitted. Verified webhook events
+project the provider subscription into local entitlement state with event-ID deduplication,
+out-of-order rejection, and a content-free receipt. A closed provider period
+stores one immutable distinct-author count. A settlement job submits one catalog
+charge after placing the settlement ID in subscription custom data, which Paddle
+copies to the resulting transaction. Reconciliation requires that exact ID. An
+ambiguous provider outcome enters reconciliation and never retries the charge. Failed or
+stale settlements, unmatched provider events, and subscription lifecycle changes
+feed operator email and production metrics.
 
 Each review snapshots a closed trigger class and its signed-webhook context at
 creation: automatic pull-request event, explicit review command, GitHub check
