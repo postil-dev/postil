@@ -959,10 +959,11 @@ async function ensureLocalModelCredential(): Promise<void> {
   // explicit review model. Hosted mode accepts only a promoted qualification
   // profile and therefore must remain disabled for this local BYOK path.
   process.env.POSTIL_HOSTED_MODE = "0";
-  process.env.REVIEW_MODEL = "openai/gpt-5-mini";
+  process.env.REVIEW_MODEL =
+    process.env.POSTIL_LOCAL_REVIEW_MODEL?.trim() || "openai/gpt-5-mini";
   // The CLI deduplicates the model chain. Repeating the primary model yields
   // one attempt, while an empty cascade variable would retain built-in defaults.
-  process.env.REVIEW_MODEL_CASCADE = "openai/gpt-5-mini";
+  process.env.REVIEW_MODEL_CASCADE = process.env.REVIEW_MODEL;
   process.env.POSTIL_DISABLE_SCORER = "1";
   delete process.env.REVIEW_SCORER_MODEL;
 }
