@@ -282,23 +282,24 @@ export function triggerQueueDrain(reason: string): void {
 
 async function runCoalescedQueueDrains(label: string): Promise<void> {
   let pass = 0;
-  while (true) {
-    backgroundDrainRequested = false;
-    pass += 1;
-    const passLabel = `${label}:${pass}`;
-    try {
-      const count = await drainQueueOnce(passLabel);
-      if (count > 0) console.log(`[${passLabel}] drained ${count} job(s)`);
-    } catch (err) {
-      console.error(`[${passLabel}] drain failed: ${redactSecrets(err)}`);
+  try {
+    while (true) {
+      backgroundDrainRequested = false;
+      pass += 1;
+      const passLabel = `${label}:${pass}`;
+      try {
+        const count = await drainQueueOnce(passLabel);
+        if (count > 0) console.log(`[${passLabel}] drained ${count} job(s)`);
+      } catch (err) {
+        console.error(`[${passLabel}] drain failed: ${redactSecrets(err)}`);
+      }
+      if (backgroundDrainRequested) continue;
+      return;
     }
-    if (backgroundDrainRequested) continue;
-
-    // No await or promise callback may separate the final flag check from
-    // releasing the single-flight owner. A trigger therefore either requests
-    // another pass above or observes no active drain and starts a new one.
+  } finally {
+    const followUpRequested = backgroundDrainRequested;
     backgroundDrain = undefined;
-    return;
+    if (followUpRequested) triggerQueueDrain(`${label}:settlement`);
   }
 }
 
