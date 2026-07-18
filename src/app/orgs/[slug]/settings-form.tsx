@@ -9,6 +9,8 @@ interface SettingsFormProps {
   slug: string;
   billedMode: "hosted" | "byok" | null;
   managedReviewsPaused: boolean;
+  hostedInferenceAvailable: boolean;
+  trialCanSwitchProvider: boolean;
   settings:
     | {
         apiBase: string | null;
@@ -43,6 +45,8 @@ export function SettingsForm({
   settings,
   billedMode,
   managedReviewsPaused,
+  hostedInferenceAvailable,
+  trialCanSwitchProvider,
   sharedSnapshot,
   sharedSourceFullName,
   sharedSourceInstalled,
@@ -80,19 +84,28 @@ export function SettingsForm({
                 name="providerMode"
                 value="hosted"
                 checked={!bringOwnKey}
-                disabled={billedMode !== "hosted"}
+                disabled={
+                  !hostedInferenceAvailable ||
+                  (billedMode !== "hosted" && !trialCanSwitchProvider)
+                }
                 onChange={() => setBringOwnKey(false)}
                 className="h-4 w-4 accent-[#2F6F4E]"
               />
               <span>
                 <span className="block font-medium">
                   Hosted by Postil
-                  {managedReviewsPaused || billedMode !== "hosted" ? " (paused)" : ""}
+                  {!hostedInferenceAvailable ||
+                  managedReviewsPaused ||
+                  (billedMode !== "hosted" && !trialCanSwitchProvider)
+                    ? " (paused)"
+                    : ""}
                 </span>
                 <span className="text-xs text-charcoal/70">
-                  {managedReviewsPaused
+                  {!hostedInferenceAvailable
+                    ? "Hosted inference is paused."
+                    : managedReviewsPaused
                     ? "Managed reviews are paused."
-                    : billedMode === "hosted"
+                    : billedMode === "hosted" || trialCanSwitchProvider
                     ? "Postil chooses and operates the models."
                     : "New hosted inference setup is unavailable."}
                 </span>
@@ -104,7 +117,7 @@ export function SettingsForm({
                 name="providerMode"
                 value="byok"
                 checked={bringOwnKey}
-                disabled={billedMode === "hosted"}
+                disabled={billedMode === "hosted" && !trialCanSwitchProvider}
                 onChange={() => setBringOwnKey(true)}
                 className="h-4 w-4 accent-[#2F6F4E]"
               />
@@ -115,19 +128,21 @@ export function SettingsForm({
             </label>
           </div>
           <p className="mt-3 text-xs text-charcoal/60">
-            {billedMode ? (
+            {trialCanSwitchProvider ? (
+              <>
+                {hostedInferenceAvailable
+                  ? "Choose hosted inference or your provider during the free trial."
+                  : "Use your provider during the free trial. Hosted inference is paused."}{" "}
+                <Link href={`/orgs/${slug}/billing`} className="text-rust hover:underline">
+                  View trial.
+                </Link>
+              </>
+            ) : billedMode ? (
               <>
                 Your private-repository plan uses {billedMode === "byok" ? "BYOK" : "hosted inference"}.{" "}
                 <Link href={`/orgs/${slug}/billing`} className="text-rust hover:underline">
                   View billing.
                 </Link>
-                {" "}
-                <a
-                  href={`mailto:hello@postil.dev?subject=${encodeURIComponent(`Change ${slug} inference plan`)}`}
-                  className="text-rust hover:underline"
-                >
-                  Contact us to change plans.
-                </a>
               </>
             ) : (
               <>

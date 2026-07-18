@@ -20,16 +20,17 @@ export default function QuickstartPage() {
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">Quickstart</h1>
       <p className="mt-4 text-lg">
-        Start with the GitHub App and your model provider. It reviews new
-        non-draft pull requests after provider setup. Add the CLI and GitHub
+        Start with the GitHub App, your model provider, and a 30-day free trial. It
+        reviews new non-draft pull requests after setup. Add the CLI and GitHub
         Action for local reviews and merge blocking.
       </p>
 
       <h2>1. GitHub App with BYOK</h2>
       <p>
-        Install the App, select all repositories or a chosen set, then add your
-        provider credentials in organization settings. Postil reviews new
-        non-draft pull requests in those repositories after setup.
+        Install the App, select all repositories or a chosen set, then configure
+        your provider API, model, and key in organization settings. Your free
+        30-day trial starts automatically. Postil reviews new non-draft pull requests
+        in those repositories after setup.
       </p>
       <p>
         Draft pull requests are skipped until marked ready. Existing open pull

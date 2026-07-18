@@ -111,6 +111,7 @@ export default async function OrgBillingPage({
     providerSettings?.hasKey ?? false,
   );
   const entitlement = privateAccess.entitlement;
+  const activeTrial = privateAccess.reason === "active_trial" && entitlement?.trialEndsAt;
   const contactState = entitlement
     ? (
         await db
@@ -195,14 +196,18 @@ export default async function OrgBillingPage({
           <div>
             <p className="eyebrow">Private repository access</p>
             <p className="mt-2 text-lg font-medium">
-              {privateAccess.allowed
+              {activeTrial
+                ? "Free trial active"
+                : privateAccess.allowed
                 ? "Private access ready"
                 : entitlement
                   ? "Private access paused"
                   : "Public only"}
             </p>
             <p className="mt-1 max-w-2xl text-sm text-ink-soft">
-              {privateAccess.allowed
+              {activeTrial
+                ? `Private-repository reviews are included through ${formatDateTime(activeTrial)}.`
+                : privateAccess.allowed
                 ? `${entitlement?.subscriptionMode === "byok" ? "BYOK" : "Hosted"} private-repository reviews are enabled.`
                 : entitlement
                   ? "Check the plan status and provider setup below."
@@ -227,12 +232,12 @@ export default async function OrgBillingPage({
           </div>
         )}
         {!entitlement && (
-          <a
+          <Link
             className="btn-primary mt-4 inline-flex text-xs"
-            href={`mailto:hello@postil.dev?subject=${encodeURIComponent(`Activate ${org.slug}`)}`}
+            href="/install"
           >
-            Contact us to activate
-          </a>
+            Start 30-day trial
+          </Link>
         )}
         {entitlement?.subscriptionMode === "hosted" && (
           <p className="mt-4 border-t border-stone/60 pt-4 text-xs text-charcoal/60">
@@ -258,7 +263,9 @@ export default async function OrgBillingPage({
         <div className="card p-6">
           <p className="eyebrow">Plan</p>
           <p className="serif-display mt-3 text-3xl">
-            {entitlement
+            {activeTrial
+              ? "$0"
+              : entitlement
               ? `$${
                   entitlement.subscriptionMode === "byok"
                     ? BYOK_ACTIVE_AUTHOR_MONTHLY_USD
@@ -267,7 +274,11 @@ export default async function OrgBillingPage({
               : "$0"}
           </p>
           <p className="mt-2 text-sm text-charcoal/70">
-            {entitlement ? "per billed private-PR author" : "for public repositories"}
+            {activeTrial
+              ? `through ${formatDateTime(activeTrial)}`
+              : entitlement
+                ? "per billed private-PR author"
+                : "for public repositories"}
           </p>
           <p className="mt-4 font-mono text-[11px] text-charcoal/55">
             Public repositories are free. Repositories are not billing units.

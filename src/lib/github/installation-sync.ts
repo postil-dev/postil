@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { getDb, schema } from "@/lib/db";
-import { requireEnv } from "@/lib/env";
+import { hostedInferenceEnabled, requireEnv } from "@/lib/env";
 import {
   apiBase,
   buildAppJwt,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/github/app-auth";
 import { redactSecrets } from "@/lib/redact";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
+import { grantSelfServiceTrial } from "@/lib/self-service-trial";
 
 /**
  * Installation and organization persistence shared by the webhook receiver
@@ -251,25 +252,51 @@ export async function upsertInstallation(
 ): Promise<number | undefined> {
   const db = getDb();
   const orgId = await findOrCreateOrg(account);
-  const upserted = await db
-    .insert(schema.installations)
-    .values({
-      githubInstallationId: installation.id,
-      orgId,
-      accountLogin: account.login,
-      accountType: account.type ?? "User",
-      suspended: installation.suspended ?? false,
-    })
-    .onConflictDoUpdate({
-      target: schema.installations.githubInstallationId,
-      set: {
+  const accountType = account.type ?? "User";
+  return db.transaction(async (tx) => {
+    const upserted = await tx
+      .insert(schema.installations)
+      .values({
+        githubInstallationId: installation.id,
         orgId,
         accountLogin: account.login,
+        accountType,
         suspended: installation.suspended ?? false,
-      },
-    })
-    .returning({ id: schema.installations.id });
-  return upserted[0]?.id;
+      })
+      .onConflictDoUpdate({
+        target: schema.installations.githubInstallationId,
+        set: {
+          orgId,
+          accountLogin: account.login,
+          accountType,
+          suspended: installation.suspended ?? false,
+        },
+      })
+      .returning({ id: schema.installations.id });
+    const installationRowId = upserted[0]?.id;
+    if (installationRowId === undefined) return undefined;
+    const organization = (
+      await tx
+        .select({ slug: schema.organizations.slug })
+        .from(schema.organizations)
+        .where(eq(schema.organizations.id, orgId))
+        .limit(1)
+    )[0];
+    if (!organization) throw new Error("installation organization is missing");
+
+    if (!(installation.suspended ?? false)) {
+      await grantSelfServiceTrial(tx, {
+        orgId,
+        orgSlug: organization.slug,
+        accountLogin: account.login,
+        accountType,
+        githubOwnerId: account.id,
+        githubInstallationId: installation.id,
+        subscriptionMode: hostedInferenceEnabled() ? "hosted" : "byok",
+      });
+    }
+    return installationRowId;
+  });
 }
 
 function githubHeaders(bearer: string): Record<string, string> {

@@ -34,6 +34,10 @@ import {
 import { isPermanentFailure } from "./failure-classifier";
 import { runGateStateSyncJob } from "./gate-state-sync";
 import {
+  runOperatorAlertJob,
+  type OperatorAlertJobPayload,
+} from "./operator-alert";
+import {
   postRespondFailureComment,
   runRespondDeliveryJob,
   runRespondFailureCommentJob,
@@ -57,6 +61,7 @@ export const PROCESSABLE_JOB_KINDS = [
   "respond",
   "respond-delivery",
   "billing-contact-verification",
+  "operator-alert",
   "gate-state-sync",
   "check-run-cleanup",
   "respond-failure-comment",
@@ -107,6 +112,9 @@ async function handleJob(
       await runBillingContactVerificationJob(
         job.payload as BillingContactVerificationJobPayload,
       );
+      break;
+    case "operator-alert":
+      await runOperatorAlertJob(job.payload as OperatorAlertJobPayload);
       break;
     case "gate-state-sync":
       await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);

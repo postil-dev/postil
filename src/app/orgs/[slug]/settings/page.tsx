@@ -61,7 +61,8 @@ export default async function OrgSettingsPage({
       .where(eq(schema.orgSettings.orgId, org.id))
       .limit(1)
   )[0];
-  const managedReviewsPaused = !hostedInferenceEnabled() && !(settings?.hasKey ?? false);
+  const hostedInferenceAvailable = hostedInferenceEnabled();
+  const managedReviewsPaused = !hostedInferenceAvailable && !(settings?.hasKey ?? false);
   const sharedSnapshot = (
     await db
       .select({
@@ -79,7 +80,11 @@ export default async function OrgSettingsPage({
   )[0];
   const entitlement = (
     await db
-      .select({ subscriptionMode: schema.organizationEntitlements.subscriptionMode })
+      .select({
+        subscriptionMode: schema.organizationEntitlements.subscriptionMode,
+        status: schema.organizationEntitlements.status,
+        trialEndsAt: schema.organizationEntitlements.trialEndsAt,
+      })
       .from(schema.organizationEntitlements)
       .where(eq(schema.organizationEntitlements.orgId, org.id))
       .limit(1)
@@ -241,6 +246,12 @@ export default async function OrgSettingsPage({
             slug={org.slug}
             settings={settings}
             managedReviewsPaused={managedReviewsPaused}
+            hostedInferenceAvailable={hostedInferenceAvailable}
+            trialCanSwitchProvider={Boolean(
+              entitlement?.status === "trialing" &&
+                entitlement.trialEndsAt &&
+                entitlement.trialEndsAt > now,
+            )}
             sharedSnapshot={sharedSnapshot}
             sharedSourceFullName={sharedSnapshot?.sourceFullName ?? sharedSourceFullName}
             sharedSourceInstalled={sharedSourceInstalled}

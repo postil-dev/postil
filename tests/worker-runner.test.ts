@@ -19,6 +19,7 @@ let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let webhookCommentRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
+let operatorAlertRun: (() => Promise<void>) | undefined;
 let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let webhookDeliveryLoadError: Error | undefined;
@@ -126,6 +127,12 @@ mock.module("@/worker/billing-contact-verification", () => ({
   },
 }));
 
+mock.module("@/worker/operator-alert", () => ({
+  runOperatorAlertJob: async () => {
+    await operatorAlertRun?.();
+  },
+}));
+
 mock.module("@/worker/gate-state-sync", () => ({
   runGateStateSyncJob: async () => {
     await gateStateSyncRun?.();
@@ -168,6 +175,7 @@ beforeEach(() => {
   respondFailureCommentRun = async () => undefined;
   webhookCommentRun = async () => undefined;
   billingContactVerificationRun = async () => undefined;
+  operatorAlertRun = async () => undefined;
   gateStateSyncRun = async () => undefined;
   cleanupRun = async () => undefined;
   webhookDeliveryLoadError = undefined;
@@ -300,6 +308,7 @@ describe("drainQueueOnce", () => {
       "respond",
       "respond-delivery",
       "billing-contact-verification",
+      "operator-alert",
       "gate-state-sync",
       "check-run-cleanup",
       "respond-failure-comment",
@@ -380,6 +389,21 @@ describe("drainQueueOnce", () => {
     job.payload = { orgId: 7, tokenDigest: "a".repeat(43) };
     let called = false;
     billingContactVerificationRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("dispatches durable operator alert jobs", async () => {
+    const job = reviewJob(1);
+    job.kind = "operator-alert";
+    job.payload = { event: "trial_started", orgId: 7 };
+    let called = false;
+    operatorAlertRun = async () => {
       called = true;
     };
     jobs.push(job);

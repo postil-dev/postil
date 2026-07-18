@@ -52,6 +52,8 @@ const schema = {
   organizationEntitlements: {
     orgId: "organization_entitlements.org_id",
     subscriptionMode: "organization_entitlements.subscription_mode",
+    status: "organization_entitlements.status",
+    trialEndsAt: "organization_entitlements.trial_ends_at",
     billingContactEmail: "organization_entitlements.billing_contact_email",
     billingContactPending: "organization_entitlements.billing_contact_pending",
     billingContactVerifiedAt: "organization_entitlements.billing_contact_verified_at",
@@ -216,6 +218,9 @@ function fakeDb() {
     transaction(callback: (tx: unknown) => Promise<unknown>) {
       return callback(fakeDb());
     },
+    execute() {
+      return Promise.resolve({ rows: billingRows });
+    },
     update() {
       const chain = {
         set(values: Record<string, unknown>) {
@@ -276,6 +281,7 @@ function approvalForm(): FormData {
 }
 
 beforeEach(() => {
+  delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
   process.env.POSTIL_SEALING_KEY =
     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
   sessionUser = { id: 10 };
@@ -621,7 +627,84 @@ describe("saveOrgSettings", () => {
     );
     expect(result).toEqual({
       status: "error",
-      message: "Your billed plan uses hosted inference. Contact Postil before switching inference mode.",
+      message: "Your plan uses hosted inference. Change the plan before switching inference mode.",
+    });
+    expect(insertCount).toBe(0);
+  });
+
+  test("lets an active trial switch from hosted inference to BYOK atomically", async () => {
+    billingRows = [{
+      subscriptionMode: "hosted",
+      status: "trialing",
+      trialEndsAt: new Date(Date.now() + 60_000),
+    }];
+    updateResultRows = [{ orgId: 20 }];
+
+    const result = await saveOrgSettings(
+      null,
+      byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
+    );
+
+    expect(result).toEqual({ status: "success", message: "Organization settings saved." });
+    expect(updatedValues).toMatchObject({
+      subscriptionMode: "byok",
+      updatedBy: "trial-provider-mode",
+    });
+    expect(conflictSet).toHaveProperty("apiKeyCiphertext");
+  });
+
+  test("writes the requested mode even when an active trial already has that mode", async () => {
+    billingRows = [{
+      subscriptionMode: "byok",
+      status: "trialing",
+      trialEndsAt: new Date(Date.now() + 60_000),
+    }];
+    updateResultRows = [{ orgId: 20 }];
+
+    const result = await saveOrgSettings(
+      null,
+      byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
+    );
+
+    expect(result).toEqual({ status: "success", message: "Organization settings saved." });
+    expect(updatedValues).toMatchObject({
+      subscriptionMode: "byok",
+      updatedBy: "trial-provider-mode",
+    });
+  });
+
+  test("does not let an expired trial change provider mode", async () => {
+    billingRows = [{
+      subscriptionMode: "hosted",
+      status: "trialing",
+      trialEndsAt: new Date(Date.now() - 60_000),
+    }];
+
+    const result = await saveOrgSettings(
+      null,
+      byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
+    );
+
+    expect(result).toEqual({
+      status: "error",
+      message: "Your plan uses hosted inference. Change the plan before switching inference mode.",
+    });
+    expect(insertCount).toBe(0);
+  });
+
+  test("does not let a BYOK trial select hosted inference while hosted is paused", async () => {
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
+    billingRows = [{
+      subscriptionMode: "byok",
+      status: "trialing",
+      trialEndsAt: new Date(Date.now() + 60_000),
+    }];
+
+    const result = await saveOrgSettings(null, settingsForm());
+
+    expect(result).toEqual({
+      status: "error",
+      message: "Hosted inference is paused. Use your provider.",
     });
     expect(insertCount).toBe(0);
   });
@@ -643,9 +726,11 @@ describe("SettingsForm API key handling", () => {
     expect(source).toContain('value="anthropic"');
     expect(source).toContain('type="checkbox"');
     expect(source).toContain('type="radio"');
-    expect(source).toContain('disabled={billedMode !== "hosted"}');
-    expect(source).toContain('disabled={billedMode === "hosted"}');
+    expect(source).toContain("!hostedInferenceAvailable");
+    expect(readFileSync("src/app/orgs/[slug]/actions.ts", "utf8")).toContain("FOR UPDATE");
+    expect(source).toContain('disabled={billedMode === "hosted" && !trialCanSwitchProvider}');
     expect(source).toContain("New hosted inference setup is unavailable.");
+    expect(source).toContain("Choose hosted inference or your provider during the free trial.");
     expect(source).toContain("Use only a provider you trust with that code.");
     expect(source).toContain("Private repositories remain inactive until a matching plan");
     expect(source).toContain("Shared owner configuration is disabled. The stored snapshot is not used.");

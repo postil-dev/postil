@@ -157,7 +157,7 @@ describe("organization billing page auth", () => {
     expect(markup).toContain("Public only");
     expect(markup).toContain("public · free");
     expect(markup).toContain("$0");
-    expect(markup).toContain("Contact us to activate");
+    expect(markup).toContain("Start 30-day trial");
     expect(markup).not.toContain("billing contact: not set");
     expect(markup).not.toContain("included usage: $0.00");
     expect(markup).not.toContain("overage hard cap: not set");

@@ -95,6 +95,13 @@ Private-repository product access is organization-scoped and fail-closed.
 `organization_entitlements` records hosted or BYOK subscription mode, lifecycle
 state, trial and past-due grace boundaries, operator promotions, verified billing
 contacts, and the current-period included usage plus overage hard cap.
+The first active GitHub App installation for an owner atomically inserts one
+30-day trial and, when operator email is configured, a durable alert job. The
+trial uses hosted inference when hosted service is enabled and BYOK otherwise.
+The organization GitHub ID is the trial identity, and the entitlement survives
+uninstall, so reinstalling cannot restart the trial. Alert delivery uses a
+provider idempotency key and contains account and installation metadata without
+repository content.
 `src/lib/private-repository-entitlement.ts` is the single decision point used by
 webhook intake and workers. The webhook stores delivery and repository metadata,
 then skips review/respond queue, check, and conversational comment side effects
@@ -131,8 +138,8 @@ Both review envelopes and respond receipts carry `usageAccountingComplete`.
 Missing or false completeness consumes at least the full reservation while known
 per-model token and price rows remain available as analytics; an unattributed
 adjustment event makes committed billing equal the conservative charge.
-Provider credentials do not grant product access. Operators apply the
-complete entitlement state idempotently through
+Provider credentials do not grant product access. Operators can apply the
+complete post-trial entitlement state idempotently through
 `scripts/set-org-entitlement.ts`; the billing page reports the stored state and
 lets organization administrators set the hosted overage hard cap. BYOK billing
 copy directs administrators to provider-side budgets because Postil cannot

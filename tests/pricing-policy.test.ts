@@ -30,11 +30,11 @@ describe("pricing policy", () => {
     expect(terms).toContain("Repository count and review count are not billing units");
     expect(terms).toContain("provider-side budgets and");
     expect(terms).toContain("hard limits where the provider supports them");
-    expect(pricing).toContain("Public repositories are free with your model provider");
-    expect(pricing).toContain("Enrollment is paused");
+    expect(pricing).toMatch(/Public repositories\s+are free with your provider/);
+    expect(pricing).toContain("30-day free trial");
     expect(pricing).toContain('href="/contact"');
     expect(pricing).toContain("Install with BYOK");
-    expect(pricing).toContain("Contact us to activate");
+    expect(pricing).toContain("Start 30-day trial");
     expect(terms).toContain("Public-repository App reviews are free");
     expect(terms).toContain("materially beyond ordinary interactive");
     expect(terms).not.toContain("Where practicable");
@@ -54,7 +54,7 @@ describe("pricing policy", () => {
     expect(byok).toBeGreaterThan(0);
     expect(hosted).toBeGreaterThan(byok);
     expect(pricing.slice(byok, hosted)).toContain("btn-primary");
-    expect(pricing.slice(byok, hosted)).toContain('href="/contact"');
+    expect(pricing.slice(byok, hosted)).toContain('href="/install"');
     expect(pricing.slice(hosted)).toContain("btn-secondary");
     const pricingSection = homepage.slice(homepage.indexOf("{/* 07 - Pricing teaser */}"));
     expect(pricingSection).toContain("md:grid-cols-2 xl:grid-cols-4");
@@ -63,15 +63,14 @@ describe("pricing policy", () => {
     );
   });
 
-  test("structured metadata advertises only the available commercial offer", () => {
+  test("structured metadata advertises the available self-service offer", () => {
     const layout = source("src/app/layout.tsx");
     expect(layout).not.toContain('name: "Hosted"');
-    expect(layout).not.toContain("price: String(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD)");
     expect(layout).toContain('name: "BYOK"');
     expect(layout).toContain("price: String(BYOK_ACTIVE_AUTHOR_MONTHLY_USD)");
   });
 
-  test("keeps public setup surfaces BYOK-first while hosted enrollment is paused", () => {
+  test("keeps public setup surfaces self-service with a BYOK trial", () => {
     const setupCopy = [
       source("src/app/install/page.tsx"),
       source("src/app/docs/page.tsx"),
@@ -83,14 +82,14 @@ describe("pricing policy", () => {
     const privacy = source("src/app/privacy/page.tsx");
     const billing = source("src/app/orgs/[slug]/billing/page.tsx");
 
-    expect(setupCopy).toContain("GitHub App with BYOK");
-    expect(setupCopy).toContain("connect your model provider");
+    expect(setupCopy).toContain("GitHub App");
+    expect(setupCopy).toContain("30-day free trial");
     expect(setupCopy).not.toMatch(/zero.configuration/i);
     expect(setupCopy).not.toContain("Postil&apos;s hosted default model");
-    expect(settings).toContain('disabled={billedMode !== "hosted"}');
+    expect(settings).toContain("!hostedInferenceAvailable");
+    expect(setupCopy).toContain("model provider");
     expect(settings).toContain("New hosted inference setup is unavailable");
-    expect(privacy).toContain("new hosted enrollment is paused");
-    expect(privacy).toContain("Existing hosted plans");
+    expect(privacy).toContain("Existing hosted plans use");
     expect(billing).not.toMatch(/included usage|overage hard cap|credit balance|credit grants/i);
     expect(billing).not.toContain("calculateBillingCreditBalance");
   });

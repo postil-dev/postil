@@ -89,15 +89,16 @@ function GitHubPanel({ githubAppUrl }: { githubAppUrl: string }) {
           <p className="font-mono text-sm text-charcoal/70">01</p>
           <h2 className="serif-display mt-1 text-2xl">GitHub App with BYOK</h2>
           <p className="mt-2 text-sm text-ink-soft">
-            Automatic reviews after you connect your model provider.
+            A 30-day free trial after you connect your model provider.
           </p>
         </div>
         <div className="min-w-0">
           <p className="text-ink-soft">
             Choose all repositories or a selected set during installation.
-            Then open organization settings and configure the provider API,
-            model, and key. New non-draft pull requests are reviewed after
-            setup. Draft pull requests are skipped until they are marked ready.
+            The 30-day trial starts automatically. Open organization settings to
+            connect your provider API, model, and key. New non-draft pull
+            requests are reviewed after setup. Draft pull requests are skipped
+            until they are marked ready.
             Existing open pull requests are not reviewed retroactively unless
             a review is requested again.
           </p>

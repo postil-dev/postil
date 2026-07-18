@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
 import { centsToMicros } from "@/lib/billing-credits";
@@ -19,6 +19,7 @@ import {
 } from "@/lib/byok-provider";
 import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
 import { getDb, schema } from "@/lib/db";
+import { hostedInferenceEnabled } from "@/lib/env";
 import { getOrgMembership } from "@/lib/org-access";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
@@ -459,36 +460,9 @@ export async function saveOrgSettings(
   }
 
   const db = getDb();
-  const [currentSettings, entitlement] = await Promise.all([
-    db
-      .select({
-        apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
-        apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
-      })
-      .from(schema.orgSettings)
-      .where(eq(schema.orgSettings.orgId, orgId))
-      .limit(1)
-      .then((rows) => rows[0]),
-    db
-      .select({ subscriptionMode: schema.organizationEntitlements.subscriptionMode })
-      .from(schema.organizationEntitlements)
-      .where(eq(schema.organizationEntitlements.orgId, orgId))
-      .limit(1)
-      .then((rows) => rows[0]),
-  ]);
-
   const removingByok = providerMode === "hosted" || apiKeyAction === "remove";
   const requestedMode = removingByok ? "hosted" : "byok";
-  if (
-    (entitlement?.subscriptionMode === "hosted" ||
-      entitlement?.subscriptionMode === "byok") &&
-    entitlement.subscriptionMode !== requestedMode
-  ) {
-    return {
-      status: "error",
-      message: `Your billed plan uses ${entitlement.subscriptionMode === "byok" ? "BYOK" : "hosted inference"}. Contact Postil before switching inference mode.`,
-    };
-  }
+  const now = new Date();
   if (!removingByok) {
     if (!apiFormat) {
       return { status: "error", message: "Choose a supported API interface." };
@@ -502,16 +476,6 @@ export async function saveOrgSettings(
     if (!model) {
       return { status: "error", message: "Enter the primary model." };
     }
-    if (apiKeyAction === "keep" && !currentSettings?.apiKeyCiphertext) {
-      return { status: "error", message: "Enter a provider key to enable BYOK." };
-    }
-    if (apiAuthAction === "keep" && currentSettings?.apiAuthHeaderCiphertext) {
-      const storedHeader = unseal(
-        Buffer.from(currentSettings.apiAuthHeaderCiphertext),
-        getSealingKey(),
-      );
-      validateAdditionalAuthHeader(storedHeader, apiFormat);
-    }
   }
 
   const base = {
@@ -523,7 +487,7 @@ export async function saveOrgSettings(
     guardrailsMd,
     contentPolicyMd,
     sharedConfigEnabled,
-    updatedAt: new Date(),
+    updatedAt: now,
   };
 
   // The key is write-only: set when provided, cleared when requested,
@@ -569,21 +533,119 @@ export async function saveOrgSettings(
     return { status: "error", message: "Choose how to update additional authentication." };
   }
 
-  await db
-    .insert(schema.orgSettings)
-    .values({
-      orgId,
-      ...base,
-      apiKeyCiphertext: "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
-      apiAuthHeaderCiphertext:
-        "apiAuthHeaderCiphertext" in authUpdate ? authUpdate.apiAuthHeaderCiphertext : null,
-      apiAuthValueCiphertext:
-        "apiAuthValueCiphertext" in authUpdate ? authUpdate.apiAuthValueCiphertext : null,
-    })
-    .onConflictDoUpdate({
-      target: schema.orgSettings.orgId,
-      set: { ...base, ...keyUpdate, ...authUpdate },
-    });
+  const modeError = await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT "org_id"
+      FROM "organization_entitlements"
+      WHERE "org_id" = ${orgId}
+      FOR UPDATE
+    `);
+    await tx.execute(sql`
+      SELECT "org_id"
+      FROM "org_settings"
+      WHERE "org_id" = ${orgId}
+      FOR UPDATE
+    `);
+    const entitlement = (
+      await tx
+        .select({
+          subscriptionMode: schema.organizationEntitlements.subscriptionMode,
+          status: schema.organizationEntitlements.status,
+          trialEndsAt: schema.organizationEntitlements.trialEndsAt,
+        })
+        .from(schema.organizationEntitlements)
+        .where(eq(schema.organizationEntitlements.orgId, orgId))
+        .limit(1)
+    )[0];
+    const currentSettings = (
+      await tx
+        .select({
+          apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
+          apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
+        })
+        .from(schema.orgSettings)
+        .where(eq(schema.orgSettings.orgId, orgId))
+        .limit(1)
+    )[0];
+    const activeTrial = Boolean(
+      entitlement?.status === "trialing" &&
+        entitlement.trialEndsAt &&
+        entitlement.trialEndsAt > now,
+    );
+    if (
+      requestedMode === "hosted" &&
+      !hostedInferenceEnabled() &&
+      entitlement?.subscriptionMode !== "hosted"
+    ) {
+      return {
+        status: "error" as const,
+        message: "Hosted inference is paused. Use your provider.",
+      };
+    }
+    if (
+      (entitlement?.subscriptionMode === "hosted" ||
+        entitlement?.subscriptionMode === "byok") &&
+      entitlement.subscriptionMode !== requestedMode &&
+      !activeTrial
+    ) {
+      return {
+        status: "error" as const,
+        message: `Your plan uses ${entitlement.subscriptionMode === "byok" ? "BYOK" : "hosted inference"}. Change the plan before switching inference mode.`,
+      };
+    }
+    if (!removingByok && apiKeyAction === "keep" && !currentSettings?.apiKeyCiphertext) {
+      return { status: "error" as const, message: "Enter a provider key to enable BYOK." };
+    }
+    if (
+      !removingByok &&
+      apiAuthAction === "keep" &&
+      currentSettings?.apiAuthHeaderCiphertext
+    ) {
+      const storedHeader = unseal(
+        Buffer.from(currentSettings.apiAuthHeaderCiphertext),
+        getSealingKey(),
+      );
+      validateAdditionalAuthHeader(storedHeader, apiFormat!);
+    }
+
+    await tx
+      .insert(schema.orgSettings)
+      .values({
+        orgId,
+        ...base,
+        apiKeyCiphertext: "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
+        apiAuthHeaderCiphertext:
+          "apiAuthHeaderCiphertext" in authUpdate ? authUpdate.apiAuthHeaderCiphertext : null,
+        apiAuthValueCiphertext:
+          "apiAuthValueCiphertext" in authUpdate ? authUpdate.apiAuthValueCiphertext : null,
+      })
+      .onConflictDoUpdate({
+        target: schema.orgSettings.orgId,
+        set: { ...base, ...keyUpdate, ...authUpdate },
+      });
+    if (activeTrial) {
+      const switched = await tx
+        .update(schema.organizationEntitlements)
+        .set({
+          subscriptionMode: requestedMode,
+          updatedBy: "trial-provider-mode",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(schema.organizationEntitlements.orgId, orgId),
+            eq(schema.organizationEntitlements.status, "trialing"),
+            gt(schema.organizationEntitlements.trialEndsAt, now),
+          ),
+        )
+        .returning({ orgId: schema.organizationEntitlements.orgId });
+      if (switched.length !== 1) {
+        throw new Error("The free trial ended before the provider change was saved.");
+      }
+    }
+    return null;
+  });
+  if (modeError) return modeError;
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);
   return { status: "success", message: "Organization settings saved." };
