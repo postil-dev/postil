@@ -29,8 +29,8 @@ export default function InstallPage() {
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         On GitHub, install the App, connect your model provider, and start a
-        30-day free trial. GitLab, Bitbucket, and Azure DevOps run the Postil CLI
-        inside their own CI.
+        30-day free trial without a card. GitLab, Bitbucket, and Azure DevOps run
+        the Postil CLI inside their own CI.
       </p>
 
       <div className="mt-10">

@@ -29,8 +29,9 @@ export default function QuickstartPage() {
       <p>
         Install the App, select all repositories or a chosen set, then configure
         your provider API, model, and key in organization settings. Your free
-        30-day trial starts automatically. Postil reviews new non-draft pull requests
-        in those repositories after setup.
+        30-day trial starts automatically without a card. Postil reviews new
+        non-draft pull requests in those repositories after setup. Private reviews
+        pause when the trial ends unless a paid plan is active.
       </p>
       <p>
         Draft pull requests are skipped until marked ready. Existing open pull

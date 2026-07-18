@@ -79,7 +79,7 @@ export default function PricingPage() {
           </p>
           <ActiveAuthorUnit id="byok-active-author" />
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
-            <li>30-day free trial</li>
+            <li>30 days free, no card</li>
             <li>Your provider, models, and credentials</li>
             <li>Provider usage billed directly to you</li>
             <li>Review volume is not a billing unit</li>

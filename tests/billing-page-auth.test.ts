@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import * as billingUsage from "@/lib/billing-usage";
+import type { PrivateRepositoryAccessDecision } from "@/lib/private-repository-entitlement";
 
 let role = "member";
+let privateAccessDecision: PrivateRepositoryAccessDecision;
 
 const eventRows = [
   {
@@ -105,13 +107,7 @@ mock.module("@/lib/billing-usage", () => ({
 }));
 
 mock.module("@/lib/private-repository-entitlement", () => ({
-  canProcessPrivateRepository: async () => ({
-    allowed: false,
-    reason: "no_entitlement",
-    entitlement: null,
-    usageMicros: 0,
-    usageLimitMicros: null,
-  }),
+  canProcessPrivateRepository: async () => privateAccessDecision,
   requireMatchingProviderMode: (decision: unknown) => decision,
 }));
 
@@ -135,6 +131,13 @@ const { default: OrgBillingPage } = await import("@/app/orgs/[slug]/billing/page
 
 beforeEach(() => {
   role = "member";
+  privateAccessDecision = {
+    allowed: false,
+    reason: "no_entitlement",
+    entitlement: null,
+    usageMicros: 0,
+    usageLimitMicros: null,
+  };
 });
 
 describe("organization billing page auth", () => {
@@ -175,7 +178,75 @@ describe("organization billing page auth", () => {
     expect(markup).not.toContain("Repository coverage history");
     expect(markup).toContain("/orgs/acme/settings/audit");
   });
+
+  test("states the exact no-card trial boundary and consequence", async () => {
+    role = "admin";
+    privateAccessDecision = entitlementDecision(
+      "active_trial",
+      "trialing",
+      new Date("2099-08-17T12:00:00.000Z"),
+    );
+
+    const page = await OrgBillingPage({
+      params: Promise.resolve({ slug: "acme" }),
+      searchParams: Promise.resolve({}),
+    });
+    const markup = renderToStaticMarkup(page);
+
+    expect(markup).toContain("Free trial active");
+    expect(markup).toContain('data-trial-state="active"');
+    expect(markup).toContain('dateTime="2099-08-17T12:00:00.000Z"');
+    expect(markup).toContain("No card is required");
+    expect(markup).toContain("then pause unless a paid plan is active");
+  });
+
+  test("explains why private reviews pause after trial expiry", async () => {
+    role = "admin";
+    privateAccessDecision = entitlementDecision(
+      "inactive",
+      "past_due",
+      new Date("2026-07-17T12:00:00.000Z"),
+    );
+
+    const page = await OrgBillingPage({
+      params: Promise.resolve({ slug: "acme" }),
+      searchParams: Promise.resolve({}),
+    });
+    const markup = renderToStaticMarkup(page);
+
+    expect(markup).toContain("Private access paused");
+    expect(markup).toContain('data-trial-state="ended"');
+    expect(markup).toContain('dateTime="2026-07-17T12:00:00.000Z"');
+    expect(markup).toContain("Private reviews are paused until a paid plan is active");
+  });
 });
+
+function entitlementDecision(
+  reason: "active_trial" | "inactive",
+  status: "trialing" | "past_due",
+  trialEndsAt: Date,
+): PrivateRepositoryAccessDecision {
+  return {
+    allowed: reason === "active_trial",
+    reason,
+    entitlement: {
+      subscriptionMode: "byok",
+      status,
+      trialEndsAt,
+      pastDueGraceEndsAt: null,
+      periodStartsAt: new Date("2026-07-18T12:00:00.000Z"),
+      periodEndsAt: trialEndsAt,
+      includedUsageMicros: 100_000_000,
+      overageHardCapMicros: 0,
+      promotionalEligible: false,
+      promotionalEndsAt: null,
+      billingContactEmail: null,
+      billingContactVerifiedAt: null,
+    },
+    usageMicros: 0,
+    usageLimitMicros: null,
+  };
+}
 
 function fakeDb(): any {
   return {
@@ -183,6 +254,8 @@ function fakeDb(): any {
       const kind =
         "hasKey" in selection
           ? "provider"
+          : "activeEmail" in selection
+            ? "contact"
           : "count" in selection
           ? "activeAuthors"
           : "repositoryFullName" in selection
@@ -203,6 +276,8 @@ function fakeDb(): any {
               ? usageRows
               : kind === "provider"
                 ? [{ hasKey: false }]
+                : kind === "contact"
+                  ? [{ activeEmail: null, pendingEmail: null, verifiedAt: null }]
               : currentRepoRows;
       const chain = {
         from() {
