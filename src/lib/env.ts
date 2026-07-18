@@ -418,14 +418,7 @@ export function validateEnv(processKind: "web" | "worker"): void {
     );
   }
   if (processKind === "web" && process.env.POSTIL_PUBLIC_URL?.trim()) {
-    try {
-      configuredPublicOrigin();
-    } catch (error) {
-      const detail = safePublicUrlValidationDetail(error);
-      throw new Error(
-        `Postil web cannot start: invalid POSTIL_PUBLIC_URL.${detail ? ` ${detail}` : ""}`,
-      );
-    }
+    validateConfiguredPublicOrigin(processKind);
   }
   if (
     processKind === "worker" &&
@@ -452,6 +445,23 @@ function validateOperatorAlertEnv(processKind: "web" | "worker"): void {
   if (!process.env.BREVO_API_KEY?.trim()) {
     throw new Error(
       `Postil ${processKind} cannot start: POSTIL_OPERATOR_ALERT_EMAIL requires BREVO_API_KEY.`,
+    );
+  }
+  if (!process.env.POSTIL_PUBLIC_URL?.trim()) {
+    throw new Error(
+      `Postil ${processKind} cannot start: POSTIL_OPERATOR_ALERT_EMAIL requires POSTIL_PUBLIC_URL.`,
+    );
+  }
+  validateConfiguredPublicOrigin(processKind);
+}
+
+function validateConfiguredPublicOrigin(processKind: "web" | "worker"): void {
+  try {
+    configuredPublicOrigin();
+  } catch (error) {
+    const detail = safePublicUrlValidationDetail(error);
+    throw new Error(
+      `Postil ${processKind} cannot start: invalid POSTIL_PUBLIC_URL.${detail ? ` ${detail}` : ""}`,
     );
   }
 }

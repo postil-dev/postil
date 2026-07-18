@@ -282,10 +282,28 @@ describe("web startup environment validation", () => {
     expect(() => validateEnv("web")).toThrow(/requires BREVO_API_KEY/);
 
     process.env.BREVO_API_KEY = "brevo-test-key";
+    delete process.env.POSTIL_PUBLIC_URL;
+    expect(() => validateEnv("web")).toThrow(/requires POSTIL_PUBLIC_URL/);
+
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
     expect(() => validateEnv("web")).not.toThrow();
 
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "invalid";
     expect(() => validateEnv("web")).toThrow(/must be a valid email address/);
+  });
+
+  test("validates operator alert dashboard links in the worker", () => {
+    configureRequiredWorkerEnvironment();
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
+    process.env.BREVO_API_KEY = "brevo-test-key";
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev/tenant";
+
+    expect(() => validateEnv("worker")).toThrow(
+      /invalid POSTIL_PUBLIC_URL.*without a path, query, or fragment/,
+    );
+
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    expect(() => validateEnv("worker")).not.toThrow();
   });
 });
 
