@@ -7,8 +7,10 @@ describe("private repository worker defense in depth", () => {
     const installationSync = readFileSync("src/lib/github/installation-sync.ts", "utf8");
     const gate = source.indexOf("await canProcessPrivateRepository", source.indexOf("runReviewJob"));
     expect(gate).toBeGreaterThan(0);
-    expect(source).toContain("authorGithubId: payload.authorGithubId");
-    expect(source).toContain("authorLogin: payload.authorLogin");
+    const authorLookup = source.indexOf("getPullRequestReviewContext", gate);
+    expect(authorLookup).toBeGreaterThan(gate);
+    expect(source).toContain("authorGithubId: authorGithubId");
+    expect(source).toContain("authorLogin: authorLogin");
     for (const sideEffect of [
       "insert(schema.reviews)",
       "await getInstallationToken",
@@ -24,9 +26,24 @@ describe("private repository worker defense in depth", () => {
     expect(source.indexOf("fetchRepositorySummary", gate)).toBeLessThan(
       source.indexOf("insert(schema.reviews)", gate),
     );
+    expect(authorLookup).toBeLessThan(source.indexOf("insert(schema.reviews)", gate));
+    expect(authorLookup).toBeLessThan(source.indexOf("await reserveHostedReviewSpend", gate));
+    expect(authorLookup).toBeLessThan(source.indexOf("await runCli", gate));
+    expect(
+      source.slice(authorLookup, source.indexOf("const hostedReviewUnavailable", gate)),
+    ).toContain("private review author identity is unavailable");
     expect(installationSync).toContain(
       "AbortSignal.any([signal, AbortSignal.timeout(10_000)])",
     );
+  });
+
+  test("private author enforcement activates only after the managed fleet replacement", () => {
+    const deploy = readFileSync(".github/workflows/deploy.yml", "utf8");
+    const activation = readFileSync("scripts/activate-release-jobs.ts", "utf8");
+    expect(deploy.indexOf("Deploy managed fleet")).toBeLessThan(
+      deploy.indexOf("Activate release capabilities after fleet replacement"),
+    );
+    expect(activation).toContain("activatePrivateReviewAuthorIdentity");
   });
 
   test("disabled hosted inference stops before reservation, config fetch, or CLI spawn", () => {

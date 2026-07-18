@@ -20,7 +20,11 @@ import {
   finalizeEscalationEmailRetirement,
   quiesceEscalationEmailJobs,
 } from "@/lib/escalation-email-retirement";
-import { activateReleaseJobs } from "@/lib/release-job-rollout";
+import {
+  activatePrivateReviewAuthorIdentity,
+  activateReleaseJobs,
+  PRIVATE_REVIEW_AUTHOR_CAPABILITY,
+} from "@/lib/release-job-rollout";
 
 /**
  * Queue claim semantics against a real Postgres (FOR UPDATE SKIP LOCKED
@@ -147,6 +151,16 @@ describeDb("postgres job queue", () => {
       [laterId],
     );
     expect(later.rows[0]?.runnable).toBe(true);
+  });
+
+  test("activates private author enforcement idempotently", async () => {
+    expect(await activatePrivateReviewAuthorIdentity(pool)).toBe(true);
+    expect(await activatePrivateReviewAuthorIdentity(pool)).toBe(false);
+    const capability = await pool.query<{ name: string }>(
+      "SELECT name FROM deployment_capabilities WHERE name = $1",
+      [PRIVATE_REVIEW_AUTHOR_CAPABILITY],
+    );
+    expect(capability.rows).toEqual([{ name: PRIVATE_REVIEW_AUTHOR_CAPABILITY }]);
   });
 
   test("retires staged escalation email work and clears recipient material", async () => {

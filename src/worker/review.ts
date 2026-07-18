@@ -33,6 +33,7 @@ import {
   completeCheckRun,
   createCheckRun,
   findCheckRunByExternalId,
+  getPullRequestReviewContext,
 } from "@/lib/github/checks";
 import {
   materializeOrgConfig,
@@ -605,6 +606,31 @@ export async function runReviewJob(
     return;
   }
 
+  let authorGithubId = payload.authorGithubId;
+  let authorLogin = payload.authorLogin;
+  if (currentRepository.private) {
+    const context = await translateWorkerAbort(
+      getPullRequestReviewContext(token, currentRepository.full_name, payload.prNumber, signal),
+      signal,
+    );
+    if (context.headSha !== payload.headSha || context.baseSha !== payload.baseSha) {
+      console.warn(
+        `review job skipped: ${currentRepository.full_name}#${payload.prNumber} refs changed before author verification`,
+      );
+      return;
+    }
+    if (
+      typeof context.authorGithubId !== "number" ||
+      !Number.isSafeInteger(context.authorGithubId) ||
+      context.authorGithubId <= 0 ||
+      !context.authorLogin
+    ) {
+      throw new OperationalError("private review author identity is unavailable");
+    }
+    authorGithubId = context.authorGithubId;
+    authorLogin = context.authorLogin;
+  }
+
   const hostedReviewUnavailable = !llm.byok && !hostedInferenceEnabled();
 
   // Incremental re-review: baseline = last completed review of this PR.
@@ -636,8 +662,8 @@ export async function runReviewJob(
   const reviewValues = {
     repositoryId: repository.id,
     prNumber: payload.prNumber,
-    authorGithubId: payload.authorGithubId ?? null,
-    authorLogin: payload.authorLogin ?? null,
+    authorGithubId: authorGithubId ?? null,
+    authorLogin: authorLogin ?? null,
     headSha: payload.headSha,
     baseSha: payload.baseSha,
     sinceSha: baseline?.headSha ?? null,

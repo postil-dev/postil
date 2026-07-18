@@ -101,6 +101,37 @@ describe("pull-request review context", () => {
     });
   });
 
+  test("normalizes only a complete bounded author identity", async () => {
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        draft: false,
+        head: { sha: "head-sha" },
+        base: { sha: "base-sha" },
+        user: { id: 0, login: "   " },
+      })) as typeof fetch;
+
+    await expect(getPullRequestReviewContext("token", "octo/repo", 7)).resolves.toEqual({
+      headSha: "head-sha",
+      baseSha: "base-sha",
+      draft: false,
+    });
+
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        draft: false,
+        head: { sha: "head-sha" },
+        base: { sha: "base-sha" },
+        user: { id: 42, login: ` ${"a".repeat(101)} ` },
+      })) as typeof fetch;
+
+    await expect(getPullRequestReviewContext("token", "octo/repo", 7)).resolves.toEqual({
+      headSha: "head-sha",
+      baseSha: "base-sha",
+      draft: false,
+      authorGithubId: 42,
+    });
+  });
+
   test("fails closed when either immutable ref is absent", async () => {
     globalThis.fetch = (async (_input) =>
       Response.json({ head: { sha: "head-sha" }, base: {} })) as typeof fetch;

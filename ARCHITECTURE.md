@@ -149,8 +149,11 @@ complete post-trial entitlement state idempotently through
 `scripts/set-org-entitlement.ts`; the billing page reports the stored state and
 lets organization administrators set the hosted overage hard cap. BYOK billing
 copy directs administrators to provider-side budgets because Postil cannot
-enforce external charges. The page does not represent a payment checkout. Review rows snapshot the pull request
-author GitHub ID and login supplied by the reviewable pull-request webhook.
+enforce external charges. The page does not represent a payment checkout. Before
+a private review row can run, the worker resolves the pull request's author ID,
+login, head, and base from GitHub. A rollout-activated database trigger rejects
+anonymous active reviews and makes the recorded author identity immutable.
+Historical rows remain unknown rather than receiving a guessed identity.
 Billing counts distinct GitHub author IDs on private pull requests within the
 entitlement period; bot and service identities count by the same ID rule.
 

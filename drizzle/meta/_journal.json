@@ -211,6 +211,13 @@
       "when": 1784297400000,
       "tag": "0029_review_trigger_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1784394144533,
+      "tag": "0030_private_review_author_invariant",
+      "breakpoints": true
     }
   ]
 }
