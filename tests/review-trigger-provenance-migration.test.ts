@@ -79,6 +79,7 @@ describeDb("review trigger provenance migration", () => {
     const context = {
       source: "requested_review",
       webhookDeliveryId: "delivery-1",
+      webhookEvent: "issue_comment",
       sourceCommentId: 123,
     };
     const inserted = await pool.query<{ id: string }>(
@@ -134,5 +135,71 @@ describeDb("review trigger provenance migration", () => {
         [repositoryId, JSON.stringify({ source: "requested_review" })],
       ),
     ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      pool.query(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, trigger_source, trigger_context)
+         VALUES ($1, 6, 'wrong-event-head', 'base', 'requested_review', $2)`,
+        [
+          repositoryId,
+          JSON.stringify({
+            source: "requested_review",
+            webhookDeliveryId: "delivery-3",
+            webhookEvent: "pull_request",
+          }),
+        ],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      pool.query(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, trigger_source, trigger_context)
+         VALUES ($1, 7, 'malformed-evidence-head', 'base', 'requested_review', $2)`,
+        [
+          repositoryId,
+          JSON.stringify({
+            source: "requested_review",
+            webhookDeliveryId: "delivery-4",
+            webhookEvent: "issue_comment",
+            sourceCommentId: "not-a-number",
+            sourceUrl: "https://example.com/not-github",
+          }),
+        ],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      pool.query(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, trigger_source, trigger_context)
+         VALUES ($1, 8, 'extra-evidence-head', 'base', 'requested_review', $2)`,
+        [
+          repositoryId,
+          JSON.stringify({
+            source: "requested_review",
+            webhookDeliveryId: "delivery-5",
+            webhookEvent: "issue_comment",
+            unrelated: "not-provenance",
+          }),
+        ],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  test("defers historical validation while enforcing constraints on new rows", async () => {
+    const constraints = await pool.query<{ conname: string; convalidated: boolean }>(
+      `SELECT conname, convalidated
+         FROM pg_constraint
+        WHERE conname IN (
+          'reviews_trigger_source_check',
+          'reviews_trigger_context_check',
+          'usage_events_trigger_source_check'
+        )
+        ORDER BY conname`,
+    );
+    expect(constraints.rows).toEqual([
+      { conname: "reviews_trigger_context_check", convalidated: false },
+      { conname: "reviews_trigger_source_check", convalidated: false },
+      { conname: "usage_events_trigger_source_check", convalidated: false },
+    ]);
   });
 });

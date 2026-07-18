@@ -93,7 +93,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       VALUES
         (${repositoryId}, 1, 'head-1', 'base', 'running', 'unknown', NULL),
         (${repositoryId}, 2, 'head-2', 'base', 'running', 'requested_review',
-         '{"source":"requested_review","webhookDeliveryId":"billing-test"}'::jsonb)
+         '{"source":"requested_review","webhookDeliveryId":"billing-test","webhookEvent":"issue_comment"}'::jsonb)
       RETURNING id;
     `);
     reviewIds = reviews.rows.map((row) => Number(row.id));

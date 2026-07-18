@@ -56,7 +56,7 @@ export function normalizeReviewTriggerContext(value: unknown): ReviewTriggerCont
   if (candidate.source === "unknown") return { source: "unknown" };
   if (
     typeof candidate.webhookDeliveryId !== "string" ||
-    candidate.webhookDeliveryId.length === 0 ||
+    candidate.webhookDeliveryId.trim().length === 0 ||
     candidate.webhookDeliveryId.length > 200
   ) {
     return { source: "unknown" };
@@ -97,10 +97,10 @@ export function normalizeReviewTriggerContext(value: unknown): ReviewTriggerCont
 }
 
 function safeGithubUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 2_048) return false;
+  if (typeof value !== "string" || value.length > 2_048 || value !== value.trim()) return false;
   try {
     const parsed = new URL(value);
-    return parsed.protocol === "https:" && parsed.hostname === "github.com";
+    return parsed.origin === "https://github.com";
   } catch {
     return false;
   }

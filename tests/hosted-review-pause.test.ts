@@ -72,8 +72,12 @@ describeDb("paused hosted review claims", () => {
       headSha: "head-one",
       baseSha: "base",
       sinceSha: null,
-      triggerSource: "unknown" as const,
-      triggerContext: { source: "unknown" as const },
+      triggerSource: "requested_review" as const,
+      triggerContext: {
+        source: "requested_review" as const,
+        webhookDeliveryId: "pause-request",
+        webhookEvent: "issue_comment" as const,
+      },
       queuedAt: new Date("2026-07-17T14:00:00Z"),
       startedAt: new Date("2026-07-17T14:00:01Z"),
     };
@@ -100,16 +104,31 @@ describeDb("paused hosted review claims", () => {
     );
     expect(secondHead).not.toBeNull();
 
-    const rows = await pool!.query<{ head_sha: string; status: string }>(
-      `SELECT head_sha, status
+    const rows = await pool!.query<{
+      head_sha: string;
+      status: string;
+      trigger_source: string;
+      trigger_context: Record<string, unknown>;
+    }>(
+      `SELECT head_sha, status, trigger_source, trigger_context
          FROM reviews
         WHERE repository_id = $1 AND pr_number = $2
         ORDER BY head_sha`,
       [repositoryId, baseClaim.prNumber],
     );
     expect(rows.rows).toEqual([
-      { head_sha: "head-one", status: "failed" },
-      { head_sha: "head-two", status: "failed" },
+      {
+        head_sha: "head-one",
+        status: "failed",
+        trigger_source: "requested_review",
+        trigger_context: baseClaim.triggerContext,
+      },
+      {
+        head_sha: "head-two",
+        status: "failed",
+        trigger_source: "requested_review",
+        trigger_context: baseClaim.triggerContext,
+      },
     ]);
     const cleanupJobs = await pool!.query<{ payload: Record<string, unknown> }>(
       "SELECT payload FROM jobs WHERE kind = 'check-run-cleanup' ORDER BY id",

@@ -34,6 +34,13 @@ describe("review trigger context", () => {
     expect(
       normalizeReviewTriggerContext({
         source: "requested_review",
+        webhookDeliveryId: "   ",
+        webhookEvent: "issue_comment",
+      }),
+    ).toEqual({ source: "unknown" });
+    expect(
+      normalizeReviewTriggerContext({
+        source: "requested_review",
         webhookDeliveryId: "delivery-2",
         webhookEvent: "check_run",
       }),
@@ -53,6 +60,18 @@ describe("review trigger context", () => {
       source: "requested_review",
       webhookDeliveryId: "delivery-3",
       webhookEvent: "pull_request_review_comment",
+    });
+    expect(
+      normalizeReviewTriggerContext({
+        source: "requested_review",
+        webhookDeliveryId: "delivery-4",
+        webhookEvent: "issue_comment",
+        sourceUrl: " https://github.com/octo/repo/issues/1 ",
+      }),
+    ).toEqual({
+      source: "requested_review",
+      webhookDeliveryId: "delivery-4",
+      webhookEvent: "issue_comment",
     });
   });
 });
