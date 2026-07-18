@@ -204,13 +204,28 @@ export default async function OrgBillingPage({
                   ? "Private access paused"
                   : "Public only"}
             </p>
-            <p className="mt-1 max-w-2xl text-sm text-ink-soft">
+            <p
+              className="mt-1 max-w-2xl text-sm text-ink-soft"
+              data-trial-state={activeTrial ? "active" : entitlement?.status === "past_due" ? "ended" : undefined}
+            >
               {activeTrial
-                ? `Private-repository reviews are included through ${formatDateTime(activeTrial)}.`
+                ? <>
+                    No card is required. Private reviews are included through{" "}
+                    <time dateTime={activeTrial.toISOString()}>{formatDateTime(activeTrial)}</time>,
+                    then pause unless a paid plan is active.
+                  </>
                 : privateAccess.allowed
                 ? `${entitlement?.subscriptionMode === "byok" ? "BYOK" : "Hosted"} private-repository reviews are enabled.`
                 : entitlement
-                  ? "Check the plan status and provider setup below."
+                  ? entitlement.status === "past_due" && entitlement.trialEndsAt
+                    ? <>
+                        The trial ended{" "}
+                        <time dateTime={entitlement.trialEndsAt.toISOString()}>
+                          {formatDateTime(entitlement.trialEndsAt)}
+                        </time>
+                        . Private reviews are paused until a paid plan is active.
+                      </>
+                    : "Check the plan status and provider setup below."
                   : "Add a private plan before Postil reviews or responds in private repositories. Public reviews remain free."}
             </p>
           </div>

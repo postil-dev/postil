@@ -89,7 +89,7 @@ function GitHubPanel({ githubAppUrl }: { githubAppUrl: string }) {
           <p className="font-mono text-sm text-charcoal/70">01</p>
           <h2 className="serif-display mt-1 text-2xl">GitHub App with BYOK</h2>
           <p className="mt-2 text-sm text-ink-soft">
-            A 30-day free trial after you connect your model provider.
+            Thirty days free. No card required.
           </p>
         </div>
         <div className="min-w-0">
@@ -101,6 +101,10 @@ function GitHubPanel({ githubAppUrl }: { githubAppUrl: string }) {
             until they are marked ready.
             Existing open pull requests are not reviewed retroactively unless
             a review is requested again.
+          </p>
+          <p className="mt-3 text-sm text-ink-soft">
+            Private reviews pause when the trial ends unless a paid plan is active.
+            Public repositories remain free with your provider.
           </p>
           <p className="mt-3 text-sm text-ink-soft">
             You can disable individual repositories from the organization
