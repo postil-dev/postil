@@ -76,7 +76,7 @@ console.log("fixture-key");
       cascade: "openai/gpt-5-mini",
       scorer: undefined,
       scorerDisabled: "1",
-      hostedMode: "1",
+      hostedMode: "0",
       endpointAuthPresent: false,
       configApiBaseAllowed: false,
     });

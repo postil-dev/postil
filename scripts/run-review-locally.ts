@@ -24,6 +24,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 
 import { Client } from "pg";
 
+import { seal } from "@/lib/crypto/seal";
 import type { Envelope, Finding } from "@/lib/envelope";
 
 const root = join(import.meta.dir, "..");
@@ -198,6 +199,9 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
   const oldEnv = { ...process.env };
   let closeDatabasePool: (() => Promise<void>) | undefined;
   try {
+    const modelApiKey = process.env.MODEL_API_KEY?.trim();
+    if (!modelApiKey) throw new Error("local review model credential is unavailable");
+    const sealingKey = randomBytes(32);
     const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
       .privateKey.export({ type: "pkcs1", format: "pem" })
       .toString();
@@ -207,6 +211,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     process.env.GITHUB_API_URL = github.origin;
     process.env.GITHUB_APP_ID = "1";
     process.env.GITHUB_APP_PRIVATE_KEY = privateKey;
+    process.env.POSTIL_SEALING_KEY = sealingKey.toString("hex");
     process.env.POSTIL_QUEUE_DRAIN_MAX_JOBS = "1";
     process.env.POSTIL_QUEUE_DRAIN_DEADLINE_MS = "720000";
 
@@ -218,6 +223,26 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     closeDatabasePool = closeDb;
 
     const pool = getPool();
+    await pool.query(
+      `INSERT INTO org_settings (
+         org_id,
+         api_base,
+         api_key_ciphertext,
+         api_format,
+         model,
+         model_cascade
+       )
+       SELECT id, $1, $2, $3, $4, $5
+       FROM organizations
+       WHERE slug = 'local'`,
+      [
+        process.env.POSTIL_API_BASE,
+        seal(modelApiKey, sealingKey),
+        process.env.POSTIL_API_FORMAT,
+        process.env.REVIEW_MODEL,
+        process.env.REVIEW_MODEL_CASCADE,
+      ],
+    );
     const payload = {
       installationId: DEFAULT_INSTALLATION_ID,
       repoFullName: options.repoFullName,
@@ -858,7 +883,10 @@ async function ensureLocalModelCredential(): Promise<void> {
   delete process.env.POSTIL_ALLOW_CONFIG_API_BASE;
   process.env.POSTIL_API_BASE = "https://openrouter.ai/api/v1";
   process.env.POSTIL_API_FORMAT = "openai-compatible";
-  process.env.POSTIL_HOSTED_MODE = "1";
+  // This harness uses the maintainer's own OpenRouter credential and an
+  // explicit review model. Hosted mode accepts only a promoted qualification
+  // profile and therefore must remain disabled for this local BYOK path.
+  process.env.POSTIL_HOSTED_MODE = "0";
   process.env.REVIEW_MODEL = "openai/gpt-5-mini";
   // The CLI deduplicates the model chain. Repeating the primary model yields
   // one attempt, while an empty cascade variable would retain built-in defaults.
