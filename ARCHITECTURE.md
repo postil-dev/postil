@@ -37,6 +37,12 @@ or publishes the private dataset.
 
 Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
 
+Web and worker processes use `DATABASE_URL`. The release migration subprocess
+uses an optional `POSTIL_DIRECT_DATABASE_URL`, or derives the known Supabase
+session-pool endpoint from a port-6543 transaction-pool URL. Only the Drizzle
+child receives that value as `DATABASE_URL`; ordinary runtime connections keep
+the configured pooling mode.
+
 The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
 
 The worker scans GitHub's App delivery summaries through a leased, cursor-paginated pass inside GitHub's three-day recovery window. It records payload-free delivery identity, event, response status, and bounded request outcome before asking GitHub to redeliver a failed attempt. A newer successful delivery closes every older failure with the same GUID. Ambiguous requests receive one delayed retry, each GUID has a three-request ceiling, and API rate-limit state pauses the shared scanner. Recovery metadata expires after 30 days; webhook payloads remain confined to the signed durable inbox.
