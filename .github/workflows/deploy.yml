@@ -142,9 +142,22 @@ jobs:
             staged+="POSTHOG_PROJECT_TOKEN=${token}"$'\n'
           fi
           staged+="DATABASE_URL=${DATABASE_URL}"$'\n'
-          if [[ -n "${BREVO_API_KEY}" ]]; then
+          if [[ -n "${BREVO_API_KEY:-}" ]]; then
             staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
           fi
+          paddle_secret_names=(
+            PADDLE_API_KEY
+            PADDLE_CLIENT_TOKEN
+            PADDLE_WEBHOOK_SECRET
+            PADDLE_ZERO_BASE_PRICE_ID
+            PADDLE_ACTIVE_AUTHOR_PRICE_ID
+          )
+          for name in "${paddle_secret_names[@]}"; do
+            value="${!name:-}"
+            if [[ -n "${value}" ]]; then
+              staged+="${name}=${value}"$'\n'
+            fi
+          done
           if [[ -n "${staged}" ]]; then
             printf '%s' "${staged}" | flyctl secrets import --stage
           fi
