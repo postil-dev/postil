@@ -14,7 +14,7 @@ describe("release database connection", () => {
     const resolved = new URL(
       resolveDirectDatabaseUrl({
         databaseUrl:
-          "postgresql://postgres.project:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require",
+          "postgresql://postgres.project@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require",
       }),
     );
 
@@ -24,21 +24,21 @@ describe("release database connection", () => {
   });
 
   test("prefers an explicit direct connection and rejects unknown transaction pools", () => {
-    const direct = "postgresql://postil:secret@db.internal:5432/postil";
+    const direct = "postgresql://postil@db.internal:5432/postil";
     expect(
       resolveDirectDatabaseUrl({
-        databaseUrl: "postgresql://postil:secret@pooler.example.com:6543/postil",
+        databaseUrl: "postgresql://postil@pooler.example.com:6543/postil",
         directDatabaseUrl: direct,
       }),
     ).toBe(new URL(direct).toString());
     expect(() =>
       resolveDirectDatabaseUrl({
-        databaseUrl: "postgresql://postil:secret@pooler.example.com:6543/postil",
+        databaseUrl: "postgresql://postil@pooler.example.com:6543/postil",
       }),
     ).toThrow(/known session endpoint/);
     expect(() =>
       resolveDirectDatabaseUrl({
-        databaseUrl: "postgresql://postil:secret@db.internal:5432/postil",
+        databaseUrl: "postgresql://postil@db.internal:5432/postil",
         directDatabaseUrl: "   ",
       }),
     ).toThrow(/cannot be empty/);
@@ -46,9 +46,9 @@ describe("release database connection", () => {
 
   test("binds only the migration subprocess to the direct connection", async () => {
     const runtimeUrl =
-      "postgresql://postgres.project:runtime-secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres";
+      "postgresql://postgres.project@aws-0-eu-central-1.pooler.supabase.com:6543/postgres";
     const directUrl =
-      "postgresql://postgres.project:migration-secret@aws-0-eu-central-1.pooler.supabase.com:5432/postgres";
+      "postgresql://postgres.project@aws-0-eu-central-1.pooler.supabase.com:5432/postgres";
     const parentEnvironment = {
       DATABASE_URL: runtimeUrl,
       POSTIL_DIRECT_DATABASE_URL: directUrl,
@@ -73,7 +73,7 @@ describe("release database connection", () => {
     const fakeBun = join(temporaryDirectory, "bun");
     const capturePath = join(temporaryDirectory, "capture.json");
     const runtimeUrl =
-      "postgresql://postgres.project:runtime-secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require";
+      "postgresql://postgres.project@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require";
 
     try {
       await writeFile(
@@ -116,7 +116,7 @@ describe("release database connection", () => {
 
   test("adds release context to migration process failures", async () => {
     const environment = {
-      DATABASE_URL: "postgresql://postil:secret@db.internal:5432/postil",
+      DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
     };
     await expect(
       runReleaseMigrations(environment, () => {
