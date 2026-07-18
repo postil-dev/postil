@@ -6,6 +6,7 @@ import {
   SuspendedInstallationsNotice,
 } from "@/app/orgs/[slug]/repo-health-banner";
 import type { RepoHealthRow } from "@/lib/repo-health";
+import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 
 const NOW = new Date("2026-07-11T12:00:00.000Z");
 
@@ -22,6 +23,7 @@ function row(overrides: Partial<RepoHealthRow> = {}): RepoHealthRow {
     completedCount: 0,
     lastCompletedAt: null,
     latestAttemptStatus: null,
+    latestAttemptErrorMessage: null,
     latestAttemptAt: null,
     latestAttemptPublicId: null,
     ...overrides,
@@ -78,6 +80,39 @@ describe("RepoHealthBanner", () => {
           row({ repositoryId: 2, installationSuspended: true }),
         ]}
         now={NOW}
+      />,
+    );
+
+    expect(markup).toBe("");
+  });
+
+  test("does not turn a managed pause into a repository failure warning", () => {
+    const markup = renderToStaticMarkup(
+      <RepoHealthBanner
+        slug="postil-dev"
+        rows={[
+          row({
+            attemptCount: 1,
+            latestAttemptStatus: "failed",
+            latestAttemptErrorMessage: HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+            latestAttemptAt: new Date("2026-07-11T11:00:00.000Z"),
+          }),
+        ]}
+        now={NOW}
+        managedReviewsPaused
+      />,
+    );
+
+    expect(markup).toBe("");
+  });
+
+  test("suppresses first-review warnings during a managed pause", () => {
+    const markup = renderToStaticMarkup(
+      <RepoHealthBanner
+        slug="postil-dev"
+        rows={[row()]}
+        now={NOW}
+        managedReviewsPaused
       />,
     );
 

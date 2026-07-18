@@ -46,5 +46,6 @@ describe("operator review filters", () => {
     });
 
     expect(parseOperatorReviewFilters({ status: "deleted", from: "2026-7-1" }).status).toBe("");
+    expect(parseOperatorReviewFilters({ status: "unavailable" }).status).toBe("unavailable");
   });
 });

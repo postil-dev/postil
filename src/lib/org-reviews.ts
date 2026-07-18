@@ -4,8 +4,12 @@ import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import { computeEffectiveGate } from "@/lib/envelope";
 import { getActiveApprovalIds, parseEnvelopeForApprovals } from "@/lib/finding-approvals";
+import {
+  reviewDisplayStatus,
+  type ReviewDisplayStatus,
+} from "@/lib/review-outcome";
 
-export type OrgReviewStatus = "queued" | "running" | "completed" | "failed" | "stale";
+export type OrgReviewStatus = ReviewDisplayStatus;
 
 export interface OrgReviewRow {
   id: number;
@@ -37,6 +41,7 @@ export async function getOrgReviewRows(
       publicId: schema.reviews.publicId,
       prNumber: schema.reviews.prNumber,
       status: schema.reviews.status,
+      errorMessage: schema.reviews.errorMessage,
       silent: schema.reviews.silent,
       gateFailing: schema.reviews.gateFailing,
       engineGateFailing: schema.reviews.engineGateFailing,
@@ -59,11 +64,12 @@ export async function getOrgReviewRows(
   // envelope (finding bodies, summaries) out of the RSC payload and the
   // polling responses.
   return Promise.all(
-    rows.map(async ({ envelope: rawEnvelope, engineGateFailing, ...row }) => {
+    rows.map(async ({ envelope: rawEnvelope, engineGateFailing, errorMessage, ...row }) => {
       const envelope = parseEnvelopeForApprovals(rawEnvelope);
       const approvalIds = await getActiveApprovalIds(db, row.id);
       return {
         ...row,
+        status: reviewDisplayStatus(row.status, errorMessage),
         gateFailing: envelope
           ? computeEffectiveGate(
               envelope,

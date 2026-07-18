@@ -1,20 +1,21 @@
 import { StatusIcon, type StatusKind } from "./status-icon";
 
-type ReviewStatus = "queued" | "running" | "completed" | "failed" | "stale";
+import type { ReviewDisplayStatus } from "@/lib/review-outcome";
 
-const STATUS_ICON: Record<ReviewStatus, StatusKind | null> = {
+const STATUS_ICON: Record<ReviewDisplayStatus, StatusKind | null> = {
   queued: null,
   running: null,
   completed: "pass",
   failed: "error",
   stale: null,
+  unavailable: "info",
 };
 
 export function ReviewStatusBadge({
   status,
   gateFailing,
 }: {
-  status: ReviewStatus;
+  status: ReviewDisplayStatus;
   gateFailing: boolean | null;
 }) {
   const icon = status === "completed" && gateFailing ? "warn" : STATUS_ICON[status];
@@ -25,7 +26,7 @@ export function ReviewStatusBadge({
         className={
           status === "failed"
             ? "text-softred"
-            : status === "stale"
+            : status === "stale" || status === "unavailable"
               ? "text-charcoal/70"
               : "text-charcoal/80"
         }
@@ -41,7 +42,7 @@ export function GateBadge({
   status,
 }: {
   gateFailing: boolean | null;
-  status: ReviewStatus;
+  status: ReviewDisplayStatus;
 }) {
   if (status !== "completed" || gateFailing === null) {
     return <span className="font-mono text-xs text-charcoal/70">—</span>;

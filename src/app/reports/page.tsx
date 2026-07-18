@@ -13,6 +13,7 @@ import { ReportsHeader } from "@/components/reports-header";
 import { getDb, schema } from "@/lib/db";
 import { githubAppInstallUrl } from "@/lib/github-app";
 import { githubPrUrl } from "@/lib/github-links";
+import { reviewDisplayStatus } from "@/lib/review-outcome";
 import { getVerifiedSessionUser } from "@/lib/session";
 
 export const metadata: Metadata = {
@@ -80,6 +81,7 @@ export default async function ReportsPage() {
             publicId: schema.reviews.publicId,
             prNumber: schema.reviews.prNumber,
             status: schema.reviews.status,
+            errorMessage: schema.reviews.errorMessage,
             silent: schema.reviews.silent,
             gateFailing: schema.reviews.gateFailing,
             envelope: schema.reviews.envelope,
@@ -191,10 +193,16 @@ export default async function ReportsPage() {
                     </a>
                   </td>
                   <td className="px-4 py-2.5">
-                    <ReviewStatusBadge status={r.status} gateFailing={r.gateFailing} />
+                    <ReviewStatusBadge
+                      status={reviewDisplayStatus(r.status, r.errorMessage)}
+                      gateFailing={r.gateFailing}
+                    />
                   </td>
                   <td className="px-4 py-2.5">
-                    <GateBadge gateFailing={r.gateFailing} status={r.status} />
+                    <GateBadge
+                      gateFailing={r.gateFailing}
+                      status={reviewDisplayStatus(r.status, r.errorMessage)}
+                    />
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs">
                     {r.silent ? (

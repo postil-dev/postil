@@ -52,11 +52,13 @@ import {
   releaseHostedReviewSpend,
   reserveHostedReviewSpend,
 } from "@/lib/hosted-usage-reservations";
+import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import { persistReviewCompletion } from "@/lib/review-completion";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
+import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
   reportOperationalModelIncident,
@@ -602,6 +604,8 @@ export async function runReviewJob(
     return;
   }
 
+  const hostedReviewUnavailable = !llm.byok && !hostedInferenceEnabled();
+
   // Incremental re-review: baseline = last completed review of this PR.
   const baseline = (
     await db
@@ -627,23 +631,51 @@ export async function runReviewJob(
   // deployment setting must not create a row that only the watchdog can close.
   const publicOrigin = configuredPublicOrigin();
 
-  const inserted = await db
-    .insert(schema.reviews)
-    .values({
+  const reviewValues = {
+    repositoryId: repository.id,
+    prNumber: payload.prNumber,
+    authorGithubId: payload.authorGithubId ?? null,
+    authorLogin: payload.authorLogin ?? null,
+    headSha: payload.headSha,
+    baseSha: payload.baseSha,
+    sinceSha: baseline?.headSha ?? null,
+    queuedAt: timing.queuedAt,
+    startedAt: timing.startedAt,
+  };
+  const inserted = hostedReviewUnavailable
+    ? await claimPausedHostedReview(db, reviewValues, {
+        installationId: payload.installationId,
+        repoFullName: payload.repoFullName,
+      })
+    : await db
+        .insert(schema.reviews)
+        .values({ ...reviewValues, status: "running" })
+        .returning({ id: schema.reviews.id, publicId: schema.reviews.publicId })
+        .then((rows) => {
+          const review = rows[0];
+          return review
+            ? {
+                ...review,
+                advisoryCheckExternalId: undefined,
+                gateCheckExternalId: undefined,
+              }
+            : null;
+        });
+  const reviewId = inserted?.id;
+  const publicId = inserted?.publicId;
+  if (hostedReviewUnavailable && (reviewId === undefined || !publicId)) {
+    await supersedeActiveReviews({
       repositoryId: repository.id,
       prNumber: payload.prNumber,
-      authorGithubId: payload.authorGithubId ?? null,
-      authorLogin: payload.authorLogin ?? null,
-      headSha: payload.headSha,
-      baseSha: payload.baseSha,
-      sinceSha: baseline?.headSha ?? null,
-      status: "running",
-      queuedAt: timing.queuedAt,
-      startedAt: timing.startedAt,
-    })
-    .returning({ id: schema.reviews.id, publicId: schema.reviews.publicId });
-  const reviewId = inserted[0]?.id;
-  const publicId = inserted[0]?.publicId;
+      newHeadSha: payload.headSha,
+      repoFullName: payload.repoFullName,
+      token,
+    });
+    console.log(
+      `review job skipped: unavailable hosted review already recorded for ${payload.repoFullName}#${payload.prNumber}@${payload.headSha}`,
+    );
+    return;
+  }
   if (reviewId === undefined || !publicId) throw new Error("review insert returned no row");
   const detailsUrl =
     publicOrigin && installation.orgSlug
@@ -667,10 +699,12 @@ export async function runReviewJob(
   let publicationStarted = false;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
-  const advisoryCheckExternalId = checkRunExternalId(publicId, "review");
-  const gateCheckExternalId = checkRunExternalId(publicId, "gate");
+  const advisoryCheckExternalId =
+    inserted.advisoryCheckExternalId ?? checkRunExternalId(publicId, "review");
+  const gateCheckExternalId =
+    inserted.gateCheckExternalId ?? checkRunExternalId(publicId, "gate");
 
-  if (!llm.byok && !hostedInferenceEnabled()) {
+  if (hostedReviewUnavailable) {
     try {
       publicationStarted = true;
       onPublicationStarted?.();
@@ -718,35 +752,10 @@ export async function runReviewJob(
           .set({ gateCheckRunId })
           .where(eq(schema.reviews.id, reviewId));
       }
-      await db.transaction(async (tx) => {
-        await tx
-          .update(schema.reviews)
-          .set({
-            advisoryCheckRunId,
-            gateCheckRunId,
-            status: "failed",
-            errorMessage: HOSTED_INFERENCE_DISABLED_MESSAGE,
-            finishedAt: new Date(),
-          })
-          .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
-        await tx.insert(schema.jobs).values({
-          kind: "check-run-cleanup",
-          payload: {
-            installationId: payload.installationId,
-            repoFullName: payload.repoFullName,
-            advisoryCheckRunId: advisoryCheckRunId ?? null,
-            gateCheckRunId: gateCheckRunId ?? null,
-            headSha: payload.headSha,
-            advisoryCheckExternalId,
-            gateCheckExternalId,
-            advisoryCheckRunMayExist,
-            gateCheckRunMayExist,
-            message: HOSTED_INFERENCE_DISABLED_MESSAGE,
-            intent: "neutralize",
-          },
-          maxAttempts: 5,
-        });
-      });
+      await db
+        .update(schema.reviews)
+        .set({ advisoryCheckRunId, gateCheckRunId })
+        .where(eq(schema.reviews.id, reviewId));
       const checksNeutralized = await completeHostedInferenceDisabledCheckRuns(
         token,
         payload.repoFullName,
@@ -1268,9 +1277,6 @@ async function neutralizeSupersededCheckRuns(
     );
   }
 }
-
-export const HOSTED_INFERENCE_DISABLED_MESSAGE =
-  "Hosted review service is temporarily unavailable.";
 
 export async function completeHostedInferenceDisabledCheckRuns(
   token: string,

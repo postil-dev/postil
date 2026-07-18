@@ -33,6 +33,7 @@ const STATUSES: Array<"" | OperatorReviewStatus> = [
   "completed",
   "failed",
   "stale",
+  "unavailable",
 ];
 
 const SEVERITY_STYLES: Record<Finding["severity"], string> = {
