@@ -2,6 +2,10 @@ import { and, eq, lt, sql } from "drizzle-orm";
 
 import { getDb, getPool, schema } from "@/lib/db";
 import { checkRunExternalId } from "@/lib/github/checks";
+import {
+  reconcileOperatorAlertDeliveries,
+  sweepExpiredSelfServiceTrials,
+} from "@/lib/operator-alerts";
 import { REVIEW_DEADLINE_MS } from "./review";
 
 export const WATCHDOG_ERROR_PREFIX = "watchdog:";
@@ -109,6 +113,14 @@ export async function watchdogPass(
      WHERE kind = 'respond' AND status = 'failed'`,
     [cutoff],
   );
+
+  await reconcileOperatorAlertDeliveries(db);
+  const expiredTrials = await sweepExpiredSelfServiceTrials(db, now);
+  if (expiredTrials.transitioned > 0) {
+    console.log(
+      `[trial expiry] transitioned=${expiredTrials.transitioned} alerted=${expiredTrials.alerted}`,
+    );
+  }
 
   return { killed };
 }

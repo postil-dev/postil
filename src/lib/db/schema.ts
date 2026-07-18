@@ -435,6 +435,42 @@ export const organizationEntitlements = pgTable(
   ],
 );
 
+/** Durable, content-free audit state for email sent to the Postil operator. */
+export const operatorAlertDeliveries = pgTable(
+  "operator_alert_deliveries",
+  {
+    eventKey: text("event_key").primaryKey(),
+    event: text("event").notNull(),
+    orgId: bigint("org_id", { mode: "number" }).references(() => organizations.id, {
+      onDelete: "set null",
+    }),
+    githubInstallationId: bigint("github_installation_id", { mode: "number" }),
+    status: text("status").notNull().default("queued"),
+    messageId: text("message_id"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("operator_alert_deliveries_status_created_idx").on(t.status, t.createdAt),
+    index("operator_alert_deliveries_org_created_idx").on(t.orgId, t.createdAt),
+    check(
+      "operator_alert_deliveries_event_check",
+      sql`${t.event} IN ('trial_started', 'trial_expired', 'installation_removed')`,
+    ),
+    check(
+      "operator_alert_deliveries_status_check",
+      sql`${t.status} IN ('queued', 'retrying', 'delivered', 'failed')`,
+    ),
+    check(
+      "operator_alert_deliveries_event_key_nonempty",
+      sql`length(btrim(${t.eventKey})) > 0`,
+    ),
+  ],
+);
+
 /** Atomic hosted-inference budget holds. Expired active rows no longer consume capacity. */
 export const hostedUsageReservations = pgTable(
   "hosted_usage_reservations",

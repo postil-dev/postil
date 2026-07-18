@@ -43,7 +43,16 @@ mock.module("@/lib/server-observability", () => ({
 }));
 
 mock.module("@/lib/db", () => ({
+  getDb: () => ({}),
   getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
+}));
+
+mock.module("@/lib/operator-alerts", () => ({
+  ensureOperatorAlertDelivery: async () => undefined,
+  normalizeLegacyOperatorAlertPayload: (payload: Record<string, unknown>) =>
+    typeof payload.eventKey === "string" ? payload : null,
+  recordOperatorAlertDelivered: async () => undefined,
+  recordOperatorAlertFailure: async () => undefined,
 }));
 
 mock.module("@/lib/queue", () => ({
@@ -128,8 +137,10 @@ mock.module("@/worker/billing-contact-verification", () => ({
 }));
 
 mock.module("@/worker/operator-alert", () => ({
+  validateOperatorAlertPayload: () => undefined,
   runOperatorAlertJob: async () => {
     await operatorAlertRun?.();
+    return { messageId: "operator-alert-message" };
   },
 }));
 
@@ -401,7 +412,7 @@ describe("drainQueueOnce", () => {
   test("dispatches durable operator alert jobs", async () => {
     const job = reviewJob(1);
     job.kind = "operator-alert";
-    job.payload = { event: "trial_started", orgId: 7 };
+    job.payload = { event: "trial_started", eventKey: "trial-started:7", orgId: 7 };
     let called = false;
     operatorAlertRun = async () => {
       called = true;

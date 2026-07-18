@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 
-import { getPool } from "@/lib/db";
+import { getDb, getPool } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
 import type { GateStateSyncJobPayload } from "@/lib/finding-approvals";
 import {
@@ -28,6 +28,12 @@ import {
   type ObservabilityProcessGroup,
 } from "@/lib/server-observability";
 import {
+  ensureOperatorAlertDelivery,
+  normalizeLegacyOperatorAlertPayload,
+  recordOperatorAlertDelivered,
+  recordOperatorAlertFailure,
+} from "@/lib/operator-alerts";
+import {
   runBillingContactVerificationJob,
   type BillingContactVerificationJobPayload,
 } from "./billing-contact-verification";
@@ -36,6 +42,7 @@ import { runGateStateSyncJob } from "./gate-state-sync";
 import {
   runOperatorAlertJob,
   type OperatorAlertJobPayload,
+  validateOperatorAlertPayload,
 } from "./operator-alert";
 import {
   postRespondFailureComment,
@@ -113,9 +120,15 @@ async function handleJob(
         job.payload as BillingContactVerificationJobPayload,
       );
       break;
-    case "operator-alert":
-      await runOperatorAlertJob(job.payload as OperatorAlertJobPayload);
+    case "operator-alert": {
+      const payload = normalizeLegacyOperatorAlertPayload(job.payload);
+      if (!payload) throw new Error("operator alert job payload is malformed");
+      validateOperatorAlertPayload(payload);
+      await ensureOperatorAlertDelivery(getDb(), payload, job.createdAt);
+      const result = await runOperatorAlertJob(payload);
+      await recordOperatorAlertDelivered(getDb(), payload, result.messageId);
       break;
+    }
     case "gate-state-sync":
       await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
       break;
@@ -186,6 +199,21 @@ export async function runClaimedJob(
       reconcileIndefinitely
         ? await retryJobIndefinitely(getPool(), job, message)
         : await failJob(getPool(), job, message, { permanent });
+    if (job.kind === "operator-alert") {
+      const payload = normalizeLegacyOperatorAlertPayload(job.payload);
+      if (payload) {
+        await recordOperatorAlertFailure(
+          getDb(),
+          payload,
+          message,
+          outcome === "failed",
+        ).catch((auditError) => {
+          console.error(
+            `[${label}] operator alert audit update failed: ${redactSecrets(auditError)}`,
+          );
+        });
+      }
+    }
     console.error(
       `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
     );

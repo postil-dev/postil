@@ -58,6 +58,8 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
           webhook_recovery_unresolved: "2",
           webhook_recovery_terminal: "1",
           webhook_recovery_last_scan_age_seconds: "42",
+          operator_alert_failures_current: "1",
+          oldest_operator_alert_pending_age_seconds: "90",
           watchdog_kills: "5",
         },
       ],
@@ -91,6 +93,17 @@ function queryResponse(text: string): { rows: Array<Record<string, string | null
         { kind: "respond", status: "failed", count: "1" },
         { kind: "review", status: "queued", count: "7" },
         { kind: "review", status: "running", count: "2" },
+      ],
+    };
+  }
+  if (
+    sql.includes("FROM operator_alert_deliveries") &&
+    sql.includes("GROUP BY event, status")
+  ) {
+    return {
+      rows: [
+        { event: "trial_started", status: "delivered", count: "2" },
+        { event: "trial_expired", status: "queued", count: "1" },
       ],
     };
   }
@@ -218,6 +231,11 @@ describe("/api/metrics", () => {
     expect(text).toContain('postil_webhook_deliveries_24h_by_event{event="pull_request"} 7');
     expect(text).toContain('postil_jobs_current{kind="review",status="queued"} 7');
     expect(text).toContain('postil_jobs_current{kind="respond",status="failed"} 1');
+    expect(text).toContain(
+      'postil_operator_alerts_current{event="trial_started",status="delivered"} 2',
+    );
+    expect(text).toContain("postil_operator_alert_failures_current 1");
+    expect(text).toContain("postil_oldest_operator_alert_pending_age_seconds 90");
     expect(text).toContain('postil_oldest_job_age_seconds{status="queued"} 300');
     expect(text).toContain('postil_oldest_job_age_seconds{status="running"} 45');
     expect(text).toContain("postil_oldest_running_review_age_seconds 720");
@@ -236,7 +254,7 @@ describe("/api/metrics", () => {
     expect(text).toContain('postil_review_incidents_30m{category="invalid_output"} 5');
     expect(text).toContain('postil_review_incidents_30m{category="failed_job"} 6');
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(10);
+    expect(queryCalls).toBe(11);
   });
 
   test("keeps the scrape successful and reports database down when DB access fails", async () => {
@@ -250,6 +268,6 @@ describe("/api/metrics", () => {
     expect(text).not.toContain("postil_database_size_bytes");
     expect(text).not.toContain("postil_queue_depth");
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(10);
+    expect(queryCalls).toBe(11);
   });
 });

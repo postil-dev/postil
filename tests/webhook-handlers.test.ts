@@ -85,6 +85,10 @@ mock.module("@/lib/github/checks", () => ({
 const { POST } = await import("@/app/api/webhooks/github/route");
 const { getDb, getPool } = await import("@/lib/db");
 const { hasNewerCompletedReviewForHead } = await import("@/lib/finding-approvals");
+const {
+  reconcileOperatorAlertDeliveries,
+  sweepExpiredSelfServiceTrials,
+} = await import("@/lib/operator-alerts");
 const { claimJob } = await import("@/lib/queue");
 const { runClaimedJob } = await import("@/worker/runner");
 
@@ -144,7 +148,14 @@ describeDb("webhook handler behaviour", () => {
           await pool.query(trimmed);
         } catch (err) {
           const code = (err as { code?: string }).code;
-          if (code !== "42P07" && code !== "42710" && code !== "42701") throw err;
+          if (
+            code !== "42P07" &&
+            code !== "42710" &&
+            code !== "42701" &&
+            code !== "42723"
+          ) {
+            throw err;
+          }
         }
       }
     }
@@ -472,14 +483,19 @@ describeDb("webhook handler behaviour", () => {
     const afterReinstall = await pool.query<{
       trial_ends_at: Date;
       alert_count: number;
+      removal_alert_count: number;
     }>(
       `SELECT entitlement.trial_ends_at,
-              (SELECT count(*)::int FROM jobs WHERE kind = 'operator-alert') AS alert_count
+              (SELECT count(*)::int FROM jobs
+                WHERE kind = 'operator-alert' AND payload ->> 'event' = 'trial_started') AS alert_count,
+              (SELECT count(*)::int FROM jobs
+                WHERE kind = 'operator-alert' AND payload ->> 'event' = 'installation_removed') AS removal_alert_count
          FROM organization_entitlements entitlement`,
     );
     expect(afterReinstall.rows).toHaveLength(1);
     expect(afterReinstall.rows[0]!.trial_ends_at).toEqual(first.rows[0]!.trial_ends_at);
     expect(afterReinstall.rows[0]!.alert_count).toBe(1);
+    expect(afterReinstall.rows[0]!.removal_alert_count).toBe(1);
   });
 
   test("suspended installation waits to grant its trial until unsuspended", async () => {
@@ -515,6 +531,66 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(entitlement.rows).toEqual([{ subscription_mode: "byok" }]);
     expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(1);
+  });
+
+  test("expired trials transition once and queue one audited owner alert", async () => {
+    const orgId = await seedOrg();
+    const trialEndsAt = new Date("2026-07-18T11:00:00.000Z");
+    await pool.query(
+      `INSERT INTO organization_entitlements
+         (org_id, subscription_mode, status, trial_ends_at, period_starts_at,
+          period_ends_at, updated_by)
+       VALUES ($1, 'byok', 'trialing', $2::timestamptz,
+               $2::timestamptz - interval '30 days', $2::timestamptz,
+               'self-service-trial')`,
+      [orgId, trialEndsAt],
+    );
+
+    const now = new Date("2026-07-18T12:00:00.000Z");
+    const [first, concurrent] = await Promise.all([
+      sweepExpiredSelfServiceTrials(getDb(), now),
+      sweepExpiredSelfServiceTrials(getDb(), now),
+    ]);
+    expect(first.transitioned + concurrent.transitioned).toBe(1);
+    expect(first.alerted + concurrent.alerted).toBe(1);
+
+    const state = await pool.query<{
+      status: string;
+      updated_by: string;
+      job_count: number;
+      audit_count: number;
+    }>(
+      `SELECT entitlement.status, entitlement.updated_by,
+              (SELECT count(*)::int FROM jobs
+                WHERE kind = 'operator-alert' AND payload ->> 'event' = 'trial_expired') AS job_count,
+              (SELECT count(*)::int FROM operator_alert_deliveries
+                WHERE event = 'trial_expired' AND status = 'queued') AS audit_count
+         FROM organization_entitlements entitlement
+        WHERE entitlement.org_id = $1`,
+      [orgId],
+    );
+    expect(state.rows[0]).toMatchObject({
+      status: "past_due",
+      updated_by: "self-service-trial-expiry",
+      job_count: 1,
+      audit_count: 1,
+    });
+    expect(await sweepExpiredSelfServiceTrials(getDb(), now)).toEqual({
+      transitioned: 0,
+      alerted: 0,
+    });
+
+    await pool.query(
+      `UPDATE jobs SET status = 'done'
+       WHERE kind = 'operator-alert' AND payload ->> 'event' = 'trial_expired'`,
+    );
+    await reconcileOperatorAlertDeliveries(getDb());
+    const delivered = await pool.query<{ status: string; delivered_at: Date | null }>(
+      `SELECT status, delivered_at FROM operator_alert_deliveries
+       WHERE event = 'trial_expired'`,
+    );
+    expect(delivered.rows[0]?.status).toBe("delivered");
+    expect(delivered.rows[0]?.delivered_at).toBeInstanceOf(Date);
   });
 
   test("trial setup does not enqueue email when operator alerts are not configured", async () => {

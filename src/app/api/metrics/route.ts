@@ -44,6 +44,9 @@ interface DatabaseMetrics {
   webhookRecoveryLastScanAge: number;
   webhookDeliveries24hByEvent: Array<{ event: string; count: number }>;
   jobCounts: Array<{ kind: string; status: string; count: number }>;
+  operatorAlertCounts: Array<{ event: string; status: string; count: number }>;
+  operatorAlertFailuresCurrent: number;
+  oldestOperatorAlertPendingAge: number;
   oldestJobAges: Map<string, number>;
   oldestRunningReviewAge: number;
   usageTokens: Array<{ model: string; type: "prompt" | "completion"; tokens: number }>;
@@ -169,6 +172,20 @@ export async function GET(request: Request): Promise<NextResponse> {
             row.status,
           )}"} ${row.count}`,
       ),
+      "# HELP postil_operator_alerts_current Durable operator email alerts by event and delivery status.",
+      "# TYPE postil_operator_alerts_current gauge",
+      ...dbMetrics.operatorAlertCounts.map(
+        (row) =>
+          `postil_operator_alerts_current{event="${escapeLabelValue(
+            row.event,
+          )}",status="${escapeLabelValue(row.status)}"} ${row.count}`,
+      ),
+      "# HELP postil_operator_alert_failures_current Operator email alerts with exhausted delivery retries.",
+      "# TYPE postil_operator_alert_failures_current gauge",
+      `postil_operator_alert_failures_current ${dbMetrics.operatorAlertFailuresCurrent}`,
+      "# HELP postil_oldest_operator_alert_pending_age_seconds Age of the oldest queued or retrying operator email alert.",
+      "# TYPE postil_oldest_operator_alert_pending_age_seconds gauge",
+      `postil_oldest_operator_alert_pending_age_seconds ${dbMetrics.oldestOperatorAlertPendingAge}`,
       "# HELP postil_oldest_job_age_seconds Age in seconds of the oldest queued or running job.",
       "# TYPE postil_oldest_job_age_seconds gauge",
       ...JOB_AGE_STATUSES.map(
@@ -231,6 +248,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     silence,
     webhooks24hByEvent,
     jobsByKindStatus,
+    operatorAlertsByEventStatus,
     oldestJobs,
     oldestRunningReview,
     usageByModel,
@@ -256,6 +274,8 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       webhook_recovery_unresolved: string;
       webhook_recovery_terminal: string;
       webhook_recovery_last_scan_age_seconds: string;
+      operator_alert_failures_current: string;
+      oldest_operator_alert_pending_age_seconds: string;
       watchdog_kills: string;
     }>(`
       SELECT
@@ -278,6 +298,8 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         (SELECT count(*)::text FROM github_webhook_delivery_recoveries WHERE outcome = 'failure' AND recovery_delivery_id IS NULL AND COALESCE(request_state, '') NOT IN ('terminal', 'exhausted')) AS webhook_recovery_unresolved,
         (SELECT count(*)::text FROM github_webhook_delivery_recoveries WHERE request_state IN ('terminal', 'exhausted')) AS webhook_recovery_terminal,
         (SELECT COALESCE(EXTRACT(EPOCH FROM now() - last_page_at), 0)::int::text FROM github_webhook_redelivery_state WHERE id = 1) AS webhook_recovery_last_scan_age_seconds,
+        (SELECT count(*)::text FROM operator_alert_deliveries WHERE status = 'failed') AS operator_alert_failures_current,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text FROM operator_alert_deliveries WHERE status IN ('queued', 'retrying')) AS oldest_operator_alert_pending_age_seconds,
         (SELECT count(*)::text FROM reviews WHERE status = 'failed' AND error_message LIKE 'watchdog:%') AS watchdog_kills
     `),
     pool.query<{ status: string; count: string }>(`
@@ -309,6 +331,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       FROM jobs
       GROUP BY kind, status
       ORDER BY kind, status
+    `),
+    pool.query<{ event: string; status: string; count: string }>(`
+      SELECT event, status, count(*)::text AS count
+      FROM operator_alert_deliveries
+      GROUP BY event, status
+      ORDER BY event, status
     `),
     pool.query<{ status: string; age_seconds: string | null }>(`
       SELECT
@@ -466,6 +494,13 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       status: jobRow.status,
       count: toNumber(jobRow.count),
     })),
+    operatorAlertCounts: operatorAlertsByEventStatus.rows.map((alertRow) => ({
+      event: alertRow.event,
+      status: alertRow.status,
+      count: toNumber(alertRow.count),
+    })),
+    operatorAlertFailuresCurrent: toNumber(row.operator_alert_failures_current),
+    oldestOperatorAlertPendingAge: toNumber(row.oldest_operator_alert_pending_age_seconds),
     oldestJobAges: new Map(
       oldestJobs.rows.map((jobRow) => [jobRow.status, toNumber(jobRow.age_seconds)]),
     ),

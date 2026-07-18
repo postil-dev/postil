@@ -1,6 +1,9 @@
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
-import { optionalEnv } from "@/lib/env";
+import {
+  enqueueOperatorAlert,
+  trialStartedAlertPayload,
+} from "@/lib/operator-alerts";
 
 export const SELF_SERVICE_TRIAL_DAYS = 30;
 const SELF_SERVICE_TRIAL_DURATION_MS =
@@ -51,22 +54,10 @@ export async function grantSelfServiceTrial(
 
   if (!created) return { granted: false, trialEndsAt: null };
 
-  if (optionalEnv("POSTIL_OPERATOR_ALERT_EMAIL")) {
-    await db.insert(schema.jobs).values({
-      kind: "operator-alert",
-      payload: {
-        event: "trial_started",
-        orgId: input.orgId,
-        orgSlug: input.orgSlug,
-        accountLogin: input.accountLogin,
-        accountType: input.accountType,
-        githubOwnerId: input.githubOwnerId,
-        githubInstallationId: input.githubInstallationId,
-        trialEndsAt: trialEndsAt.toISOString(),
-      },
-      maxAttempts: 5,
-    });
-  }
+  await enqueueOperatorAlert(
+    db,
+    trialStartedAlertPayload({ ...input, trialEndsAt }),
+  );
 
   return { granted: true, trialEndsAt };
 }

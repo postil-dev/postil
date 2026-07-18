@@ -102,18 +102,6 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   intent?: "fail" | "neutralize";
 }
 
-/** A durable, idempotent notification to the verified Postil operator inbox. */
-export interface OperatorAlertJobPayload extends Record<string, unknown> {
-  event: "trial_started";
-  orgId: number;
-  orgSlug: string;
-  accountLogin: string;
-  accountType: string;
-  githubOwnerId: number;
-  githubInstallationId: number;
-  trialEndsAt: string;
-}
-
 export interface WebhookDispatchJobPayload extends Record<string, unknown> {
   deliveryId: string;
 }

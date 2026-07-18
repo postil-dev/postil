@@ -25,6 +25,8 @@ describe("production monitor email", () => {
     );
     expect(workflow).toContain("vars.POSTIL_OPERATOR_ALERT_EMAIL");
     expect(workflow).toContain("secret-path: /postil");
+    expect(workflow).toContain("postil_operator_alert_failures_current");
+    expect(workflow).toContain("postil_oldest_operator_alert_pending_age_seconds");
   });
 
   test("sends a bounded idempotent failure alert without production output", async () => {

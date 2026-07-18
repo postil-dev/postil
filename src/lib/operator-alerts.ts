@@ -1,0 +1,325 @@
+import { and, eq, lte, sql } from "drizzle-orm";
+
+import type { Database } from "@/lib/db";
+import { schema } from "@/lib/db";
+import { optionalEnv } from "@/lib/env";
+
+export type OperatorAlertEvent =
+  | "trial_started"
+  | "trial_expired"
+  | "installation_removed";
+
+interface OperatorAlertBasePayload extends Record<string, unknown> {
+  event: OperatorAlertEvent;
+  eventKey: string;
+  orgId: number;
+  orgSlug: string;
+  accountLogin: string;
+  githubOwnerId: number;
+}
+
+export interface TrialStartedAlertPayload extends OperatorAlertBasePayload {
+  event: "trial_started";
+  accountType: string;
+  githubInstallationId: number;
+  trialEndsAt: string;
+}
+
+export interface TrialExpiredAlertPayload extends OperatorAlertBasePayload {
+  event: "trial_expired";
+  trialEndsAt: string;
+}
+
+export interface InstallationRemovedAlertPayload extends OperatorAlertBasePayload {
+  event: "installation_removed";
+  accountType: string;
+  githubInstallationId: number;
+}
+
+export type OperatorAlertJobPayload =
+  | TrialStartedAlertPayload
+  | TrialExpiredAlertPayload
+  | InstallationRemovedAlertPayload;
+
+type AlertWriteDatabase = Pick<Database, "insert">;
+
+/** Insert the audit row and queue job together inside the caller's transaction. */
+export async function enqueueOperatorAlert(
+  db: AlertWriteDatabase,
+  payload: OperatorAlertJobPayload,
+): Promise<boolean> {
+  if (!optionalEnv("POSTIL_OPERATOR_ALERT_EMAIL")) return false;
+
+  const created = await db
+    .insert(schema.operatorAlertDeliveries)
+    .values({
+      eventKey: payload.eventKey,
+      event: payload.event,
+      orgId: payload.orgId,
+      githubInstallationId:
+        payload.event === "trial_expired" ? null : payload.githubInstallationId,
+    })
+    .onConflictDoNothing({ target: schema.operatorAlertDeliveries.eventKey })
+    .returning({ eventKey: schema.operatorAlertDeliveries.eventKey });
+  if (created.length === 0) return false;
+
+  await db.insert(schema.jobs).values({
+    kind: "operator-alert",
+    payload,
+    maxAttempts: 5,
+  });
+  return true;
+}
+
+/** Ensure a rolling-deploy or legacy queue job has a durable audit row. */
+export async function ensureOperatorAlertDelivery(
+  db: Database,
+  payload: OperatorAlertJobPayload,
+  createdAt = new Date(),
+): Promise<void> {
+  await db
+    .insert(schema.operatorAlertDeliveries)
+    .values({
+      eventKey: payload.eventKey,
+      event: payload.event,
+      orgId: payload.orgId,
+      githubInstallationId:
+        payload.event === "trial_expired" ? null : payload.githubInstallationId,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing({ target: schema.operatorAlertDeliveries.eventKey });
+}
+
+export function trialStartedAlertPayload(input: {
+  orgId: number;
+  orgSlug: string;
+  accountLogin: string;
+  accountType: string;
+  githubOwnerId: number;
+  githubInstallationId: number;
+  trialEndsAt: Date;
+}): TrialStartedAlertPayload {
+  return {
+    event: "trial_started",
+    eventKey: `trial-started:${input.githubOwnerId}`,
+    orgId: input.orgId,
+    orgSlug: input.orgSlug,
+    accountLogin: input.accountLogin,
+    accountType: input.accountType,
+    githubOwnerId: input.githubOwnerId,
+    githubInstallationId: input.githubInstallationId,
+    trialEndsAt: input.trialEndsAt.toISOString(),
+  };
+}
+
+export function installationRemovedAlertPayload(input: {
+  orgId: number;
+  orgSlug: string;
+  accountLogin: string;
+  accountType: string;
+  githubOwnerId: number;
+  githubInstallationId: number;
+}): InstallationRemovedAlertPayload {
+  return {
+    event: "installation_removed",
+    eventKey: `installation-removed:${input.githubInstallationId}`,
+    ...input,
+  };
+}
+
+/** Transition expired trials once and queue one operator alert per transition. */
+export async function sweepExpiredSelfServiceTrials(
+  db: Database,
+  now = new Date(),
+  limit = 100,
+): Promise<{ transitioned: number; alerted: number }> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+    throw new Error("expired trial sweep limit must be in 1..1000");
+  }
+  const expired = await db
+    .select({
+      orgId: schema.organizationEntitlements.orgId,
+      trialEndsAt: schema.organizationEntitlements.trialEndsAt,
+      orgSlug: schema.organizations.slug,
+      accountLogin: schema.organizations.name,
+      githubOwnerId: schema.organizations.githubOrgId,
+    })
+    .from(schema.organizationEntitlements)
+    .innerJoin(
+      schema.organizations,
+      eq(schema.organizations.id, schema.organizationEntitlements.orgId),
+    )
+    .where(
+      and(
+        eq(schema.organizationEntitlements.status, "trialing"),
+        lte(schema.organizationEntitlements.trialEndsAt, now),
+      ),
+    )
+    .orderBy(schema.organizationEntitlements.trialEndsAt)
+    .limit(limit);
+
+  let transitioned = 0;
+  let alerted = 0;
+  for (const row of expired) {
+    if (!row.trialEndsAt) continue;
+    const trialEndsAt = row.trialEndsAt;
+    const result = await db.transaction(async (tx) => {
+      const changed = await tx
+        .update(schema.organizationEntitlements)
+        .set({
+          status: "past_due",
+          updatedBy: "self-service-trial-expiry",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(schema.organizationEntitlements.orgId, row.orgId),
+            eq(schema.organizationEntitlements.status, "trialing"),
+            lte(schema.organizationEntitlements.trialEndsAt, now),
+          ),
+        )
+        .returning({ orgId: schema.organizationEntitlements.orgId });
+      if (changed.length === 0) return { transitioned: false, alerted: false };
+      if (row.githubOwnerId === null) {
+        return { transitioned: true, alerted: false };
+      }
+      const payload: TrialExpiredAlertPayload = {
+        event: "trial_expired",
+        eventKey: `trial-expired:${row.orgId}:${trialEndsAt.toISOString()}`,
+        orgId: row.orgId,
+        orgSlug: row.orgSlug,
+        accountLogin: row.accountLogin,
+        githubOwnerId: row.githubOwnerId,
+        trialEndsAt: trialEndsAt.toISOString(),
+      };
+      return {
+        transitioned: true,
+        alerted: await enqueueOperatorAlert(tx, payload),
+      };
+    });
+    if (result.transitioned) transitioned += 1;
+    if (result.alerted) alerted += 1;
+  }
+  return { transitioned, alerted };
+}
+
+/** Restore audit consistency across retries and rolling deployments. */
+export async function reconcileOperatorAlertDeliveries(db: Database): Promise<void> {
+  await db.execute(sql`
+    WITH recent_jobs AS MATERIALIZED (
+      SELECT
+        CASE
+          WHEN NULLIF(jobs.payload ->> 'eventKey', '') IS NOT NULL
+            THEN jobs.payload ->> 'eventKey'
+          WHEN jobs.payload ->> 'event' = 'trial_started'
+               AND jobs.payload ->> 'githubOwnerId' ~ '^[1-9][0-9]*$'
+            THEN 'trial-started:' || (jobs.payload ->> 'githubOwnerId')
+        END AS event_key,
+        jobs.payload ->> 'event' AS event,
+        organization.id AS org_id,
+        CASE WHEN jobs.payload ->> 'githubInstallationId' ~ '^[1-9][0-9]*$'
+          THEN (jobs.payload ->> 'githubInstallationId')::bigint END AS github_installation_id,
+        jobs.status,
+        jobs.last_error,
+        jobs.created_at
+      FROM jobs
+      LEFT JOIN organizations AS organization
+        ON organization.id = CASE WHEN jobs.payload ->> 'orgId' ~ '^[1-9][0-9]*$'
+          THEN (jobs.payload ->> 'orgId')::bigint END
+      WHERE jobs.kind = 'operator-alert'
+      ORDER BY jobs.id DESC
+      LIMIT 1000
+    ), inserted AS (
+      INSERT INTO operator_alert_deliveries
+        (event_key, event, org_id, github_installation_id, status, created_at, updated_at)
+      SELECT event_key, event, org_id, github_installation_id, 'queued', created_at, created_at
+      FROM recent_jobs
+      WHERE event_key IS NOT NULL
+        AND event IN ('trial_started', 'trial_expired', 'installation_removed')
+        AND org_id IS NOT NULL
+      ON CONFLICT (event_key) DO NOTHING
+    )
+    UPDATE operator_alert_deliveries AS delivery
+    SET
+      status = CASE WHEN job.status = 'done' THEN 'delivered' ELSE 'failed' END,
+      last_error = CASE WHEN job.status = 'failed' THEN job.last_error END,
+      last_attempt_at = now(),
+      delivered_at = CASE
+        WHEN job.status = 'done' THEN COALESCE(delivery.delivered_at, now())
+        ELSE delivery.delivered_at
+      END,
+      updated_at = now()
+    FROM recent_jobs AS job
+    WHERE delivery.event_key = job.event_key
+      AND (
+        (job.status = 'done' AND delivery.status <> 'delivered')
+        OR (job.status = 'failed' AND delivery.status IN ('queued', 'retrying'))
+      )
+  `);
+}
+
+/** Add the stable event key accepted by workers during a rolling deployment. */
+export function normalizeLegacyOperatorAlertPayload(
+  value: Record<string, unknown>,
+): OperatorAlertJobPayload | null {
+  if (value.event !== "trial_started") {
+    return typeof value.eventKey === "string" && value.eventKey
+      ? (value as OperatorAlertJobPayload)
+      : null;
+  }
+  if (
+    typeof value.githubOwnerId !== "number" ||
+    !Number.isSafeInteger(value.githubOwnerId)
+  ) {
+    return null;
+  }
+  return {
+    ...value,
+    eventKey:
+      typeof value.eventKey === "string" && value.eventKey
+        ? value.eventKey
+        : `trial-started:${value.githubOwnerId}`,
+  } as TrialStartedAlertPayload;
+}
+
+export async function recordOperatorAlertDelivered(
+  db: Database,
+  payload: OperatorAlertJobPayload,
+  messageId: string | null,
+  now = new Date(),
+): Promise<void> {
+  const rows = await db
+    .update(schema.operatorAlertDeliveries)
+    .set({
+      status: "delivered",
+      messageId,
+      lastError: null,
+      lastAttemptAt: now,
+      deliveredAt: now,
+      updatedAt: now,
+    })
+    .where(eq(schema.operatorAlertDeliveries.eventKey, payload.eventKey))
+    .returning({ eventKey: schema.operatorAlertDeliveries.eventKey });
+  if (rows.length === 0) {
+    throw new Error("operator alert audit row is missing");
+  }
+}
+
+export async function recordOperatorAlertFailure(
+  db: Database,
+  payload: OperatorAlertJobPayload,
+  error: string,
+  terminal: boolean,
+  now = new Date(),
+): Promise<void> {
+  await db
+    .update(schema.operatorAlertDeliveries)
+    .set({
+      status: terminal ? "failed" : "retrying",
+      lastError: error.slice(0, 2_000),
+      lastAttemptAt: now,
+      updatedAt: now,
+    })
+    .where(eq(schema.operatorAlertDeliveries.eventKey, payload.eventKey));
+}
