@@ -124,8 +124,10 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Brevo</strong> sends verification messages when an
-            organization administrator configures a billing contact. Review findings
-            remain in GitHub and the authenticated Postil dashboard.
+            organization administrator configures a billing contact and sends
+            the operator a one-time trial-start notice containing GitHub account
+            and App installation metadata. Review findings remain in GitHub and
+            the authenticated Postil dashboard.
           </li>
         </ul>
         <p>
@@ -141,13 +143,17 @@ export default function PrivacyPage() {
           daily identifier from the project, hostname, IP address, and user
           agent, then discards the raw IP address. DNT and Global Privacy
           Control disable browser and request analytics. Session replay,
-          person profiles, surveys, heatmaps, exception capture, and
-          autocaptured clicks are disabled. Server-side
+          person profiles, surveys, heatmaps, and autocaptured clicks are
+          disabled. Server-side
           request telemetry records sanitized path, referrer origin/public
           path, campaign parameters, user agent, and Cloudflare bot metadata
           when present; it does not send IP addresses, arbitrary query strings,
-          or protected dashboard paths. Authentication sets one first-party
-          session cookie after sign-in; analytics do not use it.
+          or protected dashboard paths. Operational monitoring sends fixed event
+          names and scrubbed exception stacks with project-relative code
+          locations. It excludes request content, source code, repository names,
+          prompts, model output, credentials, email addresses, and absolute file
+          paths. Authentication sets one first-party session cookie after sign-in;
+          analytics do not use it.
         </p>
 
         <h2>Where data is processed (residency)</h2>

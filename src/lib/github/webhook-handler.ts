@@ -347,10 +347,10 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
         .where(eq(schema.installations.githubInstallationId, installation.id));
       break;
     case "unsuspend":
-      await db
-        .update(schema.installations)
-        .set({ suspended: false })
-        .where(eq(schema.installations.githubInstallationId, installation.id));
+      await upsertInstallation(
+        { id: installation.id, suspended: false },
+        installation.account,
+      );
       break;
     default:
       break;

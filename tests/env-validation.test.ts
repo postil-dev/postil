@@ -24,6 +24,8 @@ const MANAGED_ENV = [
   "POSTHOG_LOG_INFO_SAMPLE_RATE",
   "POSTHOG_LOG_MAX_PER_MINUTE",
   "POSTIL_RELEASE_SHA",
+  "POSTIL_OPERATOR_ALERT_EMAIL",
+  "BREVO_API_KEY",
 ] as const;
 const originalEnv = new Map(
   MANAGED_ENV.map((name) => [name, process.env[name]]),
@@ -271,6 +273,19 @@ describe("web startup environment validation", () => {
     process.env.POSTIL_RELEASE_SHA = "0123456789abcdef";
 
     expect(() => validateEnv("web")).not.toThrow();
+  });
+
+  test("requires complete operator alert email configuration", () => {
+    configureRequiredWebEnvironment();
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
+    delete process.env.BREVO_API_KEY;
+    expect(() => validateEnv("web")).toThrow(/requires BREVO_API_KEY/);
+
+    process.env.BREVO_API_KEY = "brevo-test-key";
+    expect(() => validateEnv("web")).not.toThrow();
+
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "invalid";
+    expect(() => validateEnv("web")).toThrow(/must be a valid email address/);
   });
 });
 

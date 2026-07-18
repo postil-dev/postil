@@ -88,6 +88,24 @@ export async function sendVerificationEmail(input: {
   apiKey: string;
   fetchImpl?: Fetch;
 }): Promise<{ messageId: string | null }> {
+  return sendTransactionalEmail({
+    ...input,
+    text: [
+      ...input.text,
+      "",
+      "This link expires in 24 hours. If you did not request this, ignore it.",
+    ],
+  });
+}
+
+export async function sendTransactionalEmail(input: {
+  recipient: string;
+  subject: string;
+  text: string[];
+  idempotencyKey: string;
+  apiKey: string;
+  fetchImpl?: Fetch;
+}): Promise<{ messageId: string | null }> {
   const response = await (input.fetchImpl ?? fetch)(BREVO_SEND_URL, {
     method: "POST",
     headers: {
@@ -109,7 +127,7 @@ export async function sendVerificationEmail(input: {
       },
       to: [{ email: input.recipient }],
       subject: input.subject,
-      textContent: [...input.text, "", "This link expires in 24 hours. If you did not request this, ignore it."].join("\n"),
+      textContent: input.text.join("\n"),
       headers: { "Idempotency-Key": input.idempotencyKey },
     }),
     signal: AbortSignal.timeout(BREVO_TIMEOUT_MS),
@@ -122,7 +140,7 @@ export async function sendVerificationEmail(input: {
     parsed = {};
   }
   if (!response.ok && parsed.code !== "duplicate_parameter") {
-    throw new Error(`Brevo verification email failed: ${response.status}`);
+    throw new Error(`Brevo transactional email failed: ${response.status}`);
   }
   return { messageId: typeof parsed.messageId === "string" ? parsed.messageId : null };
 }

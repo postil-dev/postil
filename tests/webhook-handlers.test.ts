@@ -186,6 +186,8 @@ describeDb("webhook handler behaviour", () => {
       authorLogin: "admin",
     };
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
+    delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
     await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
@@ -401,6 +403,123 @@ describeDb("webhook handler behaviour", () => {
       authorGithubId: 4242,
       authorLogin: "dependabot[bot]",
     });
+  });
+
+  test("installation grants one owner-scoped trial and reinstall cannot reset it", async () => {
+    const account = { id: 9090, login: "NewCustomer", type: "Organization" };
+    const created = {
+      action: "created",
+      installation: { id: 8080, account, suspended_at: null },
+      repositories: [],
+    };
+
+    expect((await post("installation", created, "trial-created-1")).status).toBe(200);
+
+    const first = await pool.query<{
+      org_id: string;
+      status: string;
+      subscription_mode: string;
+      trial_ends_at: Date;
+      period_starts_at: Date;
+      period_ends_at: Date;
+      included_usage_micros: string;
+    }>(
+      `SELECT org_id, status, subscription_mode, trial_ends_at, period_starts_at,
+              period_ends_at, included_usage_micros
+         FROM organization_entitlements`,
+    );
+    expect(first.rows).toHaveLength(1);
+    expect(first.rows[0]).toMatchObject({
+      status: "trialing",
+      subscription_mode: "hosted",
+      included_usage_micros: "100000000",
+    });
+    expect(first.rows[0]!.trial_ends_at.getTime() - first.rows[0]!.period_starts_at.getTime())
+      .toBe(30 * 24 * 60 * 60 * 1_000);
+    expect(first.rows[0]!.period_ends_at).toEqual(first.rows[0]!.trial_ends_at);
+
+    const alerts = await pool.query<{ payload: Record<string, unknown> }>(
+      "SELECT payload FROM jobs WHERE kind = 'operator-alert'",
+    );
+    expect(alerts.rows).toHaveLength(1);
+    expect(alerts.rows[0]!.payload).toMatchObject({
+      event: "trial_started",
+      orgSlug: "newcustomer",
+      accountLogin: "NewCustomer",
+      githubOwnerId: 9090,
+      githubInstallationId: 8080,
+    });
+
+    expect((await post("installation", {
+      action: "deleted",
+      installation: { id: 8080, account },
+    }, "trial-deleted-1")).status).toBe(200);
+    expect((await post("installation", {
+      ...created,
+      installation: { id: 8081, account, suspended_at: null },
+    }, "trial-created-2")).status).toBe(200);
+
+    const afterReinstall = await pool.query<{
+      trial_ends_at: Date;
+      alert_count: number;
+    }>(
+      `SELECT entitlement.trial_ends_at,
+              (SELECT count(*)::int FROM jobs WHERE kind = 'operator-alert') AS alert_count
+         FROM organization_entitlements entitlement`,
+    );
+    expect(afterReinstall.rows).toHaveLength(1);
+    expect(afterReinstall.rows[0]!.trial_ends_at).toEqual(first.rows[0]!.trial_ends_at);
+    expect(afterReinstall.rows[0]!.alert_count).toBe(1);
+  });
+
+  test("suspended installation waits to grant its trial until unsuspended", async () => {
+    const account = { id: 9191, login: "PausedCustomer", type: "Organization" };
+    expect((await post("installation", {
+      action: "created",
+      installation: { id: 8181, account, suspended_at: "2026-07-18T00:00:00Z" },
+      repositories: [],
+    }, "trial-suspended-created")).status).toBe(200);
+    expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(0);
+
+    expect((await post("installation", {
+      action: "unsuspend",
+      installation: { id: 8181, account, suspended_at: null },
+    }, "trial-unsuspended")).status).toBe(200);
+    expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(1);
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(1);
+  });
+
+  test("hosted pause starts a BYOK trial without consuming hosted inference", async () => {
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
+    expect((await post("installation", {
+      action: "created",
+      installation: {
+        id: 8282,
+        account: { id: 9292, login: "WaitingCustomer", type: "Organization" },
+        suspended_at: null,
+      },
+      repositories: [],
+    }, "trial-hosted-paused")).status).toBe(200);
+    const entitlement = await pool.query<{ subscription_mode: string }>(
+      "SELECT subscription_mode FROM organization_entitlements",
+    );
+    expect(entitlement.rows).toEqual([{ subscription_mode: "byok" }]);
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(1);
+  });
+
+  test("trial setup does not enqueue email when operator alerts are not configured", async () => {
+    delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
+    expect((await post("installation", {
+      action: "created",
+      installation: {
+        id: 8383,
+        account: { id: 9393, login: "SelfHostedCustomer", type: "Organization" },
+        suspended_at: null,
+      },
+      repositories: [],
+    }, "trial-without-operator-alerts")).status).toBe(200);
+    expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(1);
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(0);
   });
 
   test("pull_request synchronize neutralizes superseded review check-runs", async () => {
