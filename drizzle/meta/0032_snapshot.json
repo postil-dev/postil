@@ -688,7 +688,7 @@
         },
         "billing_provider_events_outcome_check": {
           "name": "billing_provider_events_outcome_check",
-          "value": "\"billing_provider_events\".\"outcome\" IN ('applied', 'stale', 'ignored', 'unmatched')"
+          "value": "\"billing_provider_events\".\"outcome\" IN ('processing', 'applied', 'stale', 'ignored', 'unmatched')"
         },
         "billing_provider_events_event_type_nonempty": {
           "name": "billing_provider_events_event_type_nonempty",
