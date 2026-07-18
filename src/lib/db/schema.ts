@@ -678,7 +678,7 @@ export const billingAuthorSettlements = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
-      .references(() => organizations.id, { onDelete: "cascade" }),
+      .references(() => organizations.id, { onDelete: "restrict" }),
     providerSubscriptionId: text("provider_subscription_id").notNull(),
     periodStartsAt: timestamp("period_starts_at", {
       withTimezone: true,

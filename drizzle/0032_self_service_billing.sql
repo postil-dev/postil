@@ -73,7 +73,7 @@ CREATE TABLE "billing_provider_subscriptions" (
 );
 --> statement-breakpoint
 ALTER TABLE "operator_alert_deliveries" DROP CONSTRAINT "operator_alert_deliveries_event_check";--> statement-breakpoint
-ALTER TABLE "billing_author_settlements" ADD CONSTRAINT "billing_author_settlements_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "billing_author_settlements" ADD CONSTRAINT "billing_author_settlements_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "billing_checkout_transactions" ADD CONSTRAINT "billing_checkout_transactions_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "billing_checkout_transactions" ADD CONSTRAINT "billing_checkout_transactions_requested_by_user_id_users_id_fk" FOREIGN KEY ("requested_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "billing_provider_events" ADD CONSTRAINT "billing_provider_events_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint

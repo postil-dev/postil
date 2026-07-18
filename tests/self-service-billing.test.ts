@@ -479,6 +479,27 @@ describeDb("self-service billing", () => {
     expect(jobs.rows[0]!.count).toBe(1);
     delete process.env.POSTIL_PADDLE_BILLING_ENABLED;
   });
+
+  test("retains financial settlements when organization deletion is attempted", async () => {
+    const account = await createCheckoutAccount(pool, "retained-ledger", 303, 403);
+    const settlement = await pool.query<{ id: string }>(
+      `INSERT INTO billing_author_settlements
+         (org_id, provider_subscription_id, period_starts_at, period_ends_at,
+          active_author_count, total_amount_cents, status)
+       VALUES ($1, 'sub_retained', '2026-06-18T00:00:00Z', '2026-07-18T00:00:00Z', 1, 600, 'charged')
+       RETURNING id`,
+      [account.orgId],
+    );
+
+    await expect(
+      pool.query("DELETE FROM organizations WHERE id = $1", [account.orgId]),
+    ).rejects.toThrow(/foreign key constraint/);
+    const retained = await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM billing_author_settlements WHERE id = $1",
+      [settlement.rows[0]!.id],
+    );
+    expect(retained.rows[0]!.count).toBe(1);
+  });
 });
 
 function subscriptionEvent(input: {

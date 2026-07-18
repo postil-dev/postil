@@ -78,6 +78,8 @@ export default function PrivacyPage() {
           delete review history. A verified organization administrator can
           request an export or deletion of organization data by emailing{" "}
           <a href="mailto:hello@postil.dev">hello@postil.dev</a>.
+          Billing records required for accounting, tax, fraud prevention, or
+          disputes are retained only for those purposes.
         </p>
 
         <h2>Bring-your-own API keys</h2>
