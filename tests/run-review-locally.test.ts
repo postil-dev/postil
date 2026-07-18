@@ -101,6 +101,7 @@ console.log("fixture-key");
         "1000",
         "--gate-check-run-id",
         "1001",
+        "--bounded",
         "--output",
         "json",
       ],
@@ -467,7 +468,7 @@ function fakePostilSource(): string {
   return `#!/usr/bin/env bun
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
-  console.log("postil 0.6.0");
+  console.log("postil 0.7.0");
   process.exit(0);
 }
 if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {

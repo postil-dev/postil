@@ -1025,6 +1025,9 @@ async function ensureTrustedPostilExecutable(): Promise<void> {
       `local review requires Postil v0.6.0 or newer; ${executable} reported ${JSON.stringify((stdout || stderr).trim())}`,
     );
   }
+  const supportsBoundedReview =
+    Number(versionMatch[1]) > 0 || Number(versionMatch[2]) >= 7;
+  process.env.POSTIL_LOCAL_REVIEW_BOUNDED = supportsBoundedReview ? "1" : "0";
   process.env.POSTIL_BIN = executable;
   process.env.PATH = trustedPath;
 }
