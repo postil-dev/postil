@@ -183,7 +183,7 @@ try {
     "Organization settings",
     "Config files",
     "Hosted by Postil",
-    "Managed reviews are paused.",
+    "Hosted inference is paused.",
     "acme/unreached",
     "pending",
     "set up but not yet exercised",
