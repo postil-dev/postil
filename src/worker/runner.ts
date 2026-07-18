@@ -61,6 +61,7 @@ const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
 );
 
 let backgroundDrain: Promise<void> | undefined;
+let backgroundDrainRequested = false;
 
 export const PROCESSABLE_JOB_KINDS = [
   "webhook-dispatch",
@@ -273,18 +274,33 @@ export async function drainWebhookDispatch(
 
 export function triggerQueueDrain(reason: string): void {
   if (optionalEnv("POSTIL_WEBHOOK_DRAIN_ENABLED", "0") !== "1") return;
+  backgroundDrainRequested = true;
   if (backgroundDrain) return;
   const label = `web-drain:${reason.replace(/[^a-z0-9_-]/gi, "_")}`;
-  backgroundDrain = drainQueueOnce(label)
-    .then((count) => {
-      if (count > 0) console.log(`[${label}] drained ${count} job(s)`);
-    })
-    .catch((err) => {
-      console.error(`[${label}] drain failed: ${redactSecrets(err)}`);
-    })
-    .finally(() => {
-      backgroundDrain = undefined;
-    });
+  backgroundDrain = runCoalescedQueueDrains(label);
+}
+
+async function runCoalescedQueueDrains(label: string): Promise<void> {
+  let pass = 0;
+  try {
+    while (true) {
+      backgroundDrainRequested = false;
+      pass += 1;
+      const passLabel = `${label}:${pass}`;
+      try {
+        const count = await drainQueueOnce(passLabel);
+        if (count > 0) console.log(`[${passLabel}] drained ${count} job(s)`);
+      } catch (err) {
+        console.error(`[${passLabel}] drain failed: ${redactSecrets(err)}`);
+      }
+      if (backgroundDrainRequested) continue;
+      return;
+    }
+  } finally {
+    const followUpRequested = backgroundDrainRequested;
+    backgroundDrain = undefined;
+    if (followUpRequested) triggerQueueDrain(`${label}:settlement`);
+  }
 }
 
 export function readPositiveIntEnv(name: string, fallback: number): number {
