@@ -86,6 +86,13 @@ interface LocalGitHubServer {
   stop(): void;
 }
 
+interface LocalPullFile {
+  filename: string;
+  status: "added" | "removed" | "modified" | "renamed";
+  previous_filename?: string;
+  changes: number;
+}
+
 interface DatabaseHandle {
   databaseUrl: string;
   cleanup(): Promise<void>;
@@ -182,6 +189,10 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
       : options.target.kind === "base"
         ? { kind: "tree", ref: selectedHead }
         : { kind: "working-tree" };
+  const baseRepositorySource: RepositorySource =
+    options.target.kind === "base"
+      ? { kind: "tree", ref: options.target.base }
+      : repositorySource;
 
   const database = await createDisposableDatabase(options.repoFullName, options.keepDatabase);
   const github = createLocalGitHubServer({
@@ -193,6 +204,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     baseSha,
     pullRequestTitle,
     repositorySource,
+    baseRepositorySource,
   });
 
   const cacheDir = await mkdtemp(join(tmpdir(), "postil-local-review-cache-"));
@@ -383,8 +395,10 @@ function createLocalGitHubServer(input: {
   baseSha: string;
   pullRequestTitle: string;
   repositorySource: RepositorySource;
+  baseRepositorySource: RepositorySource;
 }): LocalGitHubServer {
   const events: LocalGitHubEvent[] = [];
+  const pullFiles = pullFilesFromDiff(input.diffText);
   let nextCheckRunId = 1000;
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -418,20 +432,37 @@ function createLocalGitHubServer(input: {
         return json({
           title: input.pullRequestTitle,
           body: "",
+          state: "open",
+          merged: false,
           head: { sha: input.headSha },
           base: { sha: input.baseSha },
+          changed_files: pullFiles.length,
         });
       }
 
       if (request.method === "GET" && suffix.startsWith("compare/")) {
+        const accept = request.headers.get("accept") ?? "";
+        if (!accept.includes("diff")) {
+          return json({ merge_base_commit: { sha: input.baseSha } });
+        }
         return new Response(input.diffText, {
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
       }
 
+      if (
+        request.method === "GET" &&
+        suffix.startsWith(`pulls/${input.prNumber}/files`)
+      ) {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return json(page === 1 ? pullFiles : []);
+      }
+
       if (request.method === "GET" && suffix.startsWith("contents/")) {
         const relative = decodeURIComponent(suffix.slice("contents/".length));
-        return serveRepoFile(input.repoPath, input.repositorySource, relative);
+        const ref = url.searchParams.get("ref");
+        const source = ref === input.baseSha ? input.baseRepositorySource : input.repositorySource;
+        return serveRepoFile(input.repoPath, source, relative);
       }
 
       if (request.method === "POST" && suffix === "check-runs") {
@@ -489,6 +520,47 @@ function createLocalGitHubServer(input: {
     events,
     stop: () => server.stop(true),
   };
+}
+
+export function pullFilesFromDiff(diffText: string): LocalPullFile[] {
+  const sections = diffText.split(/^diff --git /m).slice(1);
+  return sections.flatMap((section) => {
+    const lines = section.split("\n");
+    const oldMarker = lines.find((line) => line.startsWith("--- "))?.slice(4);
+    const newMarker = lines.find((line) => line.startsWith("+++ "))?.slice(4);
+    const renamedFrom = lines.find((line) => line.startsWith("rename from "))?.slice(12);
+    const renamedTo = lines.find((line) => line.startsWith("rename to "))?.slice(10);
+    const oldPath = renamedFrom ?? repositoryPathFromMarker(oldMarker);
+    const newPath = renamedTo ?? repositoryPathFromMarker(newMarker);
+    const filename = newPath ?? oldPath;
+    if (!filename) return [];
+    const status =
+      oldMarker === "/dev/null"
+        ? "added"
+        : newMarker === "/dev/null"
+          ? "removed"
+          : renamedFrom && renamedTo
+            ? "renamed"
+            : "modified";
+    const changes = lines.filter(
+      (line) =>
+        (line.startsWith("+") && !line.startsWith("+++")) ||
+        (line.startsWith("-") && !line.startsWith("---")),
+    ).length;
+    return [
+      {
+        filename,
+        status,
+        ...(status === "renamed" && oldPath ? { previous_filename: oldPath } : {}),
+        changes,
+      },
+    ];
+  });
+}
+
+function repositoryPathFromMarker(marker: string | undefined): string | undefined {
+  if (!marker || marker === "/dev/null") return undefined;
+  return marker.startsWith("a/") || marker.startsWith("b/") ? marker.slice(2) : marker;
 }
 
 async function createDisposableDatabase(
