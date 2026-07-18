@@ -256,7 +256,9 @@ The app exposes three layers:
   failures and structured reviewer/scorer fallbacks, invalid model output, and failed jobs.
   The production monitor fails on any operational, scorer, invalid-output, or failed-job
   incident, more than two scorer fallbacks, or more than five model fallbacks in that
-  window without exposing provider error text.
+  window without exposing provider error text. A failed monitor run sends one
+  provider-idempotent email to the operator inbox with only the commit and Actions run
+  link. A manual test dispatch exercises the same delivery path without simulating an outage.
 - PostHog for traffic-source, campaign, pageview, and likely bot/automation analysis.
 
 PostHog is configured for anonymous cookieless capture on public pages only. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Event payloads omit arbitrary query strings and protected dashboard paths.
