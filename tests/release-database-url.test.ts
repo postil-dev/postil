@@ -1,0 +1,145 @@
+import { describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { resolveDirectDatabaseUrl } from "../scripts/resolve-direct-database-url";
+import {
+  releaseMigrationEnvironment,
+  runReleaseMigrations,
+} from "../scripts/run-release-migrations";
+
+describe("release database connection", () => {
+  test("derives the Supabase session-pool endpoint without exposing a separate secret", () => {
+    const resolved = new URL(
+      resolveDirectDatabaseUrl({
+        databaseUrl:
+          "postgresql://postgres.project:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require",
+      }),
+    );
+
+    expect(resolved.port).toBe("5432");
+    expect(resolved.searchParams.has("pgbouncer")).toBe(false);
+    expect(resolved.searchParams.get("sslmode")).toBe("require");
+  });
+
+  test("prefers an explicit direct connection and rejects unknown transaction pools", () => {
+    const direct = "postgresql://postil:secret@db.internal:5432/postil";
+    expect(
+      resolveDirectDatabaseUrl({
+        databaseUrl: "postgresql://postil:secret@pooler.example.com:6543/postil",
+        directDatabaseUrl: direct,
+      }),
+    ).toBe(new URL(direct).toString());
+    expect(() =>
+      resolveDirectDatabaseUrl({
+        databaseUrl: "postgresql://postil:secret@pooler.example.com:6543/postil",
+      }),
+    ).toThrow(/known session endpoint/);
+    expect(() =>
+      resolveDirectDatabaseUrl({
+        databaseUrl: "postgresql://postil:secret@db.internal:5432/postil",
+        directDatabaseUrl: "   ",
+      }),
+    ).toThrow(/cannot be empty/);
+  });
+
+  test("binds only the migration subprocess to the direct connection", async () => {
+    const runtimeUrl =
+      "postgresql://postgres.project:runtime-secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres";
+    const directUrl =
+      "postgresql://postgres.project:migration-secret@aws-0-eu-central-1.pooler.supabase.com:5432/postgres";
+    const parentEnvironment = {
+      DATABASE_URL: runtimeUrl,
+      POSTIL_DIRECT_DATABASE_URL: directUrl,
+      POSTIL_DB_POOL_MAX: "2",
+    };
+    let childEnvironment: Record<string, string | undefined> | undefined;
+
+    await runReleaseMigrations(parentEnvironment, (environment) => {
+      childEnvironment = environment;
+      return { exited: Promise.resolve(0) };
+    });
+
+    expect(parentEnvironment.DATABASE_URL).toBe(runtimeUrl);
+    expect(childEnvironment?.DATABASE_URL).toBe(new URL(directUrl).toString());
+    expect(childEnvironment?.POSTIL_DIRECT_DATABASE_URL).toBeUndefined();
+    expect(childEnvironment?.POSTIL_DB_POOL_MAX).toBe("2");
+  });
+
+  test("runs the checked-in migration child with the rewritten environment", async () => {
+    const root = join(import.meta.dir, "..");
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "postil-release-migration-"));
+    const fakeBun = join(temporaryDirectory, "bun");
+    const capturePath = join(temporaryDirectory, "capture.json");
+    const runtimeUrl =
+      "postgresql://postgres.project:runtime-secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require";
+
+    try {
+      await writeFile(
+        fakeBun,
+        `#!${process.execPath}\nawait Bun.write(process.env.POSTIL_TEST_CAPTURE_PATH, JSON.stringify({ arguments: process.argv.slice(2), databaseUrl: process.env.DATABASE_URL, hasDirectDatabaseUrl: "POSTIL_DIRECT_DATABASE_URL" in process.env }));\n`,
+      );
+      await chmod(fakeBun, 0o755);
+
+      const wrapper = Bun.spawn(
+        [process.execPath, "run", "scripts/run-release-migrations.ts"],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            DATABASE_URL: runtimeUrl,
+            PATH: `${temporaryDirectory}:${process.env.PATH ?? ""}`,
+            POSTIL_TEST_CAPTURE_PATH: capturePath,
+          },
+          stdout: "ignore",
+          stderr: "pipe",
+        },
+      );
+      const exitCode = await wrapper.exited;
+      const stderr = await new Response(wrapper.stderr).text();
+      expect(exitCode, stderr).toBe(0);
+
+      const capture = JSON.parse(await readFile(capturePath, "utf8")) as {
+        arguments: string[];
+        databaseUrl: string;
+        hasDirectDatabaseUrl: boolean;
+      };
+      expect(capture.arguments).toEqual(["run", "db:migrate"]);
+      expect(new URL(capture.databaseUrl).port).toBe("5432");
+      expect(new URL(capture.databaseUrl).searchParams.has("pgbouncer")).toBe(false);
+      expect(capture.hasDirectDatabaseUrl).toBe(false);
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("adds release context to migration process failures", async () => {
+    const environment = {
+      DATABASE_URL: "postgresql://postil:secret@db.internal:5432/postil",
+    };
+    await expect(
+      runReleaseMigrations(environment, () => {
+        throw new Error("spawn failed");
+      }),
+    ).rejects.toThrow("release database migration could not start");
+    await expect(
+      runReleaseMigrations(environment, () => ({ exited: Promise.reject(new Error("lost child")) })),
+    ).rejects.toThrow("release database migration status could not be observed");
+  });
+
+  test("keeps the checked-in release and deploy contracts aligned", async () => {
+    const root = join(import.meta.dir, "..");
+    const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    const deployWorkflow = await readFile(join(root, ".github", "workflows", "deploy.yml"), "utf8");
+
+    expect(packageJson.scripts["release:prepare"]).toStartWith("bun run db:migrate:release");
+    expect(packageJson.scripts["db:migrate:release"]).toBe(
+      "bun run scripts/run-release-migrations.ts",
+    );
+    expect(deployWorkflow).toContain('staged+="DATABASE_URL=${DATABASE_URL}"');
+    expect(deployWorkflow).not.toContain("POSTIL_DIRECT_DATABASE_URL");
+  });
+});

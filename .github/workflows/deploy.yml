@@ -132,14 +132,16 @@ jobs:
         run: |
           set -euo pipefail
           # Secrets are piped straight to flyctl; they never touch disk.
+          if [[ -z "${DATABASE_URL:-}" ]]; then
+            echo "::error::Infisical did not provide DATABASE_URL."
+            exit 1
+          fi
           staged=""
           token="${POSTHOG_PROJECT_TOKEN:-${NEXT_PUBLIC_POSTHOG_KEY:-}}"
           if [[ -n "${token}" ]]; then
             staged+="POSTHOG_PROJECT_TOKEN=${token}"$'\n'
           fi
-          if [[ -n "${DATABASE_URL}" ]]; then
-            staged+="DATABASE_URL=${DATABASE_URL}"$'\n'
-          fi
+          staged+="DATABASE_URL=${DATABASE_URL}"$'\n'
           if [[ -n "${BREVO_API_KEY}" ]]; then
             staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
           fi
