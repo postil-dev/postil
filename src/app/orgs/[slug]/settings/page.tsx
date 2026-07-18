@@ -5,6 +5,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 
 import { schema } from "@/lib/db";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
+import { hostedInferenceEnabled } from "@/lib/env";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import { requireOrgMembership } from "@/lib/org-access";
 import {
@@ -60,6 +61,7 @@ export default async function OrgSettingsPage({
       .where(eq(schema.orgSettings.orgId, org.id))
       .limit(1)
   )[0];
+  const managedReviewsPaused = !hostedInferenceEnabled() && !(settings?.hasKey ?? false);
   const sharedSnapshot = (
     await db
       .select({
@@ -180,7 +182,9 @@ export default async function OrgSettingsPage({
         liveSharedConfigFiles,
       ).filter(isVisibleConfigArtifact);
       const healthRow = healthByRepositoryId.get(repo.id);
-      const health = healthRow ? deriveRepoHealth(healthRow, now) : null;
+      const health = healthRow
+        ? deriveRepoHealth(healthRow, now, managedReviewsPaused)
+        : null;
       return { repo, latestReview, artifacts, healthRow, health };
     })
     .filter((summary) => summary.artifacts.length > 0);
@@ -226,6 +230,7 @@ export default async function OrgSettingsPage({
         slug={org.slug}
         rows={repoHealthRows}
         now={now}
+        managedReviewsPaused={managedReviewsPaused}
         liveConfigFilesByRepositoryId={liveConfigFilesByRepositoryId}
       />
 
@@ -235,6 +240,7 @@ export default async function OrgSettingsPage({
           <SettingsForm
             slug={org.slug}
             settings={settings}
+            managedReviewsPaused={managedReviewsPaused}
             sharedSnapshot={sharedSnapshot}
             sharedSourceFullName={sharedSnapshot?.sourceFullName ?? sharedSourceFullName}
             sharedSourceInstalled={sharedSourceInstalled}
@@ -350,6 +356,20 @@ function RepoHealthLine({
           No reviews yet. The first review runs when a pull request is opened or updated.
         </p>
       </div>
+    );
+  }
+  if (health === "paused") {
+    return (
+      <p className="font-mono text-[11px] text-charcoal/55">
+        enabled · managed reviews paused
+      </p>
+    );
+  }
+  if (health === "awaiting-review") {
+    return (
+      <p className="font-mono text-[11px] text-charcoal/55">
+        enabled · awaiting the next review
+      </p>
     );
   }
   if (health === "never-reviewed" && lastEnabledAt) {

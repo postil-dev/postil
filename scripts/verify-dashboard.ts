@@ -49,6 +49,7 @@ try {
     DATABASE_URL: databaseUrl.toString(),
     POSTIL_SESSION_SECRET: sessionSecret,
     POSTIL_OPERATOR_GITHUB_IDS: "9999001",
+    POSTIL_HOSTED_INFERENCE_ENABLED: "0",
     POSTIL_SKIP_ENV_VALIDATION: "1",
     POSTIL_PUBLIC_URL: `http://127.0.0.1:${port}`,
   };
@@ -62,6 +63,39 @@ try {
   await fixtureClient.connect();
   await seedMorgaesisBillingFixture(fixtureClient);
   await seedRepositoryHealthFixture(fixtureClient);
+  const unavailableResult = await fixtureClient.query<{ public_id: string }>(`
+    INSERT INTO reviews (
+      repository_id,
+      pr_number,
+      head_sha,
+      base_sha,
+      status,
+      error_message,
+      queued_at,
+      started_at,
+      finished_at
+    )
+    SELECT
+      repositories.id,
+      99,
+      'cccccccccccccccccccccccccccccccccccccccc',
+      'dddddddddddddddddddddddddddddddddddddddd',
+      'failed',
+      'Hosted review service is temporarily unavailable.',
+      now() - interval '2 minutes',
+      now() - interval '2 minutes',
+      now() - interval '119 seconds'
+    FROM repositories
+    INNER JOIN installations ON installations.id = repositories.installation_id
+    INNER JOIN organizations ON organizations.id = installations.org_id
+    WHERE organizations.slug = 'acme'
+      AND repositories.full_name <> 'acme/unreached'
+    ORDER BY repositories.id
+    LIMIT 1
+    RETURNING public_id
+  `);
+  const unavailableReview = unavailableResult.rows[0];
+  if (!unavailableReview) throw new Error("could not seed unavailable review");
   const reviewResult = await fixtureClient.query<{ public_id: string; full_name: string }>(`
     SELECT reviews.public_id, repositories.full_name
     FROM reviews
@@ -114,7 +148,7 @@ try {
   await mkdir(stateDir, { recursive: true });
   await writeFile(
     join(stateDir, "session.env"),
-    `DATABASE_URL=${databaseUrl.toString()}\nPOSTIL_SESSION_SECRET=${sessionSecret}\nPOSTIL_OPERATOR_GITHUB_IDS=9999001\nPOSTIL_SKIP_ENV_VALIDATION=1\nPOSTIL_PUBLIC_URL=http://127.0.0.1:${port}\nPOSTIL_SESSION_COOKIE=postil_session=${cookie}\n`,
+    `DATABASE_URL=${databaseUrl.toString()}\nPOSTIL_SESSION_SECRET=${sessionSecret}\nPOSTIL_OPERATOR_GITHUB_IDS=9999001\nPOSTIL_HOSTED_INFERENCE_ENABLED=0\nPOSTIL_SKIP_ENV_VALIDATION=1\nPOSTIL_PUBLIC_URL=http://127.0.0.1:${port}\nPOSTIL_SESSION_COOKIE=postil_session=${cookie}\n`,
     { mode: 0o600 },
   );
 
@@ -142,18 +176,18 @@ try {
     "Acme Robotics",
     "Confidence distribution",
     "Recent reviews",
-    "Enabled but never reviewed.",
+    "Managed reviews are paused.",
     "acme/unreached",
-    ".postil.yaml",
   ]);
   await verifyPage(`${origin}/orgs/acme/settings`, headers, [
     "Organization settings",
     "Config files",
-    "Enabled but never reviewed.",
+    "Hosted by Postil",
+    "Managed reviews are paused.",
     "acme/unreached",
     "pending",
     "set up but not yet exercised",
-    "never reviewed",
+    "managed reviews paused",
   ]);
   await verifyPage(`${origin}/orgs/acme/billing`, headers, ["Organization billing"]);
   await verifyPage(`${origin}/orgs/morgaesis/billing`, headers, [
@@ -162,7 +196,12 @@ try {
     "Repository coverage",
     "morgaesis/postil",
   ]);
-  await verifyPage(`${origin}/reports`, headers, ["Recent reviews", "demo-dev", "Acme Robotics"]);
+  await verifyPage(`${origin}/reports`, headers, [
+    "Recent reviews",
+    "demo-dev",
+    "Acme Robotics",
+    "unavailable",
+  ]);
   await verifyPage(`${origin}/orgs/acme/runs/${review.public_id}`, headers, [
     review.full_name,
     "Summary",
@@ -170,7 +209,21 @@ try {
     "Encode the intended behavior in code",
     "Findings (",
   ]);
-  await verifyPage(`${origin}/operator`, headers, ["Review and run ledger", "demo-dev"]);
+  await verifyPage(
+    `${origin}/orgs/acme/runs/${unavailableReview.public_id}`,
+    headers,
+    [
+      "unavailable",
+      "Review unavailable",
+      "managed reviews were paused",
+      "GitHub checks were neutral",
+    ],
+  );
+  await verifyPage(`${origin}/operator`, headers, [
+    "Review and run ledger",
+    "demo-dev",
+    "unavailable",
+  ]);
   await verifyJsonShape(`${origin}/api/orgs/acme/reviews`, headers, (body) => {
     return Array.isArray(body) && body.length > 0;
   });

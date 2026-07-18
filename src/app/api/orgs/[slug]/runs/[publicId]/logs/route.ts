@@ -4,6 +4,7 @@ import { and, asc, eq, gt } from "drizzle-orm";
 
 import { schema } from "@/lib/db";
 import { getOrgMembership } from "@/lib/org-access";
+import { reviewDisplayStatus } from "@/lib/review-outcome";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +45,7 @@ export async function GET(
       .select({
         id: schema.reviews.id,
         status: schema.reviews.status,
+        errorMessage: schema.reviews.errorMessage,
         finishedAt: schema.reviews.finishedAt,
       })
       .from(schema.reviews)
@@ -73,5 +75,9 @@ export async function GET(
     .orderBy(asc(schema.reviewLogs.seq))
     .limit(MAX_LINES_PER_RESPONSE);
 
-  return NextResponse.json({ lines, status: review.status, finishedAt: review.finishedAt });
+  return NextResponse.json({
+    lines,
+    status: reviewDisplayStatus(review.status, review.errorMessage),
+    finishedAt: review.finishedAt,
+  });
 }

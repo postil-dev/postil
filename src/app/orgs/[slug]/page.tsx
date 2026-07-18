@@ -7,6 +7,7 @@ import { formatMs } from "@/components/review-status";
 import { ReviewTimeDistribution } from "@/components/review-time-distribution";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { schema } from "@/lib/db";
+import { hostedInferenceEnabled } from "@/lib/env";
 import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
@@ -79,6 +80,15 @@ export default async function OrgDashboardPage({
     .innerJoin(schema.users, eq(schema.users.id, schema.orgMembers.userId))
     .where(eq(schema.orgMembers.orgId, org.id))
     .orderBy(schema.users.login);
+  const providerSettings = (
+    await db
+      .select({ hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL` })
+      .from(schema.orgSettings)
+      .where(eq(schema.orgSettings.orgId, org.id))
+      .limit(1)
+  )[0];
+  const managedReviewsPaused =
+    !hostedInferenceEnabled() && !(providerSettings?.hasKey ?? false);
 
   // Silence rate across completed reviews.
   const silenceAgg = (
@@ -204,15 +214,6 @@ export default async function OrgDashboardPage({
           repositoryPrivate: true,
         })
       : null;
-  const providerSettings = rawPrivateAccess
-    ? (
-        await db
-          .select({ hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL` })
-          .from(schema.orgSettings)
-          .where(eq(schema.orgSettings.orgId, org.id))
-          .limit(1)
-      )[0]
-    : undefined;
   const privateAccess = rawPrivateAccess
     ? requireMatchingProviderMode(rawPrivateAccess, providerSettings?.hasKey ?? false)
     : null;
@@ -272,10 +273,28 @@ export default async function OrgDashboardPage({
 
       <PrivateBillingNotice orgSlug={org.slug} decision={privateAccess} />
 
+      {managedReviewsPaused && (
+        <div className="card mt-6 p-5">
+          <p className="text-sm">
+            <span className="font-medium">Managed reviews are paused.</span>{" "}
+            Postil is validating its hosted model roster. GitHub checks remain neutral,
+            and no review runs while paused.
+          </p>
+          {isAdmin && (
+            <Link href={`/orgs/${org.slug}/settings`} className="btn-secondary mt-3 text-xs">
+              {privateAccess?.entitlement?.subscriptionMode === "hosted"
+                ? "View inference settings"
+                : "Use your own model provider"}
+            </Link>
+          )}
+        </div>
+      )}
+
       <RepoHealthBanner
         slug={org.slug}
         rows={repoHealthRows}
         now={now}
+        managedReviewsPaused={managedReviewsPaused}
         liveConfigFilesByRepositoryId={liveConfigFilesByRepositoryId}
       />
 

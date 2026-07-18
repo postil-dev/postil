@@ -5,6 +5,7 @@ import {
   type RepoHealthRow,
   type RepoHealthReviewStatus,
 } from "@/lib/repo-health";
+import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 
 const NOW = new Date("2026-07-11T12:00:00.000Z");
 
@@ -21,6 +22,7 @@ function row(overrides: Partial<RepoHealthRow> = {}): RepoHealthRow {
     completedCount: 0,
     lastCompletedAt: null,
     latestAttemptStatus: null,
+    latestAttemptErrorMessage: null,
     latestAttemptAt: null,
     latestAttemptPublicId: null,
     ...overrides,
@@ -42,6 +44,7 @@ function attempted(
 describe("deriveRepoHealth", () => {
   test("returns awaiting-first-pr before seven silent days", () => {
     expect(deriveRepoHealth(row(), NOW)).toBe("awaiting-first-pr");
+    expect(deriveRepoHealth(row(), NOW, true)).toBe("paused");
   });
 
   test("returns never-reviewed only after seven silent days", () => {
@@ -65,6 +68,15 @@ describe("deriveRepoHealth", () => {
       expect(deriveRepoHealth(attempted(status), NOW)).toBe("failing");
     },
   );
+
+  test("distinguishes a current pause from a historical run awaiting review", () => {
+    const unavailable = {
+      ...attempted("failed"),
+      latestAttemptErrorMessage: HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+    };
+    expect(deriveRepoHealth(unavailable, NOW, true)).toBe("paused");
+    expect(deriveRepoHealth(unavailable, NOW, false)).toBe("awaiting-review");
+  });
 
   test.each(["queued", "running"] as const)(
     "returns failing when a %s latest attempt is over an hour old",

@@ -28,6 +28,10 @@ import { sortFindingsForDisplay } from "@/lib/findings";
 import { githubFindingLocationUrl, githubPrUrl } from "@/lib/github-links";
 import type { ConfigProvenanceEntry } from "@/lib/github/contents";
 import { requireOrgMembership } from "@/lib/org-access";
+import {
+  isHostedReviewUnavailable,
+  reviewDisplayStatus,
+} from "@/lib/review-outcome";
 
 import { approveFinding, revokeFinding } from "../../actions";
 import {
@@ -479,12 +483,17 @@ export default async function RunDetailPage({
     : prUrl;
   const MAX_RENDERED_FINDINGS = 200;
   const configProvenance = review.configProvenance?.entries ?? [];
+  const displayStatus = reviewDisplayStatus(review.status, review.errorMessage);
+  const hostedReviewUnavailable = isHostedReviewUnavailable(
+    review.status,
+    review.errorMessage,
+  );
 
   return (
     <LiveRunProvider
       slug={org.slug}
       publicId={review.publicId}
-      initialStatus={review.status}
+      initialStatus={displayStatus}
       queuedAt={review.queuedAt.toISOString()}
       startedAt={review.startedAt?.toISOString() ?? null}
       initialFinishedAt={review.finishedAt?.toISOString() ?? null}
@@ -509,7 +518,7 @@ export default async function RunDetailPage({
             </a>
           </h1>
           <LiveReviewStatus gateFailing={review.gateFailing} />
-          <GateBadge gateFailing={review.gateFailing} status={review.status} />
+          <GateBadge gateFailing={review.gateFailing} status={displayStatus} />
         </div>
 
         <dl className="card mt-5 grid grid-cols-2 gap-x-3 gap-y-4 p-4 sm:grid-cols-3 lg:grid-cols-4">
@@ -583,9 +592,15 @@ export default async function RunDetailPage({
         </dl>
 
         {review.errorMessage && (
-          <div className="card mt-6 border-rust p-5">
-            <p className="eyebrow text-rust">Run error</p>
-            <p className="mt-2 whitespace-pre-wrap font-mono text-xs">{review.errorMessage}</p>
+          <div className={`card mt-6 p-5 ${hostedReviewUnavailable ? "" : "border-rust"}`}>
+            <p className={`eyebrow ${hostedReviewUnavailable ? "" : "text-rust"}`}>
+              {hostedReviewUnavailable ? "Review unavailable" : "Run error"}
+            </p>
+            <p className="mt-2 text-sm text-ink-soft">
+              {hostedReviewUnavailable
+                ? `This hosted review did not run because managed reviews were paused. The GitHub checks were neutral.${usesByok ? "" : " An organization admin can use BYOK in Settings for future reviews."}`
+                : review.errorMessage}
+            </p>
           </div>
         )}
 

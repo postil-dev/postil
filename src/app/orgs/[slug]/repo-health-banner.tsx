@@ -11,6 +11,7 @@ interface RepoHealthBannerProps {
   slug: string;
   rows: readonly RepoHealthRow[];
   now: Date;
+  managedReviewsPaused?: boolean;
   liveConfigFilesByRepositoryId?: ReadonlyMap<number, readonly string[]>;
 }
 
@@ -69,10 +70,15 @@ export function RepoHealthBanner({
   slug,
   rows,
   now,
+  managedReviewsPaused = false,
   liveConfigFilesByRepositoryId = new Map(),
 }: RepoHealthBannerProps) {
-  const neverReviewed = rows.filter((row) => deriveRepoHealth(row, now) === "never-reviewed");
-  const failing = rows.filter((row) => deriveRepoHealth(row, now) === "failing");
+  const neverReviewed = rows.filter(
+    (row) => deriveRepoHealth(row, now, managedReviewsPaused) === "never-reviewed",
+  );
+  const failing = rows.filter(
+    (row) => deriveRepoHealth(row, now, managedReviewsPaused) === "failing",
+  );
   if (neverReviewed.length === 0 && failing.length === 0) return null;
 
   const affected = [...neverReviewed, ...failing];

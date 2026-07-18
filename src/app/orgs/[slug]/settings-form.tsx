@@ -8,6 +8,7 @@ import { saveOrgSettings } from "./actions";
 interface SettingsFormProps {
   slug: string;
   billedMode: "hosted" | "byok" | null;
+  managedReviewsPaused: boolean;
   settings:
     | {
         apiBase: string | null;
@@ -41,6 +42,7 @@ export function SettingsForm({
   slug,
   settings,
   billedMode,
+  managedReviewsPaused,
   sharedSnapshot,
   sharedSourceFullName,
   sharedSourceInstalled,
@@ -84,10 +86,13 @@ export function SettingsForm({
               />
               <span>
                 <span className="block font-medium">
-                  Hosted by Postil{billedMode === "hosted" ? "" : " (paused)"}
+                  Hosted by Postil
+                  {managedReviewsPaused || billedMode !== "hosted" ? " (paused)" : ""}
                 </span>
                 <span className="text-xs text-charcoal/70">
-                  {billedMode === "hosted"
+                  {managedReviewsPaused
+                    ? "Managed reviews are paused."
+                    : billedMode === "hosted"
                     ? "Postil chooses and operates the models."
                     : "New hosted inference setup is unavailable."}
                 </span>

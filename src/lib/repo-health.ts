@@ -2,11 +2,14 @@ import { sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
+import { isHostedReviewUnavailable } from "@/lib/review-outcome";
 
 export type RepoHealth =
   | "healthy"
   | "awaiting-first-pr"
+  | "awaiting-review"
   | "never-reviewed"
+  | "paused"
   | "failing";
 
 export type RepoHealthReviewStatus =
@@ -28,6 +31,7 @@ export interface RepoHealthRow {
   completedCount: number;
   lastCompletedAt: Date | null;
   latestAttemptStatus: RepoHealthReviewStatus | null;
+  latestAttemptErrorMessage: string | null;
   latestAttemptAt: Date | null;
   latestAttemptPublicId: string | null;
 }
@@ -66,6 +70,7 @@ export async function getRepoHealthRows(
       COALESCE(review_stats."completedCount", 0)::int AS "completedCount",
       review_stats."lastCompletedAt" AS "lastCompletedAt",
       latest_review."status" AS "latestAttemptStatus",
+      latest_review."errorMessage" AS "latestAttemptErrorMessage",
       COALESCE(
         latest_review."finishedAt",
         latest_review."startedAt",
@@ -98,6 +103,7 @@ export async function getRepoHealthRows(
     LEFT JOIN LATERAL (
       SELECT
         ${schema.reviews.status} AS "status",
+        ${schema.reviews.errorMessage} AS "errorMessage",
         ${schema.reviews.publicId} AS "publicId",
         ${schema.reviews.queuedAt} AS "queuedAt",
         ${schema.reviews.startedAt} AS "startedAt",
@@ -131,8 +137,23 @@ function toDate(value: Date | string): Date {
 }
 
 /** Derive the display state without any I/O so boundary behavior stays testable. */
-export function deriveRepoHealth(row: RepoHealthRow, now: Date): RepoHealth {
+export function deriveRepoHealth(
+  row: RepoHealthRow,
+  now: Date,
+  managedReviewsPaused = false,
+): RepoHealth {
   if (row.installationSuspended || row.completedCount > 0) return "healthy";
+  if (managedReviewsPaused && row.attemptCount === 0) return "paused";
+
+  if (
+    row.latestAttemptStatus !== null &&
+    isHostedReviewUnavailable(
+      row.latestAttemptStatus,
+      row.latestAttemptErrorMessage,
+    )
+  ) {
+    return managedReviewsPaused ? "paused" : "awaiting-review";
+  }
 
   if (row.attemptCount === 0) {
     return now.getTime() - row.lastEnabledAt.getTime() > NEVER_REVIEWED_AFTER_MS

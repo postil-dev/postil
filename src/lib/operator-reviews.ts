@@ -1,11 +1,16 @@
-import { and, desc, eq, gte, ilike, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, isNull, lt, ne, or, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import type { Envelope } from "@/lib/envelope";
-import type { OrgReviewStatus } from "@/lib/org-reviews";
+import {
+  HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+  reviewDisplayStatus,
+  type ReviewDisplayStatus,
+  type StoredReviewStatus,
+} from "@/lib/review-outcome";
 
-export type OperatorReviewStatus = OrgReviewStatus;
+export type OperatorReviewStatus = ReviewDisplayStatus;
 
 export interface OperatorReviewFilters {
   org: string;
@@ -42,6 +47,7 @@ const STATUSES: OperatorReviewStatus[] = [
   "completed",
   "failed",
   "stale",
+  "unavailable",
 ];
 
 export const OPERATOR_REVIEW_LIMIT = 100;
@@ -73,14 +79,29 @@ export async function getOperatorReviewRows(
     filters.repo
       ? ilike(schema.repositories.fullName, `%${escapeLike(filters.repo)}%`)
       : undefined,
-    filters.status ? eq(schema.reviews.status, filters.status) : undefined,
+    filters.status === "unavailable"
+      ? and(
+          eq(schema.reviews.status, "failed"),
+          eq(schema.reviews.errorMessage, HOSTED_REVIEW_UNAVAILABLE_MESSAGE),
+        )
+      : filters.status === "failed"
+        ? and(
+            eq(schema.reviews.status, "failed"),
+            or(
+              isNull(schema.reviews.errorMessage),
+              ne(schema.reviews.errorMessage, HOSTED_REVIEW_UNAVAILABLE_MESSAGE),
+            ),
+          )
+      : filters.status
+        ? eq(schema.reviews.status, filters.status as StoredReviewStatus)
+        : undefined,
     filters.from ? gte(schema.reviews.queuedAt, startOfUtcDay(filters.from)) : undefined,
     filters.to ? lt(schema.reviews.queuedAt, dayAfterUtc(filters.to)) : undefined,
   ].filter(Boolean);
 
   const where = predicates.length > 0 ? and(...predicates) : undefined;
 
-  return db
+  const rows = await db
     .select({
       id: schema.reviews.id,
       publicId: schema.reviews.publicId,
@@ -111,6 +132,10 @@ export async function getOperatorReviewRows(
     .where(where)
     .orderBy(desc(schema.reviews.queuedAt), desc(schema.reviews.id))
     .limit(limit);
+  return rows.map((row) => ({
+    ...row,
+    status: reviewDisplayStatus(row.status, row.errorMessage),
+  }));
 }
 
 function first(value: string | string[] | undefined): string {

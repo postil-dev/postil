@@ -11,7 +11,7 @@ import { formatAbsoluteTimestamp, formatRelativeTime } from "@/lib/time";
 const POLL_INTERVAL_MS = 5_000;
 const CLOCK_INTERVAL_MS = 1_000;
 
-const FILTERS = ["all", "running", "failed", "gate-failing"] as const;
+const FILTERS = ["all", "running", "failed", "unavailable", "gate-failing"] as const;
 type QuickFilter = (typeof FILTERS)[number];
 
 function runHref(orgSlug: string, review: Pick<OrgReviewRow, "publicId">): string {
@@ -25,6 +25,7 @@ function isActive(review: OrgReviewRow): boolean {
 function matchesQuickFilter(review: OrgReviewRow, filter: QuickFilter): boolean {
   if (filter === "running") return isActive(review);
   if (filter === "failed") return review.status === "failed";
+  if (filter === "unavailable") return review.status === "unavailable";
   if (filter === "gate-failing") return review.gateFailing === true;
   return true;
 }

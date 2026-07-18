@@ -31,14 +31,29 @@ describe("private repository worker defense in depth", () => {
 
   test("disabled hosted inference stops before reservation, config fetch, or CLI spawn", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
+    const claimSource = readFileSync("src/lib/hosted-review-pause.ts", "utf8");
     const start = source.indexOf("export async function runReviewJob");
-    const gate = source.indexOf("if (!llm.byok && !hostedInferenceEnabled())", start);
+    const mode = source.indexOf(
+      "const hostedReviewUnavailable = !llm.byok && !hostedInferenceEnabled()",
+      start,
+    );
+    const gate = source.indexOf("if (hostedReviewUnavailable)", mode);
     const reservation = source.indexOf("await reserveHostedReviewSpend", start);
     const materialization = source.indexOf("await materializeRepoConfig", start);
     const cli = source.indexOf("await runCli", start);
     const versionProbe = source.indexOf("postilCliVersionLogLine()", start);
+    const unavailableClaim = source.indexOf("claimPausedHostedReview(db, reviewValues", start);
+    const reviewInsert = source.indexOf("insert(schema.reviews)", start);
 
-    expect(gate).toBeGreaterThan(start);
+    expect(mode).toBeGreaterThan(start);
+    expect(gate).toBeGreaterThan(mode);
+    expect(unavailableClaim).toBeGreaterThan(mode);
+    expect(unavailableClaim).toBeLessThan(reviewInsert);
+    expect(claimSource).toContain("pg_advisory_xact_lock");
+    expect(claimSource).toContain("HOSTED_REVIEW_UNAVAILABLE_MESSAGE");
+    expect(claimSource.indexOf("pg_advisory_xact_lock")).toBeLessThan(
+      claimSource.indexOf("insert(schema.reviews)"),
+    );
     expect(versionProbe).toBeGreaterThan(gate);
     expect(reservation).toBeGreaterThan(gate);
     expect(materialization).toBeGreaterThan(gate);
@@ -46,11 +61,19 @@ describe("private repository worker defense in depth", () => {
     const guardBody = source.slice(gate, reservation);
     expect(guardBody).toContain("completeHostedInferenceDisabledCheckRuns");
     expect(guardBody).toContain("supersedeActiveReviews");
-    expect(guardBody).toContain('kind: "check-run-cleanup"');
-    expect(guardBody).toContain('intent: "neutralize"');
-    expect(guardBody).toContain("db.transaction");
-    expect(guardBody.indexOf("db.transaction")).toBeLessThan(
-      guardBody.indexOf("completeHostedInferenceDisabledCheckRuns"),
+    expect(claimSource).toContain('kind: "check-run-cleanup"');
+    expect(claimSource).toContain('intent: "neutralize"');
+    expect(claimSource).toContain("db.transaction");
+    expect(claimSource.indexOf("insert(schema.jobs)")).toBeGreaterThan(
+      claimSource.indexOf("insert(schema.reviews)"),
+    );
+    const duplicateRecovery = source.slice(
+      source.indexOf("if (hostedReviewUnavailable &&", unavailableClaim),
+      gate,
+    );
+    expect(duplicateRecovery).toContain("await supersedeActiveReviews");
+    expect(duplicateRecovery.indexOf("await supersedeActiveReviews")).toBeLessThan(
+      duplicateRecovery.indexOf("return;"),
     );
     expect(guardBody.indexOf("advisoryCheckRunId,")).toBeLessThan(
       guardBody.indexOf("completeHostedInferenceDisabledCheckRuns"),

@@ -11,8 +11,8 @@ import {
 } from "react";
 
 import { formatMs, ReviewStatusBadge } from "@/components/review-status";
+import type { ReviewDisplayStatus } from "@/lib/review-outcome";
 
-type ReviewStatus = "queued" | "running" | "completed" | "failed" | "stale";
 const LOG_PAGE_SIZE = 500;
 
 interface LogLine {
@@ -23,12 +23,12 @@ interface LogLine {
 
 interface LogResponse {
   lines: LogLine[];
-  status: ReviewStatus;
+  status: ReviewDisplayStatus;
   finishedAt: string | null;
 }
 
 interface LiveRunState {
-  status: ReviewStatus;
+  status: ReviewDisplayStatus;
   lines: LogLine[];
   queuedAt: string;
   startedAt: string | null;
@@ -38,8 +38,10 @@ interface LiveRunState {
 
 const LiveRunContext = createContext<LiveRunState | null>(null);
 
-function isReviewStatus(value: unknown): value is ReviewStatus {
-  return ["queued", "running", "completed", "failed", "stale"].includes(String(value));
+function isReviewStatus(value: unknown): value is ReviewDisplayStatus {
+  return ["queued", "running", "completed", "failed", "stale", "unavailable"].includes(
+    String(value),
+  );
 }
 
 function isLogResponse(value: unknown): value is LogResponse {
@@ -52,7 +54,7 @@ function isLogResponse(value: unknown): value is LogResponse {
   );
 }
 
-function isActive(status: ReviewStatus): boolean {
+function isActive(status: ReviewDisplayStatus): boolean {
   return status === "queued" || status === "running";
 }
 
@@ -68,7 +70,7 @@ export function LiveRunProvider({
 }: {
   slug: string;
   publicId: string;
-  initialStatus: ReviewStatus;
+  initialStatus: ReviewDisplayStatus;
   queuedAt: string;
   startedAt: string | null;
   initialFinishedAt: string | null;
