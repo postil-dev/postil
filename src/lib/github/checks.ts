@@ -295,11 +295,15 @@ export async function getPullRequestReviewContext(
   if (!headSha || !baseSha) {
     throw new Error(`GitHub pull request ${repoFullName}#${number} has incomplete refs`);
   }
+  const authorGithubId = data.user?.id;
+  const authorLogin = typeof data.user?.login === "string" ? data.user.login.trim() : undefined;
   return {
     headSha,
     baseSha,
     draft: data.draft === true,
-    ...(typeof data.user?.id === "number" ? { authorGithubId: data.user.id } : {}),
-    ...(data.user?.login ? { authorLogin: data.user.login } : {}),
+    ...(typeof authorGithubId === "number" && Number.isSafeInteger(authorGithubId) && authorGithubId > 0
+      ? { authorGithubId }
+      : {}),
+    ...(authorLogin && authorLogin.length <= 100 ? { authorLogin } : {}),
   };
 }
