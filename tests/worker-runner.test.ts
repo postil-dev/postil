@@ -574,23 +574,45 @@ describe("triggerQueueDrain", () => {
     expect(completed).toEqual([]);
   });
 
-  test("starts one background drain at a time", async () => {
+  test("coalesces triggers during one drain into one bounded follow-up", async () => {
     process.env.POSTIL_WEBHOOK_DRAIN_ENABLED = "1";
     jobs.push(reviewJob(1), reviewJob(2));
-    let release: (() => void) | undefined;
+    const releases: Array<() => void> = [];
     reviewRun = () =>
       new Promise<void>((resolve) => {
-        release = resolve;
+        releases.push(resolve);
       });
 
     triggerQueueDrain("enabled");
     triggerQueueDrain("enabled");
-    await waitFor(() => claimCalls > 0);
+    triggerQueueDrain("enabled");
+    await waitFor(() => claimCalls === 1 && releases.length === 1);
 
     expect(claimCalls).toBe(1);
-    release?.();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    releases.shift()!();
+    await waitFor(() => claimCalls === 2 && releases.length === 1);
     expect(completed).toEqual([1]);
+
+    releases.shift()!();
+    await waitFor(() => completed.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(claimCalls).toBe(2);
+    expect(completed).toEqual([1, 2]);
+  });
+
+  test("starts a new drain for a trigger after the prior drain settles", async () => {
+    process.env.POSTIL_WEBHOOK_DRAIN_ENABLED = "1";
+    jobs.push(reviewJob(1));
+
+    triggerQueueDrain("first");
+    await waitFor(() => completed.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    jobs.push(reviewJob(2));
+    triggerQueueDrain("after-settlement");
+    await waitFor(() => completed.length === 2);
+
+    expect(completed).toEqual([1, 2]);
   });
 });
 
@@ -599,4 +621,5 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  throw new Error("condition was not met");
 }
