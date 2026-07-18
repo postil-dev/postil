@@ -38,6 +38,10 @@ import {
 } from "@/lib/mentions";
 import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
 import {
+  enqueueOperatorAlert,
+  installationRemovedAlertPayload,
+} from "@/lib/operator-alerts";
+import {
   acceptWebhookDelivery,
   enqueueRespondJobOnce,
   enqueueReviewJobOnce,
@@ -302,13 +306,14 @@ export async function dispatchWebhookDelivery(
 async function handleInstallation(payload: InstallationEventPayload): Promise<void> {
   const db = getDb();
   const installation = payload.installation;
-  if (!installation?.account) return;
+  const account = installation?.account;
+  if (!installation || !account) return;
 
   switch (payload.action) {
     case "created": {
       const installationRowId = await upsertInstallation(
         { id: installation.id, suspended: Boolean(installation.suspended_at) },
-        installation.account,
+        account,
       );
       if (installationRowId !== undefined && payload.repositories) {
         await upsertRepositories(installationRowId, payload.repositories);
@@ -324,8 +329,18 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
       await db.transaction(async (tx) => {
         const existing = (
           await tx
-            .select({ orgId: schema.installations.orgId })
+            .select({
+              orgId: schema.installations.orgId,
+              orgSlug: schema.organizations.slug,
+              githubOwnerId: schema.organizations.githubOrgId,
+              accountLogin: schema.installations.accountLogin,
+              accountType: schema.installations.accountType,
+            })
             .from(schema.installations)
+            .innerJoin(
+              schema.organizations,
+              eq(schema.organizations.id, schema.installations.orgId),
+            )
             .where(eq(schema.installations.githubInstallationId, installation.id))
             .limit(1)
         )[0];
@@ -334,6 +349,17 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
           await tx
             .delete(schema.orgConfigSnapshots)
             .where(eq(schema.orgConfigSnapshots.orgId, existing.orgId));
+          await enqueueOperatorAlert(
+            tx,
+            installationRemovedAlertPayload({
+              orgId: existing.orgId,
+              orgSlug: existing.orgSlug,
+              accountLogin: existing.accountLogin,
+              accountType: existing.accountType,
+              githubOwnerId: existing.githubOwnerId ?? account.id,
+              githubInstallationId: installation.id,
+            }),
+          );
         }
         await tx
           .delete(schema.installations)
@@ -349,7 +375,7 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
     case "unsuspend":
       await upsertInstallation(
         { id: installation.id, suspended: false },
-        installation.account,
+        account,
       );
       break;
     default:

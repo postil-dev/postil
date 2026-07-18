@@ -21,8 +21,9 @@ describe("operator alert job", () => {
   });
 
   test("sends one idempotent trial-start alert without repository content", async () => {
-    await runOperatorAlertJob({
+    const result = await runOperatorAlertJob({
       event: "trial_started",
+      eventKey: "trial-started:700",
       orgId: 7,
       orgSlug: "acme",
       accountLogin: "Acme",
@@ -35,12 +36,48 @@ describe("operator alert job", () => {
     expect(sentInput).toMatchObject({
       recipient: "operator@example.com",
       subject: "New Postil trial: Acme",
-      idempotencyKey: "operator-alert-trial-started-700",
       apiKey: "brevo-key",
     });
+    expect(sentInput?.idempotencyKey).toMatch(/^postil-operator-[0-9a-f]{64}$/);
+    expect(result).toEqual({ messageId: "brevo-message-operator-1" });
     const text = (sentInput?.text as string[]).join("\n");
     expect(text).toContain("A GitHub owner started a 30-day Postil trial.");
     expect(text).toContain("Dashboard: https://postil.dev/orgs/acme");
+    expect(text).not.toMatch(/repository|pull request|source code/i);
+  });
+
+  test("sends concise expiry and uninstall alerts with stable idempotency", async () => {
+    await runOperatorAlertJob({
+      event: "trial_expired",
+      eventKey: "trial-expired:7:2026-08-17T12:00:00.000Z",
+      orgId: 7,
+      orgSlug: "acme",
+      accountLogin: "Acme",
+      githubOwnerId: 700,
+      trialEndsAt: "2026-08-17T12:00:00.000Z",
+    });
+    expect(sentInput).toMatchObject({
+      subject: "Postil trial ended: Acme",
+    });
+    expect((sentInput?.text as string[]).join("\n")).toContain(
+      "A Postil trial ended without an active plan.",
+    );
+
+    await runOperatorAlertJob({
+      event: "installation_removed",
+      eventKey: "installation-removed:701",
+      orgId: 7,
+      orgSlug: "acme",
+      accountLogin: "Acme",
+      accountType: "Organization",
+      githubOwnerId: 700,
+      githubInstallationId: 701,
+    });
+    expect(sentInput).toMatchObject({
+      subject: "Postil App removed: Acme",
+    });
+    const text = (sentInput?.text as string[]).join("\n");
+    expect(text).toContain("A GitHub owner removed the Postil App.");
     expect(text).not.toMatch(/repository|pull request|source code/i);
   });
 
@@ -48,6 +85,7 @@ describe("operator alert job", () => {
     await expect(
       runOperatorAlertJob({
         event: "trial_started",
+        eventKey: "trial-started:700",
         orgId: 7,
         orgSlug: "bad\nslug",
         accountLogin: "Acme",

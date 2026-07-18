@@ -218,6 +218,13 @@
       "when": 1784394144533,
       "tag": "0030_private_review_author_invariant",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1784398738632,
+      "tag": "0031_operator_alert_delivery_audit",
+      "breakpoints": true
     }
   ]
 }

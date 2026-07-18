@@ -195,6 +195,24 @@ jobs:
               echo "Check-run cleanup exhausted all retries; a GitHub check may remain in progress"
               stale_found=1
             fi
+            operator_alert_failures=$(awk \
+              '$1 == "postil_operator_alert_failures_current" { print $2 }' \
+              .cache/metrics.out)
+            echo "Unresolved operator email failures: ${operator_alert_failures:-missing}"
+            if [[ -z "${operator_alert_failures:-}" ]] || \
+               (( $(printf '%.0f' "${operator_alert_failures:-0}") > 0 )); then
+              echo "Operator email delivery failed or its metric is missing"
+              stale_found=1
+            fi
+            operator_alert_age=$(awk \
+              '$1 == "postil_oldest_operator_alert_pending_age_seconds" { print $2 }' \
+              .cache/metrics.out)
+            echo "Oldest pending operator email age: ${operator_alert_age:-missing}s"
+            if [[ -z "${operator_alert_age:-}" ]] || \
+               (( $(printf '%.0f' "${operator_alert_age:-0}") > stale_threshold_seconds )); then
+              echo "Operator email delivery is stale or its metric is missing"
+              stale_found=1
+            fi
             incident_found=0
             for category in operational_failure scorer_failure scorer_fallback model_fallback invalid_output failed_job; do
               count=$(awk -v metric="postil_review_incidents_30m{category=\"${category}\"}" \
