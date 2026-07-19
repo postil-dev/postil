@@ -12,6 +12,7 @@ afterEach(() => {
 
 describe("/api/analytics/posthog", () => {
   test("returns 204 when PostHog is not configured", async () => {
+    process.env.POSTHOG_CLIENT_CAPTURE = "1";
     delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
     delete process.env.POSTHOG_PROJECT_TOKEN;
 
@@ -22,6 +23,7 @@ describe("/api/analytics/posthog", () => {
   });
 
   test("returns the public project config from runtime env", async () => {
+    process.env.POSTHOG_CLIENT_CAPTURE = "1";
     delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
     process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com";
@@ -32,22 +34,33 @@ describe("/api/analytics/posthog", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({
       key: "phc_test_project_token",
-      apiHost: "/relay",
+      apiHost: "https://eu.i.posthog.com",
       uiHost: "https://eu.posthog.com",
     });
   });
 
-  test("returns 204 when POSTHOG_CLIENT_CAPTURE is 0, even with a key configured", async () => {
-    process.env.POSTHOG_CLIENT_CAPTURE = "0";
+  test("requires POSTHOG_CLIENT_CAPTURE to be exactly 1", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_project_token";
+    for (const value of [undefined, "0", "true", "yes"]) {
+      if (value === undefined) delete process.env.POSTHOG_CLIENT_CAPTURE;
+      else process.env.POSTHOG_CLIENT_CAPTURE = value;
+      const response = await route.GET(request());
+      expect(response.status).toBe(204);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+  });
 
-    const response = await route.GET(request());
+  test("rejects a credentialed or non-origin ingestion host", async () => {
+    process.env.POSTHOG_CLIENT_CAPTURE = "1";
+    process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
+    process.env.NEXT_PUBLIC_POSTHOG_HOST =
+      "https://user:secret@posthog.invalid/path";
 
-    expect(response.status).toBe(204);
-    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect((await route.GET(request())).status).toBe(204);
   });
 
   test("honors Global Privacy Control and Do Not Track", async () => {
+    process.env.POSTHOG_CLIENT_CAPTURE = "1";
     process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
 
     const gpc = await route.GET(

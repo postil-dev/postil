@@ -33,7 +33,7 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "POSTIL_PUBLIC_URL",
     purpose:
-      "Canonical HTTPS origin used for browser URLs and proxy-safe request telemetry",
+      "Canonical HTTPS origin used for browser URLs behind proxies",
     example: "https://postil.example.com",
     scope: ["web"],
     productionOnly: true,
@@ -400,18 +400,9 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
-    name: "POSTHOG_SERVER_CAPTURE",
-    purpose:
-      "Set to 0 to disable server-side request telemetry while keeping browser analytics",
-    example: "1",
-    scope: ["web"],
-    optional: true,
-  },
-  {
     name: "POSTHOG_CLIENT_CAPTURE",
-    purpose:
-      "Set to 0 to disable cookieless public-page browser analytics while keeping server-side request telemetry",
-    example: "1",
+    purpose: "Set to 1 to enable cookieless public-page browser analytics",
+    example: "0",
     scope: ["web"],
     optional: true,
   },
@@ -629,10 +620,15 @@ function safePublicUrlValidationDetail(error: unknown): string | undefined {
 }
 
 function validateOperationalTelemetryEnv(processKind: "web" | "worker"): void {
-  for (const name of [
-    "POSTHOG_ERROR_CAPTURE",
-    "POSTHOG_LOG_CAPTURE",
-  ] as const) {
+  const captureFlags =
+    processKind === "web"
+      ? ([
+          "POSTHOG_CLIENT_CAPTURE",
+          "POSTHOG_ERROR_CAPTURE",
+          "POSTHOG_LOG_CAPTURE",
+        ] as const)
+      : (["POSTHOG_ERROR_CAPTURE", "POSTHOG_LOG_CAPTURE"] as const);
+  for (const name of captureFlags) {
     const value = process.env[name];
     if (value !== undefined && value !== "0" && value !== "1") {
       throw new Error(
@@ -641,16 +637,14 @@ function validateOperationalTelemetryEnv(processKind: "web" | "worker"): void {
     }
   }
 
-  const enabled =
-    process.env.POSTHOG_ERROR_CAPTURE === "1" ||
-    process.env.POSTHOG_LOG_CAPTURE === "1";
+  const enabled = captureFlags.some((name) => process.env[name] === "1");
   if (!enabled) return;
 
   const token =
     process.env.POSTHOG_PROJECT_TOKEN ?? process.env.NEXT_PUBLIC_POSTHOG_KEY;
   if (!token?.trim()) {
     throw new Error(
-      `Postil ${processKind} cannot start: operational PostHog telemetry requires POSTHOG_PROJECT_TOKEN.`,
+      `Postil ${processKind} cannot start: enabled PostHog capture requires POSTHOG_PROJECT_TOKEN.`,
     );
   }
 

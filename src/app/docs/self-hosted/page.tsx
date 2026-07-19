@@ -116,7 +116,7 @@ docker compose exec web bun run db:migrate`}</code>
         </li>
         <li>
           <code>POSTIL_PUBLIC_URL</code>: canonical HTTPS origin for absolute
-          browser URLs and request telemetry, for example{" "}
+          browser URLs, for example{" "}
           <code>https://your-host</code>. Set an origin only, without a path,
           query, fragment, or credentials.
         </li>
@@ -336,15 +336,15 @@ ${doctorTranscript}`}</code>
         </li>
         <li>
           PostHog analytics are optional. Set <code>POSTHOG_PROJECT_TOKEN</code>{" "}
-          for server-side request telemetry and runtime-gated browser analytics.
+          for runtime-gated browser analytics.
           Enable Cookieless server hash mode and IP discard in the PostHog
           project before setting <code>POSTHOG_CLIENT_CAPTURE=1</code>. Browser
           capture stores no cookies or browser-persistent identifiers, honors
-          DNT/GPC, and is limited to public marketing, docs, blog, install,
-          pricing, and comparison pages. The server event
-          sends sanitized path, referrer origin/public path, campaign
-          parameters, user agent, and Cloudflare bot metadata when present; it
-          does not send IP addresses or protected dashboard paths.
+          DNT/GPC, and sends only exact published public routes directly to the
+          configured regional PostHog host. Event payloads retain path-only
+          URLs, referrer origins, bounded campaign values, page engagement, and
+          Core Web Vitals. They exclude protected routes, arbitrary query
+          strings, user agents, request identifiers, and profile updates.
         </li>
         <li>
           Operational PostHog telemetry is separate and disabled by default. Set{" "}

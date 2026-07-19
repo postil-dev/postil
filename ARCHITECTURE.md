@@ -275,9 +275,9 @@ The app exposes three layers:
   window without exposing provider error text. A failed monitor run sends one
   provider-idempotent email to the operator inbox with only the commit and Actions run
   link. A manual test dispatch exercises the same delivery path without simulating an outage.
-- PostHog for traffic-source, campaign, pageview, and likely bot/automation analysis.
+- PostHog for traffic-source, campaign, pageview, engagement, and Core Web Vitals analysis.
 
-PostHog is configured for anonymous cookieless capture on public pages only. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Event payloads omit arbitrary query strings and protected dashboard paths.
+PostHog is configured for anonymous cookieless capture on exact published public routes only. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals directly to the configured regional ingestion host with person profiles, click autocapture, surveys, heatmaps, browser exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. A per-event allowlist retains path-only public URLs, referrer origins, bounded campaign source, medium, and campaign values, engagement measurements, Web Vitals, and the transport fields required for cookieless ingestion. Protected routes, arbitrary query strings, click identifiers, profile updates, raw user agents, and server request events are excluded. The SDK sends no IP property; the PostHog project IP-capture policy controls whether ingestion metadata is stored.
 
 ## Transactional email
 
