@@ -28,12 +28,16 @@ import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
   AmbiguousCheckRunCreationError,
+  CheckRunPublicationError,
   GATE_CHECK_NAME,
   checkRunExternalId,
   completeCheckRun,
+  completeExpectedCheckRun,
   createCheckRun,
   findCheckRunByExternalId,
   getPullRequestReviewContext,
+  verifyCompletedCheckRun,
+  type ExpectedCheckRunIdentity,
 } from "@/lib/github/checks";
 import {
   materializeOrgConfig,
@@ -60,7 +64,10 @@ import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
-import { persistReviewCompletion } from "@/lib/review-completion";
+import {
+  persistReviewCompletion,
+  type ReviewCompletionInput,
+} from "@/lib/review-completion";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
@@ -85,6 +92,12 @@ export class WorkerShutdownError extends OperationalError {
     super("review interrupted by worker shutdown");
     this.name = "WorkerShutdownError";
   }
+}
+
+interface ExpectedFailureCheckRuns {
+  advisory?: ExpectedCheckRunIdentity;
+  gate?: ExpectedCheckRunIdentity;
+  publicationIncomplete?: boolean;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -146,7 +159,8 @@ export function buildCliEnv(
     // This is per-review policy, never a deployment-wide toggle inherited by
     // every child process.
     POSTIL_PREVENTION_HINT: baseEnv.POSTIL_PREVENTION_HINT === "1" ? "1" : "0",
-    POSTIL_PREVENTION_COMMANDS_JSON: baseEnv.POSTIL_PREVENTION_COMMANDS_JSON ?? "[]",
+    POSTIL_PREVENTION_COMMANDS_JSON:
+      baseEnv.POSTIL_PREVENTION_COMMANDS_JSON ?? "[]",
     POSTIL_LLM_REQUEST_TIMEOUT_SECS: optionalEnv(
       "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
       HOSTED_LLM_REQUEST_TIMEOUT_SECS,
@@ -166,10 +180,16 @@ export function buildCliEnv(
 }
 
 /** Resolve LLM config: org BYO settings win, env defaults otherwise. */
-export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConfig> {
-  const configuredFormat = optionalEnv("POSTIL_API_FORMAT", "openai-compatible") as string;
+export async function resolveLlmConfig(
+  orgId: number | null,
+): Promise<CliEnvConfig> {
+  const configuredFormat = optionalEnv(
+    "POSTIL_API_FORMAT",
+    "openai-compatible",
+  ) as string;
   const defaultFormat = parseApiFormat(configuredFormat);
-  if (!defaultFormat) throw new Error("POSTIL_API_FORMAT must be openai-compatible or anthropic");
+  if (!defaultFormat)
+    throw new Error("POSTIL_API_FORMAT must be openai-compatible or anthropic");
   const defaultAuthHeader = optionalEnv("POSTIL_ENDPOINT_AUTH_HEADER");
   const defaultAuthValue = optionalEnv("POSTIL_ENDPOINT_AUTH_VALUE");
   if (Boolean(defaultAuthHeader) !== Boolean(defaultAuthValue)) {
@@ -177,11 +197,15 @@ export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConf
       "POSTIL_ENDPOINT_AUTH_HEADER and POSTIL_ENDPOINT_AUTH_VALUE must be set together",
     );
   }
-  if (defaultAuthHeader) validateAdditionalAuthHeader(defaultAuthHeader, defaultFormat);
+  if (defaultAuthHeader)
+    validateAdditionalAuthHeader(defaultAuthHeader, defaultFormat);
   if (defaultAuthValue) validateAdditionalAuthValue(defaultAuthValue);
   const defaults: CliEnvConfig = {
     byok: false,
-    apiBase: optionalEnv("POSTIL_API_BASE", "https://openrouter.ai/api/v1") as string,
+    apiBase: optionalEnv(
+      "POSTIL_API_BASE",
+      "https://openrouter.ai/api/v1",
+    ) as string,
     apiFormat: defaultFormat,
     apiKey:
       optionalEnv("MODEL_API_KEY") ??
@@ -202,7 +226,10 @@ export async function resolveLlmConfig(orgId: number | null): Promise<CliEnvConf
   const settings = rows[0];
   if (!settings) return defaults;
   if (!settings.apiKeyCiphertext) return defaults;
-  const apiKey = unseal(Buffer.from(settings.apiKeyCiphertext), getSealingKey());
+  const apiKey = unseal(
+    Buffer.from(settings.apiKeyCiphertext),
+    getSealingKey(),
+  );
   // Internal-network guard at the worker boundary: rows predating write-time
   // validation must not reach the spawned CLI as POSTIL_API_BASE.
   if (settings.apiBase) await validateApiBase(settings.apiBase);
@@ -249,11 +276,15 @@ export async function resolveOrgReviewConfig(
     .where(eq(schema.orgSettings.orgId, orgId))
     .limit(1);
   const row = rows[0];
-  return row ? { ...row, configYaml: withoutOrgModelConfig(row.configYaml) } : null;
+  return row
+    ? { ...row, configYaml: withoutOrgModelConfig(row.configYaml) }
+    : null;
 }
 
 /** Shared owner config defaults on even when the organization has no settings row. */
-export async function resolveSharedConfigEnabled(orgId: number | null): Promise<boolean> {
+export async function resolveSharedConfigEnabled(
+  orgId: number | null,
+): Promise<boolean> {
   if (orgId == null) return false;
   const row = (
     await getDb()
@@ -289,9 +320,9 @@ export function probePostilCliVersion(
   timeoutMs = POSTIL_CLI_VERSION_TIMEOUT_MS,
 ): Promise<string> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const safeEnvironment = (process.env.PATH
-      ? { PATH: process.env.PATH }
-      : {}) as NodeJS.ProcessEnv;
+    const safeEnvironment = (
+      process.env.PATH ? { PATH: process.env.PATH } : {}
+    ) as NodeJS.ProcessEnv;
     const child = spawn(executable, ["--version"], {
       env: safeEnvironment,
       stdio: ["ignore", "pipe", "pipe"],
@@ -337,7 +368,9 @@ export function probePostilCliVersion(
     child.on("close", (exitCode) => {
       if (settled) return;
       if (exitCode !== 0) {
-        reject(`postil CLI version probe exited with code ${exitCode ?? "unknown"}`);
+        reject(
+          `postil CLI version probe exited with code ${exitCode ?? "unknown"}`,
+        );
         return;
       }
       const match = POSTIL_CLI_VERSION_PATTERN.exec(stdout.trim());
@@ -392,7 +425,11 @@ export class ReviewLogWriter {
       line = `[log truncated after ${REVIEW_LOG_MAX_LINES - 1} lines]`;
       this.stopped = true;
     } else {
-      line = redactAndTruncate(String(value), REVIEW_LOG_LINE_MAX_CHARS, this.sensitiveValues);
+      line = redactAndTruncate(
+        String(value),
+        REVIEW_LOG_LINE_MAX_CHARS,
+        this.sensitiveValues,
+      );
     }
     this.pending.push({
       reviewId: this.reviewId,
@@ -435,12 +472,14 @@ function createLineObserver(onLine: ((line: string) => void) | undefined) {
       const text = remainder + decoder.decode(chunk, { stream: true });
       const parts = text.split("\n");
       remainder = parts.pop() ?? "";
-      for (const part of parts) onLine(part.endsWith("\r") ? part.slice(0, -1) : part);
+      for (const part of parts)
+        onLine(part.endsWith("\r") ? part.slice(0, -1) : part);
     },
     end() {
       if (!onLine) return;
       remainder += decoder.decode();
-      if (remainder.length > 0) onLine(remainder.endsWith("\r") ? remainder.slice(0, -1) : remainder);
+      if (remainder.length > 0)
+        onLine(remainder.endsWith("\r") ? remainder.slice(0, -1) : remainder);
       remainder = "";
     },
   };
@@ -550,16 +589,25 @@ export async function runReviewJob(
         suspended: schema.installations.suspended,
       })
       .from(schema.installations)
-      .leftJoin(schema.organizations, eq(schema.installations.orgId, schema.organizations.id))
-      .where(eq(schema.installations.githubInstallationId, payload.installationId))
+      .leftJoin(
+        schema.organizations,
+        eq(schema.installations.orgId, schema.organizations.id),
+      )
+      .where(
+        eq(schema.installations.githubInstallationId, payload.installationId),
+      )
       .limit(1)
   )[0];
   if (!installation) {
-    console.warn(`review job skipped: unknown installation ${payload.installationId}`);
+    console.warn(
+      `review job skipped: unknown installation ${payload.installationId}`,
+    );
     return;
   }
   if (installation.suspended) {
-    console.warn(`review job skipped: installation ${payload.installationId} suspended`);
+    console.warn(
+      `review job skipped: installation ${payload.installationId} suspended`,
+    );
     return;
   }
 
@@ -576,20 +624,31 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!repository || !repository.enabled) {
-    console.warn(`review job skipped: repository ${payload.repoFullName} missing or disabled`);
+    console.warn(
+      `review job skipped: repository ${payload.repoFullName} missing or disabled`,
+    );
     return;
   }
-  const signedOrStoredPrivate = repository.private || payload.repositoryPrivate === true;
+  const signedOrStoredPrivate =
+    repository.private || payload.repositoryPrivate === true;
   const repositoryAccess = await canProcessRepositoryInference(db, {
     orgId: installation.orgId,
     repositoryPrivate: signedOrStoredPrivate,
   });
   if (!repositoryAccess.allowed) {
-    console.warn(`review job skipped: private repository ${payload.repoFullName} requires billing`);
+    console.warn(
+      `review job skipped: private repository ${payload.repoFullName} requires billing`,
+    );
     return;
   }
   const llm = await resolveLlmConfig(installation.orgId);
-  if (!providerModeMatchesRepositoryAccess(signedOrStoredPrivate, repositoryAccess, llm.byok)) {
+  if (
+    !providerModeMatchesRepositoryAccess(
+      signedOrStoredPrivate,
+      repositoryAccess,
+      llm.byok,
+    )
+  ) {
     console.warn(
       `review job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
     );
@@ -635,7 +694,10 @@ export async function runReviewJob(
   );
   await db
     .update(schema.repositories)
-    .set({ fullName: currentRepository.full_name, private: currentRepository.private })
+    .set({
+      fullName: currentRepository.full_name,
+      private: currentRepository.private,
+    })
     .where(eq(schema.repositories.id, repository.id));
   const currentAccess = await canProcessRepositoryInference(db, {
     orgId: installation.orgId,
@@ -643,7 +705,11 @@ export async function runReviewJob(
   });
   if (
     !currentAccess.allowed ||
-    !providerModeMatchesRepositoryAccess(currentRepository.private, currentAccess, llm.byok)
+    !providerModeMatchesRepositoryAccess(
+      currentRepository.private,
+      currentAccess,
+      llm.byok,
+    )
   ) {
     console.warn(
       `review job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
@@ -655,10 +721,18 @@ export async function runReviewJob(
   let authorLogin = payload.authorLogin;
   if (currentRepository.private) {
     const context = await translateWorkerAbort(
-      getPullRequestReviewContext(token, currentRepository.full_name, payload.prNumber, signal),
+      getPullRequestReviewContext(
+        token,
+        currentRepository.full_name,
+        payload.prNumber,
+        signal,
+      ),
       signal,
     );
-    if (context.headSha !== payload.headSha || context.baseSha !== payload.baseSha) {
+    if (
+      context.headSha !== payload.headSha ||
+      context.baseSha !== payload.baseSha
+    ) {
       console.warn(
         `review job skipped: ${currentRepository.full_name}#${payload.prNumber} refs changed before author verification`,
       );
@@ -670,7 +744,9 @@ export async function runReviewJob(
       context.authorGithubId <= 0 ||
       !context.authorLogin
     ) {
-      throw new OperationalError("private review author identity is unavailable");
+      throw new OperationalError(
+        "private review author identity is unavailable",
+      );
     }
     authorGithubId = context.authorGithubId;
     authorLogin = context.authorLogin;
@@ -723,7 +799,8 @@ export async function runReviewJob(
   )[0];
   const reviewId = inserted?.id;
   const publicId = inserted?.publicId;
-  if (reviewId === undefined || !publicId) throw new Error("review insert returned no row");
+  if (reviewId === undefined || !publicId)
+    throw new Error("review insert returned no row");
   const detailsUrl =
     publicOrigin && installation.orgSlug
       ? new URL(
@@ -745,10 +822,37 @@ export async function runReviewJob(
   let hostedUsageReservationId: string | null = null;
   let cliStarted = false;
   let publicationStarted = false;
+  let receiptUsageForRace: ReviewCompletionInput["usage"] | undefined;
+  let usageAccountingCompleteForRace = false;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
   const advisoryCheckExternalId = checkRunExternalId(publicId, "review");
   const gateCheckExternalId = checkRunExternalId(publicId, "gate");
+  const expectedFailureCheckRuns = (
+    publicationIncomplete = false,
+  ): ExpectedFailureCheckRuns => ({
+    ...(advisoryCheckRunId === undefined
+      ? {}
+      : {
+          advisory: {
+            id: advisoryCheckRunId,
+            name: ADVISORY_CHECK_NAME,
+            externalId: advisoryCheckExternalId,
+            headSha: payload.headSha,
+          },
+        }),
+    ...(gateCheckRunId === undefined
+      ? {}
+      : {
+          gate: {
+            id: gateCheckRunId,
+            name: GATE_CHECK_NAME,
+            externalId: gateCheckExternalId,
+            headSha: payload.headSha,
+          },
+        }),
+    publicationIncomplete,
+  });
 
   try {
     throwIfWorkerStopping(signal);
@@ -764,7 +868,8 @@ export async function runReviewJob(
       token,
       excludeReviewId: reviewId,
     });
-    if (superseded > 0) reviewLog.line(`superseded ${superseded} earlier active review(s)`);
+    if (superseded > 0)
+      reviewLog.line(`superseded ${superseded} earlier active review(s)`);
 
     advisoryCheckRunId = await createCheckRun(
       token,
@@ -773,7 +878,8 @@ export async function runReviewJob(
       payload.headSha,
       { signal, externalId: advisoryCheckExternalId },
     ).catch((error) => {
-      advisoryCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
+      advisoryCheckRunMayExist =
+        error instanceof AmbiguousCheckRunCreationError;
       throw error;
     });
     await db
@@ -806,7 +912,8 @@ export async function runReviewJob(
         })
       : null;
     if (spendReservation && !spendReservation.allowed) {
-      const message = "Hosted inference allowance is unavailable or fully reserved.";
+      const message =
+        "Hosted inference allowance is unavailable or fully reserved.";
       const settled = await db.transaction(async (tx) => {
         const failedRows = await tx
           .update(schema.reviews)
@@ -815,7 +922,12 @@ export async function runReviewJob(
             errorMessage: message,
             finishedAt: new Date(),
           })
-          .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
+          .where(
+            and(
+              eq(schema.reviews.id, reviewId),
+              eq(schema.reviews.status, "running"),
+            ),
+          )
           .returning({ id: schema.reviews.id });
         if (failedRows.length === 0) return false;
         await tx.insert(schema.jobs).values({
@@ -848,16 +960,20 @@ export async function runReviewJob(
           undefined,
           false,
           detailsUrl,
+          expectedFailureCheckRuns(),
         );
       }
-      reviewLog.line("hosted inference reservation denied before provider access");
+      reviewLog.line(
+        "hosted inference reservation denied before provider access",
+      );
       console.warn(
         `review job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
       );
       return;
     }
     hostedUsageReservationId = spendReservation?.reservationId ?? null;
-    if (hostedUsageReservationId) reviewLog.line("hosted inference spend reserved");
+    if (hostedUsageReservationId)
+      reviewLog.line("hosted inference spend reserved");
 
     const args = [
       "review",
@@ -886,7 +1002,12 @@ export async function runReviewJob(
       await writeFile(baselinePath, JSON.stringify(baseline.envelope));
       // Absolute: the CLI resolves --baseline against its own cwd, which is
       // the per-review work dir below, not the worker's.
-      args.push("--since-sha", baseline.headSha, "--baseline", resolve(baselinePath));
+      args.push(
+        "--since-sha",
+        baseline.headSha,
+        "--baseline",
+        resolve(baselinePath),
+      );
     }
     args.push("--output", "json");
 
@@ -914,18 +1035,21 @@ export async function runReviewJob(
       missingSharedSlots.length > 0 &&
       installation.orgId !== null &&
       installation.githubOrgId !== null &&
-      await resolveSharedConfigEnabled(installation.orgId)
+      (await resolveSharedConfigEnabled(installation.orgId))
     ) {
       const owner = currentRepository.full_name.split("/", 1)[0];
       if (owner) {
-        const shared = await resolveOwnerGithubConfig(createOwnerConfigStore(db), {
-          token,
-          orgId: installation.orgId,
-          githubOwnerId: installation.githubOrgId,
-          installationId: installation.id,
-          owner,
-          requiredSlots: missingSharedSlots,
-        });
+        const shared = await resolveOwnerGithubConfig(
+          createOwnerConfigStore(db),
+          {
+            token,
+            orgId: installation.orgId,
+            githubOwnerId: installation.githubOrgId,
+            installationId: installation.id,
+            owner,
+            requiredSlots: missingSharedSlots,
+          },
+        );
         sharedProvenance = shared.provenance;
         sharedConfigFiles = await materializeSharedConfig(
           workDir,
@@ -953,18 +1077,29 @@ export async function runReviewJob(
           .join(", ")})`,
       );
     }
-    const configFiles = [...repoConfigFiles, ...sharedConfigFiles, ...orgConfigFiles];
-    const configProvenance = buildConfigProvenance(configFiles, sharedProvenance, {
-      id: currentRepository.id,
-      fullName: currentRepository.full_name,
-    });
+    const configFiles = [
+      ...repoConfigFiles,
+      ...sharedConfigFiles,
+      ...orgConfigFiles,
+    ];
+    const configProvenance = buildConfigProvenance(
+      configFiles,
+      sharedProvenance,
+      {
+        id: currentRepository.id,
+        fullName: currentRepository.full_name,
+      },
+    );
     reviewLog.line(
       `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
     );
 
-    sensitiveValues = [token, llm.apiKey, llm.apiAuthHeader, llm.apiAuthValue].filter(
-      (value): value is string => Boolean(value),
-    );
+    sensitiveValues = [
+      token,
+      llm.apiKey,
+      llm.apiAuthHeader,
+      llm.apiAuthValue,
+    ].filter((value): value is string => Boolean(value));
     reviewLog.setSensitiveValues(sensitiveValues);
     throwIfWorkerStopping(signal);
     const cliEnv = buildCliEnv(llm, {
@@ -989,7 +1124,9 @@ export async function runReviewJob(
     );
 
     if (result.timedOut) {
-      throw new OperationalError(`review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline`);
+      throw new OperationalError(
+        `review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline`,
+      );
     }
     // Exit 0 = clean/below gate, 1 = gate-failing findings; both produce a
     // valid envelope. 2 (or anything else) is an operational error.
@@ -1001,22 +1138,28 @@ export async function runReviewJob(
     }
 
     const ingested = ingestEnvelope(result.stdout);
-    for (const incident of classifyOperationalModelIncidents(ingested.envelope)) {
+    for (const incident of classifyOperationalModelIncidents(
+      ingested.envelope,
+    )) {
       reportOperationalModelIncident(observabilityProcessGroup, incident);
     }
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
-    reviewLog.line("forge publication requested from the CLI");
-
-    // Guard on status so a completion racing a superseding push or watchdog
-    // cannot flap the row back to completed or attribute usage to a run that
-    // no longer owns the result. The CLI owns the success-path check-runs.
-    const receiptUsage = (ingested.modelUsage ?? [{
-      model: ingested.modelUsed,
-      promptTokens: ingested.promptTokens,
-      completionTokens: ingested.completionTokens,
-    }]).map((entry) => ({
+    const hasOperationalFinding = ingested.envelope.findings.some(
+      (finding) =>
+        finding.path === ".postil/operational" ||
+        finding.path === ".postil/provider",
+    );
+    const receiptUsage = (
+      ingested.modelUsage ?? [
+        {
+          model: ingested.modelUsed,
+          promptTokens: ingested.promptTokens,
+          completionTokens: ingested.completionTokens,
+        },
+      ]
+    ).map((entry) => ({
       orgId: installation.orgId,
       repositoryId: repository.id,
       promptTokens: entry.promptTokens,
@@ -1030,8 +1173,55 @@ export async function runReviewJob(
         entry.promptTokens,
         entry.completionTokens,
       ),
-      billingScope: !llm.byok ? "private_hosted" as const : "analytics" as const,
+      billingScope: !llm.byok
+        ? ("private_hosted" as const)
+        : ("analytics" as const),
     }));
+    receiptUsageForRace = receiptUsage;
+    usageAccountingCompleteForRace = ingested.usageAccountingComplete;
+    try {
+      await Promise.all([
+        verifyCompletedCheckRun(
+          token,
+          payload.repoFullName,
+          {
+            id: advisoryCheckRunId,
+            name: ADVISORY_CHECK_NAME,
+            externalId: advisoryCheckExternalId,
+            headSha: payload.headSha,
+            conclusion: hasOperationalFinding ? "neutral" : "success",
+            requireOutput: true,
+          },
+          signal,
+        ),
+        verifyCompletedCheckRun(
+          token,
+          payload.repoFullName,
+          {
+            id: gateCheckRunId,
+            name: GATE_CHECK_NAME,
+            externalId: gateCheckExternalId,
+            headSha: payload.headSha,
+            conclusion: ingested.gateFailing ? "failure" : "success",
+            requireOutput: true,
+          },
+          signal,
+        ),
+      ]);
+    } catch (error) {
+      if (error instanceof CheckRunPublicationError) {
+        throw error;
+      }
+      throw new CheckRunPublicationError(
+        "GitHub review publication could not be verified",
+        { cause: error },
+      );
+    }
+    reviewLog.line("forge check-runs verified completed by the CLI");
+
+    // Guard on status so a completion racing a superseding push or watchdog
+    // cannot flap the row back to completed or attribute usage to a run that
+    // no longer owns the result. The CLI owns the success-path check-runs.
     const completed = await persistReviewCompletion(db, {
       reviewId,
       envelope: ingested.envelope,
@@ -1073,25 +1263,72 @@ export async function runReviewJob(
           gateCheckRunId ?? null,
           "superseded by a newer review",
         );
-        reviewLog.line("forge check-runs restored to neutral after supersession");
+        reviewLog.line(
+          "forge check-runs restored to neutral after supersession",
+        );
       }
-      console.warn(`review ${reviewId} completed after it was already superseded or failed`);
+      console.warn(
+        `review ${reviewId} completed after it was already superseded or failed`,
+      );
     }
   } catch (err) {
+    if (err instanceof CheckRunPublicationError && receiptUsageForRace) {
+      const terminal = (
+        await db
+          .select({ status: schema.reviews.status })
+          .from(schema.reviews)
+          .where(eq(schema.reviews.id, reviewId))
+          .limit(1)
+      )[0];
+      if (terminal?.status === "stale") {
+        if (hostedUsageReservationId) {
+          await reconcileHostedReviewSpendFromReceipt(db, {
+            reservationId: hostedUsageReservationId,
+            repositoryId: repository.id,
+            reviewId,
+            triggerSource: reviewValues.triggerSource,
+            usage: receiptUsageForRace,
+            usageAccountingComplete: usageAccountingCompleteForRace,
+          });
+        }
+        await neutralizeSupersededCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? null,
+          gateCheckRunId ?? null,
+          "superseded by a newer review",
+        );
+        reviewLog.line(
+          "forge check-runs restored to neutral after supersession",
+        );
+        console.warn(
+          `review ${reviewId} publication verification raced with supersession`,
+        );
+        return;
+      }
+    }
     if (err instanceof WorkerShutdownError && !publicationStarted) {
       reviewLog.line(err.message);
       await db
         .update(schema.reviews)
         .set({ status: "stale", finishedAt: new Date() })
-        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")));
-      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
-        console.error(
-          `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
+        .where(
+          and(
+            eq(schema.reviews.id, reviewId),
+            eq(schema.reviews.status, "running"),
+          ),
         );
-      });
+      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
+        (releaseError) => {
+          console.error(
+            `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
+          );
+        },
+      );
       throw err;
     }
     const interruptedAfterPublication = err instanceof WorkerShutdownError;
+    const publicationIncomplete = err instanceof CheckRunPublicationError;
     const message = interruptedAfterPublication
       ? "review interrupted after GitHub publication began"
       : redactSecrets(err, sensitiveValues);
@@ -1104,7 +1341,12 @@ export async function runReviewJob(
           errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
           finishedAt: new Date(),
         })
-        .where(and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")))
+        .where(
+          and(
+            eq(schema.reviews.id, reviewId),
+            eq(schema.reviews.status, "running"),
+          ),
+        )
         .returning({ id: schema.reviews.id });
       if (rows.length === 0) return rows;
       await tx.insert(schema.jobs).values({
@@ -1122,6 +1364,7 @@ export async function runReviewJob(
           message,
           detailsUrl,
           intent: "fail",
+          publicationIncomplete,
         },
         maxAttempts: 5,
       });
@@ -1139,11 +1382,13 @@ export async function runReviewJob(
         );
       });
     } else {
-      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
-        console.error(
-          `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
-        );
-      });
+      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
+        (releaseError) => {
+          console.error(
+            `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
+          );
+        },
+      );
     }
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed - unless the watchdog
@@ -1158,13 +1403,18 @@ export async function runReviewJob(
         undefined,
         false,
         detailsUrl,
+        expectedFailureCheckRuns(publicationIncomplete),
       );
       reviewLog.line("forge check-runs updated for review failure");
     }
     throw interruptedAfterPublication ? new OperationalError(message) : err;
   } finally {
-    if (baselinePath) await rm(baselinePath, { force: true }).catch(() => undefined);
-    if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+    if (baselinePath)
+      await rm(baselinePath, { force: true }).catch(() => undefined);
+    if (workDir)
+      await rm(workDir, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
     await reviewLog.close();
   }
 }
@@ -1200,7 +1450,9 @@ export async function supersedeActiveReviews(
         input.excludeReviewId === undefined
           ? undefined
           : ne(schema.reviews.id, input.excludeReviewId),
-        input.onlyDifferentHead ? ne(schema.reviews.headSha, input.newHeadSha) : undefined,
+        input.onlyDifferentHead
+          ? ne(schema.reviews.headSha, input.newHeadSha)
+          : undefined,
       ),
     );
   if (active.length === 0) return 0;
@@ -1208,10 +1460,15 @@ export async function supersedeActiveReviews(
   let token = input.token;
   if (
     !token &&
-    active.some((review) => review.advisoryCheckRunId != null || review.gateCheckRunId != null)
+    active.some(
+      (review) =>
+        review.advisoryCheckRunId != null || review.gateCheckRunId != null,
+    )
   ) {
     if (input.githubInstallationId === undefined) {
-      throw new Error("cannot complete superseded check-runs without an installation id");
+      throw new Error(
+        "cannot complete superseded check-runs without an installation id",
+      );
     }
     token = await getInstallationToken(input.githubInstallationId);
   }
@@ -1298,7 +1555,10 @@ export async function completeHostedInferenceDisabledCheckRuns(
     });
   }
   if (throwOnError && errors.length > 0) {
-    throw new AggregateError(errors, "could not neutralize unavailable review check-runs");
+    throw new AggregateError(
+      errors,
+      "could not neutralize unavailable review check-runs",
+    );
   }
   return errors.length === 0;
 }
@@ -1317,40 +1577,93 @@ export async function failCheckRuns(
   signal?: AbortSignal,
   throwOnError = false,
   detailsUrl?: string,
+  expectedChecks?: ExpectedFailureCheckRuns,
 ): Promise<void> {
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
-  const summary = `Postil could not complete this review, so no review verdict exists.${details}`;
+  const publicationIncomplete =
+    expectedChecks?.publicationIncomplete === true;
+  if (
+    publicationIncomplete &&
+    ((gateCheckRunId != null && !expectedChecks?.gate) ||
+      (advisoryCheckRunId != null && !expectedChecks?.advisory))
+  ) {
+    throw new CheckRunPublicationError(
+      "publication cleanup requires the exact GitHub check-run identities",
+    );
+  }
+  const title = publicationIncomplete
+    ? "Review publication incomplete"
+    : "Review did not complete";
+  const summary = publicationIncomplete
+    ? `Postil completed the review, but GitHub did not receive the complete result. This run is not a published review verdict.${details}`
+    : `Postil could not complete this review, so no review verdict exists.${details}`;
   const errors: unknown[] = [];
-  if (gateCheckRunId != null) {
-    await completeCheckRun(
+  const complete = async (
+    checkRunId: number,
+    expected: ExpectedCheckRunIdentity | undefined,
+    conclusion: "failure" | "neutral",
+    checkSummary: string,
+  ): Promise<void> => {
+    if (!expected) {
+      await completeCheckRun(
+        token,
+        repoFullName,
+        checkRunId,
+        conclusion,
+        title,
+        checkSummary,
+        signal,
+      );
+      return;
+    }
+    if (expected.id !== checkRunId) {
+      throw new CheckRunPublicationError(
+        `GitHub check-run ${checkRunId} differs from its recorded review identity`,
+      );
+    }
+    await completeExpectedCheckRun(
       token,
       repoFullName,
-      gateCheckRunId,
-      "failure",
-      "Review did not complete",
-      `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`,
+      { ...expected, conclusion },
+      title,
+      checkSummary,
       signal,
+    );
+  };
+  if (gateCheckRunId != null) {
+    const gateSummary = publicationIncomplete
+      ? `${summary}\n\nThe merge check remains blocked because the reviewed result was not fully published. Re-request the check.`
+      : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`;
+    await complete(
+      gateCheckRunId,
+      expectedChecks?.gate,
+      "failure",
+      gateSummary,
     ).catch((error) => {
       errors.push(error);
-      console.error(`failed to complete gate check-run: ${redactSecrets(error, [token])}`);
+      console.error(
+        `failed to complete gate check-run: ${redactSecrets(error, [token])}`,
+      );
     });
   }
   if (advisoryCheckRunId != null) {
-    await completeCheckRun(
-      token,
-      repoFullName,
+    await complete(
       advisoryCheckRunId,
+      expectedChecks?.advisory,
       "neutral",
-      "Review did not complete",
       summary,
-      signal,
     ).catch((error) => {
       errors.push(error);
-      console.error(`failed to complete advisory check-run: ${redactSecrets(error, [token])}`);
+      console.error(
+        `failed to complete advisory check-run: ${redactSecrets(error, [token])}`,
+      );
     });
   }
   if (throwOnError && errors.length > 0) {
-    throw new AggregateError(errors, "could not complete failed review check-runs");
+    throw new AggregateError(
+      errors,
+      "could not complete failed review check-runs",
+    );
   }
 }
 
@@ -1362,7 +1675,10 @@ export async function runCheckRunCleanupJob(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const token = await getInstallationToken(payload.installationId, controller.signal);
+    const token = await getInstallationToken(
+      payload.installationId,
+      controller.signal,
+    );
     const errors: unknown[] = [];
     const complete = async (
       advisoryCheckRunId: number | null | undefined,
@@ -1378,6 +1694,33 @@ export async function runCheckRunCleanupJob(
         );
         return;
       }
+      const expectedChecks: ExpectedFailureCheckRuns = {
+        ...(advisoryCheckRunId != null &&
+        payload.headSha &&
+        payload.advisoryCheckExternalId
+          ? {
+              advisory: {
+                id: advisoryCheckRunId,
+                name: ADVISORY_CHECK_NAME,
+                externalId: payload.advisoryCheckExternalId,
+                headSha: payload.headSha,
+              },
+            }
+          : {}),
+        ...(gateCheckRunId != null &&
+        payload.headSha &&
+        payload.gateCheckExternalId
+          ? {
+              gate: {
+                id: gateCheckRunId,
+                name: GATE_CHECK_NAME,
+                externalId: payload.gateCheckExternalId,
+                headSha: payload.headSha,
+              },
+            }
+          : {}),
+        publicationIncomplete: payload.publicationIncomplete === true,
+      };
       await failCheckRuns(
         token,
         payload.repoFullName,
@@ -1387,12 +1730,15 @@ export async function runCheckRunCleanupJob(
         controller.signal,
         true,
         payload.detailsUrl,
+        expectedChecks,
       );
     };
 
-    await complete(payload.advisoryCheckRunId, payload.gateCheckRunId).catch((error) => {
-      errors.push(error);
-    });
+    await complete(payload.advisoryCheckRunId, payload.gateCheckRunId).catch(
+      (error) => {
+        errors.push(error);
+      },
+    );
 
     let reconciledAdvisoryCheckRunId: number | null = null;
     let reconciledGateCheckRunId: number | null = null;
@@ -1412,7 +1758,9 @@ export async function runCheckRunCleanupJob(
           controller.signal,
         );
         if (reconciledAdvisoryCheckRunId === null) {
-          errors.push(new Error("ambiguous advisory check-run is not visible yet"));
+          errors.push(
+            new Error("ambiguous advisory check-run is not visible yet"),
+          );
         }
       } catch (error) {
         errors.push(error);
@@ -1440,7 +1788,10 @@ export async function runCheckRunCleanupJob(
         errors.push(error);
       }
     }
-    await complete(reconciledAdvisoryCheckRunId, reconciledGateCheckRunId).catch((error) => {
+    await complete(
+      reconciledAdvisoryCheckRunId,
+      reconciledGateCheckRunId,
+    ).catch((error) => {
       errors.push(error);
     });
     if (errors.length > 0) {

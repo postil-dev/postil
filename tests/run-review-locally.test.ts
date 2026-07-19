@@ -91,6 +91,7 @@ console.log("fixture-key");
         "review",
         "--forge",
         "github",
+        "--publish",
         "--repo",
         "local/postil-local",
         "--pr",

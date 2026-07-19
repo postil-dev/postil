@@ -100,6 +100,7 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   message: string;
   detailsUrl?: string;
   intent?: "fail" | "neutralize";
+  publicationIncomplete?: boolean;
 }
 
 export interface WebhookDispatchJobPayload extends Record<string, unknown> {

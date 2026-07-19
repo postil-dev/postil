@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  completeExpectedCheckRun,
   createCheckRun,
   findCheckRunByExternalId,
   findIssueCommentByMarker,
   getPullRequestReviewContext,
   RESPOND_MARKER_MAX_PAGES,
+  verifyCompletedCheckRun,
 } from "@/lib/github/checks";
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -68,7 +70,8 @@ describe("respond delivery marker lookup", () => {
   });
 
   test("returns null when a short page proves the search is exhausted", async () => {
-    globalThis.fetch = (async (_input) => Response.json(comments(3, 1))) as typeof fetch;
+    globalThis.fetch = (async (_input) =>
+      Response.json(comments(3, 1))) as typeof fetch;
 
     const found = await findIssueCommentByMarker(
       "token",
@@ -92,7 +95,9 @@ describe("pull-request review context", () => {
         user: { id: 42, login: "octocat" },
       })) as typeof fetch;
 
-    await expect(getPullRequestReviewContext("token", "octo/repo", 7)).resolves.toEqual({
+    await expect(
+      getPullRequestReviewContext("token", "octo/repo", 7),
+    ).resolves.toEqual({
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
@@ -110,7 +115,9 @@ describe("pull-request review context", () => {
         user: { id: 0, login: "   " },
       })) as typeof fetch;
 
-    await expect(getPullRequestReviewContext("token", "octo/repo", 7)).resolves.toEqual({
+    await expect(
+      getPullRequestReviewContext("token", "octo/repo", 7),
+    ).resolves.toEqual({
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
@@ -124,7 +131,9 @@ describe("pull-request review context", () => {
         user: { id: 42, login: ` ${"a".repeat(101)} ` },
       })) as typeof fetch;
 
-    await expect(getPullRequestReviewContext("token", "octo/repo", 7)).resolves.toEqual({
+    await expect(
+      getPullRequestReviewContext("token", "octo/repo", 7),
+    ).resolves.toEqual({
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
@@ -136,9 +145,9 @@ describe("pull-request review context", () => {
     globalThis.fetch = (async (_input) =>
       Response.json({ head: { sha: "head-sha" }, base: {} })) as typeof fetch;
 
-    await expect(getPullRequestReviewContext("token", "octo/repo", 7)).rejects.toThrow(
-      "incomplete refs",
-    );
+    await expect(
+      getPullRequestReviewContext("token", "octo/repo", 7),
+    ).rejects.toThrow("incomplete refs");
   });
 });
 
@@ -204,5 +213,281 @@ describe("check-run creation", () => {
         "postil:run:review",
       ),
     ).resolves.toBe(2);
+  });
+});
+
+describe("check-run publication verification", () => {
+  const expected = {
+    id: 42,
+    name: "postil/review",
+    externalId: "postil:run:review",
+    headSha: "head-sha",
+    conclusion: "success" as const,
+  };
+
+  test("accepts only the exact completed check-run verdict", async () => {
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: "completed",
+        conclusion: "success",
+        output: {
+          title: "Review complete",
+          summary: "The review completed.",
+        },
+      })) as typeof fetch;
+
+    await expect(
+      verifyCompletedCheckRun("token", "octo/repo", expected),
+    ).resolves.toBeUndefined();
+  });
+
+  test("rejects pending and partial publication", async () => {
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: "in_progress",
+        conclusion: null,
+      })) as typeof fetch;
+
+    await expect(
+      verifyCompletedCheckRun("token", "octo/repo", expected),
+    ).rejects.toThrow("is not completed");
+
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: "completed",
+        conclusion: null,
+      })) as typeof fetch;
+
+    await expect(
+      verifyCompletedCheckRun("token", "octo/repo", expected),
+    ).rejects.toThrow("expected success");
+  });
+
+  test("rejects a terminal verdict with no published output when required", async () => {
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: "completed",
+        conclusion: "success",
+        output: { title: "", summary: "" },
+      })) as typeof fetch;
+
+    await expect(
+      verifyCompletedCheckRun("token", "octo/repo", {
+        ...expected,
+        requireOutput: true,
+      }),
+    ).rejects.toThrow("has no published output");
+  });
+
+  test("rejects mismatched check identity and verdict", async () => {
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        id: 42,
+        name: "postil/gate",
+        external_id: "postil:another:gate",
+        head_sha: "another-head",
+        status: "completed",
+        conclusion: "failure",
+      })) as typeof fetch;
+
+    await expect(
+      verifyCompletedCheckRun("token", "octo/repo", expected),
+    ).rejects.toThrow("does not match its review identity");
+
+    globalThis.fetch = (async (_input) =>
+      Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: "completed",
+        conclusion: "failure",
+      })) as typeof fetch;
+
+    await expect(
+      verifyCompletedCheckRun("token", "octo/repo", expected),
+    ).rejects.toThrow("expected success");
+  });
+
+  test("cleanup is idempotent after the exact verdict is terminal", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      methods.push(init?.method ?? "GET");
+      return Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: "completed",
+        conclusion: "success",
+        output: {
+          title: "Review complete",
+          summary: "The review completed.",
+        },
+      });
+    }) as typeof fetch;
+
+    await completeExpectedCheckRun(
+      "token",
+      "octo/repo",
+      expected,
+      "Review complete",
+      "The review completed.",
+    );
+
+    expect(methods).toEqual(["GET"]);
+  });
+
+  test("cleanup replaces a stale output even when the conclusion already matches", async () => {
+    const methods: string[] = [];
+    let patched = false;
+    globalThis.fetch = (async (_input, init) => {
+      const method = init?.method ?? "GET";
+      methods.push(method);
+      if (method === "PATCH") {
+        patched = true;
+        return new Response(null, { status: 200 });
+      }
+      return Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: "completed",
+        conclusion: "success",
+        output: patched
+          ? {
+              title: "Review publication incomplete",
+              summary: "This run is not a published review verdict.",
+            }
+          : {
+              title: "Review complete",
+              summary: "A review verdict exists.",
+            },
+      });
+    }) as typeof fetch;
+
+    await completeExpectedCheckRun(
+      "token",
+      "octo/repo",
+      expected,
+      "Review publication incomplete",
+      "This run is not a published review verdict.",
+    );
+
+    expect(methods).toEqual(["GET", "PATCH", "GET"]);
+  });
+
+  test("cleanup verifies identity before and terminal state after its patch", async () => {
+    const methods: string[] = [];
+    let patched = false;
+    globalThis.fetch = (async (_input, init) => {
+      const method = init?.method ?? "GET";
+      methods.push(method);
+      if (method === "PATCH") {
+        patched = true;
+        return new Response(null, { status: 200 });
+      }
+      return Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: patched ? "completed" : "in_progress",
+        conclusion: patched ? "success" : null,
+        output: patched
+          ? {
+              title: "Review complete",
+              summary: "The review completed.",
+            }
+          : null,
+      });
+    }) as typeof fetch;
+
+    await completeExpectedCheckRun(
+      "token",
+      "octo/repo",
+      expected,
+      "Review complete",
+      "The review completed.",
+    );
+
+    expect(methods).toEqual(["GET", "PATCH", "GET"]);
+  });
+
+  test("cleanup rejects a patch whose terminal output remains stale", async () => {
+    let patched = false;
+    globalThis.fetch = (async (_input, init) => {
+      if ((init?.method ?? "GET") === "PATCH") {
+        patched = true;
+        return new Response(null, { status: 200 });
+      }
+      return Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: patched ? "completed" : "in_progress",
+        conclusion: patched ? "success" : null,
+        output: patched
+          ? {
+              title: "Review complete",
+              summary: "Stale review verdict.",
+            }
+          : null,
+      });
+    }) as typeof fetch;
+
+    await expect(
+      completeExpectedCheckRun(
+        "token",
+        "octo/repo",
+        expected,
+        "Review publication incomplete",
+        "This run is not a published review verdict.",
+      ),
+    ).rejects.toThrow("did not publish the expected output");
+  });
+
+  test("cleanup does not patch a mismatched check-run identity", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      methods.push(init?.method ?? "GET");
+      return Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:another:review",
+        head_sha: "head-sha",
+        status: "in_progress",
+        conclusion: null,
+      });
+    }) as typeof fetch;
+
+    await expect(
+      completeExpectedCheckRun(
+        "token",
+        "octo/repo",
+        expected,
+        "Review complete",
+        "The review completed.",
+      ),
+    ).rejects.toThrow("does not match its review identity");
+    expect(methods).toEqual(["GET"]);
   });
 });
