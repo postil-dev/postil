@@ -230,13 +230,12 @@ jobs:
           # stopped machine the proxy has to cold-start drops/retries webhook
           # deliveries. Surface the current count rather than assume the
           # restart above (or the deploy itself) actually achieved it. A
-          # hard failure because the release verifier depends on two live web
-          # machines before activating release capabilities.
+          # warning here because the release verifier below owns the hard
+          # capacity gate after all managed process groups are inspected.
           web_running=$(flyctl machine list --app postil-web --json \
             | jq -r '[.[] | select(.config.metadata.fly_process_group == "web" and .state == "started")] | length')
           if [ "${web_running}" -lt 2 ]; then
-            echo "::error::Managed web capacity is below the configured minimum."
-            exit 1
+            echo "::warning::Managed web capacity is below the configured minimum; release activation verification follows."
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
