@@ -5,7 +5,8 @@ import {
   activatePrivateReviewAuthorIdentity,
   activateReleaseJobs,
 } from "@/lib/release-job-rollout";
-import { optionalEnv } from "@/lib/env";
+import { hostedInferenceEnabled, optionalEnv } from "@/lib/env";
+import { backfillExistingPersonalAccountTrials } from "@/lib/self-service-trial";
 import { backfillBillingContactVerification } from "./backfill-billing-contact-verification";
 
 async function main(): Promise<void> {
@@ -21,6 +22,12 @@ async function main(): Promise<void> {
       await activatePrivateReviewAuthorIdentity(getPool());
     const released = await activateReleaseJobs(getPool());
     const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+    const personalTrials = releaseSha
+      ? await backfillExistingPersonalAccountTrials(getDb(), {
+          hostedInferenceEnabled: hostedInferenceEnabled(),
+          releaseSha,
+        })
+      : { eligible: 0, granted: 0 };
     const hostedInferenceActivated = releaseSha
       ? await activateHostedInferenceRelease(getPool(), releaseSha)
       : null;
@@ -28,6 +35,8 @@ async function main(): Promise<void> {
       `release job kinds activated: released=${released} ` +
         `private_review_author=${privateReviewAuthorActivated ? "activated" : "already_active"} ` +
         `hosted_inference=${hostedInferenceActivated === null ? "unmanaged" : hostedInferenceActivated ? "activated" : "already_active"} ` +
+        `personal_trials_eligible=${personalTrials.eligible} ` +
+        `personal_trials_granted=${personalTrials.granted} ` +
         `billing_pending=${billing.pending} billing_queued=${billing.queued} ` +
         `escalation_terminalized=${retirement.terminalized} ` +
         `escalation_redacted=${retirement.redacted} ` +

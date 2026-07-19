@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
@@ -9,6 +9,7 @@ import {
 import {
   HOSTED_INFERENCE_LOCK,
   HOSTED_TRIALS_PER_GITHUB_ACTOR,
+  hostedInferenceCapability,
 } from "@/lib/release-job-rollout";
 
 export const SELF_SERVICE_TRIAL_DAYS = 30;
@@ -32,6 +33,11 @@ export interface SelfServiceTrialInput {
   subscriptionMode: "hosted" | "byok";
   hostedInferenceEnabled: boolean;
   hostedReleaseCapability: string | null;
+}
+
+export interface PersonalAccountTrialBackfillInput {
+  hostedInferenceEnabled: boolean;
+  releaseSha: string;
 }
 
 /** Grant one owner-scoped trial and enqueue its alert in the same transaction. */
@@ -118,4 +124,63 @@ export async function grantSelfServiceTrial(
 
     return { granted: true, trialEndsAt };
   });
+}
+
+/**
+ * Grant trials to unentitled personal-account installations. The GitHub
+ * account owner is the only possible installer, so its verified owner id is
+ * safe to use for the actor-scoped abuse limit.
+ */
+export async function backfillExistingPersonalAccountTrials(
+  db: Database,
+  input: PersonalAccountTrialBackfillInput,
+): Promise<{ eligible: number; granted: number }> {
+  const candidates = await db
+    .selectDistinctOn([schema.organizations.id], {
+      orgId: schema.organizations.id,
+      orgSlug: schema.organizations.slug,
+      githubOwnerId: schema.organizations.githubOrgId,
+      accountLogin: schema.installations.accountLogin,
+      accountType: schema.installations.accountType,
+      githubInstallationId: schema.installations.githubInstallationId,
+    })
+    .from(schema.installations)
+    .innerJoin(
+      schema.organizations,
+      eq(schema.organizations.id, schema.installations.orgId),
+    )
+    .leftJoin(
+      schema.organizationEntitlements,
+      eq(schema.organizationEntitlements.orgId, schema.organizations.id),
+    )
+    .leftJoin(
+      schema.selfServiceTrialGrants,
+      eq(schema.selfServiceTrialGrants.orgId, schema.organizations.id),
+    )
+    .where(
+      and(
+        eq(schema.installations.accountType, "User"),
+        eq(schema.installations.suspended, false),
+        isNotNull(schema.organizations.githubOrgId),
+        isNull(schema.organizationEntitlements.orgId),
+        isNull(schema.selfServiceTrialGrants.orgId),
+      ),
+    )
+    .orderBy(schema.organizations.id, desc(schema.installations.id));
+
+  let granted = 0;
+  for (const candidate of candidates) {
+    if (candidate.githubOwnerId === null) continue;
+    const result = await grantSelfServiceTrial(db, {
+      ...candidate,
+      githubOwnerId: candidate.githubOwnerId,
+      initiatedByGithubId: candidate.githubOwnerId,
+      subscriptionMode: "hosted",
+      hostedInferenceEnabled: input.hostedInferenceEnabled,
+      hostedReleaseCapability: hostedInferenceCapability(input.releaseSha),
+    });
+    if (result.granted) granted += 1;
+  }
+
+  return { eligible: candidates.length, granted };
 }
