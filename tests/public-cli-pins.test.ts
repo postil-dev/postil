@@ -66,7 +66,7 @@ describe("public CLI pins", () => {
     const compose = readFileSync("docker-compose.yml", "utf8");
     const defaults = compose.match(/POSTIL_CLI_REV: \$\{POSTIL_CLI_REV:-([^}]+)\}/g) ?? [];
 
-    expect(defaults).toHaveLength(2);
+    expect(defaults).toHaveLength(3);
     for (const entry of defaults) {
       expect(entry).toContain(PUBLIC_SELF_HOSTED_CLI_RELEASE);
     }
