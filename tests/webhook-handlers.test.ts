@@ -9,6 +9,7 @@ import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   signWebhookBody,
 } from "@/lib/crypto/webhook";
+import { activateHostedInferenceRelease } from "@/lib/release-job-rollout";
 
 /**
  * Behavioural coverage for the webhook route beyond delivery dedupe:
@@ -198,9 +199,13 @@ describeDb("webhook handler behaviour", () => {
     };
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
+    delete process.env.POSTIL_RELEASE_SHA;
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
     await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name LIKE 'hosted-inference-release:%'",
+    );
     await pool.query(
       "TRUNCATE self_service_trial_grants, reviews, repositories, installations, organizations, users RESTART IDENTITY CASCADE",
     );
@@ -562,6 +567,70 @@ describeDb("webhook handler behaviour", () => {
       granted_mode: "byok",
       initiated_by_github_id: "9250",
     }]);
+  });
+
+  test("installation during a dark release is promoted when that exact release activates", async () => {
+    const releaseSha = "dddddddddddddddddddddddddddddddddddddddd";
+    process.env.POSTIL_RELEASE_SHA = releaseSha;
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    const account = { id: 9260, login: "DarkTrialOwner", type: "Organization" };
+    const installation = {
+      action: "created",
+      installation: { id: 8260, account, suspended_at: null },
+      repositories: [],
+      sender: { id: 778, login: "installer", type: "User" },
+    };
+    expect((await post("installation", installation, "trial-dark-created")).status)
+      .toBe(200);
+    expect((await pool.query<{ requested_mode: string; granted_mode: string; subscription_mode: string }>(`
+      SELECT trial.requested_mode, trial.granted_mode, entitlement.subscription_mode
+      FROM self_service_trial_grants trial
+      JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
+    `)).rows[0]).toEqual({
+      requested_mode: "hosted",
+      granted_mode: "byok",
+      subscription_mode: "byok",
+    });
+
+    expect(await activateHostedInferenceRelease(pool, releaseSha)).toBe(true);
+    expect((await pool.query<{ granted_mode: string; subscription_mode: string }>(`
+      SELECT trial.granted_mode, entitlement.subscription_mode
+      FROM self_service_trial_grants trial
+      JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
+    `)).rows[0]).toEqual({
+      granted_mode: "hosted",
+      subscription_mode: "hosted",
+    });
+    expect((await post("installation", installation, "trial-dark-reinstall")).status)
+      .toBe(200);
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM self_service_trial_grants",
+    )).rows[0]!.count).toBe(1);
+  });
+
+  test("installation racing exact release activation always receives hosted access", async () => {
+    const releaseSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    process.env.POSTIL_RELEASE_SHA = releaseSha;
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    const account = { id: 9270, login: "RacingTrialOwner", type: "Organization" };
+    const [response] = await Promise.all([
+      post("installation", {
+        action: "created",
+        installation: { id: 8270, account, suspended_at: null },
+        repositories: [],
+        sender: { id: 779, login: "installer", type: "User" },
+      }, "trial-racing-created"),
+      activateHostedInferenceRelease(pool, releaseSha),
+    ]);
+    expect(response.status).toBe(200);
+    expect((await pool.query<{ granted_mode: string; subscription_mode: string }>(`
+      SELECT trial.granted_mode, entitlement.subscription_mode
+      FROM self_service_trial_grants trial
+      JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
+    `)).rows[0]).toEqual({
+      granted_mode: "hosted",
+      subscription_mode: "hosted",
+    });
   });
 
   test("suspended installation waits to grant its trial until unsuspended", async () => {

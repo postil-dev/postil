@@ -9,12 +9,12 @@ import {
 
 export const metadata: Metadata = {
   title: "Pricing",
-  description: `Start with a 30-day hosted trial without a card. Public repositories are free with BYOK. Private plans start at $${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author each month after the trial.`,
+  description: `30-day hosted trials cover up to three organizations per installing GitHub identity. Public repositories are free with BYOK. Private plans start at $${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author each month after the trial.`,
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
     description:
-      "Start with a 30-day hosted trial without a card. Pay only for active private-repository authors after the trial.",
+      "30-day hosted trials cover up to three organizations per installing GitHub identity. Pay only for active private-repository authors after the trial.",
     url: "https://postil.dev/pricing",
     images: ["/opengraph-image"],
   },
@@ -47,9 +47,9 @@ export default function PricingPage() {
         Private code, priced by active authors.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        Start with a 30-day hosted trial. No card or provider setup. Private
-        plans count only authors whose pull requests Postil reviews.
-        Repositories are not billed.
+        30-day hosted trials cover up to three organizations per installing GitHub
+        identity. No card or provider setup. Private plans count only authors
+        whose pull requests Postil reviews. Repositories are not billed.
       </p>
 
       <section
@@ -97,6 +97,8 @@ export default function PricingPage() {
           <ActiveAuthorUnit id="hosted-active-author" />
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>30 days free, no card</li>
+            <li>Up to 3 organization trials per GitHub identity</li>
+            <li>BYOK remains available after that</li>
             <li>Postil operates model access</li>
             <li>Review volume is not a billing unit</li>
           </ul>

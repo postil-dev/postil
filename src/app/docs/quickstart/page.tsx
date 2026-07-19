@@ -20,9 +20,10 @@ export default function QuickstartPage() {
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">Quickstart</h1>
       <p className="mt-4 text-lg">
-        Start with the GitHub App and a 30-day hosted trial. It reviews new
-        non-draft pull requests after setup. Add the CLI and GitHub Action for
-        local reviews and merge blocking.
+        Start with the GitHub App. Hosted trials cover up to three organizations
+        per installing identity; BYOK covers additional organizations. It
+        reviews new non-draft pull requests after setup. Add the CLI and GitHub
+        Action for local reviews and merge blocking.
       </p>
 
       <h2>1. GitHub App</h2>

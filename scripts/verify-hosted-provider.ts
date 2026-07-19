@@ -4,8 +4,9 @@ export async function verifyHostedProvider(input: {
   apiBase: string;
   model: string;
   apiKey: string;
-  providerSlug: string;
   providerName: string;
+  maxPromptPrice: number;
+  maxCompletionPrice: number;
   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 }): Promise<void> {
   const response = await (input.fetchImpl ?? fetch)(
@@ -24,8 +25,14 @@ export async function verifyHostedProvider(input: {
         max_tokens: 128,
         temperature: 0,
         provider: {
-          only: [input.providerSlug],
+          data_collection: "deny",
+          zdr: true,
+          order: [input.providerName],
           allow_fallbacks: false,
+          max_price: {
+            prompt: input.maxPromptPrice,
+            completion: input.maxCompletionPrice,
+          },
         },
         messages: [{ role: "user", content: "Reply with exactly: ready" }],
       }),
@@ -38,7 +45,10 @@ export async function verifyHostedProvider(input: {
   const payload = (await response.json()) as {
     model?: unknown;
     provider?: unknown;
-    choices?: Array<{ message?: { content?: unknown } }>;
+    choices?: Array<{
+      finish_reason?: unknown;
+      message?: { content?: unknown; refusal?: unknown };
+    }>;
     usage?: {
       prompt_tokens?: unknown;
       completion_tokens?: unknown;
@@ -47,8 +57,16 @@ export async function verifyHostedProvider(input: {
       cost_details?: { upstream_inference_cost?: unknown };
     };
   };
-  if (typeof payload.choices?.[0]?.message?.content !== "string") {
+  const choice = payload.choices?.[0];
+  if (typeof choice?.message?.content !== "string") {
     throw new Error("hosted provider preflight returned no text choice");
+  }
+  if (
+    choice.message.content.trim() !== "ready" ||
+    choice.finish_reason !== "stop" ||
+    (typeof choice.message.refusal === "string" && choice.message.refusal.trim() !== "")
+  ) {
+    throw new Error("hosted provider preflight returned an unusable text choice");
   }
   if (payload.model !== input.model) {
     throw new Error("hosted provider preflight returned an unexpected model");
@@ -81,6 +99,12 @@ export async function verifyHostedProvider(input: {
   ) {
     throw new Error("hosted provider preflight returned invalid cost accounting");
   }
+  const maximumUpstreamCost =
+    Number(promptTokens) * input.maxPromptPrice / 1_000_000 +
+    Number(completionTokens) * input.maxCompletionPrice / 1_000_000;
+  if (upstreamCost > maximumUpstreamCost + Number.EPSILON) {
+    throw new Error("hosted provider preflight exceeded its price ceiling");
+  }
 }
 
 if (import.meta.main) {
@@ -89,8 +113,9 @@ if (import.meta.main) {
     apiBase: optionalEnv("POSTIL_API_BASE", "https://openrouter.ai/api/v1") as string,
     model,
     apiKey: requireEnv("MODEL_API_KEY"),
-    providerSlug: "fireworks",
     providerName: "Fireworks",
+    maxPromptPrice: 1.4,
+    maxCompletionPrice: 4.4,
   });
   console.log(`hosted provider preflight passed for ${model} on Fireworks`);
 }

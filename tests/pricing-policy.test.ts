@@ -35,6 +35,10 @@ describe("pricing policy", () => {
     expect(pricing).toContain('href="/contact"');
     expect(pricing).toContain("Install with BYOK");
     expect(pricing).toContain("Start 30-day trial");
+    expect(pricing).toContain("Up to 3 organization trials per GitHub identity");
+    expect(pricing).toContain("BYOK remains available after that");
+    expect(terms).toContain("up to three organizations");
+    expect(terms).toContain("Additional organizations can start with BYOK");
     expect(terms).toContain("Public-repository App reviews are free");
     expect(terms).toContain("materially beyond ordinary interactive");
     expect(terms).not.toContain("Where practicable");
@@ -89,6 +93,8 @@ describe("pricing policy", () => {
     expect(setupCopy).not.toContain("Postil&apos;s hosted default model");
     expect(settings).toContain("!hostedInferenceAvailable");
     expect(setupCopy).toContain("hosted trial");
+    expect(setupCopy).toContain("Additional");
+    expect(setupCopy).toContain("organizations start with BYOK access");
     expect(settings).toContain("Choose hosted inference or your provider during the free trial.");
     expect(privacy).toContain("Hosted plans use");
     expect(billing).not.toMatch(/included usage|overage hard cap|credit balance|credit grants/i);

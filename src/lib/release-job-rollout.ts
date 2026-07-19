@@ -11,9 +11,10 @@ const ADVISORY_LOCK_NAME = "postil:release-v1-jobs";
 export const PRIVATE_REVIEW_AUTHOR_CAPABILITY = "private-review-author-v1";
 const PRIVATE_REVIEW_AUTHOR_LOCK = "postil:private-review-author-v1";
 const HOSTED_INFERENCE_CAPABILITY_PREFIX = "hosted-inference-release:";
-const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
+export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
+export const HOSTED_TRIALS_PER_GITHUB_ACTOR = 3;
 
-function hostedInferenceCapability(releaseSha: string): string {
+export function hostedInferenceCapability(releaseSha: string): string {
   const normalized = releaseSha.trim().toLowerCase();
   if (!/^[0-9a-f]{7,40}$/.test(normalized)) {
     throw new Error("hosted inference activation requires a release SHA");
@@ -52,6 +53,51 @@ export async function activateHostedInferenceRelease(
        ON CONFLICT (name) DO NOTHING`,
       [hostedInferenceCapability(releaseSha)],
     );
+    await client.query(`
+      WITH hosted_counts AS (
+        SELECT initiated_by_github_id, count(*)::int AS count
+        FROM self_service_trial_grants
+        WHERE granted_mode = 'hosted'
+        GROUP BY initiated_by_github_id
+      ), candidates AS (
+        SELECT grant_row.org_id,
+               row_number() OVER (
+                 PARTITION BY grant_row.initiated_by_github_id
+                 ORDER BY grant_row.created_at, grant_row.org_id
+               ) AS candidate_rank,
+               COALESCE(hosted_counts.count, 0) AS hosted_count
+        FROM self_service_trial_grants grant_row
+        JOIN organization_entitlements entitlement
+          ON entitlement.org_id = grant_row.org_id
+        LEFT JOIN hosted_counts
+          ON hosted_counts.initiated_by_github_id = grant_row.initiated_by_github_id
+        WHERE grant_row.requested_mode = 'hosted'
+          AND grant_row.granted_mode = 'byok'
+          AND entitlement.subscription_mode = 'byok'
+          AND entitlement.status = 'trialing'
+          AND entitlement.updated_by = 'self-service-trial'
+          AND entitlement.trial_ends_at > now()
+      ), promoted AS (
+        UPDATE organization_entitlements entitlement
+        SET subscription_mode = 'hosted',
+            updated_by = 'hosted-release-activation',
+            updated_at = now()
+        FROM candidates
+        WHERE entitlement.org_id = candidates.org_id
+          AND candidates.candidate_rank <= GREATEST($1 - candidates.hosted_count, 0)
+          AND entitlement.subscription_mode = 'byok'
+          AND entitlement.status = 'trialing'
+          AND entitlement.updated_by = 'self-service-trial'
+          AND entitlement.trial_ends_at > now()
+        RETURNING entitlement.org_id
+      )
+      UPDATE self_service_trial_grants grant_row
+      SET granted_mode = 'hosted'
+      FROM promoted
+      WHERE grant_row.org_id = promoted.org_id
+        AND grant_row.requested_mode = 'hosted'
+        AND grant_row.granted_mode = 'byok'
+    `, [HOSTED_TRIALS_PER_GITHUB_ACTOR]);
     await client.query("COMMIT");
     return (activated.rowCount ?? 0) > 0;
   } catch (error) {

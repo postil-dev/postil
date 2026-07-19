@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
-import { getDb, getPool, schema } from "@/lib/db";
-import { hostedInferenceAvailable, requireEnv } from "@/lib/env";
+import { getDb, schema } from "@/lib/db";
+import { hostedInferenceEnabled, optionalEnv, requireEnv } from "@/lib/env";
 import {
   apiBase,
   buildAppJwt,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/github/app-auth";
 import { redactSecrets } from "@/lib/redact";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
+import { hostedInferenceCapability } from "@/lib/release-job-rollout";
 import { grantSelfServiceTrial } from "@/lib/self-service-trial";
 
 /**
@@ -290,6 +291,7 @@ export async function upsertInstallation(
   if (!saved) return undefined;
   if (!(installation.suspended ?? false)) {
     const actorIdentityVerified = initiatedByGithubId !== undefined;
+    const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
     await grantSelfServiceTrial(db, {
       orgId,
       orgSlug: saved.orgSlug,
@@ -298,10 +300,11 @@ export async function upsertInstallation(
       githubOwnerId: account.id,
       githubInstallationId: installation.id,
       initiatedByGithubId: initiatedByGithubId ?? account.id,
-      subscriptionMode:
-        actorIdentityVerified && await hostedInferenceAvailable(getPool())
-          ? "hosted"
-          : "byok",
+      subscriptionMode: actorIdentityVerified ? "hosted" : "byok",
+      hostedInferenceEnabled: hostedInferenceEnabled(),
+      hostedReleaseCapability: releaseSha
+        ? hostedInferenceCapability(releaseSha)
+        : null,
     });
   }
   return saved.installationRowId;

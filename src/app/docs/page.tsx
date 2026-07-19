@@ -17,7 +17,7 @@ const CARDS = [
   {
     href: "/docs/quickstart",
     title: "Quickstart",
-    body: "Install the GitHub App, start a 30-day hosted trial, then add local and CI workflows if needed.",
+    body: "Install the GitHub App. Hosted trials cover up to three organizations per installing identity; BYOK covers additional organizations.",
   },
   {
     href: "/docs/coding-agents",
@@ -81,9 +81,10 @@ export default function DocsIndexPage() {
     <div>
       <h1 className="serif-display text-4xl">Documentation</h1>
       <p className="prose-postil mt-4 text-lg">
-        Install the GitHub App and start a 30-day hosted trial to review new
-        pull requests. These pages also cover the open-source CLI, CI merge
-        gating, configuration, and running the whole stack on your own hardware.
+        Install the GitHub App. Hosted trials cover up to three organizations
+        per installing identity; BYOK covers additional organizations. These
+        pages also cover the open-source CLI, CI merge gating, configuration,
+        and running the whole stack on your own hardware.
       </p>
       <div className="mt-10 grid gap-5 sm:grid-cols-2">
         {CARDS.map((card) => (

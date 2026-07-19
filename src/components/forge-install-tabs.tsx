@@ -95,10 +95,11 @@ function GitHubPanel({ githubAppUrl }: { githubAppUrl: string }) {
         <div className="min-w-0">
           <p className="text-ink-soft">
             Choose all repositories or a selected set during installation.
-            The 30-day hosted trial starts automatically. New non-draft pull
-            requests are reviewed after setup. Open organization settings to
-            use your own provider instead. Draft pull requests are skipped until
-            they are marked ready.
+            The 30-day hosted trial starts automatically for up to three
+            organizations installed by one GitHub identity. Additional
+            organizations start with BYOK access; connect a provider in
+            organization settings. New non-draft pull requests are reviewed
+            after setup. Draft pull requests are skipped until they are marked ready.
             Existing open pull requests are not reviewed retroactively unless
             a review is requested again.
           </p>

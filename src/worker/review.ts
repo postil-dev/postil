@@ -51,6 +51,7 @@ import {
 import { configuredPublicOrigin } from "@/lib/oauth";
 import {
   reconcileConservativeHostedReviewSpend,
+  reconcileHostedReviewSpendFromReceipt,
   releaseHostedReviewSpend,
   reserveHostedReviewSpend,
 } from "@/lib/hosted-usage-reservations";
@@ -1008,6 +1009,26 @@ export async function runReviewJob(
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
     // no longer owns the result. The CLI owns the success-path check-runs.
+    const receiptUsage = (ingested.modelUsage ?? [{
+      model: ingested.modelUsed,
+      promptTokens: ingested.promptTokens,
+      completionTokens: ingested.completionTokens,
+    }]).map((entry) => ({
+      orgId: installation.orgId,
+      repositoryId: repository.id,
+      promptTokens: entry.promptTokens,
+      completionTokens: entry.completionTokens,
+      modelUsed: entry.model,
+      // A legacy aggregate is priced only when modelUsed names one known
+      // catalog model. Chains/consensus remain unpriced and consume the
+      // full reservation rather than undercharging a fallback.
+      costMicros: calculateUsageCostMicrosForModel(
+        entry.model,
+        entry.promptTokens,
+        entry.completionTokens,
+      ),
+      billingScope: !llm.byok ? "private_hosted" as const : "analytics" as const,
+    }));
     const completed = await persistReviewCompletion(db, {
       reviewId,
       envelope: ingested.envelope,
@@ -1015,37 +1036,20 @@ export async function runReviewJob(
       configProvenance,
       silent: ingested.silent,
       gateFailing: ingested.gateFailing,
-      usage: (ingested.modelUsage ?? [{
-        model: ingested.modelUsed,
-        promptTokens: ingested.promptTokens,
-        completionTokens: ingested.completionTokens,
-      }]).map((entry) => ({
-        orgId: installation.orgId,
-        repositoryId: repository.id,
-        promptTokens: entry.promptTokens,
-        completionTokens: entry.completionTokens,
-        modelUsed: entry.model,
-        // A legacy aggregate is priced only when modelUsed names one known
-        // catalog model. Chains/consensus remain unpriced and consume the
-        // full reservation rather than undercharging a fallback.
-        costMicros: calculateUsageCostMicrosForModel(
-          entry.model,
-          entry.promptTokens,
-          entry.completionTokens,
-        ),
-        billingScope: !llm.byok ? "private_hosted" : "analytics",
-      })),
+      usage: receiptUsage,
       hostedUsageReservationId,
       usageAccountingComplete: ingested.usageAccountingComplete,
     });
 
     if (!completed) {
       if (hostedUsageReservationId) {
-        await reconcileConservativeHostedReviewSpend(db, {
+        await reconcileHostedReviewSpendFromReceipt(db, {
           reservationId: hostedUsageReservationId,
           repositoryId: repository.id,
           reviewId,
           triggerSource: reviewValues.triggerSource,
+          usage: receiptUsage,
+          usageAccountingComplete: ingested.usageAccountingComplete,
         });
       }
       const terminal = (

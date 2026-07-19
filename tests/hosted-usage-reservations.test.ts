@@ -8,6 +8,7 @@ import { Client, Pool } from "pg";
 import {
   hasHostedReservationCapacity,
   reconcileConservativeHostedReviewSpend,
+  reconcileHostedReviewSpendFromReceipt,
   reconcileHostedRespondSpend,
   releaseHostedRespondSpend,
   reserveHostedReviewSpend,
@@ -305,6 +306,121 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       model_used: "unattributed provider usage",
       trigger_source: "requested_review",
     });
+  });
+
+  test("a terminal-state race reconciles one trusted receipt without duplicate usage", async () => {
+    const db = drizzle(pool!, { schema });
+    const fixture = await pool!.query<{
+      org_id: string;
+      repository_id: string;
+      review_id: string;
+    }>(`
+      WITH org AS (
+        INSERT INTO organizations (slug, name)
+        VALUES ('completion-race-metering', 'Completion Race Metering') RETURNING id
+      ), installation AS (
+        INSERT INTO installations (github_installation_id, account_login, account_type, org_id)
+        SELECT 99717, 'completion-race-metering', 'Organization', id FROM org
+        RETURNING id, org_id
+      ), repository AS (
+        INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+        SELECT id, 99718, 'completion-race-metering/private', true, true FROM installation
+        RETURNING id
+      ), entitlement AS (
+        INSERT INTO organization_entitlements (
+          org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents,
+          updated_by
+        ) SELECT org_id, 'hosted', 'active', 3000000, 0, 300, 0, 'test'
+        FROM installation
+      ), review AS (
+        INSERT INTO reviews (
+          repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+          trigger_context
+        ) SELECT id, number, 'race-head-' || number, 'race-base', 'stale',
+          'requested_review',
+          '{"source":"requested_review","webhookDeliveryId":"race","webhookEvent":"issue_comment"}'::jsonb
+        FROM repository CROSS JOIN generate_series(1, 2) AS number
+        RETURNING id
+      )
+      SELECT installation.org_id, repository.id AS repository_id, review.id AS review_id
+      FROM installation, repository, review ORDER BY review.id;
+    `);
+    const [complete, incomplete] = fixture.rows;
+    const completeReservation = await reserveHostedReviewSpend(db, {
+      orgId: Number(complete!.org_id),
+      reviewId: Number(complete!.review_id),
+      usesByok: false,
+    });
+    const incompleteReservation = await reserveHostedReviewSpend(db, {
+      orgId: Number(incomplete!.org_id),
+      reviewId: Number(incomplete!.review_id),
+      usesByok: false,
+    });
+    expect(completeReservation.allowed).toBe(true);
+    expect(incompleteReservation.allowed).toBe(true);
+
+    const completeInput = {
+      reservationId: completeReservation.reservationId!,
+      repositoryId: Number(complete!.repository_id),
+      reviewId: Number(complete!.review_id),
+      triggerSource: "requested_review" as const,
+      usage: [{
+        promptTokens: 100,
+        completionTokens: 10,
+        modelUsed: "z-ai/glm-5.2",
+        costMicros: 1_234,
+      }],
+      usageAccountingComplete: true,
+    };
+    expect((await Promise.all([
+      reconcileHostedReviewSpendFromReceipt(db, completeInput),
+      reconcileHostedReviewSpendFromReceipt(db, completeInput),
+    ])).sort((a, b) => a - b)).toEqual([0, 1_234]);
+
+    expect(await reconcileHostedReviewSpendFromReceipt(db, {
+      reservationId: incompleteReservation.reservationId!,
+      repositoryId: Number(incomplete!.repository_id),
+      reviewId: Number(incomplete!.review_id),
+      triggerSource: "requested_review",
+      usage: [{
+        promptTokens: 200,
+        completionTokens: 20,
+        modelUsed: "z-ai/glm-5.2",
+        costMicros: 2_345,
+      }],
+      usageAccountingComplete: false,
+    })).toBe(1_000_000);
+
+    const accounting = await pool!.query<{
+      review_id: string;
+      actual_micros: string;
+      usage_micros: string;
+      usage_rows: number;
+    }>(`
+      SELECT reservation.review_id, reservation.actual_micros,
+             sum(usage.cost_micros)::bigint AS usage_micros,
+             count(usage.id)::int AS usage_rows
+      FROM hosted_usage_reservations reservation
+      JOIN usage_events usage ON usage.review_id = reservation.review_id
+      WHERE reservation.id = ANY($1::uuid[])
+      GROUP BY reservation.review_id, reservation.actual_micros
+      ORDER BY reservation.review_id
+    `, [[completeReservation.reservationId, incompleteReservation.reservationId]]);
+    expect(accounting.rows).toEqual([
+      {
+        review_id: String(complete!.review_id),
+        actual_micros: "1234",
+        usage_micros: "1234",
+        usage_rows: 1,
+      },
+      {
+        review_id: String(incomplete!.review_id),
+        actual_micros: "1000000",
+        usage_micros: "1000000",
+        usage_rows: 2,
+      },
+    ]);
   });
 
   test("classifies omitted legacy usage scope without undercounting private hosted work", async () => {
