@@ -1104,6 +1104,7 @@ export async function runReviewJob(
     throwIfWorkerStopping(signal);
     const cliEnv = buildCliEnv(llm, {
       GITHUB_TOKEN: token,
+      POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId),
       ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
       POSTIL_PREVENTION_HINT: preventionHint ? "1" : "0",
       POSTIL_PREVENTION_COMMANDS_JSON: JSON.stringify(

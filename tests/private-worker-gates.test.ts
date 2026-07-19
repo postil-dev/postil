@@ -194,6 +194,19 @@ describe("private repository worker defense in depth", () => {
     expect(args).not.toContain('"--no-post"');
   });
 
+  test("hosted publication is bound to the stored GitHub repository id", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const reviewStart = source.indexOf("export async function runReviewJob");
+    const envStart = source.indexOf("const cliEnv = buildCliEnv", reviewStart);
+    const envEnd = source.indexOf("});", envStart);
+    const cliEnv = source.slice(envStart, envEnd);
+
+    expect(cliEnv).toContain(
+      "POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId)",
+    );
+    expect(cliEnv).not.toContain("payload.githubRepoId");
+  });
+
   test("hosted review cannot persist completion before forge publication is verified", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const reviewStart = source.indexOf("export async function runReviewJob");
