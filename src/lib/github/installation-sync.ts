@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
-import { getDb, schema } from "@/lib/db";
-import { hostedInferenceEnabled, requireEnv } from "@/lib/env";
+import { getDb, getPool, schema } from "@/lib/db";
+import { hostedInferenceAvailable, requireEnv } from "@/lib/env";
 import {
   apiBase,
   buildAppJwt,
@@ -249,12 +249,12 @@ export async function upsertRepository(
 export async function upsertInstallation(
   installation: { id: number; suspended?: boolean },
   account: GithubAccount,
-  initiatedByGithubId = account.id,
+  initiatedByGithubId?: number,
 ): Promise<number | undefined> {
   const db = getDb();
   const orgId = await findOrCreateOrg(account);
   const accountType = account.type ?? "User";
-  return db.transaction(async (tx) => {
+  const saved = await db.transaction(async (tx) => {
     const upserted = await tx
       .insert(schema.installations)
       .values({
@@ -285,20 +285,26 @@ export async function upsertInstallation(
     )[0];
     if (!organization) throw new Error("installation organization is missing");
 
-    if (!(installation.suspended ?? false)) {
-      await grantSelfServiceTrial(tx, {
-        orgId,
-        orgSlug: organization.slug,
-        accountLogin: account.login,
-        accountType,
-        githubOwnerId: account.id,
-        githubInstallationId: installation.id,
-        initiatedByGithubId,
-        subscriptionMode: hostedInferenceEnabled() ? "hosted" : "byok",
-      });
-    }
-    return installationRowId;
+    return { installationRowId, orgSlug: organization.slug };
   });
+  if (!saved) return undefined;
+  if (!(installation.suspended ?? false)) {
+    const actorIdentityVerified = initiatedByGithubId !== undefined;
+    await grantSelfServiceTrial(db, {
+      orgId,
+      orgSlug: saved.orgSlug,
+      accountLogin: account.login,
+      accountType,
+      githubOwnerId: account.id,
+      githubInstallationId: installation.id,
+      initiatedByGithubId: initiatedByGithubId ?? account.id,
+      subscriptionMode:
+        actorIdentityVerified && await hostedInferenceAvailable(getPool())
+          ? "hosted"
+          : "byok",
+    });
+  }
+  return saved.installationRowId;
 }
 
 function githubHeaders(bearer: string): Record<string, string> {

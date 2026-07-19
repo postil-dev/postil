@@ -50,6 +50,7 @@ import {
 } from "@/lib/github/owner-config";
 import { configuredPublicOrigin } from "@/lib/oauth";
 import {
+  reconcileConservativeHostedReviewSpend,
   releaseHostedReviewSpend,
   reserveHostedReviewSpend,
 } from "@/lib/hosted-usage-reservations";
@@ -741,6 +742,7 @@ export async function runReviewJob(
   let workDir: string | undefined;
   let sensitiveValues: string[] = [];
   let hostedUsageReservationId: string | null = null;
+  let cliStarted = false;
   let publicationStarted = false;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
@@ -973,6 +975,7 @@ export async function runReviewJob(
     });
 
     reviewLog.line("postil CLI spawned");
+    cliStarted = true;
     const result = await runCli(args, cliEnv, workDir, {
       onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
       signal,
@@ -1037,7 +1040,14 @@ export async function runReviewJob(
     });
 
     if (!completed) {
-      await releaseHostedReviewSpend(db, hostedUsageReservationId);
+      if (hostedUsageReservationId) {
+        await reconcileConservativeHostedReviewSpend(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+        });
+      }
       const terminal = (
         await db
           .select({ status: schema.reviews.status })
@@ -1110,11 +1120,24 @@ export async function runReviewJob(
       });
       return rows;
     });
-    await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
-      console.error(
-        `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
-      );
-    });
+    if (hostedUsageReservationId && cliStarted) {
+      await reconcileConservativeHostedReviewSpend(db, {
+        reservationId: hostedUsageReservationId,
+        repositoryId: repository.id,
+        reviewId,
+        triggerSource: reviewValues.triggerSource,
+      }).catch((reconcileError) => {
+        console.error(
+          `failed to conservatively reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
+        );
+      });
+    } else {
+      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
+        console.error(
+          `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
+        );
+      });
+    }
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).

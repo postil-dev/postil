@@ -3,9 +3,9 @@ import Link from "next/link";
 
 import { and, desc, eq, sql } from "drizzle-orm";
 
-import { schema } from "@/lib/db";
+import { getPool, schema } from "@/lib/db";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
-import { hostedInferenceEnabled } from "@/lib/env";
+import { hostedInferenceAvailable as managedHostedInferenceAvailable } from "@/lib/env";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import { requireOrgMembership } from "@/lib/org-access";
 import {
@@ -61,7 +61,7 @@ export default async function OrgSettingsPage({
       .where(eq(schema.orgSettings.orgId, org.id))
       .limit(1)
   )[0];
-  const hostedInferenceAvailable = hostedInferenceEnabled();
+  const hostedInferenceAvailable = await managedHostedInferenceAvailable(getPool());
   const managedReviewsPaused = !hostedInferenceAvailable && !(settings?.hasKey ?? false);
   const sharedSnapshot = (
     await db

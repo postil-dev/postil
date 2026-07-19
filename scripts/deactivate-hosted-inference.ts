@@ -1,12 +1,17 @@
 import { closeDb, getPool } from "@/lib/db";
-import { requireEnv } from "@/lib/env";
+import { optionalEnv } from "@/lib/env";
 import { deactivateHostedInferenceRelease } from "@/lib/release-job-rollout";
 
 async function main(): Promise<void> {
   try {
+    const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+    if (!releaseSha) {
+      console.log("managed hosted inference preparation skipped outside a release image");
+      return;
+    }
     const deactivated = await deactivateHostedInferenceRelease(
       getPool(),
-      requireEnv("POSTIL_RELEASE_SHA"),
+      releaseSha,
     );
     console.log(
       `managed hosted inference prepared dark: ${deactivated ? "prior activation removed" : "already dark"}`,

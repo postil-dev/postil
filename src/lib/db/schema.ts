@@ -529,8 +529,7 @@ export const selfServiceTrialGrants = pgTable(
   "self_service_trial_grants",
   {
     orgId: bigint("org_id", { mode: "number" })
-      .primaryKey()
-      .references(() => organizations.id, { onDelete: "cascade" }),
+      .primaryKey(),
     initiatedByGithubId: bigint("initiated_by_github_id", { mode: "number" }).notNull(),
     requestedMode: text("requested_mode").notNull(),
     grantedMode: text("granted_mode").notNull(),

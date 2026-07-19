@@ -44,7 +44,7 @@ describe("public CLI pins", () => {
     expect(() => assertPublicCliPins(pins, "fixture")).not.toThrow();
     expect(() =>
       assertPublicCliPins({ ...pins, cliRelease: "v99.0.0" }, "fixture"),
-    ).toThrow("expected v0.6.3");
+    ).toThrow("expected v0.7.1");
     expect(() =>
       parsePublicCliPins("uses: postil-dev/postil-action@main", "fixture"),
     ).toThrow("exactly one complete Postil pin set");

@@ -7,6 +7,7 @@ import { Client, Pool } from "pg";
 
 import {
   hasHostedReservationCapacity,
+  reconcileConservativeHostedReviewSpend,
   reconcileHostedRespondSpend,
   releaseHostedRespondSpend,
   reserveHostedReviewSpend,
@@ -231,6 +232,79 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       repositoryPrivate: true,
     });
     expect(privateNoPlan).toMatchObject({ allowed: false, reason: "no_entitlement" });
+  });
+
+  test("a model-started failed review conservatively charges its full hold", async () => {
+    const db = drizzle(pool!, { schema });
+    const fixture = await pool!.query<{
+      org_id: string;
+      repository_id: string;
+      review_id: string;
+    }>(`
+      WITH org AS (
+        INSERT INTO organizations (slug, name)
+        VALUES ('failed-review-metering', 'Failed Review Metering') RETURNING id
+      ), installation AS (
+        INSERT INTO installations (github_installation_id, account_login, account_type, org_id)
+        SELECT 99617, 'failed-review-metering', 'Organization', id FROM org
+        RETURNING id, org_id
+      ), repository AS (
+        INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+        SELECT id, 99618, 'failed-review-metering/private', true, true FROM installation
+        RETURNING id
+      ), entitlement AS (
+        INSERT INTO organization_entitlements (
+          org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents,
+          updated_by
+        ) SELECT org_id, 'hosted', 'active', 1000000, 0, 100, 0, 'test'
+        FROM installation
+      ), review AS (
+        INSERT INTO reviews (
+          repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+          trigger_context
+        ) SELECT id, 1, 'failed-head', 'failed-base', 'running', 'requested_review',
+          '{"source":"requested_review","webhookDeliveryId":"failed-review","webhookEvent":"issue_comment"}'::jsonb
+        FROM repository RETURNING id
+      )
+      SELECT installation.org_id, repository.id AS repository_id, review.id AS review_id
+      FROM installation, repository, review;
+    `);
+    const row = fixture.rows[0]!;
+    const reservation = await reserveHostedReviewSpend(db, {
+      orgId: Number(row.org_id),
+      reviewId: Number(row.review_id),
+      usesByok: false,
+    });
+    expect(reservation.allowed).toBe(true);
+    expect(
+      await reconcileConservativeHostedReviewSpend(db, {
+        reservationId: reservation.reservationId!,
+        repositoryId: Number(row.repository_id),
+        reviewId: Number(row.review_id),
+        triggerSource: "requested_review",
+      }),
+    ).toBe(1_000_000);
+    const accounting = await pool!.query<{
+      status: string;
+      actual_micros: string;
+      cost_micros: string;
+      model_used: string;
+      trigger_source: string;
+    }>(`
+      SELECT reservation.status, reservation.actual_micros,
+             usage.cost_micros, usage.model_used, usage.trigger_source
+      FROM hosted_usage_reservations reservation
+      JOIN usage_events usage ON usage.review_id = reservation.review_id
+      WHERE reservation.id = $1
+    `, [reservation.reservationId]);
+    expect(accounting.rows[0]).toEqual({
+      status: "reconciled",
+      actual_micros: "1000000",
+      cost_micros: "1000000",
+      model_used: "unattributed provider usage",
+      trigger_source: "requested_review",
+    });
   });
 
   test("classifies omitted legacy usage scope without undercounting private hosted work", async () => {

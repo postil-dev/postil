@@ -202,9 +202,9 @@ describeDb("webhook handler behaviour", () => {
     await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
-      "TRUNCATE reviews, repositories, installations, organizations, users RESTART IDENTITY CASCADE",
+      "TRUNCATE self_service_trial_grants, reviews, repositories, installations, organizations, users RESTART IDENTITY CASCADE",
     );
-  });
+  }, 30_000);
 
   afterAll(async () => {
     globalThis.fetch = ORIGINAL_FETCH;
@@ -432,6 +432,7 @@ describeDb("webhook handler behaviour", () => {
       action: "created",
       installation: { id: 8080, account, suspended_at: null },
       repositories: [],
+      sender: { id: 7001, login: "installer", type: "User" },
     };
 
     expect((await post("installation", created, "trial-created-1")).status).toBe(200);
@@ -499,19 +500,22 @@ describeDb("webhook handler behaviour", () => {
   });
 
   test("one GitHub actor receives bounded hosted trials across owners without blocking setup", async () => {
-    for (let index = 0; index < 4; index += 1) {
-      const account = {
-        id: 9200 + index,
-        login: `TrialOwner${index}`,
-        type: "Organization",
-      };
-      expect((await post("installation", {
-        action: "created",
-        installation: { id: 8200 + index, account, suspended_at: null },
-        repositories: [],
-        sender: { id: 777, login: "installer", type: "User" },
-      }, `trial-cross-owner-${index}`)).status).toBe(200);
-    }
+    const responses = await Promise.all(
+      Array.from({ length: 4 }, async (_, index) => {
+        const account = {
+          id: 9200 + index,
+          login: `TrialOwner${index}`,
+          type: "Organization",
+        };
+        return post("installation", {
+          action: "created",
+          installation: { id: 8200 + index, account, suspended_at: null },
+          repositories: [],
+          sender: { id: 777, login: "installer", type: "User" },
+        }, `trial-cross-owner-${index}`);
+      }),
+    );
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
 
     const grants = await pool.query<{
       requested_mode: string;
@@ -527,9 +531,37 @@ describeDb("webhook handler behaviour", () => {
     expect(grants.rows.map((row) => row.requested_mode)).toEqual([
       "hosted", "hosted", "hosted", "hosted",
     ]);
-    expect(grants.rows.map((row) => row.granted_mode)).toEqual([
-      "hosted", "hosted", "hosted", "byok",
-    ]);
+    expect(grants.rows.map((row) => row.granted_mode).sort()).toEqual([
+      "byok", "hosted", "hosted", "hosted",
+    ].sort());
+  });
+
+  test("installation without a verified sender receives BYOK access only", async () => {
+    const account = {
+      id: 9250,
+      login: "UnsignedTrialOwner",
+      type: "Organization",
+    };
+    expect((await post("installation", {
+      action: "created",
+      installation: { id: 8250, account, suspended_at: null },
+      repositories: [],
+    }, "trial-missing-sender")).status).toBe(200);
+
+    const grants = await pool.query<{
+      requested_mode: string;
+      granted_mode: string;
+      initiated_by_github_id: string;
+    }>(
+      `SELECT requested_mode, granted_mode, initiated_by_github_id
+         FROM self_service_trial_grants
+        WHERE org_id = (SELECT id FROM organizations WHERE github_org_id = 9250)`,
+    );
+    expect(grants.rows).toEqual([{
+      requested_mode: "byok",
+      granted_mode: "byok",
+      initiated_by_github_id: "9250",
+    }]);
   });
 
   test("suspended installation waits to grant its trial until unsuspended", async () => {

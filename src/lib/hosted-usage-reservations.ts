@@ -238,6 +238,79 @@ export async function releaseHostedSpend(
 export const releaseHostedReviewSpend = releaseHostedSpend;
 export const releaseHostedRespondSpend = releaseHostedSpend;
 
+/** Charge the full hold when a review may have reached the provider but has no trusted receipt. */
+export async function reconcileConservativeHostedReviewSpend(
+  db: Database,
+  input: {
+    reservationId: string;
+    repositoryId: number;
+    reviewId: number;
+    triggerSource:
+      | "unknown"
+      | "automatic_pull_request"
+      | "requested_review"
+      | "github_check_rerun"
+      | "github_mention";
+    now?: Date;
+  },
+): Promise<number> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const reservation = (
+      await tx
+        .select({
+          orgId: schema.hostedUsageReservations.orgId,
+          operation: schema.hostedUsageReservations.operation,
+          status: schema.hostedUsageReservations.status,
+          reviewId: schema.hostedUsageReservations.reviewId,
+          reservedMicros: schema.hostedUsageReservations.reservedMicros,
+        })
+        .from(schema.hostedUsageReservations)
+        .where(eq(schema.hostedUsageReservations.id, input.reservationId))
+        .limit(1)
+    )[0];
+    if (
+      !reservation ||
+      reservation.operation !== "review" ||
+      reservation.status !== "active" ||
+      reservation.reviewId !== input.reviewId
+    ) {
+      throw new Error("hosted review usage reservation is not active");
+    }
+    const reconciled = await tx
+      .update(schema.hostedUsageReservations)
+      .set({
+        status: "reconciled",
+        actualMicros: reservation.reservedMicros,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.hostedUsageReservations.id, input.reservationId),
+          eq(schema.hostedUsageReservations.status, "active"),
+          eq(schema.hostedUsageReservations.operation, "review"),
+        ),
+      )
+      .returning({ id: schema.hostedUsageReservations.id });
+    if (reconciled.length !== 1) {
+      throw new Error("hosted review usage reservation changed during reconciliation");
+    }
+    await tx.insert(schema.usageEvents).values({
+      orgId: reservation.orgId,
+      repositoryId: input.repositoryId,
+      reviewId: input.reviewId,
+      promptTokens: 0,
+      completionTokens: 0,
+      modelUsed: "unattributed provider usage",
+      costMicros: reservation.reservedMicros,
+      billingScope: "private_hosted",
+      triggerSource: input.triggerSource,
+      createdAt: now,
+    });
+    return reservation.reservedMicros;
+  });
+}
+
 export async function reconcileHostedRespondSpend(
   db: Database,
   input: {

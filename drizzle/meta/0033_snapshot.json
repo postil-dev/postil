@@ -3519,21 +3519,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "self_service_trial_grants_org_id_organizations_id_fk": {
-          "name": "self_service_trial_grants_org_id_organizations_id_fk",
-          "tableFrom": "self_service_trial_grants",
-          "tableTo": "organizations",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

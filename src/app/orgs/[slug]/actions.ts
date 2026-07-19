@@ -18,8 +18,8 @@ import {
   validateAdditionalAuthValue,
 } from "@/lib/byok-provider";
 import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
-import { getDb, schema } from "@/lib/db";
-import { hostedInferenceEnabled } from "@/lib/env";
+import { getDb, getPool, schema } from "@/lib/db";
+import { hostedInferenceAvailable } from "@/lib/env";
 import { getOrgMembership } from "@/lib/org-access";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
@@ -533,6 +533,7 @@ export async function saveOrgSettings(
     return { status: "error", message: "Choose how to update additional authentication." };
   }
 
+  const managedHostedInferenceAvailable = await hostedInferenceAvailable(getPool());
   const modeError = await db.transaction(async (tx) => {
     await tx.execute(sql`
       SELECT "org_id"
@@ -574,7 +575,7 @@ export async function saveOrgSettings(
     );
     if (
       requestedMode === "hosted" &&
-      !hostedInferenceEnabled() &&
+      !managedHostedInferenceAvailable &&
       entitlement?.subscriptionMode !== "hosted"
     ) {
       return {
