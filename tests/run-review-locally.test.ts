@@ -117,6 +117,7 @@ console.log("fixture-key");
       scorer: undefined,
       scorerDisabled: "1",
       hostedMode: "0",
+      expectedGithubRepoId: "990002",
       endpointAuthPresent: false,
       configApiBaseAllowed: false,
     });
@@ -486,6 +487,7 @@ if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {
     scorer: process.env.REVIEW_SCORER_MODEL,
     scorerDisabled: process.env.POSTIL_DISABLE_SCORER,
     hostedMode: process.env.POSTIL_HOSTED_MODE,
+    expectedGithubRepoId: process.env.POSTIL_EXPECTED_GITHUB_REPO_ID,
     endpointAuthPresent: Boolean(process.env.POSTIL_ENDPOINT_AUTH_HEADER || process.env.POSTIL_ENDPOINT_AUTH_VALUE),
     configApiBaseAllowed: Boolean(process.env.POSTIL_ALLOW_CONFIG_API_BASE),
   }));
