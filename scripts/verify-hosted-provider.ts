@@ -1,5 +1,13 @@
 import { optionalEnv, requireEnv } from "@/lib/env";
 
+/** Resolve the same hosted provider credential aliases as the review worker. */
+export function hostedProviderApiKeyFromEnv(): string {
+  return optionalEnv("MODEL_API_KEY") ??
+    optionalEnv("POSTIL_API_KEY") ??
+    optionalEnv("OPENROUTER_API_KEY") ??
+    requireEnv("MODEL_API_KEY");
+}
+
 export async function verifyHostedProvider(input: {
   apiBase: string;
   model: string;
@@ -112,7 +120,7 @@ if (import.meta.main) {
   await verifyHostedProvider({
     apiBase: optionalEnv("POSTIL_API_BASE", "https://openrouter.ai/api/v1") as string,
     model,
-    apiKey: requireEnv("MODEL_API_KEY"),
+    apiKey: hostedProviderApiKeyFromEnv(),
     providerName: "Fireworks",
     maxPromptPrice: 1.4,
     maxCompletionPrice: 4.4,
