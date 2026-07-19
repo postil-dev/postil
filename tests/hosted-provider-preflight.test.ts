@@ -1,8 +1,36 @@
 import { describe, expect, test } from "bun:test";
 
-import { verifyHostedProvider } from "../scripts/verify-hosted-provider";
+import {
+  hostedProviderApiKeyFromEnv,
+  verifyHostedProvider,
+} from "../scripts/verify-hosted-provider";
 
 describe("hosted provider preflight", () => {
+  test("uses the review worker's provider credential precedence", () => {
+    const previous = {
+      MODEL_API_KEY: process.env.MODEL_API_KEY,
+      POSTIL_API_KEY: process.env.POSTIL_API_KEY,
+      OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
+    };
+    try {
+      delete process.env.MODEL_API_KEY;
+      delete process.env.POSTIL_API_KEY;
+      process.env.OPENROUTER_API_KEY = "openrouter-key";
+      expect(hostedProviderApiKeyFromEnv()).toBe("openrouter-key");
+
+      process.env.POSTIL_API_KEY = "postil-key";
+      expect(hostedProviderApiKeyFromEnv()).toBe("postil-key");
+
+      process.env.MODEL_API_KEY = "model-key";
+      expect(hostedProviderApiKeyFromEnv()).toBe("model-key");
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   test("accepts a bounded no-publication model response", async () => {
     let requestBody: Record<string, unknown> | undefined;
     await verifyHostedProvider({
