@@ -325,6 +325,7 @@ describe("drainQueueOnce", () => {
     expect(fly).toContain('worker = "bun src/worker/index.ts"');
     expect(dockerfile).toContain('CMD ["bun", "scripts/start-web.ts"]');
     expect(dockerfile).toContain("USER bun");
+    expect(dockerfile).toContain("POSTIL_CACHE_DIR=/tmp/postil");
     expect(dockerfile.indexOf("USER bun")).toBeLessThan(
       dockerfile.indexOf('CMD ["bun", "scripts/start-web.ts"]'),
     );
