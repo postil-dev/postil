@@ -863,6 +863,9 @@ export async function runReviewJob(
       "review",
       "--forge",
       "github",
+      // Remote CLI invocations are local-only by default. The hosted worker is
+      // the explicit publication boundary, so it must opt in deliberately.
+      "--publish",
       "--repo",
       payload.repoFullName,
       "--pr",
@@ -1004,7 +1007,7 @@ export async function runReviewJob(
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
-    reviewLog.line("forge check-runs updated by the CLI");
+    reviewLog.line("forge publication requested from the CLI");
 
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that

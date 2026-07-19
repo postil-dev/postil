@@ -132,6 +132,19 @@ describe("private repository worker defense in depth", () => {
     expect(denialBody).not.toContain("await runCli");
   });
 
+  test("hosted review explicitly authorizes CLI publication", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const reviewStart = source.indexOf("export async function runReviewJob");
+    const argsStart = source.indexOf('const args = [\n      "review"', reviewStart);
+    const argsEnd = source.indexOf("];", argsStart);
+    const args = source.slice(argsStart, argsEnd);
+
+    expect(argsStart).toBeGreaterThan(reviewStart);
+    expect(args.indexOf('"--publish"')).toBeGreaterThan(args.indexOf('"github"'));
+    expect(args.indexOf('"--publish"')).toBeLessThan(args.indexOf('"--repo"'));
+    expect(args).not.toContain('"--no-post"');
+  });
+
   test("operational review failures durably queue terminal check cleanup", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf("} catch (err) {", source.indexOf("await persistReviewCompletion"));
