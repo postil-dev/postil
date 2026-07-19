@@ -42,6 +42,9 @@ mock.module("@/lib/session", () => ({
 mock.module("@/lib/db", () => ({
   schema,
   getDb: () => fakeDb(),
+  getPool: () => {
+    throw new Error("getPool is not used by config re-check tests");
+  },
 }));
 
 mock.module("@/lib/org-access", () => ({

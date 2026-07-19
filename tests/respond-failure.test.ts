@@ -157,6 +157,17 @@ mock.module("@/lib/respond-delivery", () => ({
   respondDeliveryMarker: (jobId: number) => `<!-- postil-respond-job:${jobId} -->`,
 }));
 
+const realReview = await import("@/worker/review");
+mock.module("@/worker/review", () => ({
+  ...realReview,
+  resolveLlmConfig: async () => ({
+    byok: true,
+    apiBase: "https://provider.example/v1",
+    apiFormat: "openai-compatible",
+    apiKey: "fixture-key",
+  }),
+}));
+
 // Imported after the mocks are registered so the helper binds to them.
 const {
   postRespondFailureComment,
