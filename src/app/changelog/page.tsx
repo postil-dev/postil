@@ -35,7 +35,7 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.7.0–0.7.1",
+    version: "0.7.0–0.7.2",
     date: "July 19, 2026",
     summary:
       "Self-service trials and bounded hosted reviews use release-scoped activation checks.",
@@ -51,6 +51,14 @@ const RELEASES: Release[] = [
       {
         label: "Fixed",
         text: "Failed hosted reviews reconcile reserved provider spend after model execution begins.",
+      },
+      {
+        label: "Fixed",
+        text: "Hosted runs report an operational failure unless GitHub receives their terminal review checks.",
+      },
+      {
+        label: "Fixed",
+        text: "Bounded reviews recover incomplete model output and validate every selected source batch before returning results.",
       },
     ],
   },
