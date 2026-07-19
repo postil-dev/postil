@@ -498,6 +498,40 @@ describeDb("webhook handler behaviour", () => {
     expect(afterReinstall.rows[0]!.removal_alert_count).toBe(1);
   });
 
+  test("one GitHub actor receives bounded hosted trials across owners without blocking setup", async () => {
+    for (let index = 0; index < 4; index += 1) {
+      const account = {
+        id: 9200 + index,
+        login: `TrialOwner${index}`,
+        type: "Organization",
+      };
+      expect((await post("installation", {
+        action: "created",
+        installation: { id: 8200 + index, account, suspended_at: null },
+        repositories: [],
+        sender: { id: 777, login: "installer", type: "User" },
+      }, `trial-cross-owner-${index}`)).status).toBe(200);
+    }
+
+    const grants = await pool.query<{
+      requested_mode: string;
+      granted_mode: string;
+      initiated_by_github_id: string;
+    }>(
+      `SELECT requested_mode, granted_mode, initiated_by_github_id
+         FROM self_service_trial_grants
+        WHERE initiated_by_github_id = 777
+        ORDER BY created_at, org_id`,
+    );
+    expect(grants.rows).toHaveLength(4);
+    expect(grants.rows.map((row) => row.requested_mode)).toEqual([
+      "hosted", "hosted", "hosted", "hosted",
+    ]);
+    expect(grants.rows.map((row) => row.granted_mode)).toEqual([
+      "hosted", "hosted", "hosted", "byok",
+    ]);
+  });
+
   test("suspended installation waits to grant its trial until unsuspended", async () => {
     const account = { id: 9191, login: "PausedCustomer", type: "Organization" };
     expect((await post("installation", {

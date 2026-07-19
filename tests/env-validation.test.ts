@@ -89,6 +89,13 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).toContain(
       "jq -ce -f scripts/verify-managed-fleet.jq",
     );
+    expect(deployWorkflow).toContain(
+      'flyctl ssh console --app postil-web --command "bun run hosted:verify-provider"',
+    );
+    expect(deployWorkflow.indexOf("bun run hosted:verify-provider")).toBeLessThan(
+      deployWorkflow.indexOf("bun run jobs:activate-release"),
+    );
+    expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
     expect(deployWorkflow).toMatch(
       /- name: Deploy managed fleet\n\s+id: deploy\n\s+timeout-minutes: 10/,
     );
@@ -139,7 +146,7 @@ describe("worker startup environment validation", () => {
 
     const validFleet = [
       managedMachine("web", "1", "1"),
-      managedMachine("web"),
+      managedMachine("web", "1", "1"),
       managedMachine("worker", "1", "1"),
     ];
     expect(verifyManagedFleet(root, validFleet).exitCode).toBe(0);
@@ -172,15 +179,15 @@ describe("worker startup environment validation", () => {
     ).not.toBe(0);
     expect(
       verifyManagedFleet(root, [
-        managedMachine("web", "0"),
-        managedMachine("web", "0"),
+        managedMachine("web", "0", "1"),
+        managedMachine("web", "0", "1"),
         managedMachine("worker"),
       ]).exitCode,
     ).not.toBe(0);
     expect(
       verifyManagedFleet(root, [
-        managedMachine("web", "0"),
-        managedMachine("web", "0"),
+        managedMachine("web", "0", "1"),
+        managedMachine("web", "0", "1"),
       ]).exitCode,
     ).not.toBe(0);
   });

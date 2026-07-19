@@ -245,6 +245,10 @@ describe("buildCliEnv", () => {
       POSTIL_LLM_TOTAL_TIMEOUT_SECS: "540",
       MODEL_API_KEY: "model-key",
       POSTIL_API_KEY: "model-key",
+      OPENROUTER_API_KEY: "",
+      LLM_API_KEY: "",
+      OPENAI_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
       REVIEW_MODEL: "deepseek/deepseek-v4-pro",
       REVIEW_MODEL_CASCADE: "qwen/qwen3-coder",
     });
@@ -255,6 +259,28 @@ describe("buildCliEnv", () => {
     expect(Number(env.POSTIL_LLM_TOTAL_TIMEOUT_SECS) * 1000).toBeLessThan(
       REVIEW_DEADLINE_MS,
     );
+  });
+
+  test("shadows every hosted credential alias in BYOK child environments", () => {
+    const env = buildCliEnv({
+      byok: true,
+      apiBase: "https://provider.example/v1",
+      apiFormat: "openai-compatible",
+      apiKey: "customer-key",
+      apiAuthHeader: undefined,
+      apiAuthValue: undefined,
+      model: "customer/model",
+      modelCascade: undefined,
+    });
+
+    expect(env).toMatchObject({
+      MODEL_API_KEY: "customer-key",
+      POSTIL_API_KEY: "customer-key",
+      OPENROUTER_API_KEY: "",
+      LLM_API_KEY: "",
+      OPENAI_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+    });
   });
 
   test("lets operators override hosted CLI LLM timeout budgets", () => {

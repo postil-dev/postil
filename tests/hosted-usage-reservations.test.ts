@@ -16,6 +16,10 @@ import * as schema from "@/lib/db/schema";
 import type { Envelope } from "@/lib/envelope";
 import { persistReviewCompletion } from "@/lib/review-completion";
 import {
+  canProcessRepositoryInference,
+  providerModeMatchesRepositoryAccess,
+} from "@/lib/private-repository-entitlement";
+import {
   claimRespondDelivery,
   getRespondDelivery,
   markRespondDelivered,
@@ -106,7 +110,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     `);
     await migrationClient.end();
     pool = new Pool({ connectionString: databaseUrl.toString(), max: 4 });
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await pool?.end();
@@ -114,7 +118,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
       await adminClient.end();
     }
-  });
+  }, 30_000);
 
   test("row locking admits only one concurrent hold and recovers an expired hold", async () => {
     const db = drizzle(pool!, { schema });
@@ -178,6 +182,55 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       trigger_source:
         rejectedReviewId === reviewIds[1] ? "requested_review" : "unknown",
     });
+  });
+
+  test("public hosted access requires an active bounded entitlement while public BYOK does not", async () => {
+    const db = drizzle(pool!, { schema });
+    const withoutEntitlement = await pool!.query<{ id: string }>(
+      "INSERT INTO organizations (slug, name) VALUES ('public-no-plan', 'Public no plan') RETURNING id",
+    );
+    const noPlanOrgId = Number(withoutEntitlement.rows[0]!.id);
+    const publicNoPlan = await canProcessRepositoryInference(db, {
+      orgId: noPlanOrgId,
+      repositoryPrivate: false,
+    });
+    expect(providerModeMatchesRepositoryAccess(false, publicNoPlan, true)).toBe(true);
+    expect(providerModeMatchesRepositoryAccess(false, publicNoPlan, false)).toBe(false);
+
+    const trialOrg = await pool!.query<{ id: string }>(
+      "INSERT INTO organizations (slug, name) VALUES ('public-trial', 'Public trial') RETURNING id",
+    );
+    const trialOrgId = Number(trialOrg.rows[0]!.id);
+    await pool!.query(
+      `INSERT INTO organization_entitlements
+         (org_id, subscription_mode, status, trial_ends_at, period_starts_at,
+          period_ends_at, included_usage_micros, overage_hard_cap_micros, updated_by)
+       VALUES ($1, 'hosted', 'trialing', now() + interval '1 day', now(),
+               now() + interval '1 day', 2000000, 0, 'test')`,
+      [trialOrgId],
+    );
+    const activeTrial = await canProcessRepositoryInference(db, {
+      orgId: trialOrgId,
+      repositoryPrivate: false,
+    });
+    expect(activeTrial).toMatchObject({ allowed: true, reason: "active_trial" });
+    expect(providerModeMatchesRepositoryAccess(false, activeTrial, false)).toBe(true);
+
+    await pool!.query(
+      "UPDATE organization_entitlements SET trial_ends_at = now() WHERE org_id = $1",
+      [trialOrgId],
+    );
+    const expiredTrial = await canProcessRepositoryInference(db, {
+      orgId: trialOrgId,
+      repositoryPrivate: false,
+    });
+    expect(providerModeMatchesRepositoryAccess(false, expiredTrial, false)).toBe(false);
+
+    const privateNoPlan = await canProcessRepositoryInference(db, {
+      orgId: noPlanOrgId,
+      repositoryPrivate: true,
+    });
+    expect(privateNoPlan).toMatchObject({ allowed: false, reason: "no_entitlement" });
   });
 
   test("classifies omitted legacy usage scope without undercounting private hosted work", async () => {

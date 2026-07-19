@@ -75,13 +75,13 @@ export default function TermsPage() {
           organization customers.
         </p>
         <p>
-          Paddle processes self-service payments, tax, invoices, payment-method
-          changes, and cancellation. Postil does not receive card details. A
-          paid BYOK subscription continues monthly until canceled. Each closed
-          period is charged from the distinct active-author count recorded for
-          that organization. Provider-confirmed past-due, paused, or canceled
-          subscriptions can pause private-repository access after any stated
-          grace period.
+          When self-service billing is available, Paddle processes payments,
+          tax, invoices, payment-method changes, and cancellation. Postil does
+          not receive card details. A paid BYOK subscription continues monthly
+          until canceled. Each closed period is charged from the distinct
+          active-author count recorded for that organization. Provider-confirmed
+          past-due, paused, or canceled subscriptions can pause private-repository
+          access after any stated grace period.
         </p>
         <p>
           Repository count and review count are not billing units.

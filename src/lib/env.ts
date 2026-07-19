@@ -7,7 +7,10 @@
  * documented anti-goal here.
  */
 
+import type { Pool } from "pg";
+
 import { configuredPublicOrigin } from "@/lib/oauth";
+import { hostedInferenceReleaseActivated } from "@/lib/release-job-rollout";
 
 interface EnvVarSpec {
   name: string;
@@ -734,4 +737,16 @@ export function optionalEnv(
 /** The hosted service opts in explicitly; self-hosted installs retain existing behavior. */
 export function hostedInferenceEnabled(): boolean {
   return optionalEnv("POSTIL_HOSTED_INFERENCE_ENABLED", "1") === "1";
+}
+
+/**
+ * Managed releases stay dark until the exact image SHA passes fleet and
+ * provider verification. Development and self-hosted deployments without a
+ * release SHA retain the explicit environment switch behavior.
+ */
+export async function hostedInferenceAvailable(pool: Pool): Promise<boolean> {
+  if (!hostedInferenceEnabled()) return false;
+  const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+  if (!releaseSha) return true;
+  return hostedInferenceReleaseActivated(pool, releaseSha);
 }

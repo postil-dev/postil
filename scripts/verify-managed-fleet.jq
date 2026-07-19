@@ -16,6 +16,8 @@ release_group as $release
 | [$all_workers[] | select(.state == "started")] as $started_workers
 | [$all_workers[].config.env.POSTIL_HOSTED_INFERENCE_ENABLED] | unique as $worker_modes
 | [$all_workers[].config.env.POSTIL_PROVISIONAL_HOSTED_ROSTER] | unique as $worker_roster_modes
+| [$web[].config.env.POSTIL_HOSTED_INFERENCE_ENABLED] | unique as $web_modes
+| [$web[].config.env.POSTIL_PROVISIONAL_HOSTED_ROSTER] | unique as $web_roster_modes
 | {
     release_group_count: ($release | length),
     managed_count: ($managed | length),
@@ -23,7 +25,9 @@ release_group as $release
     web_started: ($web | length),
     worker_started: ($started_workers | length),
     worker_hosted_inference_modes: $worker_modes,
-    worker_provisional_roster_modes: $worker_roster_modes
+    worker_provisional_roster_modes: $worker_roster_modes,
+    web_hosted_inference_modes: $web_modes,
+    web_provisional_roster_modes: $web_roster_modes
   } as $summary
 | if (
     $summary.release_group_count == $summary.managed_count and
@@ -32,7 +36,9 @@ release_group as $release
     $summary.web_started >= 2 and
     $summary.worker_started >= 1 and
     $summary.worker_hosted_inference_modes == ["1"] and
-    $summary.worker_provisional_roster_modes == ["1"]
+    $summary.worker_provisional_roster_modes == ["1"] and
+    $summary.web_hosted_inference_modes == ["1"] and
+    $summary.web_provisional_roster_modes == ["1"]
   ) then
     $summary
   else

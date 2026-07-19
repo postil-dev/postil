@@ -46,8 +46,8 @@ POSTIL_PUBLIC_URL = "https://postil.dev"
 GITHUB_APP_SLUG = "postil-dev"
 POSTIL_BIN = "/usr/local/bin/postil"
 POSTIL_DB_POOL_MAX = "2"
-# The pinned CLI owns the managed roster. Provisional activation remains an
-# explicit deployment property until the same roster completes formal admission.
+# The pinned CLI owns the managed roster. This switch permits hosted inference;
+# the exact release also requires durable post-deploy activation.
 POSTIL_HOSTED_INFERENCE_ENABLED = "1"
 POSTIL_PROVISIONAL_HOSTED_ROSTER = "1"
 POSTIL_WEBHOOK_DRAIN_ENABLED = "1"

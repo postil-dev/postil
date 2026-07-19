@@ -52,9 +52,10 @@ export default function PrivacyPage() {
             records when accounting data is available, including purpose, model,
             token counts, and accounting provenance. The organization&apos;s
             entitlement and verified billing contact are also retained.
-            Self-service billing stores Paddle customer, subscription, and
-            transaction identifiers, subscription state, billing periods, and
-            per-period active-author counts. Card details stay with Paddle.
+            When self-service billing is available, it stores Paddle customer,
+            subscription, and transaction identifiers, subscription state,
+            billing periods, and per-period active-author counts. Card details
+            stay with Paddle.
           </li>
           <li>
             <strong>Webhook delivery ids</strong>, kept for 30 days to
@@ -130,9 +131,9 @@ export default function PrivacyPage() {
             traffic.
           </li>
           <li>
-            <strong>Paddle</strong> is the merchant of record for self-service
-            subscriptions. Paddle handles checkout, payment methods, tax,
-            invoices, and its customer billing portal.
+            <strong>Paddle</strong> provides checkout, payment methods, tax,
+            invoices, and a customer billing portal when self-service billing
+            is available.
           </li>
           <li>
             <strong>Brevo</strong> sends verification messages when an

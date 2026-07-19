@@ -3,7 +3,7 @@ import { and, eq, gt, sql } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import {
-  evaluatePrivateRepositoryAccess,
+  evaluateRepositoryInferenceAccess,
   type OrganizationEntitlementSnapshot,
 } from "@/lib/private-repository-entitlement";
 import { enqueueRespondDeliveryJob } from "@/lib/respond-delivery";
@@ -120,7 +120,7 @@ async function reserveHostedSpend(
     }
     if (entitlement.subscriptionMode !== "hosted") return emptyDecision("inactive");
 
-    const access = evaluatePrivateRepositoryAccess(true, entitlement, 0, now);
+    const access = evaluateRepositoryInferenceAccess(true, entitlement, 0, now);
     if (!access.allowed || access.usageLimitMicros === null) {
       return {
         ...emptyDecision(access.reason === "usage_cap_reached" ? "usage_cap_reached" : "inactive"),

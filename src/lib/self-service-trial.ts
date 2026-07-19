@@ -1,3 +1,5 @@
+import { and, eq, sql } from "drizzle-orm";
+
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import {
@@ -13,8 +15,9 @@ const SELF_SERVICE_TRIAL_DURATION_MS =
 // reservation layer remains fail-closed while ordinary trial usage has ample
 // headroom.
 export const SELF_SERVICE_TRIAL_HOSTED_USAGE_MICROS = 100_000_000;
+export const SELF_SERVICE_HOSTED_TRIALS_PER_ACTOR = 3;
 
-type TrialWriteDatabase = Pick<Database, "insert">;
+type TrialWriteDatabase = Pick<Database, "insert" | "select" | "execute">;
 
 export interface SelfServiceTrialInput {
   orgId: number;
@@ -23,6 +26,7 @@ export interface SelfServiceTrialInput {
   accountType: string;
   githubOwnerId: number;
   githubInstallationId: number;
+  initiatedByGithubId: number;
   subscriptionMode: "hosted" | "byok";
 }
 
@@ -33,11 +37,30 @@ export async function grantSelfServiceTrial(
   now = new Date(),
 ): Promise<{ granted: boolean; trialEndsAt: Date | null }> {
   const trialEndsAt = new Date(now.getTime() + SELF_SERVICE_TRIAL_DURATION_MS);
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:trial-actor:${input.initiatedByGithubId}`}, 0))`,
+  );
+  const hostedTrialCount = (
+    await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.selfServiceTrialGrants)
+      .where(
+        and(
+          eq(schema.selfServiceTrialGrants.initiatedByGithubId, input.initiatedByGithubId),
+          eq(schema.selfServiceTrialGrants.grantedMode, "hosted"),
+        ),
+      )
+  )[0]?.count ?? 0;
+  const grantedMode =
+    input.subscriptionMode === "hosted" &&
+    hostedTrialCount >= SELF_SERVICE_HOSTED_TRIALS_PER_ACTOR
+      ? "byok"
+      : input.subscriptionMode;
   const [created] = await db
     .insert(schema.organizationEntitlements)
     .values({
       orgId: input.orgId,
-      subscriptionMode: input.subscriptionMode,
+      subscriptionMode: grantedMode,
       status: "trialing",
       trialEndsAt,
       periodStartsAt: now,
@@ -53,6 +76,19 @@ export async function grantSelfServiceTrial(
     .returning({ orgId: schema.organizationEntitlements.orgId });
 
   if (!created) return { granted: false, trialEndsAt: null };
+
+  await db.insert(schema.selfServiceTrialGrants).values({
+    orgId: input.orgId,
+    initiatedByGithubId: input.initiatedByGithubId,
+    requestedMode: input.subscriptionMode,
+    grantedMode,
+    createdAt: now,
+  });
+  if (grantedMode !== input.subscriptionMode) {
+    console.warn(
+      `self-service trial hosted capacity limited for GitHub actor ${input.initiatedByGithubId}`,
+    );
+  }
 
   await enqueueOperatorAlert(
     db,

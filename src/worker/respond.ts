@@ -3,8 +3,8 @@ import { resolve } from "node:path";
 
 import { and, eq } from "drizzle-orm";
 
-import { getDb, schema } from "@/lib/db";
-import { optionalEnv } from "@/lib/env";
+import { getDb, getPool, schema } from "@/lib/db";
+import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import {
   findIssueCommentByMarker,
@@ -19,8 +19,8 @@ import type {
   WebhookCommentJobPayload,
 } from "@/lib/queue";
 import {
-  canProcessPrivateRepository,
-  providerModeMatchesPrivateAccess,
+  canProcessRepositoryInference,
+  providerModeMatchesRepositoryAccess,
 } from "@/lib/private-repository-entitlement";
 import {
   reconcileHostedRespondSpend,
@@ -90,20 +90,24 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
     return;
   }
   const signedOrStoredPrivate = repository.private || payload.repositoryPrivate === true;
-  const privateAccess = await canProcessPrivateRepository(db, {
+  const repositoryAccess = await canProcessRepositoryInference(db, {
     orgId: installation.orgId,
     repositoryPrivate: signedOrStoredPrivate,
   });
-  if (!privateAccess.allowed) {
+  if (!repositoryAccess.allowed) {
     console.warn(`respond job skipped: private repository ${payload.repoFullName} requires billing`);
     return;
   }
 
   const llm = await resolveLlmConfig(installation.orgId);
-  if (!providerModeMatchesPrivateAccess(signedOrStoredPrivate, privateAccess, llm.byok)) {
+  if (!providerModeMatchesRepositoryAccess(signedOrStoredPrivate, repositoryAccess, llm.byok)) {
     console.warn(
       `respond job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
     );
+    return;
+  }
+  if (!llm.byok && !(await hostedInferenceAvailable(getPool()))) {
+    console.warn("respond job skipped: managed hosted inference is unavailable");
     return;
   }
 
@@ -113,13 +117,13 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
     .update(schema.repositories)
     .set({ fullName: currentRepository.full_name, private: currentRepository.private })
     .where(eq(schema.repositories.id, repository.id));
-  const currentAccess = await canProcessPrivateRepository(db, {
+  const currentAccess = await canProcessRepositoryInference(db, {
     orgId: installation.orgId,
     repositoryPrivate: currentRepository.private,
   });
   if (
     !currentAccess.allowed ||
-    !providerModeMatchesPrivateAccess(currentRepository.private, currentAccess, llm.byok)
+    !providerModeMatchesRepositoryAccess(currentRepository.private, currentAccess, llm.byok)
   ) {
     console.warn(
       `respond job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
@@ -159,7 +163,7 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
   let cliStarted = false;
   let hostedSpendReconciled = false;
   try {
-    if (currentRepository.private && !llm.byok) {
+    if (!llm.byok) {
       const reservation = await reserveHostedRespondSpend(db, {
         orgId: installation.orgId,
         usesByok: false,
@@ -448,14 +452,18 @@ export async function postRespondFailureComment(
       );
       return;
     }
+    const access = await canProcessRepositoryInference(db, {
+      orgId: installation.orgId,
+      repositoryPrivate: repository.private,
+    });
+    const llm = await resolveLlmConfig(installation.orgId);
     if (
-      !(await canProcessPrivateRepository(db, {
-        orgId: installation.orgId,
-        repositoryPrivate: repository.private,
-      })).allowed
+      !access.allowed ||
+      !providerModeMatchesRepositoryAccess(repository.private, access, llm.byok) ||
+      (!llm.byok && !(await hostedInferenceAvailable(getPool())))
     ) {
       console.warn(
-        `respond failure comment skipped: private repository ${payload.repoFullName} requires billing`,
+        `respond failure comment skipped: repository ${payload.repoFullName} has no active inference access`,
       );
       return;
     }

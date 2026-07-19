@@ -249,6 +249,7 @@ export async function upsertRepository(
 export async function upsertInstallation(
   installation: { id: number; suspended?: boolean },
   account: GithubAccount,
+  initiatedByGithubId = account.id,
 ): Promise<number | undefined> {
   const db = getDb();
   const orgId = await findOrCreateOrg(account);
@@ -292,6 +293,7 @@ export async function upsertInstallation(
         accountType,
         githubOwnerId: account.id,
         githubInstallationId: installation.id,
+        initiatedByGithubId,
         subscriptionMode: hostedInferenceEnabled() ? "hosted" : "byok",
       });
     }
@@ -313,7 +315,10 @@ function githubHeaders(bearer: string): Record<string, string> {
  * the given accounts in line with GitHub's actual installation state. Never
  * throws; a failure on one account must not break login or the others.
  */
-export async function syncInstallationsFromGithub(accounts: AccountRef[]): Promise<void> {
+export async function syncInstallationsFromGithub(
+  accounts: AccountRef[],
+  initiatedByGithubId?: number,
+): Promise<void> {
   let jwt: string;
   try {
     const appId = requireEnv("GITHUB_APP_ID");
@@ -326,7 +331,7 @@ export async function syncInstallationsFromGithub(accounts: AccountRef[]): Promi
 
   for (const account of accounts) {
     try {
-      await syncOneAccount(jwt, account);
+      await syncOneAccount(jwt, account, initiatedByGithubId);
     } catch (err) {
       console.error(
         `installation sync failed for ${account.type} ${account.login}: ${redactSecrets(err)}`,
@@ -335,7 +340,11 @@ export async function syncInstallationsFromGithub(accounts: AccountRef[]): Promi
   }
 }
 
-async function syncOneAccount(jwt: string, account: AccountRef): Promise<void> {
+async function syncOneAccount(
+  jwt: string,
+  account: AccountRef,
+  initiatedByGithubId?: number,
+): Promise<void> {
   const path =
     account.type === "Organization"
       ? `/orgs/${encodeURIComponent(account.login)}/installation`
@@ -352,6 +361,7 @@ async function syncOneAccount(jwt: string, account: AccountRef): Promise<void> {
     { id: found.id, suspended },
     // The lookup's account block is authoritative; fall back to what we know.
     found.account ?? { id: account.githubId, login: account.login, type: account.type },
+    initiatedByGithubId,
   );
   if (installationRowId === undefined || suspended) return;
 

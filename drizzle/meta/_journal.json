@@ -232,6 +232,13 @@
       "when": 1784409902747,
       "tag": "0032_self_service_billing",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784467126420,
+      "tag": "0033_self_service_trial_grants",
+      "breakpoints": true
     }
   ]
 }
