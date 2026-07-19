@@ -323,6 +323,7 @@ describe("drainQueueOnce", () => {
 
     expect(fly).toContain('web = "bun scripts/start-web.ts"');
     expect(fly).toContain('worker = "bun src/worker/index.ts"');
+    expect(fly).toContain('monitor = "bun src/monitor/index.ts"');
     expect(dockerfile).toContain('CMD ["bun", "scripts/start-web.ts"]');
     expect(dockerfile).toContain("USER bun");
     expect(dockerfile).toContain("POSTIL_CACHE_DIR=/tmp/postil");
@@ -330,6 +331,7 @@ describe("drainQueueOnce", () => {
       dockerfile.indexOf('CMD ["bun", "scripts/start-web.ts"]'),
     );
     expect(compose).toContain('command: ["bun", "src/worker/index.ts"]');
+    expect(compose).toContain('command: ["bun", "src/monitor/index.ts"]');
     expect(web).toContain("await startServer({");
     expect(web).toContain('process.env.POSTIL_BIND_HOST?.trim() || "0.0.0.0"');
     expect(web).not.toContain("process.env.HOSTNAME");

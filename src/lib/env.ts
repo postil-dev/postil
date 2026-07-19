@@ -1,7 +1,7 @@
 /**
  * Startup configuration validation.
  *
- * Both the web process and the worker call validateEnv() at boot and fail
+ * The web, worker, and private monitor call validateEnv() at boot and fail
  * fast with an actionable message listing every missing variable, what it
  * is for, and an example value. Silent fallback to a broken default is the
  * documented anti-goal here.
@@ -17,25 +17,27 @@ interface EnvVarSpec {
   purpose: string;
   example: string;
   /** Required for which processes. */
-  scope: Array<"web" | "worker">;
+  scope: ProcessKind[];
   optional?: boolean;
   /** Required only when NODE_ENV is production. */
   productionOnly?: boolean;
 }
 
+type ProcessKind = "web" | "worker" | "monitor";
+
 const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "DATABASE_URL",
-    purpose: "Postgres connection string used by web and worker",
+    purpose: "Postgres connection string used by web, worker, and monitor",
     example: "postgres://postil:postil@localhost:5432/postil",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
   },
   {
     name: "POSTIL_PUBLIC_URL",
     purpose:
       "Canonical HTTPS origin used for browser URLs and proxy-safe request telemetry",
     example: "https://postil.example.com",
-    scope: ["web"],
+    scope: ["web", "monitor"],
     productionOnly: true,
   },
   {
@@ -43,7 +45,7 @@ const ENV_SPECS: EnvVarSpec[] = [
     purpose:
       "Maximum Postgres connections per process; keep low for free-tier hosted Postgres",
     example: "2",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
@@ -193,28 +195,28 @@ const ENV_SPECS: EnvVarSpec[] = [
     name: "BREVO_API_KEY",
     purpose: "Brevo transactional email API key",
     example: "xkeysib-...",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTIL_EMAIL_FROM_EMAIL",
     purpose: "Verified Brevo sender address for transactional email",
     example: "reviews@mail.postil.dev",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTIL_EMAIL_FROM_NAME",
     purpose: "Sender display name for transactional email",
     example: "Postil",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTIL_OPERATOR_ALERT_EMAIL",
-    purpose: "Verified operator inbox for one-time trial signup alerts",
+    purpose: "Verified private operator inbox for signup and production alerts",
     example: "ops@example.com",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
@@ -275,14 +277,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     name: "POSTIL_ESCALATION_FROM_EMAIL",
     purpose: "Legacy alias for POSTIL_EMAIL_FROM_EMAIL",
     example: "reviews@mail.postil.dev",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTIL_ESCALATION_FROM_NAME",
     purpose: "Legacy alias for POSTIL_EMAIL_FROM_NAME",
     example: "Postil",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
@@ -355,6 +357,20 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "WORKER_HEARTBEAT_INTERVAL_MS",
+    purpose: "Interval between durable worker liveness receipts",
+    example: "30000",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_MONITOR_INTERVAL_MS",
+    purpose: "Interval between private production monitoring passes",
+    example: "300000",
+    scope: ["monitor"],
+    optional: true,
+  },
+  {
     name: "METRICS_TOKEN",
     purpose: "Bearer token protecting /api/metrics",
     example: "openssl rand -hex 24",
@@ -381,7 +397,7 @@ const ENV_SPECS: EnvVarSpec[] = [
     purpose:
       "PostHog project token for privacy-scoped analytics and optional operational telemetry",
     example: "phc_...",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
@@ -389,14 +405,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     purpose:
       "Legacy runtime alias for POSTHOG_PROJECT_TOKEN; no value is compiled into the browser bundle",
     example: "phc_...",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "NEXT_PUBLIC_POSTHOG_HOST",
     purpose: "PostHog ingestion host matching the project region",
     example: "https://eu.i.posthog.com",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
@@ -420,7 +436,7 @@ const ENV_SPECS: EnvVarSpec[] = [
     purpose:
       "Set to 1 to send scrubbed operational exceptions to PostHog Error Tracking",
     example: "0",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
@@ -428,53 +444,61 @@ const ENV_SPECS: EnvVarSpec[] = [
     purpose:
       "Set to 1 to export allowlisted operational events to PostHog Logs over OTLP",
     example: "0",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTHOG_LOG_WARN_SAMPLE_RATE",
     purpose: "Deterministic sampling rate for warning-level operational logs",
     example: "0.1",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTHOG_LOG_INFO_SAMPLE_RATE",
     purpose: "Deterministic sampling rate for informational operational logs",
     example: "0.01",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTHOG_LOG_MAX_PER_MINUTE",
     purpose: "Hard per-process cap on exported operational log records",
     example: "60",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTHOG_ERROR_MAX_PER_HOUR",
     purpose: "Hard per-process cap on exported operational exceptions",
     example: "10",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
   {
     name: "POSTIL_RELEASE_SHA",
     purpose: "Git commit SHA attached to operational telemetry",
     example: "0123456789abcdef0123456789abcdef01234567",
-    scope: ["web", "worker"],
+    scope: ["web", "worker", "monitor"],
     optional: true,
   },
 ];
 
-export function validateEnv(processKind: "web" | "worker"): void {
+export function validateEnv(processKind: ProcessKind): void {
   const missing: EnvVarSpec[] = [];
   for (const spec of ENV_SPECS) {
     if (!spec.scope.includes(processKind) || spec.optional) continue;
     if (spec.productionOnly && process.env.NODE_ENV !== "production") continue;
     const value = process.env[spec.name];
     if (!value || value.trim() === "") missing.push(spec);
+  }
+  if (processKind === "monitor") {
+    const recipient = ENV_SPECS.find(
+      (spec) => spec.name === "POSTIL_OPERATOR_ALERT_EMAIL",
+    );
+    if (recipient && !process.env.POSTIL_OPERATOR_ALERT_EMAIL?.trim()) {
+      missing.push(recipient);
+    }
   }
   if (
     processKind === "web" &&
@@ -501,7 +525,7 @@ export function validateEnv(processKind: "web" | "worker"): void {
         `Copy .env.example to .env and fill these in. See /docs/self-hosted for details.`,
     );
   }
-  if (processKind === "web" && process.env.POSTIL_PUBLIC_URL?.trim()) {
+  if (processKind !== "worker" && process.env.POSTIL_PUBLIC_URL?.trim()) {
     validateConfiguredPublicOrigin(processKind);
   }
   if (
@@ -526,7 +550,7 @@ export function validateEnv(processKind: "web" | "worker"): void {
   }
   validateOperationalTelemetryEnv(processKind);
   validateOperatorAlertEnv(processKind);
-  validatePaddleEnv(processKind);
+  if (processKind !== "monitor") validatePaddleEnv(processKind);
 }
 
 function validatePaddleEnv(processKind: "web" | "worker"): void {
@@ -587,7 +611,7 @@ function validatePaddleEnv(processKind: "web" | "worker"): void {
   }
 }
 
-function validateOperatorAlertEnv(processKind: "web" | "worker"): void {
+function validateOperatorAlertEnv(processKind: ProcessKind): void {
   const recipient = process.env.POSTIL_OPERATOR_ALERT_EMAIL?.trim();
   if (!recipient) return;
   if (recipient.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
@@ -608,7 +632,7 @@ function validateOperatorAlertEnv(processKind: "web" | "worker"): void {
   validateConfiguredPublicOrigin(processKind);
 }
 
-function validateConfiguredPublicOrigin(processKind: "web" | "worker"): void {
+function validateConfiguredPublicOrigin(processKind: ProcessKind): void {
   try {
     configuredPublicOrigin();
   } catch (error) {
@@ -628,7 +652,7 @@ function safePublicUrlValidationDetail(error: unknown): string | undefined {
     : undefined;
 }
 
-function validateOperationalTelemetryEnv(processKind: "web" | "worker"): void {
+function validateOperationalTelemetryEnv(processKind: ProcessKind): void {
   for (const name of [
     "POSTHOG_ERROR_CAPTURE",
     "POSTHOG_LOG_CAPTURE",

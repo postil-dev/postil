@@ -1,4 +1,4 @@
-# Postil self-hosted stack: Postgres, web, worker.
+# Postil self-hosted stack: Postgres, web, worker, and an optional private monitor.
 #
 #   cp .env.example .env   # fill in the required values
 #   # Download the postil-cli release matching POSTIL_CLI_REV below, verify
@@ -7,7 +7,7 @@
 #   docker compose up -d
 #   docker compose exec web bun run db:migrate
 #
-# Both web and worker validate required configuration at boot and exit with
+# Web, worker, and monitor processes validate required configuration at boot and exit with
 # an actionable message if anything is missing.
 
 services:
@@ -62,6 +62,21 @@ services:
     environment:
       DATABASE_URL: postgres://postil:postil@db:5432/postil
       POSTIL_BIN: /usr/local/bin/postil
+    depends_on:
+      db:
+        condition: service_healthy
+
+  monitor:
+    profiles: ["monitoring"]
+    build:
+      context: .
+      args:
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.7.1}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
+    command: ["bun", "src/monitor/index.ts"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://postil:postil@db:5432/postil
     depends_on:
       db:
         condition: service_healthy

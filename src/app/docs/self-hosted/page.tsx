@@ -111,6 +111,19 @@ docker compose exec web bun run db:migrate`}</code>
       <h4>Web</h4>
       <ul>
         <li>
+          The optional <code>monitoring</code> Compose profile runs a separate
+          monitor process. Start it with{" "}
+          <code>docker compose --profile monitoring up -d</code> after setting{" "}
+          <code>POSTIL_PUBLIC_URL</code>,{" "}
+          <code>POSTIL_OPERATOR_ALERT_EMAIL</code>, and the operator email
+          transport. For Brevo, enable anonymous tracking for transactional
+          email and set the shortest operationally useful transactional-log
+          retention in the Brevo account. The monitor stores leases, pass
+          history, process heartbeats,
+          incidents, and delivery attempts in Postgres. Only allowlisted
+          operators can read that state on <code>/operator</code>.
+        </li>
+        <li>
           <code>POSTIL_SESSION_SECRET</code>: signs session cookies.{" "}
           <code>openssl rand -hex 32</code>.
         </li>
@@ -363,6 +376,13 @@ ${doctorTranscript}`}</code>
           tiers, for example every few minutes rather than every few seconds.
           The endpoint is bearer-protected, but each scrape still performs
           database reads.
+        </li>
+        <li>
+          The private monitor checks public availability, worker liveness,
+          review and job age, terminal check cleanup, webhook recovery, trial
+          entitlement and signup alerts, billing reconciliation, operator email
+          delivery, and recent provider/model incidents. It does not create
+          GitHub issues, comments, checks, or workflow artifacts.
         </li>
         <li>
           The worker's watchdog fails any review running longer than 10

@@ -6,6 +6,7 @@
 - Queue semantics: `src/lib/queue.ts`; it depends on PostgreSQL row locks and `FOR UPDATE SKIP LOCKED`.
 - Job execution: `src/worker/runner.ts` owns claimed-job execution shared by the long-running worker and webhook-triggered web drains.
 - Hosted runtime configuration: `fly.toml` plus secrets injected by Infisical/Fly.
+- Private production monitoring: `src/monitor/index.ts` and `src/lib/private-monitoring.ts`.
 - Public privacy posture: `src/app/privacy/page.tsx`.
 - Dataset privacy policy: the 126-PR silence-rate measurement dataset is private; only aggregate methodology and summary figures are public.
 - Self-hosting and operating guidance: `src/app/docs/self-hosted/page.tsx`.
@@ -270,12 +271,25 @@ The app exposes three layers:
 - `/api/health/dependencies` and `/api/metrics` for dependency and product-operation metrics.
   Overlapping 30-minute incident gauges cover operational review failures, scorer
   failures and structured reviewer/scorer fallbacks, invalid model output, and failed jobs.
-  The production monitor fails on any operational, scorer, invalid-output, or failed-job
-  incident, more than two scorer fallbacks, or more than five model fallbacks in that
-  window without exposing provider error text. A failed monitor run sends one
-  provider-idempotent email to the operator inbox with only the commit and Actions run
-  link. A manual test dispatch exercises the same delivery path without simulating an outage.
 - PostHog for traffic-source, campaign, pageview, and likely bot/automation analysis.
+
+Production monitoring runs in a dedicated process group. PostgreSQL owns its
+lease, pass ledger, process heartbeats, incident state, and notification outbox.
+The monitor probes the public origin and reads operational state directly from
+PostgreSQL, so a dead review worker cannot suppress queue, check-run, signup,
+billing, email, webhook, or provider incident detection. Incident notifications
+use the shared operator-notification transport directly instead of the review
+job queue. A database-outage alert bypasses the incident outbox and uses a
+time-bucketed provider idempotency key. Monitoring state is visible only on the
+operator dashboard. It is never published through GitHub issues, checks,
+comments, workflow artifacts, or scheduled workflows.
+
+The monitor and product processes share the deployment platform, network, and
+DNS path. The private database, configured mail transport, and operator mailbox
+are external dependencies. A platform-wide or network-wide outage can prevent
+the in-platform monitor from sending. PostHog operational telemetry is a
+separate private signal for process failures when enabled; it is not the source
+of incident state or alert deduplication.
 
 PostHog is configured for anonymous cookieless capture on public pages only. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Event payloads omit arbitrary query strings and protected dashboard paths.
 

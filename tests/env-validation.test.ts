@@ -102,24 +102,8 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).toContain(
       "always() && steps.deploy.outcome != 'skipped'",
     );
-    expect(deployWorkflow).toContain(
-      "steps.deploy.outcome != 'success' && steps.deploy.outcome != 'skipped'",
-    );
-    expect(deployWorkflow).toContain(
-      "steps.recover.outcome != 'success' && steps.recover.outcome != 'skipped'",
-    );
-    expect(deployWorkflow).toContain(
-      "steps.activate.outcome != 'success' && steps.activate.outcome != 'skipped'",
-    );
-    expect(deployWorkflow).toContain(
-      'flyctl logs --app postil-web --machine "${id}" --no-tail',
-    );
-    expect(deployWorkflow).toContain("tail -n 200");
-    expect(deployWorkflow).toContain(
-      "::stop-commands::${summary_command_token}",
-    );
-    expect(deployWorkflow).toContain("::stop-commands::${log_command_token}");
-    expect(deployWorkflow).toContain("] | .[:6][]");
+    expect(deployWorkflow).not.toContain("flyctl logs");
+    expect(deployWorkflow).not.toContain("Collect failed rollout diagnostics");
     expect(deployWorkflow).toContain(
       "fly_secrets=$(flyctl secrets list --json)",
     );
@@ -148,6 +132,7 @@ describe("worker startup environment validation", () => {
       managedMachine("web", "1", "1"),
       managedMachine("web", "1", "1"),
       managedMachine("worker", "1", "1"),
+      managedMachine("monitor"),
     ];
     expect(verifyManagedFleet(root, validFleet).exitCode).toBe(0);
     expect(
@@ -169,6 +154,7 @@ describe("worker startup environment validation", () => {
           "registry.fly.io/postil-web:other",
         ),
         managedMachine("worker", "1", "1"),
+        managedMachine("monitor"),
       ]).exitCode,
     ).not.toBe(0);
     expect(
@@ -182,6 +168,7 @@ describe("worker startup environment validation", () => {
         managedMachine("web", "0", "1"),
         managedMachine("web", "0", "1"),
         managedMachine("worker"),
+        managedMachine("monitor"),
       ]).exitCode,
     ).not.toBe(0);
     expect(
@@ -194,7 +181,7 @@ describe("worker startup environment validation", () => {
 });
 
 function managedMachine(
-  group: "web" | "worker",
+  group: "web" | "worker" | "monitor",
   hostedInferenceMode?: string,
   provisionalRosterMode?: string,
   state = "started",
@@ -230,6 +217,21 @@ function verifyManagedFleet(root: string, machines: unknown[]) {
 }
 
 describe("web startup environment validation", () => {
+  test("requires the private monitor database, origin, and operator recipient", () => {
+    configureRequiredWebEnvironment();
+    mutableEnv.NODE_ENV = "production";
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
+    process.env.BREVO_API_KEY = "brevo-test-key";
+
+    expect(() => validateEnv("monitor")).not.toThrow();
+    delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
+    expect(() => validateEnv("monitor")).toThrow(/POSTIL_OPERATOR_ALERT_EMAIL/);
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
+    delete process.env.DATABASE_URL;
+    expect(() => validateEnv("monitor")).toThrow(/DATABASE_URL/);
+  });
+
   test("requires POSTIL_PUBLIC_URL in production", () => {
     configureRequiredWebEnvironment();
     mutableEnv.NODE_ENV = "production";

@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 
 import {
   normalizeVerificationEmail,
-  sendTransactionalEmail,
 } from "@/lib/email-verification";
 import { requireEnv } from "@/lib/env";
+import { sendOperatorNotification } from "@/lib/operator-notifications";
 import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
 
 export type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
@@ -26,14 +26,13 @@ export async function runOperatorAlertJob(
     : null;
   const content = alertContent(payload, dashboardUrl);
 
-  return sendTransactionalEmail({
+  return sendOperatorNotification({
     recipient,
     subject: content.subject,
     text: content.text,
     idempotencyKey: `postil-operator-${createHash("sha256")
       .update(payload.eventKey)
       .digest("hex")}`,
-    apiKey: requireEnv("BREVO_API_KEY"),
   });
 }
 

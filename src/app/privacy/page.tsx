@@ -118,7 +118,7 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Fly.io</strong> (application hosting): runs the web control
-            plane and the review worker.
+            plane, review worker, and private production monitor.
           </li>
           <li>
             <strong>Supabase Postgres</strong> provides managed PostgreSQL
@@ -137,10 +137,13 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Brevo</strong> sends verification messages when an
-            organization administrator configures a billing contact and sends
-            the operator a one-time trial-start notice containing GitHub account
-            and App installation metadata. Review findings remain in GitHub and
-            the authenticated Postil dashboard.
+            organization administrator configures a billing contact. It also
+            sends private operator notices for trial, billing, delivery, and
+            production incidents. Brevo receives the recipient, subject, and
+            plain-text message for delivery and keeps transactional delivery
+            logs under the account&apos;s retention controls. Postil embeds no
+            remote images or tracking markup in these messages. Review findings
+            remain in GitHub and the authenticated Postil dashboard.
           </li>
         </ul>
         <p>

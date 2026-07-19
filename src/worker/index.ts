@@ -19,6 +19,7 @@ import {
   reportOperationalWarning,
   shutdownServerObservability,
 } from "@/lib/server-observability";
+import { recordServiceHeartbeat } from "@/lib/private-monitoring";
 import { PROCESSABLE_JOB_KINDS, readPositiveIntEnv, runClaimedJob } from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
@@ -41,6 +42,10 @@ const IDLE_POLL_MAX_MS = Math.max(
   readPositiveIntEnv("WORKER_IDLE_POLL_MAX_MS", POLL_INTERVAL_MS),
 );
 const WATCHDOG_INTERVAL_MS = readPositiveIntEnv("WORKER_WATCHDOG_INTERVAL_MS", 60_000);
+const HEARTBEAT_INTERVAL_MS = readPositiveIntEnv(
+  "WORKER_HEARTBEAT_INTERVAL_MS",
+  30_000,
+);
 const WEBHOOK_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 const WEBHOOK_RETENTION_MAX_BATCHES = 10;
 const WEBHOOK_REDELIVERY_INTERVAL_MS = readPositiveIntEnv(
@@ -55,6 +60,7 @@ let shuttingDown = false;
 let shutdownPromise: Promise<void> | undefined;
 let wakeWebhookRetention: (() => void) | undefined;
 let wakeWebhookRedelivery: (() => void) | undefined;
+let wakeHeartbeat: (() => void) | undefined;
 let activeWebhookRedeliveryController: AbortController | undefined;
 const activeRuns = new Set<Promise<unknown>>();
 const activeControllers = new Map<number, AbortController>();
@@ -92,6 +98,21 @@ function sleepUntilWebhookRedelivery(ms: number): Promise<void> {
     };
     const timer = setTimeout(finish, ms);
     wakeWebhookRedelivery = finish;
+  });
+}
+
+function sleepUntilHeartbeat(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (wakeHeartbeat === finish) wakeHeartbeat = undefined;
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    wakeHeartbeat = finish;
   });
 }
 
@@ -164,6 +185,7 @@ async function shutdown(signal: string): Promise<void> {
     shuttingDown = true;
     wakeWebhookRetention?.();
     wakeWebhookRedelivery?.();
+    wakeHeartbeat?.();
 
     const drained = await waitForWorkerIdle(SHUTDOWN_DRAIN_MS);
     if (!drained) {
@@ -210,6 +232,17 @@ async function watchdogLoop(): Promise<void> {
       console.error(`[watchdog] pass failed: ${redactSecrets(err)}`);
     }
     await sleep(WATCHDOG_INTERVAL_MS);
+  }
+}
+
+async function heartbeatLoop(): Promise<void> {
+  while (!shuttingDown) {
+    try {
+      await recordServiceHeartbeat(getPool(), "worker", workerId);
+    } catch (err) {
+      console.error(`[heartbeat] worker heartbeat failed: ${redactSecrets(err)}`);
+    }
+    await sleepUntilHeartbeat(HEARTBEAT_INTERVAL_MS);
   }
 }
 
@@ -326,6 +359,7 @@ async function main(): Promise<void> {
 
   const loops = Array.from({ length: CONCURRENCY }, (_, i) => claimLoop(i));
   loops.push(watchdogLoop());
+  loops.push(heartbeatLoop());
   loops.push(webhookRetentionLoop());
   loops.push(webhookRedeliveryLoop());
   await Promise.all(loops);
