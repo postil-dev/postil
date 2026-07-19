@@ -1,15 +1,19 @@
-import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 
 import { closeDb, getPool } from "@/lib/db";
 import { normalizeVerificationEmail } from "@/lib/email-verification";
-import { optionalEnv, validateEnv } from "@/lib/env";
+import {
+  configuredWorkerHeartbeatIntervalMs,
+  optionalEnv,
+  validateEnv,
+} from "@/lib/env";
 import {
   acquirePrivateMonitorLease,
   claimPrivateMonitoringNotifications,
   deliverPrivateMonitoringNotification,
   failPrivateMonitoringPass,
   finishPrivateMonitoringPass,
+  monitorPassAlertBucket,
   recordServiceHeartbeat,
   runDatabaseMonitoringChecks,
   runPublicMonitoringChecks,
@@ -25,12 +29,18 @@ import {
 } from "@/lib/server-observability";
 
 const INTERVAL_MS = positiveIntEnv("POSTIL_MONITOR_INTERVAL_MS", 5 * 60 * 1_000);
+const WORKER_HEARTBEAT_INTERVAL_MS =
+  configuredWorkerHeartbeatIntervalMs() ?? 30_000;
+const WORKER_HEARTBEAT_MAX_AGE_SECONDS = Math.max(
+  180,
+  Math.ceil((WORKER_HEARTBEAT_INTERVAL_MS * 3) / 1_000),
+);
 const BYPASS_ALERT_AFTER_FAILURES = 2;
 const owner = `${hostname()}-${process.pid}`;
 let shuttingDown = false;
 let wakeSleep: (() => void) | undefined;
 let monitorFailureCount = 0;
-let monitorIncidentId: string | undefined;
+let monitorFailureBucket: Date | undefined;
 let monitorAlertSent = false;
 
 async function main(): Promise<void> {
@@ -69,7 +79,9 @@ async function main(): Promise<void> {
 
       const [publicChecks, databaseChecks] = await Promise.all([
         runPublicMonitoringChecks(publicOrigin),
-        runDatabaseMonitoringChecks(pool),
+        runDatabaseMonitoringChecks(pool, {
+          workerHeartbeatMaxAgeSeconds: WORKER_HEARTBEAT_MAX_AGE_SECONDS,
+        }),
       ]);
       await finishPrivateMonitoringPass(
         pool,
@@ -79,7 +91,7 @@ async function main(): Promise<void> {
       );
       await recordServiceHeartbeat(pool, "monitor", owner, new Date());
       monitorFailureCount = 0;
-      monitorIncidentId = undefined;
+      monitorFailureBucket = undefined;
       monitorAlertSent = false;
 
       const notifications = await claimPrivateMonitoringNotifications(
@@ -103,7 +115,9 @@ async function main(): Promise<void> {
         `[monitor] pass ${pass.runId} completed with ${publicChecks.length + databaseChecks.length} checks and ${notifications.length} notification claim(s)`,
       );
     } catch (error) {
-      if (monitorFailureCount === 0) monitorIncidentId = randomUUID();
+      if (monitorFailureCount === 0) {
+        monitorFailureBucket = monitorPassAlertBucket(startedAt);
+      }
       monitorFailureCount += 1;
       reportOperationalFailure("monitor", "monitor_pass_failed", error);
       console.error(`[monitor] pass failed: ${redactSecrets(error)}`);
@@ -114,13 +128,13 @@ async function main(): Promise<void> {
       }
       if (
         monitorFailureCount >= BYPASS_ALERT_AFTER_FAILURES &&
-        monitorIncidentId &&
+        monitorFailureBucket &&
         !monitorAlertSent
       ) {
         await sendMonitorPassFailureNotification({
           recipient,
           publicOrigin,
-          incidentId: monitorIncidentId,
+          bucket: monitorFailureBucket,
         })
           .then(() => {
             monitorAlertSent = true;

@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { hostedInferenceEnabled, validateEnv } from "@/lib/env";
+import {
+  configuredWorkerHeartbeatIntervalMs,
+  hostedInferenceEnabled,
+  validateEnv,
+} from "@/lib/env";
 
 const MANAGED_ENV = [
   "DATABASE_URL",
@@ -27,6 +31,7 @@ const MANAGED_ENV = [
   "POSTIL_RELEASE_SHA",
   "POSTIL_OPERATOR_ALERT_EMAIL",
   "BREVO_API_KEY",
+  "WORKER_HEARTBEAT_INTERVAL_MS",
   "POSTIL_PADDLE_BILLING_ENABLED",
   "PADDLE_API_KEY",
   "PADDLE_WEBHOOK_SECRET",
@@ -48,6 +53,17 @@ afterEach(() => {
 });
 
 describe("worker startup environment validation", () => {
+  test("keeps worker heartbeats disabled until explicitly configured", () => {
+    delete process.env.WORKER_HEARTBEAT_INTERVAL_MS;
+    expect(configuredWorkerHeartbeatIntervalMs()).toBeNull();
+    process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
+    expect(configuredWorkerHeartbeatIntervalMs()).toBe(30_000);
+    process.env.WORKER_HEARTBEAT_INTERVAL_MS = "1000";
+    expect(() => configuredWorkerHeartbeatIntervalMs()).toThrow(
+      /between 30000 and 3600000/,
+    );
+  });
+
   test("accepts only explicit binary hosted inference switch values", () => {
     configureRequiredWorkerEnvironment();
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
@@ -223,6 +239,7 @@ describe("web startup environment validation", () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
     process.env.BREVO_API_KEY = "brevo-test-key";
+    process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
 
     expect(() => validateEnv("monitor")).not.toThrow();
     delete process.env.BREVO_API_KEY;
@@ -233,6 +250,9 @@ describe("web startup environment validation", () => {
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
     delete process.env.DATABASE_URL;
     expect(() => validateEnv("monitor")).toThrow(/DATABASE_URL/);
+    process.env.DATABASE_URL = "postgres://postil:postil@localhost:5432/postil";
+    delete process.env.WORKER_HEARTBEAT_INTERVAL_MS;
+    expect(() => validateEnv("monitor")).toThrow(/WORKER_HEARTBEAT_INTERVAL_MS/);
   });
 
   test("requires POSTIL_PUBLIC_URL in production", () => {

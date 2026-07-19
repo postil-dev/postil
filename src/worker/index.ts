@@ -3,7 +3,11 @@ import { hostname } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
 import { closeDb, getDb, getPool } from "@/lib/db";
-import { optionalEnv, validateEnv } from "@/lib/env";
+import {
+  configuredWorkerHeartbeatIntervalMs,
+  optionalEnv,
+  validateEnv,
+} from "@/lib/env";
 import { runWebhookRedeliveryPass } from "@/lib/github/webhook-redelivery";
 import {
   claimJob,
@@ -42,10 +46,7 @@ const IDLE_POLL_MAX_MS = Math.max(
   readPositiveIntEnv("WORKER_IDLE_POLL_MAX_MS", POLL_INTERVAL_MS),
 );
 const WATCHDOG_INTERVAL_MS = readPositiveIntEnv("WORKER_WATCHDOG_INTERVAL_MS", 60_000);
-const HEARTBEAT_INTERVAL_MS = readPositiveIntEnv(
-  "WORKER_HEARTBEAT_INTERVAL_MS",
-  30_000,
-);
+const HEARTBEAT_INTERVAL_MS = configuredWorkerHeartbeatIntervalMs();
 const WEBHOOK_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 const WEBHOOK_RETENTION_MAX_BATCHES = 10;
 const WEBHOOK_REDELIVERY_INTERVAL_MS = readPositiveIntEnv(
@@ -235,14 +236,14 @@ async function watchdogLoop(): Promise<void> {
   }
 }
 
-async function heartbeatLoop(): Promise<void> {
+async function heartbeatLoop(intervalMs: number): Promise<void> {
   while (!shuttingDown) {
     try {
       await recordServiceHeartbeat(getPool(), "worker", workerId);
     } catch (err) {
       console.error(`[heartbeat] worker heartbeat failed: ${redactSecrets(err)}`);
     }
-    await sleepUntilHeartbeat(HEARTBEAT_INTERVAL_MS);
+    await sleepUntilHeartbeat(intervalMs);
   }
 }
 
@@ -359,7 +360,9 @@ async function main(): Promise<void> {
 
   const loops = Array.from({ length: CONCURRENCY }, (_, i) => claimLoop(i));
   loops.push(watchdogLoop());
-  loops.push(heartbeatLoop());
+  if (HEARTBEAT_INTERVAL_MS !== null) {
+    loops.push(heartbeatLoop(HEARTBEAT_INTERVAL_MS));
+  }
   loops.push(webhookRetentionLoop());
   loops.push(webhookRedeliveryLoop());
   await Promise.all(loops);

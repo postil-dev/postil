@@ -88,6 +88,8 @@ const PUBLIC_PROBE_TIMEOUT_MS = 8_000;
 const INCIDENT_REMINDER_MS = 6 * 60 * 60 * 1_000;
 const NOTIFICATION_LEASE_MS = 60 * 1_000;
 const MAX_NOTIFICATION_ATTEMPTS = 5;
+const NOTIFICATION_RETRY_EPOCH_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
+const MONITOR_PASS_ALERT_BUCKET_MS = 6 * 60 * 60 * 1_000;
 const MAX_DETAIL_CHARS = 1_000;
 const SAFE_COMPONENT = /^[a-z][a-z0-9-]{0,63}$/;
 const SAFE_INSTANCE = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -402,7 +404,19 @@ export async function runPublicMonitoringChecks(
 
 export async function runDatabaseMonitoringChecks(
   pool: Pool,
+  options: { workerHeartbeatMaxAgeSeconds?: number } = {},
 ): Promise<PrivateMonitoringCheck[]> {
+  const workerHeartbeatMaxAgeSeconds =
+    options.workerHeartbeatMaxAgeSeconds ?? 180;
+  if (
+    !Number.isSafeInteger(workerHeartbeatMaxAgeSeconds) ||
+    workerHeartbeatMaxAgeSeconds < 30 ||
+    workerHeartbeatMaxAgeSeconds > 24 * 60 * 60
+  ) {
+    throw new Error(
+      "worker heartbeat maximum age must be between 30 and 86400 seconds",
+    );
+  }
   const result = await pool.query<Record<string, string | null>>(`
     SELECT
       (SELECT EXTRACT(EPOCH FROM now() - observed_at)::int::text
@@ -414,13 +428,16 @@ export async function runDatabaseMonitoringChecks(
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(locked_at)), 0)::int::text
          FROM jobs WHERE status = 'running') AS running_job_age,
       (SELECT count(*)::text FROM jobs
-         WHERE kind = 'check-run-cleanup' AND status = 'failed') AS cleanup_failures,
+         WHERE kind = 'check-run-cleanup' AND status = 'failed'
+           AND run_after >= now() - interval '30 minutes') AS cleanup_failures,
       (SELECT count(*)::text FROM operator_alert_deliveries
-         WHERE status = 'failed') AS email_failures,
+         WHERE status = 'failed'
+           AND updated_at >= now() - interval '30 minutes') AS email_failures,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text
          FROM operator_alert_deliveries WHERE status IN ('queued', 'retrying')) AS email_pending_age,
       (SELECT count(*)::text FROM billing_author_settlements
-         WHERE status = 'failed') AS billing_settlement_failures,
+         WHERE status = 'failed'
+           AND updated_at >= now() - interval '30 minutes') AS billing_settlement_failures,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text
          FROM billing_author_settlements
          WHERE status IN ('pending', 'charging', 'reconciling')) AS billing_settlement_age,
@@ -443,7 +460,8 @@ export async function runDatabaseMonitoringChecks(
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(received_at)), 0)::int::text
          FROM webhook_deliveries WHERE completed_at IS NULL) AS webhook_pending_age,
       (SELECT count(*)::text FROM github_webhook_delivery_recoveries
-         WHERE request_state IN ('terminal', 'exhausted')) AS webhook_terminal,
+         WHERE request_state IN ('terminal', 'exhausted')
+           AND updated_at >= now() - interval '30 minutes') AS webhook_terminal,
       (SELECT CASE
          WHEN EXISTS (SELECT 1 FROM installations WHERE suspended = false)
            THEN COALESCE(
@@ -540,19 +558,19 @@ export async function runDatabaseMonitoringChecks(
       key: "worker-heartbeat",
       group: "fleet",
       severity: "critical",
-      healthy: workerHeartbeat <= 180,
+      healthy: workerHeartbeat <= workerHeartbeatMaxAgeSeconds,
       summary: "Review worker heartbeat is fresh",
       detail: Number.isFinite(workerHeartbeat)
-        ? `${workerHeartbeat.toLocaleString("en-US")} seconds since the worker heartbeat; threshold 180.`
+        ? `${workerHeartbeat.toLocaleString("en-US")} seconds since the worker heartbeat; threshold ${workerHeartbeatMaxAgeSeconds.toLocaleString("en-US")}.`
         : "No worker heartbeat has been recorded.",
     },
     thresholdCheck("running-review-age", "queue", "critical", "Running reviews finish or recover", age("running_review_age"), 1_800, "seconds"),
     thresholdCheck("queued-job-age", "queue", "critical", "Queued work is claimed promptly", age("queued_job_age"), 1_800, "seconds"),
     thresholdCheck("running-job-age", "queue", "critical", "Claimed work reaches a terminal state", age("running_job_age"), 1_800, "seconds"),
-    thresholdCheck("check-run-cleanup", "queue", "critical", "GitHub checks reach a terminal state", count("cleanup_failures"), 0),
-    thresholdCheck("operator-email-failures", "email", "critical", "Operator email delivery succeeds", count("email_failures"), 0),
+    thresholdCheck("check-run-cleanup", "queue", "critical", "Recent GitHub check cleanup succeeds", count("cleanup_failures"), 0),
+    thresholdCheck("operator-email-failures", "email", "critical", "Recent operator email delivery succeeds", count("email_failures"), 0),
     thresholdCheck("operator-email-delay", "email", "critical", "Operator email leaves the outbox promptly", age("email_pending_age"), 1_800, "seconds"),
-    thresholdCheck("billing-settlement-failures", "billing", "critical", "Billing settlements complete", count("billing_settlement_failures"), 0),
+    thresholdCheck("billing-settlement-failures", "billing", "critical", "Recent billing settlements complete", count("billing_settlement_failures"), 0),
     thresholdCheck("billing-settlement-delay", "billing", "warning", "Billing reconciliation remains current", age("billing_settlement_age"), 3_600, "seconds"),
     thresholdCheck("billing-unmatched-events", "billing", "critical", "Billing events map to an organization", count("unmatched_billing_events"), 0),
     thresholdCheck("billing-checkout-delay", "billing", "warning", "Billing checkout completes", age("billing_checkout_age"), 3_600, "seconds"),
@@ -560,7 +578,7 @@ export async function runDatabaseMonitoringChecks(
     thresholdCheck("trial-entitlement-gaps", "signup", "critical", "Trial signup grants an entitlement", count("trial_entitlement_gaps"), 0),
     thresholdCheck("trial-alert-gaps", "signup", "warning", "Trial signup reaches the private operator audit", count("trial_alert_gaps"), 0),
     thresholdCheck("webhook-dispatch-delay", "webhook", "critical", "Webhook deliveries dispatch", age("webhook_pending_age"), 1_800, "seconds"),
-    thresholdCheck("webhook-recovery-terminal", "webhook", "critical", "Webhook recovery remains retryable", count("webhook_terminal"), 0),
+    thresholdCheck("webhook-recovery-terminal", "webhook", "critical", "Recent webhook recovery remains retryable", count("webhook_terminal"), 0),
     {
       key: "webhook-recovery-scan",
       group: "webhook",
@@ -603,7 +621,6 @@ export async function claimPrivateMonitoringNotifications(
        SELECT key
          FROM private_monitor_incidents
         WHERE pending_notification_key IS NOT NULL
-          AND notification_attempts < $1
           AND COALESCE(notification_available_at, '-infinity'::timestamptz) <= $2
           AND COALESCE(notification_lease_expires_at, '-infinity'::timestamptz) <= $2
         ORDER BY notification_available_at NULLS FIRST, key
@@ -613,7 +630,10 @@ export async function claimPrivateMonitoringNotifications(
      UPDATE private_monitor_incidents AS incident
         SET notification_lease_owner = $4,
             notification_lease_expires_at = $5,
-            notification_attempts = notification_attempts + 1,
+            notification_attempts = CASE
+              WHEN notification_attempts >= $1 THEN 1
+              ELSE notification_attempts + 1
+            END,
             updated_at = $2
        FROM candidates
       WHERE incident.key = candidates.key
@@ -672,7 +692,13 @@ export async function deliverPrivateMonitoringNotification(
     );
     await recordDeliveredNotification(pool, notification, now);
   } catch (error) {
-    const delayMs = Math.min(60 * 60 * 1_000, 30_000 * 2 ** (notification.attempt - 1));
+    const delayMs =
+      notification.attempt >= MAX_NOTIFICATION_ATTEMPTS
+        ? NOTIFICATION_RETRY_EPOCH_COOLDOWN_MS
+        : Math.min(
+            60 * 60 * 1_000,
+            30_000 * 2 ** (notification.attempt - 1),
+          );
     await pool.query(
       `UPDATE private_monitor_incidents
           SET notification_available_at = $3,
@@ -750,17 +776,14 @@ async function recordDeliveredNotification(
 export async function sendMonitorPassFailureNotification(input: {
   recipient: string;
   publicOrigin: string;
-  incidentId: string;
+  bucket: Date;
   transport?: OperatorNotificationTransport;
 }): Promise<void> {
-  if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      input.incidentId,
-    )
-  ) {
-    throw new Error("monitor incident id is malformed");
+  const bucket = monitorPassAlertBucket(input.bucket);
+  if (bucket.getTime() !== input.bucket.getTime()) {
+    throw new Error("monitor pass alert bucket is not aligned");
   }
-  const notificationKey = `postil-monitor-pass-failed-${input.incidentId}`;
+  const notificationKey = `postil-monitor-pass-failed-${bucket.toISOString()}`;
   await sendOperatorNotification(
     {
       recipient: input.recipient,
@@ -774,6 +797,17 @@ export async function sendMonitorPassFailureNotification(input: {
       idempotencyKey: notificationKey,
     },
     input.transport,
+  );
+}
+
+export function monitorPassAlertBucket(now: Date): Date {
+  const timestamp = now.getTime();
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("monitor pass alert time is invalid");
+  }
+  return new Date(
+    Math.floor(timestamp / MONITOR_PASS_ALERT_BUCKET_MS) *
+      MONITOR_PASS_ALERT_BUCKET_MS,
   );
 }
 

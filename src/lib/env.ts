@@ -360,7 +360,7 @@ const ENV_SPECS: EnvVarSpec[] = [
     name: "WORKER_HEARTBEAT_INTERVAL_MS",
     purpose: "Interval between durable worker liveness receipts",
     example: "30000",
-    scope: ["worker"],
+    scope: ["worker", "monitor"],
     optional: true,
   },
   {
@@ -493,7 +493,11 @@ export function validateEnv(processKind: ProcessKind): void {
     if (!value || value.trim() === "") missing.push(spec);
   }
   if (processKind === "monitor") {
-    for (const name of ["POSTIL_OPERATOR_ALERT_EMAIL", "BREVO_API_KEY"] as const) {
+    for (const name of [
+      "POSTIL_OPERATOR_ALERT_EMAIL",
+      "BREVO_API_KEY",
+      "WORKER_HEARTBEAT_INTERVAL_MS",
+    ] as const) {
       const spec = ENV_SPECS.find((candidate) => candidate.name === name);
       if (spec && !process.env[name]?.trim()) {
         missing.push(spec);
@@ -524,6 +528,9 @@ export function validateEnv(processKind: ProcessKind): void {
         `${lines.join("\n")}\n` +
         `Copy .env.example to .env and fill these in. See /docs/self-hosted for details.`,
     );
+  }
+  if (processKind !== "web") {
+    configuredWorkerHeartbeatIntervalMs();
   }
   if (processKind !== "worker" && process.env.POSTIL_PUBLIC_URL?.trim()) {
     validateConfiguredPublicOrigin(processKind);
@@ -756,6 +763,26 @@ export function optionalEnv(
   const value = process.env[name];
   if (value && value.trim() !== "") return value;
   return fallback;
+}
+
+/**
+ * Worker heartbeats are opt-in so self-hosted idle profiles do not acquire a
+ * permanent database write loop unless the private monitor is enabled.
+ */
+export function configuredWorkerHeartbeatIntervalMs(): number | null {
+  const raw = optionalEnv("WORKER_HEARTBEAT_INTERVAL_MS");
+  if (!raw) return null;
+  const value = Number(raw);
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 30_000 ||
+    value > 3_600_000
+  ) {
+    throw new Error(
+      "WORKER_HEARTBEAT_INTERVAL_MS must be between 30000 and 3600000 milliseconds.",
+    );
+  }
+  return value;
 }
 
 /** The hosted service opts in explicitly; self-hosted installs retain existing behavior. */

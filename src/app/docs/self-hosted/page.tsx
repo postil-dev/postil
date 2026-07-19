@@ -100,6 +100,8 @@ docker compose exec web bun run db:migrate`}</code>
         <code>WORKER_IDLE_POLL_MAX_MS=900000</code>, and{" "}
         <code>WORKER_WATCHDOG_INTERVAL_MS=900000</code> so idle periods stay
         quiet instead of issuing database checks every few seconds indefinitely.
+        Leave <code>WORKER_HEARTBEAT_INTERVAL_MS</code> unset unless the private
+        monitor is enabled.
       </p>
 
       <h3>Required configuration</h3>
@@ -115,11 +117,12 @@ docker compose exec web bun run db:migrate`}</code>
           monitor process. Start it with{" "}
           <code>docker compose --profile monitoring up -d</code> after setting{" "}
           <code>POSTIL_PUBLIC_URL</code>,{" "}
-          <code>POSTIL_OPERATOR_ALERT_EMAIL</code>, and the operator email
-          transport. For Brevo, enable anonymous tracking for transactional
-          email and set the shortest operationally useful transactional-log
-          retention in the Brevo account. The monitor stores leases, pass
-          history, process heartbeats,
+          <code>POSTIL_OPERATOR_ALERT_EMAIL</code>, <code>BREVO_API_KEY</code>, and{" "}
+          <code>WORKER_HEARTBEAT_INTERVAL_MS</code>. The monitor and worker
+          heartbeat produce periodic Postgres traffic. In Brevo, enable
+          anonymous tracking for transactional email and set the shortest
+          operationally useful transactional-log retention in the Brevo
+          account. The monitor stores leases, pass history, process heartbeats,
           incidents, and delivery attempts in Postgres. Only allowlisted
           operators can read that state on <code>/operator</code>.
         </li>

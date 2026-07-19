@@ -14,6 +14,7 @@ import {
   deliverPrivateMonitoringNotification,
   finishPrivateMonitoringPass,
   getPrivateMonitoringDashboard,
+  monitorPassAlertBucket,
   recordServiceHeartbeat,
   runDatabaseMonitoringChecks,
   runPublicMonitoringChecks,
@@ -30,10 +31,11 @@ const BUCKET = new Date("2026-07-19T12:00:00.000Z");
 describe("private monitoring public probes", () => {
   test("sends monitor-pass alerts without the database outbox", async () => {
     const sent: OperatorNotification[] = [];
+    const bucket = monitorPassAlertBucket(NOW);
     await sendMonitorPassFailureNotification({
       recipient: "operator@example.test",
       publicOrigin: "https://postil.dev",
-      incidentId: "01234567-89ab-4def-8123-456789abcdef",
+      bucket,
       transport: {
         async send(notification) {
           sent.push(notification);
@@ -42,10 +44,17 @@ describe("private monitoring public probes", () => {
       },
     });
     expect(sent).toHaveLength(1);
-    expect(sent[0]?.idempotencyKey).toContain(
-      "01234567-89ab-4def-8123-456789abcdef",
-    );
+    expect(sent[0]?.idempotencyKey).toContain(bucket.toISOString());
     expect(sent[0]?.text.join("\n")).not.toContain("GitHub");
+
+    expect(
+      monitorPassAlertBucket(new Date(bucket.getTime() + 1_000)).getTime(),
+    ).toBe(bucket.getTime());
+    expect(
+      monitorPassAlertBucket(
+        new Date(bucket.getTime() + 6 * 60 * 60 * 1_000),
+      ).getTime(),
+    ).not.toBe(bucket.getTime());
   });
 
   test("keeps operational probe results inside the service", async () => {
@@ -402,7 +411,7 @@ describeDb("private monitoring durability", () => {
     expect(resolution[0]?.kind).toBe("resolved");
   });
 
-  test("bounds notification retries and releases each failed claim", async () => {
+  test("bounds each notification retry epoch and rearms after cooldown", async () => {
     expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
     const pass = await startPrivateMonitoringPass(pool, "monitor-a", BUCKET, NOW);
     await finishPrivateMonitoringPass(
@@ -457,8 +466,109 @@ describeDb("private monitoring durability", () => {
       availableAt = row.rows[0]!.notification_available_at;
     }
     expect(
-      await claimPrivateMonitoringNotifications(pool, "monitor-final", availableAt),
+      await claimPrivateMonitoringNotifications(
+        pool,
+        "monitor-before-cooldown",
+        new Date(availableAt.getTime() - 1),
+      ),
     ).toHaveLength(0);
+    const rearmed = await claimPrivateMonitoringNotifications(
+      pool,
+      "monitor-next-epoch",
+      availableAt,
+    );
+    expect(rearmed).toHaveLength(1);
+    expect(rearmed[0]?.attempt).toBe(1);
+  });
+
+  test("resolves repaired and aged operational failures", async () => {
+    await pool.query(
+      `INSERT INTO jobs (kind, payload, status, run_after)
+       VALUES ('check-run-cleanup', '{}'::jsonb, 'failed', now() - interval '31 minutes')`,
+    );
+    await pool.query(
+      `INSERT INTO operator_alert_deliveries
+         (event_key, event, status, created_at, updated_at)
+       VALUES ('monitor-test-alert', 'trial_started', 'failed',
+               now() - interval '31 minutes', now() - interval '31 minutes')`,
+    );
+    const organization = await pool.query<{ id: string }>(
+      `INSERT INTO organizations (slug, name)
+       VALUES ('monitor-test', 'Monitor Test') RETURNING id`,
+    );
+    await pool.query(
+      `INSERT INTO billing_author_settlements
+         (org_id, provider_subscription_id, period_starts_at, period_ends_at,
+          active_author_count, unit_amount_cents, total_amount_cents, status,
+          created_at, updated_at)
+       VALUES ($1, 'sub_monitor_test', now() - interval '2 months',
+               now() - interval '1 month', 1, 600, 600, 'failed',
+               now() - interval '31 minutes', now() - interval '31 minutes')`,
+      [organization.rows[0]!.id],
+    );
+
+    const operationalChecks = (await runDatabaseMonitoringChecks(pool)).filter(
+      (check) =>
+        [
+          "check-run-cleanup",
+          "operator-email-failures",
+          "billing-settlement-failures",
+        ].includes(check.key),
+    );
+    expect(operationalChecks.every((check) => check.healthy)).toBe(true);
+
+    await pool.query(
+      `UPDATE jobs SET run_after = now()
+        WHERE kind = 'check-run-cleanup' AND status = 'failed'`,
+    );
+    await pool.query(
+      `UPDATE operator_alert_deliveries SET updated_at = now()
+        WHERE event_key = 'monitor-test-alert'`,
+    );
+    await pool.query(
+      `UPDATE billing_author_settlements SET updated_at = now()
+        WHERE provider_subscription_id = 'sub_monitor_test'`,
+    );
+    const failedChecks = (await runDatabaseMonitoringChecks(pool)).filter(
+      (check) => operationalChecks.some((candidate) => candidate.key === check.key),
+    );
+    expect(failedChecks.every((check) => !check.healthy)).toBe(true);
+
+    await pool.query(
+      `UPDATE jobs SET status = 'done'
+        WHERE kind = 'check-run-cleanup' AND status = 'failed'`,
+    );
+    await pool.query(
+      `UPDATE operator_alert_deliveries SET status = 'delivered', updated_at = now()
+        WHERE event_key = 'monitor-test-alert'`,
+    );
+    await pool.query(
+      `UPDATE billing_author_settlements SET status = 'no_charge', updated_at = now()
+        WHERE provider_subscription_id = 'sub_monitor_test'`,
+    );
+    const repairedChecks = (await runDatabaseMonitoringChecks(pool)).filter(
+      (check) => operationalChecks.some((candidate) => candidate.key === check.key),
+    );
+    expect(repairedChecks.every((check) => check.healthy)).toBe(true);
+  });
+
+  test("uses the configured heartbeat threshold", async () => {
+    await recordServiceHeartbeat(pool, "worker", "worker-threshold");
+    await pool.query(
+      `UPDATE service_heartbeats
+          SET observed_at = now() - interval '5 minutes'
+        WHERE component = 'worker'`,
+    );
+    const defaultCheck = (await runDatabaseMonitoringChecks(pool)).find(
+      (check) => check.key === "worker-heartbeat",
+    );
+    const relaxedCheck = (
+      await runDatabaseMonitoringChecks(pool, {
+        workerHeartbeatMaxAgeSeconds: 600,
+      })
+    ).find((check) => check.key === "worker-heartbeat");
+    expect(defaultCheck?.healthy).toBe(false);
+    expect(relaxedCheck?.healthy).toBe(true);
   });
 
   test("reports healthy queue and signup state from a fresh database", async () => {
