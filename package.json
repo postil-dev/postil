@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "email:preview": "bun run scripts/render-email-previews.ts",
     "dev": "next dev",
     "build": "next build && bun run scripts/verify-server-observability-bundle.ts",
     "start": "next start",

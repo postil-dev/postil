@@ -1,9 +1,13 @@
+import { normalizeVerificationEmail } from "@/lib/email-verification";
 import {
-  normalizeVerificationEmail,
   sendTransactionalEmail,
-} from "@/lib/email-verification";
+  type TransactionalEmailContent,
+} from "@/lib/transactional-email";
 
-type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type Fetch = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
 
 export interface ProductionMonitorAlertEnvironment {
   BREVO_API_KEY?: string;
@@ -32,14 +36,20 @@ export async function sendProductionMonitorAlert(
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
     "GITHUB_REPOSITORY",
   );
-  const runId = exact(environment.GITHUB_RUN_ID, /^[1-9][0-9]{0,19}$/, "GITHUB_RUN_ID");
+  const runId = exact(
+    environment.GITHUB_RUN_ID,
+    /^[1-9][0-9]{0,19}$/,
+    "GITHUB_RUN_ID",
+  );
   const attempt = exact(
     environment.GITHUB_RUN_ATTEMPT,
     /^[1-9][0-9]{0,5}$/,
     "GITHUB_RUN_ATTEMPT",
   );
   const sha = exact(environment.GITHUB_SHA, /^[0-9a-f]{40}$/, "GITHUB_SHA");
-  const server = new URL(required(environment.GITHUB_SERVER_URL, "GITHUB_SERVER_URL"));
+  const server = new URL(
+    required(environment.GITHUB_SERVER_URL, "GITHUB_SERVER_URL"),
+  );
   if (
     server.protocol !== "https:" ||
     server.username ||
@@ -52,28 +62,58 @@ export async function sendProductionMonitorAlert(
   if (kind !== "failure" && kind !== "test") {
     throw new Error("POSTIL_MONITOR_ALERT_KIND must be failure or test");
   }
-  const runUrl = new URL(`/${repository}/actions/runs/${runId}`, server).toString();
+  const runUrl = new URL(
+    `/${repository}/actions/runs/${runId}`,
+    server,
+  ).toString();
   const failure = kind === "failure";
 
   await sendTransactionalEmail({
     recipient,
-    subject: failure ? "Postil production monitor failed" : "Postil production alert test",
-    text: failure
-      ? [
-          "Postil's production checks failed.",
-          "",
-          `Commit: ${sha.slice(0, 12)}`,
-          `Run: ${runUrl}`,
-        ]
-      : [
-          "Postil's production-monitor email path is working.",
-          "",
-          `Run: ${runUrl}`,
-        ],
+    subject: failure
+      ? "Postil production monitor failed"
+      : "Postil production alert test",
+    content: productionMonitorEmailContent(
+      failure ? "failure" : "test",
+      sha,
+      runUrl,
+    ),
     idempotencyKey: `production-monitor-${kind}-${runId}-${attempt}`,
     apiKey,
     fetchImpl,
   });
+}
+
+export function productionMonitorEmailContent(
+  kind: "failure" | "test",
+  sha: string,
+  runUrl: string,
+): TransactionalEmailContent {
+  const reason =
+    "This address is configured to receive Postil production-monitor alerts.";
+  if (kind === "failure") {
+    return {
+      preheader: "Postil production checks failed.",
+      category: "Incident",
+      title: "Production checks failed",
+      summary: "The production monitor reported a failed check run.",
+      reason,
+      details: [{ label: "Commit", value: sha.slice(0, 12) }],
+      action: { label: "Open monitor run", url: runUrl },
+      note: "Inspect the failed job before changing production state.",
+      intent: "critical",
+    };
+  }
+  return {
+    preheader: "Postil production-monitor email delivery is working.",
+    category: "Monitor test",
+    title: "Alert delivery confirmed",
+    summary: "The production-monitor email path completed an explicit test.",
+    reason,
+    action: { label: "Open test run", url: runUrl },
+    note: "No action is required.",
+    intent: "success",
+  };
 }
 
 function required(value: string | undefined, name: string): string {
@@ -82,7 +122,11 @@ function required(value: string | undefined, name: string): string {
   return normalized;
 }
 
-function exact(value: string | undefined, pattern: RegExp, name: string): string {
+function exact(
+  value: string | undefined,
+  pattern: RegExp,
+  name: string,
+): string {
   const normalized = required(value, name);
   if (!pattern.test(normalized)) throw new Error(`${name} is invalid`);
   return normalized;
