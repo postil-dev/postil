@@ -204,7 +204,7 @@ describeDb("managed hosted inference release activation", () => {
     expect(await backfillExistingPersonalAccountTrials(db, {
       hostedInferenceEnabled: true,
       releaseSha: releaseC,
-    })).toEqual({ eligible: 2, granted: 1, reconciled: 1 });
+    })).toEqual({ eligible: 2, granted: 2 });
     expect((await pool.query<{ subscription_mode: string; requested_mode: string; granted_mode: string }>(`
       SELECT entitlement.subscription_mode, trial.requested_mode, trial.granted_mode
       FROM organization_entitlements entitlement
@@ -258,7 +258,7 @@ describeDb("managed hosted inference release activation", () => {
     expect(await backfillExistingPersonalAccountTrials(db, {
       hostedInferenceEnabled: true,
       releaseSha: releaseC,
-    })).toEqual({ eligible: 0, granted: 0, reconciled: 0 });
+    })).toEqual({ eligible: 0, granted: 0 });
     expect((await pool.query<{ count: string }>(
       "SELECT count(*) FROM operator_alert_deliveries WHERE org_id = $1 AND event = 'trial_started'",
       [personalOrgId],

@@ -40,6 +40,18 @@ export interface PersonalAccountTrialBackfillInput {
   releaseSha: string;
 }
 
+async function lockSelfServiceTrialActor(
+  db: Pick<Database, "execute">,
+  githubActorId: number,
+): Promise<void> {
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${HOSTED_INFERENCE_LOCK}, 0))`,
+  );
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:trial-actor:${githubActorId}`}, 0))`,
+  );
+}
+
 /** Grant one owner-scoped trial and enqueue its alert in the same transaction. */
 export async function grantSelfServiceTrial(
   db: Database,
@@ -48,12 +60,7 @@ export async function grantSelfServiceTrial(
 ): Promise<{ granted: boolean; trialEndsAt: Date | null }> {
   const trialEndsAt = new Date(now.getTime() + SELF_SERVICE_TRIAL_DURATION_MS);
   return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${HOSTED_INFERENCE_LOCK}, 0))`,
-    );
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:trial-actor:${input.initiatedByGithubId}`}, 0))`,
-    );
+    await lockSelfServiceTrialActor(tx, input.initiatedByGithubId);
     const capability = input.hostedReleaseCapability
       ? await tx.execute(sql`
           SELECT EXISTS (
@@ -134,8 +141,8 @@ export async function grantSelfServiceTrial(
 export async function backfillExistingPersonalAccountTrials(
   db: Database,
   input: PersonalAccountTrialBackfillInput,
-  now = new Date(),
-): Promise<{ eligible: number; granted: number; reconciled: number }> {
+): Promise<{ eligible: number; granted: number }> {
+  const now = new Date();
   const selection = {
     orgId: schema.organizations.id,
     orgSlug: schema.organizations.slug,
@@ -218,18 +225,12 @@ export async function backfillExistingPersonalAccountTrials(
     if (result.granted) granted += 1;
   }
 
-  let reconciled = 0;
   for (const candidate of unrecorded) {
     if (candidate.githubOwnerId === null || candidate.trialEndsAt === null) continue;
     const githubOwnerId = candidate.githubOwnerId;
     const trialEndsAt = candidate.trialEndsAt;
     const created = await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtextextended(${HOSTED_INFERENCE_LOCK}, 0))`,
-      );
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:trial-actor:${githubOwnerId}`}, 0))`,
-      );
+      await lockSelfServiceTrialActor(tx, githubOwnerId);
       const inserted = await tx
         .insert(schema.selfServiceTrialGrants)
         .values({
@@ -248,12 +249,11 @@ export async function backfillExistingPersonalAccountTrials(
       );
       return true;
     });
-    if (created) reconciled += 1;
+    if (created) granted += 1;
   }
 
   return {
     eligible: unentitled.length + unrecorded.length,
     granted,
-    reconciled,
   };
 }
