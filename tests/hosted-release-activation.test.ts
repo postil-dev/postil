@@ -16,6 +16,7 @@ import {
   deactivateHostedInferenceRelease,
   hostedInferenceReleaseActivated,
 } from "@/lib/release-job-rollout";
+import { backfillExistingPersonalAccountTrials } from "@/lib/self-service-trial";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
@@ -24,6 +25,7 @@ describeDb("managed hosted inference release activation", () => {
   const databaseName = `postil_hosted_activation_${process.pid}_${Date.now()}`;
   const releaseA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const releaseB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const releaseC = "cccccccccccccccccccccccccccccccccccccccc";
   let admin: Client;
   let pool: Pool;
 
@@ -53,6 +55,7 @@ describeDb("managed hosted inference release activation", () => {
     await admin?.end();
     delete process.env.POSTIL_RELEASE_SHA;
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
+    delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
   }, 30_000);
 
   test("deploys dark, activates only the exact release, and deactivates on rollback", async () => {
@@ -143,5 +146,76 @@ describeDb("managed hosted inference release activation", () => {
     expect(await hostedInferenceAvailable(pool)).toBe(true);
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
     expect(await hostedInferenceAvailable(pool)).toBe(false);
+  });
+
+  test("backfills bounded hosted trials only for existing personal installations", async () => {
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    process.env.POSTIL_RELEASE_SHA = releaseC;
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.test";
+
+    const personal = await pool.query<{ id: string }>(`
+      INSERT INTO organizations (slug, name, github_org_id)
+      VALUES ('personal-backfill', 'Personal Backfill', 73001) RETURNING id
+    `);
+    const personalOrgId = Number(personal.rows[0]!.id);
+    await pool.query(`
+      INSERT INTO installations (
+        github_installation_id, org_id, account_login, account_type, suspended
+      ) VALUES (74001, $1, 'personal-backfill', 'User', false)
+    `, [personalOrgId]);
+
+    const organization = await pool.query<{ id: string }>(`
+      INSERT INTO organizations (slug, name, github_org_id)
+      VALUES ('organization-backfill', 'Organization Backfill', 73002) RETURNING id
+    `);
+    const organizationOrgId = Number(organization.rows[0]!.id);
+    await pool.query(`
+      INSERT INTO installations (
+        github_installation_id, org_id, account_login, account_type, suspended
+      ) VALUES (74002, $1, 'organization-backfill', 'Organization', false)
+    `, [organizationOrgId]);
+
+    const db = drizzle(pool, { schema });
+    expect(await backfillExistingPersonalAccountTrials(db, {
+      hostedInferenceEnabled: true,
+      releaseSha: releaseC,
+    })).toEqual({ eligible: 1, granted: 1 });
+    expect((await pool.query<{ subscription_mode: string; requested_mode: string; granted_mode: string }>(`
+      SELECT entitlement.subscription_mode, trial.requested_mode, trial.granted_mode
+      FROM organization_entitlements entitlement
+      JOIN self_service_trial_grants trial ON trial.org_id = entitlement.org_id
+      WHERE entitlement.org_id = $1
+    `, [personalOrgId])).rows[0]).toEqual({
+      subscription_mode: "byok",
+      requested_mode: "hosted",
+      granted_mode: "byok",
+    });
+    expect((await pool.query<{ count: string }>(
+      "SELECT count(*) FROM organization_entitlements WHERE org_id = $1",
+      [organizationOrgId],
+    )).rows[0]!.count).toBe("0");
+    expect((await pool.query<{ count: string }>(
+      "SELECT count(*) FROM operator_alert_deliveries WHERE org_id = $1 AND event = 'trial_started'",
+      [personalOrgId],
+    )).rows[0]!.count).toBe("1");
+
+    expect(await activateHostedInferenceRelease(pool, releaseC)).toBe(true);
+    expect((await pool.query<{ subscription_mode: string; granted_mode: string }>(`
+      SELECT entitlement.subscription_mode, trial.granted_mode
+      FROM organization_entitlements entitlement
+      JOIN self_service_trial_grants trial ON trial.org_id = entitlement.org_id
+      WHERE entitlement.org_id = $1
+    `, [personalOrgId])).rows[0]).toEqual({
+      subscription_mode: "hosted",
+      granted_mode: "hosted",
+    });
+    expect(await backfillExistingPersonalAccountTrials(db, {
+      hostedInferenceEnabled: true,
+      releaseSha: releaseC,
+    })).toEqual({ eligible: 0, granted: 0 });
+    expect((await pool.query<{ count: string }>(
+      "SELECT count(*) FROM operator_alert_deliveries WHERE org_id = $1 AND event = 'trial_started'",
+      [personalOrgId],
+    )).rows[0]!.count).toBe("1");
   });
 });
