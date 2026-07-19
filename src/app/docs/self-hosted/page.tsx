@@ -161,7 +161,10 @@ docker compose exec web bun run db:migrate`}</code>
           <code>POSTIL_EMAIL_FROM_EMAIL</code> and{" "}
           <code>POSTIL_EMAIL_FROM_NAME</code>. Set{" "}
           <code>POSTIL_OPERATOR_ALERT_EMAIL</code> to a verified operator inbox
-          for one-time trial signup alerts.
+          for account, installation, billing, and service-monitor alerts. Brevo
+          controls transactional-email tracking and log retention at the account
+          level. Enable anonymous transactional-email tracking in Brevo when you
+          do not need recipient-level open or click events.
         </li>
       </ul>
 

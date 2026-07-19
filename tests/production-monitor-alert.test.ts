@@ -52,14 +52,16 @@ describe("production monitor email", () => {
 
     const body = JSON.parse(String(request?.body)) as {
       subject: string;
+      htmlContent: string;
       textContent: string;
       headers: Record<string, string>;
     };
     expect(body.subject).toBe("Postil production monitor failed");
     expect(body.textContent).toContain("Commit: c5bb3ebbff98");
     expect(body.textContent).toContain(
-      "Run: https://github.com/postil-dev/postil/actions/runs/29654572437",
+      "Open monitor run: https://github.com/postil-dev/postil/actions/runs/29654572437",
     );
+    expect(body.htmlContent).toContain("Production checks failed");
     expect(body.textContent).not.toMatch(
       /metrics|repository content|secret|token/i,
     );

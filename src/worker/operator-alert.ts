@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 
-import {
-  normalizeVerificationEmail,
-  sendTransactionalEmail,
-} from "@/lib/email-verification";
+import { normalizeVerificationEmail } from "@/lib/email-verification";
 import { requireEnv } from "@/lib/env";
 import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
+import {
+  sendTransactionalEmail,
+  type TransactionalEmailContent,
+} from "@/lib/transactional-email";
 
 export type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
 
@@ -24,12 +25,12 @@ export async function runOperatorAlertJob(
         requireEnv("POSTIL_PUBLIC_URL"),
       ).toString()
     : null;
-  const content = alertContent(payload, dashboardUrl);
+  const content = operatorAlertEmailContent(payload, dashboardUrl);
 
   return sendTransactionalEmail({
     recipient,
     subject: content.subject,
-    text: content.text,
+    content: content.content,
     idempotencyKey: `postil-operator-${createHash("sha256")
       .update(payload.eventKey)
       .digest("hex")}`,
@@ -129,89 +130,162 @@ function validateDate(value: string): void {
   }
 }
 
-function alertContent(
+export function operatorAlertEmailContent(
   payload: OperatorAlertJobPayload,
   dashboardUrl: string | null,
-): { subject: string; text: string[] } {
-  const common =
-    payload.accountLogin && payload.githubOwnerId
-      ? [
-          "",
-          `Account: ${payload.accountLogin}`,
-          `GitHub owner ID: ${payload.githubOwnerId}`,
-        ]
-      : [];
+): { subject: string; content: TransactionalEmailContent } {
+  const organization = payload.accountLogin ?? undefined;
+  const common = payload.githubOwnerId
+    ? [{ label: "GitHub owner ID", value: String(payload.githubOwnerId) }]
+    : [];
+  const action = dashboardUrl
+    ? { label: "Open organization", url: dashboardUrl }
+    : undefined;
+  const reason =
+    "This address is configured to receive Postil operator alerts.";
   if (payload.event === "trial_started") {
     return {
       subject: `New Postil trial: ${payload.accountLogin}`,
-      text: [
-        "A GitHub owner started a 30-day Postil trial.",
-        ...common,
-        `Account type: ${payload.accountType}`,
-        `GitHub App installation ID: ${payload.githubInstallationId}`,
-        `Trial ends: ${new Date(payload.trialEndsAt).toISOString()}`,
-        ...(dashboardUrl ? [`Dashboard: ${dashboardUrl}`] : []),
-      ],
+      content: {
+        preheader: `${payload.accountLogin} started a 30-day Postil trial.`,
+        category: "Trial",
+        title: "A trial has started",
+        summary: "The 30-day access window is active for this GitHub owner.",
+        organization,
+        reason,
+        details: [
+          ...common,
+          { label: "Account type", value: payload.accountType },
+          {
+            label: "Installation ID",
+            value: String(payload.githubInstallationId),
+          },
+          { label: "Trial ends", value: formatUtcDate(payload.trialEndsAt) },
+        ],
+        action,
+        note: "No action is required. Eligible pull requests are reviewed automatically.",
+        intent: "success",
+      },
     };
   }
   if (payload.event === "trial_expired") {
     return {
       subject: `Postil trial ended: ${payload.accountLogin}`,
-      text: [
-        "A Postil trial ended without an active plan.",
-        ...common,
-        `Trial ended: ${new Date(payload.trialEndsAt).toISOString()}`,
-        ...(dashboardUrl ? [`Dashboard: ${dashboardUrl}`] : []),
-      ],
+      content: {
+        preheader: `${payload.accountLogin}'s Postil trial has ended.`,
+        category: "Trial",
+        title: "The trial has ended",
+        summary:
+          "Private-repository reviews are paused because this organization has no active plan.",
+        organization,
+        reason,
+        details: [
+          ...common,
+          { label: "Trial ended", value: formatUtcDate(payload.trialEndsAt) },
+        ],
+        action,
+        note: "Review the organization before contacting its owner or changing access.",
+        intent: "warning",
+      },
     };
   }
   if (payload.event === "subscription_started") {
     return {
       subject: `Postil subscription active: ${payload.accountLogin}`,
-      text: [
-        "A customer activated self-service billing.",
-        ...common,
-        `Provider subscription: ${payload.providerSubscriptionId}`,
-        ...(payload.periodEndsAt
-          ? [
-              `Billing period ends: ${new Date(payload.periodEndsAt).toISOString()}`,
-            ]
-          : []),
-        ...(dashboardUrl ? [`Dashboard: ${dashboardUrl}`] : []),
-      ],
+      content: {
+        preheader: `${payload.accountLogin} activated a Postil subscription.`,
+        category: "Billing",
+        title: "Subscription active",
+        summary: "Self-service billing is active for this organization.",
+        organization,
+        reason,
+        details: [
+          ...common,
+          {
+            label: "Provider subscription",
+            value: payload.providerSubscriptionId,
+          },
+          ...(payload.periodEndsAt
+            ? [
+                {
+                  label: "Period ends",
+                  value: formatUtcDate(payload.periodEndsAt),
+                },
+              ]
+            : []),
+        ],
+        action,
+        intent: "success",
+      },
     };
   }
   if (payload.event === "subscription_past_due") {
     return {
       subject: `Postil payment past due: ${payload.accountLogin}`,
-      text: [
-        "A customer subscription is past due.",
-        ...common,
-        `Provider subscription: ${payload.providerSubscriptionId}`,
-        ...(dashboardUrl ? [`Dashboard: ${dashboardUrl}`] : []),
-      ],
+      content: {
+        preheader: `${payload.accountLogin}'s Postil payment is past due.`,
+        category: "Billing",
+        title: "Payment needs attention",
+        summary: "The provider reports this subscription as past due.",
+        organization,
+        reason,
+        details: [
+          ...common,
+          {
+            label: "Provider subscription",
+            value: payload.providerSubscriptionId,
+          },
+        ],
+        action,
+        note: "Check the provider record before taking action.",
+        intent: "critical",
+      },
     };
   }
   if (payload.event === "subscription_canceled") {
     return {
       subject: `Postil subscription ended: ${payload.accountLogin}`,
-      text: [
-        "A customer subscription ended.",
-        ...common,
-        `Provider subscription: ${payload.providerSubscriptionId}`,
-        ...(dashboardUrl ? [`Dashboard: ${dashboardUrl}`] : []),
-      ],
+      content: {
+        preheader: `${payload.accountLogin}'s Postil subscription has ended.`,
+        category: "Billing",
+        title: "Subscription ended",
+        summary: "The provider reports this subscription as canceled.",
+        organization,
+        reason,
+        details: [
+          ...common,
+          {
+            label: "Provider subscription",
+            value: payload.providerSubscriptionId,
+          },
+        ],
+        action,
+        note: "Review access and the provider record for this organization.",
+        intent: "warning",
+      },
     };
   }
   if (payload.event === "subscription_paused") {
     return {
       subject: `Postil subscription paused: ${payload.accountLogin}`,
-      text: [
-        "A customer subscription is paused.",
-        ...common,
-        `Provider subscription: ${payload.providerSubscriptionId}`,
-        ...(dashboardUrl ? [`Dashboard: ${dashboardUrl}`] : []),
-      ],
+      content: {
+        preheader: `${payload.accountLogin}'s Postil subscription is paused.`,
+        category: "Billing",
+        title: "Subscription paused",
+        summary: "The provider reports this subscription as paused.",
+        organization,
+        reason,
+        details: [
+          ...common,
+          {
+            label: "Provider subscription",
+            value: payload.providerSubscriptionId,
+          },
+        ],
+        action,
+        note: "Review access and the provider record for this organization.",
+        intent: "warning",
+      },
     };
   }
   if (payload.event === "billing_anomaly") {
@@ -219,13 +293,23 @@ function alertContent(
       subject: payload.accountLogin
         ? `Postil billing needs attention: ${payload.accountLogin}`
         : "Postil billing needs attention",
-      text: [
-        "A self-service billing operation needs attention.",
-        ...common,
-        `Category: ${payload.category}`,
-        `Provider reference: ${payload.providerObjectId}`,
-        ...(dashboardUrl ? [`Dashboard: ${dashboardUrl}`] : []),
-      ],
+      content: {
+        preheader: "A Postil billing operation needs attention.",
+        category: "Incident",
+        title: "Billing needs attention",
+        summary:
+          "A self-service billing operation did not reach a known good state.",
+        organization,
+        reason,
+        details: [
+          ...common,
+          { label: "Category", value: payload.category },
+          { label: "Provider reference", value: payload.providerObjectId },
+        ],
+        action,
+        note: "Inspect the provider event and the corresponding Postil billing state.",
+        intent: "critical",
+      },
     };
   }
   if (payload.event !== "installation_removed") {
@@ -233,14 +317,40 @@ function alertContent(
   }
   return {
     subject: `Postil App removed: ${payload.accountLogin}`,
-    text: [
-      "A GitHub owner removed the Postil App.",
-      ...common,
-      `Account type: ${payload.accountType}`,
-      `GitHub App installation ID: ${payload.githubInstallationId}`,
-      ...(dashboardUrl ? [`Dashboard: ${dashboardUrl}`] : []),
-    ],
+    content: {
+      preheader: `${payload.accountLogin} removed the Postil GitHub App.`,
+      category: "Access",
+      title: "GitHub App removed",
+      summary:
+        "Postil no longer receives GitHub events from this installation.",
+      organization,
+      reason,
+      details: [
+        ...common,
+        { label: "Account type", value: payload.accountType },
+        {
+          label: "Installation ID",
+          value: String(payload.githubInstallationId),
+        },
+      ],
+      action,
+      note: "Confirm whether the removal was expected before contacting the owner.",
+      intent: "notice",
+    },
   };
+}
+
+function formatUtcDate(value: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: "UTC",
+    timeZoneName: "short",
+  }).format(new Date(value));
 }
 
 function safeLabel(value: unknown, maxLength: number): value is string {

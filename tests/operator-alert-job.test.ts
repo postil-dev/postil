@@ -4,6 +4,9 @@ let sentInput: Record<string, unknown> | undefined;
 
 mock.module("@/lib/email-verification", () => ({
   normalizeVerificationEmail: (value: string) => value.trim().toLowerCase(),
+}));
+
+mock.module("@/lib/transactional-email", () => ({
   sendTransactionalEmail: async (input: Record<string, unknown>) => {
     sentInput = input;
     return { messageId: "brevo-message-operator-1" };
@@ -40,10 +43,15 @@ describe("operator alert job", () => {
     });
     expect(sentInput?.idempotencyKey).toMatch(/^postil-operator-[0-9a-f]{64}$/);
     expect(result).toEqual({ messageId: "brevo-message-operator-1" });
-    const text = (sentInput?.text as string[]).join("\n");
-    expect(text).toContain("A GitHub owner started a 30-day Postil trial.");
-    expect(text).toContain("Dashboard: https://postil.dev/orgs/acme");
-    expect(text).not.toMatch(/repository|pull request|source code/i);
+    const content = sentInput?.content as Record<string, unknown>;
+    expect(content.title).toBe("A trial has started");
+    expect(content.action).toEqual({
+      label: "Open organization",
+      url: "https://postil.dev/orgs/acme",
+    });
+    expect(content).not.toMatchObject({
+      summary: expect.stringMatching(/source code/i),
+    });
   });
 
   test("sends concise expiry and uninstall alerts with stable idempotency", async () => {
@@ -59,9 +67,7 @@ describe("operator alert job", () => {
     expect(sentInput).toMatchObject({
       subject: "Postil trial ended: Acme",
     });
-    expect((sentInput?.text as string[]).join("\n")).toContain(
-      "A Postil trial ended without an active plan.",
-    );
+    expect(sentInput?.content).toMatchObject({ title: "The trial has ended" });
 
     await runOperatorAlertJob({
       event: "installation_removed",
@@ -76,9 +82,7 @@ describe("operator alert job", () => {
     expect(sentInput).toMatchObject({
       subject: "Postil App removed: Acme",
     });
-    const text = (sentInput?.text as string[]).join("\n");
-    expect(text).toContain("A GitHub owner removed the Postil App.");
-    expect(text).not.toMatch(/repository|pull request|source code/i);
+    expect(sentInput?.content).toMatchObject({ title: "GitHub App removed" });
   });
 
   test("rejects malformed payloads before sending", async () => {
@@ -125,9 +129,11 @@ describe("operator alert job", () => {
     expect(sentInput).toMatchObject({
       subject: "Postil payment past due: Acme",
     });
-    expect((sentInput?.text as string[]).join("\n")).toContain(
-      "Provider subscription: sub_01test",
-    );
+    expect(sentInput?.content).toMatchObject({
+      details: expect.arrayContaining([
+        { label: "Provider subscription", value: "sub_01test" },
+      ]),
+    });
 
     await runOperatorAlertJob({
       orgId: base.orgId,
@@ -142,11 +148,11 @@ describe("operator alert job", () => {
     expect(sentInput).toMatchObject({
       subject: "Postil billing needs attention: Acme",
     });
-    expect((sentInput?.text as string[]).join("\n")).toContain(
-      "Category: settlement_stale",
-    );
-    expect((sentInput?.text as string[]).join("\n")).toContain(
-      "Provider reference: sub_01test",
-    );
+    expect(sentInput?.content).toMatchObject({
+      details: expect.arrayContaining([
+        { label: "Category", value: "settlement_stale" },
+        { label: "Provider reference", value: "sub_01test" },
+      ]),
+    });
   });
 });
