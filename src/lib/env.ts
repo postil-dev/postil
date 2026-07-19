@@ -156,6 +156,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_PROVISIONAL_HOSTED_ROSTER",
+    purpose:
+      "Allow the pinned CLI's provisional hosted model roster when formal admission is pending",
+    example: "1",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
     name: "REVIEW_MODEL_CASCADE",
     purpose: "Comma-separated fallback models",
     example: "moonshotai/kimi-k2.7-code,deepseek/deepseek-v4-flash",
@@ -501,6 +509,16 @@ export function validateEnv(processKind: "web" | "worker"): void {
   ) {
     throw new Error(
       "Postil worker cannot start: POSTIL_HOSTED_INFERENCE_ENABLED must be 0 or 1.",
+    );
+  }
+  if (
+    processKind === "worker" &&
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER !== undefined &&
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER !== "0" &&
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER !== "1"
+  ) {
+    throw new Error(
+      "Postil worker cannot start: POSTIL_PROVISIONAL_HOSTED_ROSTER must be 0 or 1.",
     );
   }
   validateOperationalTelemetryEnv(processKind);

@@ -15,6 +15,7 @@ const MANAGED_ENV = [
   "POSTIL_SESSION_SECRET",
   "POSTIL_WEBHOOK_DRAIN_ENABLED",
   "POSTIL_HOSTED_INFERENCE_ENABLED",
+  "POSTIL_PROVISIONAL_HOSTED_ROSTER",
   "GITHUB_APP_ID",
   "GITHUB_APP_PRIVATE_KEY",
   "POSTHOG_ERROR_CAPTURE",
@@ -57,6 +58,16 @@ describe("worker startup environment validation", () => {
     expect(() => validateEnv("worker")).toThrow(/must be 0 or 1/);
   });
 
+  test("accepts only explicit provisional roster switch values", () => {
+    configureRequiredWorkerEnvironment();
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER = "0";
+    expect(() => validateEnv("worker")).not.toThrow();
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER = "1";
+    expect(() => validateEnv("worker")).not.toThrow();
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER = "true";
+    expect(() => validateEnv("worker")).toThrow(/must be 0 or 1/);
+  });
+
   test("keeps hosted inference enabled by default and honors an explicit pause", () => {
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
     expect(hostedInferenceEnabled()).toBe(true);
@@ -66,14 +77,15 @@ describe("worker startup environment validation", () => {
     expect(hostedInferenceEnabled()).toBe(true);
   });
 
-  test("disables hosted inference in the managed deployment and verifies every worker", async () => {
+  test("enables the provisional hosted roster in the managed deployment and verifies every worker", async () => {
     const root = join(import.meta.dir, "..");
     const [flyConfig, deployWorkflow] = await Promise.all([
       readFile(join(root, "fly.toml"), "utf8"),
       readFile(join(root, ".github/workflows/deploy.yml"), "utf8"),
     ]);
 
-    expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "0"');
+    expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
+    expect(flyConfig).toContain('POSTIL_PROVISIONAL_HOSTED_ROSTER = "1"');
     expect(deployWorkflow).toContain(
       "jq -ce -f scripts/verify-managed-fleet.jq",
     );
@@ -106,7 +118,10 @@ describe("worker startup environment validation", () => {
     );
     expect(deployWorkflow).not.toContain("done < <(flyctl secrets list --json");
     expect(deployWorkflow).toContain(
-      "POSTIL_HOSTED_INFERENCE_ENABLED|REVIEW_MODEL|REVIEW_MODEL_CASCADE",
+      "POSTIL_HOSTED_INFERENCE_ENABLED|POSTIL_PROVISIONAL_HOSTED_ROSTER|REVIEW_MODEL|REVIEW_MODEL_CASCADE",
+    );
+    expect(deployWorkflow).toContain(
+      "The provisional hosted roster requires postil-cli v0.7.0 or newer.",
     );
     expect(deployWorkflow).toContain(
       'flyctl secrets unset --stage "${runtime_override_secrets[@]}"',
@@ -123,31 +138,36 @@ describe("worker startup environment validation", () => {
     expect(failedSecretList.stdout.toString()).toBe("");
 
     const validFleet = [
-      managedMachine("web", "1"),
+      managedMachine("web", "1", "1"),
       managedMachine("web"),
-      managedMachine("worker", "0"),
+      managedMachine("worker", "1", "1"),
     ];
     expect(verifyManagedFleet(root, validFleet).exitCode).toBe(0);
     expect(
-      verifyManagedFleet(root, [...validFleet, managedMachine("worker", "1")])
+      verifyManagedFleet(root, [...validFleet, managedMachine("worker", "0", "1")])
+        .exitCode,
+    ).not.toBe(0);
+    expect(
+      verifyManagedFleet(root, [...validFleet, managedMachine("worker", "1", "0")])
         .exitCode,
     ).not.toBe(0);
     expect(
       verifyManagedFleet(root, [
-        managedMachine("web", "1"),
+        managedMachine("web", "1", "1"),
         managedMachine(
           "web",
+          undefined,
           undefined,
           "started",
           "registry.fly.io/postil-web:other",
         ),
-        managedMachine("worker", "0"),
+        managedMachine("worker", "1", "1"),
       ]).exitCode,
     ).not.toBe(0);
     expect(
       verifyManagedFleet(root, [
         ...validFleet,
-        managedMachine("worker", "1", "stopped"),
+        managedMachine("worker", "0", "1", "stopped"),
       ]).exitCode,
     ).not.toBe(0);
     expect(
@@ -169,6 +189,7 @@ describe("worker startup environment validation", () => {
 function managedMachine(
   group: "web" | "worker",
   hostedInferenceMode?: string,
+  provisionalRosterMode?: string,
   state = "started",
   image = "registry.fly.io/postil-web:verified",
 ) {
@@ -180,10 +201,14 @@ function managedMachine(
         fly_platform_version: "v2",
         fly_process_group: group,
       },
-      env:
-        hostedInferenceMode === undefined
+      env: {
+        ...(hostedInferenceMode === undefined
           ? {}
-          : { POSTIL_HOSTED_INFERENCE_ENABLED: hostedInferenceMode },
+          : { POSTIL_HOSTED_INFERENCE_ENABLED: hostedInferenceMode }),
+        ...(provisionalRosterMode === undefined
+          ? {}
+          : { POSTIL_PROVISIONAL_HOSTED_ROSTER: provisionalRosterMode }),
+      },
     },
   };
 }

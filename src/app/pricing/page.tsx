@@ -9,12 +9,12 @@ import {
 
 export const metadata: Metadata = {
   title: "Pricing",
-  description: `Start with a 30-day BYOK trial. Public repositories are free with BYOK. Private BYOK is $${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author each month after the trial.`,
+  description: `Start with a 30-day hosted trial without a card. Public repositories are free with BYOK. Private plans start at $${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author each month after the trial.`,
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
     description:
-      "Start with a 30-day BYOK trial. Pay only for active private-repository authors after the trial.",
+      "Start with a 30-day hosted trial without a card. Pay only for active private-repository authors after the trial.",
     url: "https://postil.dev/pricing",
     images: ["/opengraph-image"],
   },
@@ -47,9 +47,9 @@ export default function PricingPage() {
         Private code, priced by active authors.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        Start with a 30-day free trial using your model provider. Public repositories
-        are free with your provider. Private plans count only authors whose pull
-        requests Postil reviews. Repositories are not billed.
+        Start with a 30-day hosted trial. No card or provider setup. Private
+        plans count only authors whose pull requests Postil reviews.
+        Repositories are not billed.
       </p>
 
       <section
@@ -72,7 +72,7 @@ export default function PricingPage() {
           </Link>
         </div>
 
-        <div className="card flex flex-col border-gate p-7">
+        <div className="card flex flex-col p-7">
           <h2 className="eyebrow">BYOK</h2>
           <p className="serif-display mt-3 text-4xl">
             ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD}
@@ -84,25 +84,25 @@ export default function PricingPage() {
             <li>Provider usage billed directly to you</li>
             <li>Review volume is not a billing unit</li>
           </ul>
-          <Link href="/install" className="btn-primary mt-8 text-center">
-            Start 30-day trial
+          <Link href="/install" className="btn-secondary mt-8 text-center">
+            Install with BYOK
           </Link>
         </div>
 
-        <div className="card flex flex-col p-7">
+        <div className="card flex flex-col border-gate p-7">
           <h2 className="eyebrow">Hosted</h2>
           <p className="serif-display mt-3 text-4xl">
             ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD}
           </p>
           <ActiveAuthorUnit id="hosted-active-author" />
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
-            <li>Enrollment is paused</li>
+            <li>30 days free, no card</li>
             <li>Postil operates model access</li>
             <li>Review volume is not a billing unit</li>
           </ul>
-          <span className="btn-secondary mt-8 cursor-not-allowed text-center opacity-60">
-            Enrollment paused
-          </span>
+          <Link href="/install" className="btn-primary mt-8 text-center">
+            Start 30-day trial
+          </Link>
         </div>
 
         <div className="card flex flex-col p-7">

@@ -93,9 +93,9 @@ export function SiteFooter() {
         </div>
         <div className="rule mt-10 pt-6 text-xs text-charcoal/75">
           <p>
-            Postil. CLI and Action are Apache-2.0. GitHub App reviews use your
-            model provider. Full diffs and repository snapshots are not
-            persisted by the control plane.
+            Postil. CLI and Action are Apache-2.0. GitHub App reviews use
+            hosted inference or your configured provider. Full diffs and
+            repository snapshots are not persisted by the control plane.
           </p>
         </div>
       </div>

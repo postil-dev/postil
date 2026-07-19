@@ -242,8 +242,8 @@ export default function SecurityPage() {
             access, installations, and billing. The full diff is fetched at
             review time, sent to the applicable model endpoint, and discarded
             with the process. GitHub App BYOK reviews route through the worker
-            to your configured provider. Existing hosted plans use Postil&apos;s
-            configured provider path; new hosted enrollment is paused.
+            to your configured provider. Hosted plans use Postil&apos;s configured
+            provider path.
             Self-hosted deployments send nothing to us: no telemetry, no
             license pings, no update checks.
             There is no full diff cache, embedding index, or repository clone

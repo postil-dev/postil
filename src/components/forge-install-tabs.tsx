@@ -87,7 +87,7 @@ function GitHubPanel({ githubAppUrl }: { githubAppUrl: string }) {
       <section className="rule grid gap-8 pt-10 md:grid-cols-[1fr_2fr]">
         <div>
           <p className="font-mono text-sm text-charcoal/70">01</p>
-          <h2 className="serif-display mt-1 text-2xl">GitHub App with BYOK</h2>
+          <h2 className="serif-display mt-1 text-2xl">GitHub App</h2>
           <p className="mt-2 text-sm text-ink-soft">
             Thirty days free. No card required.
           </p>
@@ -95,16 +95,16 @@ function GitHubPanel({ githubAppUrl }: { githubAppUrl: string }) {
         <div className="min-w-0">
           <p className="text-ink-soft">
             Choose all repositories or a selected set during installation.
-            The 30-day trial starts automatically. Open organization settings to
-            connect your provider API, model, and key. New non-draft pull
-            requests are reviewed after setup. Draft pull requests are skipped
-            until they are marked ready.
+            The 30-day hosted trial starts automatically. New non-draft pull
+            requests are reviewed after setup. Open organization settings to
+            use your own provider instead. Draft pull requests are skipped until
+            they are marked ready.
             Existing open pull requests are not reviewed retroactively unless
             a review is requested again.
           </p>
           <p className="mt-3 text-sm text-ink-soft">
             Private reviews pause when the trial ends unless a paid plan is active.
-            Public repositories remain free with your provider.
+            Public repositories remain free when you use your provider.
           </p>
           <p className="mt-3 text-sm text-ink-soft">
             You can disable individual repositories from the organization
@@ -181,7 +181,7 @@ jobs:
             <code className="font-mono text-xs">cli-ref</code>. Require{" "}
             <code className="font-mono text-xs">postil/gate</code> in branch
             protection when review failures should block merges. The GitHub App
-            starts reviewing after BYOK setup without this CI workflow.
+            starts reviewing during the hosted trial without this CI workflow.
           </p>
         </div>
       </section>

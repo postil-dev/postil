@@ -64,8 +64,8 @@ export default function TermsPage() {
           The organization is the customer. Private plans are billed monthly by
           active private-PR author at the rates on the{" "}
           <Link href="/pricing">pricing page</Link>. New GitHub owners receive
-          one 30-day BYOK trial. A configured BYOK provider bills its model
-          usage separately. Hosted enrollment is paused.
+          one 30-day hosted trial without a card. An organization can use BYOK
+          during the trial; that provider bills its model usage separately.
         </p>
         <p>
           An active author is a GitHub identity, including a bot or service

@@ -57,6 +57,7 @@ const KEY_NAMES = [
   "REVIEW_MODEL_CASCADE",
   "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
   "POSTIL_LLM_TOTAL_TIMEOUT_SECS",
+  "POSTIL_PROVISIONAL_HOSTED_ROSTER",
 ] as const;
 
 const originalValues = new Map(
@@ -237,6 +238,7 @@ describe("buildCliEnv", () => {
       POSTIL_API_BASE: "https://openrouter.ai/api/v1",
       POSTIL_API_FORMAT: "anthropic",
       POSTIL_HOSTED_MODE: "0",
+      POSTIL_PROVISIONAL_HOSTED_ROSTER: "0",
       POSTIL_ENDPOINT_AUTH_HEADER: "CF-Access-Client-Secret",
       POSTIL_ENDPOINT_AUTH_VALUE: "gateway-key",
       POSTIL_LLM_REQUEST_TIMEOUT_SECS: "420",
@@ -258,6 +260,7 @@ describe("buildCliEnv", () => {
   test("lets operators override hosted CLI LLM timeout budgets", () => {
     process.env.POSTIL_LLM_REQUEST_TIMEOUT_SECS = "90";
     process.env.POSTIL_LLM_TOTAL_TIMEOUT_SECS = "360";
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER = "1";
 
     const env = buildCliEnv(
       {
@@ -277,6 +280,7 @@ describe("buildCliEnv", () => {
       POSTIL_LLM_REQUEST_TIMEOUT_SECS: "90",
       POSTIL_LLM_TOTAL_TIMEOUT_SECS: "360",
       POSTIL_HOSTED_MODE: "1",
+      POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
       POSTIL_ENDPOINT_AUTH_HEADER: "",
       POSTIL_ENDPOINT_AUTH_VALUE: "",
       POSTIL_PREVENTION_HINT: "0",

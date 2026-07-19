@@ -69,6 +69,11 @@ jobs:
             echo "::error::POSTIL_CLI_TAG ${TAG} is incompatible; v0.5.0 or newer is required."
             exit 1
           fi
+          if grep -q '^POSTIL_PROVISIONAL_HOSTED_ROSTER = "1"$' fly.toml \
+            && (( major == 0 && minor < 7 )); then
+            echo "::error::The provisional hosted roster requires postil-cli v0.7.0 or newer. Update public-cli-release.json and POSTIL_CLI_TAG to the exact published release."
+            exit 1
+          fi
           base="https://github.com/postil-dev/postil-cli/releases/download/${TAG}"
           art="postil-x86_64-unknown-linux-gnu.tar.gz"
           tmp=""
@@ -169,7 +174,7 @@ jobs:
           secret_names=$(jq -r '[.[] | .Name // .name // empty] | .[]' <<<"${fly_secrets}")
           while IFS= read -r name; do
             case "${name}" in
-              POSTIL_HOSTED_INFERENCE_ENABLED|REVIEW_MODEL|REVIEW_MODEL_CASCADE) runtime_override_secrets+=("${name}") ;;
+              POSTIL_HOSTED_INFERENCE_ENABLED|POSTIL_PROVISIONAL_HOSTED_ROSTER|REVIEW_MODEL|REVIEW_MODEL_CASCADE) runtime_override_secrets+=("${name}") ;;
             esac
           done <<<"${secret_names}"
           if (( ${#runtime_override_secrets[@]} > 0 )); then

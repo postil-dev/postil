@@ -11,7 +11,7 @@ import {
 export const metadata: Metadata = {
   title: "Quickstart",
   description:
-    "Install the GitHub App with your model provider, then add the CLI and Action for local reviews and merge gating.",
+    "Install the GitHub App with a hosted trial, then add the CLI and Action for local reviews and merge gating.",
   alternates: { canonical: "/docs/quickstart" },
 };
 
@@ -20,18 +20,18 @@ export default function QuickstartPage() {
     <div className="prose-postil">
       <h1 className="serif-display text-4xl text-charcoal">Quickstart</h1>
       <p className="mt-4 text-lg">
-        Start with the GitHub App, your model provider, and a 30-day free trial. It
-        reviews new non-draft pull requests after setup. Add the CLI and GitHub
-        Action for local reviews and merge blocking.
+        Start with the GitHub App and a 30-day hosted trial. It reviews new
+        non-draft pull requests after setup. Add the CLI and GitHub Action for
+        local reviews and merge blocking.
       </p>
 
-      <h2>1. GitHub App with BYOK</h2>
+      <h2>1. GitHub App</h2>
       <p>
-        Install the App, select all repositories or a chosen set, then configure
-        your provider API, model, and key in organization settings. Your free
+        Install the App and select all repositories or a chosen set. Your hosted
         30-day trial starts automatically without a card. Postil reviews new
-        non-draft pull requests in those repositories after setup. Private reviews
-        pause when the trial ends unless a paid plan is active.
+        non-draft pull requests in those repositories after setup. You can use
+        your own provider from organization settings. Private reviews pause when
+        the trial ends unless a paid plan is active.
       </p>
       <p>
         Draft pull requests are skipped until marked ready. Existing open pull

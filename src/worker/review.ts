@@ -124,6 +124,11 @@ export function buildCliEnv(
     // Repository model settings are accepted only when the organization has
     // supplied its own provider credentials.
     POSTIL_HOSTED_MODE: llm.byok ? "0" : "1",
+    // Provisional admission is a managed-hosted deployment choice. Always
+    // shadow the worker environment so BYOK children cannot inherit it.
+    POSTIL_PROVISIONAL_HOSTED_ROSTER: llm.byok
+      ? "0"
+      : (optionalEnv("POSTIL_PROVISIONAL_HOSTED_ROSTER", "0") as string),
     // Always shadow process.env. A BYOK endpoint without additional auth must
     // never inherit the hosted gateway credential when runCli merges envs.
     POSTIL_ENDPOINT_AUTH_HEADER: llm.apiAuthHeader ?? "",
