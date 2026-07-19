@@ -29,6 +29,7 @@ import type { Envelope, Finding } from "@/lib/envelope";
 
 const root = join(import.meta.dir, "..");
 const DEFAULT_INSTALLATION_ID = 990_001;
+const DEFAULT_REPOSITORY_ID = 990_002;
 const DEFAULT_PR_NUMBER = 1;
 
 type DiffTarget =
@@ -426,7 +427,7 @@ function createLocalGitHubServer(input: {
 
       const repositoryPath = `/repos/${input.repoFullName}`;
       if (request.method === "GET" && path === repositoryPath) {
-        return json({ id: 1, full_name: input.repoFullName, private: false });
+        return json({ id: DEFAULT_REPOSITORY_ID, full_name: input.repoFullName, private: false });
       }
 
       const prefix = `${repositoryPath}/`;
@@ -703,7 +704,7 @@ async function seedFixture(databaseUrl: string, repoFullName: string): Promise<v
       ),
       repository AS (
         INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
-        SELECT installation.id, 990002, $1, false, true
+        SELECT installation.id, ${DEFAULT_REPOSITORY_ID}, $1, false, true
         FROM installation
         RETURNING id, github_repo_id, full_name, private
       )
