@@ -56,7 +56,9 @@ export async function fetchRepositorySummary(
     signal: requestSignal,
   });
   if (!response.ok) {
-    throw new Error(`GitHub repository lookup failed with HTTP ${response.status}`);
+    throw new Error(
+      `GitHub repository lookup failed with HTTP ${response.status}`,
+    );
   }
   const value = (await response.json()) as Partial<RepoSummary>;
   if (
@@ -82,7 +84,9 @@ interface InstallationLookup {
   account?: GithubAccount;
 }
 
-async function findByGithubOrgId(githubOrgId: number): Promise<number | undefined> {
+async function findByGithubOrgId(
+  githubOrgId: number,
+): Promise<number | undefined> {
   const db = getDb();
   const row = (
     await db
@@ -125,7 +129,11 @@ export async function findOrCreateOrg(account: GithubAccount): Promise<number> {
   // conflict-safe against a second concurrent request for this same account.
   const fallback = await db
     .insert(schema.organizations)
-    .values({ slug: `${slugBase}-${account.id}`, name: account.login, githubOrgId: account.id })
+    .values({
+      slug: `${slugBase}-${account.id}`,
+      name: account.login,
+      githubOrgId: account.id,
+    })
     .onConflictDoNothing()
     .returning({ id: schema.organizations.id });
   if (fallback[0]) return fallback[0].id;
@@ -192,7 +200,10 @@ export async function upsertRepository(
           private: repo.private,
         })
         .onConflictDoNothing({ target: schema.repositories.githubRepoId })
-        .returning({ id: schema.repositories.id, enabled: schema.repositories.enabled });
+        .returning({
+          id: schema.repositories.id,
+          enabled: schema.repositories.enabled,
+        });
       if (inserted) {
         if (destination.orgId !== null) {
           await recordRepositoryEnablementEvent(tx, {
@@ -228,7 +239,10 @@ export async function upsertRepository(
       .update(schema.repositories)
       .set({ fullName: repo.full_name, private: repo.private, installationId })
       .where(eq(schema.repositories.id, existing.id))
-      .returning({ id: schema.repositories.id, enabled: schema.repositories.enabled });
+      .returning({
+        id: schema.repositories.id,
+        enabled: schema.repositories.enabled,
+      });
 
     if (orgChanged && saved?.enabled && destination.orgId !== null) {
       await recordRepositoryEnablementEvent(tx, {
@@ -289,8 +303,11 @@ export async function upsertInstallation(
     return { installationRowId, orgSlug: organization.slug };
   });
   if (!saved) return undefined;
-  if (!(installation.suspended ?? false)) {
-    const actorIdentityVerified = initiatedByGithubId !== undefined;
+  // GitHub's installation webhook sender and the authenticated setup sync are
+  // verified user identities. If neither is present, defer the trial until
+  // the next authenticated sync instead of charging an organization id
+  // against a user-scoped abuse limit.
+  if (!(installation.suspended ?? false) && initiatedByGithubId !== undefined) {
     const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
     await grantSelfServiceTrial(db, {
       orgId,
@@ -299,8 +316,11 @@ export async function upsertInstallation(
       accountType,
       githubOwnerId: account.id,
       githubInstallationId: installation.id,
-      initiatedByGithubId: initiatedByGithubId ?? account.id,
-      subscriptionMode: actorIdentityVerified ? "hosted" : "byok",
+      initiatedByGithubId,
+      // Every installation starts on the hosted trial. Deploy-time admission
+      // can defer the grant to BYOK while managed inference is dark; release
+      // activation promotes that same immutable grant once the fleet is ready.
+      subscriptionMode: "hosted",
       hostedInferenceEnabled: hostedInferenceEnabled(),
       hostedReleaseCapability: releaseSha
         ? hostedInferenceCapability(releaseSha)
@@ -331,10 +351,14 @@ export async function syncInstallationsFromGithub(
   let jwt: string;
   try {
     const appId = requireEnv("GITHUB_APP_ID");
-    const privateKey = normalizePrivateKey(requireEnv("GITHUB_APP_PRIVATE_KEY"));
+    const privateKey = normalizePrivateKey(
+      requireEnv("GITHUB_APP_PRIVATE_KEY"),
+    );
     jwt = buildAppJwt(appId, privateKey);
   } catch (err) {
-    console.error(`installation sync skipped, app credentials unavailable: ${redactSecrets(err)}`);
+    console.error(
+      `installation sync skipped, app credentials unavailable: ${redactSecrets(err)}`,
+    );
     return;
   }
 
@@ -358,7 +382,9 @@ async function syncOneAccount(
     account.type === "Organization"
       ? `/orgs/${encodeURIComponent(account.login)}/installation`
       : `/users/${encodeURIComponent(account.login)}/installation`;
-  const res = await fetch(`${apiBase()}${path}`, { headers: githubHeaders(jwt) });
+  const res = await fetch(`${apiBase()}${path}`, {
+    headers: githubHeaders(jwt),
+  });
   // 404 simply means the app is not installed on this account.
   if (res.status === 404) return;
   if (!res.ok) throw new Error(`installation lookup: HTTP ${res.status}`);
@@ -369,7 +395,11 @@ async function syncOneAccount(
   const installationRowId = await upsertInstallation(
     { id: found.id, suspended },
     // The lookup's account block is authoritative; fall back to what we know.
-    found.account ?? { id: account.githubId, login: account.login, type: account.type },
+    found.account ?? {
+      id: account.githubId,
+      login: account.login,
+      type: account.type,
+    },
     initiatedByGithubId,
   );
   if (installationRowId === undefined || suspended) return;
@@ -392,7 +422,8 @@ async function syncOneAccount(
       `${apiBase()}/installation/repositories?per_page=100&page=${page}`,
       { headers: githubHeaders(token) },
     );
-    if (!listRes.ok) throw new Error(`repository listing: HTTP ${listRes.status}`);
+    if (!listRes.ok)
+      throw new Error(`repository listing: HTTP ${listRes.status}`);
     const data = (await listRes.json()) as { repositories?: RepoSummary[] };
     const repos = data.repositories ?? [];
     if (repos.length === 0) break;

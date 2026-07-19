@@ -119,6 +119,23 @@ export class WebhookDeliveryStateError extends Error {
   override name = "WebhookDeliveryStateError";
 }
 
+const PERMANENT_JOB_ERROR = Symbol.for("postil.permanent-job-error");
+
+/** Deterministic job failure that must not consume the queue retry budget. */
+export class PermanentJobError extends Error {
+  readonly [PERMANENT_JOB_ERROR] = true;
+  override name = "PermanentJobError";
+}
+
+/** Structural marker survives module duplication in bundled worker runtimes. */
+export function isPermanentJobError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    Reflect.get(error, PERMANENT_JOB_ERROR) === true
+  );
+}
+
 /**
  * Commit a signed GitHub delivery and its dispatch job together. The advisory
  * transaction lock serializes concurrent attempts for one delivery without

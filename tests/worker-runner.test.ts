@@ -9,6 +9,7 @@ const OLD_ENV = { ...process.env };
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
+const permanentFailures: number[] = [];
 const retriedIndefinitely: Array<{ id: number; error: string }> = [];
 const shutdownRequeues: number[] = [];
 let claimCalls = 0;
@@ -32,6 +33,9 @@ const operationalFailures: string[] = [];
 const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
+class MockPermanentJobError extends Error {
+  permanent = true;
+}
 class MockWebhookDeliveryStateError extends Error {}
 
 mock.module("@/lib/server-observability", () => ({
@@ -64,6 +68,8 @@ mock.module("@/lib/paddle-billing", () => ({
 
 mock.module("@/lib/queue", () => ({
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
+  isPermanentJobError: (error: unknown) =>
+    error instanceof MockPermanentJobError,
   claimJob: async (
     _pool: unknown,
     _workerId: string,
@@ -81,8 +87,14 @@ mock.module("@/lib/queue", () => ({
     if (webhookDeliveryLoadError) throw webhookDeliveryLoadError;
     return null;
   },
-  failJob: async (_pool: unknown, job: ClaimedJob, error: string) => {
+  failJob: async (
+    _pool: unknown,
+    job: ClaimedJob,
+    error: string,
+    options?: { permanent?: boolean },
+  ) => {
     failed.push({ id: job.id, error });
+    if (options?.permanent) permanentFailures.push(job.id);
     return "failed";
   },
   retryJobIndefinitely: async (
@@ -192,6 +204,7 @@ beforeEach(() => {
   jobs.length = 0;
   completed.length = 0;
   failed.length = 0;
+  permanentFailures.length = 0;
   retriedIndefinitely.length = 0;
   shutdownRequeues.length = 0;
   claimCalls = 0;
@@ -267,6 +280,26 @@ describe("drainQueueOnce", () => {
     expect(shutdownRequeues).toEqual([]);
     expect(failed).toEqual([{ id: 8, error: "provider rejected the request" }]);
     expect(completed).toEqual([]);
+  });
+
+  test("fails deterministic review startup errors without retrying", async () => {
+    reviewRun = async () => {
+      throw new MockPermanentJobError(
+        "review job cannot start: repository octo/repo is disabled",
+      );
+    };
+
+    await runClaimedJob(reviewJob(8), "worker 0", "worker");
+
+    expect(failed).toEqual([
+      {
+        id: 8,
+        error: "review job cannot start: repository octo/repo is disabled",
+      },
+    ]);
+    expect(permanentFailures).toEqual([8]);
+    expect(completed).toEqual([]);
+    expect(operationalFailures).toEqual(["job_permanently_failed"]);
   });
 
   test("worker shutdown drains, interrupts, and requeues only owned claims", () => {

@@ -8,6 +8,7 @@ import {
   completeWebhookDelivery,
   completeJob,
   failJob,
+  isPermanentJobError,
   loadWebhookDelivery,
   requeueJobsOwnedBy,
   retryJobIndefinitely,
@@ -210,6 +211,7 @@ export async function runClaimedJob(
       job.kind === "webhook-comment" &&
       message.includes("webhook comment job payload malformed");
     const permanent =
+      isPermanentJobError(err) ||
       malformedGateSync ||
       malformedWebhookDispatch ||
       invalidWebhookDelivery ||
