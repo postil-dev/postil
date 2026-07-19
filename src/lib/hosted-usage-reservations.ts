@@ -3,7 +3,7 @@ import { and, eq, gt, sql } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import {
-  evaluatePrivateRepositoryAccess,
+  evaluateRepositoryInferenceAccess,
   type OrganizationEntitlementSnapshot,
 } from "@/lib/private-repository-entitlement";
 import { enqueueRespondDeliveryJob } from "@/lib/respond-delivery";
@@ -120,7 +120,7 @@ async function reserveHostedSpend(
     }
     if (entitlement.subscriptionMode !== "hosted") return emptyDecision("inactive");
 
-    const access = evaluatePrivateRepositoryAccess(true, entitlement, 0, now);
+    const access = evaluateRepositoryInferenceAccess(true, entitlement, 0, now);
     if (!access.allowed || access.usageLimitMicros === null) {
       return {
         ...emptyDecision(access.reason === "usage_cap_reached" ? "usage_cap_reached" : "inactive"),
@@ -237,6 +237,144 @@ export async function releaseHostedSpend(
 
 export const releaseHostedReviewSpend = releaseHostedSpend;
 export const releaseHostedRespondSpend = releaseHostedSpend;
+
+type HostedReviewTriggerSource =
+  | "unknown"
+  | "automatic_pull_request"
+  | "requested_review"
+  | "github_check_rerun"
+  | "github_mention";
+
+interface HostedReviewReceiptUsage {
+  promptTokens: number;
+  completionTokens: number;
+  modelUsed: string;
+  costMicros: number | null;
+}
+
+async function reconcileHostedReviewSpendAfterCompletionRace(
+  db: Database,
+  input: {
+    reservationId: string;
+    repositoryId: number;
+    reviewId: number;
+    triggerSource: HostedReviewTriggerSource;
+    usage: HostedReviewReceiptUsage[];
+    usageAccountingComplete: boolean;
+    now?: Date;
+  },
+): Promise<number> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const reservation = (
+      await tx
+        .select({
+          orgId: schema.hostedUsageReservations.orgId,
+          operation: schema.hostedUsageReservations.operation,
+          status: schema.hostedUsageReservations.status,
+          reviewId: schema.hostedUsageReservations.reviewId,
+          reservedMicros: schema.hostedUsageReservations.reservedMicros,
+        })
+        .from(schema.hostedUsageReservations)
+        .where(eq(schema.hostedUsageReservations.id, input.reservationId))
+        .limit(1)
+    )[0];
+    if (!reservation || reservation.operation !== "review" || reservation.reviewId !== input.reviewId) {
+      throw new Error("hosted review usage reservation does not match the review");
+    }
+    if (reservation.status !== "active") return 0;
+
+    const hasTrustedReceipt = input.usage.length > 0;
+    const priced = hasTrustedReceipt && input.usage.every((usage) => usage.costMicros !== null);
+    const knownMicros = input.usage.reduce(
+      (total, usage) => total + (usage.costMicros ?? 0),
+      0,
+    );
+    const actualMicros = input.usageAccountingComplete && priced
+      ? knownMicros
+      : Math.max(reservation.reservedMicros, knownMicros);
+    const reconciled = await tx
+      .update(schema.hostedUsageReservations)
+      .set({
+        status: "reconciled",
+        actualMicros,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.hostedUsageReservations.id, input.reservationId),
+          eq(schema.hostedUsageReservations.status, "active"),
+          eq(schema.hostedUsageReservations.operation, "review"),
+        ),
+      )
+      .returning({ id: schema.hostedUsageReservations.id });
+    if (reconciled.length !== 1) return 0;
+
+    const usageRows = input.usage.map((usage) => ({
+      orgId: reservation.orgId,
+      repositoryId: input.repositoryId,
+      reviewId: input.reviewId,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      modelUsed: usage.modelUsed,
+      costMicros: usage.costMicros ?? 0,
+      billingScope: "private_hosted" as const,
+      triggerSource: input.triggerSource,
+      createdAt: now,
+    }));
+    const unattributedMicros = actualMicros - knownMicros;
+    if (unattributedMicros > 0) {
+      usageRows.push({
+        orgId: reservation.orgId,
+        repositoryId: input.repositoryId,
+        reviewId: input.reviewId,
+        promptTokens: 0,
+        completionTokens: 0,
+        modelUsed: "unattributed provider usage",
+        costMicros: unattributedMicros,
+        billingScope: "private_hosted",
+        triggerSource: input.triggerSource,
+        createdAt: now,
+      });
+    }
+    if (usageRows.length > 0) await tx.insert(schema.usageEvents).values(usageRows);
+    return actualMicros;
+  });
+}
+
+/** Charge the full hold when a review may have reached the provider but has no trusted receipt. */
+export async function reconcileConservativeHostedReviewSpend(
+  db: Database,
+  input: {
+    reservationId: string;
+    repositoryId: number;
+    reviewId: number;
+    triggerSource: HostedReviewTriggerSource;
+    now?: Date;
+  },
+): Promise<number> {
+  return reconcileHostedReviewSpendAfterCompletionRace(db, {
+    ...input,
+    usage: [],
+    usageAccountingComplete: false,
+  });
+}
+
+/** Use a complete trusted CLI receipt when terminal review state wins the completion race. */
+export async function reconcileHostedReviewSpendFromReceipt(
+  db: Database,
+  input: {
+    reservationId: string;
+    repositoryId: number;
+    reviewId: number;
+    triggerSource: HostedReviewTriggerSource;
+    usage: HostedReviewReceiptUsage[];
+    usageAccountingComplete: boolean;
+    now?: Date;
+  },
+): Promise<number> {
+  return reconcileHostedReviewSpendAfterCompletionRace(db, input);
+}
 
 export async function reconcileHostedRespondSpend(
   db: Database,

@@ -9,6 +9,7 @@ import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   signWebhookBody,
 } from "@/lib/crypto/webhook";
+import { activateHostedInferenceRelease } from "@/lib/release-job-rollout";
 
 /**
  * Behavioural coverage for the webhook route beyond delivery dedupe:
@@ -198,13 +199,17 @@ describeDb("webhook handler behaviour", () => {
     };
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
+    delete process.env.POSTIL_RELEASE_SHA;
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
     await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
-      "TRUNCATE reviews, repositories, installations, organizations, users RESTART IDENTITY CASCADE",
+      "DELETE FROM deployment_capabilities WHERE name LIKE 'hosted-inference-release:%'",
     );
-  });
+    await pool.query(
+      "TRUNCATE self_service_trial_grants, reviews, repositories, installations, organizations, users RESTART IDENTITY CASCADE",
+    );
+  }, 30_000);
 
   afterAll(async () => {
     globalThis.fetch = ORIGINAL_FETCH;
@@ -432,6 +437,7 @@ describeDb("webhook handler behaviour", () => {
       action: "created",
       installation: { id: 8080, account, suspended_at: null },
       repositories: [],
+      sender: { id: 7001, login: "installer", type: "User" },
     };
 
     expect((await post("installation", created, "trial-created-1")).status).toBe(200);
@@ -496,6 +502,135 @@ describeDb("webhook handler behaviour", () => {
     expect(afterReinstall.rows[0]!.trial_ends_at).toEqual(first.rows[0]!.trial_ends_at);
     expect(afterReinstall.rows[0]!.alert_count).toBe(1);
     expect(afterReinstall.rows[0]!.removal_alert_count).toBe(1);
+  });
+
+  test("one GitHub actor receives bounded hosted trials across owners without blocking setup", async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 4 }, async (_, index) => {
+        const account = {
+          id: 9200 + index,
+          login: `TrialOwner${index}`,
+          type: "Organization",
+        };
+        return post("installation", {
+          action: "created",
+          installation: { id: 8200 + index, account, suspended_at: null },
+          repositories: [],
+          sender: { id: 777, login: "installer", type: "User" },
+        }, `trial-cross-owner-${index}`);
+      }),
+    );
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
+
+    const grants = await pool.query<{
+      requested_mode: string;
+      granted_mode: string;
+      initiated_by_github_id: string;
+    }>(
+      `SELECT requested_mode, granted_mode, initiated_by_github_id
+         FROM self_service_trial_grants
+        WHERE initiated_by_github_id = 777
+        ORDER BY created_at, org_id`,
+    );
+    expect(grants.rows).toHaveLength(4);
+    expect(grants.rows.map((row) => row.requested_mode)).toEqual([
+      "hosted", "hosted", "hosted", "hosted",
+    ]);
+    expect(grants.rows.map((row) => row.granted_mode).sort()).toEqual([
+      "byok", "hosted", "hosted", "hosted",
+    ].sort());
+  });
+
+  test("installation without a verified sender receives BYOK access only", async () => {
+    const account = {
+      id: 9250,
+      login: "UnsignedTrialOwner",
+      type: "Organization",
+    };
+    expect((await post("installation", {
+      action: "created",
+      installation: { id: 8250, account, suspended_at: null },
+      repositories: [],
+    }, "trial-missing-sender")).status).toBe(200);
+
+    const grants = await pool.query<{
+      requested_mode: string;
+      granted_mode: string;
+      initiated_by_github_id: string;
+    }>(
+      `SELECT requested_mode, granted_mode, initiated_by_github_id
+         FROM self_service_trial_grants
+        WHERE org_id = (SELECT id FROM organizations WHERE github_org_id = 9250)`,
+    );
+    expect(grants.rows).toEqual([{
+      requested_mode: "byok",
+      granted_mode: "byok",
+      initiated_by_github_id: "9250",
+    }]);
+  });
+
+  test("installation during a dark release is promoted when that exact release activates", async () => {
+    const releaseSha = "dddddddddddddddddddddddddddddddddddddddd";
+    process.env.POSTIL_RELEASE_SHA = releaseSha;
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    const account = { id: 9260, login: "DarkTrialOwner", type: "Organization" };
+    const installation = {
+      action: "created",
+      installation: { id: 8260, account, suspended_at: null },
+      repositories: [],
+      sender: { id: 778, login: "installer", type: "User" },
+    };
+    expect((await post("installation", installation, "trial-dark-created")).status)
+      .toBe(200);
+    expect((await pool.query<{ requested_mode: string; granted_mode: string; subscription_mode: string }>(`
+      SELECT trial.requested_mode, trial.granted_mode, entitlement.subscription_mode
+      FROM self_service_trial_grants trial
+      JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
+    `)).rows[0]).toEqual({
+      requested_mode: "hosted",
+      granted_mode: "byok",
+      subscription_mode: "byok",
+    });
+
+    expect(await activateHostedInferenceRelease(pool, releaseSha)).toBe(true);
+    expect((await pool.query<{ granted_mode: string; subscription_mode: string }>(`
+      SELECT trial.granted_mode, entitlement.subscription_mode
+      FROM self_service_trial_grants trial
+      JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
+    `)).rows[0]).toEqual({
+      granted_mode: "hosted",
+      subscription_mode: "hosted",
+    });
+    expect((await post("installation", installation, "trial-dark-reinstall")).status)
+      .toBe(200);
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM self_service_trial_grants",
+    )).rows[0]!.count).toBe(1);
+  });
+
+  test("installation racing exact release activation always receives hosted access", async () => {
+    const releaseSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    process.env.POSTIL_RELEASE_SHA = releaseSha;
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    const account = { id: 9270, login: "RacingTrialOwner", type: "Organization" };
+    const [response] = await Promise.all([
+      post("installation", {
+        action: "created",
+        installation: { id: 8270, account, suspended_at: null },
+        repositories: [],
+        sender: { id: 779, login: "installer", type: "User" },
+      }, "trial-racing-created"),
+      activateHostedInferenceRelease(pool, releaseSha),
+    ]);
+    expect(response.status).toBe(200);
+    expect((await pool.query<{ granted_mode: string; subscription_mode: string }>(`
+      SELECT trial.granted_mode, entitlement.subscription_mode
+      FROM self_service_trial_grants trial
+      JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
+    `)).rows[0]).toEqual({
+      granted_mode: "hosted",
+      subscription_mode: "hosted",
+    });
   });
 
   test("suspended installation waits to grant its trial until unsuspended", async () => {

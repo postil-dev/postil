@@ -43,7 +43,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
+      { kind: "text", note: "Per active private-PR author; 30-day hosted trial" },
       {
         kind: "text",
         note: "Paid Copilot plan + AI Credits + Actions minutes per review",
@@ -53,7 +53,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Cost predictability",
     cells: [
-      { kind: "text", note: "BYOK provider controls; Hosted enrollment paused" },
+      { kind: "text", note: "Hosted or BYOK provider controls" },
       { kind: "no", note: "usage-billed since June 2026" },
     ],
   },
@@ -162,8 +162,8 @@ export default function VsCopilotPage() {
             one who burned an entire month&apos;s included credits on a single
             automatic PR review
           </a>
-          . Postil prices BYOK by active author, with provider usage billed
-          directly. Hosted enrollment is paused. See the{" "}
+          . Postil prices private plans by active author. BYOK provider usage is
+          billed directly. Hosted starts with a 30-day trial. See the{" "}
           <Link href="/pricing">pricing details</Link>.
         </p>
 
@@ -196,8 +196,8 @@ export default function VsCopilotPage() {
           ); Business and Enterprise plans are excluded. There is no model
           choice and no BYOK on any tier. With Postil, GitHub App BYOK reviews
           go through the worker to the provider you configured, while
-          self-hosted inference stays inside your network. Hosted enrollment is
-          paused. The control plane stores review envelopes, which can contain
+          self-hosted inference stays inside your network. The control plane
+          stores review envelopes, which can contain
           relevant code excerpts, but not full diffs or repository snapshots.
         </p>
 
@@ -230,8 +230,8 @@ export default function VsCopilotPage() {
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
             Require postil/gate in branch protection and keep Copilot if you
-            like it. Connect BYOK or try the CLI on your next diff. Hosted
-            enrollment is paused.
+            like it. Install the App for a hosted trial, connect BYOK, or try
+            the CLI on your next diff.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

@@ -353,8 +353,8 @@ export default function PricingArticle() {
         <h3>Postil: active-author pricing</h3>
         <p>
           Our row assumes all {TEAM_SIZE} developers open a private-repository
-          PR that Postil reviews. Hosted enrollment is paused. Its listed price
-          is {TEAM_SIZE} active authors × ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} ={" "}
+          PR that Postil reviews. The hosted plan starts with a 30-day trial.
+          Its listed price is {TEAM_SIZE} active authors × ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} ={" "}
           <strong>${HOSTED_TEAM_MONTHLY_USD} per month</strong>. BYOK is{" "}
           {TEAM_SIZE} × ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} ={" "}
           <strong>${BYOK_TEAM_MONTHLY_USD} per month</strong>, with provider

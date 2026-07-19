@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { getDb, schema } from "@/lib/db";
-import { hostedInferenceEnabled, requireEnv } from "@/lib/env";
+import { hostedInferenceEnabled, optionalEnv, requireEnv } from "@/lib/env";
 import {
   apiBase,
   buildAppJwt,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/github/app-auth";
 import { redactSecrets } from "@/lib/redact";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
+import { hostedInferenceCapability } from "@/lib/release-job-rollout";
 import { grantSelfServiceTrial } from "@/lib/self-service-trial";
 
 /**
@@ -249,11 +250,12 @@ export async function upsertRepository(
 export async function upsertInstallation(
   installation: { id: number; suspended?: boolean },
   account: GithubAccount,
+  initiatedByGithubId?: number,
 ): Promise<number | undefined> {
   const db = getDb();
   const orgId = await findOrCreateOrg(account);
   const accountType = account.type ?? "User";
-  return db.transaction(async (tx) => {
+  const saved = await db.transaction(async (tx) => {
     const upserted = await tx
       .insert(schema.installations)
       .values({
@@ -284,19 +286,28 @@ export async function upsertInstallation(
     )[0];
     if (!organization) throw new Error("installation organization is missing");
 
-    if (!(installation.suspended ?? false)) {
-      await grantSelfServiceTrial(tx, {
-        orgId,
-        orgSlug: organization.slug,
-        accountLogin: account.login,
-        accountType,
-        githubOwnerId: account.id,
-        githubInstallationId: installation.id,
-        subscriptionMode: hostedInferenceEnabled() ? "hosted" : "byok",
-      });
-    }
-    return installationRowId;
+    return { installationRowId, orgSlug: organization.slug };
   });
+  if (!saved) return undefined;
+  if (!(installation.suspended ?? false)) {
+    const actorIdentityVerified = initiatedByGithubId !== undefined;
+    const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+    await grantSelfServiceTrial(db, {
+      orgId,
+      orgSlug: saved.orgSlug,
+      accountLogin: account.login,
+      accountType,
+      githubOwnerId: account.id,
+      githubInstallationId: installation.id,
+      initiatedByGithubId: initiatedByGithubId ?? account.id,
+      subscriptionMode: actorIdentityVerified ? "hosted" : "byok",
+      hostedInferenceEnabled: hostedInferenceEnabled(),
+      hostedReleaseCapability: releaseSha
+        ? hostedInferenceCapability(releaseSha)
+        : null,
+    });
+  }
+  return saved.installationRowId;
 }
 
 function githubHeaders(bearer: string): Record<string, string> {
@@ -313,7 +324,10 @@ function githubHeaders(bearer: string): Record<string, string> {
  * the given accounts in line with GitHub's actual installation state. Never
  * throws; a failure on one account must not break login or the others.
  */
-export async function syncInstallationsFromGithub(accounts: AccountRef[]): Promise<void> {
+export async function syncInstallationsFromGithub(
+  accounts: AccountRef[],
+  initiatedByGithubId?: number,
+): Promise<void> {
   let jwt: string;
   try {
     const appId = requireEnv("GITHUB_APP_ID");
@@ -326,7 +340,7 @@ export async function syncInstallationsFromGithub(accounts: AccountRef[]): Promi
 
   for (const account of accounts) {
     try {
-      await syncOneAccount(jwt, account);
+      await syncOneAccount(jwt, account, initiatedByGithubId);
     } catch (err) {
       console.error(
         `installation sync failed for ${account.type} ${account.login}: ${redactSecrets(err)}`,
@@ -335,7 +349,11 @@ export async function syncInstallationsFromGithub(accounts: AccountRef[]): Promi
   }
 }
 
-async function syncOneAccount(jwt: string, account: AccountRef): Promise<void> {
+async function syncOneAccount(
+  jwt: string,
+  account: AccountRef,
+  initiatedByGithubId?: number,
+): Promise<void> {
   const path =
     account.type === "Organization"
       ? `/orgs/${encodeURIComponent(account.login)}/installation`
@@ -352,6 +370,7 @@ async function syncOneAccount(jwt: string, account: AccountRef): Promise<void> {
     { id: found.id, suspended },
     // The lookup's account block is authoritative; fall back to what we know.
     found.account ?? { id: account.githubId, login: account.login, type: account.type },
+    initiatedByGithubId,
   );
   if (installationRowId === undefined || suspended) return;
 

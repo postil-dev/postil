@@ -40,7 +40,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
+      { kind: "text", note: "Per active private-PR author; 30-day hosted trial" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
     ],
   },
@@ -129,8 +129,8 @@ export default function VsCodeRabbitPage() {
           <a href="https://www.coderabbit.ai/pricing" rel="noopener">
             $24 per seat per month on the annual plan
           </a>
-          . Postil prices BYOK by active author, with provider usage billed
-          directly. Hosted enrollment is paused. See the{" "}
+          . Postil prices private plans by active author. BYOK provider usage is
+          billed directly. Hosted starts with a 30-day trial. See the{" "}
           <Link href="/pricing">pricing details</Link>.
         </p>
 
@@ -150,8 +150,8 @@ export default function VsCodeRabbitPage() {
             Keep your <code className="font-mono text-xl">.coderabbit.yaml</code>.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Postil reads it. Connect BYOK or install the CLI and run a review on
-            your next diff. Hosted enrollment is paused.
+            Postil reads it. Install the App for a hosted trial, connect BYOK,
+            or install the CLI and review your next diff.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

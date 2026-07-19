@@ -6,8 +6,8 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { formatMs } from "@/components/review-status";
 import { ReviewTimeDistribution } from "@/components/review-time-distribution";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
-import { schema } from "@/lib/db";
-import { hostedInferenceEnabled } from "@/lib/env";
+import { getPool, schema } from "@/lib/db";
+import { hostedInferenceAvailable } from "@/lib/env";
 import { requireOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
@@ -88,7 +88,7 @@ export default async function OrgDashboardPage({
       .limit(1)
   )[0];
   const managedReviewsPaused =
-    !hostedInferenceEnabled() && !(providerSettings?.hasKey ?? false);
+    !(await hostedInferenceAvailable(getPool())) && !(providerSettings?.hasKey ?? false);
 
   // Silence rate across completed reviews.
   const silenceAgg = (

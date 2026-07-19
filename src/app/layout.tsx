@@ -6,7 +6,10 @@ import { CodeCopyEnhancer } from "@/components/code-copy-enhancer";
 import { PostHogPageview } from "@/components/posthog-pageview";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { BYOK_ACTIVE_AUTHOR_MONTHLY_USD } from "@/lib/pricing-policy";
+import {
+  BYOK_ACTIVE_AUTHOR_MONTHLY_USD,
+  HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
+} from "@/lib/pricing-policy";
 
 import "./globals.css";
 
@@ -89,6 +92,14 @@ const softwareApplicationJsonLd = {
       priceCurrency: "USD",
       description:
         "Per active private-PR author per month; provider usage billed directly",
+    },
+    {
+      "@type": "Offer",
+      name: "Hosted",
+      price: String(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD),
+      priceCurrency: "USD",
+      description:
+        "Thirty-day trial without a card, then per active private-PR author per month",
     },
   ],
 };

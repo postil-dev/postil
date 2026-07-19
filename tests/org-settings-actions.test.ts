@@ -87,6 +87,7 @@ mock.module("@/lib/session", () => ({
 
 mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
+  getPool: () => ({}),
   schema,
 }));
 

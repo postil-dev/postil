@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
@@ -27,7 +27,11 @@ export interface HostedReviewPauseClaim {
 export async function claimPausedHostedReview(
   db: Database,
   values: HostedReviewPauseClaim,
-  publication: { installationId: number; repoFullName: string },
+  publication: {
+    installationId: number;
+    repoFullName: string;
+    checkRunsMayExist?: boolean;
+  },
   finishedAt = new Date(),
 ): Promise<{
   id: number;
@@ -52,6 +56,50 @@ export async function claimPausedHostedReview(
       )
       .limit(1);
     if (existing.length > 0) return null;
+    const active = await tx
+      .select({
+        id: schema.reviews.id,
+        publicId: schema.reviews.publicId,
+        headSha: schema.reviews.headSha,
+        advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
+        gateCheckRunId: schema.reviews.gateCheckRunId,
+      })
+      .from(schema.reviews)
+      .where(
+        and(
+          eq(schema.reviews.repositoryId, values.repositoryId),
+          eq(schema.reviews.prNumber, values.prNumber),
+          inArray(schema.reviews.status, ["queued", "running"]),
+        ),
+      );
+    for (const review of active) {
+      await tx
+        .update(schema.reviews)
+        .set({ status: "stale", finishedAt })
+        .where(
+          and(
+            eq(schema.reviews.id, review.id),
+            inArray(schema.reviews.status, ["queued", "running"]),
+          ),
+        );
+      await tx.insert(schema.jobs).values({
+        kind: "check-run-cleanup",
+        payload: {
+          installationId: publication.installationId,
+          repoFullName: publication.repoFullName,
+          advisoryCheckRunId: review.advisoryCheckRunId,
+          gateCheckRunId: review.gateCheckRunId,
+          headSha: review.headSha,
+          advisoryCheckExternalId: checkRunExternalId(review.publicId, "review"),
+          gateCheckExternalId: checkRunExternalId(review.publicId, "gate"),
+          advisoryCheckRunMayExist: review.advisoryCheckRunId === null,
+          gateCheckRunMayExist: review.gateCheckRunId === null,
+          message: HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+          intent: "neutralize",
+        },
+        maxAttempts: 5,
+      });
+    }
     const inserted = await tx
       .insert(schema.reviews)
       .values({
@@ -75,8 +123,8 @@ export async function claimPausedHostedReview(
         headSha: values.headSha,
         advisoryCheckExternalId,
         gateCheckExternalId,
-        advisoryCheckRunMayExist: true,
-        gateCheckRunMayExist: true,
+        advisoryCheckRunMayExist: publication.checkRunsMayExist ?? true,
+        gateCheckRunMayExist: publication.checkRunsMayExist ?? true,
         message: HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
         intent: "neutralize",
       },

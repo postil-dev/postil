@@ -49,7 +49,7 @@ const COMPARISON_ROWS: ComparisonRow[] = [
   {
     feature: "Pricing model",
     cells: [
-      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
+      { kind: "text", note: "Per active private-PR author; 30-day hosted trial" },
       { kind: "text", note: "~$24/seat (Pro, annual)" },
       { kind: "text", note: "Per-seat + per-review overage" },
       { kind: "text", note: "AI Credits + Actions minutes (Jun 2026)" },
@@ -163,8 +163,9 @@ const wedges: Wedge[] = [
           burned in two hours.
         </p>
         <p className="mt-3">
-          Postil prices BYOK by active author, with provider usage billed
-          directly. Hosted enrollment is paused. A comparable model is{" "}
+          Postil prices private plans by active author. BYOK provider usage is
+          billed directly. Hosted starts with a 30-day trial. A comparable
+          model is{" "}
           <a href="https://kodus.io/pricing/" rel="noopener">
             Kodus
           </a>

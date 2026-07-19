@@ -37,14 +37,14 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
+      { kind: "text", note: "Per active private-PR author; 30-day hosted trial" },
       { kind: "text", note: "~$30/seat + ~$1 per review past 50" },
     ],
   },
   {
     feature: "Cost at high PR volume",
     cells: [
-      { kind: "text", note: "BYOK provider controls; Hosted enrollment paused" },
+      { kind: "text", note: "Hosted or BYOK provider controls" },
       { kind: "no", note: "scales with review count" },
     ],
   },
@@ -105,8 +105,9 @@ export default function VsGreptilePage() {
             public backlash
           </a>
           . A developer pushing several hundred agent-driven PRs in a month can
-          owe hundreds of dollars. Postil prices BYOK by active author, with
-          provider usage billed directly. Hosted enrollment is paused. See the{" "}
+          owe hundreds of dollars. Postil prices private plans by active author.
+          BYOK provider usage is billed directly. Hosted starts with a 30-day
+          trial. See the{" "}
           <Link href="/pricing">pricing details</Link>.
         </p>
 
@@ -145,8 +146,8 @@ export default function VsGreptilePage() {
         <div>
           <h2 className="serif-display text-2xl">Pay for active private-PR authors.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Connect BYOK and try the CLI on your next diff. Hosted enrollment
-            is paused.
+            Install the App for a hosted trial, connect BYOK, or try the CLI on
+            your next diff.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

@@ -5,7 +5,7 @@ describe("private repository worker defense in depth", () => {
   test("review worker gates before review rows, GitHub tokens, checks, config fetch, or CLI spawn", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const installationSync = readFileSync("src/lib/github/installation-sync.ts", "utf8");
-    const gate = source.indexOf("await canProcessPrivateRepository", source.indexOf("runReviewJob"));
+    const gate = source.indexOf("await canProcessRepositoryInference", source.indexOf("runReviewJob"));
     expect(gate).toBeGreaterThan(0);
     const authorLookup = source.indexOf("getPullRequestReviewContext", gate);
     expect(authorLookup).toBeGreaterThan(gate);
@@ -20,7 +20,7 @@ describe("private repository worker defense in depth", () => {
     ]) {
       expect(source.indexOf(sideEffect, source.indexOf("runReviewJob"))).toBeGreaterThan(gate);
     }
-    expect(source.indexOf("providerModeMatchesPrivateAccess", gate)).toBeLessThan(
+    expect(source.indexOf("providerModeMatchesRepositoryAccess", gate)).toBeLessThan(
       source.indexOf("await getInstallationToken", gate),
     );
     expect(source.indexOf("fetchRepositorySummary", gate)).toBeLessThan(
@@ -30,7 +30,7 @@ describe("private repository worker defense in depth", () => {
     expect(authorLookup).toBeLessThan(source.indexOf("await reserveHostedReviewSpend", gate));
     expect(authorLookup).toBeLessThan(source.indexOf("await runCli", gate));
     expect(
-      source.slice(authorLookup, source.indexOf("const hostedReviewUnavailable", gate)),
+      source.slice(authorLookup, source.indexOf("const baseline", authorLookup)),
     ).toContain("private review author identity is unavailable");
     expect(installationSync).toContain(
       "AbortSignal.any([signal, AbortSignal.timeout(10_000)])",
@@ -41,7 +41,7 @@ describe("private repository worker defense in depth", () => {
     const deploy = readFileSync(".github/workflows/deploy.yml", "utf8");
     const activation = readFileSync("scripts/activate-release-jobs.ts", "utf8");
     expect(deploy.indexOf("Deploy managed fleet")).toBeLessThan(
-      deploy.indexOf("Activate release capabilities after fleet replacement"),
+      deploy.indexOf("Verify and activate release capabilities after fleet replacement"),
     );
     expect(activation).toContain("activatePrivateReviewAuthorIdentity");
   });
@@ -50,22 +50,19 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const claimSource = readFileSync("src/lib/hosted-review-pause.ts", "utf8");
     const start = source.indexOf("export async function runReviewJob");
-    const mode = source.indexOf(
-      "const hostedReviewUnavailable = !llm.byok && !hostedInferenceEnabled()",
-      start,
-    );
+    const mode = source.indexOf("const hostedReviewUnavailable =", start);
     const gate = source.indexOf("if (hostedReviewUnavailable)", mode);
+    const token = source.indexOf("getInstallationToken(payload.installationId", mode);
     const reservation = source.indexOf("await reserveHostedReviewSpend", start);
     const materialization = source.indexOf("await materializeRepoConfig", start);
     const cli = source.indexOf("await runCli", start);
     const versionProbe = source.indexOf("postilCliVersionLogLine()", start);
-    const unavailableClaim = source.indexOf("claimPausedHostedReview(db, reviewValues", start);
-    const reviewInsert = source.indexOf("insert(schema.reviews)", start);
 
     expect(mode).toBeGreaterThan(start);
     expect(gate).toBeGreaterThan(mode);
-    expect(unavailableClaim).toBeGreaterThan(mode);
-    expect(unavailableClaim).toBeLessThan(reviewInsert);
+    expect(gate).toBeLessThan(token);
+    expect(source.slice(gate, token)).toContain("claimPausedHostedReview");
+    expect(source.slice(gate, token)).toContain("return;");
     expect(claimSource).toContain("pg_advisory_xact_lock");
     expect(claimSource).toContain("HOSTED_REVIEW_UNAVAILABLE_MESSAGE");
     expect(claimSource.indexOf("pg_advisory_xact_lock")).toBeLessThan(
@@ -75,29 +72,38 @@ describe("private repository worker defense in depth", () => {
     expect(reservation).toBeGreaterThan(gate);
     expect(materialization).toBeGreaterThan(gate);
     expect(cli).toBeGreaterThan(gate);
-    const guardBody = source.slice(gate, reservation);
-    expect(guardBody).toContain("completeHostedInferenceDisabledCheckRuns");
-    expect(guardBody).toContain("supersedeActiveReviews");
+    const guardBody = source.slice(gate, token);
+    expect(guardBody).toContain("checkRunsMayExist: false");
     expect(claimSource).toContain('kind: "check-run-cleanup"');
     expect(claimSource).toContain('intent: "neutralize"');
     expect(claimSource).toContain("db.transaction");
-    expect(claimSource.indexOf("insert(schema.jobs)")).toBeGreaterThan(
+    expect(claimSource.lastIndexOf("insert(schema.jobs)")).toBeGreaterThan(
       claimSource.indexOf("insert(schema.reviews)"),
     );
-    const duplicateRecovery = source.slice(
-      source.indexOf("if (hostedReviewUnavailable &&", unavailableClaim),
-      gate,
-    );
-    expect(duplicateRecovery).toContain("await supersedeActiveReviews");
-    expect(duplicateRecovery.indexOf("await supersedeActiveReviews")).toBeLessThan(
-      duplicateRecovery.indexOf("return;"),
-    );
-    expect(guardBody.indexOf("advisoryCheckRunId,")).toBeLessThan(
-      guardBody.indexOf("completeHostedInferenceDisabledCheckRuns"),
-    );
     expect(guardBody).toContain("return;");
+    expect(guardBody).not.toContain("getInstallationToken");
+    expect(guardBody).not.toContain("createCheckRun");
     expect(guardBody).not.toContain("postReview");
     expect(guardBody).not.toContain("failCheckRuns");
+  });
+
+  test("respond honors entitlement and release activation before tokens or provider access", () => {
+    const source = readFileSync("src/worker/respond.ts", "utf8");
+    const start = source.indexOf("export async function runRespondJob");
+    const entitlement = source.indexOf("await canProcessRepositoryInference", start);
+    const providerMode = source.indexOf("providerModeMatchesRepositoryAccess", entitlement);
+    const activation = source.indexOf("await hostedInferenceAvailable(getPool())", providerMode);
+    const token = source.indexOf("await getInstallationToken", start);
+    const reservation = source.indexOf("await reserveHostedRespondSpend", start);
+    const cli = source.indexOf("await runCli", start);
+
+    expect(entitlement).toBeGreaterThan(start);
+    expect(providerMode).toBeGreaterThan(entitlement);
+    expect(activation).toBeGreaterThan(providerMode);
+    expect(activation).toBeLessThan(token);
+    expect(activation).toBeLessThan(reservation);
+    expect(activation).toBeLessThan(cli);
+    expect(source.slice(activation, token)).toContain("return;");
   });
 
   test("hosted reservation denial leaves durable forge-visible terminal checks", () => {
@@ -150,13 +156,9 @@ describe("private repository worker defense in depth", () => {
     );
 
     const reviewStart = source.indexOf("export async function runReviewJob");
-    const unavailableCheckCreation = source.indexOf(
-      "advisoryCheckRunId = await createCheckRun",
-      reviewStart,
-    );
     const checkCreation = source.indexOf(
       "advisoryCheckRunId = await createCheckRun",
-      unavailableCheckCreation + 1,
+      reviewStart,
     );
     const publicationBoundary = source.lastIndexOf(
       "onPublicationStarted?.()",
@@ -184,7 +186,7 @@ describe("private repository worker defense in depth", () => {
     const failureStart = source.indexOf("postRespondFailureComment");
     expect(respondStart).toBeGreaterThan(0);
     expect(failureStart).toBeGreaterThan(respondStart);
-    const respondGate = source.indexOf("await canProcessPrivateRepository", respondStart);
+    const respondGate = source.indexOf("await canProcessRepositoryInference", respondStart);
     expect(respondGate).toBeGreaterThan(respondStart);
     for (const sideEffect of [
       "await getInstallationToken",
@@ -193,7 +195,7 @@ describe("private repository worker defense in depth", () => {
     ]) {
       expect(source.indexOf(sideEffect, respondStart)).toBeGreaterThan(respondGate);
     }
-    expect(source.indexOf("providerModeMatchesPrivateAccess", respondGate)).toBeLessThan(
+    expect(source.indexOf("providerModeMatchesRepositoryAccess", respondGate)).toBeLessThan(
       source.indexOf("await getInstallationToken", respondGate),
     );
     expect(source.slice(respondStart, failureStart)).toContain(
@@ -206,7 +208,7 @@ describe("private repository worker defense in depth", () => {
     expect(reservation).toBeLessThan(cliRun);
     expect(reconciliation).toBeGreaterThan(cliRun);
     expect(source.slice(respondStart, failureStart)).toContain(
-      "currentRepository.private && !llm.byok",
+      "if (!llm.byok)",
     );
     expect(source.slice(respondStart, failureStart)).toContain(
       "POSTIL_USAGE_RECEIPT_PATH",
@@ -214,7 +216,7 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(respondStart, failureStart)).toContain(
       "await releaseHostedRespondSpend",
     );
-    const failureGate = source.indexOf("await canProcessPrivateRepository", failureStart);
+    const failureGate = source.indexOf("await canProcessRepositoryInference", failureStart);
     expect(failureGate).toBeGreaterThan(failureStart);
     expect(source.slice(failureStart, failureGate)).not.toContain("postIssueComment");
     expect(source.indexOf("await deliverPreparedRespond", failureStart)).toBeGreaterThan(
@@ -230,7 +232,7 @@ describe("private repository worker defense in depth", () => {
   test("all webhook review, rerequest, mention, and approval paths pass through the gate before side effects", () => {
     const source = readFileSync("src/lib/github/webhook-handler.ts", "utf8");
     const pullStart = source.indexOf("async function handlePullRequest");
-    const pullGate = source.indexOf("await canProcessPrivateRepository", pullStart);
+    const pullGate = source.indexOf("await canProcessRepositoryInference", pullStart);
     expect(source.indexOf("await supersedeActiveReviews", pullStart)).toBeGreaterThan(pullGate);
     expect(source.indexOf("await enqueueReviewJob", pullStart)).toBeGreaterThan(pullGate);
 
@@ -238,7 +240,7 @@ describe("private repository worker defense in depth", () => {
       source.indexOf("async function enabledRepoForRerequest"),
       source.indexOf("async function handleCheckRerequest"),
     );
-    expect(rerequestResolver).toContain("await canProcessPrivateRepository");
+    expect(rerequestResolver).toContain("await canProcessRepositoryInference");
     const rerequestHandler = source.slice(
       source.indexOf("async function handleCheckRerequest"),
       source.indexOf("async function handleCheckRun"),
@@ -251,7 +253,7 @@ describe("private repository worker defense in depth", () => {
       source.indexOf("async function enabledRepoForMention"),
       source.indexOf("function isBot"),
     );
-    expect(mentionResolver).toContain("await canProcessPrivateRepository");
+    expect(mentionResolver).toContain("await canProcessRepositoryInference");
     for (const handler of ["handleIssueComment", "handleReviewComment", "handleIssues"]) {
       const start = source.indexOf(`async function ${handler}`);
       const end = source.indexOf("\nasync function ", start + 1);

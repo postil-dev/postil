@@ -7,7 +7,10 @@
  * documented anti-goal here.
  */
 
+import type { Pool } from "pg";
+
 import { configuredPublicOrigin } from "@/lib/oauth";
+import { hostedInferenceReleaseActivated } from "@/lib/release-job-rollout";
 
 interface EnvVarSpec {
   name: string;
@@ -151,6 +154,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     name: "POSTIL_HOSTED_INFERENCE_ENABLED",
     purpose:
       "Set to 0 to pause the built-in hosted provider while keeping organization BYOK providers available",
+    example: "1",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_PROVISIONAL_HOSTED_ROSTER",
+    purpose:
+      "Allow the pinned CLI's provisional hosted model roster when formal admission is pending",
     example: "1",
     scope: ["worker"],
     optional: true,
@@ -503,6 +514,16 @@ export function validateEnv(processKind: "web" | "worker"): void {
       "Postil worker cannot start: POSTIL_HOSTED_INFERENCE_ENABLED must be 0 or 1.",
     );
   }
+  if (
+    processKind === "worker" &&
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER !== undefined &&
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER !== "0" &&
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER !== "1"
+  ) {
+    throw new Error(
+      "Postil worker cannot start: POSTIL_PROVISIONAL_HOSTED_ROSTER must be 0 or 1.",
+    );
+  }
   validateOperationalTelemetryEnv(processKind);
   validateOperatorAlertEnv(processKind);
   validatePaddleEnv(processKind);
@@ -716,4 +737,16 @@ export function optionalEnv(
 /** The hosted service opts in explicitly; self-hosted installs retain existing behavior. */
 export function hostedInferenceEnabled(): boolean {
   return optionalEnv("POSTIL_HOSTED_INFERENCE_ENABLED", "1") === "1";
+}
+
+/**
+ * Managed releases stay dark until the exact image SHA passes fleet and
+ * provider verification. Development and self-hosted deployments without a
+ * release SHA retain the explicit environment switch behavior.
+ */
+export async function hostedInferenceAvailable(pool: Pool): Promise<boolean> {
+  if (!hostedInferenceEnabled()) return false;
+  const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+  if (!releaseSha) return true;
+  return hostedInferenceReleaseActivated(pool, releaseSha);
 }

@@ -7,6 +7,8 @@ import { Client, Pool } from "pg";
 
 import {
   hasHostedReservationCapacity,
+  reconcileConservativeHostedReviewSpend,
+  reconcileHostedReviewSpendFromReceipt,
   reconcileHostedRespondSpend,
   releaseHostedRespondSpend,
   reserveHostedReviewSpend,
@@ -15,6 +17,10 @@ import {
 import * as schema from "@/lib/db/schema";
 import type { Envelope } from "@/lib/envelope";
 import { persistReviewCompletion } from "@/lib/review-completion";
+import {
+  canProcessRepositoryInference,
+  providerModeMatchesRepositoryAccess,
+} from "@/lib/private-repository-entitlement";
 import {
   claimRespondDelivery,
   getRespondDelivery,
@@ -106,7 +112,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     `);
     await migrationClient.end();
     pool = new Pool({ connectionString: databaseUrl.toString(), max: 4 });
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await pool?.end();
@@ -114,7 +120,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
       await adminClient.end();
     }
-  });
+  }, 30_000);
 
   test("row locking admits only one concurrent hold and recovers an expired hold", async () => {
     const db = drizzle(pool!, { schema });
@@ -178,6 +184,243 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       trigger_source:
         rejectedReviewId === reviewIds[1] ? "requested_review" : "unknown",
     });
+  });
+
+  test("public hosted access requires an active bounded entitlement while public BYOK does not", async () => {
+    const db = drizzle(pool!, { schema });
+    const withoutEntitlement = await pool!.query<{ id: string }>(
+      "INSERT INTO organizations (slug, name) VALUES ('public-no-plan', 'Public no plan') RETURNING id",
+    );
+    const noPlanOrgId = Number(withoutEntitlement.rows[0]!.id);
+    const publicNoPlan = await canProcessRepositoryInference(db, {
+      orgId: noPlanOrgId,
+      repositoryPrivate: false,
+    });
+    expect(providerModeMatchesRepositoryAccess(false, publicNoPlan, true)).toBe(true);
+    expect(providerModeMatchesRepositoryAccess(false, publicNoPlan, false)).toBe(false);
+
+    const trialOrg = await pool!.query<{ id: string }>(
+      "INSERT INTO organizations (slug, name) VALUES ('public-trial', 'Public trial') RETURNING id",
+    );
+    const trialOrgId = Number(trialOrg.rows[0]!.id);
+    await pool!.query(
+      `INSERT INTO organization_entitlements
+         (org_id, subscription_mode, status, trial_ends_at, period_starts_at,
+          period_ends_at, included_usage_micros, overage_hard_cap_micros, updated_by)
+       VALUES ($1, 'hosted', 'trialing', now() + interval '1 day', now(),
+               now() + interval '1 day', 2000000, 0, 'test')`,
+      [trialOrgId],
+    );
+    const activeTrial = await canProcessRepositoryInference(db, {
+      orgId: trialOrgId,
+      repositoryPrivate: false,
+    });
+    expect(activeTrial).toMatchObject({ allowed: true, reason: "active_trial" });
+    expect(providerModeMatchesRepositoryAccess(false, activeTrial, false)).toBe(true);
+
+    await pool!.query(
+      "UPDATE organization_entitlements SET trial_ends_at = now() WHERE org_id = $1",
+      [trialOrgId],
+    );
+    const expiredTrial = await canProcessRepositoryInference(db, {
+      orgId: trialOrgId,
+      repositoryPrivate: false,
+    });
+    expect(providerModeMatchesRepositoryAccess(false, expiredTrial, false)).toBe(false);
+
+    const privateNoPlan = await canProcessRepositoryInference(db, {
+      orgId: noPlanOrgId,
+      repositoryPrivate: true,
+    });
+    expect(privateNoPlan).toMatchObject({ allowed: false, reason: "no_entitlement" });
+  });
+
+  test("a model-started failed review conservatively charges its full hold", async () => {
+    const db = drizzle(pool!, { schema });
+    const fixture = await pool!.query<{
+      org_id: string;
+      repository_id: string;
+      review_id: string;
+    }>(`
+      WITH org AS (
+        INSERT INTO organizations (slug, name)
+        VALUES ('failed-review-metering', 'Failed Review Metering') RETURNING id
+      ), installation AS (
+        INSERT INTO installations (github_installation_id, account_login, account_type, org_id)
+        SELECT 99617, 'failed-review-metering', 'Organization', id FROM org
+        RETURNING id, org_id
+      ), repository AS (
+        INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+        SELECT id, 99618, 'failed-review-metering/private', true, true FROM installation
+        RETURNING id
+      ), entitlement AS (
+        INSERT INTO organization_entitlements (
+          org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents,
+          updated_by
+        ) SELECT org_id, 'hosted', 'active', 1000000, 0, 100, 0, 'test'
+        FROM installation
+      ), review AS (
+        INSERT INTO reviews (
+          repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+          trigger_context
+        ) SELECT id, 1, 'failed-head', 'failed-base', 'running', 'requested_review',
+          '{"source":"requested_review","webhookDeliveryId":"failed-review","webhookEvent":"issue_comment"}'::jsonb
+        FROM repository RETURNING id
+      )
+      SELECT installation.org_id, repository.id AS repository_id, review.id AS review_id
+      FROM installation, repository, review;
+    `);
+    const row = fixture.rows[0]!;
+    const reservation = await reserveHostedReviewSpend(db, {
+      orgId: Number(row.org_id),
+      reviewId: Number(row.review_id),
+      usesByok: false,
+    });
+    expect(reservation.allowed).toBe(true);
+    expect(
+      await reconcileConservativeHostedReviewSpend(db, {
+        reservationId: reservation.reservationId!,
+        repositoryId: Number(row.repository_id),
+        reviewId: Number(row.review_id),
+        triggerSource: "requested_review",
+      }),
+    ).toBe(1_000_000);
+    const accounting = await pool!.query<{
+      status: string;
+      actual_micros: string;
+      cost_micros: string;
+      model_used: string;
+      trigger_source: string;
+    }>(`
+      SELECT reservation.status, reservation.actual_micros,
+             usage.cost_micros, usage.model_used, usage.trigger_source
+      FROM hosted_usage_reservations reservation
+      JOIN usage_events usage ON usage.review_id = reservation.review_id
+      WHERE reservation.id = $1
+    `, [reservation.reservationId]);
+    expect(accounting.rows[0]).toEqual({
+      status: "reconciled",
+      actual_micros: "1000000",
+      cost_micros: "1000000",
+      model_used: "unattributed provider usage",
+      trigger_source: "requested_review",
+    });
+  });
+
+  test("a terminal-state race reconciles one trusted receipt without duplicate usage", async () => {
+    const db = drizzle(pool!, { schema });
+    const fixture = await pool!.query<{
+      org_id: string;
+      repository_id: string;
+      review_id: string;
+    }>(`
+      WITH org AS (
+        INSERT INTO organizations (slug, name)
+        VALUES ('completion-race-metering', 'Completion Race Metering') RETURNING id
+      ), installation AS (
+        INSERT INTO installations (github_installation_id, account_login, account_type, org_id)
+        SELECT 99717, 'completion-race-metering', 'Organization', id FROM org
+        RETURNING id, org_id
+      ), repository AS (
+        INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+        SELECT id, 99718, 'completion-race-metering/private', true, true FROM installation
+        RETURNING id
+      ), entitlement AS (
+        INSERT INTO organization_entitlements (
+          org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents,
+          updated_by
+        ) SELECT org_id, 'hosted', 'active', 3000000, 0, 300, 0, 'test'
+        FROM installation
+      ), review AS (
+        INSERT INTO reviews (
+          repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+          trigger_context
+        ) SELECT id, number, 'race-head-' || number, 'race-base', 'stale',
+          'requested_review',
+          '{"source":"requested_review","webhookDeliveryId":"race","webhookEvent":"issue_comment"}'::jsonb
+        FROM repository CROSS JOIN generate_series(1, 2) AS number
+        RETURNING id
+      )
+      SELECT installation.org_id, repository.id AS repository_id, review.id AS review_id
+      FROM installation, repository, review ORDER BY review.id;
+    `);
+    const [complete, incomplete] = fixture.rows;
+    const completeReservation = await reserveHostedReviewSpend(db, {
+      orgId: Number(complete!.org_id),
+      reviewId: Number(complete!.review_id),
+      usesByok: false,
+    });
+    const incompleteReservation = await reserveHostedReviewSpend(db, {
+      orgId: Number(incomplete!.org_id),
+      reviewId: Number(incomplete!.review_id),
+      usesByok: false,
+    });
+    expect(completeReservation.allowed).toBe(true);
+    expect(incompleteReservation.allowed).toBe(true);
+
+    const completeInput = {
+      reservationId: completeReservation.reservationId!,
+      repositoryId: Number(complete!.repository_id),
+      reviewId: Number(complete!.review_id),
+      triggerSource: "requested_review" as const,
+      usage: [{
+        promptTokens: 100,
+        completionTokens: 10,
+        modelUsed: "z-ai/glm-5.2",
+        costMicros: 1_234,
+      }],
+      usageAccountingComplete: true,
+    };
+    expect((await Promise.all([
+      reconcileHostedReviewSpendFromReceipt(db, completeInput),
+      reconcileHostedReviewSpendFromReceipt(db, completeInput),
+    ])).sort((a, b) => a - b)).toEqual([0, 1_234]);
+
+    expect(await reconcileHostedReviewSpendFromReceipt(db, {
+      reservationId: incompleteReservation.reservationId!,
+      repositoryId: Number(incomplete!.repository_id),
+      reviewId: Number(incomplete!.review_id),
+      triggerSource: "requested_review",
+      usage: [{
+        promptTokens: 200,
+        completionTokens: 20,
+        modelUsed: "z-ai/glm-5.2",
+        costMicros: 2_345,
+      }],
+      usageAccountingComplete: false,
+    })).toBe(1_000_000);
+
+    const accounting = await pool!.query<{
+      review_id: string;
+      actual_micros: string;
+      usage_micros: string;
+      usage_rows: number;
+    }>(`
+      SELECT reservation.review_id, reservation.actual_micros,
+             sum(usage.cost_micros)::bigint AS usage_micros,
+             count(usage.id)::int AS usage_rows
+      FROM hosted_usage_reservations reservation
+      JOIN usage_events usage ON usage.review_id = reservation.review_id
+      WHERE reservation.id = ANY($1::uuid[])
+      GROUP BY reservation.review_id, reservation.actual_micros
+      ORDER BY reservation.review_id
+    `, [[completeReservation.reservationId, incompleteReservation.reservationId]]);
+    expect(accounting.rows).toEqual([
+      {
+        review_id: String(complete!.review_id),
+        actual_micros: "1234",
+        usage_micros: "1234",
+        usage_rows: 1,
+      },
+      {
+        review_id: String(incomplete!.review_id),
+        actual_micros: "1000000",
+        usage_micros: "1000000",
+        usage_rows: 2,
+      },
+    ]);
   });
 
   test("classifies omitted legacy usage scope without undercounting private hosted work", async () => {

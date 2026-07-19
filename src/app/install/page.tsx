@@ -9,7 +9,7 @@ import { githubAppInstallUrl } from "@/lib/github-app";
 export const metadata: Metadata = {
   title: "Install",
   description:
-    "Install Postil for GitHub with a 30-day BYOK trial, or run the CLI in GitLab, Bitbucket, and Azure DevOps CI.",
+    "Install Postil for GitHub with a hosted trial for up to three organizations per GitHub identity, or use BYOK.",
   alternates: { canonical: "/install" },
   openGraph: {
     title: "Install Postil",
@@ -28,9 +28,9 @@ export default function InstallPage() {
         Choose your forge. Start reviewing pull requests.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        On GitHub, install the App, connect your model provider, and start a
-        30-day free trial without a card. GitLab, Bitbucket, and Azure DevOps run
-        the Postil CLI inside their own CI.
+        On GitHub, one identity can start 30-day hosted trials for up to three
+        organizations without a card. Additional organizations use BYOK.
+        GitLab, Bitbucket, and Azure DevOps run the Postil CLI inside their own CI.
       </p>
 
       <div className="mt-10">

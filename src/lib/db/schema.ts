@@ -524,6 +524,33 @@ export const organizationEntitlements = pgTable(
   ],
 );
 
+/** One immutable trial grant per GitHub owner, with the initiating identity for abuse controls. */
+export const selfServiceTrialGrants = pgTable(
+  "self_service_trial_grants",
+  {
+    orgId: bigint("org_id", { mode: "number" })
+      .primaryKey(),
+    initiatedByGithubId: bigint("initiated_by_github_id", { mode: "number" }).notNull(),
+    requestedMode: text("requested_mode").notNull(),
+    grantedMode: text("granted_mode").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("self_service_trial_grants_actor_created_idx").on(
+      t.initiatedByGithubId,
+      t.createdAt,
+    ),
+    check(
+      "self_service_trial_grants_requested_mode_check",
+      sql`${t.requestedMode} IN ('hosted', 'byok')`,
+    ),
+    check(
+      "self_service_trial_grants_granted_mode_check",
+      sql`${t.grantedMode} IN ('hosted', 'byok')`,
+    ),
+  ],
+);
+
 /** One server-created Paddle transaction per self-service checkout attempt. */
 export const billingCheckoutTransactions = pgTable(
   "billing_checkout_transactions",

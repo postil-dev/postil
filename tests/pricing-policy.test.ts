@@ -30,11 +30,15 @@ describe("pricing policy", () => {
     expect(terms).toContain("Repository count and review count are not billing units");
     expect(terms).toContain("provider-side budgets and");
     expect(terms).toContain("hard limits where the provider supports them");
-    expect(pricing).toMatch(/Public repositories\s+are free with your provider/);
-    expect(pricing).toContain("30-day free trial");
+    expect(pricing).toContain("Public repositories are free with BYOK");
+    expect(pricing).toContain("30-day hosted trial");
     expect(pricing).toContain('href="/contact"');
     expect(pricing).toContain("Install with BYOK");
     expect(pricing).toContain("Start 30-day trial");
+    expect(pricing).toContain("Up to 3 organization trials per GitHub identity");
+    expect(pricing).toContain("BYOK remains available after that");
+    expect(terms).toContain("up to three organizations");
+    expect(terms).toContain("Additional organizations can start with BYOK");
     expect(terms).toContain("Public-repository App reviews are free");
     expect(terms).toContain("materially beyond ordinary interactive");
     expect(terms).not.toContain("Where practicable");
@@ -45,7 +49,7 @@ describe("pricing policy", () => {
     expect(publicPricingCopy).not.toMatch(/default overage/i);
   });
 
-  test("presents BYOK as the primary available commercial path", () => {
+  test("presents hosted as the primary trial path", () => {
     const pricing = source("src/app/pricing/page.tsx");
     const homepage = source("src/app/page.tsx");
     const byok = pricing.indexOf('<h2 className="eyebrow">BYOK</h2>');
@@ -53,9 +57,9 @@ describe("pricing policy", () => {
 
     expect(byok).toBeGreaterThan(0);
     expect(hosted).toBeGreaterThan(byok);
-    expect(pricing.slice(byok, hosted)).toContain("btn-primary");
+    expect(pricing.slice(byok, hosted)).toContain("btn-secondary");
     expect(pricing.slice(byok, hosted)).toContain('href="/install"');
-    expect(pricing.slice(hosted)).toContain("btn-secondary");
+    expect(pricing.slice(hosted)).toContain("btn-primary");
     const pricingSection = homepage.slice(homepage.indexOf("{/* 07 - Pricing teaser */}"));
     expect(pricingSection).toContain("md:grid-cols-2 xl:grid-cols-4");
     expect(homepage.indexOf("BYOK ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD}")).toBeLessThan(
@@ -65,12 +69,13 @@ describe("pricing policy", () => {
 
   test("structured metadata advertises the available self-service offer", () => {
     const layout = source("src/app/layout.tsx");
-    expect(layout).not.toContain('name: "Hosted"');
+    expect(layout).toContain('name: "Hosted"');
+    expect(layout).toContain("price: String(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD)");
     expect(layout).toContain('name: "BYOK"');
     expect(layout).toContain("price: String(BYOK_ACTIVE_AUTHOR_MONTHLY_USD)");
   });
 
-  test("keeps public setup surfaces self-service with a BYOK trial", () => {
+  test("keeps public setup surfaces self-service with a hosted trial", () => {
     const setupCopy = [
       source("src/app/install/page.tsx"),
       source("src/app/docs/page.tsx"),
@@ -83,13 +88,15 @@ describe("pricing policy", () => {
     const billing = source("src/app/orgs/[slug]/billing/page.tsx");
 
     expect(setupCopy).toContain("GitHub App");
-    expect(setupCopy).toContain("30-day free trial");
+    expect(setupCopy).toContain("30-day hosted trial");
     expect(setupCopy).not.toMatch(/zero.configuration/i);
     expect(setupCopy).not.toContain("Postil&apos;s hosted default model");
     expect(settings).toContain("!hostedInferenceAvailable");
-    expect(setupCopy).toContain("model provider");
-    expect(settings).toContain("New hosted inference setup is unavailable");
-    expect(privacy).toContain("Existing hosted plans use");
+    expect(setupCopy).toContain("hosted trial");
+    expect(setupCopy).toContain("Additional");
+    expect(setupCopy).toContain("organizations start with BYOK access");
+    expect(settings).toContain("Choose hosted inference or your provider during the free trial.");
+    expect(privacy).toContain("Hosted plans use");
     expect(billing).not.toMatch(/included usage|overage hard cap|credit balance|credit grants/i);
     expect(billing).not.toContain("calculateBillingCreditBalance");
   });

@@ -13,12 +13,12 @@ import {
   type ApiFormat,
 } from "@/lib/byok-provider";
 import {
-  canProcessPrivateRepository,
-  providerModeMatchesPrivateAccess,
+  canProcessRepositoryInference,
+  providerModeMatchesRepositoryAccess,
 } from "@/lib/private-repository-entitlement";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
-import { getDb, schema } from "@/lib/db";
-import { hostedInferenceEnabled, optionalEnv } from "@/lib/env";
+import { getDb, getPool, schema } from "@/lib/db";
+import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
 import {
   classifyOperationalModelIncidents,
   ingestEnvelope,
@@ -50,6 +50,8 @@ import {
 } from "@/lib/github/owner-config";
 import { configuredPublicOrigin } from "@/lib/oauth";
 import {
+  reconcileConservativeHostedReviewSpend,
+  reconcileHostedReviewSpendFromReceipt,
   releaseHostedReviewSpend,
   reserveHostedReviewSpend,
 } from "@/lib/hosted-usage-reservations";
@@ -124,10 +126,23 @@ export function buildCliEnv(
     // Repository model settings are accepted only when the organization has
     // supplied its own provider credentials.
     POSTIL_HOSTED_MODE: llm.byok ? "0" : "1",
+    // Provisional admission is a managed-hosted deployment choice. Always
+    // shadow the worker environment so BYOK children cannot inherit it.
+    POSTIL_PROVISIONAL_HOSTED_ROSTER: llm.byok
+      ? "0"
+      : (optionalEnv("POSTIL_PROVISIONAL_HOSTED_ROSTER", "0") as string),
     // Always shadow process.env. A BYOK endpoint without additional auth must
     // never inherit the hosted gateway credential when runCli merges envs.
     POSTIL_ENDPOINT_AUTH_HEADER: llm.apiAuthHeader ?? "",
     POSTIL_ENDPOINT_AUTH_VALUE: llm.apiAuthValue ?? "",
+    // runCli inherits process.env. Shadow every supported or common provider
+    // credential alias so a BYOK child can receive only its sealed org key.
+    MODEL_API_KEY: "",
+    POSTIL_API_KEY: "",
+    OPENROUTER_API_KEY: "",
+    LLM_API_KEY: "",
+    OPENAI_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
     // This is per-review policy, never a deployment-wide toggle inherited by
     // every child process.
     POSTIL_PREVENTION_HINT: baseEnv.POSTIL_PREVENTION_HINT === "1" ? "1" : "0",
@@ -565,18 +580,48 @@ export async function runReviewJob(
     return;
   }
   const signedOrStoredPrivate = repository.private || payload.repositoryPrivate === true;
-  const privateAccess = await canProcessPrivateRepository(db, {
+  const repositoryAccess = await canProcessRepositoryInference(db, {
     orgId: installation.orgId,
     repositoryPrivate: signedOrStoredPrivate,
   });
-  if (!privateAccess.allowed) {
+  if (!repositoryAccess.allowed) {
     console.warn(`review job skipped: private repository ${payload.repoFullName} requires billing`);
     return;
   }
   const llm = await resolveLlmConfig(installation.orgId);
-  if (!providerModeMatchesPrivateAccess(signedOrStoredPrivate, privateAccess, llm.byok)) {
+  if (!providerModeMatchesRepositoryAccess(signedOrStoredPrivate, repositoryAccess, llm.byok)) {
     console.warn(
       `review job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
+    );
+    return;
+  }
+  const hostedReviewUnavailable =
+    !llm.byok && !(await hostedInferenceAvailable(getPool()));
+  if (hostedReviewUnavailable) {
+    const trigger = normalizeReviewTriggerContext(payload.trigger);
+    const paused = await claimPausedHostedReview(
+      db,
+      {
+        repositoryId: repository.id,
+        prNumber: payload.prNumber,
+        authorGithubId: payload.authorGithubId ?? null,
+        authorLogin: payload.authorLogin ?? null,
+        headSha: payload.headSha,
+        baseSha: payload.baseSha,
+        sinceSha: null,
+        triggerSource: trigger.source,
+        triggerContext: trigger,
+        queuedAt: timing.queuedAt,
+        startedAt: timing.startedAt,
+      },
+      {
+        installationId: payload.installationId,
+        repoFullName: payload.repoFullName,
+        checkRunsMayExist: false,
+      },
+    );
+    console.warn(
+      `review job skipped: managed hosted inference is unavailable${paused ? "" : "; pause already recorded"}`,
     );
     return;
   }
@@ -592,13 +637,13 @@ export async function runReviewJob(
     .update(schema.repositories)
     .set({ fullName: currentRepository.full_name, private: currentRepository.private })
     .where(eq(schema.repositories.id, repository.id));
-  const currentAccess = await canProcessPrivateRepository(db, {
+  const currentAccess = await canProcessRepositoryInference(db, {
     orgId: installation.orgId,
     repositoryPrivate: currentRepository.private,
   });
   if (
     !currentAccess.allowed ||
-    !providerModeMatchesPrivateAccess(currentRepository.private, currentAccess, llm.byok)
+    !providerModeMatchesRepositoryAccess(currentRepository.private, currentAccess, llm.byok)
   ) {
     console.warn(
       `review job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
@@ -630,8 +675,6 @@ export async function runReviewJob(
     authorGithubId = context.authorGithubId;
     authorLogin = context.authorLogin;
   }
-
-  const hostedReviewUnavailable = !llm.byok && !hostedInferenceEnabled();
 
   // Incremental re-review: baseline = last completed review of this PR.
   const baseline = (
@@ -672,40 +715,14 @@ export async function runReviewJob(
     queuedAt: timing.queuedAt,
     startedAt: timing.startedAt,
   };
-  const inserted = hostedReviewUnavailable
-    ? await claimPausedHostedReview(db, reviewValues, {
-        installationId: payload.installationId,
-        repoFullName: payload.repoFullName,
-      })
-    : await db
-        .insert(schema.reviews)
-        .values({ ...reviewValues, status: "running" })
-        .returning({ id: schema.reviews.id, publicId: schema.reviews.publicId })
-        .then((rows) => {
-          const review = rows[0];
-          return review
-            ? {
-                ...review,
-                advisoryCheckExternalId: undefined,
-                gateCheckExternalId: undefined,
-              }
-            : null;
-        });
+  const inserted = (
+    await db
+      .insert(schema.reviews)
+      .values({ ...reviewValues, status: "running" })
+      .returning({ id: schema.reviews.id, publicId: schema.reviews.publicId })
+  )[0];
   const reviewId = inserted?.id;
   const publicId = inserted?.publicId;
-  if (hostedReviewUnavailable && (reviewId === undefined || !publicId)) {
-    await supersedeActiveReviews({
-      repositoryId: repository.id,
-      prNumber: payload.prNumber,
-      newHeadSha: payload.headSha,
-      repoFullName: payload.repoFullName,
-      token,
-    });
-    console.log(
-      `review job skipped: unavailable hosted review already recorded for ${payload.repoFullName}#${payload.prNumber}@${payload.headSha}`,
-    );
-    return;
-  }
   if (reviewId === undefined || !publicId) throw new Error("review insert returned no row");
   const detailsUrl =
     publicOrigin && installation.orgSlug
@@ -726,98 +743,12 @@ export async function runReviewJob(
   let workDir: string | undefined;
   let sensitiveValues: string[] = [];
   let hostedUsageReservationId: string | null = null;
+  let cliStarted = false;
   let publicationStarted = false;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
-  const advisoryCheckExternalId =
-    inserted.advisoryCheckExternalId ?? checkRunExternalId(publicId, "review");
-  const gateCheckExternalId =
-    inserted.gateCheckExternalId ?? checkRunExternalId(publicId, "gate");
-
-  if (hostedReviewUnavailable) {
-    try {
-      publicationStarted = true;
-      onPublicationStarted?.();
-      await supersedeActiveReviews({
-        repositoryId: repository.id,
-        prNumber: payload.prNumber,
-        newHeadSha: payload.headSha,
-        repoFullName: payload.repoFullName,
-        token,
-        excludeReviewId: reviewId,
-      }).catch((error) => {
-        console.error(`failed to supersede unavailable hosted review: ${redactSecrets(error, [token])}`);
-      });
-      advisoryCheckRunId = await createCheckRun(
-        token,
-        payload.repoFullName,
-        ADVISORY_CHECK_NAME,
-        payload.headSha,
-        { externalId: advisoryCheckExternalId },
-      ).catch((error) => {
-        advisoryCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
-        console.error(`failed to create unavailable advisory check-run: ${redactSecrets(error, [token])}`);
-        return undefined;
-      });
-      if (advisoryCheckRunId !== undefined) {
-        await db
-          .update(schema.reviews)
-          .set({ advisoryCheckRunId })
-          .where(eq(schema.reviews.id, reviewId));
-      }
-      gateCheckRunId = await createCheckRun(
-        token,
-        payload.repoFullName,
-        GATE_CHECK_NAME,
-        payload.headSha,
-        { externalId: gateCheckExternalId },
-      ).catch((error) => {
-        gateCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
-        console.error(`failed to create unavailable gate check-run: ${redactSecrets(error, [token])}`);
-        return undefined;
-      });
-      if (gateCheckRunId !== undefined) {
-        await db
-          .update(schema.reviews)
-          .set({ gateCheckRunId })
-          .where(eq(schema.reviews.id, reviewId));
-      }
-      await db
-        .update(schema.reviews)
-        .set({ advisoryCheckRunId, gateCheckRunId })
-        .where(eq(schema.reviews.id, reviewId));
-      const checksNeutralized = await completeHostedInferenceDisabledCheckRuns(
-        token,
-        payload.repoFullName,
-        advisoryCheckRunId,
-        gateCheckRunId,
-      );
-      if (checksNeutralized) {
-        reviewLog.line(
-          "hosted inference disabled before CLI or provider access; checks neutralized and durable cleanup queued",
-        );
-      } else {
-        reviewLog.line(
-          "hosted inference disabled before CLI or provider access; durable neutral cleanup queued",
-        );
-      }
-    } catch (error) {
-      // Maintenance mode must never fall through to the generic gate-failure
-      // handler. Retrying the queue job is safe because the provider remains
-      // disabled and the next attempt supersedes this review.
-      console.error(`failed to settle unavailable hosted review: ${redactSecrets(error, [token])}`);
-      await completeHostedInferenceDisabledCheckRuns(
-        token,
-        payload.repoFullName,
-        advisoryCheckRunId,
-        gateCheckRunId,
-      );
-      throw error;
-    } finally {
-      await reviewLog.close();
-    }
-    return;
-  }
+  const advisoryCheckExternalId = checkRunExternalId(publicId, "review");
+  const gateCheckExternalId = checkRunExternalId(publicId, "gate");
 
   try {
     throwIfWorkerStopping(signal);
@@ -867,7 +798,7 @@ export async function runReviewJob(
 
     throwIfWorkerStopping(signal);
     reviewLog.line(await postilCliVersionLogLine());
-    const spendReservation = currentRepository.private
+    const spendReservation = !llm.byok
       ? await reserveHostedReviewSpend(db, {
           orgId: installation.orgId,
           reviewId,
@@ -1045,6 +976,7 @@ export async function runReviewJob(
     });
 
     reviewLog.line("postil CLI spawned");
+    cliStarted = true;
     const result = await runCli(args, cliEnv, workDir, {
       onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
       signal,
@@ -1077,6 +1009,26 @@ export async function runReviewJob(
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
     // no longer owns the result. The CLI owns the success-path check-runs.
+    const receiptUsage = (ingested.modelUsage ?? [{
+      model: ingested.modelUsed,
+      promptTokens: ingested.promptTokens,
+      completionTokens: ingested.completionTokens,
+    }]).map((entry) => ({
+      orgId: installation.orgId,
+      repositoryId: repository.id,
+      promptTokens: entry.promptTokens,
+      completionTokens: entry.completionTokens,
+      modelUsed: entry.model,
+      // A legacy aggregate is priced only when modelUsed names one known
+      // catalog model. Chains/consensus remain unpriced and consume the
+      // full reservation rather than undercharging a fallback.
+      costMicros: calculateUsageCostMicrosForModel(
+        entry.model,
+        entry.promptTokens,
+        entry.completionTokens,
+      ),
+      billingScope: !llm.byok ? "private_hosted" as const : "analytics" as const,
+    }));
     const completed = await persistReviewCompletion(db, {
       reviewId,
       envelope: ingested.envelope,
@@ -1084,33 +1036,22 @@ export async function runReviewJob(
       configProvenance,
       silent: ingested.silent,
       gateFailing: ingested.gateFailing,
-      usage: (ingested.modelUsage ?? [{
-        model: ingested.modelUsed,
-        promptTokens: ingested.promptTokens,
-        completionTokens: ingested.completionTokens,
-      }]).map((entry) => ({
-        orgId: installation.orgId,
-        repositoryId: repository.id,
-        promptTokens: entry.promptTokens,
-        completionTokens: entry.completionTokens,
-        modelUsed: entry.model,
-        // A legacy aggregate is priced only when modelUsed names one known
-        // catalog model. Chains/consensus remain unpriced and consume the
-        // full reservation rather than undercharging a fallback.
-        costMicros: calculateUsageCostMicrosForModel(
-          entry.model,
-          entry.promptTokens,
-          entry.completionTokens,
-        ),
-        billingScope:
-          currentRepository.private && !llm.byok ? "private_hosted" : "analytics",
-      })),
+      usage: receiptUsage,
       hostedUsageReservationId,
       usageAccountingComplete: ingested.usageAccountingComplete,
     });
 
     if (!completed) {
-      await releaseHostedReviewSpend(db, hostedUsageReservationId);
+      if (hostedUsageReservationId) {
+        await reconcileHostedReviewSpendFromReceipt(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+          usage: receiptUsage,
+          usageAccountingComplete: ingested.usageAccountingComplete,
+        });
+      }
       const terminal = (
         await db
           .select({ status: schema.reviews.status })
@@ -1183,11 +1124,24 @@ export async function runReviewJob(
       });
       return rows;
     });
-    await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
-      console.error(
-        `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
-      );
-    });
+    if (hostedUsageReservationId && cliStarted) {
+      await reconcileConservativeHostedReviewSpend(db, {
+        reservationId: hostedUsageReservationId,
+        repositoryId: repository.id,
+        reviewId,
+        triggerSource: reviewValues.triggerSource,
+      }).catch((reconcileError) => {
+        console.error(
+          `failed to conservatively reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
+        );
+      });
+    } else {
+      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch((releaseError) => {
+        console.error(
+          `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
+        );
+      });
+    }
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).

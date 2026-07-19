@@ -40,7 +40,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
+      { kind: "text", note: "Per active private-PR author; 30-day hosted trial" },
       {
         kind: "text",
         note: "$0.05/KB of diff ($0.50 floor; $1.50 for a 30 KB medium feature)",
@@ -50,7 +50,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Cost at high PR volume",
     cells: [
-      { kind: "text", note: "BYOK provider controls; Hosted enrollment paused" },
+      { kind: "text", note: "Hosted or BYOK provider controls" },
       { kind: "no", note: "scales with diff size and PR count" },
     ],
   },
@@ -142,8 +142,8 @@ export default function VsMacroscopePage() {
           minimum, or $0.50, with a 30 KB medium feature at $1.50. Two pricing
           models in six months. To its credit, Macroscope offers spend caps, but
           the structure still charges you more for bigger changes and more PRs.
-          Postil prices BYOK by active author, with provider usage billed
-          directly. Hosted enrollment is paused. See the{" "}
+          Postil prices private plans by active author. BYOK provider usage is
+          billed directly. Hosted starts with a 30-day trial. See the{" "}
           <Link href="/pricing">pricing details</Link>.
         </p>
 
@@ -193,8 +193,8 @@ export default function VsMacroscopePage() {
             A merge gate that actually blocks.
           </h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            Require postil/gate in branch protection. Connect BYOK and try the
-            CLI on your next diff. Hosted enrollment is paused.
+            Require postil/gate in branch protection. Install the App for a
+            hosted trial, connect BYOK, or try the CLI on your next diff.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

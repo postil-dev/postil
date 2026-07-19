@@ -130,7 +130,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       syncAccounts.push({ githubId: org.id, login: org.login, type: "Organization" });
     }
   }
-  await syncInstallationsFromGithub(syncAccounts);
+  await syncInstallationsFromGithub(syncAccounts, ghUser.id);
 
   // The user owns their personal account; user-scoped installations are
   // always administered by the account holder.

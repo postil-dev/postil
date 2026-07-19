@@ -53,6 +53,9 @@ mock.module("@/lib/session", () => ({
 
 mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
+  getPool: () => {
+    throw new Error("getPool is not used by repository toggle tests");
+  },
   schema,
 }));
 

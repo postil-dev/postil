@@ -36,7 +36,7 @@ import {
   mentionsPostil,
   parsePostilApproveCommand,
 } from "@/lib/mentions";
-import { canProcessPrivateRepository } from "@/lib/private-repository-entitlement";
+import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
 import {
   enqueueOperatorAlert,
   installationRemovedAlertPayload,
@@ -79,6 +79,7 @@ interface InstallationEventPayload {
   repositories?: RepoSummary[];
   repositories_added?: RepoSummary[];
   repositories_removed?: RepoSummary[];
+  sender?: GithubUser;
 }
 
 interface PullRequestEventPayload {
@@ -314,6 +315,7 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
       const installationRowId = await upsertInstallation(
         { id: installation.id, suspended: Boolean(installation.suspended_at) },
         account,
+        payload.sender?.id,
       );
       if (installationRowId !== undefined && payload.repositories) {
         await upsertRepositories(installationRowId, payload.repositories);
@@ -376,6 +378,7 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
       await upsertInstallation(
         { id: installation.id, suspended: false },
         account,
+        payload.sender?.id,
       );
       break;
     default:
@@ -557,7 +560,7 @@ async function handlePullRequest(
   const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
   if (!repoRow?.enabled) return;
   if (
-    !(await canProcessPrivateRepository(db, {
+    !(await canProcessRepositoryInference(db, {
       orgId: installation.orgId,
       repositoryPrivate: repo.private,
     })).allowed
@@ -640,7 +643,7 @@ async function enabledRepoForRerequest(
   const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
   if (!repoRow?.enabled) return false;
   return (
-    await canProcessPrivateRepository(db, {
+    await canProcessRepositoryInference(db, {
       orgId: installation.orgId,
       repositoryPrivate: repo.private,
     })
@@ -791,7 +794,7 @@ async function enabledRepoForMention(
   const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
   if (!repoRow?.enabled) return false;
   return (
-    await canProcessPrivateRepository(db, {
+    await canProcessRepositoryInference(db, {
       orgId: installation.orgId,
       repositoryPrivate: repo.private,
     })

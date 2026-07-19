@@ -20,13 +20,12 @@ export default function PrivacyPage() {
         <p>
           When a GitHub App review runs, the worker fetches the pull-request
           diff with a short-lived installation token. BYOK reviews send it to
-          the provider configured for the organization. Existing hosted plans
-          send it through Postil&apos;s configured provider path. New hosted
-          enrollment is paused. CLI and self-hosted reviews send diffs directly
-          to the endpoint you configure. The diff lives in process memory for
-          the duration of the review and is gone with the process. There is no
-          code cache, no embedding index, and no repository clone on our
-          infrastructure.
+          the provider configured for the organization. Hosted reviews send it
+          through Postil&apos;s configured provider path. CLI and self-hosted
+          reviews send diffs directly to the endpoint you configure. The diff
+          lives in process memory for the duration of the review and is gone
+          with the process. There is no code cache, no embedding index, and no
+          repository clone on our infrastructure.
         </p>
 
         <h2>What is stored</h2>
@@ -53,9 +52,10 @@ export default function PrivacyPage() {
             records when accounting data is available, including purpose, model,
             token counts, and accounting provenance. The organization&apos;s
             entitlement and verified billing contact are also retained.
-            Self-service billing stores Paddle customer, subscription, and
-            transaction identifiers, subscription state, billing periods, and
-            per-period active-author counts. Card details stay with Paddle.
+            When self-service billing is available, it stores Paddle customer,
+            subscription, and transaction identifiers, subscription state,
+            billing periods, and per-period active-author counts. Card details
+            stay with Paddle.
           </li>
           <li>
             <strong>Webhook delivery ids</strong>, kept for 30 days to
@@ -110,11 +110,11 @@ export default function PrivacyPage() {
           <li>
             <strong>Model providers</strong> receive the diff for the duration
             of a model call. BYOK reviews route through the Postil worker to the
-            provider configured by the organization. Existing hosted plans use
-            Postil&apos;s configured provider path; new hosted enrollment is
-            paused. CLI and self-hosted deployments send diffs directly to the
-            endpoint you configure. For sensitive code we recommend BYOK pointed
-            directly at your chosen provider, or self-hosting (below).
+            provider configured by the organization. Hosted plans use
+            Postil&apos;s configured provider path. CLI and self-hosted deployments
+            send diffs directly to the endpoint you configure. For sensitive
+            code we recommend BYOK pointed directly at your chosen provider, or
+            self-hosting (below).
           </li>
           <li>
             <strong>Fly.io</strong> (application hosting): runs the web control
@@ -131,9 +131,9 @@ export default function PrivacyPage() {
             traffic.
           </li>
           <li>
-            <strong>Paddle</strong> is the merchant of record for self-service
-            subscriptions. Paddle handles checkout, payment methods, tax,
-            invoices, and its customer billing portal.
+            <strong>Paddle</strong> provides checkout, payment methods, tax,
+            invoices, and a customer billing portal when self-service billing
+            is available.
           </li>
           <li>
             <strong>Brevo</strong> sends verification messages when an

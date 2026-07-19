@@ -3,7 +3,7 @@ import { and, eq, gte, lt, sql } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 
-export type PrivateRepositoryAccessReason =
+export type RepositoryInferenceAccessReason =
   | "public_repository"
   | "active_subscription"
   | "active_trial"
@@ -30,30 +30,34 @@ export interface OrganizationEntitlementSnapshot {
   billingContactVerifiedAt: Date | null;
 }
 
-export interface PrivateRepositoryAccessDecision {
+export interface RepositoryInferenceAccessDecision {
   allowed: boolean;
-  reason: PrivateRepositoryAccessReason;
+  reason: RepositoryInferenceAccessReason;
   entitlement: OrganizationEntitlementSnapshot | null;
   usageMicros: number;
   usageLimitMicros: number | null;
 }
 
-/** Prevent a private BYOK subscription from silently spending hosted inference. */
-export function providerModeMatchesPrivateAccess(
+/** Keep provider selection within the repository's active inference entitlement. */
+export function providerModeMatchesRepositoryAccess(
   repositoryPrivate: boolean,
-  decision: PrivateRepositoryAccessDecision,
+  decision: RepositoryInferenceAccessDecision,
   byok: boolean,
 ): boolean {
-  if (!repositoryPrivate) return true;
+  // Public repositories are free only when the organization supplies the
+  // provider. Managed hosted inference always consumes an entitlement and its
+  // bounded allowance, regardless of repository visibility.
+  if (!repositoryPrivate && byok) return true;
+  if (decision.reason === "public_repository") return false;
   if (!decision.allowed || !decision.entitlement) return false;
   return decision.entitlement.subscriptionMode === (byok ? "byok" : "hosted");
 }
 
 /** Reflect a configured provider that cannot be used by the billed plan. */
 export function requireMatchingProviderMode(
-  decision: PrivateRepositoryAccessDecision,
+  decision: RepositoryInferenceAccessDecision,
   byok: boolean,
-): PrivateRepositoryAccessDecision {
+): RepositoryInferenceAccessDecision {
   if (!decision.allowed || !decision.entitlement) return decision;
   if (decision.entitlement.subscriptionMode === (byok ? "byok" : "hosted")) {
     return decision;
@@ -61,22 +65,22 @@ export function requireMatchingProviderMode(
   return { ...decision, allowed: false, reason: "provider_mode_mismatch" };
 }
 
-export function evaluatePrivateRepositoryAccess(
+export function evaluateRepositoryInferenceAccess(
   repositoryPrivate: boolean,
   entitlement: OrganizationEntitlementSnapshot | null,
   usageMicros: number,
   now = new Date(),
-): PrivateRepositoryAccessDecision {
-  if (!repositoryPrivate) {
-    return {
-      allowed: true,
-      reason: "public_repository",
-      entitlement,
-      usageMicros,
-      usageLimitMicros: null,
-    };
-  }
+): RepositoryInferenceAccessDecision {
   if (!entitlement) {
+    if (!repositoryPrivate) {
+      return {
+        allowed: true,
+        reason: "public_repository",
+        entitlement: null,
+        usageMicros,
+        usageLimitMicros: null,
+      };
+    }
     return {
       allowed: false,
       reason: "no_entitlement",
@@ -105,7 +109,7 @@ export function evaluatePrivateRepositoryAccess(
     entitlement.promotionalEligible &&
       (!entitlement.promotionalEndsAt || now < entitlement.promotionalEndsAt),
   );
-  const reason: PrivateRepositoryAccessReason | null =
+  const reason: RepositoryInferenceAccessReason | null =
     entitlement.status === "active"
       ? "active_subscription"
       : entitlement.status === "trialing" && trialActive
@@ -116,6 +120,15 @@ export function evaluatePrivateRepositoryAccess(
             ? "operator_promotion"
             : null;
   if (!reason) {
+    if (!repositoryPrivate) {
+      return {
+        allowed: true,
+        reason: "public_repository",
+        entitlement,
+        usageMicros,
+        usageLimitMicros,
+      };
+    }
     return { allowed: false, reason: "inactive", entitlement, usageMicros, usageLimitMicros };
   }
   if (usageLimitMicros !== null && usageMicros >= usageLimitMicros) {
@@ -130,17 +143,14 @@ export function evaluatePrivateRepositoryAccess(
   return { allowed: true, reason, entitlement, usageMicros, usageLimitMicros };
 }
 
-/** Single product-entitlement gate for all private-repository processing. */
-export async function canProcessPrivateRepository(
+/** Single product-entitlement gate for hosted and private-repository inference. */
+export async function canProcessRepositoryInference(
   db: Database,
   input: { orgId: number | null; repositoryPrivate: boolean; now?: Date },
-): Promise<PrivateRepositoryAccessDecision> {
+): Promise<RepositoryInferenceAccessDecision> {
   const now = input.now ?? new Date();
-  if (!input.repositoryPrivate) {
-    return evaluatePrivateRepositoryAccess(false, null, 0, now);
-  }
   if (input.orgId === null) {
-    return evaluatePrivateRepositoryAccess(true, null, 0, now);
+    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, null, 0, now);
   }
   const entitlement = (
     await db
@@ -163,12 +173,14 @@ export async function canProcessPrivateRepository(
       .where(eq(schema.organizationEntitlements.orgId, input.orgId))
       .limit(1)
   )[0] as OrganizationEntitlementSnapshot | undefined;
-  if (!entitlement) return evaluatePrivateRepositoryAccess(true, null, 0, now);
+  if (!entitlement) {
+    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, null, 0, now);
+  }
 
   // BYOK provider charges never pass through Postil, so provider-side limits
   // remain authoritative and Postil does not estimate or gate that spend.
   if (entitlement.subscriptionMode === "byok") {
-    return evaluatePrivateRepositoryAccess(true, entitlement, 0, now);
+    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, entitlement, 0, now);
   }
 
   let usageMicros = 0;
@@ -202,5 +214,18 @@ export async function canProcessPrivateRepository(
     // Fail closed instead of silently treating unknown spend as free.
     usageMicros = (usage?.unpricedCount ?? 0) > 0 ? usageLimitMicros : pricedUsageMicros;
   }
-  return evaluatePrivateRepositoryAccess(true, entitlement, usageMicros, now);
+  return evaluateRepositoryInferenceAccess(
+    input.repositoryPrivate,
+    entitlement,
+    usageMicros,
+    now,
+  );
 }
+
+// Compatibility exports for billing UI call sites while repository processing
+// migrates to the visibility-independent inference entitlement terminology.
+export type PrivateRepositoryAccessReason = RepositoryInferenceAccessReason;
+export type PrivateRepositoryAccessDecision = RepositoryInferenceAccessDecision;
+export const evaluatePrivateRepositoryAccess = evaluateRepositoryInferenceAccess;
+export const canProcessPrivateRepository = canProcessRepositoryInference;
+export const providerModeMatchesPrivateAccess = providerModeMatchesRepositoryAccess;

@@ -37,7 +37,7 @@ const ROWS: ComparisonRow[] = [
   {
     feature: "Pricing",
     cells: [
-      { kind: "text", note: "BYOK per active private-PR author; Hosted enrollment paused" },
+      { kind: "text", note: "Per active private-PR author; 30-day hosted trial" },
       { kind: "text", note: "Credit packs; $0.012/credit, $30 start" },
     ],
   },
@@ -126,8 +126,8 @@ export default function VsQodoPage() {
             usage docs
           </a>{" "}
           describe shared workspace credits and overage caps. Postil prices BYOK
-          by active author, with provider usage billed directly. Hosted
-          enrollment is paused. See the{" "}
+          by active author, with provider usage billed directly. Hosted starts
+          with a 30-day trial. See the{" "}
           <Link href="/pricing">pricing details</Link>.
         </p>
 
@@ -184,8 +184,8 @@ export default function VsQodoPage() {
         <div>
           <h2 className="serif-display text-2xl">One product, clear pricing.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            BYOK is priced by active author. Self-hosted is free with the same
-            gate and dashboard. Hosted enrollment is paused.
+            Private plans are priced by active author. Self-hosted is free with
+            the same gate and dashboard. Hosted starts with a 30-day trial.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

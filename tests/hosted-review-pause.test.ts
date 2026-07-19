@@ -52,7 +52,7 @@ describeDb("paused hosted review claims", () => {
     repositoryId = Number(repository.rows[0]!.id);
     await migrationClient.end();
     pool = new Pool({ connectionString: databaseUrl.toString(), max: 4 });
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await pool?.end();
@@ -60,7 +60,7 @@ describeDb("paused hosted review claims", () => {
       await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
       await adminClient.end();
     }
-  });
+  }, 30_000);
 
   test("admits one concurrent claim for the same head and separate claims for new heads", async () => {
     const db = drizzle(pool!, { schema });
@@ -142,6 +142,25 @@ describeDb("paused hosted review claims", () => {
       ),
     ).toBe(true);
 
+    await claimPausedHostedReview(
+      db,
+      { ...baseClaim, headSha: "head-three" },
+      {
+        installationId: 81001,
+        repoFullName: "pause-test/repo",
+        checkRunsMayExist: false,
+      },
+    );
+    const darkCleanup = await pool!.query<{ payload: Record<string, unknown> }>(
+      `SELECT payload FROM jobs
+        WHERE kind = 'check-run-cleanup' AND payload ->> 'headSha' = 'head-three'`,
+    );
+    expect(darkCleanup.rows[0]?.payload).toMatchObject({
+      advisoryCheckRunMayExist: false,
+      gateCheckRunMayExist: false,
+      intent: "neutralize",
+    });
+
     await pool!.query(
       `INSERT INTO reviews (
          repository_id, pr_number, head_sha, base_sha, status, error_message
@@ -156,7 +175,7 @@ describeDb("paused hosted review claims", () => {
       ...filters,
       status: "unavailable",
     });
-    expect(unavailableRows).toHaveLength(2);
+    expect(unavailableRows).toHaveLength(3);
     expect(unavailableRows.every(({ status }) => status === "unavailable")).toBe(true);
   });
 });
