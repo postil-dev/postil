@@ -89,6 +89,8 @@ class OperationalError extends Error {}
 
 class TerminalReviewError extends OperationalError {}
 
+export class ReviewStartupError extends OperationalError {}
+
 export class WorkerShutdownError extends OperationalError {
   constructor() {
     super("review interrupted by worker shutdown");
@@ -601,12 +603,12 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!installation) {
-    throw new OperationalError(
+    throw new ReviewStartupError(
       `review job cannot start: unknown installation ${payload.installationId}`,
     );
   }
   if (installation.suspended) {
-    throw new OperationalError(
+    throw new ReviewStartupError(
       `review job cannot start: installation ${payload.installationId} is suspended`,
     );
   }
@@ -624,7 +626,7 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!repository || !repository.enabled) {
-    throw new OperationalError(
+    throw new ReviewStartupError(
       `review job cannot start: repository ${payload.repoFullName} is missing or disabled`,
     );
   }
@@ -635,7 +637,7 @@ export async function runReviewJob(
     repositoryPrivate: signedOrStoredPrivate,
   });
   if (!repositoryAccess.allowed) {
-    throw new OperationalError(
+    throw new ReviewStartupError(
       `review job cannot start: repository ${payload.repoFullName} is not entitled to inference`,
     );
   }
@@ -690,7 +692,7 @@ export async function runReviewJob(
     repositoryPrivate: currentRepository.private,
   });
   if (!currentAccess.allowed) {
-    throw new OperationalError(
+    throw new ReviewStartupError(
       `review job cannot start: current visibility for ${payload.repoFullName} is not entitled to inference`,
     );
   }

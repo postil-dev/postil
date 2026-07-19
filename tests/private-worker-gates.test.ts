@@ -77,6 +77,9 @@ describe("private repository worker defense in depth", () => {
       "initiatedByGithubId: initiatedByGithubId ?? account.id",
     );
 
+    const runner = readFileSync("src/worker/runner.ts", "utf8");
+    expect(runner).toContain("err instanceof ReviewStartupError");
+
     const failureCatch = source.indexOf(
       "if (err instanceof TerminalReviewError) return;",
       providerFailure,
