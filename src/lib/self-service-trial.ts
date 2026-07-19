@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
@@ -40,6 +40,18 @@ export interface PersonalAccountTrialBackfillInput {
   releaseSha: string;
 }
 
+async function lockSelfServiceTrialActor(
+  db: Pick<Database, "execute">,
+  githubActorId: number,
+): Promise<void> {
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${HOSTED_INFERENCE_LOCK}, 0))`,
+  );
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:trial-actor:${githubActorId}`}, 0))`,
+  );
+}
+
 /** Grant one owner-scoped trial and enqueue its alert in the same transaction. */
 export async function grantSelfServiceTrial(
   db: Database,
@@ -48,12 +60,7 @@ export async function grantSelfServiceTrial(
 ): Promise<{ granted: boolean; trialEndsAt: Date | null }> {
   const trialEndsAt = new Date(now.getTime() + SELF_SERVICE_TRIAL_DURATION_MS);
   return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${HOSTED_INFERENCE_LOCK}, 0))`,
-    );
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:trial-actor:${input.initiatedByGithubId}`}, 0))`,
-    );
+    await lockSelfServiceTrialActor(tx, input.initiatedByGithubId);
     const capability = input.hostedReleaseCapability
       ? await tx.execute(sql`
           SELECT EXISTS (
@@ -135,14 +142,18 @@ export async function backfillExistingPersonalAccountTrials(
   db: Database,
   input: PersonalAccountTrialBackfillInput,
 ): Promise<{ eligible: number; granted: number }> {
-  const candidates = await db
+  const now = new Date();
+  const selection = {
+    orgId: schema.organizations.id,
+    orgSlug: schema.organizations.slug,
+    githubOwnerId: schema.organizations.githubOrgId,
+    accountLogin: schema.installations.accountLogin,
+    accountType: schema.installations.accountType,
+    githubInstallationId: schema.installations.githubInstallationId,
+  };
+  const unentitled = await db
     .selectDistinctOn([schema.organizations.id], {
-      orgId: schema.organizations.id,
-      orgSlug: schema.organizations.slug,
-      githubOwnerId: schema.organizations.githubOrgId,
-      accountLogin: schema.installations.accountLogin,
-      accountType: schema.installations.accountType,
-      githubInstallationId: schema.installations.githubInstallationId,
+      ...selection,
     })
     .from(schema.installations)
     .innerJoin(
@@ -167,9 +178,41 @@ export async function backfillExistingPersonalAccountTrials(
       ),
     )
     .orderBy(schema.organizations.id, desc(schema.installations.id));
+  const unrecorded = await db
+    .selectDistinctOn([schema.organizations.id], {
+      ...selection,
+      trialEndsAt: schema.organizationEntitlements.trialEndsAt,
+    })
+    .from(schema.installations)
+    .innerJoin(
+      schema.organizations,
+      eq(schema.organizations.id, schema.installations.orgId),
+    )
+    .innerJoin(
+      schema.organizationEntitlements,
+      eq(schema.organizationEntitlements.orgId, schema.organizations.id),
+    )
+    .leftJoin(
+      schema.selfServiceTrialGrants,
+      eq(schema.selfServiceTrialGrants.orgId, schema.organizations.id),
+    )
+    .where(
+      and(
+        eq(schema.installations.accountType, "User"),
+        eq(schema.installations.suspended, false),
+        isNotNull(schema.organizations.githubOrgId),
+        eq(schema.organizationEntitlements.subscriptionMode, "byok"),
+        eq(schema.organizationEntitlements.status, "trialing"),
+        eq(schema.organizationEntitlements.updatedBy, "self-service-trial"),
+        gt(schema.organizationEntitlements.trialEndsAt, now),
+        isNull(schema.selfServiceTrialGrants.orgId),
+      ),
+    )
+    .orderBy(schema.organizations.id, desc(schema.installations.id));
 
   let granted = 0;
-  for (const candidate of candidates) {
+  const capability = hostedInferenceCapability(input.releaseSha);
+  for (const candidate of unentitled) {
     if (candidate.githubOwnerId === null) continue;
     const result = await grantSelfServiceTrial(db, {
       ...candidate,
@@ -177,10 +220,40 @@ export async function backfillExistingPersonalAccountTrials(
       initiatedByGithubId: candidate.githubOwnerId,
       subscriptionMode: "hosted",
       hostedInferenceEnabled: input.hostedInferenceEnabled,
-      hostedReleaseCapability: hostedInferenceCapability(input.releaseSha),
-    });
+      hostedReleaseCapability: capability,
+    }, now);
     if (result.granted) granted += 1;
   }
 
-  return { eligible: candidates.length, granted };
+  for (const candidate of unrecorded) {
+    if (candidate.githubOwnerId === null || candidate.trialEndsAt === null) continue;
+    const githubOwnerId = candidate.githubOwnerId;
+    const trialEndsAt = candidate.trialEndsAt;
+    const created = await db.transaction(async (tx) => {
+      await lockSelfServiceTrialActor(tx, githubOwnerId);
+      const inserted = await tx
+        .insert(schema.selfServiceTrialGrants)
+        .values({
+          orgId: candidate.orgId,
+          initiatedByGithubId: githubOwnerId,
+          requestedMode: "hosted",
+          grantedMode: "byok",
+          createdAt: now,
+        })
+        .onConflictDoNothing({ target: schema.selfServiceTrialGrants.orgId })
+        .returning({ orgId: schema.selfServiceTrialGrants.orgId });
+      if (inserted.length === 0) return false;
+      await enqueueOperatorAlert(
+        tx,
+        trialStartedAlertPayload({ ...candidate, githubOwnerId, trialEndsAt }),
+      );
+      return true;
+    });
+    if (created) granted += 1;
+  }
+
+  return {
+    eligible: unentitled.length + unrecorded.length,
+    granted,
+  };
 }
