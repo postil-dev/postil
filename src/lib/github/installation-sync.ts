@@ -303,7 +303,11 @@ export async function upsertInstallation(
     return { installationRowId, orgSlug: organization.slug };
   });
   if (!saved) return undefined;
-  if (!(installation.suspended ?? false)) {
+  // GitHub's installation webhook sender and the authenticated setup sync are
+  // verified user identities. If neither is present, defer the trial until
+  // the next authenticated sync instead of charging an organization id
+  // against a user-scoped abuse limit.
+  if (!(installation.suspended ?? false) && initiatedByGithubId !== undefined) {
     const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
     await grantSelfServiceTrial(db, {
       orgId,
@@ -312,7 +316,7 @@ export async function upsertInstallation(
       accountType,
       githubOwnerId: account.id,
       githubInstallationId: installation.id,
-      initiatedByGithubId: initiatedByGithubId ?? account.id,
+      initiatedByGithubId,
       // Every installation starts on the hosted trial. Deploy-time admission
       // can defer the grant to BYOK while managed inference is dark; release
       // activation promotes that same immutable grant once the fleet is ready.

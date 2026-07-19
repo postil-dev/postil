@@ -87,6 +87,8 @@ const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 
 class OperationalError extends Error {}
 
+class TerminalReviewError extends OperationalError {}
+
 export class WorkerShutdownError extends OperationalError {
   constructor() {
     super("review interrupted by worker shutdown");
@@ -884,7 +886,7 @@ export async function runReviewJob(
     reviewLog.line("forge check-runs created");
 
     if (!providerModeMatches) {
-      throw new OperationalError(
+      throw new TerminalReviewError(
         "configured provider mode does not match the active inference entitlement",
       );
     }
@@ -1395,6 +1397,10 @@ export async function runReviewJob(
       );
       reviewLog.line("forge check-runs updated for review failure");
     }
+    // A preflight rejection becomes one durable failed review and one exact
+    // terminal check pair. Retrying the review job would create duplicate
+    // review/check identities for a condition that cannot change mid-job.
+    if (err instanceof TerminalReviewError) return;
     throw interruptedAfterPublication ? new OperationalError(message) : err;
   } finally {
     if (baselinePath)

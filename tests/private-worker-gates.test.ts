@@ -69,6 +69,22 @@ describe("private repository worker defense in depth", () => {
     );
     expect(installationSync).toContain('subscriptionMode: "hosted"');
     expect(installationSync).not.toContain("actorIdentityVerified");
+    expect(installationSync).toContain(
+      "initiatedByGithubId !== undefined",
+    );
+    expect(installationSync).toContain("initiatedByGithubId,");
+    expect(installationSync).not.toContain(
+      "initiatedByGithubId: initiatedByGithubId ?? account.id",
+    );
+
+    const failureCatch = source.indexOf(
+      "if (err instanceof TerminalReviewError) return;",
+      providerFailure,
+    );
+    expect(failureCatch).toBeGreaterThan(providerFailure);
+    expect(source.slice(providerFailure, failureCatch)).toContain(
+      "await failCheckRuns",
+    );
   });
 
   test("private author enforcement activates only after the managed fleet replacement", () => {
