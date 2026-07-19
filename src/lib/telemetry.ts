@@ -19,6 +19,8 @@ const WEB_VITAL_NAVIGATION_TYPES = new Set([
   "not-restored",
 ]);
 
+// Keep this allowlist exact. Prefix matching can capture identifiers or secrets
+// embedded in a future public-looking route before that route is reviewed.
 const PUBLIC_EXACT_PATHS = new Set([
   "/",
   "/blog",
