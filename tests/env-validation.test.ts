@@ -226,7 +226,7 @@ describe("web startup environment validation", () => {
 
     expect(() => validateEnv("monitor")).not.toThrow();
     delete process.env.BREVO_API_KEY;
-    expect(() => validateEnv("monitor")).toThrow(/requires BREVO_API_KEY/);
+    expect(() => validateEnv("monitor")).toThrow(/BREVO_API_KEY/);
     process.env.BREVO_API_KEY = "brevo-test-key";
     delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
     expect(() => validateEnv("monitor")).toThrow(/POSTIL_OPERATOR_ALERT_EMAIL/);

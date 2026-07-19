@@ -493,11 +493,11 @@ export function validateEnv(processKind: ProcessKind): void {
     if (!value || value.trim() === "") missing.push(spec);
   }
   if (processKind === "monitor") {
-    const recipient = ENV_SPECS.find(
-      (spec) => spec.name === "POSTIL_OPERATOR_ALERT_EMAIL",
-    );
-    if (recipient && !process.env.POSTIL_OPERATOR_ALERT_EMAIL?.trim()) {
-      missing.push(recipient);
+    for (const name of ["POSTIL_OPERATOR_ALERT_EMAIL", "BREVO_API_KEY"] as const) {
+      const spec = ENV_SPECS.find((candidate) => candidate.name === name);
+      if (spec && !process.env[name]?.trim()) {
+        missing.push(spec);
+      }
     }
   }
   if (

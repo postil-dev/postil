@@ -200,6 +200,8 @@ jobs:
           POSTIL_CLI_TAG: ${{ vars.POSTIL_CLI_TAG }}
       - name: Restart any machines left stopped by the deploy
         id: recover
+        # Runtime diagnostics stay in private Fly logs and the operator
+        # dashboard. Deployment CI emits only generic release status.
         # The worker and monitor process groups have no HTTP health check to
         # auto-wake them. A deploy that leaves a managed machine stopped needs
         # an explicit restart
