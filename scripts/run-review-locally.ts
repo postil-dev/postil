@@ -70,6 +70,16 @@ interface CheckCompleted {
   body: unknown;
 }
 
+interface LocalCheckRunState {
+  id: number;
+  name: string;
+  external_id: string | null;
+  head_sha: string;
+  status: "in_progress" | "completed";
+  conclusion: CheckConclusion | null;
+  output: { title: string; summary: string } | null;
+}
+
 interface ReviewPosted {
   type: "review-posted";
   commitId: string;
@@ -400,6 +410,7 @@ function createLocalGitHubServer(input: {
   const events: LocalGitHubEvent[] = [];
   const pullFiles = pullFilesFromDiff(input.diffText);
   let nextCheckRunId = 1000;
+  const checkRuns = new Map<number, LocalCheckRunState>();
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -470,19 +481,68 @@ function createLocalGitHubServer(input: {
         const id = nextCheckRunId++;
         const name = readString(body, "name", "unknown");
         const headSha = readString(body, "head_sha", input.headSha);
+        const externalId = readString(body, "external_id", "") || null;
+        checkRuns.set(id, {
+          id,
+          name,
+          external_id: externalId,
+          head_sha: headSha,
+          status: "in_progress",
+          conclusion: null,
+          output: null,
+        });
         events.push({ type: "check-created", id, name, headSha, body });
         console.log(`[local github] would create check-run #${id} ${name} on ${headSha}`);
         return json({ id });
       }
 
+      const commitChecksMatch = suffix.match(
+        /^commits\/([^/]+)\/check-runs$/,
+      );
+      if (request.method === "GET" && commitChecksMatch) {
+        const headSha = decodeURIComponent(commitChecksMatch[1] ?? "");
+        const checkName = url.searchParams.get("check_name");
+        const requestedPerPage = Number(
+          url.searchParams.get("per_page") ?? "100",
+        );
+        const requestedPage = Number(url.searchParams.get("page") ?? "1");
+        const perPage =
+          Number.isSafeInteger(requestedPerPage) && requestedPerPage > 0
+            ? requestedPerPage
+            : 100;
+        const page =
+          Number.isSafeInteger(requestedPage) && requestedPage > 0
+            ? requestedPage
+            : 1;
+        const matching = [...checkRuns.values()].filter(
+          (checkRun) =>
+            checkRun.head_sha === headSha &&
+            (!checkName || checkRun.name === checkName),
+        );
+        const start = (page - 1) * perPage;
+        return json({
+          total_count: matching.length,
+          check_runs: matching.slice(start, start + perPage),
+        });
+      }
+
       const checkMatch = suffix.match(/^check-runs\/(\d+)$/);
+      if (request.method === "GET" && checkMatch) {
+        const checkRun = checkRuns.get(Number(checkMatch[1]));
+        return checkRun ? json(checkRun) : notFound();
+      }
       if (request.method === "PATCH" && checkMatch) {
         const body = await request.json().catch(() => ({}));
         const output = isRecord(body.output) ? body.output : {};
         const id = Number(checkMatch[1]);
         const conclusion = readConclusion(body);
+        const checkRun = checkRuns.get(id);
+        if (!checkRun) return notFound();
+        checkRun.status = "completed";
+        checkRun.conclusion = conclusion;
         const title = readString(output, "title", "No title");
         const summary = readString(output, "summary", "");
+        checkRun.output = { title, summary };
         const annotations = Array.isArray(output.annotations) ? output.annotations.length : 0;
         events.push({
           type: "check-completed",

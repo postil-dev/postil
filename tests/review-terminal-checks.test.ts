@@ -4,9 +4,7 @@ const realDb = await import("@/lib/db");
 const realChecks = await import("@/lib/github/checks");
 const realAppAuth = await import("@/lib/github/app-auth");
 
-const activeReviews = [
-  { id: 10, advisoryCheckRunId: 11, gateCheckRunId: 22 },
-];
+const activeReviews = [{ id: 10, advisoryCheckRunId: 11, gateCheckRunId: 22 }];
 const transitions: Array<Record<string, unknown>> = [];
 const completions: Array<{
   id: number;
@@ -16,6 +14,7 @@ const completions: Array<{
 }> = [];
 const failingCompletionIds = new Set<number>();
 let reconciledCheckRunId: number | null = null;
+const verifiedCompletionIds: number[] = [];
 
 function fakeDb() {
   return {
@@ -69,8 +68,26 @@ mock.module("@/lib/github/checks", () => ({
     title: string,
     summary: string,
   ) => {
-    if (failingCompletionIds.has(id)) throw new Error(`check-run ${id} unavailable`);
+    if (failingCompletionIds.has(id))
+      throw new Error(`check-run ${id} unavailable`);
     completions.push({ id, conclusion, title, summary });
+  },
+  completeExpectedCheckRun: async (
+    _token: string,
+    _repo: string,
+    expected: { id: number; conclusion: string },
+    title: string,
+    summary: string,
+  ) => {
+    if (failingCompletionIds.has(expected.id))
+      throw new Error(`check-run ${expected.id} unavailable`);
+    verifiedCompletionIds.push(expected.id);
+    completions.push({
+      id: expected.id,
+      conclusion: expected.conclusion,
+      title,
+      summary,
+    });
   },
 }));
 
@@ -86,6 +103,7 @@ beforeEach(() => {
   completions.length = 0;
   failingCompletionIds.clear();
   reconciledCheckRunId = null;
+  verifiedCompletionIds.length = 0;
 });
 
 describe("review terminal check-runs", () => {
@@ -151,9 +169,9 @@ describe("review terminal check-runs", () => {
         true,
       ),
     ).rejects.toThrow("could not neutralize unavailable review check-runs");
-    expect(completions.map(({ id, conclusion }) => ({ id, conclusion }))).toEqual([
-      { id: 22, conclusion: "neutral" },
-    ]);
+    expect(
+      completions.map(({ id, conclusion }) => ({ id, conclusion })),
+    ).toEqual([{ id: 22, conclusion: "neutral" }]);
   });
 
   test("superseded reviews neutralize both checks with the replacement head", async () => {
@@ -193,11 +211,15 @@ describe("review terminal check-runs", () => {
       "worker stopped",
     );
 
-    expect(completions.map(({ id, conclusion }) => ({ id, conclusion }))).toEqual([
+    expect(
+      completions.map(({ id, conclusion }) => ({ id, conclusion })),
+    ).toEqual([
       { id: 22, conclusion: "failure" },
       { id: 11, conclusion: "neutral" },
     ]);
-    expect(completions.every(({ summary }) => !summary.includes("worker stopped"))).toBe(true);
+    expect(
+      completions.every(({ summary }) => !summary.includes("worker stopped")),
+    ).toBe(true);
     expect(completions[0]?.summary).toContain("no review verdict exists");
   });
 
@@ -213,10 +235,71 @@ describe("review terminal check-runs", () => {
       "https://postil.dev/orgs/postil-dev/runs/run-id",
     );
 
-    expect(completions.every(({ summary }) => !summary.includes("provider secret detail"))).toBe(true);
+    expect(
+      completions.every(
+        ({ summary }) => !summary.includes("provider secret detail"),
+      ),
+    ).toBe(true);
     expect(completions[0]?.summary).toContain(
       "[Review details](https://postil.dev/orgs/postil-dev/runs/run-id)",
     );
+  });
+
+  test("publication cleanup verifies exact identities and names the publication failure", async () => {
+    await failCheckRuns(
+      "test-token",
+      "postil-dev/postil",
+      11,
+      22,
+      "check-run 22 is not completed",
+      undefined,
+      true,
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+      {
+        advisory: {
+          id: 11,
+          name: "postil/review",
+          externalId: "postil:run-id:review",
+          headSha: "head-sha",
+        },
+        gate: {
+          id: 22,
+          name: "postil/gate",
+          externalId: "postil:run-id:gate",
+          headSha: "head-sha",
+        },
+        publicationIncomplete: true,
+      },
+    );
+
+    expect(verifiedCompletionIds).toEqual([22, 11]);
+    expect(completions.map(({ title }) => title)).toEqual([
+      "Review publication incomplete",
+      "Review publication incomplete",
+    ]);
+    expect(completions[0]?.summary).toContain(
+      "GitHub did not receive the complete result",
+    );
+    expect(completions[0]?.summary).toContain(
+      "[Review details](https://postil.dev/orgs/postil-dev/runs/run-id)",
+    );
+  });
+
+  test("publication cleanup rejects incomplete identity evidence", async () => {
+    await expect(
+      failCheckRuns(
+        "test-token",
+        "postil-dev/postil",
+        11,
+        22,
+        "publication failed",
+        undefined,
+        true,
+        undefined,
+        { publicationIncomplete: true },
+      ),
+    ).rejects.toThrow("requires the exact GitHub check-run identities");
+    expect(completions).toEqual([]);
   });
 
   test("strict cleanup rejects when a check-run remains incomplete", async () => {
@@ -236,6 +319,53 @@ describe("review terminal check-runs", () => {
     expect(completions.map(({ id }) => id)).toEqual([11]);
   });
 
+  test("failure cleanup is idempotent for already terminal check-runs", async () => {
+    await failCheckRuns(
+      "test-token",
+      "postil-dev/postil",
+      11,
+      22,
+      "publication failed",
+    );
+    await failCheckRuns(
+      "test-token",
+      "postil-dev/postil",
+      11,
+      22,
+      "publication failed",
+    );
+
+    expect(
+      completions.map(({ id, conclusion }) => ({ id, conclusion })),
+    ).toEqual([
+      { id: 22, conclusion: "failure" },
+      { id: 11, conclusion: "neutral" },
+      { id: 22, conclusion: "failure" },
+      { id: 11, conclusion: "neutral" },
+    ]);
+  });
+
+  test("queued publication cleanup keeps the exact run identity", async () => {
+    await runCheckRunCleanupJob({
+      installationId: 42,
+      repoFullName: "postil-dev/postil",
+      advisoryCheckRunId: 11,
+      gateCheckRunId: 22,
+      headSha: "head-sha",
+      advisoryCheckExternalId: "postil:run-id:review",
+      gateCheckExternalId: "postil:run-id:gate",
+      message: "publication verification failed",
+      detailsUrl: "https://postil.dev/orgs/postil-dev/runs/run-id",
+      intent: "fail",
+      publicationIncomplete: true,
+    });
+
+    expect(verifiedCompletionIds).toEqual([22, 11]);
+    expect(completions.every(({ title }) =>
+      title === "Review publication incomplete"
+    )).toBe(true);
+  });
+
   test("cleanup completes known checks before retrying an unresolved ambiguous peer", async () => {
     await expect(
       runCheckRunCleanupJob({
@@ -250,8 +380,8 @@ describe("review terminal check-runs", () => {
       }),
     ).rejects.toThrow("check-run cleanup remains incomplete");
 
-    expect(completions.map(({ id, conclusion }) => ({ id, conclusion }))).toEqual([
-      { id: 11, conclusion: "neutral" },
-    ]);
+    expect(
+      completions.map(({ id, conclusion }) => ({ id, conclusion })),
+    ).toEqual([{ id: 11, conclusion: "neutral" }]);
   });
 });
