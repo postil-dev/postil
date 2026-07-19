@@ -33,7 +33,9 @@ const operationalFailures: string[] = [];
 const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
-class MockReviewStartupError extends Error {}
+class MockPermanentJobError extends Error {
+  permanent = true;
+}
 class MockWebhookDeliveryStateError extends Error {}
 
 mock.module("@/lib/server-observability", () => ({
@@ -66,6 +68,8 @@ mock.module("@/lib/paddle-billing", () => ({
 
 mock.module("@/lib/queue", () => ({
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
+  isPermanentJobError: (error: unknown) =>
+    error instanceof MockPermanentJobError,
   claimJob: async (
     _pool: unknown,
     _workerId: string,
@@ -118,7 +122,6 @@ mock.module("@/worker/watchdog", () => ({
 }));
 
 mock.module("@/worker/review", () => ({
-  ReviewStartupError: MockReviewStartupError,
   WorkerShutdownError: MockWorkerShutdownError,
   runCheckRunCleanupJob: async () => {
     await cleanupRun?.();
@@ -281,7 +284,7 @@ describe("drainQueueOnce", () => {
 
   test("fails deterministic review startup errors without retrying", async () => {
     reviewRun = async () => {
-      throw new MockReviewStartupError(
+      throw new MockPermanentJobError(
         "review job cannot start: repository octo/repo is disabled",
       );
     };

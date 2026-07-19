@@ -61,7 +61,11 @@ import {
 } from "@/lib/hosted-usage-reservations";
 import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { withoutOrgModelConfig } from "@/lib/org-review-config";
-import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
+import {
+  PermanentJobError,
+  type CheckRunCleanupJobPayload,
+  type ReviewJobPayload,
+} from "@/lib/queue";
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
@@ -88,8 +92,6 @@ const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 class OperationalError extends Error {}
 
 class TerminalReviewError extends OperationalError {}
-
-export class ReviewStartupError extends OperationalError {}
 
 export class WorkerShutdownError extends OperationalError {
   constructor() {
@@ -603,12 +605,12 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!installation) {
-    throw new ReviewStartupError(
+    throw new PermanentJobError(
       `review job cannot start: unknown installation ${payload.installationId}`,
     );
   }
   if (installation.suspended) {
-    throw new ReviewStartupError(
+    throw new PermanentJobError(
       `review job cannot start: installation ${payload.installationId} is suspended`,
     );
   }
@@ -626,7 +628,7 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!repository || !repository.enabled) {
-    throw new ReviewStartupError(
+    throw new PermanentJobError(
       `review job cannot start: repository ${payload.repoFullName} is missing or disabled`,
     );
   }
@@ -637,7 +639,7 @@ export async function runReviewJob(
     repositoryPrivate: signedOrStoredPrivate,
   });
   if (!repositoryAccess.allowed) {
-    throw new ReviewStartupError(
+    throw new PermanentJobError(
       `review job cannot start: repository ${payload.repoFullName} is not entitled to inference`,
     );
   }
@@ -692,7 +694,7 @@ export async function runReviewJob(
     repositoryPrivate: currentRepository.private,
   });
   if (!currentAccess.allowed) {
-    throw new ReviewStartupError(
+    throw new PermanentJobError(
       `review job cannot start: current visibility for ${payload.repoFullName} is not entitled to inference`,
     );
   }

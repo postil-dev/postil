@@ -78,7 +78,8 @@ describe("private repository worker defense in depth", () => {
     );
 
     const runner = readFileSync("src/worker/runner.ts", "utf8");
-    expect(runner).toContain("err instanceof ReviewStartupError");
+    expect(runner).toContain("isPermanentJobError(err)");
+    expect(runner).not.toContain("err instanceof PermanentJobError");
 
     const failureCatch = source.indexOf(
       "if (err instanceof TerminalReviewError) return;",
