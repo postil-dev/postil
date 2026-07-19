@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
@@ -136,7 +136,7 @@ export async function backfillExistingPersonalAccountTrials(
   input: PersonalAccountTrialBackfillInput,
 ): Promise<{ eligible: number; granted: number }> {
   const candidates = await db
-    .select({
+    .selectDistinctOn([schema.organizations.id], {
       orgId: schema.organizations.id,
       orgSlug: schema.organizations.slug,
       githubOwnerId: schema.organizations.githubOrgId,
@@ -165,7 +165,8 @@ export async function backfillExistingPersonalAccountTrials(
         isNull(schema.organizationEntitlements.orgId),
         isNull(schema.selfServiceTrialGrants.orgId),
       ),
-    );
+    )
+    .orderBy(schema.organizations.id, desc(schema.installations.id));
 
   let granted = 0;
   for (const candidate of candidates) {

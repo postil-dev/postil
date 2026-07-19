@@ -163,6 +163,11 @@ describeDb("managed hosted inference release activation", () => {
         github_installation_id, org_id, account_login, account_type, suspended
       ) VALUES (74001, $1, 'personal-backfill', 'User', false)
     `, [personalOrgId]);
+    await pool.query(`
+      INSERT INTO installations (
+        github_installation_id, org_id, account_login, account_type, suspended
+      ) VALUES (74003, $1, 'personal-backfill', 'User', false)
+    `, [personalOrgId]);
 
     const organization = await pool.query<{ id: string }>(`
       INSERT INTO organizations (slug, name, github_org_id)
