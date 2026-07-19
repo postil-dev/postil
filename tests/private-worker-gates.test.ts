@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 describe("private repository worker defense in depth", () => {
-  test("review worker gates before review rows, GitHub tokens, checks, config fetch, or CLI spawn", () => {
+  test("review worker gates entitlement before token access and terminalizes provider mismatches", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const installationSync = readFileSync(
       "src/lib/github/installation-sync.ts",
@@ -28,9 +28,26 @@ describe("private repository worker defense in depth", () => {
         source.indexOf(sideEffect, source.indexOf("runReviewJob")),
       ).toBeGreaterThan(gate);
     }
+    const providerMode = source.indexOf(
+      "providerModeMatchesRepositoryAccess",
+      gate,
+    );
+    const checkCreation = source.indexOf(
+      "advisoryCheckRunId = await createCheckRun",
+      gate,
+    );
+    const providerFailure = source.indexOf(
+      "if (!providerModeMatches)",
+      checkCreation,
+    );
+    expect(providerMode).toBeGreaterThan(
+      source.indexOf("fetchRepositorySummary", gate),
+    );
+    expect(providerFailure).toBeGreaterThan(checkCreation);
+    expect(providerFailure).toBeLessThan(source.indexOf("await runCli", gate));
     expect(
-      source.indexOf("providerModeMatchesRepositoryAccess", gate),
-    ).toBeLessThan(source.indexOf("await getInstallationToken", gate));
+      source.slice(providerFailure, source.indexOf("await runCli", gate)),
+    ).toContain("configured provider mode does not match");
     expect(source.indexOf("fetchRepositorySummary", gate)).toBeLessThan(
       source.indexOf("insert(schema.reviews)", gate),
     );
@@ -50,6 +67,8 @@ describe("private repository worker defense in depth", () => {
     expect(installationSync).toContain(
       "AbortSignal.any([signal, AbortSignal.timeout(10_000)])",
     );
+    expect(installationSync).toContain('subscriptionMode: "hosted"');
+    expect(installationSync).not.toContain("actorIdentityVerified");
   });
 
   test("private author enforcement activates only after the managed fleet replacement", () => {
@@ -317,9 +336,7 @@ describe("private repository worker defense in depth", () => {
     expect(supersessionRace).toContain(
       "await reconcileHostedReviewSpendFromReceipt",
     );
-    expect(supersessionRace).toContain(
-      "await neutralizeSupersededCheckRuns",
-    );
+    expect(supersessionRace).toContain("await neutralizeSupersededCheckRuns");
     expect(supersessionRace).toContain("return;");
   });
 

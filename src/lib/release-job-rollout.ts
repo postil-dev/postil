@@ -44,16 +44,18 @@ export async function activateHostedInferenceRelease(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-      HOSTED_INFERENCE_LOCK,
-    ]);
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [HOSTED_INFERENCE_LOCK],
+    );
     const activated = await client.query(
       `INSERT INTO deployment_capabilities (name)
        VALUES ($1)
        ON CONFLICT (name) DO NOTHING`,
       [hostedInferenceCapability(releaseSha)],
     );
-    await client.query(`
+    await client.query(
+      `
       WITH hosted_counts AS (
         SELECT initiated_by_github_id, count(*)::int AS count
         FROM self_service_trial_grants
@@ -69,6 +71,8 @@ export async function activateHostedInferenceRelease(
         FROM self_service_trial_grants grant_row
         JOIN organization_entitlements entitlement
           ON entitlement.org_id = grant_row.org_id
+        LEFT JOIN org_settings settings
+          ON settings.org_id = grant_row.org_id
         LEFT JOIN hosted_counts
           ON hosted_counts.initiated_by_github_id = grant_row.initiated_by_github_id
         WHERE grant_row.requested_mode = 'hosted'
@@ -77,6 +81,7 @@ export async function activateHostedInferenceRelease(
           AND entitlement.status = 'trialing'
           AND entitlement.updated_by = 'self-service-trial'
           AND entitlement.trial_ends_at > now()
+          AND settings.api_key_ciphertext IS NULL
       ), promoted AS (
         UPDATE organization_entitlements entitlement
         SET subscription_mode = 'hosted',
@@ -97,7 +102,9 @@ export async function activateHostedInferenceRelease(
       WHERE grant_row.org_id = promoted.org_id
         AND grant_row.requested_mode = 'hosted'
         AND grant_row.granted_mode = 'byok'
-    `, [HOSTED_TRIALS_PER_GITHUB_ACTOR]);
+    `,
+      [HOSTED_TRIALS_PER_GITHUB_ACTOR],
+    );
     await client.query("COMMIT");
     return (activated.rowCount ?? 0) > 0;
   } catch (error) {

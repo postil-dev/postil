@@ -599,16 +599,14 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!installation) {
-    console.warn(
-      `review job skipped: unknown installation ${payload.installationId}`,
+    throw new OperationalError(
+      `review job cannot start: unknown installation ${payload.installationId}`,
     );
-    return;
   }
   if (installation.suspended) {
-    console.warn(
-      `review job skipped: installation ${payload.installationId} suspended`,
+    throw new OperationalError(
+      `review job cannot start: installation ${payload.installationId} is suspended`,
     );
-    return;
   }
 
   const repository = (
@@ -624,10 +622,9 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!repository || !repository.enabled) {
-    console.warn(
-      `review job skipped: repository ${payload.repoFullName} missing or disabled`,
+    throw new OperationalError(
+      `review job cannot start: repository ${payload.repoFullName} is missing or disabled`,
     );
-    return;
   }
   const signedOrStoredPrivate =
     repository.private || payload.repositoryPrivate === true;
@@ -636,24 +633,11 @@ export async function runReviewJob(
     repositoryPrivate: signedOrStoredPrivate,
   });
   if (!repositoryAccess.allowed) {
-    console.warn(
-      `review job skipped: private repository ${payload.repoFullName} requires billing`,
+    throw new OperationalError(
+      `review job cannot start: repository ${payload.repoFullName} is not entitled to inference`,
     );
-    return;
   }
   const llm = await resolveLlmConfig(installation.orgId);
-  if (
-    !providerModeMatchesRepositoryAccess(
-      signedOrStoredPrivate,
-      repositoryAccess,
-      llm.byok,
-    )
-  ) {
-    console.warn(
-      `review job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
-    );
-    return;
-  }
   const hostedReviewUnavailable =
     !llm.byok && !(await hostedInferenceAvailable(getPool()));
   if (hostedReviewUnavailable) {
@@ -703,19 +687,16 @@ export async function runReviewJob(
     orgId: installation.orgId,
     repositoryPrivate: currentRepository.private,
   });
-  if (
-    !currentAccess.allowed ||
-    !providerModeMatchesRepositoryAccess(
-      currentRepository.private,
-      currentAccess,
-      llm.byok,
-    )
-  ) {
-    console.warn(
-      `review job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
+  if (!currentAccess.allowed) {
+    throw new OperationalError(
+      `review job cannot start: current visibility for ${payload.repoFullName} is not entitled to inference`,
     );
-    return;
   }
+  const providerModeMatches = providerModeMatchesRepositoryAccess(
+    currentRepository.private,
+    currentAccess,
+    llm.byok,
+  );
 
   let authorGithubId = payload.authorGithubId;
   let authorLogin = payload.authorLogin;
@@ -901,6 +882,12 @@ export async function runReviewJob(
       .set({ gateCheckRunId })
       .where(eq(schema.reviews.id, reviewId));
     reviewLog.line("forge check-runs created");
+
+    if (!providerModeMatches) {
+      throw new OperationalError(
+        "configured provider mode does not match the active inference entitlement",
+      );
+    }
 
     throwIfWorkerStopping(signal);
     reviewLog.line(await postilCliVersionLogLine());
@@ -1581,8 +1568,7 @@ export async function failCheckRuns(
   expectedChecks?: ExpectedFailureCheckRuns,
 ): Promise<void> {
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
-  const publicationIncomplete =
-    expectedChecks?.publicationIncomplete === true;
+  const publicationIncomplete = expectedChecks?.publicationIncomplete === true;
   if (
     publicationIncomplete &&
     ((gateCheckRunId != null && !expectedChecks?.gate) ||
