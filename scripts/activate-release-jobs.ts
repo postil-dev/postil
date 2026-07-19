@@ -27,7 +27,7 @@ async function main(): Promise<void> {
           hostedInferenceEnabled: hostedInferenceEnabled(),
           releaseSha,
         })
-      : { eligible: 0, granted: 0 };
+      : { eligible: 0, granted: 0, reconciled: 0 };
     const hostedInferenceActivated = releaseSha
       ? await activateHostedInferenceRelease(getPool(), releaseSha)
       : null;
@@ -37,6 +37,7 @@ async function main(): Promise<void> {
         `hosted_inference=${hostedInferenceActivated === null ? "unmanaged" : hostedInferenceActivated ? "activated" : "already_active"} ` +
         `personal_trials_eligible=${personalTrials.eligible} ` +
         `personal_trials_granted=${personalTrials.granted} ` +
+        `personal_trials_reconciled=${personalTrials.reconciled} ` +
         `billing_pending=${billing.pending} billing_queued=${billing.queued} ` +
         `escalation_terminalized=${retirement.terminalized} ` +
         `escalation_redacted=${retirement.redacted} ` +

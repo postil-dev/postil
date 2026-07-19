@@ -169,6 +169,26 @@ describeDb("managed hosted inference release activation", () => {
       ) VALUES (74003, $1, 'personal-backfill', 'User', false)
     `, [personalOrgId]);
 
+    const unrecorded = await pool.query<{ id: string }>(`
+      INSERT INTO organizations (slug, name, github_org_id)
+      VALUES ('unrecorded-personal-trial', 'Unrecorded Personal Trial', 73003)
+      RETURNING id
+    `);
+    const unrecordedOrgId = Number(unrecorded.rows[0]!.id);
+    await pool.query(`
+      INSERT INTO installations (
+        github_installation_id, org_id, account_login, account_type, suspended
+      ) VALUES (74004, $1, 'unrecorded-personal-trial', 'User', false)
+    `, [unrecordedOrgId]);
+    await pool.query(`
+      INSERT INTO organization_entitlements (
+        org_id, subscription_mode, status, trial_ends_at, period_starts_at,
+        period_ends_at, included_usage_micros, overage_hard_cap_micros,
+        updated_by
+      ) VALUES ($1, 'byok', 'trialing', now() + interval '30 days', now(),
+                now() + interval '30 days', 100000000, 0, 'self-service-trial')
+    `, [unrecordedOrgId]);
+
     const organization = await pool.query<{ id: string }>(`
       INSERT INTO organizations (slug, name, github_org_id)
       VALUES ('organization-backfill', 'Organization Backfill', 73002) RETURNING id
@@ -184,7 +204,7 @@ describeDb("managed hosted inference release activation", () => {
     expect(await backfillExistingPersonalAccountTrials(db, {
       hostedInferenceEnabled: true,
       releaseSha: releaseC,
-    })).toEqual({ eligible: 1, granted: 1 });
+    })).toEqual({ eligible: 2, granted: 1, reconciled: 1 });
     expect((await pool.query<{ subscription_mode: string; requested_mode: string; granted_mode: string }>(`
       SELECT entitlement.subscription_mode, trial.requested_mode, trial.granted_mode
       FROM organization_entitlements entitlement
@@ -203,6 +223,18 @@ describeDb("managed hosted inference release activation", () => {
       "SELECT count(*) FROM operator_alert_deliveries WHERE org_id = $1 AND event = 'trial_started'",
       [personalOrgId],
     )).rows[0]!.count).toBe("1");
+    expect((await pool.query<{ requested_mode: string; granted_mode: string }>(`
+      SELECT requested_mode, granted_mode
+      FROM self_service_trial_grants
+      WHERE org_id = $1
+    `, [unrecordedOrgId])).rows[0]).toEqual({
+      requested_mode: "hosted",
+      granted_mode: "byok",
+    });
+    expect((await pool.query<{ count: string }>(
+      "SELECT count(*) FROM operator_alert_deliveries WHERE org_id = $1 AND event = 'trial_started'",
+      [unrecordedOrgId],
+    )).rows[0]!.count).toBe("1");
 
     expect(await activateHostedInferenceRelease(pool, releaseC)).toBe(true);
     expect((await pool.query<{ subscription_mode: string; granted_mode: string }>(`
@@ -214,10 +246,19 @@ describeDb("managed hosted inference release activation", () => {
       subscription_mode: "hosted",
       granted_mode: "hosted",
     });
+    expect((await pool.query<{ subscription_mode: string; granted_mode: string }>(`
+      SELECT entitlement.subscription_mode, trial.granted_mode
+      FROM organization_entitlements entitlement
+      JOIN self_service_trial_grants trial ON trial.org_id = entitlement.org_id
+      WHERE entitlement.org_id = $1
+    `, [unrecordedOrgId])).rows[0]).toEqual({
+      subscription_mode: "hosted",
+      granted_mode: "hosted",
+    });
     expect(await backfillExistingPersonalAccountTrials(db, {
       hostedInferenceEnabled: true,
       releaseSha: releaseC,
-    })).toEqual({ eligible: 0, granted: 0 });
+    })).toEqual({ eligible: 0, granted: 0, reconciled: 0 });
     expect((await pool.query<{ count: string }>(
       "SELECT count(*) FROM operator_alert_deliveries WHERE org_id = $1 AND event = 'trial_started'",
       [personalOrgId],
