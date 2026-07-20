@@ -274,7 +274,18 @@ export async function runClaimedJob(
       (job.kind === "check-run-cleanup" && !permanent);
     const outcome = durableReconciliation
       ? await retryJobIndefinitely(getPool(), job, message)
-      : await failJob(getPool(), job, message, { permanent });
+      : await failJob(getPool(), job, message, {
+          permanent,
+          ...(job.kind === "respond"
+            ? {
+                failureFollowup: {
+                  kind: "respond-failure-comment" as const,
+                  payload: { ...job.payload, respondJobId: job.id },
+                  maxAttempts: 5,
+                },
+              }
+            : {}),
+        });
     if (job.kind === "operator-alert") {
       const payload = normalizeLegacyOperatorAlertPayload(job.payload);
       if (payload) {
@@ -297,13 +308,6 @@ export async function runClaimedJob(
       reportOperationalFailure(processGroup, "job_permanently_failed", err);
     } else if (outcome === "retried") {
       reportOperationalWarning(processGroup, "job_retrying");
-    }
-    if (outcome === "failed" && job.kind === "respond") {
-      await getPool().query(
-        `INSERT INTO jobs (kind, payload, max_attempts)
-         VALUES ('respond-failure-comment', $1::jsonb || jsonb_build_object('respondJobId', $2::bigint), 5)`,
-        [JSON.stringify(job.payload), job.id],
-      );
     }
   }
 }

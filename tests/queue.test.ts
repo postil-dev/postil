@@ -461,6 +461,42 @@ describeDb("postgres job queue", () => {
     expect(await claimJob(pool, "w")).toBeNull();
   });
 
+  test("failJob atomically enqueues its terminal follow-up", async () => {
+    const payload = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      number: 7,
+      isPr: true,
+      comment: "@postil explain",
+    };
+    await enqueueJob(pool, "respond", payload, { maxAttempts: 1 });
+    const job = await claimJob(pool, "w");
+
+    expect(
+      await failJob(pool, job!, "provider request failed", {
+        failureFollowup: {
+          kind: "respond-failure-comment",
+          payload: { ...payload, respondJobId: job!.id },
+          maxAttempts: 5,
+        },
+      }),
+    ).toBe("failed");
+
+    const rows = await pool.query<{
+      kind: string;
+      status: string;
+      payload: Record<string, unknown>;
+    }>("SELECT kind, status, payload FROM jobs ORDER BY id");
+    expect(rows.rows).toEqual([
+      { kind: "respond", status: "failed", payload },
+      {
+        kind: "respond-failure-comment",
+        status: "queued",
+        payload: { ...payload, respondJobId: job!.id },
+      },
+    ]);
+  });
+
   test("failJob {permanent} fails immediately without consuming remaining attempts", async () => {
     // A deterministic error (broken CA store, missing binary) must not burn the
     // retry budget: the very first attempt goes straight to `failed`.

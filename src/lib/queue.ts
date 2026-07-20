@@ -691,7 +691,14 @@ export async function failJob(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "attempts" | "maxAttempts" | "lockedBy">,
   error: string,
-  opts: { permanent?: boolean } = {},
+  opts: {
+    permanent?: boolean;
+    failureFollowup?: {
+      kind: "respond-failure-comment";
+      payload: Record<string, unknown>;
+      maxAttempts: number;
+    };
+  } = {},
 ): Promise<"retried" | "failed" | "lost"> {
   const redactedError = redactAndTruncate(error, 2000);
   if (!opts.permanent && job.attempts < job.maxAttempts) {
@@ -718,13 +725,34 @@ export async function failJob(
   // If the watchdog already failed this job (worker died mid-run), this
   // affects 0 rows. The winner is the single owner of any follow-up side
   // effect (e.g. posting a user-facing failure comment).
-  const res = await pool.query(
-    `UPDATE jobs
-     SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2,
-         run_after = now()
-     WHERE id = $1 AND status = 'running' AND locked_by = $3`,
-    [job.id, redactedError, job.lockedBy],
-  );
+  const res = opts.failureFollowup
+    ? await pool.query(
+        `WITH failed AS (
+           UPDATE jobs
+              SET status = 'failed', locked_at = NULL, locked_by = NULL,
+                  last_error = $2, run_after = now()
+            WHERE id = $1 AND status = 'running' AND locked_by = $3
+          RETURNING id
+         )
+         INSERT INTO jobs (kind, payload, max_attempts)
+         SELECT $4, $5::jsonb, $6 FROM failed
+         RETURNING id`,
+        [
+          job.id,
+          redactedError,
+          job.lockedBy,
+          opts.failureFollowup.kind,
+          JSON.stringify(opts.failureFollowup.payload),
+          opts.failureFollowup.maxAttempts,
+        ],
+      )
+    : await pool.query(
+        `UPDATE jobs
+            SET status = 'failed', locked_at = NULL, locked_by = NULL,
+                last_error = $2, run_after = now()
+          WHERE id = $1 AND status = 'running' AND locked_by = $3`,
+        [job.id, redactedError, job.lockedBy],
+      );
   return (res.rowCount ?? 0) > 0 ? "failed" : "lost";
 }
 

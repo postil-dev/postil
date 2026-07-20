@@ -16,6 +16,7 @@ let tokenEnteredResolve: (() => void) | null = null;
 let tokenReleaseResolve: (() => void) | null = null;
 let tokenEntered = Promise.resolve();
 let tokenRelease = Promise.resolve();
+let loseLeaseAfterCheck = false;
 
 const row = {
   id: 7,
@@ -176,6 +177,7 @@ mock.module("@/lib/github/checks", () => ({
   ) => {
     checkCalls.push({ repoFullName, checkRunId, conclusion });
     checkTitles.push(title);
+    if (loseLeaseAfterCheck) leaseHeld = false;
     if (checkError) throw checkError;
   },
   getPullRequestHeadSha: async () => row.headSha,
@@ -196,6 +198,7 @@ beforeEach(() => {
   storedEnforcement = [];
   leaseHeld = false;
   blockToken = false;
+  loseLeaseAfterCheck = false;
   tokenEntered = new Promise<void>((resolve) => {
     tokenEnteredResolve = resolve;
   });
@@ -247,6 +250,16 @@ describe("durable gate state synchronization", () => {
 
     expect(checkCalls).toHaveLength(1);
     expect(storedStates).toEqual([false]);
+    expect(leaseHeld).toBe(false);
+  });
+
+  test("stops without retrying after losing the publisher lease", async () => {
+    loseLeaseAfterCheck = true;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls).toHaveLength(1);
+    expect(storedStates).toEqual([]);
     expect(leaseHeld).toBe(false);
   });
 

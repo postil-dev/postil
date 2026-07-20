@@ -43,10 +43,10 @@ export async function runGateStateSyncJob(
   if (!(await acquireGatePublisherLease(db, payload, leaseId))) return;
   try {
     for (let iteration = 0; iteration < 8; iteration += 1) {
-      await renewGatePublisherLease(db, payload.reviewId, leaseId);
+      if (!(await renewGatePublisherLease(db, payload.reviewId, leaseId))) return;
       const desired = await db.transaction((tx) => loadDesiredGateState(tx, payload));
       if (!desired) return;
-      await renewGatePublisherLease(db, payload.reviewId, leaseId);
+      if (!(await renewGatePublisherLease(db, payload.reviewId, leaseId))) return;
       const signal = AbortSignal.timeout(options.githubTimeoutMs ?? 10_000);
       const token = await getInstallationToken(
         desired.review.githubInstallationId,
@@ -68,6 +68,7 @@ export async function runGateStateSyncJob(
         desired.summary,
         signal,
       );
+      if (!(await renewGatePublisherLease(db, payload.reviewId, leaseId))) return;
       const converged = await db.transaction(async (tx) => {
         const latest = await loadDesiredGateState(tx, payload);
         if (!latest) return true;
@@ -314,7 +315,7 @@ async function renewGatePublisherLease(
   db: Database,
   reviewId: number,
   leaseId: string,
-): Promise<void> {
+): Promise<boolean> {
   const rows = await db
     .update(schema.reviews)
     .set({ gateSyncLeaseExpiresAt: sql`clock_timestamp() + interval '30 seconds'` })
@@ -325,7 +326,7 @@ async function renewGatePublisherLease(
       ),
     )
     .returning({ id: schema.reviews.id });
-  if (rows.length !== 1) throw new Error("gate publisher lease was lost");
+  return rows.length === 1;
 }
 
 async function releaseGatePublisherLease(

@@ -9,6 +9,7 @@ const OLD_ENV = { ...process.env };
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
+const failureFollowups: Array<Record<string, unknown>> = [];
 const permanentFailures: number[] = [];
 const retriedIndefinitely: Array<{ id: number; error: string }> = [];
 const shutdownRequeues: number[] = [];
@@ -94,10 +95,16 @@ mock.module("@/lib/queue", () => ({
     _pool: unknown,
     job: ClaimedJob,
     error: string,
-    options?: { permanent?: boolean },
+    options?: {
+      permanent?: boolean;
+      failureFollowup?: { payload: Record<string, unknown> };
+    },
   ) => {
     failed.push({ id: job.id, error });
     if (options?.permanent) permanentFailures.push(job.id);
+    if (options?.failureFollowup) {
+      failureFollowups.push(options.failureFollowup.payload);
+    }
     return "failed";
   },
   retryJobIndefinitely: async (
@@ -218,6 +225,7 @@ beforeEach(() => {
   jobs.length = 0;
   completed.length = 0;
   failed.length = 0;
+  failureFollowups.length = 0;
   permanentFailures.length = 0;
   retriedIndefinitely.length = 0;
   shutdownRequeues.length = 0;
@@ -470,6 +478,27 @@ describe("drainQueueOnce", () => {
     expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
     expect(called).toBe(true);
     expect(completed).toEqual([1]);
+  });
+
+  test("queues a respond failure comment in the terminal job transition", async () => {
+    const job = reviewJob(12);
+    job.kind = "respond";
+    job.attempts = job.maxAttempts;
+    job.payload = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      number: 7,
+      isPr: true,
+      comment: "@postil explain",
+    };
+    respondRun = async () => {
+      throw new Error("provider request failed");
+    };
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(failed).toEqual([{ id: 12, error: "provider request failed" }]);
+    expect(failureFollowups).toEqual([{ ...job.payload, respondJobId: 12 }]);
   });
 
   test("dispatches durable billing contact verification jobs", async () => {
