@@ -11,8 +11,10 @@ import { fetchAllActiveOrgMemberships } from "@/lib/github/user-memberships";
 import {
   GITHUB_SETUP_INSTALLATION_COOKIE,
   oauthCallbackUrl,
+  OAUTH_RETURN_TO_COOKIE,
   OAUTH_STATE_COOKIE,
   publicOrigin,
+  safeReturnTarget,
 } from "@/lib/oauth";
 import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
 import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/lib/session";
@@ -37,6 +39,14 @@ function getCookie(request: Request, name: string): string | undefined {
   return undefined;
 }
 
+function loginErrorUrl(request: Request, error: string): URL {
+  const url = new URL("/login", publicOrigin(request));
+  url.searchParams.set("error", error);
+  const returnTo = safeReturnTarget(getCookie(request, OAUTH_RETURN_TO_COOKIE));
+  if (returnTo) url.searchParams.set("next", returnTo);
+  return url;
+}
+
 export async function GET(request: Request): Promise<NextResponse> {
   const url = new URL(request.url);
   const origin = publicOrigin(request);
@@ -44,7 +54,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   const state = url.searchParams.get("state");
   const expectedState = getCookie(request, OAUTH_STATE_COOKIE);
   if (!code || !state || !expectedState || state !== expectedState) {
-    return NextResponse.redirect(new URL("/login?error=oauth_state", origin));
+    return NextResponse.redirect(loginErrorUrl(request, "oauth_state"));
   }
 
   // Exchange the code for a user access token.
@@ -59,12 +69,12 @@ export async function GET(request: Request): Promise<NextResponse> {
     }),
   });
   if (!tokenRes.ok) {
-    return NextResponse.redirect(new URL("/login?error=token_exchange", origin));
+    return NextResponse.redirect(loginErrorUrl(request, "token_exchange"));
   }
   const tokenData = (await tokenRes.json()) as { access_token?: string };
   const accessToken = tokenData.access_token;
   if (!accessToken) {
-    return NextResponse.redirect(new URL("/login?error=token_exchange", origin));
+    return NextResponse.redirect(loginErrorUrl(request, "token_exchange"));
   }
 
   const ghHeaders = {
@@ -74,7 +84,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   };
   const userRes = await fetch("https://api.github.com/user", { headers: ghHeaders });
   if (!userRes.ok) {
-    return NextResponse.redirect(new URL("/login?error=profile", origin));
+    return NextResponse.redirect(loginErrorUrl(request, "profile"));
   }
   const ghUser = (await userRes.json()) as GithubUser;
 
@@ -100,7 +110,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     .returning({ id: schema.users.id });
   const userId = upserted[0]?.id;
   if (userId === undefined) {
-    return NextResponse.redirect(new URL("/login?error=profile", origin));
+    return NextResponse.redirect(loginErrorUrl(request, "profile"));
   }
 
   // Map the user onto organizations we know about: their GitHub orgs plus
@@ -117,7 +127,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   const membershipResult = await fetchAllActiveOrgMemberships(accessToken);
   if (!membershipResult.ok) {
     const response = NextResponse.redirect(
-      new URL("/login?error=organization_memberships", origin),
+      loginErrorUrl(request, "organization_memberships"),
     );
     response.cookies.delete(OAUTH_STATE_COOKIE);
     return response;
@@ -154,10 +164,13 @@ export async function GET(request: Request): Promise<NextResponse> {
     userId,
     getCookie(request, GITHUB_SETUP_INSTALLATION_COOKIE),
   );
+  const returnTo = safeReturnTarget(getCookie(request, OAUTH_RETURN_TO_COOKIE));
   const sessionToken = await createSession(userId, accessToken, new Date());
   const response = NextResponse.redirect(
     new URL(
-      setupOrgSlug ? `/orgs/${encodeURIComponent(setupOrgSlug)}` : "/reports",
+      setupOrgSlug
+        ? `/orgs/${encodeURIComponent(setupOrgSlug)}`
+        : (returnTo ?? "/reports"),
       origin,
     ),
   );
@@ -169,6 +182,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     path: "/",
   });
   response.cookies.delete(OAUTH_STATE_COOKIE);
+  response.cookies.delete(OAUTH_RETURN_TO_COOKIE);
   response.cookies.delete(GITHUB_SETUP_INSTALLATION_COOKIE);
   return response;
 }

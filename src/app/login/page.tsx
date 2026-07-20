@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
 import Image from "next/image";
+import { redirect } from "next/navigation";
+
+import { safeReturnTarget } from "@/lib/oauth";
+import { getSessionUser } from "@/lib/session";
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -7,6 +11,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/login" },
   robots: { index: false, follow: false },
 };
+export const dynamic = "force-dynamic";
 
 const ERROR_MESSAGES: Record<string, string> = {
   oauth_state: "The sign-in attempt expired or was tampered with. Try again.",
@@ -23,7 +28,15 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string; next?: string }>;
 }) {
   const params = await searchParams;
-  const error = params.error ? (ERROR_MESSAGES[params.error] ?? "Sign-in failed. Try again.") : null;
+  const returnTo = safeReturnTarget(params.next);
+  if (await getSessionUser()) redirect(returnTo ?? "/reports");
+
+  const error = params.error
+    ? (ERROR_MESSAGES[params.error] ?? "Sign-in failed. Try again.")
+    : null;
+  const loginHref = returnTo
+    ? `/api/auth/login?next=${encodeURIComponent(returnTo)}`
+    : "/api/auth/login";
 
   return (
     <div className="mx-auto flex max-w-6xl justify-center px-6 py-24">
@@ -45,7 +58,7 @@ export default async function LoginPage({
             {error}
           </p>
         )}
-        <a href="/api/auth/login" className="btn-primary mt-8 block w-full">
+        <a href={loginHref} className="btn-primary mt-8 block w-full">
           Continue with GitHub
         </a>
         <p className="mt-4 font-mono text-xs text-charcoal/50">
