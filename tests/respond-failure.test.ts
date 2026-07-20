@@ -37,6 +37,9 @@ function fakeDb() {
     where() {
       return chain;
     },
+    innerJoin() {
+      return chain;
+    },
     // `.limit(1)` is the awaited tail of the chain; resolve to the rows for
     // whichever table `.from()` recorded.
     limit() {
@@ -52,6 +55,8 @@ const postedComments: Array<{ repo: string; number: number; body: string }> = []
 let postShouldThrow = false;
 let postShouldHang = false;
 let postShouldThrowAfterAccept = false;
+let revokeLeaseAfterPost = false;
+let queueLeaseActive = true;
 let deliveryJobEnqueues = 0;
 let delivery:
   | {
@@ -62,17 +67,20 @@ let delivery:
       state: "prepared" | "delivering" | "delivered";
       createdAt: Date;
       githubInstallationId: number;
+      repositoryId: number;
+      sourceOrgId: number;
+      sourceInstallationId: number;
+      sourceGithubInstallationId: number;
+      sourceGithubRepoId: number;
+      isPr: boolean;
+      sourceHeadSha: string;
+      publicationLeaseId: string;
     }
   | undefined;
 
 mock.module("@/lib/db", () => ({
   getDb: () => fakeDb(),
-  // Mirror the real module's export surface so a concurrently-loaded consumer
-  // of getPool does not crash with "Export named 'getPool' not found". These
-  // tests never call it; throw if they ever do.
-  getPool: () => {
-    throw new Error("getPool is not mocked for respond-failure tests");
-  },
+  getPool: () => ({ query: async () => ({ rowCount: 1, rows: [{ active: true }] }) }),
   closeDb: async () => undefined,
   schema,
 }));
@@ -117,9 +125,43 @@ mock.module("@/lib/github/checks", () => ({
       });
     }
     postedComments.push({ repo, number, body });
+    if (revokeLeaseAfterPost) queueLeaseActive = false;
     if (postShouldThrowAfterAccept) throw new Error("connection lost after accept");
     return postedComments.length;
   },
+  deleteIssueComment: async (_token: string, _repo: string, commentId: number) => {
+    postedComments.splice(commentId - 1, 1);
+  },
+  getPullRequestReviewContext: async () => ({
+    open: true,
+    merged: false,
+    draft: false,
+    headSha: "head-sha",
+    baseSha: "base-sha",
+  }),
+}));
+
+const realQueue = await import("@/lib/queue");
+mock.module("@/lib/queue", () => ({
+  ...realQueue,
+  externalSideEffectLeaseActive: async () => queueLeaseActive,
+}));
+
+const realInstallationSync = await import("@/lib/github/installation-sync");
+mock.module("@/lib/github/installation-sync", () => ({
+  ...realInstallationSync,
+  fetchRepositorySummary: async () => ({
+    id: 99,
+    full_name: "octo/repo",
+    private: false,
+  }),
+}));
+
+const realEntitlement = await import("@/lib/private-repository-entitlement");
+mock.module("@/lib/private-repository-entitlement", () => ({
+  ...realEntitlement,
+  canProcessRepositoryInference: async () => ({ allowed: true }),
+  providerModeMatchesRepositoryAccess: () => true,
 }));
 
 const realRespondDelivery = await import("@/lib/respond-delivery");
@@ -129,13 +171,19 @@ mock.module("@/lib/respond-delivery", () => ({
   claimRespondDelivery: async (_db: unknown, jobId: number) => {
     if (!delivery || delivery.jobId !== jobId || delivery.state !== "prepared") return null;
     delivery.state = "delivering";
+    delivery.publicationLeaseId = "lease-id";
     return delivery;
   },
   getRespondDelivery: async (_db: unknown, jobId: number) =>
     delivery?.jobId === jobId ? delivery : null,
   markRespondDelivered: async (_db: unknown, jobId: number) => {
     if (delivery?.jobId === jobId) delivery.state = "delivered";
+    return true;
   },
+  markRespondCancelled: async () => {
+    if (delivery) delivery.state = "cancelled" as never;
+  },
+  respondPublicationLeaseActive: async () => true,
   prepareUnmeteredRespondDelivery: async (
     _db: unknown,
     input: {
@@ -151,6 +199,14 @@ mock.module("@/lib/respond-delivery", () => ({
       state: "prepared",
       createdAt: new Date(),
       githubInstallationId: 42,
+      repositoryId: 10,
+      sourceOrgId: 2,
+      sourceInstallationId: 1,
+      sourceGithubInstallationId: 42,
+      sourceGithubRepoId: 99,
+      isPr: true,
+      sourceHeadSha: "head-sha",
+      publicationLeaseId: "lease-id",
     };
     deliveryJobEnqueues += 1;
   },
@@ -178,16 +234,28 @@ const {
 function payload(over: Partial<RespondJobPayload> = {}): RespondJobPayload {
   return {
     installationId: 42,
+    sourceInstallationId: 1,
+    sourceOrgId: 2,
+    githubRepoId: 99,
     repoFullName: "octo/repo",
     number: 7,
     isPr: true,
+    sourceHeadSha: "head-sha",
     comment: "@postil please look",
     ...over,
   };
 }
 
-const enabledInstallation = { id: 1, githubInstallationId: 42, suspended: false, orgId: null };
-const enabledRepository = { id: 10, installationId: 1, fullName: "octo/repo", enabled: true };
+const enabledInstallation = { id: 1, githubInstallationId: 42, suspended: false, orgId: 2 };
+const enabledRepository = {
+  id: 10,
+  installationId: 1,
+  githubRepoId: 99,
+  fullName: "octo/repo",
+  enabled: true,
+  private: false,
+};
+const lease = { id: 123, lockedBy: "worker", lockedAt: new Date() };
 
 beforeEach(() => {
   installationRows = [enabledInstallation];
@@ -196,6 +264,8 @@ beforeEach(() => {
   postShouldThrow = false;
   postShouldHang = false;
   postShouldThrowAfterAccept = false;
+  revokeLeaseAfterPost = false;
+  queueLeaseActive = true;
   deliveryJobEnqueues = 0;
   delivery = undefined;
   postedComments.length = 0;
@@ -207,7 +277,7 @@ afterEach(() => {
 
 describe("postRespondFailureComment (final-attempt exhaustion)", () => {
   test("posts exactly one honest fallback comment to the originating PR/issue", async () => {
-    await postRespondFailureComment(payload(), 123);
+    await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(1);
     expect(postedComments[0]).toEqual({
       repo: "octo/repo",
@@ -222,68 +292,76 @@ describe("postRespondFailureComment (final-attempt exhaustion)", () => {
   });
 
   test("calling twice posts once through the durable delivery marker", async () => {
-    await postRespondFailureComment(payload(), 123);
-    await postRespondFailureComment(payload(), 123);
+    await postRespondFailureComment(payload(), 123, lease);
+    await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(1);
     expect(deliveryJobEnqueues).toBe(1);
   });
 
   test("ambiguous accepted POST is found by marker instead of duplicated", async () => {
     postShouldThrowAfterAccept = true;
-    await postRespondFailureComment(payload(), 123);
+    await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(1);
     expect(delivery?.state).toBe("delivering");
 
     postShouldThrowAfterAccept = false;
     delivery!.state = "prepared"; // The real lease expiry makes this claimable.
-    await runRespondDeliveryJob({ respondJobId: 123 });
+    await runRespondDeliveryJob({ respondJobId: 123 }, lease);
 
     expect(postedComments).toHaveLength(1);
     expect(String(delivery?.state)).toBe("delivered");
+  });
+
+  test("removes an accepted comment when closure revokes the lease during POST", async () => {
+    revokeLeaseAfterPost = true;
+    await postRespondFailureComment(payload(), 123, lease);
+
+    expect(postedComments).toHaveLength(0);
+    expect(String(delivery?.state)).toBe("cancelled");
   });
 });
 
 describe("postRespondFailureComment skips genuinely skipped work", () => {
   test("suspended installation posts no comment", async () => {
     installationRows = [{ ...enabledInstallation, suspended: true }];
-    await postRespondFailureComment(payload(), 123);
+    await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(0);
   });
 
   test("missing installation posts no comment", async () => {
     installationRows = [];
-    await postRespondFailureComment(payload(), 123);
+    await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(0);
   });
 
   test("disabled repository posts no comment", async () => {
     repositoryRows = [{ ...enabledRepository, enabled: false }];
-    await postRespondFailureComment(payload(), 123);
+    await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(0);
   });
 
   test("missing repository posts no comment", async () => {
     repositoryRows = [];
-    await postRespondFailureComment(payload(), 123);
+    await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(0);
   });
 });
 
 describe("postRespondFailureComment is fail-safe", () => {
   test("malformed payload (no routing fields) posts nothing and does not throw", async () => {
-    await postRespondFailureComment({} as RespondJobPayload, 123);
+    await postRespondFailureComment({} as RespondJobPayload, 123, lease);
     expect(postedComments).toHaveLength(0);
   });
 
   test("a failing comment POST is swallowed, never re-thrown", async () => {
     postShouldThrow = true;
-    await expect(postRespondFailureComment(payload(), 123)).resolves.toBeUndefined();
+    await expect(postRespondFailureComment(payload(), 123, lease)).resolves.toBeUndefined();
     expect(postedComments).toHaveLength(0);
   });
 
   test("a failing token mint is swallowed, never re-thrown", async () => {
     tokenMintError = new Error("mint failed");
-    await expect(postRespondFailureComment(payload(), 123)).resolves.toBeUndefined();
+    await expect(postRespondFailureComment(payload(), 123, lease)).resolves.toBeUndefined();
     expect(postedComments).toHaveLength(0);
   });
 
@@ -291,7 +369,7 @@ describe("postRespondFailureComment is fail-safe", () => {
     postShouldHang = true;
 
     await expect(
-      postRespondFailureComment(payload(), 123, undefined, 10),
+      postRespondFailureComment(payload(), 123, lease, undefined, 10),
     ).resolves.toBeUndefined();
     expect(postedComments).toHaveLength(0);
   });
@@ -300,7 +378,7 @@ describe("postRespondFailureComment is fail-safe", () => {
     postShouldThrow = true;
 
     await expect(
-      postRespondFailureComment(payload(), 123, undefined, 10, true),
+      postRespondFailureComment(payload(), 123, lease, undefined, 10, true),
     ).rejects.toThrow("github 500");
   });
 });

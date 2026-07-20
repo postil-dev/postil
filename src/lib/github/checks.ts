@@ -80,7 +80,7 @@ export class AmbiguousCheckRunCreationError extends Error {
 
 async function githubFetch(
   token: string,
-  method: "GET" | "POST" | "PATCH",
+  method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
   signal?: AbortSignal,
@@ -410,6 +410,22 @@ export async function postIssueComment(
   return data.id!;
 }
 
+/** Remove a comment that GitHub accepted after its publication lease ended. */
+export async function deleteIssueComment(
+  token: string,
+  repoFullName: string,
+  commentId: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  await githubFetch(
+    token,
+    "DELETE",
+    `/repos/${repoFullName}/issues/comments/${commentId}`,
+    undefined,
+    signal,
+  );
+}
+
 /** Find a previously posted respond marker after an ambiguous delivery. */
 export async function findIssueCommentByMarker(
   token: string,
@@ -473,6 +489,8 @@ export async function getPullRequestHeadSha(
 export interface PullRequestReviewContext {
   headSha: string;
   baseSha: string;
+  open: boolean;
+  merged: boolean;
   draft: boolean;
   authorGithubId?: number;
   authorLogin?: string;
@@ -493,6 +511,8 @@ export async function getPullRequestReviewContext(
     signal,
   );
   const data = (await res.json()) as {
+    state?: string;
+    merged?: boolean;
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
@@ -511,6 +531,8 @@ export async function getPullRequestReviewContext(
   return {
     headSha,
     baseSha,
+    open: data.state === "open",
+    merged: data.merged === true,
     draft: data.draft === true,
     ...(typeof authorGithubId === "number" &&
     Number.isSafeInteger(authorGithubId) &&

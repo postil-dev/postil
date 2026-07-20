@@ -50,7 +50,6 @@ import {
   validateOperatorAlertPayload,
 } from "./operator-alert";
 import {
-  postRespondFailureComment,
   runRespondDeliveryJob,
   runRespondFailureCommentJob,
   runRespondJob,
@@ -119,6 +118,7 @@ async function handleJob(
         {
           queuedAt: job.createdAt,
           startedAt: job.lockedAt,
+          lease: job,
         },
         processGroup,
         signal,
@@ -126,10 +126,10 @@ async function handleJob(
       );
       break;
     case "respond":
-      await runRespondJob(job.payload as RespondJobPayload, job.id);
+      await runRespondJob(job.payload as RespondJobPayload, job);
       break;
     case "respond-delivery":
-      await runRespondDeliveryJob(job.payload as RespondDeliveryJobPayload);
+      await runRespondDeliveryJob(job.payload as RespondDeliveryJobPayload, job);
       break;
     case "billing-contact-verification":
       await runBillingContactVerificationJob(
@@ -163,12 +163,13 @@ async function handleJob(
     case "respond-failure-comment":
       await runRespondFailureCommentJob(
         job.payload as RespondFailureCommentJobPayload,
+        job,
       );
       break;
     case "webhook-comment":
       await runWebhookCommentJob(
         job.payload as WebhookCommentJobPayload,
-        job.id,
+        job,
       );
       break;
     default:
@@ -264,12 +265,10 @@ export async function runClaimedJob(
       reportOperationalWarning(processGroup, "job_retrying");
     }
     if (outcome === "failed" && job.kind === "respond") {
-      await postRespondFailureComment(
-        job.payload as RespondJobPayload,
-        job.id,
-        undefined,
-        undefined,
-        false,
+      await getPool().query(
+        `INSERT INTO jobs (kind, payload, max_attempts)
+         VALUES ('respond-failure-comment', $1::jsonb || jsonb_build_object('respondJobId', $2::bigint), 5)`,
+        [JSON.stringify(job.payload), job.id],
       );
     }
   }

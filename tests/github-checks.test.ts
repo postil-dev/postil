@@ -89,6 +89,8 @@ describe("pull-request review context", () => {
   test("loads immutable refs and optional author identity", async () => {
     globalThis.fetch = (async (_input) =>
       Response.json({
+        state: "open",
+        merged: false,
         draft: false,
         head: { sha: "head-sha" },
         base: { sha: "base-sha" },
@@ -98,6 +100,8 @@ describe("pull-request review context", () => {
     await expect(
       getPullRequestReviewContext("token", "octo/repo", 7),
     ).resolves.toEqual({
+      open: true,
+      merged: false,
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
@@ -109,6 +113,8 @@ describe("pull-request review context", () => {
   test("normalizes only a complete bounded author identity", async () => {
     globalThis.fetch = (async (_input) =>
       Response.json({
+        state: "open",
+        merged: false,
         draft: false,
         head: { sha: "head-sha" },
         base: { sha: "base-sha" },
@@ -118,6 +124,8 @@ describe("pull-request review context", () => {
     await expect(
       getPullRequestReviewContext("token", "octo/repo", 7),
     ).resolves.toEqual({
+      open: true,
+      merged: false,
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
@@ -125,6 +133,8 @@ describe("pull-request review context", () => {
 
     globalThis.fetch = (async (_input) =>
       Response.json({
+        state: "open",
+        merged: false,
         draft: false,
         head: { sha: "head-sha" },
         base: { sha: "base-sha" },
@@ -134,6 +144,8 @@ describe("pull-request review context", () => {
     await expect(
       getPullRequestReviewContext("token", "octo/repo", 7),
     ).resolves.toEqual({
+      open: true,
+      merged: false,
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,

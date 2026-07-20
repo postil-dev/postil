@@ -25,7 +25,9 @@ let operatorAlertRun: (() => Promise<void>) | undefined;
 let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let webhookDeliveryLoadError: Error | undefined;
-let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
+let reviewTiming:
+  | { queuedAt: Date; startedAt: Date; lease?: ClaimedJob }
+  | undefined;
 let reviewProcessGroup: string | undefined;
 let reviewSignal: AbortSignal | undefined;
 let reviewPublicationStartedCallback: (() => void) | undefined;
@@ -135,7 +137,7 @@ mock.module("@/worker/review", () => ({
   },
   runReviewJob: async (
     _payload: unknown,
-    timing: { queuedAt: Date; startedAt: Date },
+    timing: { queuedAt: Date; startedAt: Date; lease?: ClaimedJob },
     processGroup: string,
     signal?: AbortSignal,
     onPublicationStarted?: () => void,
@@ -642,6 +644,7 @@ describe("drainQueueOnce", () => {
     expect(reviewTiming).toEqual({
       queuedAt: new Date("2026-07-10T12:00:00.000Z"),
       startedAt: new Date("2026-07-10T12:00:05.000Z"),
+      lease: expect.objectContaining({ id: 1, lockedBy: "test" }),
     });
     expect(reviewProcessGroup).toBe("web");
   });

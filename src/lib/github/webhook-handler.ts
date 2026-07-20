@@ -43,6 +43,7 @@ import {
 } from "@/lib/operator-alerts";
 import {
   acceptWebhookDelivery,
+  cancelPullRequestPublication,
   enqueueRespondJobOnce,
   enqueueReviewJobOnce,
   type RespondJobPayload,
@@ -533,15 +534,21 @@ async function handlePullRequest(
   triggerFollowupDrain: boolean,
 ): Promise<void> {
   const action = payload.action ?? "";
-  if (!REVIEWABLE_PR_ACTIONS.has(action)) return;
+  if (!REVIEWABLE_PR_ACTIONS.has(action) && action !== "closed") return;
   const pr = payload.pull_request;
   const repo = payload.repository;
   const installationId = payload.installation?.id;
   if (!pr || !repo || !installationId) return;
-  if (pr.draft) return; // Drafts are reviewed when marked ready.
+  const token = await getInstallationToken(installationId);
+  const live = await getPullRequestReviewContext(token, repo.full_name, pr.number);
   const headSha = pr.head?.sha;
   const baseSha = pr.base?.sha;
-  if (!headSha || !baseSha) return;
+  if (action === "closed") {
+    if (live.open && !live.merged) return;
+  } else if (!live.open || live.merged || live.draft) {
+    return;
+  }
+  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) return;
 
   const db = getDb();
   const installation = (
@@ -555,10 +562,30 @@ async function handlePullRequest(
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
-  if (!installation || installation.suspended) return;
+  if (!installation || installation.suspended || installation.orgId === null) return;
 
   const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
   if (!repoRow?.enabled) return;
+  if (action === "closed") {
+    await cancelPullRequestPublication(getPool(), {
+      installationId,
+      sourceInstallationId: installation.id,
+      sourceOrgId: installation.orgId,
+      githubRepoId: repo.id,
+      repoFullName: repo.full_name,
+      prNumber: pr.number,
+    });
+    await supersedeActiveReviews({
+      repositoryId: repoRow.id,
+      prNumber: pr.number,
+      newHeadSha: headSha,
+      repoFullName: repo.full_name,
+      token,
+      githubInstallationId: installationId,
+      message: `pull request #${pr.number} closed`,
+    });
+    return;
+  }
   if (
     !(await canProcessRepositoryInference(db, {
       orgId: installation.orgId,
@@ -580,6 +607,9 @@ async function handlePullRequest(
 
   await enqueueReviewJob({
     installationId,
+    sourceInstallationId: installation.id,
+    sourceOrgId: installation.orgId,
+    githubRepoId: repo.id,
     repoFullName: repo.full_name,
     repositoryPrivate: repo.private,
     prNumber: pr.number,
@@ -625,8 +655,8 @@ async function enqueueReviewJob(
 async function enabledRepoForRerequest(
   installationId: number | undefined,
   repo: RepoSummary | undefined,
-): Promise<boolean> {
-  if (!installationId || !repo) return false;
+): Promise<{ sourceInstallationId: number; sourceOrgId: number; githubRepoId: number } | null> {
+  if (!installationId || !repo) return null;
   const db = getDb();
   const installation = (
     await db
@@ -639,15 +669,20 @@ async function enabledRepoForRerequest(
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
-  if (!installation || installation.suspended) return false;
+  if (!installation || installation.suspended || installation.orgId === null) return null;
   const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
-  if (!repoRow?.enabled) return false;
-  return (
+  if (!repoRow?.enabled) return null;
+  const allowed = (
     await canProcessRepositoryInference(db, {
       orgId: installation.orgId,
       repositoryPrivate: repo.private,
     })
   ).allowed;
+  return allowed ? {
+    sourceInstallationId: installation.id,
+    sourceOrgId: installation.orgId,
+    githubRepoId: repo.id,
+  } : null;
 }
 
 /**
@@ -696,10 +731,12 @@ async function handleCheckRerequest(
     return;
   }
 
-  if (!(await enabledRepoForRerequest(installationId, repo))) return;
+  const authority = await enabledRepoForRerequest(installationId, repo);
+  if (!authority) return;
 
   await enqueueReviewJob({
     installationId,
+    ...authority,
     repoFullName: repo.full_name,
     repositoryPrivate: repo.private,
     prNumber: pr.number,
@@ -770,8 +807,9 @@ async function handleCheckSuite(
 async function enabledRepoForMention(
   installationId: number | undefined,
   repo: RepoSummary | undefined,
-): Promise<boolean> {
-  if (!installationId || !repo) return false;
+  requireInference = true,
+): Promise<{ sourceInstallationId: number; sourceOrgId: number; githubRepoId: number } | null> {
+  if (!installationId || !repo) return null;
   const db = getDb();
   const installation = (
     await db
@@ -784,7 +822,7 @@ async function enabledRepoForMention(
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
-  if (!installation || installation.suspended) return false;
+  if (!installation || installation.suspended || installation.orgId === null) return null;
   // Defense in depth: require the repo row to belong to the claimed
   // installation, matching the worker path (review.ts / respond.ts both join
   // the repo via installationId). Without the join, a signature-valid payload
@@ -792,13 +830,18 @@ async function enabledRepoForMention(
   // the enabled check; here we reject that mismatch at the webhook gate rather
   // than relying solely on GitHub's downstream token scoping.
   const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
-  if (!repoRow?.enabled) return false;
-  return (
+  if (!repoRow?.enabled) return null;
+  const allowed = !requireInference || (
     await canProcessRepositoryInference(db, {
       orgId: installation.orgId,
       repositoryPrivate: repo.private,
     })
   ).allowed;
+  return allowed ? {
+    sourceInstallationId: installation.id,
+    sourceOrgId: installation.orgId,
+    githubRepoId: repo.id,
+  } : null;
 }
 
 /** Skip our own comments and other bots to avoid mention loops. */
@@ -876,7 +919,8 @@ async function handleIssueComment(
   if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
-  if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
+  const authority = await enabledRepoForMention(payload.installation?.id, payload.repository);
+  if (!authority) return;
   if (isPostilReviewCommand(body)) {
     if (payload.issue.pull_request != null) {
       await enqueueMentionReview(
@@ -898,12 +942,24 @@ async function handleIssueComment(
   }
   await enqueueRespond({
     installationId: payload.installation!.id,
+    ...authority,
     repoFullName: payload.repository.full_name,
     repositoryPrivate: payload.repository.private,
     number: payload.issue.number,
     // GitHub sends issue_comment for PR conversation comments too; the
     // pull_request marker distinguishes them.
     isPr: payload.issue.pull_request != null,
+    ...(payload.issue.pull_request != null
+      ? {
+          sourceHeadSha: (
+            await getPullRequestReviewContext(
+              await getInstallationToken(payload.installation!.id),
+              payload.repository.full_name,
+              payload.issue.number,
+            )
+          ).headSha,
+        }
+      : {}),
     comment: body!,
     sourceDeliveryId,
     trigger: respondTrigger(payload, sourceDeliveryId, "issue_comment"),
@@ -921,7 +977,8 @@ async function handleReviewComment(
   if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
-  if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
+  const authority = await enabledRepoForMention(payload.installation?.id, payload.repository);
+  if (!authority) return;
   if (isPostilReviewCommand(body)) {
     await enqueueMentionReview(
       payload,
@@ -940,10 +997,18 @@ async function handleReviewComment(
       : undefined;
   await enqueueRespond({
     installationId: payload.installation!.id,
+    ...authority,
     repoFullName: payload.repository.full_name,
     repositoryPrivate: payload.repository.private,
     number: payload.pull_request.number,
     isPr: true,
+    sourceHeadSha: (
+      await getPullRequestReviewContext(
+        await getInstallationToken(payload.installation!.id),
+        payload.repository.full_name,
+        payload.pull_request.number,
+      )
+    ).headSha,
     comment: body!,
     commentAnchor: anchor,
     sourceDeliveryId,
@@ -986,9 +1051,12 @@ async function enqueueMentionReview(
   if (!installationId || !repo) return;
   const token = await getInstallationToken(installationId);
   const context = await getPullRequestReviewContext(token, repo.full_name, prNumber);
-  if (context.draft) return;
+  if (!context.open || context.merged || context.draft) return;
+  const authority = await enabledRepoForMention(installationId, repo);
+  if (!authority) return;
   await enqueueReviewJob({
     installationId,
+    ...authority,
     repoFullName: repo.full_name,
     repositoryPrivate: repo.private,
     prNumber,
@@ -1040,6 +1108,12 @@ async function handleApproveCommand(
     );
     return true;
   }
+  const publicationAuthority = await enabledRepoForMention(
+    installationId,
+    repo,
+    false,
+  );
+  if (!publicationAuthority) return true;
 
   if (!command.ok) {
     await queueWebhookComment(payload, command.error, sourceDeliveryId, triggerFollowupDrain);
@@ -1151,8 +1225,11 @@ async function handleApproveCommand(
       await enqueueGateStateSync(tx, review);
       await enqueueWebhookComment(tx, {
         installationId,
+        ...publicationAuthority,
         repoFullName: repo.full_name,
         number: prNumber,
+        isPr: true,
+        sourceHeadSha: review.headSha,
         sourceDeliveryId,
         body: `Approval recorded by @${actor.login} for finding ${command.findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
       });
@@ -1194,10 +1271,23 @@ async function queueWebhookComment(
   const installationId = payload.installation?.id;
   const number = payload.issue?.number ?? payload.pull_request?.number;
   if (!repo || !installationId || !number) return;
+  const authority = await enabledRepoForMention(installationId, repo, false);
+  if (!authority) return;
+  const isPr = payload.issue?.pull_request != null || payload.pull_request != null;
+  const sourceHeadSha = isPr
+    ? (await getPullRequestReviewContext(
+        await getInstallationToken(installationId),
+        repo.full_name,
+        number,
+      )).headSha
+    : undefined;
   const inserted = await enqueueWebhookComment(getDb(), {
     installationId,
+    ...authority,
     repoFullName: repo.full_name,
     number,
+    isPr,
+    ...(sourceHeadSha ? { sourceHeadSha } : {}),
     body,
     sourceDeliveryId,
   });
@@ -1235,9 +1325,16 @@ async function handleIssues(
   if (!mentionsPostil(body) || isBot(payload.sender)) return;
   if (!mayTriggerRespond(payload.issue?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
-  if (!(await enabledRepoForMention(payload.installation?.id, payload.repository))) return;
+  const authority = await enabledRepoForMention(
+    payload.installation?.id,
+    payload.repository,
+  );
+  if (!authority) return;
   await enqueueRespond({
     installationId: payload.installation!.id,
+    sourceInstallationId: authority.sourceInstallationId,
+    sourceOrgId: authority.sourceOrgId,
+    githubRepoId: authority.githubRepoId,
     repoFullName: payload.repository.full_name,
     repositoryPrivate: payload.repository.private,
     number: payload.issue.number,

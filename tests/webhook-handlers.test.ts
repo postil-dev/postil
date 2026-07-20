@@ -48,6 +48,8 @@ let liveMembershipRole: "admin" | "member" = "admin";
 let liveMembershipState = "active";
 let membershipFetchCount = 0;
 let pullRequestReviewContext = {
+  open: true,
+  merged: false,
   headSha: "head-sha",
   baseSha: "base-sha",
   draft: false,
@@ -174,6 +176,22 @@ describeDb("webhook handler behaviour", () => {
       async (input: string | URL | Request) => {
         const url =
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes("/repos/octo/approvals")) {
+          return Response.json({
+            id: 7000,
+            full_name: "octo/approvals",
+            private: false,
+            owner: { id: 7001, login: "octo" },
+          });
+        }
+        if (url.includes("/repos/octo/issues")) {
+          return Response.json({
+            id: 7001,
+            full_name: "octo/issues",
+            private: false,
+            owner: { id: 7002, login: "octo" },
+          });
+        }
         if (!url.includes("/user/memberships/orgs/")) {
           throw new Error(`unexpected GitHub request: ${url}`);
         }
@@ -191,6 +209,8 @@ describeDb("webhook handler behaviour", () => {
       { preconnect: ORIGINAL_FETCH.preconnect },
     ) as typeof fetch;
     pullRequestReviewContext = {
+      open: true,
+      merged: false,
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
@@ -382,6 +402,11 @@ describeDb("webhook handler behaviour", () => {
     const newInst = await seedInstallation(orgId, 200);
     // Repo currently owned by the old installation.
     await seedRepo(oldInst, 7777, "octo/repo");
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      headSha: "h",
+      baseSha: "b",
+    };
 
     // A pull_request event arrives under the NEW installation.
     const res = await post(
@@ -755,6 +780,11 @@ describeDb("webhook handler behaviour", () => {
        RETURNING id`,
       [repoId],
     );
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      headSha: "new-head",
+      baseSha: "base",
+    };
 
     const res = await post(
       "pull_request",
@@ -787,6 +817,81 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(jobs.rows).toHaveLength(1);
     expect(jobs.rows[0]!.payload.headSha).toBe("new-head");
+  });
+
+  test("pull_request close revokes queued publication and neutralizes active checks", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 251);
+    const repoId = await seedRepo(inst, 7879, "octo/closing");
+    await pool.query(
+      `INSERT INTO reviews
+         (repository_id, source_org_id, source_installation_id,
+          source_github_installation_id, source_github_repo_id,
+          source_repo_full_name, pr_number, head_sha, base_sha, status,
+          advisory_check_run_id, gate_check_run_id, queued_at, started_at)
+       VALUES ($1, $2, $3, 251, 7879, 'octo/closing', 7, 'closing-head',
+               'base', 'running', 31, 32, now(), now())`,
+      [repoId, orgId, inst],
+    );
+    const respond = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload)
+       VALUES ('respond', $1::jsonb) RETURNING id`,
+      [JSON.stringify({
+        installationId: 251,
+        sourceInstallationId: inst,
+        sourceOrgId: orgId,
+        githubRepoId: 7879,
+        repoFullName: "octo/closing",
+        number: 7,
+        isPr: true,
+        sourceHeadSha: "closing-head",
+      })],
+    );
+    await pool.query(
+      `INSERT INTO respond_deliveries
+         (job_id, repository_id, source_org_id, source_installation_id,
+          source_github_installation_id, source_github_repo_id, repo_full_name,
+          issue_number, is_pr, source_head_sha, body)
+       VALUES ($1, $2, $3, $4, 251, 7879, 'octo/closing', 7, true,
+               'closing-head', 'queued reply')`,
+      [respond.rows[0]!.id, repoId, orgId, inst],
+    );
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      open: false,
+      merged: true,
+      headSha: "closing-head",
+      baseSha: "base",
+    };
+
+    expect((await post("pull_request", {
+      action: "closed",
+      installation: { id: 251 },
+      repository: { id: 7879, full_name: "octo/closing", private: false },
+      pull_request: {
+        number: 7,
+        head: { sha: "closing-head" },
+        base: { sha: "base" },
+      },
+    }, "delivery-close-1")).status).toBe(200);
+
+    const state = await pool.query(
+      `SELECT review.status AS review_status, job.status AS job_status,
+              delivery.state AS delivery_state
+       FROM reviews review
+       JOIN jobs job ON job.id = $1
+       JOIN respond_deliveries delivery ON delivery.job_id = job.id`,
+      [respond.rows[0]!.id],
+    );
+    expect(state.rows[0]).toEqual({
+      review_status: "stale",
+      job_status: "done",
+      delivery_state: "cancelled",
+    });
+    expect(completedCheckRuns).toEqual([
+      { repoFullName: "octo/closing", conclusion: "neutral" },
+      { repoFullName: "octo/closing", conclusion: "neutral" },
+    ]);
   });
 
   test("private repositories without entitlement produce no jobs, reviews, checks, or comments across webhook paths", async () => {
