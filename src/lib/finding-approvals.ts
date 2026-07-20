@@ -392,6 +392,8 @@ export async function loadReviewForApprovalByPublicId(
       )
       .where(
         and(
+          // Approval intentionally fails closed for reviews without the
+          // immutable publication identity established by migration 0034.
           eq(schema.reviews.publicId, publicId),
           eq(schema.installations.orgId, orgId),
           eq(schema.reviews.sourceOrgId, orgId),
