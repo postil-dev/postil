@@ -1,10 +1,13 @@
-import { sendTransactionalEmail } from "@/lib/email-verification";
 import { requireEnv } from "@/lib/env";
+import {
+  sendTransactionalEmail,
+  type TransactionalEmailContent,
+} from "@/lib/transactional-email";
 
 export interface OperatorNotification {
   recipient: string;
   subject: string;
-  text: string[];
+  content: TransactionalEmailContent;
   idempotencyKey: string;
 }
 

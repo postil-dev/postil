@@ -51,8 +51,8 @@ export default function PrivacyPage() {
             <strong>Usage and billing records</strong>: model-call attempt
             records when accounting data is available, including purpose, model,
             token counts, and accounting provenance. The organization&apos;s
-            entitlement and verified billing contact are also retained.
-            When self-service billing is available, it stores Paddle customer,
+            entitlement and verified billing contact are also retained. When
+            self-service billing is available, it stores Paddle customer,
             subscription, and transaction identifiers, subscription state,
             billing periods, and per-period active-author counts. Card details
             stay with Paddle.
@@ -77,9 +77,9 @@ export default function PrivacyPage() {
           App revokes repository access and stops future processing. It does not
           delete review history. A verified organization administrator can
           request an export or deletion of organization data by emailing{" "}
-          <a href="mailto:hello@postil.dev">hello@postil.dev</a>.
-          Billing records required for accounting, tax, fraud prevention, or
-          disputes are retained only for those purposes.
+          <a href="mailto:hello@postil.dev">hello@postil.dev</a>. Billing
+          records required for accounting, tax, fraud prevention, or disputes
+          are retained only for those purposes.
         </p>
 
         <h2>Bring-your-own API keys</h2>
@@ -111,10 +111,10 @@ export default function PrivacyPage() {
             <strong>Model providers</strong> receive the diff for the duration
             of a model call. BYOK reviews route through the Postil worker to the
             provider configured by the organization. Hosted plans use
-            Postil&apos;s configured provider path. CLI and self-hosted deployments
-            send diffs directly to the endpoint you configure. For sensitive
-            code we recommend BYOK pointed directly at your chosen provider, or
-            self-hosting (below).
+            Postil&apos;s configured provider path. CLI and self-hosted
+            deployments send diffs directly to the endpoint you configure. For
+            sensitive code we recommend BYOK pointed directly at your chosen
+            provider, or self-hosting (below).
           </li>
           <li>
             <strong>Fly.io</strong> (application hosting): runs the web control
@@ -132,18 +132,32 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Paddle</strong> provides checkout, payment methods, tax,
-            invoices, and a customer billing portal when self-service billing
-            is available.
+            invoices, and a customer billing portal when self-service billing is
+            available.
           </li>
           <li>
-            <strong>Brevo</strong> sends verification messages when an
-            organization administrator configures a billing contact. It also
-            sends private operator notices for trial, billing, delivery, and
-            production incidents. Brevo receives the recipient, subject, and
-            plain-text message for delivery and keeps transactional delivery
-            logs under the account&apos;s retention controls. Postil embeds no
-            remote images or tracking markup in these messages. Review findings
-            remain in GitHub and the authenticated Postil dashboard.
+            <strong>Brevo</strong> delivers billing-contact verification,
+            account, installation, billing, and service-monitor messages. Brevo
+            receives the recipient address, sender, subject, HTML and plain-text
+            body, the account or operational details shown in the message, and a
+            provider idempotency identifier used to prevent duplicate delivery.
+            Brevo records delivery events and can measure opens and link clicks.
+            Its account-level{" "}
+            <a href="https://help.brevo.com/hc/en-us/articles/11643306229906-Can-I-anonymize-the-tracking-of-opens-and-clicks-for-my-emails">
+              anonymous tracking setting
+            </a>{" "}
+            keeps aggregate open and click counts without linking them to a
+            contact. Brevo&apos;s{" "}
+            <a href="https://help.brevo.com/hc/en-us/articles/360021533839-Manage-your-transactional-logs-and-email-previews">
+              transactional log retention
+            </a>{" "}
+            is configured at the Brevo account level. Brevo retains logs and
+            message previews indefinitely by default unless the account owner
+            sets a shorter period. Brevo deletes events older than 24 months for
+            accounts with more than 10 million events unless an
+            extended-retention option applies. Review findings remain in GitHub
+            and the authenticated Postil dashboard. Postil embeds no remote
+            images, web fonts, or third-party content in these messages.
           </li>
         </ul>
         <p>

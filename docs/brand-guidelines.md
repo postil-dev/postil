@@ -165,6 +165,25 @@ Website hero example:
 - Keep primary actions direct, such as `Try the CLI` and `Read the docs`.
 - Avoid a generic single-page SaaS layout when deeper product explanation is needed.
 
+## Transactional Email
+
+Postil email uses one shared HTML and plain-text renderer for verification,
+account, installation, billing, and service-monitor messages.
+
+- Lead with the event and required action. State why the recipient received the message.
+- Keep one primary action. Put operational identifiers in compact labeled rows.
+- Use live text, system fonts, table layout, inline styles, a 600px maximum width,
+  mobile layout rules, dark-mode colors, and Outlook button padding.
+- Include a complete plain-text version. Render every production message through
+  `bun run email:preview` before release.
+- Do not add images, web fonts, CSS imports, background URLs, scripts, iframes,
+  media, or links beyond the explicit primary action. The application validates
+  this before it sends or previews a message.
+- Delivery uses Brevo's transactional email API. Provider-side tracking and
+  retention are separate from the application HTML. Configure anonymous
+  transactional-email tracking and an appropriate log-retention period in the
+  Brevo account.
+
 ## Favicon Scaling
 
 Use the supplied square favicon exports:
@@ -194,4 +213,3 @@ Approved merch assets:
 - `brand/assets/postil_merch_embroidered_patch.svg`
 - `brand/assets/postil_merch_tshirt_chest_print_one_color.svg`
 - `brand/assets/postil_merch_notebook_mock.svg`
-

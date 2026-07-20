@@ -7,6 +7,7 @@ import {
   type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 import { redactSecrets } from "@/lib/redact";
+import type { TransactionalEmailContent } from "@/lib/transactional-email";
 
 export type PrivateMonitoringGroup =
   | "availability"
@@ -362,28 +363,28 @@ export async function runPublicMonitoringChecks(
     throw new Error("private monitor public origin must be a credential-free HTTPS URL");
   }
   const checks = await Promise.all([
-    probeOk("public-site", "Public site responds", new URL("/", origin), fetchImpl),
+    probeOk("public-site", "Public site is unavailable", new URL("/", origin), fetchImpl),
     probeOk(
       "public-liveness",
-      "Web liveness endpoint responds",
+      "Web liveness endpoint is unavailable",
       new URL("/api/health", origin),
       fetchImpl,
     ),
-    probeOk("public-sitemap", "Sitemap responds", new URL("/sitemap.xml", origin), fetchImpl),
-    probeOk("public-favicon", "Favicon responds", new URL("/favicon.ico", origin), fetchImpl),
+    probeOk("public-sitemap", "Sitemap is unavailable", new URL("/sitemap.xml", origin), fetchImpl),
+    probeOk("public-favicon", "Favicon is unavailable", new URL("/favicon.ico", origin), fetchImpl),
     probeDependencies(origin, fetchImpl),
     probeRobots(origin, fetchImpl),
     probeRedirect(
       "redirect-about",
-      "Legacy about route redirects",
+      "Legacy about redirect is incorrect",
       new URL("/about", origin),
       new URL("/why-postil", origin),
       fetchImpl,
     ),
-    probeNoIndex("noindex-login", "Login is excluded from indexing", new URL("/login", origin), fetchImpl),
+    probeNoIndex("noindex-login", "Login indexing protection is missing", new URL("/login", origin), fetchImpl),
     probeNoIndex(
       "noindex-api-health",
-      "Health API is excluded from indexing",
+      "Health API indexing protection is missing",
       new URL("/api/health", origin),
       fetchImpl,
     ),
@@ -392,7 +393,7 @@ export async function runPublicMonitoringChecks(
     checks.push(
       await probeRedirect(
         "redirect-www",
-        "WWW traffic reaches the canonical origin",
+        "WWW redirect is incorrect",
         new URL("https://www.postil.dev/docs?utm_source=monitor"),
         new URL("https://postil.dev/docs?utm_source=monitor"),
         fetchImpl,
@@ -559,42 +560,42 @@ export async function runDatabaseMonitoringChecks(
       group: "fleet",
       severity: "critical",
       healthy: workerHeartbeat <= workerHeartbeatMaxAgeSeconds,
-      summary: "Review worker heartbeat is fresh",
+      summary: "Review worker heartbeat is stale",
       detail: Number.isFinite(workerHeartbeat)
         ? `${workerHeartbeat.toLocaleString("en-US")} seconds since the worker heartbeat; threshold ${workerHeartbeatMaxAgeSeconds.toLocaleString("en-US")}.`
         : "No worker heartbeat has been recorded.",
     },
-    thresholdCheck("running-review-age", "queue", "critical", "Running reviews finish or recover", age("running_review_age"), 1_800, "seconds"),
-    thresholdCheck("queued-job-age", "queue", "critical", "Queued work is claimed promptly", age("queued_job_age"), 1_800, "seconds"),
-    thresholdCheck("running-job-age", "queue", "critical", "Claimed work reaches a terminal state", age("running_job_age"), 1_800, "seconds"),
-    thresholdCheck("check-run-cleanup", "queue", "critical", "Recent GitHub check cleanup succeeds", count("cleanup_failures"), 0),
-    thresholdCheck("operator-email-failures", "email", "critical", "Recent operator email delivery succeeds", count("email_failures"), 0),
-    thresholdCheck("operator-email-delay", "email", "critical", "Operator email leaves the outbox promptly", age("email_pending_age"), 1_800, "seconds"),
-    thresholdCheck("billing-settlement-failures", "billing", "critical", "Recent billing settlements complete", count("billing_settlement_failures"), 0),
-    thresholdCheck("billing-settlement-delay", "billing", "warning", "Billing reconciliation remains current", age("billing_settlement_age"), 3_600, "seconds"),
-    thresholdCheck("billing-unmatched-events", "billing", "critical", "Billing events map to an organization", count("unmatched_billing_events"), 0),
-    thresholdCheck("billing-checkout-delay", "billing", "warning", "Billing checkout completes", age("billing_checkout_age"), 3_600, "seconds"),
-    thresholdCheck("billing-checkout-failures", "billing", "warning", "Billing checkout requests succeed", count("billing_checkout_failures"), 0),
-    thresholdCheck("trial-entitlement-gaps", "signup", "critical", "Trial signup grants an entitlement", count("trial_entitlement_gaps"), 0),
-    thresholdCheck("trial-alert-gaps", "signup", "warning", "Trial signup reaches the private operator audit", count("trial_alert_gaps"), 0),
-    thresholdCheck("webhook-dispatch-delay", "webhook", "critical", "Webhook deliveries dispatch", age("webhook_pending_age"), 1_800, "seconds"),
-    thresholdCheck("webhook-recovery-terminal", "webhook", "critical", "Recent webhook recovery remains retryable", count("webhook_terminal"), 0),
+    thresholdCheck("running-review-age", "queue", "critical", "Reviews are stuck running", age("running_review_age"), 1_800, "seconds"),
+    thresholdCheck("queued-job-age", "queue", "critical", "Queued work is delayed", age("queued_job_age"), 1_800, "seconds"),
+    thresholdCheck("running-job-age", "queue", "critical", "Claimed work is stuck", age("running_job_age"), 1_800, "seconds"),
+    thresholdCheck("check-run-cleanup", "queue", "critical", "GitHub check cleanup is failing", count("cleanup_failures"), 0),
+    thresholdCheck("operator-email-failures", "email", "critical", "Operator email delivery is failing", count("email_failures"), 0),
+    thresholdCheck("operator-email-delay", "email", "critical", "Operator email delivery is delayed", age("email_pending_age"), 1_800, "seconds"),
+    thresholdCheck("billing-settlement-failures", "billing", "critical", "Billing settlements are failing", count("billing_settlement_failures"), 0),
+    thresholdCheck("billing-settlement-delay", "billing", "warning", "Billing reconciliation is delayed", age("billing_settlement_age"), 3_600, "seconds"),
+    thresholdCheck("billing-unmatched-events", "billing", "critical", "Billing events are unmatched", count("unmatched_billing_events"), 0),
+    thresholdCheck("billing-checkout-delay", "billing", "warning", "Billing checkout is delayed", age("billing_checkout_age"), 3_600, "seconds"),
+    thresholdCheck("billing-checkout-failures", "billing", "warning", "Billing checkout is failing", count("billing_checkout_failures"), 0),
+    thresholdCheck("trial-entitlement-gaps", "signup", "critical", "Trial entitlements are missing", count("trial_entitlement_gaps"), 0),
+    thresholdCheck("trial-alert-gaps", "signup", "warning", "Trial operator alerts are missing", count("trial_alert_gaps"), 0),
+    thresholdCheck("webhook-dispatch-delay", "webhook", "critical", "Webhook delivery is delayed", age("webhook_pending_age"), 1_800, "seconds"),
+    thresholdCheck("webhook-recovery-terminal", "webhook", "critical", "Webhook recovery reached a terminal state", count("webhook_terminal"), 0),
     {
       key: "webhook-recovery-scan",
       group: "webhook",
       severity: "warning",
       healthy: row.webhook_scan_age !== null && age("webhook_scan_age") <= 1_800,
-      summary: "Webhook recovery scan is fresh",
+      summary: "Webhook recovery scan is stale",
       detail: row.webhook_scan_age === null
         ? "No webhook recovery scan has been recorded for an active installation."
         : `${age("webhook_scan_age").toLocaleString("en-US")} seconds since the recovery scan; threshold 1,800.`,
     },
-    thresholdCheck("review-operational-failures", "provider", "critical", "Reviews complete without operational sentinels", count("operational_failures"), 0),
-    thresholdCheck("scorer-failures", "provider", "critical", "Scoring completes", count("scorer_failures"), 0),
-    thresholdCheck("scorer-fallbacks", "provider", "warning", "Scoring avoids repeated fallback", count("scorer_fallbacks"), 2),
-    thresholdCheck("model-fallbacks", "provider", "warning", "Review models avoid repeated fallback", count("model_fallbacks"), 5),
-    thresholdCheck("invalid-model-output", "provider", "critical", "Model output validates", count("invalid_outputs"), 0),
-    thresholdCheck("failed-jobs", "queue", "critical", "Queue jobs avoid terminal failure", count("failed_jobs"), 0),
+    thresholdCheck("review-operational-failures", "provider", "critical", "Reviews have operational failures", count("operational_failures"), 0),
+    thresholdCheck("scorer-failures", "provider", "critical", "Review scoring is failing", count("scorer_failures"), 0),
+    thresholdCheck("scorer-fallbacks", "provider", "warning", "Review scoring uses repeated fallback", count("scorer_fallbacks"), 2),
+    thresholdCheck("model-fallbacks", "provider", "warning", "Review models use repeated fallback", count("model_fallbacks"), 5),
+    thresholdCheck("invalid-model-output", "provider", "critical", "Model output is invalid", count("invalid_outputs"), 0),
+    thresholdCheck("failed-jobs", "queue", "critical", "Queue jobs are failing", count("failed_jobs"), 0),
   ];
 }
 
@@ -669,23 +670,15 @@ export async function deliverPrivateMonitoringNotification(
 ): Promise<void> {
   const now = input.now ?? new Date();
   const dashboardUrl = new URL("/operator#monitoring", input.publicOrigin).toString();
-  const stateLabel = notification.kind === "resolved"
-    ? "resolved"
-    : notification.kind === "reminder"
-      ? "continues"
-      : "opened";
   try {
     await sendOperatorNotification(
       {
         recipient: input.recipient,
         subject: `[${notification.severity}] Postil monitor: ${notification.summary}`,
-        text: [
-          `Private production incident ${stateLabel}.`,
-          "",
-          notification.detail,
-          "",
-          `Private dashboard: ${dashboardUrl}`,
-        ],
+        content: privateMonitoringIncidentEmailContent(
+          notification,
+          dashboardUrl,
+        ),
         idempotencyKey: notification.notificationKey,
       },
       input.transport,
@@ -788,16 +781,65 @@ export async function sendMonitorPassFailureNotification(input: {
     {
       recipient: input.recipient,
       subject: "[critical] Postil monitor: health checks unavailable",
-      text: [
-        "The private production monitor cannot complete its health checks.",
-        "",
-        `Public origin: ${new URL(input.publicOrigin).origin}`,
-        "This alert bypasses the Postgres incident outbox because the monitor cannot record a normal incident.",
-      ],
+      content: privateMonitoringPassFailureEmailContent(input.publicOrigin),
       idempotencyKey: notificationKey,
     },
     input.transport,
   );
+}
+
+export function privateMonitoringIncidentEmailContent(
+  notification: Pick<
+    PrivateMonitoringNotification,
+    "kind" | "severity" | "summary" | "detail"
+  >,
+  dashboardUrl: string,
+): TransactionalEmailContent {
+  const stateLabel = notification.kind === "resolved"
+    ? "resolved"
+    : notification.kind === "reminder"
+      ? "continues"
+      : "opened";
+  return {
+    preheader: `${notification.summary}: incident ${stateLabel}.`,
+    category: "Production monitor",
+    title: notification.summary,
+    summary: `A private production incident ${stateLabel}.`,
+    reason: "This address is configured to receive Postil production alerts.",
+    details: [
+      { label: "Severity", value: notification.severity },
+      { label: "State", value: stateLabel },
+    ],
+    action: { label: "Open monitoring", url: dashboardUrl },
+    note: notification.detail,
+    intent:
+      notification.kind === "resolved"
+        ? "success"
+        : notification.severity === "critical"
+          ? "critical"
+          : "warning",
+  };
+}
+
+export function privateMonitoringPassFailureEmailContent(
+  publicOrigin: string,
+): TransactionalEmailContent {
+  const origin = new URL(publicOrigin).origin;
+  return {
+    preheader: "The private production monitor cannot complete its checks.",
+    category: "Production monitor",
+    title: "Health checks unavailable",
+    summary:
+      "The private production monitor cannot complete its health checks.",
+    reason: "This address is configured to receive Postil production alerts.",
+    details: [{ label: "Public origin", value: origin }],
+    action: {
+      label: "Open monitoring",
+      url: new URL("/operator#monitoring", publicOrigin).toString(),
+    },
+    note: "This alert bypasses the Postgres incident outbox because the monitor cannot record a normal incident.",
+    intent: "critical",
+  };
 }
 
 export function monitorPassAlertBucket(now: Date): Date {
@@ -970,12 +1012,12 @@ async function probeDependencies(origin: URL, fetchImpl: Fetch): Promise<Private
     }
     return availabilityCheck(
       "public-dependencies",
-      "Web dependencies are ready",
+      "Web dependencies are unavailable",
       healthy,
       `${url.toString()} returned HTTP ${response.status} with ${healthy ? "healthy" : "invalid"} readiness data.`,
     );
   } catch (error) {
-    return availabilityCheck("public-dependencies", "Web dependencies are ready", false, requestFailure(url, error));
+    return availabilityCheck("public-dependencies", "Web dependencies are unavailable", false, requestFailure(url, error));
   }
 }
 
@@ -992,12 +1034,12 @@ async function probeRobots(origin: URL, fetchImpl: Fetch): Promise<PrivateMonito
       body.includes(`Sitemap: ${new URL("/sitemap.xml", origin).toString()}`);
     return availabilityCheck(
       "public-robots",
-      "Robots policy exposes public pages",
+      "Robots policy is incorrect",
       healthy,
       `${url.toString()} returned HTTP ${response.status} with ${healthy ? "expected" : "unexpected"} directives.`,
     );
   } catch (error) {
-    return availabilityCheck("public-robots", "Robots policy exposes public pages", false, requestFailure(url, error));
+    return availabilityCheck("public-robots", "Robots policy is incorrect", false, requestFailure(url, error));
   }
 }
 

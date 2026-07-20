@@ -61,7 +61,11 @@ import {
 } from "@/lib/hosted-usage-reservations";
 import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { withoutOrgModelConfig } from "@/lib/org-review-config";
-import type { CheckRunCleanupJobPayload, ReviewJobPayload } from "@/lib/queue";
+import {
+  PermanentJobError,
+  type CheckRunCleanupJobPayload,
+  type ReviewJobPayload,
+} from "@/lib/queue";
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
@@ -86,6 +90,8 @@ const HOSTED_LLM_TOTAL_TIMEOUT_SECS = "540";
 const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 
 class OperationalError extends Error {}
+
+class TerminalReviewError extends OperationalError {}
 
 export class WorkerShutdownError extends OperationalError {
   constructor() {
@@ -599,16 +605,14 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!installation) {
-    console.warn(
-      `review job skipped: unknown installation ${payload.installationId}`,
+    throw new PermanentJobError(
+      `review job cannot start: unknown installation ${payload.installationId}`,
     );
-    return;
   }
   if (installation.suspended) {
-    console.warn(
-      `review job skipped: installation ${payload.installationId} suspended`,
+    throw new PermanentJobError(
+      `review job cannot start: installation ${payload.installationId} is suspended`,
     );
-    return;
   }
 
   const repository = (
@@ -624,10 +628,9 @@ export async function runReviewJob(
       .limit(1)
   )[0];
   if (!repository || !repository.enabled) {
-    console.warn(
-      `review job skipped: repository ${payload.repoFullName} missing or disabled`,
+    throw new PermanentJobError(
+      `review job cannot start: repository ${payload.repoFullName} is missing or disabled`,
     );
-    return;
   }
   const signedOrStoredPrivate =
     repository.private || payload.repositoryPrivate === true;
@@ -636,24 +639,11 @@ export async function runReviewJob(
     repositoryPrivate: signedOrStoredPrivate,
   });
   if (!repositoryAccess.allowed) {
-    console.warn(
-      `review job skipped: private repository ${payload.repoFullName} requires billing`,
+    throw new PermanentJobError(
+      `review job cannot start: repository ${payload.repoFullName} is not entitled to inference`,
     );
-    return;
   }
   const llm = await resolveLlmConfig(installation.orgId);
-  if (
-    !providerModeMatchesRepositoryAccess(
-      signedOrStoredPrivate,
-      repositoryAccess,
-      llm.byok,
-    )
-  ) {
-    console.warn(
-      `review job skipped: private repository ${payload.repoFullName} provider mode does not match billing`,
-    );
-    return;
-  }
   const hostedReviewUnavailable =
     !llm.byok && !(await hostedInferenceAvailable(getPool()));
   if (hostedReviewUnavailable) {
@@ -703,19 +693,16 @@ export async function runReviewJob(
     orgId: installation.orgId,
     repositoryPrivate: currentRepository.private,
   });
-  if (
-    !currentAccess.allowed ||
-    !providerModeMatchesRepositoryAccess(
-      currentRepository.private,
-      currentAccess,
-      llm.byok,
-    )
-  ) {
-    console.warn(
-      `review job skipped: current visibility for ${payload.repoFullName} requires matching billing`,
+  if (!currentAccess.allowed) {
+    throw new PermanentJobError(
+      `review job cannot start: current visibility for ${payload.repoFullName} is not entitled to inference`,
     );
-    return;
   }
+  const providerModeMatches = providerModeMatchesRepositoryAccess(
+    currentRepository.private,
+    currentAccess,
+    llm.byok,
+  );
 
   let authorGithubId = payload.authorGithubId;
   let authorLogin = payload.authorLogin;
@@ -901,6 +888,12 @@ export async function runReviewJob(
       .set({ gateCheckRunId })
       .where(eq(schema.reviews.id, reviewId));
     reviewLog.line("forge check-runs created");
+
+    if (!providerModeMatches) {
+      throw new TerminalReviewError(
+        "configured provider mode does not match the active inference entitlement",
+      );
+    }
 
     throwIfWorkerStopping(signal);
     reviewLog.line(await postilCliVersionLogLine());
@@ -1104,6 +1097,7 @@ export async function runReviewJob(
     throwIfWorkerStopping(signal);
     const cliEnv = buildCliEnv(llm, {
       GITHUB_TOKEN: token,
+      POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId),
       ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
       POSTIL_PREVENTION_HINT: preventionHint ? "1" : "0",
       POSTIL_PREVENTION_COMMANDS_JSON: JSON.stringify(
@@ -1407,6 +1401,10 @@ export async function runReviewJob(
       );
       reviewLog.line("forge check-runs updated for review failure");
     }
+    // A preflight rejection becomes one durable failed review and one exact
+    // terminal check pair. Retrying the review job would create duplicate
+    // review/check identities for a condition that cannot change mid-job.
+    if (err instanceof TerminalReviewError) return;
     throw interruptedAfterPublication ? new OperationalError(message) : err;
   } finally {
     if (baselinePath)
@@ -1580,8 +1578,7 @@ export async function failCheckRuns(
   expectedChecks?: ExpectedFailureCheckRuns,
 ): Promise<void> {
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
-  const publicationIncomplete =
-    expectedChecks?.publicationIncomplete === true;
+  const publicationIncomplete = expectedChecks?.publicationIncomplete === true;
   if (
     publicationIncomplete &&
     ((gateCheckRunId != null && !expectedChecks?.gate) ||

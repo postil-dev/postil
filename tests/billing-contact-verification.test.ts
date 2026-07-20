@@ -115,6 +115,7 @@ describe("billing verification sender", () => {
     const body = JSON.parse(String(request?.init?.body));
     expect(body.subject).toBe("Verify your Postil billing contact");
     expect(body.textContent).toContain("billing contact for Acme Injected");
+    expect(body.htmlContent).toContain("Verify billing contact email");
     expect(body.headers["Idempotency-Key"]).toBe("verification-digest");
   });
 });

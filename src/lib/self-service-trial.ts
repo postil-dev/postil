@@ -20,7 +20,8 @@ const SELF_SERVICE_TRIAL_DURATION_MS =
 // reservation layer remains fail-closed while ordinary trial usage has ample
 // headroom.
 export const SELF_SERVICE_TRIAL_HOSTED_USAGE_MICROS = 100_000_000;
-export const SELF_SERVICE_HOSTED_TRIALS_PER_ACTOR = HOSTED_TRIALS_PER_GITHUB_ACTOR;
+export const SELF_SERVICE_HOSTED_TRIALS_PER_ACTOR =
+  HOSTED_TRIALS_PER_GITHUB_ACTOR;
 
 export interface SelfServiceTrialInput {
   orgId: number;
@@ -35,7 +36,7 @@ export interface SelfServiceTrialInput {
   hostedReleaseCapability: string | null;
 }
 
-export interface PersonalAccountTrialBackfillInput {
+export interface SelfServiceTrialBackfillInput {
   hostedInferenceEnabled: boolean;
   releaseSha: string;
 }
@@ -72,24 +73,29 @@ export async function grantSelfServiceTrial(
     const hostedAvailable =
       input.hostedInferenceEnabled &&
       (capability === null || capability.rows[0]?.active === true);
-    const hostedTrialCount = (
-      await tx
-        .select({ count: sql<number>`count(*)::int` })
-        .from(schema.selfServiceTrialGrants)
-        .where(
-          and(
-            eq(schema.selfServiceTrialGrants.initiatedByGithubId, input.initiatedByGithubId),
-            eq(schema.selfServiceTrialGrants.grantedMode, "hosted"),
-          ),
-        )
-    )[0]?.count ?? 0;
+    const hostedTrialCount =
+      (
+        await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(schema.selfServiceTrialGrants)
+          .where(
+            and(
+              eq(
+                schema.selfServiceTrialGrants.initiatedByGithubId,
+                input.initiatedByGithubId,
+              ),
+              eq(schema.selfServiceTrialGrants.grantedMode, "hosted"),
+            ),
+          )
+      )[0]?.count ?? 0;
     const hostedEligible =
       input.subscriptionMode === "hosted" &&
       hostedAvailable &&
       hostedTrialCount < SELF_SERVICE_HOSTED_TRIALS_PER_ACTOR;
-    const grantedMode = input.subscriptionMode === "hosted" && !hostedEligible
-      ? "byok"
-      : input.subscriptionMode;
+    const grantedMode =
+      input.subscriptionMode === "hosted" && !hostedEligible
+        ? "byok"
+        : input.subscriptionMode;
     const [created] = await tx
       .insert(schema.organizationEntitlements)
       .values({
@@ -119,9 +125,11 @@ export async function grantSelfServiceTrial(
       createdAt: now,
     });
     if (grantedMode !== input.subscriptionMode) {
-      console.warn(hostedAvailable
-        ? `self-service hosted trial limit reached for GitHub actor ${input.initiatedByGithubId}`
-        : `self-service hosted trial deferred until managed inference activation for GitHub actor ${input.initiatedByGithubId}`);
+      console.warn(
+        hostedAvailable
+          ? `self-service hosted trial limit reached for GitHub actor ${input.initiatedByGithubId}`
+          : `self-service hosted trial deferred until managed inference activation for GitHub actor ${input.initiatedByGithubId}`,
+      );
     }
 
     await enqueueOperatorAlert(
@@ -134,13 +142,13 @@ export async function grantSelfServiceTrial(
 }
 
 /**
- * Grant trials to unentitled personal-account installations. The GitHub
- * account owner is the only possible installer, so its verified owner id is
- * safe to use for the actor-scoped abuse limit.
+ * Grant trials to unentitled personal installations and repair active legacy
+ * self-service trials that were recorded as BYOK without provider credentials.
+ * The immutable grant keeps release activation and repeated deploys idempotent.
  */
-export async function backfillExistingPersonalAccountTrials(
+export async function backfillSelfServiceTrials(
   db: Database,
-  input: PersonalAccountTrialBackfillInput,
+  input: SelfServiceTrialBackfillInput,
 ): Promise<{ eligible: number; granted: number }> {
   const now = new Date();
   const selection = {
@@ -196,15 +204,19 @@ export async function backfillExistingPersonalAccountTrials(
       schema.selfServiceTrialGrants,
       eq(schema.selfServiceTrialGrants.orgId, schema.organizations.id),
     )
+    .leftJoin(
+      schema.orgSettings,
+      eq(schema.orgSettings.orgId, schema.organizations.id),
+    )
     .where(
       and(
-        eq(schema.installations.accountType, "User"),
         eq(schema.installations.suspended, false),
         isNotNull(schema.organizations.githubOrgId),
         eq(schema.organizationEntitlements.subscriptionMode, "byok"),
         eq(schema.organizationEntitlements.status, "trialing"),
         eq(schema.organizationEntitlements.updatedBy, "self-service-trial"),
         gt(schema.organizationEntitlements.trialEndsAt, now),
+        isNull(schema.orgSettings.apiKeyCiphertext),
         isNull(schema.selfServiceTrialGrants.orgId),
       ),
     )
@@ -214,19 +226,24 @@ export async function backfillExistingPersonalAccountTrials(
   const capability = hostedInferenceCapability(input.releaseSha);
   for (const candidate of unentitled) {
     if (candidate.githubOwnerId === null) continue;
-    const result = await grantSelfServiceTrial(db, {
-      ...candidate,
-      githubOwnerId: candidate.githubOwnerId,
-      initiatedByGithubId: candidate.githubOwnerId,
-      subscriptionMode: "hosted",
-      hostedInferenceEnabled: input.hostedInferenceEnabled,
-      hostedReleaseCapability: capability,
-    }, now);
+    const result = await grantSelfServiceTrial(
+      db,
+      {
+        ...candidate,
+        githubOwnerId: candidate.githubOwnerId,
+        initiatedByGithubId: candidate.githubOwnerId,
+        subscriptionMode: "hosted",
+        hostedInferenceEnabled: input.hostedInferenceEnabled,
+        hostedReleaseCapability: capability,
+      },
+      now,
+    );
     if (result.granted) granted += 1;
   }
 
   for (const candidate of unrecorded) {
-    if (candidate.githubOwnerId === null || candidate.trialEndsAt === null) continue;
+    if (candidate.githubOwnerId === null || candidate.trialEndsAt === null)
+      continue;
     const githubOwnerId = candidate.githubOwnerId;
     const trialEndsAt = candidate.trialEndsAt;
     const created = await db.transaction(async (tx) => {

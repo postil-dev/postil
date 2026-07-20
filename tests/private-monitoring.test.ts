@@ -45,7 +45,10 @@ describe("private monitoring public probes", () => {
     });
     expect(sent).toHaveLength(1);
     expect(sent[0]?.idempotencyKey).toContain(bucket.toISOString());
-    expect(sent[0]?.text.join("\n")).not.toContain("GitHub");
+    expect(sent[0]?.content.details).toEqual([
+      { label: "Public origin", value: "https://postil.dev" },
+    ]);
+    expect(sent[0]?.content.summary).not.toContain("GitHub");
 
     expect(
       monitorPassAlertBucket(new Date(bucket.getTime() + 1_000)).getTime(),
@@ -184,7 +187,7 @@ describeDb("private monitoring durability", () => {
             group: "fleet",
             severity: "critical",
             healthy: true,
-            summary: "Review worker heartbeat is fresh",
+            summary: "Review worker heartbeat is stale",
             detail: "Worker heartbeat is fresh.",
           },
         ],
@@ -204,7 +207,7 @@ describeDb("private monitoring durability", () => {
       group: "fleet",
       severity: "critical",
       healthy: false,
-      summary: "Review worker heartbeat is fresh",
+      summary: "Review worker heartbeat is stale",
       detail: "No worker heartbeat has been recorded.",
     };
     await finishPrivateMonitoringPass(pool, firstPass!, [failure], NOW);
@@ -229,7 +232,9 @@ describeDb("private monitoring durability", () => {
       now: NOW,
     });
     expect(sent).toHaveLength(1);
-    expect(sent[0]?.text.join("\n")).toContain("https://postil.dev/operator#monitoring");
+    expect(sent[0]?.content.action?.url).toBe(
+      "https://postil.dev/operator#monitoring",
+    );
 
     const resolvedAt = new Date(NOW.getTime() + 5 * 60_000);
     expect(await acquirePrivateMonitorLease(pool, "monitor-a", resolvedAt)).toBe(true);
@@ -292,7 +297,7 @@ describeDb("private monitoring durability", () => {
       group: "availability",
       severity: "critical",
       healthy: false,
-      summary: "Public site responds",
+      summary: "Public site is unavailable",
       detail: "The public probe failed.",
     };
     expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
@@ -362,7 +367,7 @@ describeDb("private monitoring durability", () => {
       group: "availability",
       severity: "critical",
       healthy: false,
-      summary: "Public site responds",
+      summary: "Public site is unavailable",
       detail: "The public probe failed.",
     };
     expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
@@ -423,7 +428,7 @@ describeDb("private monitoring durability", () => {
           group: "availability",
           severity: "critical",
           healthy: false,
-          summary: "Public site responds",
+          summary: "Public site is unavailable",
           detail: "The public probe failed.",
         },
       ],

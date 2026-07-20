@@ -16,6 +16,7 @@ import {
   verificationTokenDigest,
   type VerificationTokenState,
 } from "@/lib/email-verification";
+import type { TransactionalEmailContent } from "@/lib/transactional-email";
 
 const PURPOSE = "billing-contact";
 
@@ -138,13 +139,29 @@ export async function sendBillingContactVerification(input: {
   return sendVerificationEmail({
     recipient: input.recipient,
     subject: "Verify your Postil billing contact",
-    text: [
-      `Verify this address as the billing contact for ${sanitizeVerificationLabel(input.orgName)}.`,
-      "",
-      `Verify billing contact: ${input.verificationUrl}`,
-    ],
+    content: billingContactVerificationEmailContent(
+      input.orgName,
+      input.verificationUrl,
+    ),
     idempotencyKey: input.idempotencyKey,
     apiKey: input.apiKey,
     fetchImpl: input.fetchImpl,
   });
+}
+
+export function billingContactVerificationEmailContent(
+  orgName: string,
+  verificationUrl: string,
+): TransactionalEmailContent {
+  const organization = sanitizeVerificationLabel(orgName);
+  return {
+    preheader: `Confirm the billing contact for ${organization}.`,
+    category: "Verification",
+    title: "Verify billing contact email",
+    summary: "Confirm this address before Postil records it as the organization's billing contact.",
+    organization,
+    reason: `Someone entered this address as the Postil billing contact for ${organization}.`,
+    action: { label: "Verify billing contact", url: verificationUrl },
+    intent: "action",
+  };
 }

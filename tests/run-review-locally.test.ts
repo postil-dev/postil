@@ -117,6 +117,7 @@ console.log("fixture-key");
       scorer: undefined,
       scorerDisabled: "1",
       hostedMode: "0",
+      expectedGithubRepoId: "990002",
       endpointAuthPresent: false,
       configApiBaseAllowed: false,
     });
@@ -254,6 +255,25 @@ console.log("fixture-key");
     expect(result.stdout).toContain("Gate: passed");
     expect(result.stdout).toContain("warn/risk");
     expect(result.stdout).toContain("Local fixture finding");
+  }, 120_000);
+
+  test("preserves findings when the local advisory publication is neutral", async () => {
+    const repo = await createFixtureRepo("neutral-advisory");
+
+    const result = await runLocalReview(repo, "0", 1, {
+      args: ["--require-clean"],
+      env: {
+        POSTIL_FAKE_FINDING: "1",
+        POSTIL_FAKE_ADVISORY_NEUTRAL: "1",
+      },
+    });
+
+    expect(result.stdout).toContain(
+      "would complete check-run #1000 as neutral",
+    );
+    expect(result.stdout).toContain("Review findings:");
+    expect(result.stdout).toContain("Local fixture finding");
+    expect(result.stdout).toContain("Gate: passed");
   }, 120_000);
 
   test("base mode uses the exact selected head and serves files from its tree", async () => {
@@ -486,6 +506,7 @@ if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {
     scorer: process.env.REVIEW_SCORER_MODEL,
     scorerDisabled: process.env.POSTIL_DISABLE_SCORER,
     hostedMode: process.env.POSTIL_HOSTED_MODE,
+    expectedGithubRepoId: process.env.POSTIL_EXPECTED_GITHUB_REPO_ID,
     endpointAuthPresent: Boolean(process.env.POSTIL_ENDPOINT_AUTH_HEADER || process.env.POSTIL_ENDPOINT_AUTH_VALUE),
     configApiBaseAllowed: Boolean(process.env.POSTIL_ALLOW_CONFIG_API_BASE),
   }));
@@ -574,7 +595,7 @@ async function patchCheck(id, conclusion, title, summary) {
     })
   });
 }
-await patchCheck(advisory, "success", failing ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
+await patchCheck(advisory, process.env.POSTIL_FAKE_ADVISORY_NEUTRAL === "1" ? "neutral" : "success", failing ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
 await patchCheck(gate, failing ? "failure" : "success", failing ? "Merge gate failed" : "Merge gate passed", envelope.summary);
 if (hasFinding) {
   await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}/reviews\`, {
