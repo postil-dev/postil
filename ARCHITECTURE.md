@@ -280,9 +280,13 @@ PostgreSQL, so a dead review worker cannot suppress queue, check-run, signup,
 billing, email, webhook, or provider incident detection. Incident notifications
 use the shared operator-notification transport directly instead of the review
 job queue. A database-outage alert bypasses the incident outbox and uses a
-time-bucketed provider idempotency key. Monitoring state is visible only on the
-operator dashboard. It is never published through GitHub issues, checks,
-comments, workflow artifacts, or scheduled workflows.
+time-bucketed provider idempotency key. One monitor process stores the last
+sent outage bucket and timestamp in a bounded, atomically replaced file on a
+monitor-only persistent volume. The file is fsynced before replacement is
+acknowledged. Missing, expired, or invalid state enables delivery instead of
+suppressing an alert. Monitoring state is visible only on the operator
+dashboard. It is never published through GitHub issues, checks, comments,
+workflow artifacts, or scheduled workflows.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, configured mail transport, and operator mailbox

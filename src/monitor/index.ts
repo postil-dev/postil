@@ -26,6 +26,10 @@ import {
 } from "@/lib/private-monitoring";
 import { redactSecrets } from "@/lib/redact";
 import {
+  loadMonitorAlertState,
+  persistMonitorAlertState,
+} from "@/lib/monitor-alert-state";
+import {
   reportOperationalFailure,
   reportOperationalState,
   shutdownServerObservability,
@@ -47,6 +51,14 @@ let monitorFailureState: MonitorPassFailureState = {
 
 async function main(): Promise<void> {
   validateEnv("monitor");
+  const alertStatePath = required("POSTIL_MONITOR_ALERT_STATE_PATH");
+  const loadedAlertState = await loadMonitorAlertState(alertStatePath);
+  monitorFailureState = loadedAlertState.state;
+  if (loadedAlertState.status === "invalid") {
+    console.error(
+      "[monitor] durable alert state is invalid; alert deduplication is failing open",
+    );
+  }
   const workerHeartbeatIntervalMs = configuredWorkerHeartbeatIntervalMs();
   if (workerHeartbeatIntervalMs === null) {
     throw new Error(
@@ -155,10 +167,18 @@ async function main(): Promise<void> {
           publicOrigin,
           bucket: monitorFailureState.bucket,
         })
-          .then(() => {
-            monitorFailureState = markMonitorPassAlertSent(
-              monitorFailureState,
-            );
+          .then(async () => {
+            const sentState = markMonitorPassAlertSent(monitorFailureState);
+            monitorFailureState = sentState;
+            await persistMonitorAlertState(
+              alertStatePath,
+              sentState,
+              new Date(),
+            ).catch((stateError) => {
+              console.error(
+                `[monitor] durable alert state write failed; restart deduplication is unavailable: ${redactSecrets(stateError)}`,
+              );
+            });
           })
           .catch((notificationError) => {
             console.error(
