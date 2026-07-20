@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -245,6 +246,34 @@ describe("trusted local Postil pre-push hook", () => {
     expect(record.invocation).not.toContain("isolated-fixture-key");
   });
 
+  test("never writes a credential-bearing remote URL into hook or common Git state", async () => {
+    const fixture = await createFixture("credential-remote");
+    const credential = "push-url-password-must-remain-memory-only";
+    const credentialRemote = join(fixture.root, `user-${credential}@example.invalid.git`);
+    await symlink(fixture.remote, credentialRemote, "dir");
+    await git(fixture.repository, ["config", "--unset-all", "remote.origin.url"]);
+    await writeFile(fixture.leakNeedle, `${credential}\n`);
+    await commit(fixture.repository, "topic", "credential remote\n");
+    await installHook(fixture, fixture.repository, true);
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/credential-remote"],
+      "pass",
+      {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "remote.origin.url",
+        GIT_CONFIG_VALUE_0: `file://${credentialRemote}`,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(await Bun.file(fixture.leakLog).exists()).toBe(false);
+    expect(await directoryContains(join(fixture.repository, ".git"), credential)).toBe(false);
+    expect(await refExists(fixture.remote, "refs/heads/credential-remote")).toBe(true);
+  });
+
   test("symlinked review configuration cannot expose an out-of-repository canary", async () => {
     const fixture = await createFixture("config-symlink");
     const canary = join(fixture.root, "external-canary");
@@ -333,11 +362,115 @@ describe("trusted local Postil pre-push hook", () => {
     expect(result.stderr).toContain("focused assertion proves the required behavior");
     expect((await readRecords(fixture)).length).toBe(1);
     expect((await readRecord(fixture)).dispositionsVariable).toBe("absent");
-    expect(await Bun.file(paths.cache).exists()).toBe(false);
-    expect(await Bun.file(paths.template).exists()).toBe(false);
+    await waitForFilesToDisappear(paths.cache, paths.template);
     expect(await Bun.file(paths.lock).exists()).toBe(false);
     expect(await refExists(fixture.remote, "refs/heads/accepted-disposition")).toBe(true);
   });
+
+  test("preserves a validated handoff until the exact later push reaches a real bare remote", async () => {
+    const fixture = await createFixture("validated-handoff");
+    const head = await commit(fixture.repository, "topic", "validated handoff\n");
+    const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+    const remoteRef = "refs/heads/validated-handoff";
+    const paths = reviewCachePaths(fixture, base, head);
+    await installHook(fixture, fixture.repository, true);
+
+    const reviewed = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "finding",
+    );
+    expect(reviewed.exitCode).not.toBe(0);
+    await fillDispositionReasons(paths.template);
+
+    const validated = await push(
+      fixture,
+      fixture.repository,
+      ["--dry-run", "origin", `HEAD:${remoteRef}`],
+      "provider-error",
+      { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template },
+    );
+
+    expect(validated.exitCode).toBe(0);
+    expect(validated.stderr).toContain('accepted disposition path="app.txt" line=1');
+    expect(await refExists(fixture.remote, remoteRef)).toBe(false);
+    expect((await readRecords(fixture)).length).toBe(1);
+    const marker = await acceptedMarkerPath(fixture, base, head);
+    expect((await lstat(marker)).isSymbolicLink()).toBe(false);
+    expect((await stat(marker)).mode & 0o777).toBe(0o600);
+    expect((await stat(paths.cache)).mode & 0o777).toBe(0o600);
+    expect((await stat(paths.template)).mode & 0o777).toBe(0o600);
+
+    const acceptedDocument = await readFile(marker, "utf8");
+    const tamperedDocument = JSON.parse(acceptedDocument) as { targetDigest: string };
+    tamperedDocument.targetDigest = "0".repeat(40);
+    await writeFile(marker, JSON.stringify(tamperedDocument), { mode: 0o600 });
+    const tampered = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "provider-error",
+    );
+    expect(tampered.exitCode).not.toBe(0);
+    expect(tampered.stderr).toContain("accepted review marker is malformed, stale, tampered");
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect(await refExists(fixture.remote, remoteRef)).toBe(false);
+    await writeFile(marker, acceptedDocument, { mode: 0o600 });
+
+    const rejectionHook = join(fixture.remote, "hooks", "pre-receive");
+    await writeFile(rejectionHook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    await git(fixture.root, [
+      "--git-dir",
+      fixture.remote,
+      "config",
+      "core.hooksPath",
+      join(fixture.remote, "hooks"),
+    ]);
+    const failedTransport = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "provider-error",
+    );
+    expect(failedTransport.exitCode).not.toBe(0);
+    expect(await refExists(fixture.remote, remoteRef)).toBe(false);
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect(await Bun.file(marker).exists()).toBe(true);
+    expect(await Bun.file(paths.cache).exists()).toBe(true);
+    expect(await Bun.file(paths.template).exists()).toBe(true);
+    await rm(rejectionHook);
+
+    const pushed = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "provider-error",
+    );
+
+    expect(pushed.exitCode).toBe(0);
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect(await refExists(fixture.remote, remoteRef)).toBe(true);
+    await waitForFilesToDisappear(marker, paths.cache, paths.template);
+
+    await git(fixture.repository, [
+      "-c",
+      "core.hooksPath=/dev/null",
+      "push",
+      "origin",
+      `:${remoteRef}`,
+    ]);
+    const replay = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "provider-error",
+    );
+    expect(replay.exitCode).not.toBe(0);
+    expect(replay.stderr).toContain("local review did not complete");
+    expect((await readRecords(fixture)).length).toBe(2);
+    expect(await refExists(fixture.remote, remoteRef)).toBe(false);
+  }, 30_000);
 
   test("replaces cache symlinks without modifying their targets", async () => {
     const fixture = await createFixture("cache-symlinks");
@@ -587,6 +720,8 @@ interface Fixture {
   gh: string;
   secrets: string;
   secretsLog: string;
+  leakNeedle: string;
+  leakLog: string;
   hook: string;
 }
 
@@ -599,6 +734,8 @@ async function createFixture(name: string): Promise<Fixture> {
   const log = join(root, "review.jsonl");
   const modeFile = join(root, "mode");
   const secretsLog = join(root, "secrets.log");
+  const leakNeedle = join(root, "leak-needle");
+  const leakLog = join(root, "state-leak.log");
   await mkdir(bin);
   await git(root, ["init", "--bare", remote]);
   await git(root, ["init", "-b", "main", repository]);
@@ -612,7 +749,7 @@ async function createFixture(name: string): Promise<Fixture> {
   await git(repository, ["remote", "add", "origin", remote]);
   await git(repository, ["-c", "core.hooksPath=/dev/null", "push", "-u", "origin", "main"]);
   await git(root, ["--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main"]);
-  const commands = await writeFakeCommands(bin, { log, modeFile, secretsLog });
+  const commands = await writeFakeCommands(bin, { log, modeFile, secretsLog, leakNeedle, leakLog });
   return {
     root,
     repository,
@@ -621,6 +758,8 @@ async function createFixture(name: string): Promise<Fixture> {
     log,
     modeFile,
     secretsLog,
+    leakNeedle,
+    leakLog,
     ...commands,
     hook: join(repository, ".git", "hooks", "pre-push"),
   };
@@ -678,7 +817,13 @@ async function push(
 
 async function writeFakeCommands(
   bin: string,
-  paths: { log: string; modeFile: string; secretsLog: string },
+  paths: {
+    log: string;
+    modeFile: string;
+    secretsLog: string;
+    leakNeedle: string;
+    leakLog: string;
+  },
 ): Promise<{ postil: string; gh: string; secrets: string }> {
   const postil = join(bin, "postil");
   await writeFile(
@@ -698,6 +843,16 @@ done
 head=\$(git rev-parse HEAD)
 merge_base=\$(git merge-base "\$base" "\$head")
 mode=\$(< '${paths.modeFile}')
+if [[ -s '${paths.leakNeedle}' ]]; then
+  leak_needle=\$(< '${paths.leakNeedle}')
+  temporary_state=\$(dirname "\$PWD")
+  common_state=\$(git rev-parse --git-common-dir)
+  if /usr/bin/grep -R -F -l -- "\$leak_needle" "\$temporary_state" "\$common_state" >'${paths.leakLog}' 2>/dev/null; then
+    :
+  else
+    /bin/rm -f -- '${paths.leakLog}'
+  fi
+fi
 aws=absent; [[ -n "\${AWS_SECRET_ACCESS_KEY+x}" ]] && aws=present
 dispositions_variable=absent; [[ -n "\${POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE+x}" ]] && dispositions_variable=present
 credential=absent; [[ -n "\${MODEL_API_KEY:-}\${POSTIL_API_KEY:-}\${OPENROUTER_API_KEY:-}" ]] && credential=present
@@ -776,6 +931,30 @@ function reviewCachePaths(fixture: Fixture, base: string, head: string) {
   };
 }
 
+async function acceptedMarkerPath(
+  fixture: Fixture,
+  base: string,
+  head: string,
+): Promise<string> {
+  const directory = join(fixture.repository, ".git", "postil-local-review");
+  const prefix = `accepted-${base}-${head}-`;
+  const matches = (await readdir(directory)).filter(
+    (entry) => entry.startsWith(prefix) && entry.endsWith(".json"),
+  );
+  expect(matches).toHaveLength(1);
+  return join(directory, matches[0]!);
+}
+
+async function waitForFilesToDisappear(...paths: string[]): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if ((await Promise.all(paths.map((path) => Bun.file(path).exists()))).every((exists) => !exists)) {
+      return;
+    }
+    await Bun.sleep(20);
+  }
+  throw new Error(`timed out waiting for local review handoff cleanup: ${paths.join(", ")}`);
+}
+
 async function fillDispositionReasons(path: string): Promise<void> {
   const document = JSON.parse(await readFile(path, "utf8")) as {
     findings: Record<string, { reason: string }>;
@@ -785,6 +964,18 @@ async function fillDispositionReasons(path: string): Promise<void> {
       "The changed fixture line is intentional and the focused assertion proves the required behavior.";
   }
   await writeFile(path, JSON.stringify(document));
+}
+
+async function directoryContains(directory: string, needle: string): Promise<boolean> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (await directoryContains(path, needle)) return true;
+    } else if (entry.isFile()) {
+      if ((await readFile(path)).includes(Buffer.from(needle))) return true;
+    }
+  }
+  return false;
 }
 
 async function refExists(remote: string, ref: string): Promise<boolean> {
