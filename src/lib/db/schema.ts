@@ -1403,6 +1403,95 @@ export const jobs = pgTable(
   ],
 );
 
+/** Private one-shot audit record for a publication-recovery worker rehearsal. */
+export const privateWorkerRehearsals = pgTable(
+  "private_worker_rehearsals",
+  {
+    nonce: uuid("nonce").primaryKey(),
+    state: text("state").notNull().default("armed"),
+    operatorGithubId: bigint("operator_github_id", { mode: "number" }).notNull(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    repositoryId: bigint("repository_id", { mode: "number" })
+      .notNull()
+      .references(() => repositories.id, { onDelete: "restrict" }),
+    reviewId: bigint("review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "restrict" }),
+    jobId: bigint("job_id", { mode: "number" })
+      .notNull()
+      .references(() => jobs.id, { onDelete: "restrict" }),
+    orgSlug: text("org_slug").notNull(),
+    repoFullName: text("repo_full_name").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    reviewPublicId: uuid("review_public_id").notNull(),
+    armedAt: timestamp("armed_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    interruptedWorkerInstance: text("interrupted_worker_instance"),
+    replacementWorkerInstance: text("replacement_worker_instance"),
+    replacementObservedAt: timestamp("replacement_observed_at", {
+      withTimezone: true,
+    }),
+    beforeReviewCount: integer("before_review_count"),
+    beforeUsageCount: integer("before_usage_count"),
+    beforeCheckCount: integer("before_check_count"),
+    beforePublicationCount: integer("before_publication_count"),
+    afterReviewCount: integer("after_review_count"),
+    afterUsageCount: integer("after_usage_count"),
+    afterCheckCount: integer("after_check_count"),
+    afterPublicationCount: integer("after_publication_count"),
+    failureReason: text("failure_reason"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("private_worker_rehearsals_review_idx").on(t.reviewId),
+    uniqueIndex("private_worker_rehearsals_job_idx").on(t.jobId),
+    index("private_worker_rehearsals_state_idx").on(t.state, t.updatedAt),
+    check(
+      "private_worker_rehearsals_state_check",
+      sql`${t.state} IN ('armed', 'awaiting_replacement', 'replacement_verified', 'completed', 'expired', 'failed')`,
+    ),
+    check(
+      "private_worker_rehearsals_identity_check",
+      sql`length(btrim(${t.orgSlug})) > 0 AND length(btrim(${t.repoFullName})) > 0 AND ${t.prNumber} > 0 AND ${t.headSha} ~ '^[0-9a-f]{40}$'`,
+    ),
+    check(
+      "private_worker_rehearsals_arming_window_check",
+      sql`${t.expiresAt} > ${t.armedAt} AND ${t.expiresAt} <= ${t.armedAt} + interval '10 minutes'`,
+    ),
+    check(
+      "private_worker_rehearsals_before_counts_check",
+      sql`(${t.beforeReviewCount} IS NULL AND ${t.beforeUsageCount} IS NULL AND ${t.beforeCheckCount} IS NULL AND ${t.beforePublicationCount} IS NULL) OR (${t.beforeReviewCount} >= 0 AND ${t.beforeUsageCount} >= 0 AND ${t.beforeCheckCount} >= 0 AND ${t.beforePublicationCount} >= 0)`,
+    ),
+    check(
+      "private_worker_rehearsals_after_counts_check",
+      sql`(${t.afterReviewCount} IS NULL AND ${t.afterUsageCount} IS NULL AND ${t.afterCheckCount} IS NULL AND ${t.afterPublicationCount} IS NULL) OR (${t.afterReviewCount} >= 0 AND ${t.afterUsageCount} >= 0 AND ${t.afterCheckCount} >= 0 AND ${t.afterPublicationCount} >= 0)`,
+    ),
+    check(
+      "private_worker_rehearsals_replacement_pair_check",
+      sql`(${t.replacementWorkerInstance} IS NULL) = (${t.replacementObservedAt} IS NULL)`,
+    ),
+    check(
+      "private_worker_rehearsals_consumed_state_check",
+      sql`(${t.state} IN ('armed', 'expired') AND ${t.consumedAt} IS NULL AND ${t.interruptedWorkerInstance} IS NULL AND ${t.beforeReviewCount} IS NULL) OR (${t.state} IN ('awaiting_replacement', 'replacement_verified', 'completed', 'failed') AND ${t.consumedAt} IS NOT NULL AND ${t.interruptedWorkerInstance} IS NOT NULL AND ${t.beforeReviewCount} IS NOT NULL)`,
+    ),
+    check(
+      "private_worker_rehearsals_replacement_state_check",
+      sql`(${t.state} IN ('armed', 'awaiting_replacement', 'expired') AND ${t.replacementWorkerInstance} IS NULL) OR (${t.state} IN ('replacement_verified', 'completed') AND ${t.replacementWorkerInstance} IS NOT NULL) OR ${t.state} = 'failed'`,
+    ),
+    check(
+      "private_worker_rehearsals_completion_state_check",
+      sql`(${t.state} = 'completed' AND ${t.afterReviewCount} IS NOT NULL AND ${t.completedAt} IS NOT NULL AND ${t.failureReason} IS NULL) OR (${t.state} IN ('expired', 'failed') AND ${t.afterReviewCount} IS NULL AND ${t.completedAt} IS NOT NULL AND ${t.failureReason} IS NOT NULL) OR (${t.state} IN ('armed', 'awaiting_replacement', 'replacement_verified') AND ${t.afterReviewCount} IS NULL AND ${t.completedAt} IS NULL AND ${t.failureReason} IS NULL)`,
+    ),
+  ],
+);
+
 /** Durable answer preparation and external-delivery state for respond jobs. */
 export const respondDeliveries = pgTable(
   "respond_deliveries",

@@ -21,6 +21,7 @@
     "hosted:deactivate-release": "bun run scripts/deactivate-hosted-inference.ts",
     "hosted:verify-provider": "bun run scripts/verify-hosted-provider.ts",
     "operational:indexes": "bun run scripts/ensure-operational-indexes.ts",
+    "operations:arm-worker-rehearsal": "bun run scripts/arm-private-worker-rehearsal.ts",
     "billing:backfill-contact-verification": "bun run scripts/backfill-billing-contact-verification.ts",
     "verify:dashboard": "bun run scripts/verify-dashboard.ts",
     "review:local": "bun run scripts/run-review-locally.ts",

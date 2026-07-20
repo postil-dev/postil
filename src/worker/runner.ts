@@ -31,6 +31,7 @@ import {
   reportOperationalWarning,
   type ObservabilityProcessGroup,
 } from "@/lib/server-observability";
+import { WorkerInterruptionRehearsalError } from "@/lib/private-worker-rehearsal";
 import {
   ensureOperatorAlertDelivery,
   normalizeLegacyOperatorAlertPayload,
@@ -230,6 +231,7 @@ export async function runClaimedJob(
     await completeJob(getPool(), job);
     console.log(`[${label}] job ${job.id} done in ${Date.now() - started}ms`);
   } catch (err) {
+    if (err instanceof WorkerInterruptionRehearsalError) throw err;
     const message = redactSecrets(err);
     if (err instanceof WorkerShutdownError && job.kind === "review") {
       const requeued = await requeueJobsOwnedBy(
@@ -346,7 +348,9 @@ export async function drainQueueOnce(
   });
 
   while (drained < maxJobs && Date.now() < deadlineAt) {
-    const job = await claimJob(getPool(), workerId, WEB_PROCESSABLE_JOB_KINDS);
+    const job = await claimJob(getPool(), workerId, WEB_PROCESSABLE_JOB_KINDS, {
+      excludePrivateWorkerRehearsals: true,
+    });
     if (!job) break;
     await runClaimedJob(job, label, "web");
     drained += 1;

@@ -245,7 +245,9 @@ describeDb("webhook handler behaviour", () => {
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
     delete process.env.POSTIL_RELEASE_SHA;
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
-    await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
+    await pool.query(
+      "TRUNCATE private_worker_rehearsals, respond_deliveries, jobs RESTART IDENTITY",
+    );
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
       "DELETE FROM deployment_capabilities WHERE name LIKE 'hosted-inference-release:%'",

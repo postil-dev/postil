@@ -24,6 +24,10 @@ import {
   type PrivateMonitoringPass,
   type MonitorPassFailureState,
 } from "@/lib/private-monitoring";
+import {
+  configuredPrivateWorkerRehearsalSandbox,
+  reconcilePrivateWorkerRehearsals,
+} from "@/lib/private-worker-rehearsal";
 import { redactSecrets } from "@/lib/redact";
 import {
   loadMonitorAlertState,
@@ -51,6 +55,7 @@ let monitorFailureState: MonitorPassFailureState = {
 
 async function main(): Promise<void> {
   validateEnv("monitor");
+  configuredPrivateWorkerRehearsalSandbox();
   const alertStatePath = required("POSTIL_MONITOR_ALERT_STATE_PATH");
   const loadedAlertState = await loadMonitorAlertState(alertStatePath);
   monitorFailureState = loadedAlertState.state;
@@ -90,6 +95,18 @@ async function main(): Promise<void> {
         continue;
       }
       await recordServiceHeartbeat(pool, "monitor", owner, startedAt);
+      const rehearsal = await reconcilePrivateWorkerRehearsals(pool, startedAt);
+      if (
+        rehearsal.replacementsVerified > 0 ||
+        rehearsal.jobsRequeued > 0 ||
+        rehearsal.rehearsalsCompleted > 0 ||
+        rehearsal.rehearsalsExpired > 0 ||
+        rehearsal.rehearsalsFailed > 0
+      ) {
+        console.log(
+          `[monitor] private rehearsal replacement=${rehearsal.replacementsVerified} requeued=${rehearsal.jobsRequeued} completed=${rehearsal.rehearsalsCompleted} expired=${rehearsal.rehearsalsExpired} failed=${rehearsal.rehearsalsFailed}`,
+        );
+      }
       pass = await startPrivateMonitoringPass(
         pool,
         owner,

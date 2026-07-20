@@ -73,7 +73,9 @@ describeDb("watchdog stuck-review kill", () => {
   beforeEach(async () => {
     tokenCalls = 0;
     failCheckRunsCalls = 0;
-    await pool.query("TRUNCATE respond_deliveries, jobs RESTART IDENTITY");
+    await pool.query(
+      "TRUNCATE private_worker_rehearsals, respond_deliveries, jobs RESTART IDENTITY",
+    );
     await pool.query(
       "TRUNCATE reviews, repositories, installations, organizations RESTART IDENTITY CASCADE",
     );

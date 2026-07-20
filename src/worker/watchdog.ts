@@ -124,6 +124,12 @@ export async function watchdogPass(
            locked_at = NULL, locked_by = NULL, run_after = now(),
            last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
        WHERE status = 'running' AND locked_at < $1
+         AND NOT EXISTS (
+           SELECT 1
+             FROM private_worker_rehearsals rehearsal
+            WHERE rehearsal.job_id = jobs.id
+              AND rehearsal.state = 'awaiting_replacement'
+         )
        RETURNING id, kind, status, payload
      )
      INSERT INTO jobs (kind, payload, max_attempts)

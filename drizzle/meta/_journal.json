@@ -288,6 +288,13 @@
       "when": 1784573699185,
       "tag": "0040_customer_notification_inbox",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1784575007062,
+      "tag": "0041_private_worker_rehearsal_control",
+      "breakpoints": true
     }
   ]
 }

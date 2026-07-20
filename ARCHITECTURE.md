@@ -50,6 +50,16 @@ The worker scans GitHub's App delivery summaries through a leased, cursor-pagina
 
 The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods. Enabling the private monitor also enables an explicit worker heartbeat and periodic database checks, so that profile intentionally generates background database traffic.
 
+The private monitor owns the worker-interruption rehearsal control. A database-only
+operator command can arm one short-lived request for the configured sandbox
+organization and repository, with one exact pull request, head commit, review,
+and nonce. The worker can consume the request only after the recovery review ID,
+review envelope, and publication receipt are durable. Fly restarts the failed
+worker process, and the monitor waits for a different worker heartbeat before it
+requeues that exact recovery job. The audit row stores identities, state changes,
+and before-and-after review, usage, check, and publication counts without review
+content. Generic web drains and the queue watchdog exclude the rehearsal job.
+
 The long-running worker stops claiming on `SIGINT` or `SIGTERM` and gives active
 jobs a bounded drain window. Review work can be interrupted and requeued without
 consuming an attempt until GitHub publication begins; its unpublished review row

@@ -51,6 +51,8 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   recoveryReviewId?: number;
   /** Gate conclusion already published by the CLI for the staged review. */
   recoveryGateConclusion?: "success" | "failure" | "neutral";
+  /** Private marker that prevents a web-process queue drain from claiming a rehearsal recovery. */
+  privateWorkerRehearsalNonce?: string;
 }
 
 /** An @postil mention on a PR or issue the bot should reply to. */
@@ -592,7 +594,10 @@ export async function claimJob(
   pool: Pool,
   workerId: string,
   allowedKinds: readonly string[],
-  options: { exactWebhookDispatchDeliveryId?: string } = {},
+  options: {
+    exactWebhookDispatchDeliveryId?: string;
+    excludePrivateWorkerRehearsals?: boolean;
+  } = {},
 ): Promise<ClaimedJob | null> {
   const capabilities = [...new Set(allowedKinds.filter(Boolean))];
   if (capabilities.length === 0) {
@@ -618,10 +623,18 @@ export async function claimJob(
            $2::text IS NULL
            OR (kind = 'webhook-dispatch' AND payload->>'deliveryId' = $2)
          )
+         AND (
+           NOT $3::boolean
+           OR NOT payload ? 'privateWorkerRehearsalNonce'
+         )
        ORDER BY CASE WHEN kind = 'github-reaction' THEN 0 ELSE 1 END, id
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
-      [capabilities, options.exactWebhookDispatchDeliveryId ?? null],
+      [
+        capabilities,
+        options.exactWebhookDispatchDeliveryId ?? null,
+        options.excludePrivateWorkerRehearsals === true,
+      ],
     );
     const row = selected.rows[0];
     if (!row) {

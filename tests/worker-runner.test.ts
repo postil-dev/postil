@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 import type { ClaimedJob } from "@/lib/queue";
+import { WorkerInterruptionRehearsalError } from "@/lib/private-worker-rehearsal";
 import "./quiet-console";
 
 const OLD_ENV = { ...process.env };
@@ -15,6 +16,7 @@ const retriedIndefinitely: Array<{ id: number; error: string }> = [];
 const shutdownRequeues: number[] = [];
 let claimCalls = 0;
 const claimCapabilities: string[][] = [];
+const claimOptions: Array<Record<string, unknown> | undefined> = [];
 let reviewRun: (() => Promise<void>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
 let respondDeliveryRun: (() => Promise<void>) | undefined;
@@ -80,9 +82,11 @@ mock.module("@/lib/queue", () => ({
     _pool: unknown,
     _workerId: string,
     allowedKinds: readonly string[],
+    options?: Record<string, unknown>,
   ) => {
     claimCalls += 1;
     claimCapabilities.push([...allowedKinds]);
+    claimOptions.push(options);
     return jobs.shift();
   },
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
@@ -245,6 +249,7 @@ beforeEach(() => {
   shutdownRequeues.length = 0;
   claimCalls = 0;
   claimCapabilities.length = 0;
+  claimOptions.length = 0;
   reviewRun = async () => undefined;
   respondRun = async () => undefined;
   respondDeliveryRun = async () => undefined;
@@ -303,6 +308,21 @@ describe("drainQueueOnce", () => {
     expect(failed).toEqual([]);
     expect(completed).toEqual([]);
     expect(operationalWarnings).toEqual([]);
+  });
+
+  test("leaves a rehearsal recovery job claimed while the worker exits", async () => {
+    reviewRun = async () => {
+      throw new WorkerInterruptionRehearsalError(
+        "20000000-0000-4000-8000-000000000012",
+      );
+    };
+
+    await expect(runClaimedJob(reviewJob(17), "worker 0", "worker"))
+      .rejects.toBeInstanceOf(WorkerInterruptionRehearsalError);
+    expect(shutdownRequeues).toEqual([]);
+    expect(retriedIndefinitely).toEqual([]);
+    expect(failed).toEqual([]);
+    expect(completed).toEqual([]);
   });
 
   test("retries staged publication reconciliation without exhausting attempts", async () => {
@@ -466,6 +486,7 @@ describe("drainQueueOnce", () => {
         "github-reaction",
       ],
     ]);
+    expect(claimOptions).toEqual([{ excludePrivateWorkerRehearsals: true }]);
   });
 
   test("dispatches fixed webhook comments through a durable job", async () => {

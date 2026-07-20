@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { hostname } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -19,6 +20,10 @@ import {
 import { redactSecrets } from "@/lib/redact";
 import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
 import { recordServiceHeartbeat } from "@/lib/private-monitoring";
+import {
+  configuredPrivateWorkerRehearsalSandbox,
+  WorkerInterruptionRehearsalError,
+} from "@/lib/private-worker-rehearsal";
 import {
   reportOperationalFailure,
   reportOperationalState,
@@ -61,7 +66,7 @@ const WEBHOOK_REDELIVERY_INTERVAL_MS = readPositiveIntEnv(
 const SHUTDOWN_DRAIN_MS = readPositiveIntEnv("WORKER_SHUTDOWN_DRAIN_MS", 10_000);
 const SHUTDOWN_SETTLE_MS = readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000);
 
-const workerId = `${hostname()}-${process.pid}`;
+const workerId = `${hostname()}-${process.pid}-${randomUUID()}`;
 let shuttingDown = false;
 let shutdownPromise: Promise<void> | undefined;
 let wakeWebhookRetention: (() => void) | undefined;
@@ -351,6 +356,7 @@ function validatePostilBin(): void {
 
 async function main(): Promise<void> {
   validateEnv("worker");
+  configuredPrivateWorkerRehearsalSandbox();
   validatePostilBin();
   // Fail fast if the database is unreachable.
   await getPool().query("SELECT 1");
@@ -377,6 +383,10 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (err) => {
+  if (err instanceof WorkerInterruptionRehearsalError) {
+    console.warn(`[rehearsal] consumed one-shot request ${err.nonce}; exiting worker`);
+    process.exit(86);
+  }
   // Boot failures (e.g. a malformed DATABASE_URL surfacing from getPool) can
   // embed credentials in the error; redact before it hits platform logs.
   reportOperationalFailure("worker", "worker_boot_failed", err);
