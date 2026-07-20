@@ -13,13 +13,16 @@ import {
   deliverPrivateMonitoringNotification,
   failPrivateMonitoringPass,
   finishPrivateMonitoringPass,
-  monitorPassAlertBucket,
+  markMonitorPassAlertSent,
+  recordMonitorPassFailure,
+  recordMonitorPassSuccess,
   recordServiceHeartbeat,
   runDatabaseMonitoringChecks,
   runPublicMonitoringChecks,
   sendMonitorPassFailureNotification,
   startPrivateMonitoringPass,
   type PrivateMonitoringPass,
+  type MonitorPassFailureState,
 } from "@/lib/private-monitoring";
 import { redactSecrets } from "@/lib/redact";
 import {
@@ -36,9 +39,11 @@ const BYPASS_ALERT_AFTER_FAILURES = 2;
 const owner = `${hostname()}-${process.pid}`;
 let shuttingDown = false;
 let wakeSleep: (() => void) | undefined;
-let monitorFailureCount = 0;
-let monitorFailureBucket: Date | undefined;
-let monitorAlertSent = false;
+let monitorFailureState: MonitorPassFailureState = {
+  bucket: null,
+  failuresInBucket: 0,
+  lastAlertBucket: null,
+};
 
 async function main(): Promise<void> {
   validateEnv("monitor");
@@ -97,9 +102,7 @@ async function main(): Promise<void> {
         new Date(),
       );
       await recordServiceHeartbeat(pool, "monitor", owner, new Date());
-      monitorFailureCount = 0;
-      monitorFailureBucket = undefined;
-      monitorAlertSent = false;
+      monitorFailureState = recordMonitorPassSuccess(monitorFailureState);
 
       const notifications = await claimPrivateMonitoringNotifications(
         pool,
@@ -126,10 +129,12 @@ async function main(): Promise<void> {
         `[monitor] pass ${pass.runId} completed with ${publicChecks.length + databaseChecks.length} checks and ${notifications.length} notification claim(s)`,
       );
     } catch (error) {
-      if (monitorFailureCount === 0) {
-        monitorFailureBucket = monitorPassAlertBucket(startedAt);
-      }
-      monitorFailureCount += 1;
+      const failure = recordMonitorPassFailure(
+        monitorFailureState,
+        startedAt,
+        BYPASS_ALERT_AFTER_FAILURES,
+      );
+      monitorFailureState = failure.state;
       reportOperationalFailure("monitor", "monitor_pass_failed", error);
       console.error(`[monitor] pass failed: ${redactSecrets(error)}`);
       if (pass) {
@@ -142,17 +147,18 @@ async function main(): Promise<void> {
         );
       }
       if (
-        monitorFailureCount >= BYPASS_ALERT_AFTER_FAILURES &&
-        monitorFailureBucket &&
-        !monitorAlertSent
+        failure.shouldAlert &&
+        monitorFailureState.bucket
       ) {
         await sendMonitorPassFailureNotification({
           recipient,
           publicOrigin,
-          bucket: monitorFailureBucket,
+          bucket: monitorFailureState.bucket,
         })
           .then(() => {
-            monitorAlertSent = true;
+            monitorFailureState = markMonitorPassAlertSent(
+              monitorFailureState,
+            );
           })
           .catch((notificationError) => {
             console.error(

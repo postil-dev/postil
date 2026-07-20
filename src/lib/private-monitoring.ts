@@ -45,6 +45,12 @@ export interface PrivateMonitoringPass {
   scheduledFor: Date;
 }
 
+export interface MonitorPassFailureState {
+  bucket: Date | null;
+  failuresInBucket: number;
+  lastAlertBucket: Date | null;
+}
+
 export interface PrivateMonitoringDashboard {
   state: {
     lastStartedAt: Date | null;
@@ -91,6 +97,8 @@ const NOTIFICATION_LEASE_MS = 60 * 1_000;
 const MAX_NOTIFICATION_ATTEMPTS = 5;
 const NOTIFICATION_RETRY_EPOCH_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
 const MONITOR_PASS_ALERT_BUCKET_MS = 6 * 60 * 60 * 1_000;
+const STALE_MONITOR_RUN_MS = 30 * 60 * 1_000;
+const MONITOR_RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_DETAIL_CHARS = 1_000;
 const SAFE_COMPONENT = /^[a-z][a-z0-9-]{0,63}$/;
 const SAFE_INSTANCE = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -253,31 +261,68 @@ export async function startPrivateMonitoringPass(
   scheduledFor: Date,
   now = new Date(),
 ): Promise<PrivateMonitoringPass | null> {
-  const result = await pool.query<{ id: string }>(
-    `INSERT INTO private_monitor_runs
-       (scheduled_for, owner, status, started_at)
-     SELECT $1, $2, 'running', $3
-       FROM private_monitor_state
-      WHERE id = $4
-        AND lease_owner = $2
-        AND lease_expires_at > $3
-     ON CONFLICT (scheduled_for) DO NOTHING
-     RETURNING id`,
-    [scheduledFor, owner, now, MONITOR_STATE_ID],
-  );
-  const row = result.rows[0];
-  if (!row) return null;
-  await pool.query(
-    `UPDATE private_monitor_state
-        SET last_started_at = $2,
-            last_error = NULL,
-            updated_at = $2
-      WHERE id = $1
-        AND lease_owner = $3
-        AND lease_expires_at > $2`,
-    [MONITOR_STATE_ID, now, owner],
-  );
-  return { runId: Number(row.id), owner, scheduledFor };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const lease = await client.query(
+      `SELECT id
+         FROM private_monitor_state
+        WHERE id = $1
+          AND lease_owner = $2
+          AND lease_expires_at > $3
+        FOR UPDATE`,
+      [MONITOR_STATE_ID, owner, now],
+    );
+    if ((lease.rowCount ?? 0) !== 1) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    await client.query(
+      `UPDATE private_monitor_runs
+          SET status = 'failed',
+              check_count = GREATEST(check_count, 1),
+              failure_count = GREATEST(failure_count, 1),
+              finished_at = $1,
+              error = 'Monitor process stopped before pass completion.'
+        WHERE status = 'running'
+          AND started_at < $2`,
+      [now, new Date(now.getTime() - STALE_MONITOR_RUN_MS)],
+    );
+    await client.query(
+      `DELETE FROM private_monitor_runs
+        WHERE status IN ('completed', 'failed')
+          AND COALESCE(finished_at, started_at) < $1`,
+      [new Date(now.getTime() - MONITOR_RUN_RETENTION_MS)],
+    );
+    const result = await client.query<{ id: string }>(
+      `INSERT INTO private_monitor_runs
+         (scheduled_for, owner, status, started_at)
+       VALUES ($1, $2, 'running', $3)
+       ON CONFLICT (scheduled_for) DO NOTHING
+       RETURNING id`,
+      [scheduledFor, owner, now],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    await client.query(
+      `UPDATE private_monitor_state
+          SET last_started_at = $2,
+              last_error = NULL,
+              updated_at = $2
+        WHERE id = $1`,
+      [MONITOR_STATE_ID, now],
+    );
+    await client.query("COMMIT");
+    return { runId: Number(row.id), owner, scheduledFor };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function finishPrivateMonitoringPass(
@@ -429,26 +474,23 @@ export async function runDatabaseMonitoringChecks(
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(locked_at)), 0)::int::text
          FROM jobs WHERE status = 'running') AS running_job_age,
       (SELECT count(*)::text FROM jobs
-         WHERE kind = 'check-run-cleanup' AND status = 'failed'
-           AND run_after >= now() - interval '30 minutes') AS cleanup_failures,
+         WHERE kind = 'check-run-cleanup' AND status = 'failed') AS cleanup_failures,
       (SELECT count(*)::text FROM operator_alert_deliveries
-         WHERE status = 'failed'
-           AND updated_at >= now() - interval '30 minutes') AS email_failures,
+         WHERE status = 'failed') AS email_failures,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text
          FROM operator_alert_deliveries WHERE status IN ('queued', 'retrying')) AS email_pending_age,
       (SELECT count(*)::text FROM billing_author_settlements
-         WHERE status = 'failed'
-           AND updated_at >= now() - interval '30 minutes') AS billing_settlement_failures,
+         WHERE status = 'failed') AS billing_settlement_failures,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text
          FROM billing_author_settlements
          WHERE status IN ('pending', 'charging', 'reconciling')) AS billing_settlement_age,
       (SELECT count(*)::text FROM billing_provider_events
-         WHERE outcome = 'unmatched' AND occurred_at >= now() - interval '24 hours') AS unmatched_billing_events,
+         WHERE outcome = 'unmatched') AS unmatched_billing_events,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text
          FROM billing_checkout_transactions
          WHERE status IN ('creating', 'pending')) AS billing_checkout_age,
       (SELECT count(*)::text FROM billing_checkout_transactions
-         WHERE status = 'failed' AND updated_at >= now() - interval '24 hours') AS billing_checkout_failures,
+         WHERE status = 'failed') AS billing_checkout_failures,
       (SELECT count(*)::text
          FROM self_service_trial_grants AS grant_row
          LEFT JOIN organization_entitlements AS entitlement ON entitlement.org_id = grant_row.org_id
@@ -457,12 +499,11 @@ export async function runDatabaseMonitoringChecks(
          FROM self_service_trial_grants AS grant_row
          LEFT JOIN operator_alert_deliveries AS delivery
            ON delivery.event_key = 'trial-started:' || grant_row.initiated_by_github_id::text
-         WHERE delivery.event_key IS NULL) AS trial_alert_gaps,
+         WHERE delivery.status IS DISTINCT FROM 'delivered') AS trial_alert_gaps,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(received_at)), 0)::int::text
          FROM webhook_deliveries WHERE completed_at IS NULL) AS webhook_pending_age,
       (SELECT count(*)::text FROM github_webhook_delivery_recoveries
-         WHERE request_state IN ('terminal', 'exhausted')
-           AND updated_at >= now() - interval '30 minutes') AS webhook_terminal,
+         WHERE request_state IN ('terminal', 'exhausted')) AS webhook_terminal,
       (SELECT CASE
          WHEN EXISTS (SELECT 1 FROM installations WHERE suspended = false)
            THEN COALESCE(
@@ -527,7 +568,7 @@ export async function runDatabaseMonitoringChecks(
              WHERE incident ->> 'category' = 'invalidOutput'
            )) AS invalid_outputs,
       (SELECT count(*)::text FROM jobs
-         WHERE status = 'failed' AND run_after >= now() - interval '30 minutes') AS failed_jobs
+         WHERE status = 'failed') AS failed_jobs
   `);
   const row = result.rows[0];
   if (!row) throw new Error("private monitoring database query returned no row");
@@ -851,6 +892,48 @@ export function monitorPassAlertBucket(now: Date): Date {
     Math.floor(timestamp / MONITOR_PASS_ALERT_BUCKET_MS) *
       MONITOR_PASS_ALERT_BUCKET_MS,
   );
+}
+
+export function recordMonitorPassFailure(
+  state: MonitorPassFailureState,
+  now: Date,
+  alertAfterFailures = 2,
+): { state: MonitorPassFailureState; shouldAlert: boolean } {
+  if (!Number.isSafeInteger(alertAfterFailures) || alertAfterFailures < 1) {
+    throw new Error("monitor pass alert threshold must be a positive integer");
+  }
+  const bucket = monitorPassAlertBucket(now);
+  const sameBucket = state.bucket?.getTime() === bucket.getTime();
+  const failuresInBucket = sameBucket ? state.failuresInBucket + 1 : 1;
+  return {
+    state: {
+      bucket,
+      failuresInBucket,
+      lastAlertBucket: state.lastAlertBucket,
+    },
+    shouldAlert:
+      failuresInBucket >= alertAfterFailures &&
+      state.lastAlertBucket?.getTime() !== bucket.getTime(),
+  };
+}
+
+export function markMonitorPassAlertSent(
+  state: MonitorPassFailureState,
+): MonitorPassFailureState {
+  if (!state.bucket) {
+    throw new Error("monitor pass alert cannot be recorded without a bucket");
+  }
+  return { ...state, lastAlertBucket: state.bucket };
+}
+
+export function recordMonitorPassSuccess(
+  state: MonitorPassFailureState,
+): MonitorPassFailureState {
+  return {
+    bucket: null,
+    failuresInBucket: 0,
+    lastAlertBucket: state.lastAlertBucket,
+  };
 }
 
 async function reconcileCheck(

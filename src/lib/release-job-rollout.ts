@@ -115,7 +115,19 @@ export async function activateHostedInferenceRelease(
   }
 }
 
-/** Deploy and rollback preparation always make the target release dark first. */
+/**
+ * Report whether the target release is already active without changing any
+ * capability. A failed or same-SHA deploy therefore preserves the last known
+ * working release and an existing activation for the target SHA.
+ */
+export async function prepareHostedInferenceRelease(
+  pool: Pool,
+  releaseSha: string,
+): Promise<boolean> {
+  return hostedInferenceReleaseActivated(pool, releaseSha);
+}
+
+/** Explicitly revoke hosted inference for one exact release. */
 export async function deactivateHostedInferenceRelease(
   pool: Pool,
   releaseSha: string,

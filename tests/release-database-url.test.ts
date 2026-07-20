@@ -136,6 +136,12 @@ describe("release database connection", () => {
     const deployWorkflow = await readFile(join(root, ".github", "workflows", "deploy.yml"), "utf8");
 
     expect(packageJson.scripts["release:prepare"]).toStartWith("bun run db:migrate:release");
+    expect(packageJson.scripts["release:prepare"]).toContain(
+      "hosted:prepare-release",
+    );
+    expect(packageJson.scripts["release:prepare"]).not.toContain(
+      "hosted:deactivate-release",
+    );
     expect(packageJson.scripts["db:migrate:release"]).toBe(
       "bun run scripts/run-release-migrations.ts",
     );

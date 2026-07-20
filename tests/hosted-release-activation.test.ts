@@ -15,6 +15,7 @@ import {
   activateHostedInferenceRelease,
   deactivateHostedInferenceRelease,
   hostedInferenceReleaseActivated,
+  prepareHostedInferenceRelease,
 } from "@/lib/release-job-rollout";
 import { backfillSelfServiceTrials } from "@/lib/self-service-trial";
 
@@ -167,6 +168,10 @@ describeDb("managed hosted inference release activation", () => {
     );
     expect(access).toMatchObject({ allowed: true, reason: "active_trial" });
     expect(providerModeMatchesRepositoryAccess(true, access, false)).toBe(true);
+    expect(await prepareHostedInferenceRelease(pool, releaseA)).toBe(true);
+    expect(await hostedInferenceReleaseActivated(pool, releaseA)).toBe(true);
+    expect(await prepareHostedInferenceRelease(pool, releaseB)).toBe(false);
+    expect(await hostedInferenceReleaseActivated(pool, releaseA)).toBe(true);
     expect(await hostedInferenceReleaseActivated(pool, releaseB)).toBe(false);
 
     process.env.POSTIL_RELEASE_SHA = releaseB;

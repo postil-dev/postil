@@ -1,6 +1,6 @@
 import { closeDb, getPool } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
-import { deactivateHostedInferenceRelease } from "@/lib/release-job-rollout";
+import { prepareHostedInferenceRelease } from "@/lib/release-job-rollout";
 
 async function main(): Promise<void> {
   try {
@@ -9,12 +9,12 @@ async function main(): Promise<void> {
       console.log("managed hosted inference preparation skipped outside a release image");
       return;
     }
-    const deactivated = await deactivateHostedInferenceRelease(
+    const alreadyActive = await prepareHostedInferenceRelease(
       getPool(),
       releaseSha,
     );
     console.log(
-      `managed hosted inference prepared dark: ${deactivated ? "prior activation removed" : "already dark"}`,
+      `managed hosted inference release prepared: ${alreadyActive ? "existing activation preserved" : "awaiting post-deploy activation"}`,
     );
   } finally {
     await closeDb();
