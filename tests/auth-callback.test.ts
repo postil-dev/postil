@@ -19,6 +19,7 @@ const ORIGINAL_CLIENT_ID = process.env.GITHUB_OAUTH_CLIENT_ID;
 const ORIGINAL_CLIENT_SECRET = process.env.GITHUB_OAUTH_CLIENT_SECRET;
 
 const syncCalls: AccountRef[][] = [];
+const setupDestinationCalls: Array<{ userId: number; installationId: string | undefined }> = [];
 const reconciliationCalls: Array<{ userId: number; accounts: AccountMembership[] }> = [];
 const sessionCalls: Array<{
   userId: number;
@@ -27,6 +28,7 @@ const sessionCalls: Array<{
 }> = [];
 const requestedUrls: string[] = [];
 let githubResponses: Array<Response | Error> = [];
+let setupOrgSlug: string | undefined;
 
 mock.module("@/lib/db", () => ({
   ...dbModule,
@@ -36,6 +38,13 @@ mock.module("@/lib/db", () => ({
 mock.module("@/lib/github/installation-sync", () => ({
   syncInstallationsFromGithub: async (accounts: AccountRef[]) => {
     syncCalls.push(accounts);
+  },
+  findAccessibleInstallationOrgSlug: async (
+    userId: number,
+    installationId: string | undefined,
+  ) => {
+    setupDestinationCalls.push({ userId, installationId });
+    return setupOrgSlug;
   },
 }));
 
@@ -69,10 +78,12 @@ beforeEach(() => {
   process.env.GITHUB_OAUTH_CLIENT_ID = "github-client-id";
   process.env.GITHUB_OAUTH_CLIENT_SECRET = "github-client-secret";
   syncCalls.length = 0;
+  setupDestinationCalls.length = 0;
   reconciliationCalls.length = 0;
   sessionCalls.length = 0;
   requestedUrls.length = 0;
   githubResponses = [];
+  setupOrgSlug = undefined;
   globalThis.fetch = (async (input: string | URL | Request) => {
     requestedUrls.push(
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
@@ -188,6 +199,7 @@ describe("GET /api/auth/callback", () => {
       accessToken: "user-access-token",
     });
     expect(sessionCalls[0]?.membershipCheckedAt).toBeInstanceOf(Date);
+    expect(setupDestinationCalls).toEqual([{ userId: 77, installationId: undefined }]);
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("https://postil.dev/reports");
     expect(response.headers.get("set-cookie")).toContain("postil_session=signed-session");
@@ -197,12 +209,41 @@ describe("GET /api/auth/callback", () => {
       "https://api.github.com/user/memberships/orgs?per_page=100&state=active",
     ]);
   });
+
+  test("lands a setup flow on the installed account after authorization", async () => {
+    setupOrgSlug = "morgaesis";
+    githubResponses = [
+      jsonResponse({ access_token: "user-access-token" }),
+      githubUserResponse(),
+      jsonResponse([]),
+    ];
+
+    const response = await GET(
+      callbackRequest("postil_setup_installation=146332124"),
+    );
+
+    expect(setupDestinationCalls).toEqual([
+      { userId: 77, installationId: "146332124" },
+    ]);
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/orgs/morgaesis",
+    );
+    expect(response.headers.get("set-cookie")).toContain(
+      "postil_setup_installation=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    );
+  });
 });
 
-function callbackRequest(): Request {
+function callbackRequest(extraCookie?: string): Request {
   return new Request(
     "http://localhost:3000/api/auth/callback?code=github-code&state=expected-state",
-    { headers: { cookie: "postil_oauth_state=expected-state" } },
+    {
+      headers: {
+        cookie: ["postil_oauth_state=expected-state", extraCookie]
+          .filter(Boolean)
+          .join("; "),
+      },
+    },
   );
 }
 
