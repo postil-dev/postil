@@ -541,7 +541,7 @@ describeDb("webhook handler behaviour", () => {
     ].sort());
   });
 
-  test("installation without a verified sender receives BYOK access only", async () => {
+  test("installation without a verified sender defers its trial until authenticated setup", async () => {
     const account = {
       id: 9250,
       login: "UnsignedTrialOwner",
@@ -562,11 +562,7 @@ describeDb("webhook handler behaviour", () => {
          FROM self_service_trial_grants
         WHERE org_id = (SELECT id FROM organizations WHERE github_org_id = 9250)`,
     );
-    expect(grants.rows).toEqual([{
-      requested_mode: "byok",
-      granted_mode: "byok",
-      initiated_by_github_id: "9250",
-    }]);
+    expect(grants.rows).toEqual([]);
   });
 
   test("installation during a dark release is promoted when that exact release activates", async () => {
@@ -645,6 +641,7 @@ describeDb("webhook handler behaviour", () => {
     expect((await post("installation", {
       action: "unsuspend",
       installation: { id: 8181, account, suspended_at: null },
+      sender: { id: 7002, login: "installer", type: "User" },
     }, "trial-unsuspended")).status).toBe(200);
     expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(1);
     expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(1);
@@ -660,6 +657,7 @@ describeDb("webhook handler behaviour", () => {
         suspended_at: null,
       },
       repositories: [],
+      sender: { id: 7003, login: "installer", type: "User" },
     }, "trial-hosted-paused")).status).toBe(200);
     const entitlement = await pool.query<{ subscription_mode: string }>(
       "SELECT subscription_mode FROM organization_entitlements",
@@ -738,6 +736,7 @@ describeDb("webhook handler behaviour", () => {
         suspended_at: null,
       },
       repositories: [],
+      sender: { id: 7004, login: "installer", type: "User" },
     }, "trial-without-operator-alerts")).status).toBe(200);
     expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(1);
     expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(0);
