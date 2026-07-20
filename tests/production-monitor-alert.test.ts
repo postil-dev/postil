@@ -29,19 +29,10 @@ describe("production monitor email", () => {
     );
     expect(workflow).toContain("vars.POSTIL_OPERATOR_ALERT_EMAIL");
     expect(workflow).toContain("secret-path: /postil");
-    expect(workflow).toContain("postil_operator_alert_failures_current");
-    expect(workflow).toContain(
-      "postil_oldest_operator_alert_pending_age_seconds",
-    );
-    expect(workflow).toContain("postil_billing_settlement_failures_current");
-    expect(workflow).toContain(
-      "postil_oldest_billing_settlement_pending_age_seconds",
-    );
-    expect(workflow).toContain("postil_unmatched_billing_provider_events_24h");
-    expect(workflow).toContain(
-      "postil_oldest_billing_checkout_open_age_seconds",
-    );
-    expect(workflow).toContain("postil_billing_checkout_failures_24h");
+    expect(workflow).toContain("postil_database_up 1");
+    expect(workflow).toContain("postil_private_monitor_heartbeat_fresh 1");
+    expect(workflow).not.toContain("cat .cache/metrics.out");
+    expect(workflow).not.toContain("postil_operator_alert_failures_current");
   });
 
   test("sends a bounded idempotent failure alert without production output", async () => {

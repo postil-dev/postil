@@ -47,6 +47,7 @@ RUN apt-get update \
 COPY --chown=bun:bun --from=deps /app/node_modules ./node_modules
 COPY --chown=bun:bun . .
 COPY --chown=bun:bun --from=build /app/.next ./.next
+RUN chown bun:bun /app
 # Bake the pinned postil CLI into the image. This stage only installs a
 # binary that is already present at vendor/postil; it does not fetch or
 # verify one itself. Production (deploy.yml) always populates vendor/postil
@@ -71,8 +72,9 @@ RUN set -eu; \
       exit 1; \
     fi; \
     /usr/local/bin/postil --version
-USER bun
 EXPOSE 3000
 # Run the server in the container's signal-receiving process. Package-script
 # wrappers can orphan the Next server when the wrapper receives SIGTERM.
-CMD ["bun", "scripts/start-web.ts"]
+# The managed wrapper prepares a monitor-only volume when needed, drops to the
+# image's unprivileged application uid/gid, and forwards shutdown signals.
+CMD ["bun", "scripts/start-managed-process.ts", "web"]

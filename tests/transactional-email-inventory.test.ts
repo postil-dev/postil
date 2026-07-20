@@ -4,13 +4,17 @@ import { join } from "node:path";
 
 import { productionMonitorEmailContent } from "@/../scripts/send-production-monitor-alert";
 import { billingContactVerificationEmailContent } from "@/lib/billing-contact-verification";
+import { operatorAlertEmailContent } from "@/lib/operator-alert-email";
 import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
+import {
+  privateMonitoringIncidentEmailContent,
+  privateMonitoringPassFailureEmailContent,
+} from "@/lib/private-monitoring";
 import {
   assertApplicationEmailBody,
   renderTransactionalEmail,
   type TransactionalEmailContent,
 } from "@/lib/transactional-email";
-import { operatorAlertEmailContent } from "@/worker/operator-alert";
 
 const base = {
   orgId: 7,
@@ -101,9 +105,37 @@ describe("outbound email inventory", () => {
         "c5bb3ebbff986e2c93184daa38551ec26d4b06ee",
         "https://github.com/postil-dev/postil/actions/runs/29654572437",
       ),
+      privateMonitoringIncidentEmailContent(
+        {
+          kind: "opened",
+          severity: "critical",
+          summary: "Review worker heartbeat is stale",
+          detail: "No recent worker heartbeat has been recorded.",
+        },
+        "https://postil.dev/operator#monitoring",
+      ),
+      privateMonitoringIncidentEmailContent(
+        {
+          kind: "reminder",
+          severity: "warning",
+          summary: "Billing reconciliation needs attention",
+          detail: "The incident remains open.",
+        },
+        "https://postil.dev/operator#monitoring",
+      ),
+      privateMonitoringIncidentEmailContent(
+        {
+          kind: "resolved",
+          severity: "critical",
+          summary: "Review worker heartbeat recovered",
+          detail: "The worker heartbeat is fresh.",
+        },
+        "https://postil.dev/operator#monitoring",
+      ),
+      privateMonitoringPassFailureEmailContent("https://postil.dev"),
     ];
 
-    expect(content).toHaveLength(12);
+    expect(content).toHaveLength(16);
     for (const message of content) {
       expect(message.title.length).toBeGreaterThan(5);
       expect(message.summary.length).toBeGreaterThan(10);
@@ -140,7 +172,7 @@ describe("outbound email inventory", () => {
     expect(directSenders).toEqual([
       "scripts/send-production-monitor-alert.ts",
       "src/lib/email-verification.ts",
-      "src/worker/operator-alert.ts",
+      "src/lib/operator-notifications.ts",
     ]);
 
     const forbiddenTransport =

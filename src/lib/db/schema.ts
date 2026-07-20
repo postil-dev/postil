@@ -1128,6 +1128,143 @@ export const releaseSteps = pgTable("release_steps", {
   details: jsonb("details").$type<Record<string, unknown>>().notNull(),
 });
 
+/** Private, low-cardinality liveness receipts for independent service processes. */
+export const serviceHeartbeats = pgTable(
+  "service_heartbeats",
+  {
+    component: text("component").primaryKey(),
+    instanceId: text("instance_id").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    check(
+      "service_heartbeats_component_check",
+      sql`${t.component} IN ('worker', 'monitor')`,
+    ),
+    check(
+      "service_heartbeats_instance_nonempty",
+      sql`length(btrim(${t.instanceId})) > 0`,
+    ),
+  ],
+);
+
+/** Singleton lease and latest-pass state for the private monitoring process. */
+export const privateMonitorState = pgTable(
+  "private_monitor_state",
+  {
+    id: integer("id").primaryKey(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    lastStartedAt: timestamp("last_started_at", { withTimezone: true }),
+    lastCompletedAt: timestamp("last_completed_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [check("private_monitor_state_singleton_check", sql`${t.id} = 1`)],
+);
+
+/** Content-bounded private history for monitoring pass audit and diagnosis. */
+export const privateMonitorRuns = pgTable(
+  "private_monitor_runs",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    owner: text("owner").notNull(),
+    status: text("status").notNull(),
+    checkCount: integer("check_count").notNull().default(0),
+    failureCount: integer("failure_count").notNull().default(0),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    error: text("error"),
+  },
+  (t) => [
+    uniqueIndex("private_monitor_runs_scheduled_idx").on(t.scheduledFor),
+    index("private_monitor_runs_started_idx").on(t.startedAt),
+    check(
+      "private_monitor_runs_status_check",
+      sql`${t.status} IN ('running', 'completed', 'failed')`,
+    ),
+    check(
+      "private_monitor_runs_counts_check",
+      sql`${t.checkCount} >= 0 AND ${t.failureCount} >= 0 AND ${t.failureCount} <= ${t.checkCount}`,
+    ),
+    check(
+      "private_monitor_runs_owner_nonempty",
+      sql`length(btrim(${t.owner})) > 0`,
+    ),
+  ],
+);
+
+/** Private incident state and a durable, retryable notification outbox. */
+export const privateMonitorIncidents = pgTable(
+  "private_monitor_incidents",
+  {
+    key: text("key").primaryKey(),
+    group: text("group").notNull(),
+    severity: text("severity").notNull(),
+    summary: text("summary").notNull(),
+    detail: text("detail").notNull(),
+    state: text("state").notNull().default("open"),
+    occurrenceCount: integer("occurrence_count").notNull().default(1),
+    firstDetectedAt: timestamp("first_detected_at", { withTimezone: true })
+      .notNull(),
+    lastDetectedAt: timestamp("last_detected_at", { withTimezone: true })
+      .notNull(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    pendingNotificationKey: text("pending_notification_key"),
+    pendingNotificationKind: text("pending_notification_kind"),
+    notificationAttempts: integer("notification_attempts").notNull().default(0),
+    notificationAvailableAt: timestamp("notification_available_at", {
+      withTimezone: true,
+    }),
+    notificationLeaseOwner: text("notification_lease_owner"),
+    notificationLeaseExpiresAt: timestamp("notification_lease_expires_at", {
+      withTimezone: true,
+    }),
+    lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true }),
+    lastNotificationError: text("last_notification_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("private_monitor_incidents_state_updated_idx").on(t.state, t.updatedAt),
+    index("private_monitor_incidents_notification_idx")
+      .on(t.notificationAvailableAt, t.notificationLeaseExpiresAt)
+      .where(sql`${t.pendingNotificationKey} IS NOT NULL`),
+    check(
+      "private_monitor_incidents_state_check",
+      sql`${t.state} IN ('open', 'resolved')`,
+    ),
+    check(
+      "private_monitor_incidents_severity_check",
+      sql`${t.severity} IN ('warning', 'critical')`,
+    ),
+    check(
+      "private_monitor_incidents_notification_kind_check",
+      sql`${t.pendingNotificationKind} IS NULL OR ${t.pendingNotificationKind} IN ('opened', 'reminder', 'resolved')`,
+    ),
+    check(
+      "private_monitor_incidents_notification_pair_check",
+      sql`(${t.pendingNotificationKey} IS NULL) = (${t.pendingNotificationKind} IS NULL)`,
+    ),
+    check(
+      "private_monitor_incidents_occurrence_count_check",
+      sql`${t.occurrenceCount} > 0 AND ${t.notificationAttempts} >= 0 AND ${t.notificationAttempts} <= 5`,
+    ),
+    check(
+      "private_monitor_incidents_text_nonempty",
+      sql`length(btrim(${t.key})) > 0 AND length(btrim(${t.group})) > 0 AND length(btrim(${t.summary})) > 0`,
+    ),
+  ],
+);
+
 export type JobPayload = Record<string, unknown>;
 
 /** Postgres-native job queue, claimed with FOR UPDATE SKIP LOCKED. */

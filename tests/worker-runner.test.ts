@@ -54,6 +54,7 @@ mock.module("@/lib/server-observability", () => ({
 mock.module("@/lib/db", () => ({
   getDb: () => ({}),
   getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
+  schema: {},
 }));
 
 mock.module("@/lib/operator-alerts", () => ({
@@ -380,22 +381,39 @@ describe("drainQueueOnce", () => {
     expect(fly).toContain('kill_timeout = "30s"');
   });
 
-  test("hosted process entrypoints receive termination signals directly", () => {
+  test("hosted process launcher drops privileges and forwards termination", () => {
     const fly = readFileSync("fly.toml", "utf8");
     const dockerfile = readFileSync("Dockerfile", "utf8");
     const compose = readFileSync("docker-compose.yml", "utf8");
+    const launcher = readFileSync("scripts/start-managed-process.ts", "utf8");
     const web = readFileSync("scripts/start-web.ts", "utf8");
     const webhook = readFileSync("src/lib/github/webhook-handler.ts", "utf8");
 
-    expect(fly).toContain('web = "bun scripts/start-web.ts"');
-    expect(fly).toContain('worker = "bun src/worker/index.ts"');
-    expect(dockerfile).toContain('CMD ["bun", "scripts/start-web.ts"]');
-    expect(dockerfile).toContain("USER bun");
-    expect(dockerfile).toContain("POSTIL_CACHE_DIR=/tmp/postil");
-    expect(dockerfile.indexOf("USER bun")).toBeLessThan(
-      dockerfile.indexOf('CMD ["bun", "scripts/start-web.ts"]'),
+    expect(fly).toContain('web = "bun scripts/start-managed-process.ts web"');
+    expect(fly).toContain('worker = "bun scripts/start-managed-process.ts worker"');
+    expect(fly).toContain('monitor = "bun scripts/start-managed-process.ts monitor"');
+    expect(dockerfile).toContain(
+      'CMD ["bun", "scripts/start-managed-process.ts", "web"]',
     );
-    expect(compose).toContain('command: ["bun", "src/worker/index.ts"]');
+    expect(dockerfile).not.toContain("USER bun");
+    expect(dockerfile).toContain("RUN chown bun:bun /app");
+    expect(dockerfile).toContain("POSTIL_CACHE_DIR=/tmp/postil");
+    expect(compose).toContain(
+      'command: ["bun", "scripts/start-managed-process.ts", "worker"]',
+    );
+    expect(compose).toContain(
+      'command: ["bun", "scripts/start-managed-process.ts", "monitor"]',
+    );
+    expect(launcher).toContain("process.setgid(targetGid)");
+    expect(launcher).toContain("process.setuid(targetUid)");
+    expect(launcher).toContain("actualUid !== targetUid");
+    expect(launcher).toContain("actualGid !== targetGid");
+    expect(launcher.indexOf("process.setgid(targetGid)")).toBeLessThan(
+      launcher.indexOf("process.setuid(targetUid)"),
+    );
+    expect(launcher).toContain('child.kill("SIGINT")');
+    expect(launcher).toContain('child.kill("SIGTERM")');
+    expect(launcher).toContain("const exitCode = await child.exited");
     expect(web).toContain("await startServer({");
     expect(web).toContain('process.env.POSTIL_BIND_HOST?.trim() || "0.0.0.0"');
     expect(web).not.toContain("process.env.HOSTNAME");
