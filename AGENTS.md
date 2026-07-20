@@ -32,7 +32,11 @@ absolute path. The retry validates the mode-0600 template against a private
 mode-0600 cache bound to the exact reviewed merge base, head, stable IDs,
 locations, and digest; it does not rerun model inference. Stale, partial,
 additional, tampered, or location-mismatched entries fail closed. Provider,
-model-output, and truncated-diff findings cannot be dispositioned. An accepted
-retry removes its cache and generated template. Unaccepted records contain
-only finding IDs and locations and remain under `.git/postil-local-review`
-until the matching retry succeeds or the repository owner removes them.
+model-output, and truncated-diff findings cannot be dispositioned. Accepted
+evidence creates a private marker bound to the reviewed SHAs, configured
+remote, destination ref, and observed remote tip. A dry run or failed
+transport leaves the handoff intact. The marker is claimed atomically and its
+cache and generated template are removed only after the exact remote ref
+reports the reviewed head. Unaccepted records contain only finding IDs and
+locations and remain under `.git/postil-local-review` until the matching retry
+succeeds or the repository owner removes them.

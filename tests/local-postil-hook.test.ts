@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -333,11 +334,115 @@ describe("trusted local Postil pre-push hook", () => {
     expect(result.stderr).toContain("focused assertion proves the required behavior");
     expect((await readRecords(fixture)).length).toBe(1);
     expect((await readRecord(fixture)).dispositionsVariable).toBe("absent");
-    expect(await Bun.file(paths.cache).exists()).toBe(false);
-    expect(await Bun.file(paths.template).exists()).toBe(false);
+    await waitForFilesToDisappear(paths.cache, paths.template);
     expect(await Bun.file(paths.lock).exists()).toBe(false);
     expect(await refExists(fixture.remote, "refs/heads/accepted-disposition")).toBe(true);
   });
+
+  test("preserves a validated handoff until the exact later push reaches a real bare remote", async () => {
+    const fixture = await createFixture("validated-handoff");
+    const head = await commit(fixture.repository, "topic", "validated handoff\n");
+    const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+    const remoteRef = "refs/heads/validated-handoff";
+    const paths = reviewCachePaths(fixture, base, head);
+    await installHook(fixture, fixture.repository, true);
+
+    const reviewed = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "finding",
+    );
+    expect(reviewed.exitCode).not.toBe(0);
+    await fillDispositionReasons(paths.template);
+
+    const validated = await push(
+      fixture,
+      fixture.repository,
+      ["--dry-run", "origin", `HEAD:${remoteRef}`],
+      "provider-error",
+      { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template },
+    );
+
+    expect(validated.exitCode).toBe(0);
+    expect(validated.stderr).toContain('accepted disposition path="app.txt" line=1');
+    expect(await refExists(fixture.remote, remoteRef)).toBe(false);
+    expect((await readRecords(fixture)).length).toBe(1);
+    const marker = await acceptedMarkerPath(fixture, base, head);
+    expect((await lstat(marker)).isSymbolicLink()).toBe(false);
+    expect((await stat(marker)).mode & 0o777).toBe(0o600);
+    expect((await stat(paths.cache)).mode & 0o777).toBe(0o600);
+    expect((await stat(paths.template)).mode & 0o777).toBe(0o600);
+
+    const acceptedDocument = await readFile(marker, "utf8");
+    const tamperedDocument = JSON.parse(acceptedDocument) as { targetDigest: string };
+    tamperedDocument.targetDigest = "0".repeat(40);
+    await writeFile(marker, JSON.stringify(tamperedDocument), { mode: 0o600 });
+    const tampered = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "provider-error",
+    );
+    expect(tampered.exitCode).not.toBe(0);
+    expect(tampered.stderr).toContain("accepted review marker is malformed, stale, tampered");
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect(await refExists(fixture.remote, remoteRef)).toBe(false);
+    await writeFile(marker, acceptedDocument, { mode: 0o600 });
+
+    const rejectionHook = join(fixture.remote, "hooks", "pre-receive");
+    await writeFile(rejectionHook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    await git(fixture.root, [
+      "--git-dir",
+      fixture.remote,
+      "config",
+      "core.hooksPath",
+      join(fixture.remote, "hooks"),
+    ]);
+    const failedTransport = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "provider-error",
+    );
+    expect(failedTransport.exitCode).not.toBe(0);
+    expect(await refExists(fixture.remote, remoteRef)).toBe(false);
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect(await Bun.file(marker).exists()).toBe(true);
+    expect(await Bun.file(paths.cache).exists()).toBe(true);
+    expect(await Bun.file(paths.template).exists()).toBe(true);
+    await rm(rejectionHook);
+
+    const pushed = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "provider-error",
+    );
+
+    expect(pushed.exitCode).toBe(0);
+    expect((await readRecords(fixture)).length).toBe(1);
+    expect(await refExists(fixture.remote, remoteRef)).toBe(true);
+    await waitForFilesToDisappear(marker, paths.cache, paths.template);
+
+    await git(fixture.repository, [
+      "-c",
+      "core.hooksPath=/dev/null",
+      "push",
+      "origin",
+      `:${remoteRef}`,
+    ]);
+    const replay = await push(
+      fixture,
+      fixture.repository,
+      ["origin", `HEAD:${remoteRef}`],
+      "provider-error",
+    );
+    expect(replay.exitCode).not.toBe(0);
+    expect(replay.stderr).toContain("local review did not complete");
+    expect((await readRecords(fixture)).length).toBe(2);
+    expect(await refExists(fixture.remote, remoteRef)).toBe(false);
+  }, 30_000);
 
   test("replaces cache symlinks without modifying their targets", async () => {
     const fixture = await createFixture("cache-symlinks");
@@ -774,6 +879,30 @@ function reviewCachePaths(fixture: Fixture, base: string, head: string) {
     template: join(directory, `dispositions-${key}.json`),
     lock: join(directory, `lock-${key}`),
   };
+}
+
+async function acceptedMarkerPath(
+  fixture: Fixture,
+  base: string,
+  head: string,
+): Promise<string> {
+  const directory = join(fixture.repository, ".git", "postil-local-review");
+  const prefix = `accepted-${base}-${head}-`;
+  const matches = (await readdir(directory)).filter(
+    (entry) => entry.startsWith(prefix) && entry.endsWith(".json"),
+  );
+  expect(matches).toHaveLength(1);
+  return join(directory, matches[0]!);
+}
+
+async function waitForFilesToDisappear(...paths: string[]): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if ((await Promise.all(paths.map((path) => Bun.file(path).exists()))).every((exists) => !exists)) {
+      return;
+    }
+    await Bun.sleep(20);
+  }
+  throw new Error(`timed out waiting for local review handoff cleanup: ${paths.join(", ")}`);
 }
 
 async function fillDispositionReasons(path: string): Promise<void> {

@@ -248,6 +248,132 @@ validate_dispositions() {
     ' "$disposition_input" >/dev/null 2>&1
 }
 
+validate_accepted_marker() {
+  marker_input=$1
+  expected_base=$2
+  expected_head=$3
+  expected_review_digest=$4
+  expected_disposition_digest=$5
+  expected_target_digest=$6
+  # shellcheck disable=SC2016
+  "$JQ_EXECUTABLE" -e --arg base "$expected_base" --arg head "$expected_head" \
+    --arg review "$expected_review_digest" --arg disposition "$expected_disposition_digest" \
+    --arg target "$expected_target_digest" '
+      (. | type == "object") and
+      ((keys | sort) == (["baseSha", "dispositionDigest", "headSha", "reviewDigest", "targetDigest", "version"] | sort)) and
+      (.version == 1) and (.baseSha == $base) and (.headSha == $head) and
+      (.reviewDigest == $review) and (.dispositionDigest == $disposition) and
+      (.targetDigest == $target)
+    ' "$marker_input" >/dev/null 2>&1
+}
+
+write_accepted_marker() {
+  marker_path=$1
+  expected_base=$2
+  expected_head=$3
+  expected_review_digest=$4
+  expected_disposition_digest=$5
+  expected_target_digest=$6
+  marker_temporary=$("$MKTEMP_EXECUTABLE" "$review_cache_directory/.accepted.XXXXXX") || return 1
+  # The marker contains digests and immutable identities, not finding prose.
+  # shellcheck disable=SC2016
+  if ! "$JQ_EXECUTABLE" -n --arg base "$expected_base" --arg head "$expected_head" \
+    --arg review "$expected_review_digest" --arg disposition "$expected_disposition_digest" \
+    --arg target "$expected_target_digest" '
+      {
+        version: 1,
+        baseSha: $base,
+        headSha: $head,
+        reviewDigest: $review,
+        dispositionDigest: $disposition,
+        targetDigest: $target
+      }
+    ' >"$marker_temporary"; then
+    /bin/rm -f -- "$marker_temporary"
+    return 1
+  fi
+  /bin/chmod 600 "$marker_temporary" || {
+    /bin/rm -f -- "$marker_temporary"
+    return 1
+  }
+  if [ -d "$marker_path" ] && [ ! -L "$marker_path" ]; then
+    /bin/rm -f -- "$marker_temporary"
+    return 1
+  fi
+  /bin/rm -f -- "$marker_path" || {
+    /bin/rm -f -- "$marker_temporary"
+    return 1
+  }
+  /bin/mv -f -- "$marker_temporary" "$marker_path"
+}
+
+start_accepted_marker_observer() {
+  observer_marker_path=$1
+  observer_marker_digest=$2
+  observer_cache_path=$3
+  observer_template_path=$4
+  observer_lock_path=$5
+  observer_remote_name=$6
+  observer_remote_ref=$7
+  observer_head_sha=$8
+
+  # A pre-push hook runs before the network update and Git has no post-push
+  # hook. The bounded observer consumes the authorization marker only after
+  # the exact remote ref reports the reviewed head. Dry runs and failed pushes
+  # leave the marker available for the exact retry.
+  (
+    /bin/sh -c '
+      repository_root=$1
+      git_executable=$2
+      marker_path=$3
+      expected_marker_digest=$4
+      cache_path=$5
+      template_path=$6
+      lock_path=$7
+      remote_name=$8
+      remote_ref=$9
+      reviewed_head=${10}
+      for observer_delay in 0 1 1 2 3 5 8 13 21 34 55 60 60; do
+        if [ "$observer_delay" -gt 0 ]; then
+          /bin/sleep "$observer_delay"
+        fi
+        remote_line=$(GIT_TERMINAL_PROMPT=0 "$git_executable" -C "$repository_root" \
+          -c credential.interactive=never ls-remote --refs "$remote_name" "$remote_ref" 2>/dev/null || true)
+        set -- $remote_line
+        if [ "$#" -eq 2 ] && [ "$1" = "$reviewed_head" ] && [ "$2" = "$remote_ref" ]; then
+          if /bin/mkdir -m 700 "$lock_path" 2>/dev/null; then
+            if [ -f "$marker_path" ] && [ ! -L "$marker_path" ]; then
+              observed_digest=$("$git_executable" hash-object "$marker_path" 2>/dev/null || true)
+              if [ "$observed_digest" = "$expected_marker_digest" ]; then
+                consumed_path=$marker_path.consumed.$$
+                if /bin/mv -- "$marker_path" "$consumed_path"; then
+                  /bin/rm -f -- "$cache_path" "$template_path" "$consumed_path"
+                fi
+              fi
+            fi
+            /bin/rmdir "$lock_path" >/dev/null 2>&1 || true
+          fi
+          exit 0
+        fi
+      done
+    ' postil-marker-observer "$repository_root" "$GIT_EXECUTABLE" \
+      "$observer_marker_path" "$observer_marker_digest" "$observer_cache_path" \
+      "$observer_template_path" "$observer_lock_path" "$observer_remote_name" \
+      "$observer_remote_ref" "$observer_head_sha" </dev/null >/dev/null 2>&1 &
+  )
+}
+
+reject_conflicting_accepted_marker() {
+  expected_marker_path=$1
+  for candidate_marker in "$review_cache_directory/accepted-$review_cache_key-"*.json; do
+    if [ ! -e "$candidate_marker" ] && [ ! -L "$candidate_marker" ]; then
+      continue
+    fi
+    [ "$candidate_marker" = "$expected_marker_path" ] ||
+      fail_setup "an accepted exact review is bound to a different push target"
+  done
+}
+
 write_review_cache_and_template() {
   review_input=$1
   expected_base=$2
@@ -400,6 +526,21 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
   review_cache_path=$review_cache_directory/review-$review_cache_key.json
   disposition_template_path=$review_cache_directory/dispositions-$review_cache_key.json
   cache_lock_path=$review_cache_directory/lock-$review_cache_key
+  remote_url=$("$GIT_EXECUTABLE" remote get-url "$remote_name" 2>/dev/null) ||
+    fail_setup "could not resolve the push remote URL"
+  target_descriptor=$temporary_root/push-target.json
+  # Bind an accepted disposition to this configured remote, destination ref,
+  # and observed remote tip without persisting the remote URL.
+  # shellcheck disable=SC2016
+  "$JQ_EXECUTABLE" -cn --arg remoteName "$remote_name" --arg remoteUrl "$remote_url" \
+    --arg remoteRef "$remote_ref" --arg remoteSha "$remote_sha" \
+    '{remoteName: $remoteName, remoteUrl: $remoteUrl, remoteRef: $remoteRef, remoteSha: $remoteSha}' \
+    >"$target_descriptor" || fail_setup "could not bind the accepted disposition to the push target"
+  /bin/chmod 600 "$target_descriptor" || fail_setup "could not protect the push target descriptor"
+  target_digest=$(file_digest "$target_descriptor") ||
+    fail_setup "could not verify the push target digest"
+  accepted_marker_path=$review_cache_directory/accepted-$review_cache_key-$target_digest.json
+  reject_conflicting_accepted_marker "$accepted_marker_path"
   dispositions_file=
   if [ -n "$dispositions_source" ]; then
     [ "$dispositions_source" = "$disposition_template_path" ] ||
@@ -413,6 +554,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
 
   if [ -n "$dispositions_file" ]; then
     acquire_cache_lock
+    reject_conflicting_accepted_marker "$accepted_marker_path"
     [ -e "$review_cache_path" ] ||
       fail_setup "no cached exact review matches the disposition file; run the push once without dispositions"
     validate_private_file "$review_cache_path" "cached local review"
@@ -423,11 +565,53 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     validate_dispositions "$dispositions_file" "$review_cache_path" \
       "$merge_base_sha" "$head_sha" "$review_digest" ||
       fail_setup "review dispositions are malformed, stale, incomplete, tampered, or do not match the cached findings"
+    disposition_digest=$(file_digest "$dispositions_file") ||
+      fail_setup "could not verify the review disposition digest"
+    write_accepted_marker "$accepted_marker_path" "$merge_base_sha" "$head_sha" \
+      "$review_digest" "$disposition_digest" "$target_digest" ||
+      fail_setup "could not persist the accepted review disposition marker"
+    validate_private_file "$accepted_marker_path" "accepted local review marker"
+    accepted_marker_digest=$(file_digest "$accepted_marker_path") ||
+      fail_setup "could not verify the accepted local review marker digest"
     log_dispositions "$dispositions_file" "$review_cache_path" ||
       fail_setup "could not log accepted review dispositions"
-    /bin/rm -f -- "$review_cache_path" "$disposition_template_path" ||
-      fail_setup "could not remove the accepted local review cache"
     release_cache_lock
+    start_accepted_marker_observer "$accepted_marker_path" "$accepted_marker_digest" \
+      "$review_cache_path" "$disposition_template_path" "$cache_lock_path" \
+      "$remote_name" "$remote_ref" "$head_sha"
+    continue
+  fi
+
+  if [ -e "$accepted_marker_path" ] || [ -L "$accepted_marker_path" ]; then
+    acquire_cache_lock
+    reject_conflicting_accepted_marker "$accepted_marker_path"
+    validate_private_file "$accepted_marker_path" "accepted local review marker"
+    [ -e "$review_cache_path" ] ||
+      fail_setup "accepted review marker has no cached exact review"
+    [ -e "$disposition_template_path" ] ||
+      fail_setup "accepted review marker has no disposition evidence"
+    validate_private_file "$review_cache_path" "cached local review"
+    validate_private_file "$disposition_template_path" "accepted review dispositions"
+    validate_review_cache "$review_cache_path" "$merge_base_sha" "$head_sha" ||
+      fail_setup "cached local review is malformed, stale, synthetic, or does not match the pushed SHAs"
+    review_digest=$(file_digest "$review_cache_path") ||
+      fail_setup "could not verify the cached local review digest"
+    disposition_digest=$(file_digest "$disposition_template_path") ||
+      fail_setup "could not verify the accepted review disposition digest"
+    validate_dispositions "$disposition_template_path" "$review_cache_path" \
+      "$merge_base_sha" "$head_sha" "$review_digest" ||
+      fail_setup "accepted review dispositions are malformed, stale, incomplete, tampered, or do not match the cached findings"
+    validate_accepted_marker "$accepted_marker_path" "$merge_base_sha" "$head_sha" \
+      "$review_digest" "$disposition_digest" "$target_digest" ||
+      fail_setup "accepted review marker is malformed, stale, tampered, or does not match this push target"
+    accepted_marker_digest=$(file_digest "$accepted_marker_path") ||
+      fail_setup "could not verify the accepted local review marker digest"
+    log_dispositions "$disposition_template_path" "$review_cache_path" ||
+      fail_setup "could not log accepted review dispositions"
+    release_cache_lock
+    start_accepted_marker_observer "$accepted_marker_path" "$accepted_marker_digest" \
+      "$review_cache_path" "$disposition_template_path" "$cache_lock_path" \
+      "$remote_name" "$remote_ref" "$head_sha"
     continue
   fi
 
@@ -496,6 +680,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     '[.findings[] | select(.path == ".postil/provider" or .path == ".postil/model-output" or .path == ".postil/diff")] | length' \
     "$output_file") || fail_setup "could not classify local review findings"
   acquire_cache_lock
+  reject_conflicting_accepted_marker "$accepted_marker_path"
   /bin/rm -f -- "$review_cache_path" "$disposition_template_path" ||
     fail_setup "could not clear the superseded exact-review cache"
   if [ "$finding_count" -gt 0 ]; then
