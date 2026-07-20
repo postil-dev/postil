@@ -227,6 +227,18 @@ describeDb("publication receipt migration and lifecycle", () => {
       { finding_id: "summary-id", initial_state: "summaryOnly", current_state: "resolved" },
     ]);
 
+    await applyPublicationThreadObservations(db, [
+      { githubCommentId: "8001", state: "inline" },
+    ]);
+    expect(
+      (
+        await pool.query<{ current_state: string }>(
+          "SELECT current_state FROM finding_publications WHERE review_id = $1 AND finding_id = 'inline-id'",
+          [firstId],
+        )
+      ).rows[0]?.current_state,
+    ).toBe("carried");
+
     await expect(
       pool.query(
         "UPDATE finding_publications SET initial_state = 'unknown' WHERE review_id = $1 AND finding_id = 'inline-id'",
