@@ -277,13 +277,17 @@ jobs:
           if [ -z "$stopped" ]; then
             echo "No stopped machines after deploy."
           else
+            restart_failed=0
             for id in $stopped; do
               echo "Restarting one managed machine left stopped by deploy."
               if ! flyctl machine start "$id" --app postil-web >/dev/null 2>&1; then
                 echo "::error::A managed machine could not be restarted."
-                exit 1
+                restart_failed=1
               fi
             done
+            if [ "${restart_failed}" -ne 0 ]; then
+              exit 1
+            fi
             sleep 15
           fi
           # fly.toml requires min_machines_running = 2 for the web group: a

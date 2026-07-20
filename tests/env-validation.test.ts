@@ -128,6 +128,11 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).toContain(
       "always() && steps.deploy.outcome != 'skipped'",
     );
+    expect(deployWorkflow).toContain("restart_failed=0");
+    expect(deployWorkflow).toContain("restart_failed=1");
+    expect(deployWorkflow.indexOf('if [ "${restart_failed}" -ne 0 ]')).toBeGreaterThan(
+      deployWorkflow.indexOf("restart_failed=1"),
+    );
     expect(deployWorkflow).not.toContain("flyctl logs");
     expect(deployWorkflow).not.toContain("Collect failed rollout diagnostics");
     expect(deployWorkflow).toContain(
