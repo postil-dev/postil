@@ -112,8 +112,8 @@ console.log("fixture-key");
       openRouterCredentialPresent: false,
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
-      model: "openai/gpt-5-mini",
-      cascade: "openai/gpt-5-mini",
+      model: "z-ai/glm-5.2",
+      cascade: "z-ai/glm-5.2",
       scorer: undefined,
       scorerDisabled: "1",
       hostedMode: "0",
@@ -121,6 +121,18 @@ console.log("fixture-key");
       endpointAuthPresent: false,
       configApiBaseAllowed: false,
     });
+  }, 120_000);
+
+  test("accepts an explicit local-review model override", async () => {
+    const repo = await createFixtureRepo("model-override");
+
+    await runLocalReview(repo, "0", 0, {
+      env: { POSTIL_LOCAL_REVIEW_MODEL: "openai/gpt-5-mini" },
+    });
+
+    const invocation = JSON.parse(await readFile(invocationMarker, "utf8"));
+    expect(invocation.model).toBe("openai/gpt-5-mini");
+    expect(invocation.cascade).toBe("openai/gpt-5-mini");
   }, 120_000);
 
   test("rejects a prerelease that can predate the hosted-mode contract", async () => {

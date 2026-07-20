@@ -6,8 +6,8 @@ local hosted-review harness before handoff. Use the pull request's actual base:
 ```sh
 POSTIL_API_BASE=https://openrouter.ai/api/v1 \
 POSTIL_API_FORMAT=openai-compatible \
-REVIEW_MODEL=openai/gpt-5-mini \
-REVIEW_MODEL_CASCADE=openai/gpt-5-mini \
+REVIEW_MODEL=z-ai/glm-5.2 \
+REVIEW_MODEL_CASCADE=z-ai/glm-5.2 \
 POSTIL_DISABLE_SCORER=1 \
 bun run review:local -- --base origin/main --head HEAD --require-clean --repo-path .
 ```
