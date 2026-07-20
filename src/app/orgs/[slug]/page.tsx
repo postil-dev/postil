@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 
 import { OrganizationSwitcher } from "@/components/organization-switcher";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
@@ -238,6 +238,34 @@ export default async function OrgDashboardPage({
   const privateAccess = rawPrivateAccess
     ? requireMatchingProviderMode(rawPrivateAccess, providerSettings?.hasKey ?? false)
     : null;
+  const unreadNotifications = (
+    await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.customerNotificationEvents)
+      .leftJoin(
+        schema.customerNotificationReads,
+        and(
+          eq(
+            schema.customerNotificationReads.eventId,
+            schema.customerNotificationEvents.id,
+          ),
+          eq(schema.customerNotificationReads.userId, user.id),
+        ),
+      )
+      .where(
+        and(
+          eq(schema.customerNotificationEvents.orgId, org.id),
+          sql`${schema.customerNotificationEvents.expiresAt} > now()`,
+          isAdmin
+            ? or(
+                eq(schema.customerNotificationEvents.visibility, "members"),
+                eq(schema.customerNotificationEvents.visibility, "admins"),
+              )
+            : eq(schema.customerNotificationEvents.visibility, "members"),
+          isNull(schema.customerNotificationReads.id),
+        ),
+      )
+  )[0]?.count ?? 0;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
@@ -253,6 +281,20 @@ export default async function OrgDashboardPage({
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <OrganizationSwitcher currentSlug={org.slug} userId={user.id} />
+          <Link
+            href={`/orgs/${org.slug}/notifications`}
+            className="btn-secondary inline-flex items-center gap-2 text-xs"
+          >
+            Notifications
+            {unreadNotifications > 0 && (
+              <span
+                aria-label={`${unreadNotifications} unread notification${unreadNotifications === 1 ? "" : "s"}`}
+                className="inline-flex min-w-5 items-center justify-center rounded-full bg-gate px-1.5 py-0.5 font-mono text-[10px] leading-none text-white"
+              >
+                {unreadNotifications > 99 ? "99+" : unreadNotifications}
+              </span>
+            )}
+          </Link>
           {isAdmin && (
             <>
               <Link href={`/orgs/${org.slug}/billing`} className="btn-secondary text-xs">

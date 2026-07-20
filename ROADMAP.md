@@ -7,8 +7,10 @@
   costs inside the plan price rather than exposing inference metering.
 - Count the same GitHub identity separately for unrelated customer organizations
   and once across organizations consolidated under one enterprise account.
-- Add checkout, billing-manager roles, payment-processor state, invoices, usage
-  alerts, and in-app service notices.
+- Add billing-manager roles, invoices, and usage alerts.
+- Connect customer-actionable service disruption and recovery, account security,
+  installation suspension, and subscription recovery or cancellation events to
+  the organization notification inbox without exposing operator incidents.
 - Run the hosted service on a free-tier-compatible PostgreSQL profile: low per-process DB pools, single-job webhook queue drains, one low-frequency worker fallback, and explicit provider docs.
 - Stand up PostHog dashboards for traffic sources, docs/blog paths, install funnel events, and bot/automation breakdowns.
 - Activate scrubbed PostHog Error Tracking and sampled OTLP Logs only with zero-dollar billing caps, project and issue rate limits, alert destinations, and log drop rules configured.

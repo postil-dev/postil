@@ -3,6 +3,11 @@ import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
+import {
+  enqueueCustomerNotification,
+  settlementFailedNotification,
+  subscriptionPastDueNotification,
+} from "@/lib/customer-notifications";
 import { optionalEnv, requireEnv } from "@/lib/env";
 import {
   enqueueOperatorAlert,
@@ -716,6 +721,18 @@ export async function applyPaddleWebhookEvent(
               .where(eq(schema.organizations.id, orgId))
               .limit(1)
           )[0];
+          if (alertEvent === "subscription_past_due" && organization) {
+            await enqueueCustomerNotification(
+              tx,
+              subscriptionPastDueNotification({
+                orgId,
+                orgSlug: organization.slug,
+                providerSubscriptionId: providerObjectId,
+                eventId: event.eventId,
+              }),
+              now,
+            );
+          }
           if (organization?.githubOwnerId) {
             await enqueueOperatorAlert(tx, {
               event: alertEvent,
@@ -952,6 +969,17 @@ async function failSettlement(
         .where(eq(schema.organizations.id, settlement.orgId))
         .limit(1)
     )[0];
+    if (organization) {
+      await enqueueCustomerNotification(
+        tx,
+        settlementFailedNotification({
+          orgId: settlement.orgId,
+          orgSlug: organization.slug,
+          settlementId: settlement.id,
+        }),
+        now,
+      );
+    }
     if (organization?.githubOwnerId) {
       await enqueueOperatorAlert(tx, {
         event: "billing_anomaly",
