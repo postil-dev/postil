@@ -239,6 +239,27 @@
       "when": 1784467126420,
       "tag": "0033_self_service_trial_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784548800000,
+      "tag": "0034_revocable_publication_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1784548801000,
+      "tag": "0035_gate_control_and_enforcement",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784548802000,
+      "tag": "0036_review_publication_receipts",
+      "breakpoints": true
     }
   ]
 }

@@ -66,10 +66,10 @@ export async function installLocalPostilHook(
   const supported =
     version.exitCode === 0 &&
     versionMatch !== null &&
-    (Number(versionMatch[1]) > 0 || Number(versionMatch[2]) >= 6);
+    (Number(versionMatch[1]) > 0 || Number(versionMatch[2]) >= 7);
   if (!supported) {
     throw new Error(
-      `local pre-push review requires Postil v0.6.0 or newer; ${postilExecutable} reported ${JSON.stringify(version.stdout.trim())}`,
+      `local pre-push review requires Postil v0.7.0 or newer; ${postilExecutable} reported ${JSON.stringify(version.stdout.trim())}`,
     );
   }
 

@@ -24,6 +24,7 @@ import {
   ingestEnvelope,
 } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
@@ -62,19 +63,31 @@ import {
 import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import {
+  externalSideEffectLeaseActive,
   PermanentJobError,
   type CheckRunCleanupJobPayload,
+  type ExternalSideEffectLease,
   type ReviewJobPayload,
 } from "@/lib/queue";
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
-  persistReviewCompletion,
+  persistReviewCompletionWithGateMode,
   type ReviewCompletionInput,
 } from "@/lib/review-completion";
+import {
+  getInstallationGateEnabled,
+  getOrganizationGateEnabled,
+} from "@/lib/gate-mode";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
+import {
+  applyPublicationThreadObservations,
+  getPullRequestPublicationCommentIds,
+  readPublicationReceipt,
+  type PublicationReceipt,
+} from "@/lib/publication-receipt";
 import {
   reportOperationalModelIncident,
   type ObservabilityProcessGroup,
@@ -86,6 +99,7 @@ export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
 // or scorer, and the worker retains one minute for process and persistence work.
 const HOSTED_LLM_REQUEST_TIMEOUT_SECS = "420";
 const HOSTED_LLM_TOTAL_TIMEOUT_SECS = "540";
+const REVIEW_CANCELLATION_POLL_MS = 250;
 
 const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 
@@ -607,7 +621,7 @@ function throwIfWorkerStopping(signal?: AbortSignal): void {
  */
 export async function runReviewJob(
   payload: ReviewJobPayload,
-  timing: { queuedAt: Date; startedAt: Date } = {
+  timing: { queuedAt: Date; startedAt: Date; lease?: ExternalSideEffectLease } = {
     queuedAt: new Date(),
     startedAt: new Date(),
   },
@@ -616,7 +630,18 @@ export async function runReviewJob(
   onPublicationStarted?: () => void,
 ): Promise<void> {
   throwIfWorkerStopping(signal);
+  if (
+    typeof payload.sourceInstallationId !== "number" ||
+    typeof payload.sourceOrgId !== "number" ||
+    typeof payload.githubRepoId !== "number"
+  ) {
+    throw new PermanentJobError("review job lacks immutable source identity");
+  }
   const db = getDb();
+  const leaseActive = () => timing.lease
+    ? externalSideEffectLeaseActive(getPool(), timing.lease)
+    : Promise.resolve(true);
+  if (!(await leaseActive())) return;
 
   const installation = (
     await db
@@ -637,7 +662,11 @@ export async function runReviewJob(
       )
       .limit(1)
   )[0];
-  if (!installation) {
+  if (
+    !installation ||
+    installation.id !== payload.sourceInstallationId ||
+    installation.orgId !== payload.sourceOrgId
+  ) {
     throw new PermanentJobError(
       `review job cannot start: unknown installation ${payload.installationId}`,
     );
@@ -655,12 +684,12 @@ export async function runReviewJob(
       .where(
         and(
           eq(schema.repositories.installationId, installation.id),
-          eq(schema.repositories.fullName, payload.repoFullName),
+          eq(schema.repositories.githubRepoId, payload.githubRepoId),
         ),
       )
       .limit(1)
   )[0];
-  if (!repository || !repository.enabled) {
+  if (!repository || !repository.enabled || repository.fullName !== payload.repoFullName) {
     throw new PermanentJobError(
       `review job cannot start: repository ${payload.repoFullName} is missing or disabled`,
     );
@@ -715,6 +744,32 @@ export async function runReviewJob(
     fetchRepositorySummary(token, payload.repoFullName, signal),
     signal,
   );
+  if (
+    currentRepository.id !== payload.githubRepoId ||
+    currentRepository.full_name !== payload.repoFullName
+  ) {
+    throw new PermanentJobError("review job repository identity changed");
+  }
+  const liveContext = await translateWorkerAbort(
+    getPullRequestReviewContext(
+      token,
+      currentRepository.full_name,
+      payload.prNumber,
+      signal,
+    ),
+    signal,
+  );
+  if (
+    !liveContext.open ||
+    liveContext.merged ||
+    liveContext.draft ||
+    liveContext.headSha !== payload.headSha ||
+    liveContext.baseSha !== payload.baseSha ||
+    !(await leaseActive())
+  ) {
+    console.warn(`review job skipped: pull request closed, changed, or lost its lease`);
+    return;
+  }
   await db
     .update(schema.repositories)
     .set({
@@ -740,24 +795,7 @@ export async function runReviewJob(
   let authorGithubId = payload.authorGithubId;
   let authorLogin = payload.authorLogin;
   if (currentRepository.private) {
-    const context = await translateWorkerAbort(
-      getPullRequestReviewContext(
-        token,
-        currentRepository.full_name,
-        payload.prNumber,
-        signal,
-      ),
-      signal,
-    );
-    if (
-      context.headSha !== payload.headSha ||
-      context.baseSha !== payload.baseSha
-    ) {
-      console.warn(
-        `review job skipped: ${currentRepository.full_name}#${payload.prNumber} refs changed before author verification`,
-      );
-      return;
-    }
+    const context = liveContext;
     if (
       typeof context.authorGithubId !== "number" ||
       !Number.isSafeInteger(context.authorGithubId) ||
@@ -800,6 +838,11 @@ export async function runReviewJob(
   const trigger = normalizeReviewTriggerContext(payload.trigger);
   const reviewValues = {
     repositoryId: repository.id,
+    sourceOrgId: payload.sourceOrgId,
+    sourceInstallationId: payload.sourceInstallationId,
+    sourceGithubInstallationId: payload.installationId,
+    sourceGithubRepoId: payload.githubRepoId,
+    sourceRepoFullName: payload.repoFullName,
     prNumber: payload.prNumber,
     authorGithubId: authorGithubId ?? null,
     authorLogin: authorLogin ?? null,
@@ -838,6 +881,7 @@ export async function runReviewJob(
   let gateCheckRunId: number | undefined;
   let baselinePath: string | undefined;
   let workDir: string | undefined;
+  let publicationReceiptPath: string | undefined;
   let sensitiveValues: string[] = [];
   let hostedUsageReservationId: string | null = null;
   let cliStarted = false;
@@ -846,6 +890,45 @@ export async function runReviewJob(
   let usageAccountingCompleteForRace = false;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
+  let gateEnabled = false;
+  const leaseAbortController = new AbortController();
+  const reviewSignal = signal
+    ? AbortSignal.any([signal, leaseAbortController.signal])
+    : leaseAbortController.signal;
+  let leasePollInFlight = false;
+  const leasePoll = timing.lease
+    ? setInterval(() => {
+        if (leasePollInFlight || leaseAbortController.signal.aborted) return;
+        leasePollInFlight = true;
+        void leaseActive()
+          .then((active) => {
+            if (!active) leaseAbortController.abort();
+          })
+          .catch(() => leaseAbortController.abort())
+          .finally(() => {
+            leasePollInFlight = false;
+          });
+      }, REVIEW_CANCELLATION_POLL_MS)
+    : undefined;
+  leasePoll?.unref?.();
+  const publicationAuthorized = async (): Promise<boolean> => {
+    if (!(await leaseActive())) return false;
+    const current = await translateWorkerAbort(
+      getPullRequestReviewContext(
+        token,
+        payload.repoFullName,
+        payload.prNumber,
+        reviewSignal,
+      ),
+      reviewSignal,
+    );
+    return current.open &&
+      !current.merged &&
+      !current.draft &&
+      current.headSha === payload.headSha &&
+      current.baseSha === payload.baseSha &&
+      await leaseActive();
+  };
   const advisoryCheckExternalId = checkRunExternalId(publicId, "review");
   const gateCheckExternalId = checkRunExternalId(publicId, "gate");
   const expectedFailureCheckRuns = (
@@ -875,9 +958,14 @@ export async function runReviewJob(
   });
 
   try {
-    throwIfWorkerStopping(signal);
+    gateEnabled = await getOrganizationGateEnabled(db, installation.orgId);
+    throwIfWorkerStopping(reviewSignal);
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
+    if (!(await publicationAuthorized())) {
+      reviewLog.line("publication cancelled before forge writes");
+      throw new TerminalReviewError("pull request is no longer eligible for publication");
+    }
     publicationStarted = true;
     onPublicationStarted?.();
     const superseded = await supersedeActiveReviews({
@@ -896,7 +984,7 @@ export async function runReviewJob(
       payload.repoFullName,
       ADVISORY_CHECK_NAME,
       payload.headSha,
-      { signal, externalId: advisoryCheckExternalId },
+      { signal: reviewSignal, externalId: advisoryCheckExternalId },
     ).catch((error) => {
       advisoryCheckRunMayExist =
         error instanceof AmbiguousCheckRunCreationError;
@@ -911,7 +999,7 @@ export async function runReviewJob(
       payload.repoFullName,
       GATE_CHECK_NAME,
       payload.headSha,
-      { signal, externalId: gateCheckExternalId },
+      { signal: reviewSignal, externalId: gateCheckExternalId },
     ).catch((error) => {
       gateCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
       throw error;
@@ -928,7 +1016,7 @@ export async function runReviewJob(
       );
     }
 
-    throwIfWorkerStopping(signal);
+    throwIfWorkerStopping(reviewSignal);
     reviewLog.line(await postilCliVersionLogLine());
     const spendReservation = !llm.byok
       ? await reserveHostedReviewSpend(db, {
@@ -987,6 +1075,7 @@ export async function runReviewJob(
           false,
           detailsUrl,
           expectedFailureCheckRuns(),
+          gateEnabled,
         );
       }
       reviewLog.line(
@@ -1043,6 +1132,7 @@ export async function runReviewJob(
     // trust model (default branch only, never the PR head).
     workDir = resolve(CACHE_DIR, "workdirs", `review-${reviewId}`);
     await mkdir(workDir, { recursive: true });
+    publicationReceiptPath = join(workDir, "publication-receipt.json");
     const repoConfigFiles = await materializeRepoConfig(
       token,
       payload.repoFullName,
@@ -1127,7 +1217,7 @@ export async function runReviewJob(
       llm.apiAuthValue,
     ].filter((value): value is string => Boolean(value));
     reviewLog.setSensitiveValues(sensitiveValues);
-    throwIfWorkerStopping(signal);
+    throwIfWorkerStopping(reviewSignal);
     const cliEnv = buildCliEnv(llm, {
       GITHUB_TOKEN: token,
       POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId),
@@ -1138,13 +1228,20 @@ export async function runReviewJob(
           ? await discoverPreventionCommands(token, payload.repoFullName)
           : [],
       ),
+      // The path is optional. A CLI without receipt support ignores it, and
+      // absence is persisted as legacy unknown.
+      POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
     });
 
+    if (!(await publicationAuthorized())) {
+      reviewLog.line("publication cancelled before CLI start");
+      throw new TerminalReviewError("pull request is no longer eligible for publication");
+    }
     reviewLog.line("postil CLI spawned");
     cliStarted = true;
     const result = await runCli(args, cliEnv, workDir, {
       onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
-      signal,
+      signal: reviewSignal,
     });
     reviewLog.line(
       `postil CLI exited with code ${result.exitCode}${result.timedOut ? " after timeout" : ""}`,
@@ -1172,6 +1269,19 @@ export async function runReviewJob(
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
+    let publicationReceipt: PublicationReceipt | undefined;
+    try {
+      publicationReceipt = await readPublicationReceipt(publicationReceiptPath);
+      reviewLog.line(
+        `publication receipt ingested (${publicationReceipt.findings.length} finding states)`,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        reviewLog.line("publication receipt absent; lifecycle recorded as legacy unknown");
+      } else {
+        throw error;
+      }
+    }
     const hasOperationalFinding = ingested.envelope.findings.some(
       (finding) =>
         finding.path === ".postil/operational" ||
@@ -1205,6 +1315,18 @@ export async function runReviewJob(
     }));
     receiptUsageForRace = receiptUsage;
     usageAccountingCompleteForRace = ingested.usageAccountingComplete;
+    if (!gateEnabled) {
+      await completeCheckRun(
+        token,
+        payload.repoFullName,
+        gateCheckRunId,
+        "neutral",
+        "Postil gate is advisory",
+        "Merge blocking is disabled. Review findings remain advisory.",
+        reviewSignal,
+      );
+      reviewLog.line("forge gate check-run set to advisory");
+    }
     try {
       await Promise.all([
         verifyCompletedCheckRun(
@@ -1228,7 +1350,11 @@ export async function runReviewJob(
             name: GATE_CHECK_NAME,
             externalId: gateCheckExternalId,
             headSha: payload.headSha,
-            conclusion: ingested.gateFailing ? "failure" : "success",
+            conclusion: gateEnabled
+              ? ingested.gateFailing
+                ? "failure"
+                : "success"
+              : "neutral",
             requireOutput: true,
           },
           signal,
@@ -1248,7 +1374,7 @@ export async function runReviewJob(
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
     // no longer owns the result. The CLI owns the success-path check-runs.
-    const completed = await persistReviewCompletion(db, {
+    const completion = await persistReviewCompletionWithGateMode(db, {
       reviewId,
       envelope: ingested.envelope,
       configFiles,
@@ -1258,7 +1384,14 @@ export async function runReviewJob(
       usage: receiptUsage,
       hostedUsageReservationId,
       usageAccountingComplete: ingested.usageAccountingComplete,
-    });
+      publicationReceipt,
+    }, installation.orgId);
+    const completed = completion.completed;
+    if (completed) {
+      void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+        triggerQueueDrain("gate-state-sync"),
+      );
+    }
 
     if (!completed) {
       if (hostedUsageReservationId) {
@@ -1296,6 +1429,33 @@ export async function runReviewJob(
       console.warn(
         `review ${reviewId} completed after it was already superseded or failed`,
       );
+    } else {
+      try {
+        const commentIds = await getPullRequestPublicationCommentIds(
+          db,
+          repository.id,
+          payload.prNumber,
+        );
+        const observations = await observeGitHubReviewThreads(
+          token,
+          payload.repoFullName,
+          payload.prNumber,
+          commentIds,
+          signal,
+        );
+        await applyPublicationThreadObservations(db, observations);
+        if (observations.length > 0) {
+          reviewLog.line(
+            `publication lifecycle reconciled (${observations.length} GitHub threads)`,
+          );
+        }
+      } catch (error) {
+        // A transient GitHub read does not invalidate the immutable receipt.
+        console.warn(
+          `review ${reviewId} publication lifecycle observation deferred: ${redactSecrets(error)}`,
+        );
+        reviewLog.line("publication lifecycle observation deferred");
+      }
     }
   } catch (err) {
     if (err instanceof CheckRunPublicationError && receiptUsageForRace) {
@@ -1430,6 +1590,7 @@ export async function runReviewJob(
         false,
         detailsUrl,
         expectedFailureCheckRuns(publicationIncomplete),
+        gateEnabled,
       );
       reviewLog.line("forge check-runs updated for review failure");
     }
@@ -1444,6 +1605,7 @@ export async function runReviewJob(
     }
     throw interruptedAfterPublication ? new OperationalError(message) : err;
   } finally {
+    if (leasePoll) clearInterval(leasePoll);
     if (baselinePath)
       await rm(baselinePath, { force: true }).catch(() => undefined);
     if (workDir)
@@ -1463,6 +1625,7 @@ interface SupersedeActiveReviewsInput {
   onlyDifferentHead?: boolean;
   token?: string;
   githubInstallationId?: number;
+  message?: string;
 }
 
 /** Mark active reviews stale and neutralize every recorded forge check-run. */
@@ -1508,7 +1671,7 @@ export async function supersedeActiveReviews(
     token = await getInstallationToken(input.githubInstallationId);
   }
 
-  const message = `superseded by a newer review of ${input.newHeadSha}`;
+  const message = input.message ?? `superseded by a newer review of ${input.newHeadSha}`;
   let superseded = 0;
   for (const review of active) {
     const changed = await db
@@ -1599,9 +1762,8 @@ export async function completeHostedInferenceDisabledCheckRuns(
 }
 
 /**
- * Complete both check-runs after an operational failure. The gate fails
- * closed (`failure`); the advisory check is `neutral` because there is no
- * review verdict, only an operational error.
+ * Complete both check-runs after an operational failure. Enforced gates fail
+ * closed; advisory gates and the review check remain neutral.
  */
 export async function failCheckRuns(
   token: string,
@@ -1613,6 +1775,7 @@ export async function failCheckRuns(
   throwOnError = false,
   detailsUrl?: string,
   expectedChecks?: ExpectedFailureCheckRuns,
+  gateEnabled = true,
 ): Promise<void> {
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
   const publicationIncomplete = expectedChecks?.publicationIncomplete === true;
@@ -1625,9 +1788,11 @@ export async function failCheckRuns(
       "publication cleanup requires the exact GitHub check-run identities",
     );
   }
-  const title = publicationIncomplete
-    ? "Review publication incomplete"
-    : "Review did not complete";
+  const title = gateEnabled
+    ? publicationIncomplete
+      ? "Review publication incomplete"
+      : "Review did not complete"
+    : "Postil gate is advisory";
   const summary = publicationIncomplete
     ? `Postil completed the review, but GitHub did not receive the complete result. This run is not a published review verdict.${details}`
     : `Postil could not complete this review, so no review verdict exists.${details}`;
@@ -1665,13 +1830,15 @@ export async function failCheckRuns(
     );
   };
   if (gateCheckRunId != null) {
-    const gateSummary = publicationIncomplete
-      ? `${summary}\n\nThe merge check remains blocked because the reviewed result was not fully published. Re-request the check.`
-      : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`;
+    const gateSummary = gateEnabled
+      ? publicationIncomplete
+        ? `${summary}\n\nThe merge check remains blocked because the reviewed result was not fully published. Re-request the check.`
+        : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`
+      : `${summary}\n\nMerge blocking is disabled for this organization.`;
     await complete(
       gateCheckRunId,
       expectedChecks?.gate,
-      "failure",
+      gateEnabled ? "failure" : "neutral",
       gateSummary,
     ).catch((error) => {
       errors.push(error);
@@ -1710,6 +1877,10 @@ export async function runCheckRunCleanupJob(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const gateEnabled = await getInstallationGateEnabled(
+      getDb(),
+      payload.installationId,
+    );
     const token = await getInstallationToken(
       payload.installationId,
       controller.signal,
@@ -1766,6 +1937,7 @@ export async function runCheckRunCleanupJob(
         true,
         payload.detailsUrl,
         expectedChecks,
+        gateEnabled,
       );
     };
 

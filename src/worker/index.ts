@@ -7,6 +7,7 @@ import { optionalEnv, validateEnv } from "@/lib/env";
 import { runWebhookRedeliveryPass } from "@/lib/github/webhook-redelivery";
 import {
   claimJob,
+  enqueueGateEnforcementSweepOnce,
   pruneCompletedWebhookDeliveries,
   requeueJobsOwnedBy,
   WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE,
@@ -41,6 +42,10 @@ const IDLE_POLL_MAX_MS = Math.max(
   readPositiveIntEnv("WORKER_IDLE_POLL_MAX_MS", POLL_INTERVAL_MS),
 );
 const WATCHDOG_INTERVAL_MS = readPositiveIntEnv("WORKER_WATCHDOG_INTERVAL_MS", 60_000);
+const GATE_ENFORCEMENT_SWEEP_INTERVAL_MS = readPositiveIntEnv(
+  "POSTIL_GATE_ENFORCEMENT_SWEEP_INTERVAL_MS",
+  6 * 60 * 60 * 1000,
+);
 const WEBHOOK_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 const WEBHOOK_RETENTION_MAX_BATCHES = 10;
 const WEBHOOK_REDELIVERY_INTERVAL_MS = readPositiveIntEnv(
@@ -204,6 +209,9 @@ function jitter(delayMs: number): number {
 async function watchdogLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
+      await enqueueGateEnforcementSweepOnce(getPool(), {
+        minIntervalMs: GATE_ENFORCEMENT_SWEEP_INTERVAL_MS,
+      });
       const { killed } = await watchdogPass();
       if (killed > 0) console.warn(`[watchdog] killed ${killed} stuck review(s)`);
     } catch (err) {

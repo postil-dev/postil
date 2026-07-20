@@ -67,8 +67,9 @@ forced exit during webhook dispatch leaves the inbox job recoverable by the
 queue watchdog; completed delivery IDs remain durable dedupe records.
 
 Every queue consumer supplies its explicit supported job kinds to the claim query.
-The bounded web drain and long-running worker share the handler capability list
-from the queue runner; adding a handler and adding its capability are one change.
+The bounded web drain uses the latency-sensitive capability list. The long-running
+worker adds maintenance jobs such as repository-rule discovery, keeping those jobs
+away from request-serving processes.
 Release job kinds are also staged in PostgreSQL with an infinite `run_after` until
 the deploy workflow confirms that every managed web and worker Machine is running
 one image. Activation and inserts share a transaction advisory lock, so no job can
@@ -77,12 +78,24 @@ become claimable between the fleet check and capability activation.
 `humanEscalation` is a GitHub-native, kind-blocking maintainer decision. The PR review
 contains the grounded finding and directs the author to encode the intended behavior
 in code, tests, configuration, or the pull request before pushing again. The
-`postil/gate` check prevents merge until a new review resolves it. An organization
-admin can record a rationale for an irreducible product decision through a secondary,
-commit-scoped dashboard override. Overrides atomically enqueue a gate-state sync. Sync jobs
-serialize per review, recompute the latest decision, and idempotently publish it to
-the GitHub check. Severity-blocking findings require a code or configuration change
-and cannot be cleared by an override.
+New organizations use `postil/gate` as an advisory check. An organization admin
+can enable blocking in settings. The raw CLI verdict lives in `engine_gate_failing`, while
+`gate_failing` records the verdict after applying organization mode and eligible
+approvals. Mode changes and approvals atomically enqueue gate-state synchronization.
+Publishers take a per-review database lease, lock approval and organization mode
+in one order, verify the pull request head, and republish until the observed
+generation is stable. A disabled gate is neutral on normal completion,
+operational failure, watchdog cleanup, and approval changes. Severity-blocking
+findings require a code or configuration change and cannot be cleared by an
+override.
+
+A bounded worker sweep reads the effective default-branch protection and active
+ruleset APIs for each enabled repository. Coverage is `required` only when
+`postil/gate` is bound to this GitHub App. Any-source rules, another App, missing
+permissions, malformed responses, and stale observations remain distinct or
+unknown. Admission uses a scope advisory lock, GitHub rate limits continue the
+same durable job at the reported reset time, and the settings page exposes a
+scoped re-check with visible progress.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
@@ -182,6 +195,20 @@ survives removal of the related repository or review row. Conversational replies
 remain `respond` jobs, record their GitHub mention context in the job payload,
 and use the separate `github_mention` usage class.
 
+Published review findings have a separate durable lifecycle. CLI publication
+receipts bind each review and stable finding ID to its initial channel and
+GitHub review/comment identities. The initial record is immutable. Later
+envelopes can mark the same stable finding carried, resolved, or suppressed;
+GitHub review-thread flags can mark an inline comment resolved, outdated, or
+deleted. Comment prose, reactions, and dismissed reviews do not change finding
+state. Reviews produced by a CLI without the receipt contract record their
+unobserved findings as `unknown`. Dashboard publication counts and confidence
+metrics read this normalized state instead of assuming every envelope finding
+reached the pull request. Receipts store finding identities, GitHub object
+identifiers, and lifecycle states only. They do not store comment prose or
+provider payloads, and dashboard rendering uses the same organization
+authorization boundary as the review envelope.
+
 ## Dashboard
 
 The signed-in product surface is three pages, all server-rendered and
@@ -198,7 +225,7 @@ noindexed:
   model cascade, and one constrained additional authentication header. Banners
   surface suspended installations and enabled
   repositories that have never completed their first review.
-- `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope:
+- `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope and publication receipt:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file
   links), resolved findings, retained policy-suppressed findings in collapsed
   detail, suppressed/ungrounded counts, gate verdict,
@@ -248,9 +275,9 @@ Write access to the owner `.github` default branch is organization-wide policy
 administration. The source repository uses CODEOWNERS, a ruleset, and required
 review to constrain policy changes.
 
-Aggregates (silence rate, gate failures) read the denormalized `silent` and
-`gate_failing` columns; `engine_gate_failing` stores the immutable CLI gate
-result. Active rows in `finding_approvals` clear kind-based blockers for the
+Aggregates (silence rate, effective gate failures) read the denormalized `silent`
+and `gate_failing` columns; `engine_gate_failing` stores the immutable CLI gate
+result independently of organization mode. Active rows in `finding_approvals` clear kind-based blockers for the
 same review and head SHA, while severity blockers remain governed by the
 configured severity threshold. Per-review detail reads the stored envelope
 `jsonb` verbatim. The envelope is the CLI's frozen v1 output contract

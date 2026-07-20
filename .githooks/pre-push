@@ -16,7 +16,7 @@ TRUSTED_PATH='__TRUSTED_PATH__'
 TRUSTED_HOME='__TRUSTED_HOME__'
 
 zero_sha=0000000000000000000000000000000000000000
-local_primary_model=openai/gpt-5-mini
+local_primary_model=z-ai/glm-5.2
 local_cascade_override=$local_primary_model
 remote_name=${1:-origin}
 cached_openrouter_api_key=${OPENROUTER_API_KEY:-}
@@ -665,7 +665,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
       REVIEW_MODEL_CASCADE="$local_cascade_override" \
       REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \
       "$CREDENTIAL_WRAPPER" "$POSTIL_EXECUTABLE" review --base "$base_sha" --no-post \
-      --output json --fail-on info --model "$local_primary_model") >"$output_file"
+      --bounded --output json --fail-on info --model "$local_primary_model") >"$output_file"
   else
     key_file=$temporary_root/openrouter-key
     (umask 077 && printf '%s\n' "$openrouter_api_key" >"$key_file") ||
@@ -690,7 +690,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
         unset POSTIL_KEY_FILE
         export MODEL_API_KEY
         exec "$POSTIL_EXECUTABLE" review --base "$POSTIL_BASE_SHA" --no-post \
-          --output json --fail-on info --model "$POSTIL_PRIMARY_MODEL"
+          --bounded --output json --fail-on info --model "$POSTIL_PRIMARY_MODEL"
       ') >"$output_file"
   fi
   review_status=$?

@@ -253,9 +253,10 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
          api_key_ciphertext,
          api_format,
          model,
-         model_cascade
+         model_cascade,
+         gate_enabled
        )
-       SELECT id, $1, $2, $3, $4, $5
+       SELECT id, $1, $2, $3, $4, $5, true
        FROM organizations
        WHERE slug = 'local'`,
       [
@@ -266,8 +267,27 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
         process.env.REVIEW_MODEL_CASCADE,
       ],
     );
+    const authority = await pool.query<{
+      source_installation_id: string;
+      source_org_id: string;
+      github_repo_id: string;
+    }>(
+      `SELECT installation.id AS source_installation_id,
+              installation.org_id AS source_org_id,
+              repository.github_repo_id
+       FROM installations installation
+       JOIN repositories repository ON repository.installation_id = installation.id
+       WHERE installation.github_installation_id = $1
+         AND repository.full_name = $2`,
+      [DEFAULT_INSTALLATION_ID, options.repoFullName],
+    );
+    const source = authority.rows[0];
+    if (!source) throw new Error("local review source identity is unavailable");
     const payload = {
       installationId: DEFAULT_INSTALLATION_ID,
+      sourceInstallationId: Number(source.source_installation_id),
+      sourceOrgId: Number(source.source_org_id),
+      githubRepoId: Number(source.github_repo_id),
       repoFullName: options.repoFullName,
       prNumber: options.prNumber,
       headSha,

@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import type { Envelope } from "@/lib/envelope";
-import { persistReviewCompletion } from "@/lib/review-completion";
+import { persistReviewCompletionWithGateMode } from "@/lib/review-completion";
 
 function fakeDb(reviewUpdated = true): {
   db: Database;
@@ -13,6 +13,23 @@ function fakeDb(reviewUpdated = true): {
   const inserted: Array<{ table: unknown; values: unknown }> = [];
   let transactions = 0;
   const tx = {
+    execute() {
+      return Promise.resolve();
+    },
+    select() {
+      const chain = {
+        from() {
+          return chain;
+        },
+        where() {
+          return chain;
+        },
+        limit() {
+          return Promise.resolve([{ repositoryId: 2, prNumber: 1 }]);
+        },
+      };
+      return chain;
+    },
     update() {
       const chain = {
         set() {
@@ -23,7 +40,9 @@ function fakeDb(reviewUpdated = true): {
         },
         returning() {
           return Promise.resolve(
-            reviewUpdated ? [{ id: 7, triggerSource: "requested_review" }] : [],
+            reviewUpdated
+              ? [{ id: 7, publicId: "review-public-id", triggerSource: "requested_review" }]
+              : [],
           );
         },
       };
@@ -53,7 +72,22 @@ function fakeDb(reviewUpdated = true): {
   };
 }
 
-const envelope = { version: 1 } as Envelope;
+const envelope = {
+  version: 1,
+  summary: "",
+  silent: true,
+  findings: [],
+  resolved: [],
+  counts: { info: 0, warn: 0, error: 0, suppressed: 0, ungrounded: 0 },
+  confidenceBuckets: [0, 0, 0, 0, 0],
+  gate: { failOn: "error", failing: false },
+  modelUsed: "test/model",
+  usage: { promptTokens: 0, completionTokens: 0 },
+  durationMs: 1,
+  baseSha: "a".repeat(40),
+  headSha: "b".repeat(40),
+  sinceSha: null,
+} as Envelope;
 const base = {
   reviewId: 7,
   envelope,
@@ -85,9 +119,9 @@ const base = {
 };
 
 describe("review completion transaction", () => {
-  test("atomically records review usage without a notification outbox", async () => {
+  test("atomically records review usage and schedules gate reconciliation", async () => {
     const state = fakeDb();
-    const completed = await persistReviewCompletion(state.db, base);
+    const completed = (await persistReviewCompletionWithGateMode(state.db, base, null)).completed;
 
     expect(completed).toBe(true);
     expect(state.transactions).toBe(1);
@@ -97,7 +131,7 @@ describe("review completion transaction", () => {
       { ...base.usage[0], reviewId: 7, triggerSource: "requested_review" },
       { ...base.usage[1], reviewId: 7, triggerSource: "requested_review" },
     ]);
-    expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(0);
+    expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(1);
   });
 
   test("records repeated model usage rows as separate events", async () => {
@@ -108,8 +142,12 @@ describe("review completion transaction", () => {
     }));
 
     expect(
-      await persistReviewCompletion(state.db, { ...base, usage: sameModelUsage }),
-    ).toBe(true);
+      await persistReviewCompletionWithGateMode(
+        state.db,
+        { ...base, usage: sameModelUsage },
+        null,
+      ),
+    ).toMatchObject({ completed: true });
     const usageInsert = state.inserted.find((row) => row.table === schema.usageEvents);
     expect(usageInsert?.values).toEqual([
       { ...sameModelUsage[0], reviewId: 7, triggerSource: "requested_review" },
@@ -119,7 +157,8 @@ describe("review completion transaction", () => {
 
   test("records no accounting after losing the completion race", async () => {
     const state = fakeDb(false);
-    expect(await persistReviewCompletion(state.db, base)).toBe(false);
+    expect(await persistReviewCompletionWithGateMode(state.db, base, null))
+      .toMatchObject({ completed: false });
     expect(state.inserted).toEqual([]);
   });
 });

@@ -34,6 +34,9 @@ export interface ClaimedJob {
 
 export interface ReviewJobPayload extends Record<string, unknown> {
   installationId: number; // GitHub installation id
+  sourceInstallationId?: number;
+  sourceOrgId?: number;
+  githubRepoId?: number;
   repoFullName: string;
   repositoryPrivate?: boolean;
   prNumber: number;
@@ -49,10 +52,14 @@ export interface ReviewJobPayload extends Record<string, unknown> {
 /** An @postil mention on a PR or issue the bot should reply to. */
 export interface RespondJobPayload extends Record<string, unknown> {
   installationId: number;
+  sourceInstallationId?: number;
+  sourceOrgId?: number;
+  githubRepoId?: number;
   repoFullName: string;
   repositoryPrivate?: boolean;
   number: number; // PR or issue number
   isPr: boolean;
+  sourceHeadSha?: string;
   comment: string; // the maintainer's message text
   // "path:line" anchor when the mention is a PR review comment, so the bot
   // knows which code the question is about.
@@ -73,10 +80,109 @@ export interface RespondJobPayload extends Record<string, unknown> {
 /** A fixed webhook reply delivered through the marker-reconciled comment path. */
 export interface WebhookCommentJobPayload extends Record<string, unknown> {
   installationId: number;
+  sourceInstallationId?: number;
+  sourceOrgId?: number;
+  githubRepoId?: number;
   repoFullName: string;
   number: number;
+  isPr: boolean;
+  sourceHeadSha?: string;
   body: string;
   sourceDeliveryId: string;
+}
+
+export interface ExternalSideEffectLease {
+  id: number;
+  lockedBy: string;
+  lockedAt: Date;
+}
+
+/** Verify a queue claim without retaining a row or connection lock. */
+export async function externalSideEffectLeaseActive(
+  pool: Pick<Pool, "query">,
+  lease: ExternalSideEffectLease,
+): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT 1
+       FROM jobs
+      WHERE id = $1
+        AND status = 'running'
+        AND locked_by = $2
+        AND locked_at = $3
+      LIMIT 1`,
+    [lease.id, lease.lockedBy, lease.lockedAt],
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+/** Revoke every publication path bound to one exact pull request identity. */
+export async function cancelPullRequestPublication(
+  pool: Pick<Pool, "query">,
+  input: {
+    installationId: number;
+    sourceInstallationId: number;
+    sourceOrgId: number;
+    githubRepoId: number;
+    repoFullName: string;
+    prNumber: number;
+  },
+): Promise<number> {
+  const result = await pool.query(
+    `WITH matching_jobs AS MATERIALIZED (
+       SELECT id
+         FROM jobs
+        WHERE kind IN ('review', 'respond', 'respond-failure-comment', 'webhook-comment')
+          AND status IN ('queued', 'running')
+          AND payload->>'installationId' = $1::text
+          AND payload->>'sourceInstallationId' = $2::text
+          AND payload->>'sourceOrgId' = $3::text
+          AND payload->>'githubRepoId' = $4::text
+          AND lower(payload->>'repoFullName') = lower($5)
+          AND COALESCE((payload->>'prNumber')::integer, (payload->>'number')::integer) = $6
+          AND COALESCE((payload->>'isPr')::boolean, kind = 'review')
+     ), cancelled_deliveries AS (
+       UPDATE respond_deliveries delivery
+          SET state = 'cancelled',
+              publication_lease_id = NULL,
+              publication_lease_expires_at = NULL,
+              delivery_lease_expires_at = NULL,
+              cancelled_at = now(),
+              updated_at = now()
+        WHERE delivery.source_github_installation_id = $1::bigint
+          AND delivery.source_installation_id = $2::bigint
+          AND delivery.source_org_id = $3::bigint
+          AND delivery.source_github_repo_id = $4::bigint
+          AND lower(delivery.repo_full_name) = lower($5)
+          AND delivery.issue_number = $6
+          AND delivery.is_pr
+          AND delivery.state IN ('prepared', 'delivering')
+      RETURNING delivery.job_id
+     ), delivery_jobs AS (
+       SELECT job.id
+         FROM jobs job
+         JOIN cancelled_deliveries delivery
+           ON job.kind = 'respond-delivery'
+          AND job.payload->>'respondJobId' = delivery.job_id::text
+        WHERE job.status IN ('queued', 'running')
+     ), terminal_ids AS (
+       SELECT id FROM matching_jobs
+       UNION SELECT id FROM delivery_jobs
+     )
+     UPDATE jobs job
+        SET status = 'done', locked_at = NULL, locked_by = NULL,
+            last_error = 'pull request closed'
+      WHERE job.id IN (SELECT id FROM terminal_ids)
+        AND job.status IN ('queued', 'running')`,
+    [
+      String(input.installationId),
+      String(input.sourceInstallationId),
+      String(input.sourceOrgId),
+      String(input.githubRepoId),
+      input.repoFullName,
+      input.prNumber,
+    ],
+  );
+  return result.rowCount ?? 0;
 }
 
 export interface RespondDeliveryJobPayload extends Record<string, unknown> {
@@ -101,6 +207,89 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   detailsUrl?: string;
   intent?: "fail" | "neutralize";
   publicationIncomplete?: boolean;
+}
+
+export interface GateEnforcementSweepJobPayload extends Record<string, unknown> {
+  scopeKey: string;
+  orgId?: number;
+  afterRepositoryId?: number;
+  requestedAt: string;
+}
+
+export type GateEnforcementSweepStatus = "queued" | "running" | "done" | "failed";
+
+export async function enqueueGateEnforcementSweepOnce(
+  pool: Pool,
+  input: { orgId?: number; minIntervalMs?: number } = {},
+): Promise<number | null> {
+  const scopeKey = input.orgId === undefined ? "global" : `org:${input.orgId}`;
+  const payload: GateEnforcementSweepJobPayload = {
+    scopeKey,
+    ...(input.orgId === undefined ? {} : { orgId: input.orgId }),
+    requestedAt: new Date().toISOString(),
+  };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`postil:gate-enforcement-sweep:${scopeKey}`],
+    );
+    const result = await client.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       SELECT 'gate-enforcement-sweep', $1::jsonb, 'queued', now(), 20
+       WHERE NOT EXISTS (
+         SELECT 1 FROM jobs
+         WHERE kind = 'gate-enforcement-sweep'
+           AND payload->>'scopeKey' = $3
+           AND (
+             status IN ('queued', 'running')
+             OR ($2::bigint IS NOT NULL AND created_at >= now() - ($2 || ' milliseconds')::interval)
+           )
+       )
+       RETURNING id`,
+      [JSON.stringify(payload), input.minIntervalMs ?? null, scopeKey],
+    );
+    await client.query("COMMIT");
+    return result.rows[0] ? Number(result.rows[0].id) : null;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function findActiveGateEnforcementSweep(
+  pool: Pick<Pool, "query">,
+  orgId: number,
+): Promise<number | null> {
+  const result = await pool.query<{ id: string }>(
+    `SELECT id FROM jobs
+      WHERE kind = 'gate-enforcement-sweep'
+        AND status IN ('queued', 'running')
+        AND payload->>'scopeKey' = $1
+      ORDER BY id LIMIT 1`,
+    [`org:${orgId}`],
+  );
+  return result.rows[0] ? Number(result.rows[0].id) : null;
+}
+
+export async function getGateEnforcementSweepStatus(
+  pool: Pick<Pool, "query">,
+  input: { jobId: number; orgId: number },
+): Promise<GateEnforcementSweepStatus | null> {
+  if (!Number.isInteger(input.jobId) || input.jobId <= 0) return null;
+  const result = await pool.query<{ status: GateEnforcementSweepStatus }>(
+    `SELECT status FROM jobs
+      WHERE id = $1
+        AND kind = 'gate-enforcement-sweep'
+        AND payload->>'scopeKey' = $2
+        AND status IN ('queued', 'running', 'done', 'failed')
+      LIMIT 1`,
+    [input.jobId, `org:${input.orgId}`],
+  );
+  return result.rows[0]?.status ?? null;
 }
 
 export interface WebhookDispatchJobPayload extends Record<string, unknown> {
@@ -384,7 +573,8 @@ export async function claimJob(
     }
     const claimed = await client.query<{ locked_at: Date }>(
       `UPDATE jobs
-       SET status = 'running', attempts = attempts + 1, locked_at = now(), locked_by = $2
+       SET status = 'running', attempts = attempts + 1,
+           locked_at = date_trunc('milliseconds', clock_timestamp()), locked_by = $2
        WHERE id = $1
        RETURNING locked_at`,
       [row.id, workerId],
@@ -425,6 +615,25 @@ export async function completeJob(
      WHERE id = $1 AND status = 'running' AND locked_by = $2`,
     [job.id, job.lockedBy],
   );
+}
+
+export async function continueClaimedJob(
+  pool: Pool,
+  job: Pick<ClaimedJob, "id" | "lockedBy">,
+  payload: Record<string, unknown>,
+  options: { runAfter?: Date } = {},
+): Promise<void> {
+  const result = await pool.query(
+    `UPDATE jobs
+        SET payload = $3, status = 'queued', attempts = 0,
+            run_after = COALESCE($4, now()), locked_at = NULL,
+            locked_by = NULL, last_error = NULL
+      WHERE id = $1 AND status = 'running' AND locked_by = $2`,
+    [job.id, job.lockedBy, JSON.stringify(payload), options.runAfter ?? null],
+  );
+  if ((result.rowCount ?? 0) !== 1) {
+    throw new Error("job continuation lost its lease");
+  }
 }
 
 /** Requeue claims owned by one stopping worker without consuming an attempt. */
@@ -482,7 +691,14 @@ export async function failJob(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "attempts" | "maxAttempts" | "lockedBy">,
   error: string,
-  opts: { permanent?: boolean } = {},
+  opts: {
+    permanent?: boolean;
+    failureFollowup?: {
+      kind: "respond-failure-comment";
+      payload: Record<string, unknown>;
+      maxAttempts: number;
+    };
+  } = {},
 ): Promise<"retried" | "failed" | "lost"> {
   const redactedError = redactAndTruncate(error, 2000);
   if (!opts.permanent && job.attempts < job.maxAttempts) {
@@ -509,13 +725,34 @@ export async function failJob(
   // If the watchdog already failed this job (worker died mid-run), this
   // affects 0 rows. The winner is the single owner of any follow-up side
   // effect (e.g. posting a user-facing failure comment).
-  const res = await pool.query(
-    `UPDATE jobs
-     SET status = 'failed', locked_at = NULL, locked_by = NULL, last_error = $2,
-         run_after = now()
-     WHERE id = $1 AND status = 'running' AND locked_by = $3`,
-    [job.id, redactedError, job.lockedBy],
-  );
+  const res = opts.failureFollowup
+    ? await pool.query(
+        `WITH failed AS (
+           UPDATE jobs
+              SET status = 'failed', locked_at = NULL, locked_by = NULL,
+                  last_error = $2, run_after = now()
+            WHERE id = $1 AND status = 'running' AND locked_by = $3
+          RETURNING id
+         )
+         INSERT INTO jobs (kind, payload, max_attempts)
+         SELECT $4, $5::jsonb, $6 FROM failed
+         RETURNING id`,
+        [
+          job.id,
+          redactedError,
+          job.lockedBy,
+          opts.failureFollowup.kind,
+          JSON.stringify(opts.failureFollowup.payload),
+          opts.failureFollowup.maxAttempts,
+        ],
+      )
+    : await pool.query(
+        `UPDATE jobs
+            SET status = 'failed', locked_at = NULL, locked_by = NULL,
+                last_error = $2, run_after = now()
+          WHERE id = $1 AND status = 'running' AND locked_by = $3`,
+        [job.id, redactedError, job.lockedBy],
+      );
   return (res.rowCount ?? 0) > 0 ? "failed" : "lost";
 }
 

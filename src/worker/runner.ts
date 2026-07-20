@@ -5,6 +5,7 @@ import { optionalEnv } from "@/lib/env";
 import type { GateStateSyncJobPayload } from "@/lib/finding-approvals";
 import {
   claimJob,
+  continueClaimedJob,
   completeWebhookDelivery,
   completeJob,
   failJob,
@@ -14,6 +15,7 @@ import {
   retryJobIndefinitely,
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
+  type GateEnforcementSweepJobPayload,
   type RespondDeliveryJobPayload,
   type RespondFailureCommentJobPayload,
   type RespondJobPayload,
@@ -44,13 +46,13 @@ import {
 } from "./billing-contact-verification";
 import { isPermanentFailure } from "./failure-classifier";
 import { runGateStateSyncJob } from "./gate-state-sync";
+import { runGateEnforcementSweepJob } from "./gate-enforcement-sweep";
 import {
   runOperatorAlertJob,
   type OperatorAlertJobPayload,
   validateOperatorAlertPayload,
 } from "./operator-alert";
 import {
-  postRespondFailureComment,
   runRespondDeliveryJob,
   runRespondFailureCommentJob,
   runRespondJob,
@@ -76,7 +78,7 @@ const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
 let backgroundDrain: Promise<void> | undefined;
 let backgroundDrainRequested = false;
 
-export const PROCESSABLE_JOB_KINDS = [
+export const WEB_PROCESSABLE_JOB_KINDS = [
   "webhook-dispatch",
   "review",
   "respond",
@@ -90,12 +92,22 @@ export const PROCESSABLE_JOB_KINDS = [
   "webhook-comment",
 ] as const;
 
+export const PROCESSABLE_JOB_KINDS = [
+  ...WEB_PROCESSABLE_JOB_KINDS,
+  "gate-enforcement-sweep",
+] as const;
+
+interface JobContinuation {
+  payload: Record<string, unknown>;
+  runAfter?: Date;
+}
+
 async function handleJob(
   job: ClaimedJob,
   processGroup: ObservabilityProcessGroup,
   signal?: AbortSignal,
   onReviewPublicationStarted?: () => void,
-): Promise<void> {
+): Promise<JobContinuation | void> {
   switch (job.kind) {
     case "webhook-dispatch": {
       const payload = job.payload as WebhookDispatchJobPayload;
@@ -119,6 +131,7 @@ async function handleJob(
         {
           queuedAt: job.createdAt,
           startedAt: job.lockedAt,
+          lease: job,
         },
         processGroup,
         signal,
@@ -126,10 +139,10 @@ async function handleJob(
       );
       break;
     case "respond":
-      await runRespondJob(job.payload as RespondJobPayload, job.id);
+      await runRespondJob(job.payload as RespondJobPayload, job);
       break;
     case "respond-delivery":
-      await runRespondDeliveryJob(job.payload as RespondDeliveryJobPayload);
+      await runRespondDeliveryJob(job.payload as RespondDeliveryJobPayload, job);
       break;
     case "billing-contact-verification":
       await runBillingContactVerificationJob(
@@ -154,6 +167,10 @@ async function handleJob(
     case "gate-state-sync":
       await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
       break;
+    case "gate-enforcement-sweep":
+      return runGateEnforcementSweepJob(
+        job.payload as GateEnforcementSweepJobPayload,
+      );
     case "check-run-cleanup":
       validateCheckRunCleanupPayload(
         job.payload as CheckRunCleanupJobPayload,
@@ -163,12 +180,13 @@ async function handleJob(
     case "respond-failure-comment":
       await runRespondFailureCommentJob(
         job.payload as RespondFailureCommentJobPayload,
+        job,
       );
       break;
     case "webhook-comment":
       await runWebhookCommentJob(
         job.payload as WebhookCommentJobPayload,
-        job.id,
+        job,
       );
       break;
     default:
@@ -186,7 +204,19 @@ export async function runClaimedJob(
   const started = Date.now();
   console.log(`[${label}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
   try {
-    await handleJob(job, processGroup, signal, onReviewPublicationStarted);
+    const continuation = await handleJob(
+      job,
+      processGroup,
+      signal,
+      onReviewPublicationStarted,
+    );
+    if (continuation) {
+      await continueClaimedJob(getPool(), job, continuation.payload, {
+        runAfter: continuation.runAfter,
+      });
+      console.log(`[${label}] job ${job.id} continued in ${Date.now() - started}ms`);
+      return;
+    }
     await completeJob(getPool(), job);
     console.log(`[${label}] job ${job.id} done in ${Date.now() - started}ms`);
   } catch (err) {
@@ -207,6 +237,9 @@ export async function runClaimedJob(
     const malformedGateSync =
       job.kind === "gate-state-sync" &&
       message.includes("gate state sync job payload is malformed");
+    const malformedGateEnforcement =
+      job.kind === "gate-enforcement-sweep" &&
+      message.includes("gate enforcement sweep job payload is malformed");
     const malformedWebhookDispatch =
       job.kind === "webhook-dispatch" &&
       message.includes("webhook dispatch job payload is malformed");
@@ -220,11 +253,13 @@ export async function runClaimedJob(
     const permanent =
       isPermanentJobError(err) ||
       malformedGateSync ||
+      malformedGateEnforcement ||
       malformedWebhookDispatch ||
       invalidWebhookDelivery ||
       malformedWebhookComment ||
       malformedCheckRunCleanup ||
       (job.kind !== "gate-state-sync" &&
+        job.kind !== "gate-enforcement-sweep" &&
         job.kind !== "webhook-dispatch" &&
         job.kind !== "webhook-comment" &&
         isPermanentFailure(message));
@@ -239,7 +274,18 @@ export async function runClaimedJob(
       (job.kind === "check-run-cleanup" && !permanent);
     const outcome = durableReconciliation
       ? await retryJobIndefinitely(getPool(), job, message)
-      : await failJob(getPool(), job, message, { permanent });
+      : await failJob(getPool(), job, message, {
+          permanent,
+          ...(job.kind === "respond"
+            ? {
+                failureFollowup: {
+                  kind: "respond-failure-comment" as const,
+                  payload: { ...job.payload, respondJobId: job.id },
+                  maxAttempts: 5,
+                },
+              }
+            : {}),
+        });
     if (job.kind === "operator-alert") {
       const payload = normalizeLegacyOperatorAlertPayload(job.payload);
       if (payload) {
@@ -263,15 +309,6 @@ export async function runClaimedJob(
     } else if (outcome === "retried") {
       reportOperationalWarning(processGroup, "job_retrying");
     }
-    if (outcome === "failed" && job.kind === "respond") {
-      await postRespondFailureComment(
-        job.payload as RespondJobPayload,
-        job.id,
-        undefined,
-        undefined,
-        false,
-      );
-    }
   }
 }
 
@@ -292,7 +329,7 @@ export async function drainQueueOnce(
   });
 
   while (drained < maxJobs && Date.now() < deadlineAt) {
-    const job = await claimJob(getPool(), workerId, PROCESSABLE_JOB_KINDS);
+    const job = await claimJob(getPool(), workerId, WEB_PROCESSABLE_JOB_KINDS);
     if (!job) break;
     await runClaimedJob(job, label, "web");
     drained += 1;

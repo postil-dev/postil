@@ -146,6 +146,52 @@ export const repositories = pgTable("repositories", {
     .defaultNow(),
 });
 
+export type GateEnforcementEvidence = {
+  expectedContext: "postil/gate";
+  expectedAppId: number;
+  branchProtection: {
+    available: boolean;
+    requiredStatusChecksPresent: boolean;
+    exactMatch: boolean;
+    match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+  };
+  activeRules: {
+    available: boolean;
+    pagesRead: number;
+    exactMatch: boolean;
+    match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+  };
+};
+
+/** Last observed GitHub enforcement state for one repository's default branch. */
+export const repositoryGateEnforcement = pgTable(
+  "repository_gate_enforcement",
+  {
+    repositoryId: bigint("repository_id", { mode: "number" })
+      .primaryKey()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    status: text("status").notNull(),
+    defaultBranch: text("default_branch"),
+    branchProtection: text("branch_protection").notNull().default("unknown"),
+    evidence: jsonb("evidence").$type<GateEnforcementEvidence>(),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    lastSuccessfulAt: timestamp("last_successful_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("repository_gate_enforcement_status_checked_idx").on(t.status, t.checkedAt),
+    check(
+      "repository_gate_enforcement_status_check",
+      sql`${t.status} IN ('required', 'not_required', 'unknown')`,
+    ),
+    check(
+      "repository_gate_enforcement_branch_protection_check",
+      sql`${t.branchProtection} IN ('protected', 'unprotected', 'unknown')`,
+    ),
+  ],
+);
+
 export const repoConfigProbes = pgTable("repo_config_probes", {
   repositoryId: bigint("repository_id", { mode: "number" })
     .primaryKey()
@@ -222,6 +268,11 @@ export const reviews = pgTable(
     repositoryId: bigint("repository_id", { mode: "number" })
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
+    sourceOrgId: bigint("source_org_id", { mode: "number" }),
+    sourceInstallationId: bigint("source_installation_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", { mode: "number" }),
+    sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
+    sourceRepoFullName: text("source_repo_full_name"),
     prNumber: integer("pr_number").notNull(),
     authorGithubId: bigint("author_github_id", { mode: "number" }),
     authorLogin: text("author_login"),
@@ -241,6 +292,10 @@ export const reviews = pgTable(
     errorMessage: text("error_message"),
     advisoryCheckRunId: bigint("advisory_check_run_id", { mode: "number" }),
     gateCheckRunId: bigint("gate_check_run_id", { mode: "number" }),
+    gateSyncLeaseId: uuid("gate_sync_lease_id"),
+    gateSyncLeaseExpiresAt: timestamp("gate_sync_lease_expires_at", {
+      withTimezone: true,
+    }),
     queuedAt: timestamp("queued_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -261,6 +316,77 @@ export const reviews = pgTable(
     check(
       "reviews_trigger_context_check",
       sql`(${t.triggerSource} = 'unknown' AND (${t.triggerContext} IS NULL OR ${t.triggerContext} = '{"source":"unknown"}'::jsonb)) OR (${t.triggerSource} <> 'unknown' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext} - ARRAY['source', 'webhookDeliveryId', 'webhookEvent', 'webhookAction', 'sourceCommentId', 'sourceUrl', 'requestedByGithubId', 'requestedByLogin', 'checkName']::text[] = '{}'::jsonb AND ${t.triggerContext}->>'source' = ${t.triggerSource} AND jsonb_typeof(${t.triggerContext}->'webhookDeliveryId') = 'string' AND COALESCE(length(btrim(${t.triggerContext}->>'webhookDeliveryId')), 0) > 0 AND length(${t.triggerContext}->>'webhookDeliveryId') <= 200 AND ((${t.triggerSource} = 'automatic_pull_request' AND ${t.triggerContext}->>'webhookEvent' = 'pull_request') OR (${t.triggerSource} = 'requested_review' AND ${t.triggerContext}->>'webhookEvent' IN ('issue_comment', 'pull_request_review_comment')) OR (${t.triggerSource} = 'github_check_rerun' AND ${t.triggerContext}->>'webhookEvent' IN ('check_run', 'check_suite'))) AND (NOT ${t.triggerContext} ? 'webhookAction' OR (jsonb_typeof(${t.triggerContext}->'webhookAction') = 'string' AND length(${t.triggerContext}->>'webhookAction') <= 100)) AND (NOT ${t.triggerContext} ? 'sourceCommentId' OR (jsonb_typeof(${t.triggerContext}->'sourceCommentId') = 'number' AND (${t.triggerContext}->>'sourceCommentId')::numeric = trunc((${t.triggerContext}->>'sourceCommentId')::numeric) AND (${t.triggerContext}->>'sourceCommentId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'sourceUrl' OR (jsonb_typeof(${t.triggerContext}->'sourceUrl') = 'string' AND length(${t.triggerContext}->>'sourceUrl') <= 2048 AND ${t.triggerContext}->>'sourceUrl' ~* '^https://github[.]com([/?#]|$)')) AND (NOT ${t.triggerContext} ? 'requestedByGithubId' OR (jsonb_typeof(${t.triggerContext}->'requestedByGithubId') = 'number' AND (${t.triggerContext}->>'requestedByGithubId')::numeric = trunc((${t.triggerContext}->>'requestedByGithubId')::numeric) AND (${t.triggerContext}->>'requestedByGithubId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'requestedByLogin' OR (jsonb_typeof(${t.triggerContext}->'requestedByLogin') = 'string' AND length(${t.triggerContext}->>'requestedByLogin') <= 100)) AND (NOT ${t.triggerContext} ? 'checkName' OR (jsonb_typeof(${t.triggerContext}->'checkName') = 'string' AND length(${t.triggerContext}->>'checkName') <= 200)))`,
+    ),
+  ],
+);
+
+/**
+ * Immutable identity for the CLI's publication result. A row without a CLI
+ * receipt records a legacy review whose publication could not be observed.
+ */
+export const reviewPublicationReceipts = pgTable(
+  "review_publication_receipts",
+  {
+    reviewId: bigint("review_id", { mode: "number" })
+      .primaryKey()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    receiptVersion: integer("receipt_version"),
+    receiptId: text("receipt_id"),
+    githubReviewId: text("github_review_id"),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    check(
+      "review_publication_receipts_identity_check",
+      sql`(${t.receiptVersion} IS NULL AND ${t.receiptId} IS NULL) OR (${t.receiptVersion} = 1 AND length(btrim(${t.receiptId})) BETWEEN 1 AND 200)`,
+    ),
+    check(
+      "review_publication_receipts_github_review_id_check",
+      sql`${t.githubReviewId} IS NULL OR ${t.githubReviewId} ~ '^[1-9][0-9]{0,19}$'`,
+    ),
+  ],
+);
+
+/** Per-finding publication identity and its normalized, observed lifecycle. */
+export const findingPublications = pgTable(
+  "finding_publications",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    reviewId: bigint("review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    findingId: text("finding_id").notNull(),
+    stableIdentity: boolean("stable_identity").notNull(),
+    initialState: text("initial_state").notNull(),
+    currentState: text("current_state").notNull(),
+    githubCommentId: text("github_comment_id"),
+    lifecycleObservedAt: timestamp("lifecycle_observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("finding_publications_review_finding_idx").on(t.reviewId, t.findingId),
+    index("finding_publications_comment_idx").on(t.githubCommentId),
+    index("finding_publications_stable_finding_idx").on(t.findingId, t.stableIdentity),
+    check(
+      "finding_publications_finding_id_check",
+      sql`length(btrim(${t.findingId})) BETWEEN 1 AND 500`,
+    ),
+    check(
+      "finding_publications_initial_state_check",
+      sql`${t.initialState} IN ('inline', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown')`,
+    ),
+    check(
+      "finding_publications_current_state_check",
+      sql`${t.currentState} IN ('inline', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown')`,
+    ),
+    check(
+      "finding_publications_github_comment_id_check",
+      sql`${t.githubCommentId} IS NULL OR ${t.githubCommentId} ~ '^[1-9][0-9]{0,19}$'`,
     ),
   ],
 );
@@ -1017,14 +1143,25 @@ export const respondDeliveries = pgTable(
         onDelete: "set null",
       },
     ),
+    sourceOrgId: bigint("source_org_id", { mode: "number" }),
+    sourceInstallationId: bigint("source_installation_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", { mode: "number" }),
+    sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
     repoFullName: text("repo_full_name").notNull(),
     issueNumber: integer("issue_number").notNull(),
+    isPr: boolean("is_pr").notNull().default(false),
+    sourceHeadSha: text("source_head_sha"),
     body: text("body").notNull(),
     state: text("state").notNull().default("prepared"),
     deliveryLeaseExpiresAt: timestamp("delivery_lease_expires_at", {
       withTimezone: true,
     }),
     githubCommentId: bigint("github_comment_id", { mode: "number" }),
+    publicationLeaseId: uuid("publication_lease_id"),
+    publicationLeaseExpiresAt: timestamp("publication_lease_expires_at", {
+      withTimezone: true,
+    }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1040,7 +1177,7 @@ export const respondDeliveries = pgTable(
     ),
     check(
       "respond_deliveries_state_check",
-      sql`${t.state} IN ('prepared', 'delivering', 'delivered')`,
+      sql`${t.state} IN ('prepared', 'delivering', 'delivered', 'cancelled')`,
     ),
     check(
       "respond_deliveries_issue_number_positive",
@@ -1087,6 +1224,7 @@ export const orgSettings = pgTable("org_settings", {
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
   sharedConfigEnabled: boolean("shared_config_enabled").notNull().default(true),
+  gateEnabled: boolean("gate_enabled").notNull().default(false),
   /** Retired compatibility columns; the post-deploy retirement clears every value. */
   escalationEmail: text("escalation_email"),
   escalationEmailPending: text("escalation_email_pending"),
@@ -1118,6 +1256,45 @@ export const orgSettings = pgTable("org_settings", {
     .notNull()
     .defaultNow(),
 });
+
+export const organizationSettingEvents = pgTable(
+  "organization_setting_events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    setting: text("setting").notNull(),
+    value: text("value").notNull(),
+    actorUserId: bigint("actor_user_id", { mode: "number" }).references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+    source: text("source").notNull().default("dashboard"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("organization_setting_events_org_time_idx").on(
+      t.orgId,
+      t.occurredAt,
+      t.id,
+    ),
+    check(
+      "organization_setting_events_setting_check",
+      sql`${t.setting} IN ('gate_enabled')`,
+    ),
+    check(
+      "organization_setting_events_value_check",
+      sql`${t.value} IN ('enabled', 'advisory')`,
+    ),
+    check(
+      "organization_setting_events_source_check",
+      sql`${t.source} IN ('dashboard')`,
+    ),
+  ],
+);
 
 /** Last successful immutable snapshot of the owner's installed `.github` policy repo. */
 export const orgConfigSnapshots = pgTable("org_config_snapshots", {

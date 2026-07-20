@@ -9,6 +9,7 @@ const OLD_ENV = { ...process.env };
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
+const failureFollowups: Array<Record<string, unknown>> = [];
 const permanentFailures: number[] = [];
 const retriedIndefinitely: Array<{ id: number; error: string }> = [];
 const shutdownRequeues: number[] = [];
@@ -25,7 +26,9 @@ let operatorAlertRun: (() => Promise<void>) | undefined;
 let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let webhookDeliveryLoadError: Error | undefined;
-let reviewTiming: { queuedAt: Date; startedAt: Date } | undefined;
+let reviewTiming:
+  | { queuedAt: Date; startedAt: Date; lease?: ClaimedJob }
+  | undefined;
 let reviewProcessGroup: string | undefined;
 let reviewSignal: AbortSignal | undefined;
 let reviewPublicationStartedCallback: (() => void) | undefined;
@@ -82,6 +85,7 @@ mock.module("@/lib/queue", () => ({
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
     completed.push(job.id);
   },
+  continueClaimedJob: async () => undefined,
   completeWebhookDelivery: async () => undefined,
   loadWebhookDelivery: async () => {
     if (webhookDeliveryLoadError) throw webhookDeliveryLoadError;
@@ -91,10 +95,16 @@ mock.module("@/lib/queue", () => ({
     _pool: unknown,
     job: ClaimedJob,
     error: string,
-    options?: { permanent?: boolean },
+    options?: {
+      permanent?: boolean;
+      failureFollowup?: { payload: Record<string, unknown> };
+    },
   ) => {
     failed.push({ id: job.id, error });
     if (options?.permanent) permanentFailures.push(job.id);
+    if (options?.failureFollowup) {
+      failureFollowups.push(options.failureFollowup.payload);
+    }
     return "failed";
   },
   retryJobIndefinitely: async (
@@ -135,7 +145,7 @@ mock.module("@/worker/review", () => ({
   },
   runReviewJob: async (
     _payload: unknown,
-    timing: { queuedAt: Date; startedAt: Date },
+    timing: { queuedAt: Date; startedAt: Date; lease?: ClaimedJob },
     processGroup: string,
     signal?: AbortSignal,
     onPublicationStarted?: () => void,
@@ -184,6 +194,10 @@ mock.module("@/worker/gate-state-sync", () => ({
   },
 }));
 
+mock.module("@/worker/gate-enforcement-sweep", () => ({
+  runGateEnforcementSweepJob: async () => null,
+}));
+
 const { drainQueueOnce, runClaimedJob, triggerQueueDrain } =
   await import("@/worker/runner");
 
@@ -211,6 +225,7 @@ beforeEach(() => {
   jobs.length = 0;
   completed.length = 0;
   failed.length = 0;
+  failureFollowups.length = 0;
   permanentFailures.length = 0;
   retriedIndefinitely.length = 0;
   shutdownRequeues.length = 0;
@@ -465,6 +480,27 @@ describe("drainQueueOnce", () => {
     expect(completed).toEqual([1]);
   });
 
+  test("queues a respond failure comment in the terminal job transition", async () => {
+    const job = reviewJob(12);
+    job.kind = "respond";
+    job.attempts = job.maxAttempts;
+    job.payload = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      number: 7,
+      isPr: true,
+      comment: "@postil explain",
+    };
+    respondRun = async () => {
+      throw new Error("provider request failed");
+    };
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(failed).toEqual([{ id: 12, error: "provider request failed" }]);
+    expect(failureFollowups).toEqual([{ ...job.payload, respondJobId: 12 }]);
+  });
+
   test("dispatches durable billing contact verification jobs", async () => {
     const job = reviewJob(1);
     job.kind = "billing-contact-verification";
@@ -642,6 +678,7 @@ describe("drainQueueOnce", () => {
     expect(reviewTiming).toEqual({
       queuedAt: new Date("2026-07-10T12:00:00.000Z"),
       startedAt: new Date("2026-07-10T12:00:05.000Z"),
+      lease: expect.objectContaining({ id: 1, lockedBy: "test" }),
     });
     expect(reviewProcessGroup).toBe("web");
   });

@@ -109,10 +109,20 @@ export default async function OrgDashboardPage({
   const silenceRate =
     silenceAgg.completed > 0 ? Math.round((silenceAgg.silent / silenceAgg.completed) * 100) : null;
 
-  // Confidence distribution: sum confidenceBuckets across stored envelopes.
+  // Confidence distribution includes only findings whose publication receipt
+  // proves they reached GitHub. Legacy unobserved envelope counts stay out.
   const bucketRows = await db
     .select({
-      buckets: sql<number[]>`${schema.reviews.envelope} -> 'confidenceBuckets'`,
+      confidences: sql<number[]>`ARRAY(
+        SELECT (finding ->> 'confidence')::double precision
+        FROM jsonb_array_elements(COALESCE(${schema.reviews.envelope} -> 'findings', '[]'::jsonb)) finding
+        WHERE EXISTS (
+          SELECT 1 FROM finding_publications publication
+          WHERE publication.review_id = ${schema.reviews.id}
+            AND publication.finding_id = finding ->> 'id'
+            AND publication.initial_state IN ('inline', 'summaryOnly', 'carried', 'inlineRejected')
+        )
+      )`,
       durationMs: sql<number | null>`(${schema.reviews.envelope} ->> 'durationMs')::int`,
     })
     .from(schema.reviews)
@@ -128,10 +138,12 @@ export default async function OrgDashboardPage({
     .limit(500);
   const buckets = [0, 0, 0, 0, 0];
   for (const row of bucketRows) {
-    if (Array.isArray(row.buckets)) {
-      row.buckets.forEach((v, i) => {
-        if (i < 5 && typeof v === "number") buckets[i] = (buckets[i] ?? 0) + v;
-      });
+    if (Array.isArray(row.confidences)) {
+      for (const confidence of row.confidences) {
+        if (typeof confidence !== "number") continue;
+        const index = Math.min(4, Math.max(0, Math.floor(confidence * 5)));
+        buckets[index] = (buckets[index] ?? 0) + 1;
+      }
     }
   }
   const shippedConfidenceFindings = buckets.reduce((sum, count) => sum + count, 0);
@@ -172,9 +184,17 @@ export default async function OrgDashboardPage({
         ungrounded: sql<number>`
           COALESCE(SUM((${schema.reviews.envelope} -> 'counts' ->> 'ungrounded')::int), 0)::int
         `,
-        // Findings actually shipped, summed from stored envelopes.
+        // Findings proven shipped by immutable publication receipts.
         shipped: sql<number>`
-          COALESCE(SUM(jsonb_array_length(${schema.reviews.envelope} -> 'findings')), 0)::int
+          COALESCE((
+            SELECT count(*) FROM finding_publications publication
+            INNER JOIN reviews published_review ON published_review.id = publication.review_id
+            INNER JOIN repositories published_repository ON published_repository.id = published_review.repository_id
+            INNER JOIN installations published_installation ON published_installation.id = published_repository.installation_id
+            WHERE published_installation.org_id = ${org.id}
+              AND published_review.status = 'completed'
+              AND publication.initial_state IN ('inline', 'summaryOnly', 'carried', 'inlineRejected')
+          ), 0)::int
         `,
       })
       .from(schema.reviews)

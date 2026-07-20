@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { closeDb, getPool } from "@/lib/db";
 
-const RELEASE_STEP = "operational-indexes-v1";
+const RELEASE_STEP = "operational-indexes-v2";
 const RELEASE_LOCK_NAMESPACE = 1_349_481_332;
 const RELEASE_LOCK_OPERATION = 1_768_704_356;
 const RELEASE_LOCK_WAIT_MS = 15 * 60 * 1_000;
@@ -36,6 +36,20 @@ const OPERATIONAL_INDEXES: OperationalIndex[] = [
       "(completed_at)",
       "where",
       "completed_at is not null",
+    ],
+  },
+  {
+    name: "respond_deliveries_pr_identity_idx",
+    createSql:
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "respond_deliveries_pr_identity_idx" ON "respond_deliveries" ("source_github_installation_id", "source_github_repo_id", "issue_number", "source_head_sha") WHERE "is_pr" AND "state" IN (\'prepared\', \'delivering\')',
+    definitionFragments: [
+      "public.respond_deliveries",
+      "(source_github_installation_id, source_github_repo_id, issue_number, source_head_sha)",
+      "where",
+      "is_pr",
+      "state",
+      "prepared",
+      "delivering",
     ],
   },
 ];
