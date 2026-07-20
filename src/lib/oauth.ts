@@ -1,4 +1,5 @@
 export const OAUTH_STATE_COOKIE = "postil_oauth_state";
+export const GITHUB_SETUP_INSTALLATION_COOKIE = "postil_setup_installation";
 export const OAUTH_CALLBACK_PATH = "/api/auth/callback";
 
 export function oauthCallbackUrl(request: Request): string {

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { getDb, schema } from "@/lib/db";
 import { hostedInferenceEnabled, optionalEnv, requireEnv } from "@/lib/env";
@@ -76,6 +76,45 @@ export interface AccountRef {
   githubId: number;
   login: string;
   type: "User" | "Organization";
+}
+
+/**
+ * Resolve a GitHub setup callback target inside the authenticated user's
+ * refreshed dashboard boundary. The installation id is untrusted input and
+ * never grants access by itself.
+ */
+export async function findAccessibleInstallationOrgSlug(
+  userId: number,
+  installationId: string | undefined,
+): Promise<string | undefined> {
+  const numericInstallationId = Number(installationId);
+  if (
+    !installationId ||
+    !/^[1-9]\d*$/.test(installationId) ||
+    !Number.isSafeInteger(numericInstallationId)
+  ) {
+    return undefined;
+  }
+
+  const row = (
+    await getDb()
+      .select({ slug: schema.organizations.slug })
+      .from(schema.installations)
+      .innerJoin(
+        schema.organizations,
+        eq(schema.organizations.id, schema.installations.orgId),
+      )
+      .innerJoin(
+        schema.orgMembers,
+        and(
+          eq(schema.orgMembers.orgId, schema.organizations.id),
+          eq(schema.orgMembers.userId, userId),
+        ),
+      )
+      .where(eq(schema.installations.githubInstallationId, numericInstallationId))
+      .limit(1)
+  )[0];
+  return row?.slug;
 }
 
 interface InstallationLookup {

@@ -3,9 +3,10 @@ import Link from "next/link";
 
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
+import { OrganizationSwitcher } from "@/components/organization-switcher";
+import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { formatMs } from "@/components/review-status";
 import { ReviewTimeDistribution } from "@/components/review-time-distribution";
-import { PrivateBillingNotice } from "@/components/private-billing-notice";
 import { getPool, schema } from "@/lib/db";
 import { hostedInferenceAvailable } from "@/lib/env";
 import { requireOrgMembership } from "@/lib/org-access";
@@ -36,7 +37,7 @@ export default async function OrgDashboardPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const { db, org, membership } = await requireOrgMembership(slug);
+  const { db, user, org, membership } = await requireOrgMembership(slug);
   const isAdmin = membership.role === "admin";
   const now = new Date();
 
@@ -231,6 +232,7 @@ export default async function OrgDashboardPage({
           <h1 className="serif-display mt-2 text-3xl">{org.name}</h1>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <OrganizationSwitcher currentSlug={org.slug} userId={user.id} />
           {isAdmin && (
             <>
               <Link href={`/orgs/${org.slug}/billing`} className="btn-secondary text-xs">
