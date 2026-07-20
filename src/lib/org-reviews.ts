@@ -11,7 +11,6 @@ import {
 import type { ReviewTriggerSource } from "@/lib/review-trigger";
 import {
   getReviewPublicationCounts,
-  type PublicationCounts,
 } from "@/lib/publication-receipt";
 
 export type OrgReviewStatus = ReviewDisplayStatus;
@@ -29,7 +28,6 @@ export interface OrgReviewRow {
   finishedAt: string | null;
   repoFullName: string;
   triggerSource: ReviewTriggerSource;
-  publicationCounts: PublicationCounts | null;
 }
 
 /**
@@ -96,7 +94,6 @@ export async function getOrgReviewRows(
             ).failing
           : row.gateFailing,
         findingsCount: counts && counts.unknown === 0 ? activePublished : null,
-        publicationCounts: counts,
         modelUsed: envelope?.modelUsed ?? null,
         startedAt: row.startedAt?.toISOString() ?? null,
         finishedAt: row.finishedAt?.toISOString() ?? null,

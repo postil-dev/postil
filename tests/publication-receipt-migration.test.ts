@@ -274,11 +274,9 @@ describeDb("publication receipt migration and lifecycle", () => {
     const dashboardRows = await getOrgReviewRows(db, orgId, 20);
     expect(dashboardRows.find((row) => row.id === legacyId)).toMatchObject({
       findingsCount: null,
-      publicationCounts: expect.objectContaining({ unknown: 1 }),
     });
     expect(dashboardRows.find((row) => row.id === reviewIds[1])).toMatchObject({
       findingsCount: 1,
-      publicationCounts: expect.objectContaining({ carried: 1, resolved: 1 }),
     });
   });
 });
