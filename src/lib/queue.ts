@@ -588,7 +588,7 @@ export async function claimJob(
   pool: Pool,
   workerId: string,
   allowedKinds: readonly string[],
-  options: { webhookDeliveryId?: string } = {},
+  options: { exactWebhookDispatchDeliveryId?: string } = {},
 ): Promise<ClaimedJob | null> {
   const capabilities = [...new Set(allowedKinds.filter(Boolean))];
   if (capabilities.length === 0) {
@@ -610,11 +610,14 @@ export async function claimJob(
        WHERE status = 'queued'
          AND run_after <= now()
          AND kind = ANY($1::text[])
-         AND ($2::text IS NULL OR payload->>'deliveryId' = $2)
+         AND (
+           $2::text IS NULL
+           OR (kind = 'webhook-dispatch' AND payload->>'deliveryId' = $2)
+         )
        ORDER BY CASE WHEN kind = 'github-reaction' THEN 0 ELSE 1 END, id
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
-      [capabilities, options.webhookDeliveryId ?? null],
+      [capabilities, options.exactWebhookDispatchDeliveryId ?? null],
     );
     const row = selected.rows[0];
     if (!row) {

@@ -360,7 +360,7 @@ export async function drainWebhookDispatch(
 ): Promise<boolean> {
   const workerId = `${label}-${hostname()}-${process.pid}`;
   const job = await claimJob(getPool(), workerId, ["webhook-dispatch"], {
-    webhookDeliveryId: deliveryId,
+    exactWebhookDispatchDeliveryId: deliveryId,
   });
   if (!job) return false;
   await runClaimedJob(job, label, "web");
