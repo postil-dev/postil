@@ -128,6 +128,8 @@ describe("public CLI pins", () => {
     expect(deploy).toContain(
       "bun run scripts/verify-postil-cli-contract.ts --binary vendor/postil",
     );
+    expect(deploy).toContain("version: 0.4.71");
+    expect(deploy).not.toContain("version: latest");
   });
 
   test("keeps the changelog head aligned with the current CLI release", () => {
