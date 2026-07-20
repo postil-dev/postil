@@ -11,6 +11,11 @@ import { envelopeSchema, type Finding } from "@/lib/envelope";
 import { sortFindingsForDisplay } from "@/lib/findings";
 import { githubFindingLocationUrl, githubPrUrl } from "@/lib/github-links";
 import { requireOperatorAccess } from "@/lib/operator-access";
+import { getPool } from "@/lib/db";
+import {
+  getPrivateMonitoringDashboard,
+  type PrivateMonitoringDashboard,
+} from "@/lib/private-monitoring";
 import {
   getOperatorReviewRows,
   OPERATOR_REVIEW_LIMIT,
@@ -45,6 +50,112 @@ const SEVERITY_STYLES: Record<Finding["severity"], string> = {
 function formatTimestamp(value: Date | null): string {
   if (!value) return "Not recorded";
   return value.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+}
+
+function MonitoringStatus({ monitoring }: { monitoring: PrivateMonitoringDashboard }) {
+  const open = monitoring.incidents.filter((incident) => incident.state === "open");
+  return (
+    <section id="monitoring" className="mt-8 scroll-mt-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">Private monitoring</p>
+          <h2 className="serif-display mt-2 text-2xl">Production health</h2>
+        </div>
+        <p className="font-mono text-xs text-charcoal/60">
+          {open.length.toLocaleString()} open · last pass {formatTimestamp(monitoring.state.lastCompletedAt)}
+        </p>
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <div className="card p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+            Monitor pass
+          </p>
+          <p className="mt-2 text-sm">{formatTimestamp(monitoring.state.lastCompletedAt)}</p>
+          {monitoring.state.lastError && (
+            <p className="mt-2 break-words font-mono text-xs text-rust">
+              {monitoring.state.lastError}
+            </p>
+          )}
+        </div>
+        <div className="card p-4 lg:col-span-2">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+            Process heartbeats
+          </p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {monitoring.heartbeats.map((heartbeat) => (
+              <div key={heartbeat.component} className="min-w-0">
+                <p className="text-sm font-semibold">{heartbeat.component}</p>
+                <p className="truncate font-mono text-xs text-charcoal/60" title={heartbeat.instanceId}>
+                  {heartbeat.instanceId} · {formatTimestamp(heartbeat.observedAt)}
+                </p>
+              </div>
+            ))}
+            {monitoring.heartbeats.length === 0 && (
+              <p className="text-sm text-charcoal/50">No heartbeat recorded.</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="card mt-4 overflow-hidden">
+        <div className="border-b border-stone bg-paper px-4 py-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+            Incident ledger
+          </p>
+        </div>
+        {monitoring.incidents.map((incident) => (
+          <details key={incident.key} className="border-b border-stone/70 px-4 py-3 last:border-b-0" open={incident.state === "open"}>
+            <summary className="cursor-pointer list-none text-sm">
+              <span className={incident.state === "open" ? "font-semibold text-rust" : "text-charcoal/60"}>
+                {incident.state === "open" ? "●" : "✓"} {incident.summary}
+              </span>{" "}
+              <span className="font-mono text-[11px] text-charcoal/50">
+                {incident.severity} · {incident.group} · {incident.occurrenceCount.toLocaleString()} observation(s)
+              </span>
+            </summary>
+            <div className="mt-3 space-y-1 text-xs text-charcoal/70">
+              <p>{incident.detail}</p>
+              <p className="font-mono">
+                first {formatTimestamp(incident.firstDetectedAt)} · last {formatTimestamp(incident.lastDetectedAt)}
+              </p>
+              {incident.lastNotificationError && (
+                <p className="font-mono text-rust">
+                  notification attempt {incident.notificationAttempts}: {incident.lastNotificationError}
+                </p>
+              )}
+            </div>
+          </details>
+        ))}
+        {monitoring.incidents.length === 0 && (
+          <p className="px-4 py-8 text-center text-sm text-charcoal/50">No incidents recorded.</p>
+        )}
+      </div>
+
+      <div className="card mt-4 overflow-x-auto">
+        <table className="w-full min-w-[38rem] text-left font-mono text-xs">
+          <thead className="border-b border-stone bg-paper text-charcoal/50">
+            <tr>
+              <th className="px-4 py-3 font-normal">started</th>
+              <th className="px-4 py-3 font-normal">status</th>
+              <th className="px-4 py-3 text-right font-normal">checks</th>
+              <th className="px-4 py-3 text-right font-normal">failures</th>
+            </tr>
+          </thead>
+          <tbody>
+            {monitoring.runs.map((run) => (
+              <tr key={run.id} className="border-b border-stone/60 last:border-b-0">
+                <td className="px-4 py-3">{formatTimestamp(run.startedAt)}</td>
+                <td className="px-4 py-3">{run.status}</td>
+                <td className="px-4 py-3 text-right">{run.checkCount}</td>
+                <td className="px-4 py-3 text-right">{run.failureCount}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
 }
 
 function FilterInput({
@@ -368,7 +479,10 @@ export default async function OperatorDashboardPage({
   const params = await searchParams;
   const filters = parseOperatorReviewFilters(params);
   const { db, user } = await requireOperatorAccess();
-  const reviews = await getOperatorReviewRows(db, filters);
+  const [reviews, monitoring] = await Promise.all([
+    getOperatorReviewRows(db, filters),
+    getPrivateMonitoringDashboard(getPool()),
+  ]);
   const totalRows = reviews[0]?.totalRows ?? 0;
   const shownRows = reviews.length;
 
@@ -383,6 +497,8 @@ export default async function OperatorDashboardPage({
           {user.login} · {shownRows.toLocaleString()} of {totalRows.toLocaleString()} runs
         </p>
       </div>
+
+      <MonitoringStatus monitoring={monitoring} />
 
       <form className="card mt-6 grid gap-4 p-4 md:grid-cols-[1fr_1fr_10rem_10rem_10rem_auto] md:items-end">
         <FilterInput label="Organization" name="org" defaultValue={filters.org} />

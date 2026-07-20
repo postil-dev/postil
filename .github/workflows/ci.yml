@@ -74,6 +74,14 @@ jobs:
           PGHOST: localhost
           PGUSER: postgres
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postil_webhook_recovery
+      - name: Verify private monitoring on fresh Postgres
+        run: |
+          createdb postil_private_monitoring
+          bun test --isolate tests/private-monitoring.test.ts
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postil_private_monitoring
       - name: Verify GitHub onboarding lifecycle on fresh Postgres
         run: |
           createdb postil_webhook_lifecycle

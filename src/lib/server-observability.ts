@@ -14,13 +14,16 @@ import {
   type OperationalModelIncidentClassification,
 } from "@/lib/envelope";
 
-export type ObservabilityProcessGroup = "web" | "worker";
+export type ObservabilityProcessGroup = "web" | "worker" | "monitor";
 export type OperationalFailureClass =
   | "web_request_failed"
   | "worker_boot_failed"
   | "job_permanently_failed"
-  | "webhook_recovery_failed";
-export type OperationalState = "worker_started";
+  | "webhook_recovery_failed"
+  | "monitor_boot_failed"
+  | "monitor_pass_failed"
+  | "monitor_notification_failed";
+export type OperationalState = "worker_started" | "monitor_started";
 export type OperationalWarning = "job_retrying" | "webhook_recovery_retrying";
 
 type OperationalLogEvent =
@@ -31,7 +34,11 @@ type OperationalLogEvent =
   | "postil.webhook.recovery.failed"
   | "postil.webhook.recovery.retrying"
   | "postil.model.incident"
-  | "postil.worker.started";
+  | "postil.worker.started"
+  | "postil.monitor.started"
+  | "postil.monitor.boot.failed"
+  | "postil.monitor.pass.failed"
+  | "postil.monitor.notification.failed";
 
 interface ObservabilityEnvironment {
   POSTHOG_ERROR_CAPTURE?: string;
@@ -82,10 +89,26 @@ const FAILURE_EVENTS: Record<OperationalFailureClass, OperationalEventDefinition
     severityNumber: SeverityNumber.ERROR,
     severityText: "ERROR",
   },
+  monitor_boot_failed: {
+    event: "postil.monitor.boot.failed",
+    severityNumber: SeverityNumber.FATAL,
+    severityText: "FATAL",
+  },
+  monitor_pass_failed: {
+    event: "postil.monitor.pass.failed",
+    severityNumber: SeverityNumber.ERROR,
+    severityText: "ERROR",
+  },
+  monitor_notification_failed: {
+    event: "postil.monitor.notification.failed",
+    severityNumber: SeverityNumber.ERROR,
+    severityText: "ERROR",
+  },
 };
 
 const STATE_EVENTS: Record<OperationalState, OperationalLogEvent> = {
   worker_started: "postil.worker.started",
+  monitor_started: "postil.monitor.started",
 };
 
 const WARNING_EVENTS: Record<OperationalWarning, OperationalLogEvent> = {
@@ -101,7 +124,11 @@ const RELEASE_SHA = /^[0-9a-f]{7,40}$/i;
 const FAILURE_CLASSES = new Set<OperationalFailureClass>(
   Object.keys(FAILURE_EVENTS) as OperationalFailureClass[],
 );
-const PROCESS_GROUPS = new Set<ObservabilityProcessGroup>(["web", "worker"]);
+const PROCESS_GROUPS = new Set<ObservabilityProcessGroup>([
+  "web",
+  "worker",
+  "monitor",
+]);
 const MODEL_INCIDENT_PHASE_SET = new Set<string>(MODEL_INCIDENT_PHASES);
 const TYPED_MODEL_INCIDENT_CATEGORIES = new Set([
   "providerError",

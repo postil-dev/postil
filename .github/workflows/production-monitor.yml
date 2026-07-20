@@ -2,9 +2,9 @@ name: Production monitor
 
 on:
   schedule:
-    # Every 15 minutes: this is the only automated detector of a dead or
-    # stopped worker (postil_oldest_job_age_seconds staleness check below),
-    # so the full metrics probe runs on this cadence rather than daily.
+    # Every 15 minutes: this external monitor is independent of the
+    # in-platform private monitor and detects a dead or stopped worker through
+    # postil_oldest_job_age_seconds staleness.
     - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
@@ -168,6 +168,10 @@ jobs:
             if ! grep -E '^postil_database_up 1$' .cache/metrics.out; then
               echo "Metrics check did not report postil_database_up 1"
               cat .cache/metrics.out
+              exit 1
+            fi
+            if ! grep -E '^postil_private_monitor_heartbeat_fresh 1$' .cache/metrics.out; then
+              echo "Private monitor heartbeat is missing or stale"
               exit 1
             fi
 

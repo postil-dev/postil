@@ -1,14 +1,18 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { productionMonitorEmailContent } from "@/../scripts/send-production-monitor-alert";
 import { billingContactVerificationEmailContent } from "@/lib/billing-contact-verification";
+import { operatorAlertEmailContent } from "@/lib/operator-alert-email";
 import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
+import {
+  privateMonitoringIncidentEmailContent,
+  privateMonitoringPassFailureEmailContent,
+} from "@/lib/private-monitoring";
 import {
   assertApplicationEmailBody,
   renderTransactionalEmail,
 } from "@/lib/transactional-email";
-import { operatorAlertEmailContent } from "@/worker/operator-alert";
-import { productionMonitorEmailContent } from "@/../scripts/send-production-monitor-alert";
 
 const outputDirectory = resolve(
   process.argv[2] ?? "/tmp/postil-email-previews",
@@ -104,7 +108,47 @@ const previews = [
     ).content,
   ],
   [
-    "production-monitor-failure",
+    "private-monitor-opened",
+    privateMonitoringIncidentEmailContent(
+      {
+        kind: "opened",
+        severity: "critical",
+        summary: "Review worker heartbeat is stale",
+        detail: "No recent worker heartbeat has been recorded.",
+      },
+      "https://postil.dev/operator#monitoring",
+    ),
+  ],
+  [
+    "private-monitor-reminder",
+    privateMonitoringIncidentEmailContent(
+      {
+        kind: "reminder",
+        severity: "warning",
+        summary: "Billing reconciliation needs attention",
+        detail: "The incident remains open.",
+      },
+      "https://postil.dev/operator#monitoring",
+    ),
+  ],
+  [
+    "private-monitor-resolved",
+    privateMonitoringIncidentEmailContent(
+      {
+        kind: "resolved",
+        severity: "critical",
+        summary: "Review worker heartbeat recovered",
+        detail: "The worker heartbeat is fresh.",
+      },
+      "https://postil.dev/operator#monitoring",
+    ),
+  ],
+  [
+    "private-monitor-unavailable",
+    privateMonitoringPassFailureEmailContent("https://postil.dev"),
+  ],
+  [
+    "github-monitor-failure",
     productionMonitorEmailContent(
       "failure",
       "c5bb3ebbff986e2c93184daa38551ec26d4b06ee",
@@ -112,7 +156,7 @@ const previews = [
     ),
   ],
   [
-    "production-monitor-test",
+    "github-monitor-test",
     productionMonitorEmailContent(
       "test",
       "c5bb3ebbff986e2c93184daa38551ec26d4b06ee",

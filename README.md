@@ -21,6 +21,7 @@ This repository contains the hosted service at [postil.dev](https://postil.dev):
 | --- | --- |
 | `src/app` | Public site, authentication, dashboard, and API routes |
 | `src/worker` | Durable review and notification jobs |
+| `src/monitor` | Private production monitoring and incident delivery |
 | `src/lib` | GitHub, billing, policy, and persistence boundaries |
 | `drizzle` | PostgreSQL schema migrations |
 | `scripts` | Release, billing, verification, and operations commands |

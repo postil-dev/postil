@@ -219,6 +219,27 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+      - name: Provision private monitor state volume
+        id: monitor-volume
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          volumes=$(flyctl volumes list --app postil-web --json)
+          count=$(jq -r '[.[] | select((.name // .Name) == "postil_monitor_state" and (.region // .Region) == "lhr")] | length' <<<"${volumes}")
+          if [ "${count}" -eq 0 ]; then
+            if ! flyctl volumes create postil_monitor_state --app postil-web --region lhr --size 1 --yes >/dev/null 2>&1; then
+              echo "::error::Private monitor state volume provisioning failed."
+              exit 1
+            fi
+            volumes=$(flyctl volumes list --app postil-web --json)
+          elif [ "${count}" -ne 1 ]; then
+            echo "::error::Expected exactly one private monitor state volume in lhr."
+            exit 1
+          fi
+          volume_id=$(jq -er '[.[] | select((.name // .Name) == "postil_monitor_state" and (.region // .Region) == "lhr")] | if length == 1 then (.[0].id // .[0].ID) else error("private monitor volume is not unique") end' <<<"${volumes}")
+          echo "volume-id=${volume_id}" >> "${GITHUB_OUTPUT}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Deploy managed fleet
         id: deploy
         timeout-minutes: 10
@@ -234,9 +255,11 @@ jobs:
           POSTIL_CLI_TAG: ${{ vars.POSTIL_CLI_TAG }}
       - name: Restart any machines left stopped by the deploy
         id: recover
-        # The worker process group has no http health check to auto-wake it
-        # (only the web group does), so a deploy that leaves a machine in
-        # `stopped` - seen on the first cutover - needs an explicit restart
+        # Runtime diagnostics stay in private Fly logs and the operator
+        # dashboard. Deployment CI emits only generic release status.
+        # The worker and monitor process groups have no HTTP health check to
+        # auto-wake them. A deploy that leaves a managed machine stopped needs
+        # an explicit restart
         # or the review queue/webhook receiver stays dark until someone
         # notices and starts it by hand. Must run even when the flyctl deploy
         # step itself fails (a partial rolling deploy that times out waiting
@@ -248,30 +271,35 @@ jobs:
           set -euo pipefail
           stopped=$(flyctl machine list --app postil-web --json | jq -r '.[] | select(
             .state == "stopped"
-            and (.config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker")
+            and (.config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker" or .config.metadata.fly_process_group == "monitor")
             and .config.metadata.fly_platform_version == "v2"
           ) | .id')
           if [ -z "$stopped" ]; then
             echo "No stopped machines after deploy."
           else
+            restart_failed=0
             for id in $stopped; do
-              echo "Restarting machine left stopped by deploy: $id"
-              flyctl machine start "$id" --app postil-web
+              echo "Restarting one managed machine left stopped by deploy."
+              if ! flyctl machine start "$id" --app postil-web >/dev/null 2>&1; then
+                echo "::error::A managed machine could not be restarted."
+                restart_failed=1
+              fi
             done
+            if [ "${restart_failed}" -ne 0 ]; then
+              exit 1
+            fi
             sleep 15
           fi
           # fly.toml requires min_machines_running = 2 for the web group: a
           # stopped machine the proxy has to cold-start drops/retries webhook
           # deliveries. Surface the current count rather than assume the
           # restart above (or the deploy itself) actually achieved it. A
-          # warning, not a hard failure: not confident enough in the exact
-          # `fly_process_group` metadata field path to fail every future
-          # deploy on a possible field-name mismatch rather than a real gap.
+          # warning here because the release verifier below owns the hard
+          # capacity gate after all managed process groups are inspected.
           web_running=$(flyctl machine list --app postil-web --json \
             | jq -r '[.[] | select(.config.metadata.fly_process_group == "web" and .state == "started")] | length')
-          echo "web machines running: ${web_running}"
           if [ "${web_running}" -lt 2 ]; then
-            echo "::warning::Only ${web_running} web machine(s) reported running after deploy; fly.toml requires min_machines_running = 2. Verify with 'fly status -a postil-web'."
+            echo "::warning::Managed web capacity is below the configured minimum; release activation verification follows."
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -292,52 +320,22 @@ jobs:
             echo "::error::Refusing to activate release capabilities: fleet image, process, or hosted-inference configuration is inconsistent."
             exit 1
           fi
-          echo "managed fleet verified: ${fleet_summary}"
+          if ! jq -e --arg volume "${MONITOR_VOLUME_ID}" '
+            [.[] | select(
+              .config.metadata.fly_process_group == "monitor" and
+              .state == "started" and
+              any(.config.mounts[]?;
+                (.path == "/var/lib/postil-monitor") and
+                ((.volume // .volume_id) == $volume)
+              )
+            )] | length == 1
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::Private monitor is not using the provisioned durable state volume."
+            exit 1
+          fi
+          echo "Managed fleet verified."
           flyctl ssh console --app postil-web --command "bun run hosted:verify-provider"
           flyctl ssh console --app postil-web --command "bun run jobs:activate-release"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Collect failed rollout diagnostics
-        if: ${{ always() && ((steps.deploy.outcome != 'success' && steps.deploy.outcome != 'skipped') || (steps.recover.outcome != 'success' && steps.recover.outcome != 'skipped') || (steps.activate.outcome != 'success' && steps.activate.outcome != 'skipped')) }}
-        timeout-minutes: 3
-        run: |
-          set +e
-          echo "::group::Managed machine summary"
-          machines=$(flyctl machine list --app postil-web --json)
-          list_status=$?
-          if [ "${list_status}" -ne 0 ]; then
-            echo "flyctl machine list failed with status ${list_status}."
-          else
-            summary_command_token="postil-machine-summary-$(< /proc/sys/kernel/random/uuid)"
-            echo "::stop-commands::${summary_command_token}"
-            if ! jq -r '.[] | [
-              (.id // "unknown"),
-              (.state // "unknown"),
-              (.region // "unknown"),
-              (.config.metadata.fly_process_group // "unknown"),
-              (.config.image // "unknown")
-            ] | @tsv' <<<"${machines}"; then
-              echo "Machine inventory could not be summarized."
-            fi
-            echo "::${summary_command_token}::"
-          fi
-          echo "::endgroup::"
-
-          if [ "${list_status}" -eq 0 ]; then
-            while IFS= read -r id; do
-              [ -n "${id}" ] || continue
-              echo "::group::Buffered logs for machine ${id}"
-              log_command_token="postil-machine-logs-$(< /proc/sys/kernel/random/uuid)"
-              echo "::stop-commands::${log_command_token}"
-              flyctl logs --app postil-web --machine "${id}" --no-tail 2>&1 | tail -n 200
-              echo "::${log_command_token}::"
-              echo "::endgroup::"
-            done < <(jq -r '[.[] | select(
-              (.config.metadata.fly_process_group == "web" or
-              .config.metadata.fly_process_group == "worker") and
-              ((.id // "") | test("^[A-Za-z0-9_-]+$"))
-            ) | .id] | .[:6][]' <<<"${machines}")
-          fi
-          exit 0
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          MONITOR_VOLUME_ID: ${{ steps.monitor-volume.outputs.volume-id }}

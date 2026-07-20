@@ -6,6 +6,7 @@
 - Queue semantics: `src/lib/queue.ts`; it depends on PostgreSQL row locks and `FOR UPDATE SKIP LOCKED`.
 - Job execution: `src/worker/runner.ts` owns claimed-job execution shared by the long-running worker and webhook-triggered web drains.
 - Hosted runtime configuration: `fly.toml` plus secrets injected by Infisical/Fly.
+- Private production monitoring: `src/monitor/index.ts` and `src/lib/private-monitoring.ts`.
 - Public privacy posture: `src/app/privacy/page.tsx`.
 - Dataset privacy policy: the 126-PR silence-rate measurement dataset is private; only aggregate methodology and summary figures are public.
 - Self-hosting and operating guidance: `src/app/docs/self-hosted/page.tsx`.
@@ -37,17 +38,17 @@ or publishes the private dataset.
 
 Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
 
-Web and worker processes use `DATABASE_URL`. The release migration subprocess
+Web, worker, and monitor processes use `DATABASE_URL`. The release migration subprocess
 uses an optional `POSTIL_DIRECT_DATABASE_URL`, or derives the known Supabase
 session-pool endpoint from a port-6543 transaction-pool URL. Only the Drizzle
 child receives that value as `DATABASE_URL`; ordinary runtime connections keep
 the configured pooling mode.
 
-The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
+The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling when the private monitor is disabled. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
 
 The worker scans GitHub's App delivery summaries through a leased, cursor-paginated pass inside GitHub's three-day recovery window. It records payload-free delivery identity, event, response status, and bounded request outcome before asking GitHub to redeliver a failed attempt. A newer successful delivery closes every older failure with the same GUID. Ambiguous requests receive one delayed retry, each GUID has a three-request ceiling, and API rate-limit state pauses the shared scanner. Recovery metadata expires after 30 days; webhook payloads remain confined to the signed durable inbox.
 
-The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods.
+The watchdog shares that free-tier profile: its interval is configurable so the fallback worker does not keep a scale-to-zero database warm by checking for stuck jobs every minute during idle periods. Enabling the private monitor also enables an explicit worker heartbeat and periodic database checks, so that profile intentionally generates background database traffic.
 
 The long-running worker stops claiming on `SIGINT` or `SIGTERM` and gives active
 jobs a bounded drain window. Review work can be interrupted and requeued without
@@ -306,12 +307,33 @@ The app exposes three layers:
 - `/api/health/dependencies` and `/api/metrics` for dependency and product-operation metrics.
   Overlapping 30-minute incident gauges cover operational review failures, scorer
   failures and structured reviewer/scorer fallbacks, invalid model output, and failed jobs.
-  The production monitor fails on any operational, scorer, invalid-output, or failed-job
-  incident, more than two scorer fallbacks, or more than five model fallbacks in that
-  window without exposing provider error text. A failed monitor run sends one
-  provider-idempotent email to the operator inbox with only the commit and Actions run
-  link. A manual test dispatch exercises the same delivery path without simulating an outage.
 - PostHog for traffic-source, campaign, pageview, and likely bot/automation analysis.
+
+Production monitoring runs in a dedicated process group. PostgreSQL owns its
+lease, pass ledger, process heartbeats, incident state, and notification outbox.
+The monitor probes the public origin and reads operational state directly from
+PostgreSQL, so a dead review worker cannot suppress queue, check-run, signup,
+billing, email, webhook, or provider incident detection. Incident notifications
+use the shared operator-notification transport directly instead of the review
+job queue. A database-outage alert bypasses the incident outbox and uses a
+time-bucketed provider idempotency key. One monitor process stores the last
+sent outage bucket and timestamp in a bounded, atomically replaced file on a
+monitor-only persistent volume. The file is fsynced before replacement is
+acknowledged. Missing, expired, or invalid state enables delivery instead of
+suppressing an alert. Monitoring state and target details are visible only on
+the operator dashboard. The bearer-protected metrics endpoint exposes aggregate
+monitor-heartbeat age and freshness gauges for an external dead-man alarm. The
+scheduled GitHub monitor is an independent check of public reachability,
+aggregate operational metrics, and operator email delivery without receiving
+private monitor targets.
+
+The monitor and product processes share the deployment platform, network, and
+DNS path. The private database, configured mail transport, operator mailbox,
+and external metrics collector are separate dependencies. A platform-wide or
+network-wide outage can prevent the in-platform monitor from sending, so the
+external collector alarms on a missing scrape or stale aggregate heartbeat.
+PostHog operational telemetry is a separate private signal for process failures
+when enabled; it is not the source of incident state or alert deduplication.
 
 PostHog is configured for anonymous cookieless capture on public pages only. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Event payloads omit arbitrary query strings and protected dashboard paths.
 

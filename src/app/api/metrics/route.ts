@@ -25,6 +25,7 @@ const DATABASE_METRICS_TIMEOUT_MS = 2_000;
 interface DatabaseMetrics {
   databaseSizeBytes: number;
   activeSessions: number;
+  privateMonitorHeartbeatAgeSeconds: number;
   queueDepth: number;
   reviewStatusCounts: Map<string, number>;
   review24hStatusCounts: Map<string, number>;
@@ -96,6 +97,12 @@ export async function GET(request: Request): Promise<NextResponse> {
       "# HELP postil_sessions_active Sessions that have not expired.",
       "# TYPE postil_sessions_active gauge",
       `postil_sessions_active ${dbMetrics.activeSessions}`,
+      "# HELP postil_private_monitor_heartbeat_age_seconds Age of the private monitor heartbeat, or 2147483647 when no heartbeat exists.",
+      "# TYPE postil_private_monitor_heartbeat_age_seconds gauge",
+      `postil_private_monitor_heartbeat_age_seconds ${dbMetrics.privateMonitorHeartbeatAgeSeconds}`,
+      "# HELP postil_private_monitor_heartbeat_fresh Whether the private monitor heartbeat is less than 15 minutes old.",
+      "# TYPE postil_private_monitor_heartbeat_fresh gauge",
+      `postil_private_monitor_heartbeat_fresh ${dbMetrics.privateMonitorHeartbeatAgeSeconds < 900 ? 1 : 0}`,
       "# HELP postil_installations_current GitHub App installations by state.",
       "# TYPE postil_installations_current gauge",
       ...INSTALLATION_STATES.map(
@@ -286,6 +293,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     pool.query<{
       database_size_bytes: string;
       active_sessions: string;
+      private_monitor_heartbeat_age_seconds: string;
       queue_depth: string;
       active_installations: string;
       suspended_installations: string;
@@ -316,6 +324,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       SELECT
         pg_database_size(current_database())::text AS database_size_bytes,
         (SELECT count(*)::text FROM sessions WHERE expires_at > now()) AS active_sessions,
+        COALESCE(
+          (SELECT EXTRACT(EPOCH FROM now() - observed_at)::int
+             FROM service_heartbeats
+            WHERE component = 'monitor'),
+          2147483647
+        )::text AS private_monitor_heartbeat_age_seconds,
         (SELECT count(*)::text FROM jobs WHERE status = 'queued') AS queue_depth,
         (SELECT count(*)::text FROM installations WHERE suspended = false) AS active_installations,
         (SELECT count(*)::text FROM installations WHERE suspended = true) AS suspended_installations,
@@ -503,6 +517,9 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
   return {
     databaseSizeBytes: toNumber(row.database_size_bytes),
     activeSessions: toNumber(row.active_sessions),
+    privateMonitorHeartbeatAgeSeconds: toNumber(
+      row.private_monitor_heartbeat_age_seconds,
+    ),
     queueDepth: toNumber(row.queue_depth),
     reviewStatusCounts,
     review24hStatusCounts,

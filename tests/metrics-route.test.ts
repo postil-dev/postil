@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 const TOKEN = "metrics-route-test-token";
 
 let queryShouldThrow = false;
+let privateMonitorHeartbeatAge = "42";
 let getPoolCalls = 0;
 let queryCalls = 0;
 
@@ -24,6 +25,7 @@ const { GET } = await import("@/app/api/metrics/route");
 beforeEach(() => {
   process.env.METRICS_TOKEN = TOKEN;
   queryShouldThrow = false;
+  privateMonitorHeartbeatAge = "42";
   getPoolCalls = 0;
   queryCalls = 0;
 });
@@ -43,6 +45,7 @@ function queryResponse(text: string): {
         {
           database_size_bytes: "123456",
           active_sessions: "2",
+          private_monitor_heartbeat_age_seconds: privateMonitorHeartbeatAge,
           queue_depth: "7",
           active_installations: "3",
           suspended_installations: "1",
@@ -226,6 +229,8 @@ describe("/api/metrics", () => {
     );
     expect(text).toContain("postil_database_size_bytes 123456");
     expect(text).toContain("postil_sessions_active 2");
+    expect(text).toContain("postil_private_monitor_heartbeat_age_seconds 42");
+    expect(text).toContain("postil_private_monitor_heartbeat_fresh 1");
     expect(text).toContain("postil_queue_depth 7");
     expect(text).toContain('postil_installations_current{state="active"} 3');
     expect(text).toContain('postil_installations_current{state="suspended"} 1');
@@ -309,6 +314,19 @@ describe("/api/metrics", () => {
     );
     expect(getPoolCalls).toBe(1);
     expect(queryCalls).toBe(11);
+  });
+
+  test("emits an explicit unhealthy sentinel when the private monitor heartbeat is absent", async () => {
+    privateMonitorHeartbeatAge = "2147483647";
+
+    const response = await GET(metricsRequest());
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).toContain(
+      "postil_private_monitor_heartbeat_age_seconds 2147483647",
+    );
+    expect(text).toContain("postil_private_monitor_heartbeat_fresh 0");
   });
 
   test("keeps the scrape successful and reports database down when DB access fails", async () => {
