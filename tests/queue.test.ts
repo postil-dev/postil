@@ -70,7 +70,7 @@ describeDb("postgres job queue", () => {
 
   beforeEach(async () => {
     await pool.query(
-      "TRUNCATE respond_deliveries, jobs, deployment_capabilities RESTART IDENTITY",
+      "TRUNCATE private_worker_rehearsals, respond_deliveries, jobs, deployment_capabilities RESTART IDENTITY",
     );
   });
 
