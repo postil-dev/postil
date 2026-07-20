@@ -52,8 +52,11 @@ export const suppressedFindingSchema = z.object({
   reason: suppressionReasonSchema,
 });
 
+export const MODEL_INCIDENT_PHASES = ["planner", "review", "scorer", "respond"] as const;
+export const modelIncidentPhaseSchema = z.enum(MODEL_INCIDENT_PHASES);
+
 export const modelIncidentSchema = z.object({
-  phase: z.enum(["review", "scorer"]),
+  phase: modelIncidentPhaseSchema,
   category: z.enum(["providerError", "invalidOutput", "timeout", "deadline"]),
   recovered: z.boolean(),
   recovery: z.enum(["repair", "fallback"]).optional(),

@@ -83,6 +83,12 @@ describe("envelope ingestion", () => {
   test("preserves exact model incidents and enforces recovery consistency", () => {
     const modelIncidents = [
       {
+        phase: "planner" as const,
+        category: "invalidOutput" as const,
+        recovered: true,
+        recovery: "fallback" as const,
+      },
+      {
         phase: "scorer" as const,
         category: "invalidOutput" as const,
         recovered: true,
@@ -102,6 +108,11 @@ describe("envelope ingestion", () => {
       {
         phase: "scorer" as const,
         category: "providerError" as const,
+        recovered: false,
+      },
+      {
+        phase: "respond" as const,
+        category: "deadline" as const,
         recovered: false,
       },
     ];

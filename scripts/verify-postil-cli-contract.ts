@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import release from "../src/data/public-cli-release.json";
+import { ingestEnvelope } from "../src/lib/envelope";
 
 const REQUIRED_REVIEW_FLAGS = [
   "--publish",
@@ -79,16 +80,13 @@ export function assertEnvelopeContract(
   expectedBaseSha?: string,
   expectedHeadSha?: string,
 ): void {
-  let parsed: unknown;
+  let envelope;
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("postil review did not emit a JSON envelope");
+    envelope = ingestEnvelope(raw).envelope;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "validation failed";
+    throw new Error(`postil review emitted an incompatible envelope: ${detail}`);
   }
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new Error("postil review emitted a non-object envelope");
-  }
-  const envelope = parsed as Record<string, unknown>;
   const mismatches: string[] = [];
   if (envelope.version !== 1) mismatches.push("version");
   if (
