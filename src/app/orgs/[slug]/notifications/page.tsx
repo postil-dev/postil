@@ -40,14 +40,33 @@ export default async function OrganizationNotificationsPage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ after?: string }>;
+  searchParams: Promise<{ after?: string; view?: string }>;
 }) {
   const { slug } = await params;
   const { db, user, org, membership } = await requireOrgMembership(slug);
-  const cursor = parseCursor((await searchParams).after);
+  const query = await searchParams;
+  const view = query.view === "past" ? "past" : "unread";
+  const cursor = parseCursor(query.after);
   const visibility = membership.role === "admin"
     ? sql`event.visibility IN ('members', 'admins')`
     : sql`event.visibility = 'members'`;
+  const countResult = await db.execute(sql<{
+    unreadCount: string;
+    pastCount: string;
+  }>`
+    SELECT
+      count(*) FILTER (WHERE receipt.read_at IS NULL)::text AS "unreadCount",
+      count(*) FILTER (WHERE receipt.read_at IS NOT NULL)::text AS "pastCount"
+    FROM customer_notification_events AS event
+    LEFT JOIN customer_notification_reads AS receipt
+      ON receipt.event_id = event.id AND receipt.user_id = ${user.id}
+    WHERE event.org_id = ${org.id}
+      AND event.expires_at > now()
+      AND ${visibility}
+  `);
+  const counts = countResult.rows[0] ?? { unreadCount: "0", pastCount: "0" };
+  const unreadCount = Number(counts.unreadCount);
+  const pastCount = Number(counts.pastCount);
   const result = await db.execute(sql<NotificationRow>`
     SELECT
       event.id::text AS id,
@@ -65,6 +84,7 @@ export default async function OrganizationNotificationsPage({
     WHERE event.org_id = ${org.id}
       AND event.expires_at > now()
       AND ${visibility}
+      AND ${view === "past" ? sql`receipt.read_at IS NOT NULL` : sql`receipt.read_at IS NULL`}
       AND ${cursor ? sql`(event.created_at, event.id) < (${cursor.createdAt}, ${cursor.id}::bigint)` : sql`TRUE`}
     ORDER BY event.created_at DESC, event.id DESC
     LIMIT ${PAGE_SIZE + 1}
@@ -95,7 +115,7 @@ export default async function OrganizationNotificationsPage({
             Trial, billing, security, and service updates for this organization.
           </p>
         </div>
-        {notifications.length > 0 && (
+        {view === "unread" && unreadCount > 0 && (
           <form action={markAllNotificationsRead}>
             <input type="hidden" name="slug" value={org.slug} />
             <button type="submit" className="btn-secondary text-xs">
@@ -105,13 +125,36 @@ export default async function OrganizationNotificationsPage({
         )}
       </div>
 
+      <nav aria-label="Notification history" className="mt-8 flex gap-2">
+        <Link
+          href={pageUrl(org.slug, "unread")}
+          aria-current={view === "unread" ? "page" : undefined}
+          className={view === "unread" ? "btn-primary text-xs" : "btn-secondary text-xs"}
+        >
+          Unread <span className="font-mono">{unreadCount.toLocaleString()}</span>
+        </Link>
+        <Link
+          href={pageUrl(org.slug, "past")}
+          aria-current={view === "past" ? "page" : undefined}
+          className={view === "past" ? "btn-primary text-xs" : "btn-secondary text-xs"}
+        >
+          Past notifications <span className="font-mono">{pastCount.toLocaleString()}</span>
+        </Link>
+      </nav>
+
       <div className="card mt-8 overflow-hidden">
         {notifications.length === 0 ? (
           <div className="px-6 py-14 text-center">
             <NotificationIcon severity="info" />
-            <p className="mt-3 font-medium">You’re all caught up.</p>
+            <p className="mt-3 font-medium">
+              {view === "past" ? "No past notifications." : "No unread notifications."}
+            </p>
             <p className="mt-1 text-sm text-ink-soft">
-              Organization updates appear here when they need your attention.
+              {view === "past"
+                ? "Read organization updates appear here during their retention period."
+                : pastCount > 0
+                  ? "You’re caught up. Read updates remain under Past notifications."
+                  : "Organization updates appear here when they need your attention."}
             </p>
           </div>
         ) : (
@@ -119,7 +162,7 @@ export default async function OrganizationNotificationsPage({
             {notifications.map((event) => (
               <li
                 key={event.id}
-                className={`grid gap-4 px-5 py-5 sm:grid-cols-[1.5rem_minmax(0,1fr)_auto] ${event.readAt ? "bg-white/25" : "bg-white/70"}`}
+                className={`grid gap-4 px-5 py-5 sm:grid-cols-[1.5rem_minmax(0,1fr)_auto] ${event.readAt ? "bg-ivory" : "bg-paper"}`}
               >
                 <NotificationIcon severity={event.severity} />
                 <div className="min-w-0">
@@ -150,7 +193,7 @@ export default async function OrganizationNotificationsPage({
                     )}
                   </div>
                 </div>
-                {!event.readAt && (
+                {view === "unread" && !event.readAt && (
                   <form action={markNotificationRead} className="self-start">
                     <input type="hidden" name="slug" value={org.slug} />
                     <input type="hidden" name="eventId" value={event.id} />
@@ -168,12 +211,12 @@ export default async function OrganizationNotificationsPage({
       {(cursor || nextCursor) && (
         <nav aria-label="Notification pages" className="mt-4 flex items-center justify-between gap-3">
           {cursor ? (
-            <Link href={pageUrl(org.slug)} className="btn-secondary text-xs">
+            <Link href={pageUrl(org.slug, view)} className="btn-secondary text-xs">
               Newest
             </Link>
           ) : <span />}
           {nextCursor ? (
-            <Link href={pageUrl(org.slug, nextCursor)} className="btn-secondary text-xs">
+            <Link href={pageUrl(org.slug, view, nextCursor)} className="btn-secondary text-xs">
               Older
             </Link>
           ) : <span />}
@@ -240,7 +283,15 @@ function encodeCursor(event: NotificationRow): string {
   })).toString("base64url");
 }
 
-function pageUrl(slug: string, after?: string): string {
+function pageUrl(
+  slug: string,
+  view: "unread" | "past" = "unread",
+  after?: string,
+): string {
   const base = `/orgs/${encodeURIComponent(slug)}/notifications`;
-  return after ? `${base}?after=${encodeURIComponent(after)}` : base;
+  const query = new URLSearchParams();
+  if (view === "past") query.set("view", "past");
+  if (after) query.set("after", after);
+  const encoded = query.toString();
+  return encoded ? `${base}?${encoded}` : base;
 }

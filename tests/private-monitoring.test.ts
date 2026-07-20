@@ -69,6 +69,8 @@ describe("private monitoring public probes", () => {
       recipient: "operator@example.test",
       publicOrigin: "https://postil.dev",
       bucket,
+      failureCount: 2,
+      observedAt: NOW,
       transport: {
         async send(notification) {
           sent.push(notification);
@@ -78,9 +80,15 @@ describe("private monitoring public probes", () => {
     });
     expect(sent).toHaveLength(1);
     expect(sent[0]?.idempotencyKey).toContain(bucket.toISOString());
-    expect(sent[0]?.content.details).toEqual([
-      { label: "Public origin", value: "https://postil.dev" },
-    ]);
+    expect(sent[0]?.content.title).toBe("Monitoring pass failed");
+    expect(sent[0]?.content.details).toContainEqual({
+      label: "Evidence",
+      value: "2 consecutive monitor passes did not complete.",
+    });
+    expect(sent[0]?.content.details).toContainEqual({
+      label: "Affected capability",
+      value: "Private production monitoring",
+    });
     expect(sent[0]?.content.summary).not.toContain("GitHub");
 
     expect(
@@ -308,6 +316,19 @@ describeDb("private monitoring durability", () => {
     expect(sent[0]?.content.action?.url).toBe(
       "https://postil.dev/operator#monitoring",
     );
+    expect(sent[0]?.content.title).toBe("Review worker heartbeat is stale");
+    expect(sent[0]?.content.details).toContainEqual({
+      label: "Affected capability",
+      value: "Review worker fleet",
+    });
+    expect(sent[0]?.content.details).toContainEqual({
+      label: "First observed",
+      value: "2026-07-19 12:00:00 UTC",
+    });
+    expect(sent[0]?.content.details).toContainEqual({
+      label: "Recommended action",
+      value: "Inspect the worker process and heartbeat before restarting or replacing a machine.",
+    });
 
     const resolvedAt = new Date(NOW.getTime() + 5 * 60_000);
     expect(await acquirePrivateMonitorLease(pool, "monitor-a", resolvedAt)).toBe(true);
@@ -334,6 +355,7 @@ describeDb("private monitoring durability", () => {
     const dashboard = await getPrivateMonitoringDashboard(pool);
     expect(dashboard.incidents[0]).toMatchObject({
       key: "worker-heartbeat",
+      summary: "Review worker heartbeat is stale",
       state: "resolved",
       occurrenceCount: 1,
     });
@@ -865,6 +887,32 @@ describeDb("private monitoring durability", () => {
     } finally {
       await pool.query(
         "DELETE FROM installations WHERE github_installation_id = 900034",
+      );
+    }
+  });
+
+  test("reports bounded webhook recovery failure evidence", async () => {
+    await pool.query(
+      `INSERT INTO installations
+         (github_installation_id, account_login, account_type, suspended)
+       VALUES (900035, 'monitor-evidence', 'Organization', false)`,
+    );
+    await pool.query(
+      `INSERT INTO github_webhook_redelivery_state
+         (id, last_page_at, last_error_category)
+       VALUES (1, now() - interval '3 hours', 'invalid_response')`,
+    );
+    try {
+      const check = (await runDatabaseMonitoringChecks(pool)).find(
+        (candidate) => candidate.key === "webhook-recovery-scan",
+      );
+      expect(check).toMatchObject({ healthy: false, severity: "warning" });
+      expect(check?.detail).toContain(
+        "Last scanner result: GitHub response did not match the recovery contract.",
+      );
+    } finally {
+      await pool.query(
+        "DELETE FROM installations WHERE github_installation_id = 900035",
       );
     }
   });

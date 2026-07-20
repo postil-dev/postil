@@ -111,10 +111,15 @@ const previews = [
     "private-monitor-opened",
     privateMonitoringIncidentEmailContent(
       {
+        incidentKey: "worker-heartbeat",
         kind: "opened",
+        capability: "fleet",
         severity: "critical",
         summary: "Review worker heartbeat is stale",
         detail: "No recent worker heartbeat has been recorded.",
+        firstObservedAt: new Date("2026-07-20T12:00:00.000Z"),
+        lastObservedAt: new Date("2026-07-20T12:05:00.000Z"),
+        resolvedAt: null,
       },
       "https://postil.dev/operator#monitoring",
     ),
@@ -123,10 +128,15 @@ const previews = [
     "private-monitor-reminder",
     privateMonitoringIncidentEmailContent(
       {
+        incidentKey: "billing-settlement-delay",
         kind: "reminder",
+        capability: "billing",
         severity: "warning",
         summary: "Billing reconciliation needs attention",
         detail: "The incident remains open.",
+        firstObservedAt: new Date("2026-07-20T06:00:00.000Z"),
+        lastObservedAt: new Date("2026-07-20T12:05:00.000Z"),
+        resolvedAt: null,
       },
       "https://postil.dev/operator#monitoring",
     ),
@@ -135,10 +145,15 @@ const previews = [
     "private-monitor-resolved",
     privateMonitoringIncidentEmailContent(
       {
+        incidentKey: "worker-heartbeat",
         kind: "resolved",
+        capability: "fleet",
         severity: "critical",
-        summary: "Review worker heartbeat recovered",
+        summary: "Review worker heartbeat is stale",
         detail: "The worker heartbeat is fresh.",
+        firstObservedAt: new Date("2026-07-20T12:00:00.000Z"),
+        lastObservedAt: new Date("2026-07-20T12:05:00.000Z"),
+        resolvedAt: new Date("2026-07-20T12:10:00.000Z"),
       },
       "https://postil.dev/operator#monitoring",
     ),

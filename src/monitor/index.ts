@@ -183,6 +183,8 @@ async function main(): Promise<void> {
           recipient,
           publicOrigin,
           bucket: monitorFailureState.bucket,
+          failureCount: monitorFailureState.failuresInBucket,
+          observedAt: startedAt,
         })
           .then(async () => {
             const sentState = markMonitorPassAlertSent(monitorFailureState);
