@@ -98,7 +98,7 @@ describe("trusted local Postil pre-push hook", () => {
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
       modelCredential: "present",
-      invocation: `review --base ${remoteBase} --no-post --output json --fail-on info --model z-ai/glm-5.2`,
+      invocation: `review --base ${remoteBase} --no-post --bounded --output json --fail-on info --model z-ai/glm-5.2`,
     });
     expect(await refExists(fixture.remote, "refs/heads/topic")).toBe(true);
   });
@@ -112,7 +112,7 @@ describe("trusted local Postil pre-push hook", () => {
     );
 
     await expect(installHook(fixture, fixture.repository, true)).rejects.toThrow(
-      "requires Postil v0.6.0 or newer",
+      "requires Postil v0.7.0 or newer",
     );
   });
 
@@ -829,7 +829,7 @@ async function writeFakeCommands(
   await writeFile(
     postil,
     `#!/bin/bash
-if [[ "\${1:-}" == "--version" ]]; then echo 'postil 0.6.0'; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo 'postil 0.7.0'; exit 0; fi
 base=
 model=
 invocation="\$*"
