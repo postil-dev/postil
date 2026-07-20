@@ -71,7 +71,7 @@ services:
     build:
       context: .
       args:
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.7.6}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.7.7}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     command: ["bun", "scripts/start-managed-process.ts", "monitor"]
     env_file: .env

@@ -2,8 +2,9 @@ name: Production monitor
 
 on:
   schedule:
-    # Staged external smoke proof. Deep checks and incident state remain in the
-    # private monitor and operator dashboard.
+    # Every 15 minutes: this external monitor remains independent of the
+    # in-platform private monitor and detects a dead or stopped worker through
+    # postil_oldest_job_age_seconds staleness.
     - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
@@ -160,15 +161,137 @@ jobs:
               --write-out '%{http_code}' \
               "https://postil.dev/api/metrics")"
             if [[ "${metrics_status}" != 2* ]]; then
-              echo "Metrics smoke check failed."
+              echo "Metrics check failed with HTTP ${metrics_status}"
+              cat .cache/metrics.out
               exit 1
             fi
             if ! grep -E '^postil_database_up 1$' .cache/metrics.out; then
-              echo "Database readiness smoke check failed."
+              echo "Metrics check did not report postil_database_up 1"
+              cat .cache/metrics.out
               exit 1
             fi
             if ! grep -E '^postil_private_monitor_heartbeat_fresh 1$' .cache/metrics.out; then
-              echo "Private monitor heartbeat smoke check failed."
+              echo "Private monitor heartbeat is missing or stale"
+              exit 1
+            fi
+
+            # A running review or queued/running job past 30 minutes should
+            # have completed or been swept by the ten-minute watchdog. This
+            # checks both ledgers because a dead worker can leave a review
+            # running after its queue job has already reached a terminal state.
+            stale_threshold_seconds=1800
+            stale_found=0
+            review_age=$(grep -E '^postil_oldest_running_review_age_seconds ' .cache/metrics.out \
+              | awk '{print $2}')
+            echo "Oldest running review age: ${review_age:-missing}s"
+            if [[ -z "${review_age:-}" ]]; then
+              echo "Running-review age metric is missing"
+              stale_found=1
+            elif (( $(printf '%.0f' "${review_age}") > stale_threshold_seconds )); then
+              echo "Oldest running review is ${review_age}s old (over ${stale_threshold_seconds}s) - watchdog may be stuck or stopped"
+              stale_found=1
+            fi
+            cleanup_failures=$(awk \
+              '$1 == "postil_jobs_current{kind=\"check-run-cleanup\",status=\"failed\"}" { print $2 }' \
+              .cache/metrics.out)
+            echo "Failed check-run cleanup jobs: ${cleanup_failures:-0}"
+            if [[ -n "${cleanup_failures:-}" ]] && (( $(printf '%.0f' "${cleanup_failures}") > 0 )); then
+              echo "Check-run cleanup exhausted all retries; a GitHub check may remain in progress"
+              stale_found=1
+            fi
+            operator_alert_failures=$(awk \
+              '$1 == "postil_operator_alert_failures_current" { print $2 }' \
+              .cache/metrics.out)
+            echo "Unresolved operator email failures: ${operator_alert_failures:-missing}"
+            if [[ -z "${operator_alert_failures:-}" ]] || \
+               (( $(printf '%.0f' "${operator_alert_failures:-0}") > 0 )); then
+              echo "Operator email delivery failed or its metric is missing"
+              stale_found=1
+            fi
+            operator_alert_age=$(awk \
+              '$1 == "postil_oldest_operator_alert_pending_age_seconds" { print $2 }' \
+              .cache/metrics.out)
+            echo "Oldest pending operator email age: ${operator_alert_age:-missing}s"
+            if [[ -z "${operator_alert_age:-}" ]] || \
+               (( $(printf '%.0f' "${operator_alert_age:-0}") > stale_threshold_seconds )); then
+              echo "Operator email delivery is stale or its metric is missing"
+              stale_found=1
+            fi
+            billing_failures=$(awk \
+              '$1 == "postil_billing_settlement_failures_current" { print $2 }' \
+              .cache/metrics.out)
+            echo "Billing settlements requiring attention: ${billing_failures:-missing}"
+            if [[ -z "${billing_failures:-}" ]] || \
+               (( $(printf '%.0f' "${billing_failures:-0}") > 0 )); then
+              echo "A billing settlement failed or its metric is missing"
+              stale_found=1
+            fi
+            billing_age=$(awk \
+              '$1 == "postil_oldest_billing_settlement_pending_age_seconds" { print $2 }' \
+              .cache/metrics.out)
+            echo "Oldest incomplete billing settlement age: ${billing_age:-missing}s"
+            if [[ -z "${billing_age:-}" ]] || \
+               (( $(printf '%.0f' "${billing_age:-0}") > 3600 )); then
+              echo "Billing settlement reconciliation is stale or its metric is missing"
+              stale_found=1
+            fi
+            unmatched_billing_events=$(awk \
+              '$1 == "postil_unmatched_billing_provider_events_24h" { print $2 }' \
+              .cache/metrics.out)
+            echo "Unmatched billing events: ${unmatched_billing_events:-missing}"
+            if [[ -z "${unmatched_billing_events:-}" ]] || \
+               (( $(printf '%.0f' "${unmatched_billing_events:-0}") > 0 )); then
+              echo "A verified billing event could not be mapped or its metric is missing"
+              stale_found=1
+            fi
+            billing_checkout_age=$(awk \
+              '$1 == "postil_oldest_billing_checkout_open_age_seconds" { print $2 }' \
+              .cache/metrics.out)
+            echo "Oldest incomplete billing checkout age: ${billing_checkout_age:-missing}s"
+            if [[ -z "${billing_checkout_age:-}" ]] || \
+               (( $(printf '%.0f' "${billing_checkout_age:-0}") > 3600 )); then
+              echo "A self-service checkout is stale or its metric is missing"
+              stale_found=1
+            fi
+            billing_checkout_failures=$(awk \
+              '$1 == "postil_billing_checkout_failures_24h" { print $2 }' \
+              .cache/metrics.out)
+            echo "Failed billing checkouts: ${billing_checkout_failures:-missing}"
+            if [[ -z "${billing_checkout_failures:-}" ]] || \
+               (( $(printf '%.0f' "${billing_checkout_failures:-0}") > 0 )); then
+              echo "A self-service checkout failed or its metric is missing"
+              stale_found=1
+            fi
+            incident_found=0
+            for category in operational_failure scorer_failure scorer_fallback model_fallback invalid_output failed_job; do
+              count=$(awk -v metric="postil_review_incidents_30m{category=\"${category}\"}" \
+                '$1 == metric { print $2 }' .cache/metrics.out)
+              threshold=0
+              case "${category}" in
+                scorer_fallback) threshold=2 ;;
+                model_fallback) threshold=5 ;;
+              esac
+              echo "Recent ${category} incidents: ${count:-missing}"
+              if [[ -z "${count:-}" ]]; then
+                echo "Operational incident metric is missing for ${category}"
+                incident_found=1
+              elif (( $(printf '%.0f' "${count}") > threshold )); then
+                echo "Postil reported ${count} ${category} incident(s) in the last 30 minutes (threshold ${threshold})"
+                incident_found=1
+              fi
+            done
+            for status in queued running; do
+              age=$(grep -E "^postil_oldest_job_age_seconds\{status=\"${status}\"\}" .cache/metrics.out \
+                | awk '{print $2}')
+              echo "Oldest ${status} job age: ${age:-missing}s"
+              if [[ -n "${age:-}" ]] && (( $(printf '%.0f' "${age}") > stale_threshold_seconds )); then
+                echo "Oldest ${status} job is ${age}s old (over ${stale_threshold_seconds}s) - worker may be stuck or stopped"
+                stale_found=1
+              fi
+            done
+            if [[ "${stale_found}" -eq 1 || "${incident_found}" -eq 1 ]]; then
+              echo "Full metrics for context:"
+              cat .cache/metrics.out
               exit 1
             fi
           fi

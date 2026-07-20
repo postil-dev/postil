@@ -322,10 +322,10 @@ monitor-only persistent volume. The file is fsynced before replacement is
 acknowledged. Missing, expired, or invalid state enables delivery instead of
 suppressing an alert. Monitoring state and target details are visible only on
 the operator dashboard. The bearer-protected metrics endpoint exposes aggregate
-monitor-heartbeat age and freshness gauges for an external dead-man alarm. A
-scheduled GitHub smoke monitor verifies public reachability and aggregate
-heartbeat freshness without receiving monitor targets or publishing private
-diagnostics.
+monitor-heartbeat age and freshness gauges for an external dead-man alarm. The
+scheduled GitHub monitor remains an independent check of public reachability,
+aggregate operational metrics, and operator email delivery without receiving
+private monitor targets.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, configured mail transport, operator mailbox,
