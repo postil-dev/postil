@@ -179,10 +179,12 @@ account, installation, billing, and service-monitor messages.
 - Do not add images, web fonts, CSS imports, background URLs, scripts, iframes,
   media, or links beyond the explicit primary action. The application validates
   this before it sends or previews a message.
-- Delivery uses Brevo's transactional email API. Provider-side tracking and
+- Delivery uses Brevo's authenticated HTTPS REST API at
+  `https://api.brevo.com/v3/smtp/email`. The `smtp` path segment is an API route
+  name; SMTP transport is prohibited. Provider-side tracking and
   retention are separate from the application HTML. Configure anonymous
   transactional-email tracking and an appropriate log-retention period in the
-  Brevo account.
+  Brevo account when available. Delivery does not depend on either setting.
 
 ## Favicon Scaling
 

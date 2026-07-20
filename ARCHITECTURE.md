@@ -288,11 +288,19 @@ before sending. The renderer uses live text, email-safe tables, inline styles,
 responsive rules, dark-mode colors, and Outlook-compatible button padding. Local
 previews cover every production message type.
 
-Delivery uses Brevo's transactional email API with provider idempotency. Brevo's
-anonymous transactional-email tracking and log retention are account-level
-operator settings. Anonymous tracking retains aggregate unique open and click
-counts without linking them to a contact. The send API has no per-message tracking
+Delivery uses Brevo's transactional email API as an authenticated HTTPS REST
+call to `https://api.brevo.com/v3/smtp/email` with provider idempotency. The
+`smtp` path segment is Brevo's API naming; Postil does not use SMTP transport.
+Stable logical delivery keys become deterministic UUIDs for Brevo's 30-minute
+idempotency window. The five-attempt queue schedule and ten-minute watchdog
+reclaim fit inside that window during normal operation. Brevo's anonymous
+transactional-email tracking and log retention are account-level operator
+settings. Anonymous tracking retains aggregate unique open and click counts
+without linking them to a contact. The send API has no per-message tracking
 override, so delivery remains available when a stricter provider setting is not
-available.
+available. A provider acceptance followed by more than 30 minutes without any
+worker or watchdog completion can produce a duplicate retry because Brevo does
+not expose an idempotency-key lookup; delivery remains at-least-once in that
+outage mode.
 
 Operational Error Tracking and OTLP Logs are separate, server-only features disabled by default. `POSTHOG_ERROR_CAPTURE=1` sends exceptions only at the Next.js request boundary, worker boot boundary, and exhausted job boundary, plus fixed model-incident classification events after successful envelope ingestion. Those events contain only phase, category, recovery, and source classifications from typed `modelIncidents` or exact CLI operational sentinel paths. `POSTHOG_LOG_CAPTURE=1` sends fixed event names and fixed outcome categories with deterministic sampling and per-process hard caps. Both paths use a fixed `postil-system` identity and reject request data, headers, cookies, account identities, repository names, prompts, diffs, source code, finding text, model output, arbitrary caller properties, raw error messages, function names, and absolute paths. Source map upload is disabled because the supported PostHog upload path includes application source content.

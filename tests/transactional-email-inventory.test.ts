@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 import { productionMonitorEmailContent } from "@/../scripts/send-production-monitor-alert";
 import { billingContactVerificationEmailContent } from "@/lib/billing-contact-verification";
@@ -114,4 +116,51 @@ describe("outbound email inventory", () => {
       expect(rendered.text).toContain("Why you received this:");
     }
   });
+
+  test("routes every production sender through the Brevo HTTPS transport", () => {
+    const files = [...sourceFiles("src"), ...sourceFiles("scripts")].filter(
+      (path) => !path.startsWith("src/data/evidence/"),
+    );
+    const sources = new Map(
+      files.map((path) => [path, readFileSync(path, "utf8")]),
+    );
+    const brevoEndpointOwners = [...sources]
+      .filter(([, source]) => source.includes("https://api.brevo.com"))
+      .map(([path]) => path);
+    expect(brevoEndpointOwners).toEqual(["src/lib/transactional-email.ts"]);
+
+    const directSenders = [...sources]
+      .filter(
+        ([path, source]) =>
+          path !== "src/lib/transactional-email.ts" &&
+          /\bsendTransactionalEmail\s*\(/.test(source),
+      )
+      .map(([path]) => path)
+      .sort();
+    expect(directSenders).toEqual([
+      "scripts/send-production-monitor-alert.ts",
+      "src/lib/email-verification.ts",
+      "src/worker/operator-alert.ts",
+    ]);
+
+    const forbiddenTransport =
+      /\b(?:nodemailer|createTransport|SMTP_(?:HOST|PORT|USER|PASS)|smtp:\/\/|smtps:\/\/|api\.mailgun\.|api\.postmarkapp\.|api\.resend\.)/i;
+    const violations = [...sources]
+      .filter(([, source]) => forbiddenTransport.test(source))
+      .map(([path]) => path);
+    expect(violations).toEqual([]);
+
+    const packageManifest = readFileSync("package.json", "utf8");
+    expect(packageManifest).not.toMatch(
+      /\b(?:nodemailer|smtp-client|emailjs|mailgun|postmark|resend)\b/i,
+    );
+  });
 });
+
+function sourceFiles(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) return sourceFiles(path);
+    return entry.isFile() && /\.(?:ts|tsx)$/.test(entry.name) ? [path] : [];
+  });
+}
