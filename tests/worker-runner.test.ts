@@ -50,6 +50,7 @@ mock.module("@/lib/server-observability", () => ({
 mock.module("@/lib/db", () => ({
   getDb: () => ({}),
   getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
+  schema: {},
 }));
 
 mock.module("@/lib/operator-alerts", () => ({

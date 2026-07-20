@@ -2,6 +2,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { billingContactVerificationEmailContent } from "@/lib/billing-contact-verification";
+import { operatorAlertEmailContent } from "@/lib/operator-alert-email";
 import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
 import {
   privateMonitoringIncidentEmailContent,
@@ -11,7 +12,6 @@ import {
   assertApplicationEmailBody,
   renderTransactionalEmail,
 } from "@/lib/transactional-email";
-import { operatorAlertEmailContent } from "@/worker/operator-alert";
 
 const outputDirectory = resolve(
   process.argv[2] ?? "/tmp/postil-email-previews",

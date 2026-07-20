@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { billingContactVerificationEmailContent } from "@/lib/billing-contact-verification";
+import { operatorAlertEmailContent } from "@/lib/operator-alert-email";
 import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
 import {
   privateMonitoringIncidentEmailContent,
@@ -11,7 +12,6 @@ import {
   renderTransactionalEmail,
   type TransactionalEmailContent,
 } from "@/lib/transactional-email";
-import { operatorAlertEmailContent } from "@/worker/operator-alert";
 
 const base = {
   orgId: 7,
