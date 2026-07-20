@@ -409,6 +409,17 @@ export const findingApprovals = pgTable(
     source: findingApprovalSource("source").notNull(),
     sourceCommentId: uuid("source_comment_id"),
     sourceUrl: text("source_url"),
+    sourceOrgId: bigint("source_org_id", { mode: "number" }),
+    sourceRepositoryId: bigint("source_repository_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", {
+      mode: "number",
+    }),
+    sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
+    sourcePrNumber: integer("source_pr_number"),
+    sourceHeadSha: text("source_head_sha"),
+    sourceWebhookDeliveryId: text("source_webhook_delivery_id"),
+    sourceGithubCommentId: bigint("source_github_comment_id", { mode: "number" }),
+    sourceCommentKind: text("source_comment_kind"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -421,10 +432,29 @@ export const findingApprovals = pgTable(
     uniqueIndex("finding_approvals_active_idx")
       .on(t.reviewId, t.findingId)
       .where(sql`${t.revokedAt} IS NULL`),
+    uniqueIndex("finding_approvals_github_comment_idx")
+      .on(
+        t.sourceGithubInstallationId,
+        t.sourceGithubRepoId,
+        t.sourceCommentKind,
+        t.sourceGithubCommentId,
+      )
+      .where(sql`${t.source} = 'github'`),
+    uniqueIndex("finding_approvals_github_delivery_idx")
+      .on(t.sourceWebhookDeliveryId)
+      .where(sql`${t.source} = 'github'`),
     index("finding_approvals_review_idx").on(t.reviewId),
     check(
       "finding_approvals_rationale_nonempty",
       sql`length(btrim(${t.rationale})) > 0`,
+    ),
+    check(
+      "finding_approvals_binding_check",
+      sql`(${t.sourceOrgId} IS NULL AND ${t.sourceRepositoryId} IS NULL AND ${t.sourceGithubInstallationId} IS NULL AND ${t.sourceGithubRepoId} IS NULL AND ${t.sourcePrNumber} IS NULL AND ${t.sourceHeadSha} IS NULL) OR (${t.sourceOrgId} > 0 AND ${t.sourceRepositoryId} > 0 AND ${t.sourceGithubInstallationId} > 0 AND ${t.sourceGithubRepoId} > 0 AND ${t.sourcePrNumber} > 0 AND length(btrim(${t.sourceHeadSha})) BETWEEN 1 AND 200)`,
+    ),
+    check(
+      "finding_approvals_github_source_check",
+      sql`${t.source} <> 'github' OR (${t.sourceWebhookDeliveryId} IS NULL AND ${t.sourceGithubCommentId} IS NULL AND ${t.sourceCommentKind} IS NULL) OR (length(btrim(${t.sourceWebhookDeliveryId})) BETWEEN 1 AND 200 AND ${t.sourceGithubCommentId} > 0 AND ${t.sourceCommentKind} IN ('issue_comment', 'pull_request_review_comment'))`,
     ),
   ],
 );

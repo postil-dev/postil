@@ -917,7 +917,14 @@ async function handleIssueComment(
 ): Promise<void> {
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
-  if (await handleApproveCommand(payload, sourceDeliveryId, triggerFollowupDrain)) return;
+  if (
+    await handleApproveCommand(
+      payload,
+      sourceDeliveryId,
+      "issue_comment",
+      triggerFollowupDrain,
+    )
+  ) return;
   if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
@@ -981,7 +988,14 @@ async function handleReviewComment(
   }
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
-  if (await handleApproveCommand(payload, sourceDeliveryId, triggerFollowupDrain)) return;
+  if (
+    await handleApproveCommand(
+      payload,
+      sourceDeliveryId,
+      "pull_request_review_comment",
+      triggerFollowupDrain,
+    )
+  ) return;
   if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
@@ -1097,6 +1111,7 @@ async function enqueueMentionReview(
 async function handleApproveCommand(
   payload: CommentEventPayload,
   sourceDeliveryId: string,
+  commentKind: "issue_comment" | "pull_request_review_comment",
   triggerFollowupDrain: boolean,
 ): Promise<boolean> {
   const command = parsePostilApproveCommand(payload.comment?.body);
@@ -1107,10 +1122,20 @@ async function handleApproveCommand(
   const prNumber = payload.issue?.pull_request
     ? payload.issue.number
     : payload.pull_request?.number;
-  if (!repo || !installationId || !prNumber) {
+  const githubCommentId = payload.comment?.id;
+  if (
+    !repo ||
+    !installationId ||
+    !prNumber ||
+    typeof githubCommentId !== "number" ||
+    !Number.isSafeInteger(githubCommentId) ||
+    githubCommentId <= 0 ||
+    !sourceDeliveryId.trim() ||
+    sourceDeliveryId.length > 200
+  ) {
     await queueWebhookComment(
       payload,
-      "Approval commands only work on pull request comments.",
+      "Approval rejected: the GitHub event lacks a complete pull request or comment identity.",
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1162,11 +1187,16 @@ async function handleApproveCommand(
     return true;
   }
 
-  const actor = await loadLiveApprovalActor(review, payload.comment?.user, repo.full_name);
+  const actor = await loadLiveApprovalActor(
+    review,
+    payload.comment?.user,
+    repo.full_name,
+    token,
+  );
   if (!actor) {
     await queueWebhookComment(
       payload,
-      "Approval rejected: this GitHub account could not be verified as a logged-in organization admin.",
+      "Approval rejected: GitHub could not verify this account as an active organization member.",
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1226,6 +1256,19 @@ async function handleApproveCommand(
         source: "github",
         sourceCommentId: null,
         sourceUrl: payload.comment?.html_url ?? null,
+        binding: {
+          orgId: review.orgId,
+          repositoryId: review.repositoryId,
+          githubInstallationId: review.githubInstallationId,
+          githubRepoId: review.githubRepoId,
+          prNumber: review.prNumber,
+          headSha: review.headSha,
+        },
+        githubSource: {
+          webhookDeliveryId: sourceDeliveryId,
+          githubCommentId,
+          commentKind,
+        },
       });
       const nextState = await getReviewApprovalState(tx, review);
       effectiveFailing = nextState.effectiveGate.failing;

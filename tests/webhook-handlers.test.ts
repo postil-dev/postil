@@ -46,6 +46,10 @@ let pullRequestHeadSha = "head-sha";
 let liveMembershipStatus = 200;
 let liveMembershipRole: "admin" | "member" = "admin";
 let liveMembershipState = "active";
+let liveMembershipUserId = 501;
+let liveMembershipUserLogin = "admin";
+let liveMembershipOrgId = 999;
+let liveMembershipOrgLogin = "octo";
 let membershipFetchCount = 0;
 let pullRequestReviewContext = {
   open: true,
@@ -171,6 +175,10 @@ describeDb("webhook handler behaviour", () => {
     liveMembershipStatus = 200;
     liveMembershipRole = "admin";
     liveMembershipState = "active";
+    liveMembershipUserId = 501;
+    liveMembershipUserLogin = "admin";
+    liveMembershipOrgId = 999;
+    liveMembershipOrgLogin = "octo";
     membershipFetchCount = 0;
     globalThis.fetch = Object.assign(
       async (input: string | URL | Request) => {
@@ -192,13 +200,18 @@ describeDb("webhook handler behaviour", () => {
             owner: { id: 7002, login: "octo" },
           });
         }
-        if (!url.includes("/user/memberships/orgs/")) {
+        if (!url.includes("/orgs/octo/memberships/admin")) {
           throw new Error(`unexpected GitHub request: ${url}`);
         }
         membershipFetchCount += 1;
         return new Response(
           liveMembershipStatus === 200
-            ? JSON.stringify({ state: liveMembershipState, role: liveMembershipRole })
+            ? JSON.stringify({
+                state: liveMembershipState,
+                role: liveMembershipRole,
+                user: { id: liveMembershipUserId, login: liveMembershipUserLogin },
+                organization: { id: liveMembershipOrgId, login: liveMembershipOrgLogin },
+              })
             : "unavailable",
           {
             status: liveMembershipStatus,
@@ -253,11 +266,15 @@ describeDb("webhook handler behaviour", () => {
     return result.rows.map((row) => row.body);
   }
 
-  async function seedInstallation(orgId: number, githubInstallationId: number): Promise<number> {
+  async function seedInstallation(
+    orgId: number,
+    githubInstallationId: number,
+    accountType = "Organization",
+  ): Promise<number> {
     const inst = await pool.query<{ id: string }>(
       `INSERT INTO installations (github_installation_id, org_id, account_login, account_type, suspended)
-       VALUES ($1, $2, 'octo', 'Organization', false) RETURNING id`,
-      [githubInstallationId, orgId],
+       VALUES ($1, $2, 'octo', $3, false) RETURNING id`,
+      [githubInstallationId, orgId, accountType],
     );
     return Number(inst.rows[0]!.id);
   }
@@ -362,9 +379,16 @@ describeDb("webhook handler behaviour", () => {
   ): Promise<number> {
     const row = await pool.query<{ id: string }>(
       `INSERT INTO reviews
-         (repository_id, pr_number, head_sha, base_sha, status, envelope, silent,
+         (repository_id, source_org_id, source_installation_id,
+          source_github_installation_id, source_github_repo_id, source_repo_full_name,
+          pr_number, head_sha, base_sha, status, envelope, silent,
           engine_gate_failing, gate_failing, gate_check_run_id, finished_at)
-       VALUES ($1, 9, 'head-sha', 'base-sha', 'completed', $2, false, true, true, 900, now())
+       SELECT repository.id, installation.org_id, installation.id,
+              installation.github_installation_id, repository.github_repo_id, repository.full_name,
+              9, 'head-sha', 'base-sha', 'completed', $2, false, true, true, 900, now()
+       FROM repositories repository
+       JOIN installations installation ON installation.id = repository.installation_id
+       WHERE repository.id = $1
        RETURNING id`,
       [repoId, JSON.stringify(envelope)],
     );
@@ -375,17 +399,18 @@ describeDb("webhook handler behaviour", () => {
     deliveryId: string,
     body = "@postil approve kind-blocker -- reviewed",
     privateRepository = false,
+    repoFullName = "octo/approvals",
   ): Promise<Response> {
     return post(
       "issue_comment",
       {
         action: "created",
         installation: { id: 700 },
-        repository: { id: 7000, full_name: "octo/approvals", private: privateRepository },
+        repository: { id: 7000, full_name: repoFullName, private: privateRepository },
         sender: { id: 501, login: "admin", type: "User" },
         comment: {
           id: 123456,
-          html_url: "https://github.com/octo/approvals/pull/9#issuecomment-123456",
+          html_url: `https://github.com/${repoFullName}/pull/9#issuecomment-123456`,
           body,
           user: { id: 501, login: "admin", type: "User" },
           author_association: "MEMBER",
@@ -1126,6 +1151,54 @@ describeDb("webhook handler behaviour", () => {
     expect(replies[0]).toContain("head-sha");
   });
 
+  test("approval command verifies and records a live admin who has never signed in", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    expect((await approvalComment("approval-without-session")).status).toBe(200);
+
+    const approval = await pool.query<{
+      actor_github_id: string;
+      actor_login_snapshot: string;
+      actor_role_snapshot: string;
+      rationale: string;
+    }>(
+      `SELECT actor_github_id, actor_login_snapshot, actor_role_snapshot, rationale
+         FROM finding_approvals
+        WHERE review_id = $1`,
+      [reviewId],
+    );
+    expect(approval.rows).toEqual([
+      {
+        actor_github_id: "501",
+        actor_login_snapshot: "admin",
+        actor_role_snapshot: "admin",
+        rationale: "reviewed",
+      },
+    ]);
+    expect(membershipFetchCount).toBe(1);
+  });
+
+  test("approval command does not depend on an unexpired web session", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await pool.query("UPDATE sessions SET expires_at = now() - interval '1 hour'");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    expect((await approvalComment("approval-expired-session")).status).toBe(200);
+
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows[0]!.c).toBe(1);
+    expect(membershipFetchCount).toBe(1);
+  });
+
   test("free-form mentions continue through respond path without approvals", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
@@ -1328,16 +1401,18 @@ describeDb("webhook handler behaviour", () => {
     expect((await queuedWebhookCommentBodies())[0]).toContain("absent");
   });
 
-  test("approval command rejects unverified and non-admin commenters", async () => {
+  test("approval command rejects incomplete identities and live non-admin members", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedCompletedApprovalReview(repoId);
 
+    liveMembershipUserId = 0;
     expect((await approvalComment("approval-unverified")).status).toBe(200);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not be verified");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
 
-    await seedUser(501, "admin", orgId, "member");
+    liveMembershipUserId = 501;
+    liveMembershipRole = "member";
     expect((await approvalComment("approval-member")).status).toBe(200);
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
       "requires an organization admin",
@@ -1374,7 +1449,7 @@ describeDb("webhook handler behaviour", () => {
         )
       ).rows[0]!.c,
     ).toBe(0);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not be verified");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
   });
 
   test("approval command applies a live admin demotion before authorizing", async () => {
@@ -1427,17 +1502,70 @@ describeDb("webhook handler behaviour", () => {
     ).toBe(0);
   });
 
+  test("approval command fails closed on an ambiguous membership response", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    liveMembershipOrgId = 12345;
+
+    expect((await approvalComment("approval-membership-mismatch")).status).toBe(200);
+
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals",
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+    expect(
+      (
+        await pool.query<{ role: string }>(
+          "SELECT role FROM org_members WHERE org_id = $1",
+          [orgId],
+        )
+      ).rows[0]!.role,
+    ).toBe("admin");
+  });
+
+  test("approval command replay cannot create a second approval", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    expect((await approvalComment("approval-first-delivery")).status).toBe(200);
+    expect((await approvalComment("approval-replayed-comment")).status).toBe(200);
+
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows[0]!.c).toBe(1);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("already approved");
+  });
+
   test("approval command recognizes a personal-account owner without an organization lookup", async () => {
     const orgId = await seedOrg();
     await pool.query("UPDATE organizations SET github_org_id = 501 WHERE id = $1", [orgId]);
-    const inst = await seedInstallation(orgId, 700);
+    const inst = await seedInstallation(orgId, 700, "User");
     const repoId = await seedRepo(inst, 7000, "admin/approvals");
     await seedUser(501, "admin", orgId, "admin");
     await pool.query("DELETE FROM sessions");
     const reviewId = await seedCompletedApprovalReview(repoId);
     liveMembershipStatus = 503;
 
-    expect((await approvalComment("approval-personal-owner")).status).toBe(200);
+    expect(
+      (
+        await approvalComment(
+          "approval-personal-owner",
+          undefined,
+          false,
+          "admin/approvals",
+        )
+      ).status,
+    ).toBe(200);
 
     expect(
       (
@@ -1493,8 +1621,14 @@ describeDb("webhook handler behaviour", () => {
     await pool.query(
       `INSERT INTO finding_approvals
          (review_id, finding_id, actor_user_id, actor_github_id, actor_login_snapshot,
-          actor_role_snapshot, rationale, source, revoked_at, revoked_by_user_id)
-       VALUES ($1, 'kind-blocker', $2, '501', 'admin', 'admin', 'revoked earlier', 'dashboard', now(), $2)`,
+          actor_role_snapshot, rationale, source, revoked_at, revoked_by_user_id,
+          source_org_id, source_repository_id, source_github_installation_id,
+          source_github_repo_id, source_pr_number, source_head_sha)
+       SELECT review.id, 'kind-blocker', $2, '501', 'admin', 'admin',
+              'revoked earlier', 'dashboard', now(), $2, review.source_org_id,
+              review.repository_id, review.source_github_installation_id,
+              review.source_github_repo_id, review.pr_number, review.head_sha
+       FROM reviews review WHERE review.id = $1`,
       [reviewId, userId],
     );
 
@@ -1517,8 +1651,14 @@ describeDb("webhook handler behaviour", () => {
     await pool.query(
       `INSERT INTO finding_approvals
          (review_id, finding_id, actor_user_id, actor_github_id, actor_login_snapshot,
-          actor_role_snapshot, rationale, source)
-       VALUES ($1, 'kind-blocker', $2, '501', 'admin', 'admin', 'approved old head', 'dashboard')`,
+          actor_role_snapshot, rationale, source, source_org_id,
+          source_repository_id, source_github_installation_id, source_github_repo_id,
+          source_pr_number, source_head_sha)
+       SELECT review.id, 'kind-blocker', $2, '501', 'admin', 'admin',
+              'approved old head', 'dashboard', review.source_org_id,
+              review.repository_id, review.source_github_installation_id,
+              review.source_github_repo_id, review.pr_number, review.head_sha
+       FROM reviews review WHERE review.id = $1`,
       [oldReviewId, userId],
     );
     const newReview = await pool.query<{ id: string }>(
@@ -1578,6 +1718,8 @@ describeDb("webhook handler behaviour", () => {
         repoFullName: "octo/approvals",
         orgId,
         githubInstallationId: 700,
+        githubRepoId: 7000,
+        installationAccountType: "Organization",
       }),
     ).toBe(true);
   });

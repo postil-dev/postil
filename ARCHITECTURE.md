@@ -243,6 +243,15 @@ writes. Rows and aggregates are scoped through `installations.org_id`, so an id
 belonging to another organization returns 404. Sign-in also synchronizes known
 GitHub App installations (`src/lib/github/installation-sync.ts`).
 
+GitHub approval commands authorize independently from dashboard sessions. The
+signed webhook identifies the actor, and the installation token reads that
+actor's live organization membership before an approval is stored. The response
+must bind the expected user and organization identities and report an active
+`role=admin`. Missing, ambiguous, stale, or unavailable membership data fails
+closed. Personal-account installations bind the actor to the installed account
+id. The approval record snapshots the actor and rationale against the reviewed
+commit and finding, while the durable webhook delivery id prevents replay.
+
 Repository config status crosses the latest completed review's recorded
 `config_files` with a cached default-branch GitHub contents probe. The settings
 page refreshes missing or 15-minute-old probes with four-request concurrency;
