@@ -42,6 +42,11 @@ web = "bun scripts/start-managed-process.ts web"
 worker = "bun scripts/start-managed-process.ts worker"
 monitor = "bun scripts/start-managed-process.ts monitor"
 
+[[restart]]
+policy = "on-failure"
+retries = 10
+processes = ["worker"]
+
 [env]
 NODE_ENV = "production"
 POSTIL_PUBLIC_URL = "https://postil.dev"

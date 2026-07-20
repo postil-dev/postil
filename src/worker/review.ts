@@ -85,6 +85,10 @@ import { discoverPreventionCommands } from "@/lib/review-guidance";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
+  consumePrivateWorkerRehearsalAfterStaging,
+  WorkerInterruptionRehearsalError,
+} from "@/lib/private-worker-rehearsal";
+import {
   applyPublicationThreadObservations,
   getPullRequestPublicationCommentIds,
   readPublicationReceipt,
@@ -1573,6 +1577,24 @@ export async function runReviewJob(
     }
     completionStaged = true;
     reviewLog.line("review result and publication receipt staged durably");
+    const workerInstanceId = timing.lease?.lockedBy.match(/^(.+)#\d+$/)?.[1];
+    if (observabilityProcessGroup === "worker" && workerInstanceId && timing.lease) {
+      const rehearsalNonce = await consumePrivateWorkerRehearsalAfterStaging(
+        getPool(),
+        {
+          reviewId,
+          reviewJobId: timing.lease.id,
+          repoFullName: payload.repoFullName,
+          prNumber: payload.prNumber,
+          headSha: payload.headSha,
+          workerInstanceId,
+        },
+      );
+      if (rehearsalNonce) {
+        reviewLog.line("private worker interruption rehearsal consumed");
+        throw new WorkerInterruptionRehearsalError(rehearsalNonce);
+      }
+    }
     try {
       await Promise.all([
         verifyCompletedCheckRun(
@@ -1734,6 +1756,7 @@ export async function runReviewJob(
       }
     }
     if (completionStaged) {
+      if (err instanceof WorkerInterruptionRehearsalError) throw err;
       const message = err instanceof WorkerShutdownError
         ? "worker stopped after the review result was staged"
         : `publication verification deferred: ${redactSecrets(err, sensitiveValues)}`;

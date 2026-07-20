@@ -364,6 +364,21 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_WORKER_REHEARSAL_ENABLED",
+    purpose: "Explicit opt-in for one exact private sandbox worker interruption rehearsal",
+    example: "0",
+    scope: ["worker", "monitor"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_WORKER_REHEARSAL_SANDBOX",
+    purpose:
+      "Exact organization and repository permitted for private worker interruption rehearsals",
+    example: "example|example/postil-sandbox",
+    scope: ["worker", "monitor"],
+    optional: true,
+  },
+  {
     name: "POSTIL_MONITOR_INTERVAL_MS",
     purpose: "Interval between private production monitoring passes",
     example: "300000",
