@@ -246,6 +246,34 @@ describe("trusted local Postil pre-push hook", () => {
     expect(record.invocation).not.toContain("isolated-fixture-key");
   });
 
+  test("never writes a credential-bearing remote URL into hook or common Git state", async () => {
+    const fixture = await createFixture("credential-remote");
+    const credential = "push-url-password-must-remain-memory-only";
+    const credentialRemote = join(fixture.root, `user-${credential}@example.invalid.git`);
+    await symlink(fixture.remote, credentialRemote, "dir");
+    await git(fixture.repository, ["config", "--unset-all", "remote.origin.url"]);
+    await writeFile(fixture.leakNeedle, `${credential}\n`);
+    await commit(fixture.repository, "topic", "credential remote\n");
+    await installHook(fixture, fixture.repository, true);
+
+    const result = await push(
+      fixture,
+      fixture.repository,
+      ["origin", "HEAD:refs/heads/credential-remote"],
+      "pass",
+      {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "remote.origin.url",
+        GIT_CONFIG_VALUE_0: `file://${credentialRemote}`,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(await Bun.file(fixture.leakLog).exists()).toBe(false);
+    expect(await directoryContains(join(fixture.repository, ".git"), credential)).toBe(false);
+    expect(await refExists(fixture.remote, "refs/heads/credential-remote")).toBe(true);
+  });
+
   test("symlinked review configuration cannot expose an out-of-repository canary", async () => {
     const fixture = await createFixture("config-symlink");
     const canary = join(fixture.root, "external-canary");
@@ -692,6 +720,8 @@ interface Fixture {
   gh: string;
   secrets: string;
   secretsLog: string;
+  leakNeedle: string;
+  leakLog: string;
   hook: string;
 }
 
@@ -704,6 +734,8 @@ async function createFixture(name: string): Promise<Fixture> {
   const log = join(root, "review.jsonl");
   const modeFile = join(root, "mode");
   const secretsLog = join(root, "secrets.log");
+  const leakNeedle = join(root, "leak-needle");
+  const leakLog = join(root, "state-leak.log");
   await mkdir(bin);
   await git(root, ["init", "--bare", remote]);
   await git(root, ["init", "-b", "main", repository]);
@@ -717,7 +749,7 @@ async function createFixture(name: string): Promise<Fixture> {
   await git(repository, ["remote", "add", "origin", remote]);
   await git(repository, ["-c", "core.hooksPath=/dev/null", "push", "-u", "origin", "main"]);
   await git(root, ["--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main"]);
-  const commands = await writeFakeCommands(bin, { log, modeFile, secretsLog });
+  const commands = await writeFakeCommands(bin, { log, modeFile, secretsLog, leakNeedle, leakLog });
   return {
     root,
     repository,
@@ -726,6 +758,8 @@ async function createFixture(name: string): Promise<Fixture> {
     log,
     modeFile,
     secretsLog,
+    leakNeedle,
+    leakLog,
     ...commands,
     hook: join(repository, ".git", "hooks", "pre-push"),
   };
@@ -783,7 +817,13 @@ async function push(
 
 async function writeFakeCommands(
   bin: string,
-  paths: { log: string; modeFile: string; secretsLog: string },
+  paths: {
+    log: string;
+    modeFile: string;
+    secretsLog: string;
+    leakNeedle: string;
+    leakLog: string;
+  },
 ): Promise<{ postil: string; gh: string; secrets: string }> {
   const postil = join(bin, "postil");
   await writeFile(
@@ -803,6 +843,16 @@ done
 head=\$(git rev-parse HEAD)
 merge_base=\$(git merge-base "\$base" "\$head")
 mode=\$(< '${paths.modeFile}')
+if [[ -s '${paths.leakNeedle}' ]]; then
+  leak_needle=\$(< '${paths.leakNeedle}')
+  temporary_state=\$(dirname "\$PWD")
+  common_state=\$(git rev-parse --git-common-dir)
+  if /usr/bin/grep -R -F -l -- "\$leak_needle" "\$temporary_state" "\$common_state" >'${paths.leakLog}' 2>/dev/null; then
+    :
+  else
+    /bin/rm -f -- '${paths.leakLog}'
+  fi
+fi
 aws=absent; [[ -n "\${AWS_SECRET_ACCESS_KEY+x}" ]] && aws=present
 dispositions_variable=absent; [[ -n "\${POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE+x}" ]] && dispositions_variable=present
 credential=absent; [[ -n "\${MODEL_API_KEY:-}\${POSTIL_API_KEY:-}\${OPENROUTER_API_KEY:-}" ]] && credential=present
@@ -914,6 +964,18 @@ async function fillDispositionReasons(path: string): Promise<void> {
       "The changed fixture line is intentional and the focused assertion proves the required behavior.";
   }
   await writeFile(path, JSON.stringify(document));
+}
+
+async function directoryContains(directory: string, needle: string): Promise<boolean> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (await directoryContains(path, needle)) return true;
+    } else if (entry.isFile()) {
+      if ((await readFile(path)).includes(Buffer.from(needle))) return true;
+    }
+  }
+  return false;
 }
 
 async function refExists(remote: string, ref: string): Promise<boolean> {

@@ -187,6 +187,38 @@ file_digest() {
   printf '%s\n' "$digest"
 }
 
+value_digest() {
+  # Feed values over stdin so credential-bearing remote URLs never enter a
+  # pathname, argument vector, environment variable, or temporary file.
+  digest=$(printf '%s' "$1" | "$GIT_EXECUTABLE" hash-object --stdin) || return 1
+  case "$digest" in
+    *[!0-9a-f]*|'') return 1 ;;
+  esac
+  [ "${#digest}" -eq 40 ] || [ "${#digest}" -eq 64 ] || return 1
+  printf '%s\n' "$digest"
+}
+
+push_target_digest() {
+  target_remote_name_digest=$(value_digest "$1") || return 1
+  target_remote_url_digest=$(value_digest "$2") || return 1
+  target_remote_ref_digest=$(value_digest "$3") || return 1
+  target_remote_sha_digest=$(value_digest "$4") || return 1
+
+  # The domain tag and NUL-delimited, fixed-format component digests make the
+  # field boundaries deterministic and unambiguous without persisting values.
+  digest=$(
+    printf 'postil-push-target-v1\000%s\000%s\000%s\000%s\000' \
+      "$target_remote_name_digest" "$target_remote_url_digest" \
+      "$target_remote_ref_digest" "$target_remote_sha_digest" |
+      "$GIT_EXECUTABLE" hash-object --stdin
+  ) || return 1
+  case "$digest" in
+    *[!0-9a-f]*|'') return 1 ;;
+  esac
+  [ "${#digest}" -eq 40 ] || [ "${#digest}" -eq 64 ] || return 1
+  printf '%s\n' "$digest"
+}
+
 validate_review_cache() {
   cache_input=$1
   expected_base=$2
@@ -513,7 +545,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
 
   base_branch=$(resolve_base_branch "$local_branch") || exit $?
   base_ref="refs/remotes/$remote_name/$base_branch"
-  "$GIT_EXECUTABLE" fetch --quiet --no-tags "$remote_name" \
+  "$GIT_EXECUTABLE" fetch --quiet --no-tags --no-write-fetch-head "$remote_name" \
     "+refs/heads/$base_branch:$base_ref" ||
     fail_setup "could not fetch pull request base $remote_name/$base_branch"
   base_sha=$("$GIT_EXECUTABLE" rev-parse --verify "$base_ref^{commit}" 2>/dev/null) ||
@@ -528,16 +560,9 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
   cache_lock_path=$review_cache_directory/lock-$review_cache_key
   remote_url=$("$GIT_EXECUTABLE" remote get-url "$remote_name" 2>/dev/null) ||
     fail_setup "could not resolve the push remote URL"
-  target_descriptor=$temporary_root/push-target.json
   # Bind an accepted disposition to this configured remote, destination ref,
-  # and observed remote tip without persisting the remote URL.
-  # shellcheck disable=SC2016
-  "$JQ_EXECUTABLE" -cn --arg remoteName "$remote_name" --arg remoteUrl "$remote_url" \
-    --arg remoteRef "$remote_ref" --arg remoteSha "$remote_sha" \
-    '{remoteName: $remoteName, remoteUrl: $remoteUrl, remoteRef: $remoteRef, remoteSha: $remoteSha}' \
-    >"$target_descriptor" || fail_setup "could not bind the accepted disposition to the push target"
-  /bin/chmod 600 "$target_descriptor" || fail_setup "could not protect the push target descriptor"
-  target_digest=$(file_digest "$target_descriptor") ||
+  # and observed remote tip while keeping a credential-bearing URL in memory.
+  target_digest=$(push_target_digest "$remote_name" "$remote_url" "$remote_ref" "$remote_sha") ||
     fail_setup "could not verify the push target digest"
   accepted_marker_path=$review_cache_directory/accepted-$review_cache_key-$target_digest.json
   reject_conflicting_accepted_marker "$accepted_marker_path"
