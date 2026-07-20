@@ -16,11 +16,12 @@ SET "source_org_id" = review."source_org_id",
     "source_head_sha" = review."head_sha"
 FROM "reviews" review
 WHERE review."id" = approval."review_id"
-  AND review."source_org_id" IS NOT NULL
-  AND review."source_github_installation_id" IS NOT NULL
-  AND review."source_github_repo_id" IS NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX CONCURRENTLY "finding_approvals_github_comment_idx" ON "finding_approvals" USING btree ("source_github_installation_id","source_github_repo_id","source_comment_kind","source_github_comment_id") WHERE "finding_approvals"."source" = 'github';--> statement-breakpoint
-CREATE UNIQUE INDEX CONCURRENTLY "finding_approvals_github_delivery_idx" ON "finding_approvals" USING btree ("source_webhook_delivery_id") WHERE "finding_approvals"."source" = 'github';--> statement-breakpoint
+  AND review."repository_id" > 0
+  AND review."source_org_id" > 0
+  AND review."source_github_installation_id" > 0
+  AND review."source_github_repo_id" > 0
+  AND review."pr_number" > 0
+  AND length(btrim(review."head_sha")) BETWEEN 1 AND 200;--> statement-breakpoint
 ALTER TABLE "finding_approvals" ADD CONSTRAINT "finding_approvals_binding_check" CHECK (
   (
     "source_org_id" IS NULL

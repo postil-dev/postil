@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { closeDb, getPool } from "@/lib/db";
 
-const RELEASE_STEP = "operational-indexes-v2";
+const RELEASE_STEP = "operational-indexes-v3";
 const RELEASE_LOCK_NAMESPACE = 1_349_481_332;
 const RELEASE_LOCK_OPERATION = 1_768_704_356;
 const RELEASE_LOCK_WAIT_MS = 15 * 60 * 1_000;
@@ -50,6 +50,33 @@ const OPERATIONAL_INDEXES: OperationalIndex[] = [
       "state",
       "prepared",
       "delivering",
+    ],
+  },
+  {
+    name: "finding_approvals_github_comment_idx",
+    createSql:
+      'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "finding_approvals_github_comment_idx" ON "finding_approvals" ("source_github_installation_id", "source_github_repo_id", "source_comment_kind", "source_github_comment_id") WHERE "source" = \'github\'',
+    definitionFragments: [
+      "public.finding_approvals",
+      "source_github_installation_id",
+      "source_github_repo_id",
+      "source_comment_kind",
+      "source_github_comment_id",
+      "where",
+      "source",
+      "github",
+    ],
+  },
+  {
+    name: "finding_approvals_github_delivery_idx",
+    createSql:
+      'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "finding_approvals_github_delivery_idx" ON "finding_approvals" ("source_webhook_delivery_id") WHERE "source" = \'github\'',
+    definitionFragments: [
+      "public.finding_approvals",
+      "source_webhook_delivery_id",
+      "where",
+      "source",
+      "github",
     ],
   },
 ];

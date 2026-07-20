@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Client } from "pg";
+import { Client, Pool } from "pg";
+
+import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
@@ -25,7 +27,8 @@ describeDb("GitHub approval binding migration", () => {
 
     const databaseUrl = new URL(TEST_URL!);
     databaseUrl.pathname = `/${databaseName}`;
-    client = new Client({ connectionString: databaseUrl.toString() });
+    const isolatedDatabaseUrl = databaseUrl.toString();
+    client = new Client({ connectionString: isolatedDatabaseUrl });
     await client.connect();
 
     const migrationsDirectory = join(import.meta.dir, "..", "drizzle");
@@ -83,6 +86,12 @@ describeDb("GitHub approval binding migration", () => {
     )).rows[0]!.id;
 
     await applyMigration(client, join(migrationsDirectory, "0037_github_approval_bindings.sql"));
+    const operationalPool = new Pool({ connectionString: isolatedDatabaseUrl, max: 1 });
+    try {
+      await ensureOperationalIndexes(operationalPool);
+    } finally {
+      await operationalPool.end();
+    }
   }, 30_000);
 
   afterAll(async () => {
