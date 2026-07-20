@@ -12,7 +12,8 @@ export const dynamic = "force-dynamic";
  * GitHub redirects here after an installation is created or updated. The
  * installation_id query parameter is attacker-controlled, so it is never used
  * as authorization. A fresh user OAuth flow reconciles the accounts and
- * installations GitHub says the user can administer, then lands on reports.
+ * installations GitHub says the user can administer, then resolves the
+ * accessible installed account or falls back to the account index.
  */
 export async function GET(request: Request): Promise<NextResponse> {
   const url = new URL(request.url);
