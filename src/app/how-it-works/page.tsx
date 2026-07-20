@@ -8,12 +8,12 @@ import { StatusIcon } from "@/components/status-icon";
 export const metadata: Metadata = {
   title: "How it works",
   description:
-    "Webhook to queue to CLI to check-runs: the Postil hosted pipeline, its fail-closed doctrine, minimal GitHub permissions, and what is (not) stored.",
+    "Webhook to queue to CLI to check-runs: the Postil hosted pipeline, configurable merge gate, minimal GitHub permissions, and retained review data.",
   alternates: { canonical: "/how-it-works" },
   openGraph: {
     title: "How Postil works",
     description:
-      "A small, auditable pipeline around one review engine: webhook, queue, CLI, check-runs. Fail-closed by design.",
+      "A small, auditable pipeline around one review engine: webhook, queue, CLI, and check-runs.",
     url: "https://postil.dev/how-it-works",
     images: ["/opengraph-image"],
   },
@@ -42,7 +42,7 @@ const PIPELINE = [
     step: "4",
     name: "Check-runs",
     detail:
-      "The CLI posts inline comments in one batched review and completes postil/review (advisory) and postil/gate (blocking). The envelope is stored; the diff is not.",
+      "The CLI posts inline comments in one batched review and completes postil/review. After the envelope is stored, the control plane completes postil/gate according to the organization’s merge-gate setting. The diff is not stored.",
   },
 ] as const;
 
@@ -97,22 +97,20 @@ export default function HowItWorksPage() {
       <Section
         number="01"
         eyebrow="Doctrine"
-        title="Fail closed, always."
+        title="Advisory by default. Blocking when enabled."
       >
         <div className="grid gap-8 md:grid-cols-2">
           <div className="space-y-4 text-ink-soft">
             <p>
-              When the model returns invalid or ungrounded output, Postil does
-              not shrug and pass. The CLI retries one JSON repair, then emits a
-              synthetic <code className="font-mono text-sm">error</code>{" "}
-              finding and fails the gate. When the hosted worker crashes or a
-              review exceeds its ten-minute deadline, the watchdog completes
-              the gate check-run as <strong>failure</strong>, never neutral.
+              New organizations start with an advisory merge gate. An admin can
+              enable blocking after adding <code className="font-mono text-sm">postil/gate</code>{" "}
+              to the repository rules. Postil keeps the check neutral while the
+              merge gate is advisory.
             </p>
             <p>
-              A neutral grey check that looks like success is how unreviewed
-              code merges. If Postil cannot vouch for a head commit, the gate
-              says so in red.
+              With blocking enabled, invalid model output and incomplete hosted
+              reviews fail closed. Turning blocking off reconciles the latest
+              check for every pull request back to neutral.
             </p>
           </div>
           <div className="card p-6">
@@ -122,7 +120,7 @@ export default function HowItWorksPage() {
                 <StatusIcon kind="error" />
                 <span>
                   <code className="font-mono">postil/gate</code> on operational
-                  error: <strong>failure</strong> (fail closed)
+                  error: <strong>failure</strong> when blocking is enabled
                 </span>
               </li>
               <li className="flex items-center gap-3">
@@ -135,6 +133,10 @@ export default function HowItWorksPage() {
               <li className="flex items-center gap-3">
                 <StatusIcon kind="pass" />
                 <span>Clean PR: both green, zero comments</span>
+              </li>
+              <li className="flex items-center gap-3">
+                <StatusIcon kind="info" />
+                <span>Advisory merge gate: neutral, with findings left on the review</span>
               </li>
             </ul>
           </div>

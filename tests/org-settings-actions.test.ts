@@ -16,6 +16,8 @@ let updatedValues: Record<string, unknown> | null = null;
 let updateResultRows: Array<Record<string, unknown>> = [];
 let approvalInserted = false;
 let gateSyncJobs = 0;
+let organizationGateSyncJobs = 0;
+let settingEvents: Array<Record<string, unknown>> = [];
 let storedGateStates: boolean[] = [];
 let checkConclusions: string[] = [];
 let checkError: Error | null = null;
@@ -45,6 +47,7 @@ const schema = {
   },
   orgSettings: {
     orgId: "org_settings.org_id",
+    gateEnabled: "org_settings.gate_enabled",
     apiKeyCiphertext: "org_settings.api_key_ciphertext",
     apiAuthHeaderCiphertext: "org_settings.api_auth_header_ciphertext",
     updatedAt: "org_settings.updated_at",
@@ -71,6 +74,9 @@ const schema = {
       "organization_entitlements.billing_contact_verification_message_id",
   },
   jobs: { kind: "jobs.kind" },
+  organizationSettingEvents: {
+    id: "organization_setting_events.id",
+  },
 };
 
 mock.module("next/cache", () => ({
@@ -109,6 +115,9 @@ mock.module("@/lib/org-access", () => ({
 }));
 
 mock.module("@/lib/finding-approvals", () => ({
+  enqueueLatestGateStateSyncsForOrganization: async () => {
+    organizationGateSyncJobs += 1;
+  },
   enqueueGateStateSync: async () => {
     gateSyncJobs += 1;
   },
@@ -139,6 +148,10 @@ mock.module("@/lib/finding-approvals", () => ({
   updateStoredEffectiveGate: async (_db: unknown, _reviewId: number, failing: boolean) => {
     storedGateStates.push(failing);
   },
+}));
+
+mock.module("@/lib/gate-mode", () => ({
+  lockOrganizationGateMode: async () => true,
 }));
 
 mock.module("@/lib/github/app-auth", () => ({
@@ -205,6 +218,12 @@ function fakeDb() {
           if (table === schema.jobs) {
             queuedJobs.push(values);
             return Promise.resolve([]);
+          }
+          if (table === schema.organizationSettingEvents) {
+            settingEvents.push(values);
+            return {
+              returning: async () => [{ id: 55 }],
+            };
           }
           insertedValues = values;
           return {
@@ -298,6 +317,8 @@ beforeEach(() => {
   updateResultRows = [];
   approvalInserted = false;
   gateSyncJobs = 0;
+  organizationGateSyncJobs = 0;
+  settingEvents = [];
   storedGateStates = [];
   checkConclusions = [];
   checkError = null;
@@ -373,6 +394,30 @@ describe("billing contact verification actions", () => {
 });
 
 describe("saveOrgSettings", () => {
+  test("audits a merge-gate change and queues organization-wide reconciliation", async () => {
+    settingsRows = [{ gateEnabled: false }];
+
+    const result = await saveOrgSettings(
+      null,
+      byokForm({
+        apiKeyAction: "replace",
+        apiKey: "sk-test-secret",
+        gateEnabled: "on",
+      }),
+    );
+
+    expect(result).toEqual({ status: "success", message: "Organization settings saved." });
+    expect(conflictSet?.gateEnabled).toBe(true);
+    expect(settingEvents).toEqual([{
+      orgId: 20,
+      setting: "gate_enabled",
+      value: "enabled",
+      actorUserId: 10,
+      source: "dashboard",
+    }]);
+    expect(organizationGateSyncJobs).toBe(1);
+  });
+
   test("rejects non-admin writes before storing settings", async () => {
     memberRows = [{ role: "member" }];
 
@@ -408,19 +453,19 @@ describe("saveOrgSettings", () => {
 
     expect(storedGateStates).toEqual([true]);
     expect(gateSyncJobs).toBe(1);
-    expect(checkConclusions).toEqual(["failure"]);
+    expect(checkConclusions).toEqual([]);
   });
 
-  test("keeps the approval active when fail-closed revocation cannot reach GitHub", async () => {
+  test("commits revocation before durable GitHub synchronization", async () => {
     sessionUser = { id: 10, githubId: "100", login: "owner" };
     approvalInserted = true;
     checkError = new Error("GitHub unavailable");
 
-    await expect(revokeFinding(approvalForm())).rejects.toThrow("GitHub unavailable");
+    await revokeFinding(approvalForm());
 
-    expect(approvalInserted).toBe(true);
-    expect(storedGateStates).toEqual([]);
-    expect(gateSyncJobs).toBe(0);
+    expect(approvalInserted).toBe(false);
+    expect(storedGateStates).toEqual([true]);
+    expect(gateSyncJobs).toBe(1);
   });
 
   test("seals a replacement API key before storage", async () => {

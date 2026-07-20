@@ -13,6 +13,9 @@ function fakeDb(reviewUpdated = true): {
   const inserted: Array<{ table: unknown; values: unknown }> = [];
   let transactions = 0;
   const tx = {
+    execute() {
+      return Promise.resolve();
+    },
     update() {
       const chain = {
         set() {

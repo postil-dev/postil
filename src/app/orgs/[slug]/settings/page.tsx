@@ -14,6 +14,7 @@ import {
 } from "@/lib/private-repository-entitlement";
 import { deriveRepoHealth, getRepoHealthRows, type RepoHealth } from "@/lib/repo-health";
 import { formatRelativeTime } from "@/lib/time";
+import { deriveGateEnforcementPresentation } from "@/lib/gate-enforcement-health";
 import {
   isVisibleConfigArtifact,
   ownerConfigRepositoryFullName,
@@ -22,6 +23,7 @@ import {
   type VisibleConfigArtifact,
 } from "../config-resolution";
 import { ConfigRecheckButton } from "../config-recheck-button";
+import { GateEnforcementRecheckButton } from "../gate-enforcement-recheck-button";
 import { RepoHealthBanner } from "../repo-health-banner";
 import { SettingsForm } from "../settings-form";
 
@@ -54,6 +56,7 @@ export default async function OrgSettingsPage({
         guardrailsMd: schema.orgSettings.guardrailsMd,
         contentPolicyMd: schema.orgSettings.contentPolicyMd,
         sharedConfigEnabled: schema.orgSettings.sharedConfigEnabled,
+        gateEnabled: schema.orgSettings.gateEnabled,
         hasKey: sql<boolean>`${schema.orgSettings.apiKeyCiphertext} IS NOT NULL`,
         hasAdditionalAuth: sql<boolean>`${schema.orgSettings.apiAuthHeaderCiphertext} IS NOT NULL AND ${schema.orgSettings.apiAuthValueCiphertext} IS NOT NULL`,
       })
@@ -106,11 +109,22 @@ export default async function OrgSettingsPage({
       private: schema.repositories.private,
       githubInstallationId: schema.installations.githubInstallationId,
       accountLogin: schema.installations.accountLogin,
+      gateEnforcementStatus: schema.repositoryGateEnforcement.status,
+      gateDefaultBranch: schema.repositoryGateEnforcement.defaultBranch,
+      gateBranchProtection: schema.repositoryGateEnforcement.branchProtection,
+      gateEvidence: schema.repositoryGateEnforcement.evidence,
+      gateCheckedAt: schema.repositoryGateEnforcement.checkedAt,
+      gateLastSuccessfulAt: schema.repositoryGateEnforcement.lastSuccessfulAt,
+      gateLastError: schema.repositoryGateEnforcement.lastError,
     })
     .from(schema.repositories)
     .innerJoin(
       schema.installations,
       eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .leftJoin(
+      schema.repositoryGateEnforcement,
+      eq(schema.repositoryGateEnforcement.repositoryId, schema.repositories.id),
     )
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
@@ -266,6 +280,13 @@ export default async function OrgSettingsPage({
 
         {showConfigFiles && (
           <div>
+            {enabledRepos.length > 0 && (
+              <GateEnforcementCoverage
+                slug={org.slug}
+                repositories={repos.filter((repo) => repo.enabled)}
+                now={now}
+              />
+            )}
             <div className="flex items-center justify-between gap-3">
               <p className="eyebrow">Config files</p>
               {enabledRepos.length > 0 && (
@@ -338,6 +359,117 @@ export default async function OrgSettingsPage({
         )}
       </div>
     </div>
+  );
+}
+
+function GateEnforcementCoverage({
+  slug,
+  repositories,
+  now,
+}: {
+  slug: string;
+  repositories: Array<{
+    id: number;
+    fullName: string;
+    gateEnforcementStatus: string | null;
+    gateDefaultBranch: string | null;
+    gateBranchProtection: string | null;
+    gateEvidence: {
+      branchProtection: {
+        exactMatch: boolean;
+        match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+      };
+      activeRules: {
+        exactMatch: boolean;
+        match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+      };
+    } | null;
+    gateCheckedAt: Date | null;
+    gateLastSuccessfulAt: Date | null;
+    gateLastError: string | null;
+  }>;
+  now: Date;
+}) {
+  return (
+    <section className="mb-8">
+      <div className="flex items-center justify-between gap-3">
+        <p className="eyebrow">GitHub enforcement</p>
+        <GateEnforcementRecheckButton slug={slug} />
+      </div>
+      <div className="card mt-3 divide-y divide-stone/60">
+        {repositories.map((repository) => {
+          const presentation = deriveGateEnforcementPresentation(
+            {
+              status: repository.gateEnforcementStatus,
+              checkedAt: repository.gateCheckedAt,
+              lastError: repository.gateLastError,
+            },
+            now,
+          );
+          const anySource =
+            repository.gateEvidence?.branchProtection.match === "any_source" ||
+            repository.gateEvidence?.activeRules.match === "any_source";
+          const identityUnknown =
+            repository.gateEvidence?.branchProtection.match === "unknown_identity" ||
+            repository.gateEvidence?.activeRules.match === "unknown_identity";
+          const foreignSource =
+            repository.gateEvidence?.branchProtection.match === "foreign_app" ||
+            repository.gateEvidence?.activeRules.match === "foreign_app";
+          const statusLabel = presentation.status === "not_required"
+            ? anySource
+              ? "any source"
+              : foreignSource
+                ? "other App"
+                : presentation.label
+            : presentation.label;
+          const detail = presentation.status === "required" &&
+              repository.gateEvidence?.branchProtection.exactMatch
+            ? "required by branch protection"
+            : presentation.status === "required" &&
+                repository.gateEvidence?.activeRules.exactMatch
+              ? "required by an active ruleset"
+              : anySource
+                ? "postil/gate accepts any source"
+                : foreignSource
+                  ? "postil/gate requires another App"
+                  : identityUnknown
+                    ? "check source is unavailable"
+                    : `branch protection: ${repository.gateBranchProtection ?? "unknown"}`;
+          return (
+            <div key={repository.id} className="flex items-start justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate font-mono text-sm">{repository.fullName}</p>
+                <p className="mt-0.5 text-xs text-charcoal/60">
+                  {repository.gateDefaultBranch
+                    ? `default: ${repository.gateDefaultBranch}`
+                    : "default branch unavailable"}
+                  {repository.gateCheckedAt
+                    ? ` · checked ${relative(repository.gateCheckedAt, now)}`
+                    : " · not checked"}
+                </p>
+                <p className="mt-0.5 text-xs text-charcoal/60">{detail}</p>
+                {repository.gateLastError && (
+                  <p className="mt-1 text-xs text-rust">
+                    {repository.gateLastError}
+                    {repository.gateLastSuccessfulAt
+                      ? ` Last confirmed ${relative(repository.gateLastSuccessfulAt, now)}.`
+                      : ""}
+                  </p>
+                )}
+              </div>
+              <span className="shrink-0 rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/70">
+                {statusLabel}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 text-xs text-charcoal/60">
+        Required means GitHub names <code>postil/gate</code> and binds it to the Postil App.
+        Ambiguous or unreadable rules stay unknown. See the{" "}
+        <Link href="/docs/gate" className="text-rust hover:underline">gate guide</Link>.
+      </p>
+    </section>
   );
 }
 

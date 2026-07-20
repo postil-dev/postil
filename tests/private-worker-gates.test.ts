@@ -256,7 +256,7 @@ describe("private repository worker defense in depth", () => {
     const publication = source.indexOf("await Promise.all([", cliCompletion);
     const verification = source.indexOf("verifyCompletedCheckRun", publication);
     const persistence = source.indexOf(
-      "const completed = await persistReviewCompletion",
+      "const completion = await persistReviewCompletionWithGateMode",
       verification,
     );
 
@@ -272,6 +272,19 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(publication, persistence)).toContain(
       "{ cause: error }",
     );
+  });
+
+  test("advisory organizations neutralize the CLI gate result before verification", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const completion = source.indexOf("receiptUsageForRace = receiptUsage");
+    const verification = source.indexOf("await Promise.all([", completion);
+    const advisory = source.slice(completion, verification);
+
+    expect(advisory).toContain("if (!gateEnabled)");
+    expect(advisory).toContain('"neutral"');
+    expect(advisory).toContain('"Postil gate is advisory"');
+    expect(source.slice(verification, source.indexOf("const completion =", verification)))
+      .toContain(": \"neutral\"");
   });
 
   test("operational review failures durably queue terminal check cleanup", () => {

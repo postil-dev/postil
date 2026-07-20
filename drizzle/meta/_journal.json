@@ -239,6 +239,13 @@
       "when": 1784467126420,
       "tag": "0033_self_service_trial_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784535433634,
+      "tag": "0034_gate_control_and_enforcement",
+      "breakpoints": true
     }
   ]
 }

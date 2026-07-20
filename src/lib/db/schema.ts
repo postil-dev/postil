@@ -146,6 +146,52 @@ export const repositories = pgTable("repositories", {
     .defaultNow(),
 });
 
+export type GateEnforcementEvidence = {
+  expectedContext: "postil/gate";
+  expectedAppId: number;
+  branchProtection: {
+    available: boolean;
+    requiredStatusChecksPresent: boolean;
+    exactMatch: boolean;
+    match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+  };
+  activeRules: {
+    available: boolean;
+    pagesRead: number;
+    exactMatch: boolean;
+    match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+  };
+};
+
+/** Last observed GitHub enforcement state for one repository's default branch. */
+export const repositoryGateEnforcement = pgTable(
+  "repository_gate_enforcement",
+  {
+    repositoryId: bigint("repository_id", { mode: "number" })
+      .primaryKey()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    status: text("status").notNull(),
+    defaultBranch: text("default_branch"),
+    branchProtection: text("branch_protection").notNull().default("unknown"),
+    evidence: jsonb("evidence").$type<GateEnforcementEvidence>(),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    lastSuccessfulAt: timestamp("last_successful_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("repository_gate_enforcement_status_checked_idx").on(t.status, t.checkedAt),
+    check(
+      "repository_gate_enforcement_status_check",
+      sql`${t.status} IN ('required', 'not_required', 'unknown')`,
+    ),
+    check(
+      "repository_gate_enforcement_branch_protection_check",
+      sql`${t.branchProtection} IN ('protected', 'unprotected', 'unknown')`,
+    ),
+  ],
+);
+
 export const repoConfigProbes = pgTable("repo_config_probes", {
   repositoryId: bigint("repository_id", { mode: "number" })
     .primaryKey()
@@ -241,6 +287,10 @@ export const reviews = pgTable(
     errorMessage: text("error_message"),
     advisoryCheckRunId: bigint("advisory_check_run_id", { mode: "number" }),
     gateCheckRunId: bigint("gate_check_run_id", { mode: "number" }),
+    gateSyncLeaseId: uuid("gate_sync_lease_id"),
+    gateSyncLeaseExpiresAt: timestamp("gate_sync_lease_expires_at", {
+      withTimezone: true,
+    }),
     queuedAt: timestamp("queued_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1087,6 +1137,7 @@ export const orgSettings = pgTable("org_settings", {
   guardrailsMd: text("guardrails_md"),
   contentPolicyMd: text("content_policy_md"),
   sharedConfigEnabled: boolean("shared_config_enabled").notNull().default(true),
+  gateEnabled: boolean("gate_enabled").notNull().default(false),
   /** Retired compatibility columns; the post-deploy retirement clears every value. */
   escalationEmail: text("escalation_email"),
   escalationEmailPending: text("escalation_email_pending"),
@@ -1118,6 +1169,45 @@ export const orgSettings = pgTable("org_settings", {
     .notNull()
     .defaultNow(),
 });
+
+export const organizationSettingEvents = pgTable(
+  "organization_setting_events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    setting: text("setting").notNull(),
+    value: text("value").notNull(),
+    actorUserId: bigint("actor_user_id", { mode: "number" }).references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+    source: text("source").notNull().default("dashboard"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("organization_setting_events_org_time_idx").on(
+      t.orgId,
+      t.occurredAt,
+      t.id,
+    ),
+    check(
+      "organization_setting_events_setting_check",
+      sql`${t.setting} IN ('gate_enabled')`,
+    ),
+    check(
+      "organization_setting_events_value_check",
+      sql`${t.value} IN ('enabled', 'advisory')`,
+    ),
+    check(
+      "organization_setting_events_source_check",
+      sql`${t.source} IN ('dashboard')`,
+    ),
+  ],
+);
 
 /** Last successful immutable snapshot of the owner's installed `.github` policy repo. */
 export const orgConfigSnapshots = pgTable("org_config_snapshots", {

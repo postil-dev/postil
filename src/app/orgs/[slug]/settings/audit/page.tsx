@@ -18,9 +18,10 @@ const AUDIT_PAGE_SIZE = 50;
 interface AuditEventRow {
   eventId: string;
   occurredAt: Date;
-  action: string;
-  repositoryFullName: string;
-  repositoryPrivate: boolean;
+  eventType: "repository" | "setting";
+  value: string;
+  subject: string | null;
+  repositoryPrivate: boolean | null;
   source: string;
   actorLogin: string | null;
 }
@@ -44,25 +45,44 @@ export default async function OrganizationAuditPage({
   const cursor = parseCursor((await searchParams).after);
 
   const result = await db.execute(sql<AuditEventRow>`
-    SELECT
-      ${schema.repositoryEnablementEvents.id}::text AS "eventId",
-      ${schema.repositoryEnablementEvents.occurredAt} AS "occurredAt",
-      ${schema.repositoryEnablementEvents.action} AS "action",
-      ${schema.repositoryEnablementEvents.repositoryFullName} AS "repositoryFullName",
-      ${schema.repositoryEnablementEvents.repositoryPrivate} AS "repositoryPrivate",
-      ${schema.repositoryEnablementEvents.source} AS "source",
-      actor.${sql.identifier("login")} AS "actorLogin"
-    FROM ${schema.repositoryEnablementEvents}
-    LEFT JOIN ${schema.users} actor
-      ON actor.${sql.identifier("id")} = ${schema.repositoryEnablementEvents.actorUserId}
-    WHERE ${schema.repositoryEnablementEvents.orgId} = ${org.id}
-      AND ${cursor ? sql`
-        (${schema.repositoryEnablementEvents.occurredAt}, ${schema.repositoryEnablementEvents.id})
-          < (${cursor.occurredAt}, ${cursor.eventId}::bigint)
-      ` : sql`TRUE`}
-    ORDER BY
-      ${schema.repositoryEnablementEvents.occurredAt} DESC,
-      ${schema.repositoryEnablementEvents.id} DESC
+    WITH audit_events AS (
+      SELECT
+        ${schema.repositoryEnablementEvents.id}::text AS "eventId",
+        ${schema.repositoryEnablementEvents.occurredAt} AS "occurredAt",
+        'repository'::text AS "eventType",
+        ${schema.repositoryEnablementEvents.action} AS "value",
+        ${schema.repositoryEnablementEvents.repositoryFullName} AS "subject",
+        ${schema.repositoryEnablementEvents.repositoryPrivate} AS "repositoryPrivate",
+        ${schema.repositoryEnablementEvents.source} AS "source",
+        repository_actor.${sql.identifier("login")} AS "actorLogin"
+      FROM ${schema.repositoryEnablementEvents}
+      LEFT JOIN ${schema.users} repository_actor
+        ON repository_actor.${sql.identifier("id")} = ${schema.repositoryEnablementEvents.actorUserId}
+      WHERE ${schema.repositoryEnablementEvents.orgId} = ${org.id}
+
+      UNION ALL
+
+      SELECT
+        ${schema.organizationSettingEvents.id}::text AS "eventId",
+        ${schema.organizationSettingEvents.occurredAt} AS "occurredAt",
+        'setting'::text AS "eventType",
+        ${schema.organizationSettingEvents.value} AS "value",
+        ${schema.organizationSettingEvents.setting} AS "subject",
+        NULL::boolean AS "repositoryPrivate",
+        ${schema.organizationSettingEvents.source} AS "source",
+        setting_actor.${sql.identifier("login")} AS "actorLogin"
+      FROM ${schema.organizationSettingEvents}
+      LEFT JOIN ${schema.users} setting_actor
+        ON setting_actor.${sql.identifier("id")} = ${schema.organizationSettingEvents.actorUserId}
+      WHERE ${schema.organizationSettingEvents.orgId} = ${org.id}
+    )
+    SELECT "eventId", "occurredAt", "eventType", "value", "subject", "repositoryPrivate", "source", "actorLogin"
+    FROM audit_events
+    WHERE ${cursor ? sql`
+      ("occurredAt", "eventType", "eventId"::bigint) <
+      (${cursor.occurredAt}, ${cursor.eventType}, ${cursor.eventId}::bigint)
+    ` : sql`TRUE`}
+    ORDER BY "occurredAt" DESC, "eventType" DESC, "eventId"::bigint DESC
     LIMIT ${AUDIT_PAGE_SIZE + 1}
   `);
   const rows = (result.rows as unknown as RawAuditEventRow[]).map((row) => ({
@@ -106,16 +126,12 @@ export default async function OrganizationAuditPage({
           </thead>
           <tbody className="divide-y divide-stone/60">
             {events.map((event) => (
-              <tr key={event.eventId}>
+              <tr key={`${event.eventType}-${event.eventId}`}>
                 <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
                   {formatDateTime(event.occurredAt)}
                 </td>
                 <td className="px-4 py-3">
-                  {event.action === "enable" ? "Enabled" : "Disabled"}{" "}
-                  <span className="font-mono text-xs">{event.repositoryFullName}</span>{" "}
-                  <span className="text-charcoal/55">
-                    ({event.repositoryPrivate ? "private" : "public"})
-                  </span>
+                  {formatAuditEvent(event)}
                 </td>
                 <td className="px-4 py-3 font-mono text-xs text-charcoal/70">
                   {event.actorLogin ? `@${event.actorLogin}` : "System"}
@@ -156,6 +172,7 @@ export default async function OrganizationAuditPage({
 
 interface AuditCursor {
   occurredAt: Date;
+  eventType: AuditEventRow["eventType"];
   eventId: string;
 }
 
@@ -166,13 +183,14 @@ function parseCursor(raw: string | undefined): AuditCursor | null {
     if (
       typeof value.occurredAt !== "string" ||
       !/^\d{4}-\d{2}-\d{2}T/.test(value.occurredAt) ||
+      (value.eventType !== "repository" && value.eventType !== "setting") ||
       typeof value.eventId !== "string" ||
       !/^[1-9]\d*$/.test(value.eventId)
     ) return null;
     if (BigInt(value.eventId) > 9_223_372_036_854_775_807n) return null;
     const occurredAt = new Date(value.occurredAt);
     if (!Number.isFinite(occurredAt.getTime())) return null;
-    return { occurredAt, eventId: value.eventId };
+    return { occurredAt, eventType: value.eventType, eventId: value.eventId };
   } catch {
     return null;
   }
@@ -181,6 +199,7 @@ function parseCursor(raw: string | undefined): AuditCursor | null {
 function encodeCursor(event: AuditEventRow): string {
   return Buffer.from(JSON.stringify({
     occurredAt: event.occurredAt.toISOString(),
+    eventType: event.eventType,
     eventId: event.eventId,
   })).toString("base64url");
 }
@@ -188,6 +207,14 @@ function encodeCursor(event: AuditEventRow): string {
 function auditPageUrl(slug: string, after?: string): string {
   const base = `/orgs/${encodeURIComponent(slug)}/settings/audit`;
   return after ? `${base}?after=${encodeURIComponent(after)}` : base;
+}
+
+function formatAuditEvent(event: AuditEventRow): string {
+  if (event.eventType === "repository") {
+    const visibility = event.repositoryPrivate ? " (private)" : "";
+    return `${event.value === "enable" ? "Enabled" : "Disabled"} ${event.subject ?? "repository"}${visibility}`;
+  }
+  return event.value === "enabled" ? "Enabled merge gate" : "Set merge gate to advisory";
 }
 
 function formatAuditSource(source: string): string {

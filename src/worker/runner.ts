@@ -5,6 +5,7 @@ import { optionalEnv } from "@/lib/env";
 import type { GateStateSyncJobPayload } from "@/lib/finding-approvals";
 import {
   claimJob,
+  continueClaimedJob,
   completeWebhookDelivery,
   completeJob,
   failJob,
@@ -14,6 +15,7 @@ import {
   retryJobIndefinitely,
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
+  type GateEnforcementSweepJobPayload,
   type RespondDeliveryJobPayload,
   type RespondFailureCommentJobPayload,
   type RespondJobPayload,
@@ -44,6 +46,7 @@ import {
 } from "./billing-contact-verification";
 import { isPermanentFailure } from "./failure-classifier";
 import { runGateStateSyncJob } from "./gate-state-sync";
+import { runGateEnforcementSweepJob } from "./gate-enforcement-sweep";
 import {
   runOperatorAlertJob,
   type OperatorAlertJobPayload,
@@ -76,7 +79,7 @@ const DEFAULT_DRAIN_DEADLINE_MS = readPositiveIntEnv(
 let backgroundDrain: Promise<void> | undefined;
 let backgroundDrainRequested = false;
 
-export const PROCESSABLE_JOB_KINDS = [
+export const WEB_PROCESSABLE_JOB_KINDS = [
   "webhook-dispatch",
   "review",
   "respond",
@@ -90,12 +93,22 @@ export const PROCESSABLE_JOB_KINDS = [
   "webhook-comment",
 ] as const;
 
+export const PROCESSABLE_JOB_KINDS = [
+  ...WEB_PROCESSABLE_JOB_KINDS,
+  "gate-enforcement-sweep",
+] as const;
+
+interface JobContinuation {
+  payload: Record<string, unknown>;
+  runAfter?: Date;
+}
+
 async function handleJob(
   job: ClaimedJob,
   processGroup: ObservabilityProcessGroup,
   signal?: AbortSignal,
   onReviewPublicationStarted?: () => void,
-): Promise<void> {
+): Promise<JobContinuation | void> {
   switch (job.kind) {
     case "webhook-dispatch": {
       const payload = job.payload as WebhookDispatchJobPayload;
@@ -154,6 +167,10 @@ async function handleJob(
     case "gate-state-sync":
       await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
       break;
+    case "gate-enforcement-sweep":
+      return runGateEnforcementSweepJob(
+        job.payload as GateEnforcementSweepJobPayload,
+      );
     case "check-run-cleanup":
       validateCheckRunCleanupPayload(
         job.payload as CheckRunCleanupJobPayload,
@@ -186,7 +203,19 @@ export async function runClaimedJob(
   const started = Date.now();
   console.log(`[${label}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
   try {
-    await handleJob(job, processGroup, signal, onReviewPublicationStarted);
+    const continuation = await handleJob(
+      job,
+      processGroup,
+      signal,
+      onReviewPublicationStarted,
+    );
+    if (continuation) {
+      await continueClaimedJob(getPool(), job, continuation.payload, {
+        runAfter: continuation.runAfter,
+      });
+      console.log(`[${label}] job ${job.id} continued in ${Date.now() - started}ms`);
+      return;
+    }
     await completeJob(getPool(), job);
     console.log(`[${label}] job ${job.id} done in ${Date.now() - started}ms`);
   } catch (err) {
@@ -207,6 +236,9 @@ export async function runClaimedJob(
     const malformedGateSync =
       job.kind === "gate-state-sync" &&
       message.includes("gate state sync job payload is malformed");
+    const malformedGateEnforcement =
+      job.kind === "gate-enforcement-sweep" &&
+      message.includes("gate enforcement sweep job payload is malformed");
     const malformedWebhookDispatch =
       job.kind === "webhook-dispatch" &&
       message.includes("webhook dispatch job payload is malformed");
@@ -220,11 +252,13 @@ export async function runClaimedJob(
     const permanent =
       isPermanentJobError(err) ||
       malformedGateSync ||
+      malformedGateEnforcement ||
       malformedWebhookDispatch ||
       invalidWebhookDelivery ||
       malformedWebhookComment ||
       malformedCheckRunCleanup ||
       (job.kind !== "gate-state-sync" &&
+        job.kind !== "gate-enforcement-sweep" &&
         job.kind !== "webhook-dispatch" &&
         job.kind !== "webhook-comment" &&
         isPermanentFailure(message));
@@ -292,7 +326,7 @@ export async function drainQueueOnce(
   });
 
   while (drained < maxJobs && Date.now() < deadlineAt) {
-    const job = await claimJob(getPool(), workerId, PROCESSABLE_JOB_KINDS);
+    const job = await claimJob(getPool(), workerId, WEB_PROCESSABLE_JOB_KINDS);
     if (!job) break;
     await runClaimedJob(job, label, "web");
     drained += 1;
