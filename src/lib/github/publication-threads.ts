@@ -5,9 +5,15 @@ const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
 
 interface ThreadNode {
+  id?: string | null;
   isResolved?: boolean;
   isOutdated?: boolean;
-  comments?: { nodes?: Array<{ databaseId?: number | null } | null> | null } | null;
+  comments?: CommentsConnection | null;
+}
+
+interface CommentsConnection {
+  nodes?: Array<{ databaseId?: number | null } | null> | null;
+  pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
 }
 
 interface ThreadsResponse {
@@ -19,6 +25,15 @@ interface ThreadsResponse {
           pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
         } | null;
       } | null;
+    } | null;
+  };
+  errors?: Array<{ message?: string }>;
+}
+
+interface ThreadCommentsResponse {
+  data?: {
+    node?: {
+      comments?: CommentsConnection | null;
     } | null;
   };
   errors?: Array<{ message?: string }>;
@@ -53,8 +68,7 @@ export async function observeGitHubReviewThreads(
   const requestSignal = signal
     ? AbortSignal.any([signal, timeoutSignal])
     : timeoutSignal;
-  let cursor: string | null = null;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
+  async function requestGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
     const response = await fetch(graphqlApi(), {
       method: "POST",
       headers: {
@@ -64,33 +78,91 @@ export async function observeGitHubReviewThreads(
         "User-Agent": "postil-control-plane",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        query: `query PostilPublicationThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+      body: JSON.stringify({ query, variables }),
+      signal: requestSignal,
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub review thread observation failed with HTTP ${response.status}`);
+    }
+    return (await response.json()) as T;
+  }
+  function recordComments(
+    comments: CommentsConnection | null | undefined,
+    state: PublicationThreadObservation["state"],
+  ): void {
+    for (const comment of comments?.nodes ?? []) {
+      const id = comment?.databaseId;
+      if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) {
+        const key = String(id);
+        if (expected.has(key)) observed.set(key, state);
+      }
+    }
+  }
+  async function observeRemainingComments(
+    threadId: string,
+    initialCursor: string,
+    state: PublicationThreadObservation["state"],
+  ): Promise<void> {
+    let commentsCursor: string | null = initialCursor;
+    for (let page = 1; page < MAX_PAGES; page += 1) {
+      const payload: ThreadCommentsResponse = await requestGraphql<ThreadCommentsResponse>(
+        `query PostilPublicationThreadComments($threadId: ID!, $commentsCursor: String) {
+          node(id: $threadId) {
+            ... on PullRequestReviewThread {
+              comments(first: ${PAGE_SIZE}, after: $commentsCursor) {
+                nodes { databaseId }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }`,
+        { threadId, commentsCursor },
+      );
+      if (payload.errors?.length) {
+        throw new Error("GitHub review thread comment observation returned GraphQL errors");
+      }
+      const comments: CommentsConnection | null | undefined = payload.data?.node?.comments;
+      if (!comments) {
+        throw new Error("GitHub review thread comment observation returned no thread");
+      }
+      recordComments(comments, state);
+      if (!comments.pageInfo?.hasNextPage) return;
+      commentsCursor = comments.pageInfo.endCursor ?? null;
+      if (!commentsCursor) {
+        throw new Error("GitHub review thread comment pagination omitted its cursor");
+      }
+    }
+    throw new Error(`GitHub review thread comment observation exceeded ${MAX_PAGES} pages`);
+  }
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const payload: ThreadsResponse = await requestGraphql<ThreadsResponse>(
+      `query PostilPublicationThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {
               reviewThreads(first: ${PAGE_SIZE}, after: $cursor) {
                 nodes {
+                  id
                   isResolved
                   isOutdated
-                  comments(first: ${PAGE_SIZE}) { nodes { databaseId } }
+                  comments(first: ${PAGE_SIZE}) {
+                    nodes { databaseId }
+                    pageInfo { hasNextPage endCursor }
+                  }
                 }
                 pageInfo { hasNextPage endCursor }
               }
             }
           }
         }`,
-        variables: { owner, name, number: prNumber, cursor },
-      }),
-      signal: requestSignal,
-    });
-    if (!response.ok) {
-      throw new Error(`GitHub review thread observation failed with HTTP ${response.status}`);
-    }
-    const payload = (await response.json()) as ThreadsResponse;
+      { owner, name, number: prNumber, cursor },
+    );
     if (payload.errors?.length) {
       throw new Error("GitHub review thread observation returned GraphQL errors");
     }
-    const threads = payload.data?.repository?.pullRequest?.reviewThreads;
+    const threads: NonNullable<
+      NonNullable<NonNullable<ThreadsResponse["data"]>["repository"]>["pullRequest"]
+    >["reviewThreads"] = payload.data?.repository?.pullRequest?.reviewThreads;
     if (!threads) throw new Error("GitHub review thread observation returned no pull request");
     for (const thread of threads.nodes ?? []) {
       if (!thread) continue;
@@ -99,12 +171,14 @@ export async function observeGitHubReviewThreads(
         : thread.isOutdated
           ? "outdated"
           : "inline";
-      for (const comment of thread.comments?.nodes ?? []) {
-        const id = comment?.databaseId;
-        if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) {
-          const key = String(id);
-          if (expected.has(key)) observed.set(key, state);
+      recordComments(thread.comments, state);
+      if (thread.comments?.pageInfo?.hasNextPage) {
+        const threadId = thread.id;
+        const commentsCursor = thread.comments.pageInfo.endCursor ?? null;
+        if (!threadId || !commentsCursor) {
+          throw new Error("GitHub review thread comment pagination omitted its identity or cursor");
         }
+        await observeRemainingComments(threadId, commentsCursor, state);
       }
     }
     if (!threads.pageInfo?.hasNextPage) {

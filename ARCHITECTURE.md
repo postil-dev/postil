@@ -191,7 +191,10 @@ deleted. Comment prose, reactions, and dismissed reviews do not change finding
 state. Reviews produced by a CLI without the receipt contract record their
 unobserved findings as `unknown`. Dashboard publication counts and confidence
 metrics read this normalized state instead of assuming every envelope finding
-reached the pull request.
+reached the pull request. Receipts store finding identities, GitHub object
+identifiers, and lifecycle states only. They do not store comment prose or
+provider payloads, and dashboard rendering uses the same organization
+authorization boundary as the review envelope.
 
 ## Dashboard
 

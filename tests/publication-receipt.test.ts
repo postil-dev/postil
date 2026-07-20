@@ -157,19 +157,31 @@ describe("GitHub publication thread observations", () => {
                 reviewThreads: {
                   nodes: [
                     {
+                      id: "thread-11",
                       isResolved: true,
                       isOutdated: false,
-                      comments: { nodes: [{ databaseId: 11 }, { databaseId: 91 }] },
+                      comments: {
+                        nodes: [{ databaseId: 11 }, { databaseId: 91 }],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
                     },
                     {
+                      id: "thread-12",
                       isResolved: false,
                       isOutdated: true,
-                      comments: { nodes: [{ databaseId: 12 }] },
+                      comments: {
+                        nodes: [{ databaseId: 12 }],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
                     },
                     {
+                      id: "thread-13",
                       isResolved: false,
                       isOutdated: false,
-                      comments: { nodes: [{ databaseId: 13 }, { databaseId: 92 }] },
+                      comments: {
+                        nodes: [{ databaseId: 13 }, { databaseId: 92 }],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
                     },
                   ],
                   pageInfo: { hasNextPage: false, endCursor: null },
@@ -189,5 +201,54 @@ describe("GitHub publication thread observations", () => {
       { githubCommentId: "13", state: "inline" },
       { githubCommentId: "14", state: "deleted" },
     ]);
+  });
+
+  test("paginates comments within a review thread before classifying absence", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(request);
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [{
+                    id: "thread-paged",
+                    isResolved: true,
+                    isOutdated: false,
+                    comments: {
+                      nodes: [{ databaseId: 91 }],
+                      pageInfo: { hasNextPage: true, endCursor: "comment-page-2" },
+                    },
+                  }],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        }));
+      }
+      return new Response(JSON.stringify({
+        data: {
+          node: {
+            comments: {
+              nodes: [{ databaseId: 11 }],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      }));
+    }) as unknown as typeof fetch;
+
+    expect(await observeGitHubReviewThreads("token", "owner/repo", 4, ["11"])).toEqual([
+      { githubCommentId: "11", state: "resolved" },
+    ]);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.variables).toEqual({
+      threadId: "thread-paged",
+      commentsCursor: "comment-page-2",
+    });
   });
 });
