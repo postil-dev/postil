@@ -221,12 +221,13 @@ describeDb("revocable pull-request publication lease", () => {
          VALUES (62001, $1, 'legacy', 'Organization') RETURNING id`,
         [org.rows[0]!.id],
       );
-      await legacyPool.query(
+      const repository = await legacyPool.query<{ id: string }>(
         `INSERT INTO repositories
            (installation_id, github_repo_id, full_name, private, enabled)
-         VALUES ($1, 63001, 'legacy/widgets', false, true)`,
+         VALUES ($1, 63001, 'legacy/widgets', false, true) RETURNING id`,
         [installation.rows[0]!.id],
       );
+      const repositoryId = Number(repository.rows[0]!.id);
       const review = await legacyPool.query<{ id: string }>(
         `INSERT INTO jobs (kind, payload)
          VALUES ('review', $1::jsonb) RETURNING id`,
@@ -238,16 +239,71 @@ describeDb("revocable pull-request publication lease", () => {
           baseSha: "legacy-base",
         })],
       );
-      const response = await legacyPool.query<{ id: string }>(
-        `INSERT INTO jobs (kind, payload)
-         VALUES ('respond', $1::jsonb) RETURNING id`,
-        [JSON.stringify({
-          installationId: 62001,
-          repoFullName: "legacy/widgets",
-          number: 7,
-          isPr: true,
-        })],
-      );
+      const insertLegacyDelivery = async (input: {
+        issueNumber: number;
+        isPr: boolean | string;
+        sourceHeadSha?: string;
+        state: "prepared" | "delivered";
+      }) => {
+        const job = await legacyPool.query<{ id: string }>(
+          `INSERT INTO jobs (kind, payload, status)
+           VALUES ('respond', $1::jsonb, $2) RETURNING id`,
+          [
+            JSON.stringify({
+              installationId: 62001,
+              repoFullName: "legacy/widgets",
+              number: input.issueNumber,
+              isPr: input.isPr,
+              ...(input.sourceHeadSha
+                ? { sourceHeadSha: input.sourceHeadSha }
+                : {}),
+            }),
+            input.state === "delivered" ? "done" : "queued",
+          ],
+        );
+        await legacyPool.query(
+          `INSERT INTO respond_deliveries
+             (job_id, repository_id, repo_full_name, issue_number, body, state,
+              github_comment_id, delivered_at)
+           VALUES ($1, $2, 'legacy/widgets', $3, 'legacy reply', $4,
+                   CASE WHEN $4 = 'delivered' THEN $3 + 1000 ELSE NULL END,
+                   CASE WHEN $4 = 'delivered' THEN now() ELSE NULL END)`,
+          [job.rows[0]!.id, repositoryId, input.issueNumber, input.state],
+        );
+        return Number(job.rows[0]!.id);
+      };
+
+      // The legacy fixture has seven terminal deliveries: five PR replies
+      // without a recoverable head and two issue replies.
+      for (let index = 0; index < 7; index += 1) {
+        await insertLegacyDelivery({
+          issueNumber: 100 + index,
+          isPr: index < 5,
+          state: "delivered",
+        });
+      }
+      const deliveredRecoverable = await insertLegacyDelivery({
+        issueNumber: 200,
+        isPr: true,
+        sourceHeadSha: "delivered-head",
+        state: "delivered",
+      });
+      const activeRecoverable = await insertLegacyDelivery({
+        issueNumber: 201,
+        isPr: true,
+        sourceHeadSha: "active-head",
+        state: "prepared",
+      });
+      const activeAmbiguous = await insertLegacyDelivery({
+        issueNumber: 202,
+        isPr: true,
+        state: "prepared",
+      });
+      const activeMalformed = await insertLegacyDelivery({
+        issueNumber: 203,
+        isPr: "yes",
+        state: "prepared",
+      });
 
       const migration = await readFile(
         join(migrationDir, "0034_revocable_publication_leases.sql"),
@@ -256,12 +312,12 @@ describeDb("revocable pull-request publication lease", () => {
       for (const statement of migration.split("--> statement-breakpoint")) {
         if (statement.trim()) await legacyPool.query(statement);
       }
-      const rows = await legacyPool.query<{
+      const reviewRow = await legacyPool.query<{
         id: string;
         status: string;
         payload: Record<string, unknown>;
-      }>("SELECT id, status, payload FROM jobs ORDER BY id");
-      expect(rows.rows[0]).toMatchObject({
+      }>("SELECT id, status, payload FROM jobs WHERE id = $1", [review.rows[0]!.id]);
+      expect(reviewRow.rows[0]).toMatchObject({
         id: review.rows[0]!.id,
         status: "queued",
         payload: {
@@ -270,10 +326,117 @@ describeDb("revocable pull-request publication lease", () => {
           githubRepoId: 63001,
         },
       });
-      expect(rows.rows[1]).toMatchObject({
-        id: response.rows[0]!.id,
-        status: "failed",
+      const productionShape = await legacyPool.query<{
+        delivered_count: string;
+        pr_count: string;
+        legacy_count: string;
+        complete_count: string;
+      }>(
+        `SELECT count(*) AS delivered_count,
+                count(*) FILTER (WHERE is_pr) AS pr_count,
+                count(*) FILTER (
+                  WHERE publication_identity_state = 'legacy_delivered'
+                ) AS legacy_count,
+                count(*) FILTER (
+                  WHERE publication_identity_state = 'complete'
+                ) AS complete_count
+         FROM respond_deliveries
+         WHERE issue_number BETWEEN 100 AND 106
+           AND state = 'delivered'`,
+      );
+      expect(productionShape.rows[0]).toEqual({
+        delivered_count: "7",
+        pr_count: "5",
+        legacy_count: "5",
+        complete_count: "2",
       });
+      const repaired = await legacyPool.query<{
+        job_id: string;
+        job_status: string;
+        state: string;
+        is_pr: boolean;
+        source_head_sha: string | null;
+        publication_identity_state: string;
+      }>(
+        `SELECT delivery.job_id, job.status AS job_status, delivery.state,
+                delivery.is_pr, delivery.source_head_sha,
+                delivery.publication_identity_state
+         FROM respond_deliveries delivery
+         JOIN jobs job ON job.id = delivery.job_id
+         WHERE delivery.job_id = ANY($1::bigint[])
+         ORDER BY delivery.job_id`,
+        [[deliveredRecoverable, activeRecoverable, activeAmbiguous, activeMalformed]],
+      );
+      expect(repaired.rows).toEqual([
+        {
+          job_id: String(deliveredRecoverable),
+          job_status: "done",
+          state: "delivered",
+          is_pr: true,
+          source_head_sha: "delivered-head",
+          publication_identity_state: "complete",
+        },
+        {
+          job_id: String(activeRecoverable),
+          job_status: "queued",
+          state: "prepared",
+          is_pr: true,
+          source_head_sha: "active-head",
+          publication_identity_state: "complete",
+        },
+        {
+          job_id: String(activeAmbiguous),
+          job_status: "failed",
+          state: "cancelled",
+          is_pr: true,
+          source_head_sha: null,
+          publication_identity_state: "cancelled_incomplete",
+        },
+        {
+          job_id: String(activeMalformed),
+          job_status: "failed",
+          state: "cancelled",
+          is_pr: false,
+          source_head_sha: null,
+          publication_identity_state: "cancelled_incomplete",
+        },
+      ]);
+      const identityConstraint = await legacyPool.query<{ convalidated: boolean }>(
+        `SELECT convalidated
+         FROM pg_constraint
+         WHERE conname = 'respond_deliveries_publication_identity_check'`,
+      );
+      expect(identityConstraint.rows[0]).toEqual({ convalidated: false });
+      const invalidNewJob = await legacyPool.query<{ id: string }>(
+        `INSERT INTO jobs (kind, payload, status)
+         VALUES ('respond', $1::jsonb, 'done') RETURNING id`,
+        [JSON.stringify({
+          installationId: 62001,
+          sourceInstallationId: Number(installation.rows[0]!.id),
+          sourceOrgId: Number(org.rows[0]!.id),
+          githubRepoId: 63001,
+          repoFullName: "legacy/widgets",
+          number: 204,
+          isPr: true,
+          sourceHeadSha: "new-head",
+        })],
+      );
+      await expect(
+        legacyPool.query(
+          `INSERT INTO respond_deliveries
+             (job_id, repository_id, source_org_id, source_installation_id,
+              source_github_installation_id, source_github_repo_id,
+              repo_full_name, issue_number, is_pr, body, state)
+           VALUES ($1, $2, $3, $4, 62001, 63001,
+                   'legacy/widgets', 204, true, 'invalid new reply', 'delivered')`,
+          [
+            invalidNewJob.rows[0]!.id,
+            repositoryId,
+            org.rows[0]!.id,
+            installation.rows[0]!.id,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
       await expect(
         legacyPool.query(
           `UPDATE jobs
