@@ -253,9 +253,10 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
          api_key_ciphertext,
          api_format,
          model,
-         model_cascade
+         model_cascade,
+         gate_enabled
        )
-       SELECT id, $1, $2, $3, $4, $5
+       SELECT id, $1, $2, $3, $4, $5, true
        FROM organizations
        WHERE slug = 'local'`,
       [
