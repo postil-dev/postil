@@ -9,6 +9,7 @@ import {
   verifyBillingContactToken,
 } from "@/lib/billing-contact-verification";
 import type { Database } from "@/lib/db";
+import { brevoIdempotencyUuid } from "@/lib/transactional-email";
 
 const NOW = new Date("2026-07-12T12:00:00.000Z");
 const TOKEN = "a".repeat(43);
@@ -116,7 +117,9 @@ describe("billing verification sender", () => {
     expect(body.subject).toBe("Verify your Postil billing contact");
     expect(body.textContent).toContain("billing contact for Acme Injected");
     expect(body.htmlContent).toContain("Verify billing contact email");
-    expect(body.headers["Idempotency-Key"]).toBe("verification-digest");
+    expect(body.headers["Idempotency-Key"]).toBe(
+      brevoIdempotencyUuid("verification-digest"),
+    );
   });
 });
 

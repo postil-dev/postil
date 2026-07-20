@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   assertApplicationEmailBody,
+  brevoIdempotencyUuid,
   renderTransactionalEmail,
   sendTransactionalEmail,
   type TransactionalEmailContent,
@@ -86,7 +87,7 @@ describe("transactional email renderer", () => {
     );
   });
 
-  test("sends HTML and text through the existing Brevo API with idempotency", async () => {
+  test("sends HTML and text through the authenticated Brevo HTTPS API", async () => {
     let request: { input: string; init?: RequestInit } | undefined;
     const result = await sendTransactionalEmail({
       recipient: "billing@example.com",
@@ -111,10 +112,65 @@ describe("transactional email renderer", () => {
       "api-key": "brevo-test-key",
       "content-type": "application/json",
     });
+    expect(request?.init?.redirect).toBe("error");
     expect(body.htmlContent).toContain("Verify billing contact email");
     expect(body.textContent).toContain("Why you received this:");
-    expect(body.headers).toEqual({ "Idempotency-Key": "verification-preview" });
+    expect(body.headers).toEqual({
+      "Idempotency-Key": brevoIdempotencyUuid("verification-preview"),
+    });
+    expect((body.headers as Record<string, string>)["Idempotency-Key"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(body).not.toHaveProperty("templateId");
+  });
+
+  test("keeps provider idempotency stable across durable retries", () => {
+    const first = brevoIdempotencyUuid("operator-event:stable");
+    expect(brevoIdempotencyUuid("operator-event:stable")).toBe(first);
+    expect(brevoIdempotencyUuid("operator-event:different")).not.toBe(first);
+  });
+
+  test("accepts only Brevo's documented duplicate response as delivered", async () => {
+    const input = {
+      recipient: "billing@example.com",
+      subject: "Verify your Postil billing contact",
+      content: representative,
+      idempotencyKey: "verification-preview",
+      apiKey: "brevo-test-key",
+    };
+    await expect(
+      sendTransactionalEmail({
+        ...input,
+        fetchImpl: async () =>
+          Response.json(
+            { code: "duplicate_parameter" },
+            { status: 400 },
+          ),
+      }),
+    ).resolves.toEqual({ messageId: null });
+    await expect(
+      sendTransactionalEmail({
+        ...input,
+        fetchImpl: async () =>
+          Response.json(
+            { code: "duplicate_parameter" },
+            { status: 401 },
+          ),
+      }),
+    ).rejects.toThrow("Brevo transactional email failed: 401");
+  });
+
+  test("rejects an accepted response without Brevo's delivery receipt", async () => {
+    await expect(
+      sendTransactionalEmail({
+        recipient: "billing@example.com",
+        subject: "Verify your Postil billing contact",
+        content: representative,
+        idempotencyKey: "verification-preview",
+        apiKey: "brevo-test-key",
+        fetchImpl: async () => Response.json({}, { status: 201 }),
+      }),
+    ).rejects.toThrow("returned no message ID");
   });
 
   test("rejects malformed envelope fields before provider access", async () => {
@@ -151,5 +207,15 @@ describe("transactional email renderer", () => {
         fetchImpl,
       }),
     ).rejects.toThrow("idempotency key is invalid");
+    await expect(
+      sendTransactionalEmail({
+        recipient: "billing@example.com",
+        subject: "Valid subject",
+        content: representative,
+        idempotencyKey: "valid-idempotency-key",
+        apiKey: "",
+        fetchImpl,
+      }),
+    ).rejects.toThrow("API key is invalid");
   });
 });
