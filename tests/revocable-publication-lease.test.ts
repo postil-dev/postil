@@ -194,4 +194,97 @@ describeDb("revocable pull-request publication lease", () => {
       ),
     ).toBe(true);
   });
+
+  test("migration binds eligible legacy work and retires ambiguous PR delivery", async () => {
+    const legacyDatabase = `postil_legacy_${randomUUID().replaceAll("-", "")}`;
+    await admin.query(`CREATE DATABASE "${legacyDatabase}"`);
+    const source = new URL(TEST_URL!);
+    source.pathname = `/${legacyDatabase}`;
+    const legacyPool = new Pool({ connectionString: source.toString(), max: 2 });
+    try {
+      const migrationDir = join(import.meta.dir, "..", "drizzle");
+      const files = (await readdir(migrationDir))
+        .filter((file) => file.endsWith(".sql"))
+        .sort();
+      for (const file of files.filter((name) => name < "0034_")) {
+        const contents = await readFile(join(migrationDir, file), "utf8");
+        for (const statement of contents.split("--> statement-breakpoint")) {
+          if (statement.trim()) await legacyPool.query(statement);
+        }
+      }
+      const org = await legacyPool.query<{ id: string }>(
+        `INSERT INTO organizations (slug, name) VALUES ('legacy', 'Legacy') RETURNING id`,
+      );
+      const installation = await legacyPool.query<{ id: string }>(
+        `INSERT INTO installations
+           (github_installation_id, org_id, account_login, account_type)
+         VALUES (62001, $1, 'legacy', 'Organization') RETURNING id`,
+        [org.rows[0]!.id],
+      );
+      await legacyPool.query(
+        `INSERT INTO repositories
+           (installation_id, github_repo_id, full_name, private, enabled)
+         VALUES ($1, 63001, 'legacy/widgets', false, true)`,
+        [installation.rows[0]!.id],
+      );
+      const review = await legacyPool.query<{ id: string }>(
+        `INSERT INTO jobs (kind, payload)
+         VALUES ('review', $1::jsonb) RETURNING id`,
+        [JSON.stringify({
+          installationId: 62001,
+          repoFullName: "legacy/widgets",
+          prNumber: 7,
+          headSha: "legacy-head",
+          baseSha: "legacy-base",
+        })],
+      );
+      const response = await legacyPool.query<{ id: string }>(
+        `INSERT INTO jobs (kind, payload)
+         VALUES ('respond', $1::jsonb) RETURNING id`,
+        [JSON.stringify({
+          installationId: 62001,
+          repoFullName: "legacy/widgets",
+          number: 7,
+          isPr: true,
+        })],
+      );
+
+      const migration = await readFile(
+        join(migrationDir, "0034_revocable_publication_leases.sql"),
+        "utf8",
+      );
+      for (const statement of migration.split("--> statement-breakpoint")) {
+        if (statement.trim()) await legacyPool.query(statement);
+      }
+      const rows = await legacyPool.query<{
+        id: string;
+        status: string;
+        payload: Record<string, unknown>;
+      }>("SELECT id, status, payload FROM jobs ORDER BY id");
+      expect(rows.rows[0]).toMatchObject({
+        id: review.rows[0]!.id,
+        status: "queued",
+        payload: {
+          sourceOrgId: Number(org.rows[0]!.id),
+          sourceInstallationId: Number(installation.rows[0]!.id),
+          githubRepoId: 63001,
+        },
+      });
+      expect(rows.rows[1]).toMatchObject({
+        id: response.rows[0]!.id,
+        status: "failed",
+      });
+      await expect(
+        legacyPool.query(
+          `UPDATE jobs
+           SET payload = jsonb_set(payload, '{repoFullName}', '"other/widgets"')
+           WHERE id = $1`,
+          [review.rows[0]!.id],
+        ),
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      await legacyPool.end();
+      await admin.query(`DROP DATABASE "${legacyDatabase}" WITH (FORCE)`);
+    }
+  }, 20_000);
 });

@@ -36,6 +36,66 @@ CREATE TRIGGER "reviews_guard_publication_identity"
 BEFORE UPDATE ON "reviews"
 FOR EACH ROW EXECUTE FUNCTION "postil_guard_review_publication_identity"();
 
+UPDATE "jobs" job
+SET "payload" = job."payload" || jsonb_build_object(
+  'sourceOrgId', installation."org_id",
+  'sourceInstallationId', installation."id",
+  'githubRepoId', repository."github_repo_id"
+)
+FROM "installations" installation
+JOIN "repositories" repository ON repository."installation_id" = installation."id"
+WHERE job."kind" IN ('review', 'respond', 'respond-failure-comment', 'webhook-comment')
+  AND job."status" IN ('queued', 'running')
+  AND job."payload"->>'installationId' = installation."github_installation_id"::text
+  AND lower(job."payload"->>'repoFullName') = lower(repository."full_name");
+
+UPDATE "jobs"
+SET "status" = 'failed',
+    "locked_at" = NULL,
+    "locked_by" = NULL,
+    "last_error" = 'publication job lacks immutable source identity'
+WHERE "kind" IN ('review', 'respond', 'respond-failure-comment', 'webhook-comment')
+  AND "status" IN ('queued', 'running')
+  AND (
+    "payload"->>'sourceOrgId' IS NULL OR
+    "payload"->>'sourceInstallationId' IS NULL OR
+    "payload"->>'githubRepoId' IS NULL OR
+    (
+      "kind" IN ('respond', 'respond-failure-comment', 'webhook-comment')
+      AND (
+        jsonb_typeof("payload"->'isPr') IS DISTINCT FROM 'boolean' OR
+        ("payload"->>'isPr')::boolean AND "payload"->>'sourceHeadSha' IS NULL
+      )
+    )
+  );
+
+CREATE FUNCTION "postil_guard_job_publication_identity"()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD."kind" IN ('review', 'respond', 'respond-failure-comment', 'webhook-comment')
+     AND (
+       NEW."kind" IS DISTINCT FROM OLD."kind" OR
+       NEW."payload"->>'installationId' IS DISTINCT FROM OLD."payload"->>'installationId' OR
+       NEW."payload"->>'sourceOrgId' IS DISTINCT FROM OLD."payload"->>'sourceOrgId' OR
+       NEW."payload"->>'sourceInstallationId' IS DISTINCT FROM OLD."payload"->>'sourceInstallationId' OR
+       NEW."payload"->>'githubRepoId' IS DISTINCT FROM OLD."payload"->>'githubRepoId' OR
+       NEW."payload"->>'repoFullName' IS DISTINCT FROM OLD."payload"->>'repoFullName' OR
+       NEW."payload"->>'prNumber' IS DISTINCT FROM OLD."payload"->>'prNumber' OR
+       NEW."payload"->>'number' IS DISTINCT FROM OLD."payload"->>'number' OR
+       NEW."payload"->>'isPr' IS DISTINCT FROM OLD."payload"->>'isPr' OR
+       NEW."payload"->>'headSha' IS DISTINCT FROM OLD."payload"->>'headSha' OR
+       NEW."payload"->>'baseSha' IS DISTINCT FROM OLD."payload"->>'baseSha' OR
+       NEW."payload"->>'sourceHeadSha' IS DISTINCT FROM OLD."payload"->>'sourceHeadSha'
+     ) THEN
+    RAISE EXCEPTION 'job publication identity is immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER "jobs_guard_publication_identity"
+BEFORE UPDATE ON "jobs"
+FOR EACH ROW EXECUTE FUNCTION "postil_guard_job_publication_identity"();
+
 ALTER TABLE "respond_deliveries"
   ADD COLUMN "source_org_id" bigint,
   ADD COLUMN "source_installation_id" bigint,
