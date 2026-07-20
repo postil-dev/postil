@@ -37,6 +37,16 @@ describe("dashboard metric details", () => {
     expect(source).not.toContain("candidate findings dropped");
   });
 
+  test("labels confidence as percentages and does not draw empty buckets", () => {
+    const source = readFileSync("src/app/orgs/[slug]/page.tsx", "utf8");
+
+    expect(source).toContain('"0–20%", "20–40%", "40–60%", "60–80%", "80–100%"');
+    expect(source).toContain("share of shipped findings on a linear scale");
+    expect(source).toContain("v > 0");
+    expect(source).toContain(': "0"');
+    expect(source).not.toContain('"0–.2"');
+  });
+
   test("does not present silence rate as a commit-quality score", () => {
     const source = readFileSync("src/app/orgs/[slug]/page.tsx", "utf8");
     expect(source).toContain("reviewer output frequency, not commit quality");

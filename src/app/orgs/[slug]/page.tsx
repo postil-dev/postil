@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 };
 export const dynamic = "force-dynamic";
 
-const BUCKET_LABELS = ["0–.2", ".2–.4", ".4–.6", ".6–.8", ".8–1"] as const;
+const BUCKET_LABELS = ["0–20%", "20–40%", "40–60%", "60–80%", "80–100%"] as const;
 
 export default async function OrgDashboardPage({
   params,
@@ -383,7 +383,7 @@ export default async function OrgDashboardPage({
         <div className="card p-8">
           <p className="eyebrow">Confidence distribution</p>
           <p className="mt-2 text-xs text-charcoal/70">
-            Higher confidence is better. Each bar is the share of shipped findings.
+            Higher is better. Bars show the share of shipped findings on a linear scale.
           </p>
           <div className="mt-6 grid grid-cols-[2.5rem_1fr] gap-3">
             <div className="flex h-32 flex-col justify-between border-r border-stone/80 pr-2 text-right font-mono text-[10px] text-charcoal/70">
@@ -400,14 +400,17 @@ export default async function OrgDashboardPage({
                   <div
                     role="img"
                     tabIndex={0}
-                    aria-label={`${BUCKET_LABELS[i]} confidence: ${v} findings, ${bucketPercentages[i]} percent of shipped findings`}
+                    aria-label={`${BUCKET_LABELS[i]} confidence: ${v} of ${shippedConfidenceFindings} shipped findings, ${bucketPercentages[i]} percent`}
                     className="w-full rounded-t-[3px] bg-gate"
-                    title={`${bucketPercentages[i]}% · ${v} findings at ${BUCKET_LABELS[i]} confidence`}
+                    title={`${v} of ${shippedConfidenceFindings} shipped findings (${bucketPercentages[i]}%) scored ${BUCKET_LABELS[i]} confidence`}
                     style={{
-                      height: `${Math.max(
-                        ((bucketPercentages[i] ?? 0) / bucketPercentageMax) * 100,
-                        v > 0 ? 4 : 1,
-                      )}%`,
+                      height:
+                        v > 0
+                          ? `${Math.max(
+                              ((bucketPercentages[i] ?? 0) / bucketPercentageMax) * 100,
+                              4,
+                            )}%`
+                          : "0",
                       opacity: 0.45 + i * 0.13,
                     }}
                   />
