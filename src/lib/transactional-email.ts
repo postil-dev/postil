@@ -207,10 +207,10 @@ export async function sendTransactionalEmail(input: {
     throw new Error("transactional email subject is invalid");
   }
   if (!/^[!-~]{1,200}$/.test(input.idempotencyKey)) {
-    throw new Error("transactional email idempotency key is invalid");
+    throw new Error("idempotency key is invalid");
   }
   if (!input.apiKey.trim() || /[\r\n]/.test(input.apiKey)) {
-    throw new Error("transactional email API key is invalid");
+    throw new Error("API key is invalid");
   }
   const providerIdempotencyKey = brevoIdempotencyUuid(input.idempotencyKey);
   const rendered = renderTransactionalEmail(input.content);
