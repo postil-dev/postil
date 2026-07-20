@@ -139,8 +139,8 @@ ALTER TABLE "respond_deliveries"
 UPDATE "respond_deliveries"
 SET "state" = 'cancelled',
     "publication_identity_state" = 'cancelled_incomplete',
-    "cancelled_at" = now()
-WHERE "state" IN ('prepared', 'delivering')
+    "cancelled_at" = COALESCE("cancelled_at", now())
+WHERE "state" IN ('prepared', 'delivering', 'cancelled')
   AND (
     "source_org_id" IS NULL OR
     "source_installation_id" IS NULL OR

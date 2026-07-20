@@ -239,12 +239,23 @@ describeDb("revocable pull-request publication lease", () => {
           baseSha: "legacy-base",
         })],
       );
+      await legacyPool.query(
+        `ALTER TABLE respond_deliveries
+           DROP CONSTRAINT respond_deliveries_state_check,
+           ADD CONSTRAINT respond_deliveries_state_check
+             CHECK (state IN ('prepared', 'delivering', 'delivered', 'cancelled'))`,
+      );
       const insertLegacyDelivery = async (input: {
         issueNumber: number;
         isPr: boolean | string;
         sourceHeadSha?: string;
-        state: "prepared" | "delivered";
+        state: "prepared" | "delivered" | "cancelled";
       }) => {
+        const jobStatus = input.state === "prepared"
+          ? "queued"
+          : input.state === "delivered"
+            ? "done"
+            : "failed";
         const job = await legacyPool.query<{ id: string }>(
           `INSERT INTO jobs (kind, payload, status)
            VALUES ('respond', $1::jsonb, $2) RETURNING id`,
@@ -258,7 +269,7 @@ describeDb("revocable pull-request publication lease", () => {
                 ? { sourceHeadSha: input.sourceHeadSha }
                 : {}),
             }),
-            input.state === "delivered" ? "done" : "queued",
+            jobStatus,
           ],
         );
         await legacyPool.query(
@@ -303,6 +314,11 @@ describeDb("revocable pull-request publication lease", () => {
         issueNumber: 203,
         isPr: "yes",
         state: "prepared",
+      });
+      const cancelledAmbiguous = await insertLegacyDelivery({
+        issueNumber: 204,
+        isPr: true,
+        state: "cancelled",
       });
 
       const migration = await readFile(
@@ -357,15 +373,23 @@ describeDb("revocable pull-request publication lease", () => {
         is_pr: boolean;
         source_head_sha: string | null;
         publication_identity_state: string;
+        cancelled_at_set: boolean;
       }>(
         `SELECT delivery.job_id, job.status AS job_status, delivery.state,
                 delivery.is_pr, delivery.source_head_sha,
-                delivery.publication_identity_state
+                delivery.publication_identity_state,
+                delivery.cancelled_at IS NOT NULL AS cancelled_at_set
          FROM respond_deliveries delivery
          JOIN jobs job ON job.id = delivery.job_id
          WHERE delivery.job_id = ANY($1::bigint[])
          ORDER BY delivery.job_id`,
-        [[deliveredRecoverable, activeRecoverable, activeAmbiguous, activeMalformed]],
+        [[
+          deliveredRecoverable,
+          activeRecoverable,
+          activeAmbiguous,
+          activeMalformed,
+          cancelledAmbiguous,
+        ]],
       );
       expect(repaired.rows).toEqual([
         {
@@ -375,6 +399,7 @@ describeDb("revocable pull-request publication lease", () => {
           is_pr: true,
           source_head_sha: "delivered-head",
           publication_identity_state: "complete",
+          cancelled_at_set: false,
         },
         {
           job_id: String(activeRecoverable),
@@ -383,6 +408,7 @@ describeDb("revocable pull-request publication lease", () => {
           is_pr: true,
           source_head_sha: "active-head",
           publication_identity_state: "complete",
+          cancelled_at_set: false,
         },
         {
           job_id: String(activeAmbiguous),
@@ -391,6 +417,7 @@ describeDb("revocable pull-request publication lease", () => {
           is_pr: true,
           source_head_sha: null,
           publication_identity_state: "cancelled_incomplete",
+          cancelled_at_set: true,
         },
         {
           job_id: String(activeMalformed),
@@ -399,6 +426,16 @@ describeDb("revocable pull-request publication lease", () => {
           is_pr: false,
           source_head_sha: null,
           publication_identity_state: "cancelled_incomplete",
+          cancelled_at_set: true,
+        },
+        {
+          job_id: String(cancelledAmbiguous),
+          job_status: "failed",
+          state: "cancelled",
+          is_pr: true,
+          source_head_sha: null,
+          publication_identity_state: "cancelled_incomplete",
+          cancelled_at_set: true,
         },
       ]);
       const identityConstraint = await legacyPool.query<{ convalidated: boolean }>(
@@ -416,7 +453,7 @@ describeDb("revocable pull-request publication lease", () => {
           sourceOrgId: Number(org.rows[0]!.id),
           githubRepoId: 63001,
           repoFullName: "legacy/widgets",
-          number: 204,
+          number: 205,
           isPr: true,
           sourceHeadSha: "new-head",
         })],
@@ -428,7 +465,7 @@ describeDb("revocable pull-request publication lease", () => {
               source_github_installation_id, source_github_repo_id,
               repo_full_name, issue_number, is_pr, body, state)
            VALUES ($1, $2, $3, $4, 62001, 63001,
-                   'legacy/widgets', 204, true, 'invalid new reply', 'delivered')`,
+                   'legacy/widgets', 205, true, 'invalid new reply', 'delivered')`,
           [
             invalidNewJob.rows[0]!.id,
             repositoryId,
