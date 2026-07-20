@@ -207,7 +207,7 @@ try {
     "Summary",
     "Maintainer decision needed",
     "Encode the intended behavior in code",
-    "Findings (",
+    "Publication not recorded",
   ]);
   await verifyPage(
     `${origin}/orgs/acme/runs/${unavailableReview.public_id}`,
