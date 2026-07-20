@@ -21,6 +21,7 @@ import {
 } from "@/lib/private-repository-entitlement";
 import { paddleCheckoutConfiguration } from "@/lib/paddle-billing";
 import { BillingContactForm } from "./billing-contact-form";
+import { NotificationPreferencesForm } from "./notification-preferences-form";
 import {
   BillingCheckoutButton,
   BillingPortalButton,
@@ -157,6 +158,18 @@ export default async function OrgBillingPage({
           .limit(1)
       )[0]
     : undefined;
+  const notificationPreferences = (
+    await db
+      .select({
+        billingSummaryEmail:
+          schema.organizationNotificationPreferences.billingSummaryEmail,
+        serviceSummaryEmail:
+          schema.organizationNotificationPreferences.serviceSummaryEmail,
+      })
+      .from(schema.organizationNotificationPreferences)
+      .where(eq(schema.organizationNotificationPreferences.orgId, org.id))
+      .limit(1)
+  )[0];
   const hasEntitlementPeriod = Boolean(
     entitlement?.periodStartsAt && entitlement.periodEndsAt,
   );
@@ -362,12 +375,23 @@ export default async function OrgBillingPage({
           </p>
         )}
         {entitlement && (
-          <BillingContactForm
-            slug={org.slug}
-            activeEmail={contactState?.activeEmail ?? null}
-            pendingEmail={contactState?.pendingEmail ?? null}
-            verified={Boolean(contactState?.verifiedAt)}
-          />
+          <>
+            <BillingContactForm
+              slug={org.slug}
+              activeEmail={contactState?.activeEmail ?? null}
+              pendingEmail={contactState?.pendingEmail ?? null}
+              verified={Boolean(contactState?.verifiedAt)}
+            />
+            <NotificationPreferencesForm
+              slug={org.slug}
+              billingSummaryEmail={
+                notificationPreferences?.billingSummaryEmail ?? true
+              }
+              serviceSummaryEmail={
+                notificationPreferences?.serviceSummaryEmail ?? true
+              }
+            />
+          </>
         )}
       </div>
 

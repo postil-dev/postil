@@ -214,6 +214,12 @@ function formatAuditEvent(event: AuditEventRow): string {
     const visibility = event.repositoryPrivate ? " (private)" : "";
     return `${event.value === "enable" ? "Enabled" : "Disabled"} ${event.subject ?? "repository"}${visibility}`;
   }
+  if (event.subject === "billing_summary_email") {
+    return `${event.value === "enabled" ? "Enabled" : "Disabled"} billing summaries`;
+  }
+  if (event.subject === "service_summary_email") {
+    return `${event.value === "enabled" ? "Enabled" : "Disabled"} service summaries`;
+  }
   return event.value === "enabled" ? "Enabled merge gate" : "Set merge gate to advisory";
 }
 

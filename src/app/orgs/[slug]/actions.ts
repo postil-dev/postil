@@ -21,6 +21,7 @@ import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
 import { getDb, getPool, schema } from "@/lib/db";
 import { hostedInferenceAvailable } from "@/lib/env";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
+import { DEFAULT_ORGANIZATION_NOTIFICATION_PREFERENCES } from "@/lib/organization-notification-preferences";
 import { getOrgMembership } from "@/lib/org-access";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
@@ -303,6 +304,71 @@ export async function resendBillingContactVerification(
   });
   revalidatePath(`/orgs/${slug}/billing`);
   return { status: "success", message: "Verification email queued." };
+}
+
+export async function saveNotificationPreferences(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId, userId } = await requireAdmin(slug);
+  const next = {
+    billingSummaryEmail: formData.getAll("billingSummaryEmail").includes("on"),
+    serviceSummaryEmail: formData.getAll("serviceSummaryEmail").includes("on"),
+  };
+  const db = getDb();
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    const existing = (
+      await tx
+        .select({
+          billingSummaryEmail:
+            schema.organizationNotificationPreferences.billingSummaryEmail,
+          serviceSummaryEmail:
+            schema.organizationNotificationPreferences.serviceSummaryEmail,
+        })
+        .from(schema.organizationNotificationPreferences)
+        .where(eq(schema.organizationNotificationPreferences.orgId, orgId))
+        .limit(1)
+    )[0] ?? DEFAULT_ORGANIZATION_NOTIFICATION_PREFERENCES;
+
+    await tx
+      .insert(schema.organizationNotificationPreferences)
+      .values({ orgId, ...next, updatedAt: now })
+      .onConflictDoUpdate({
+        target: schema.organizationNotificationPreferences.orgId,
+        set: { ...next, updatedAt: now },
+      });
+
+    const events = [
+      existing.billingSummaryEmail === next.billingSummaryEmail
+        ? null
+        : {
+            orgId,
+            setting: "billing_summary_email",
+            value: next.billingSummaryEmail ? "enabled" : "disabled",
+            actorUserId: userId,
+            source: "dashboard",
+          },
+      existing.serviceSummaryEmail === next.serviceSummaryEmail
+        ? null
+        : {
+            orgId,
+            setting: "service_summary_email",
+            value: next.serviceSummaryEmail ? "enabled" : "disabled",
+            actorUserId: userId,
+            source: "dashboard",
+          },
+    ].filter((event): event is NonNullable<typeof event> => event !== null);
+    if (events.length > 0) {
+      await tx.insert(schema.organizationSettingEvents).values(events);
+    }
+  });
+
+  revalidatePath(`/orgs/${slug}/billing`);
+  revalidatePath(`/orgs/${slug}/settings/audit`);
+  return { status: "success", message: "Notification preferences saved." };
 }
 
 export async function toggleRepository(formData: FormData): Promise<void> {

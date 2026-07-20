@@ -274,6 +274,13 @@
       "when": 1784564224866,
       "tag": "0038_private_monitoring_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1784570812168,
+      "tag": "0039_organization_notification_preferences",
+      "breakpoints": true
     }
   ]
 }

@@ -82,6 +82,26 @@ describe("organization audit page", () => {
         source: "dashboard",
         actorLogin: "octocat",
       },
+      {
+        eventId: "4",
+        occurredAt: new Date("2026-07-15T12:00:00.000Z"),
+        eventType: "setting",
+        value: "disabled",
+        subject: "billing_summary_email",
+        repositoryPrivate: null,
+        source: "dashboard",
+        actorLogin: "octocat",
+      },
+      {
+        eventId: "5",
+        occurredAt: new Date("2026-07-15T13:00:00.000Z"),
+        eventType: "setting",
+        value: "enabled",
+        subject: "service_summary_email",
+        repositoryPrivate: null,
+        source: "dashboard",
+        actorLogin: "octocat",
+      },
     ];
 
     const page = await OrganizationAuditPage({
@@ -100,6 +120,8 @@ describe("organization audit page", () => {
     expect(markup).toContain("Imported baseline");
     expect(markup).toContain("System");
     expect(markup).toContain("Enabled merge gate");
+    expect(markup).toContain("Disabled billing summaries");
+    expect(markup).toContain("Enabled service summaries");
     expect(markup).toContain("Dashboard");
     expect(markup).not.toContain("github_installation");
     expect(markup).not.toContain("migration_baseline");

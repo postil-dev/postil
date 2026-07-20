@@ -11,6 +11,7 @@ let conflictSet: Record<string, unknown> | null = null;
 let insertCount = 0;
 let settingsRows: Array<Record<string, unknown>> = [];
 let billingRows: Array<Record<string, unknown>> = [];
+let notificationPreferenceRows: Array<Record<string, unknown>> = [];
 let queuedJobs: Array<Record<string, unknown>> = [];
 let updatedValues: Record<string, unknown> | null = null;
 let updateResultRows: Array<Record<string, unknown>> = [];
@@ -72,6 +73,13 @@ const schema = {
       "organization_entitlements.billing_contact_verification_sent_at",
     billingContactVerificationMessageId:
       "organization_entitlements.billing_contact_verification_message_id",
+  },
+  organizationNotificationPreferences: {
+    orgId: "organization_notification_preferences.org_id",
+    billingSummaryEmail:
+      "organization_notification_preferences.billing_summary_email",
+    serviceSummaryEmail:
+      "organization_notification_preferences.service_summary_email",
   },
   jobs: { kind: "jobs.kind" },
   organizationSettingEvents: {
@@ -181,6 +189,7 @@ const {
   resendBillingContactVerification,
   revokeFinding,
   saveBillingContact,
+  saveNotificationPreferences,
   saveOrgSettings,
 } = await import("@/app/orgs/[slug]/actions");
 
@@ -190,6 +199,8 @@ function fakeDb() {
       const rows =
         "role" in selection
           ? memberRows
+          : "billingSummaryEmail" in selection
+            ? notificationPreferenceRows
           : "subscriptionMode" in selection
             ? billingRows
           : "activeEmail" in selection ||
@@ -220,7 +231,7 @@ function fakeDb() {
             return Promise.resolve([]);
           }
           if (table === schema.organizationSettingEvents) {
-            settingEvents.push(values);
+            settingEvents.push(...(Array.isArray(values) ? values : [values]));
             return {
               returning: async () => [{ id: 55 }],
             };
@@ -312,6 +323,7 @@ beforeEach(() => {
   insertCount = 0;
   settingsRows = [];
   billingRows = [];
+  notificationPreferenceRows = [];
   queuedJobs = [];
   updatedValues = null;
   updateResultRows = [];
@@ -328,6 +340,17 @@ function billingContactForm(email: string): FormData {
   const form = new FormData();
   form.set("slug", "acme");
   form.set("billingContact", email);
+  return form;
+}
+
+function notificationPreferencesForm(
+  billingSummaryEmail: boolean,
+  serviceSummaryEmail: boolean,
+): FormData {
+  const form = new FormData();
+  form.set("slug", "acme");
+  if (billingSummaryEmail) form.set("billingSummaryEmail", "on");
+  if (serviceSummaryEmail) form.set("serviceSummaryEmail", "on");
   return form;
 }
 
@@ -390,6 +413,58 @@ describe("billing contact verification actions", () => {
     expect(updatedValues?.billingContactVerificationTokenDigest).toBeInstanceOf(Buffer);
     expect(queuedJobs).toHaveLength(1);
     expect(queuedJobs[0]?.kind).toBe("billing-contact-verification");
+  });
+});
+
+describe("organization notification preferences", () => {
+  test("stores optional email choices and audits changes", async () => {
+    notificationPreferenceRows = [{
+      billingSummaryEmail: true,
+      serviceSummaryEmail: false,
+    }];
+
+    expect(
+      await saveNotificationPreferences(
+        null,
+        notificationPreferencesForm(false, true),
+      ),
+    ).toEqual({
+      status: "success",
+      message: "Notification preferences saved.",
+    });
+    expect(insertedValues).toMatchObject({
+      orgId: 20,
+      billingSummaryEmail: false,
+      serviceSummaryEmail: true,
+    });
+    expect(settingEvents).toEqual([
+      {
+        orgId: 20,
+        setting: "billing_summary_email",
+        value: "disabled",
+        actorUserId: 10,
+        source: "dashboard",
+      },
+      {
+        orgId: 20,
+        setting: "service_summary_email",
+        value: "enabled",
+        actorUserId: 10,
+        source: "dashboard",
+      },
+    ]);
+  });
+
+  test("rejects non-admin preference changes", async () => {
+    memberRows = [{ role: "member" }];
+
+    await expect(
+      saveNotificationPreferences(
+        null,
+        notificationPreferencesForm(false, false),
+      ),
+    ).rejects.toThrow("this action requires an organization admin");
+    expect(insertCount).toBe(0);
   });
 });
 
