@@ -130,19 +130,22 @@ describe("private monitoring public probes", () => {
 describeDb("private monitoring durability", () => {
   let pool: Pool;
 
-  beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_URL, max: 8 });
-    const directory = join(import.meta.dir, "..", "drizzle");
-    const migrations = (await readdir(directory))
-      .filter((file) => file.endsWith(".sql"))
-      .sort();
-    for (const migration of migrations) {
-      const source = await readFile(join(directory, migration), "utf8");
-      for (const statement of source.split("--> statement-breakpoint")) {
-        if (statement.trim()) await pool.query(statement);
+  beforeAll(
+    async () => {
+      pool = new Pool({ connectionString: TEST_URL, max: 8 });
+      const directory = join(import.meta.dir, "..", "drizzle");
+      const migrations = (await readdir(directory))
+        .filter((file) => file.endsWith(".sql"))
+        .sort();
+      for (const migration of migrations) {
+        const source = await readFile(join(directory, migration), "utf8");
+        for (const statement of source.split("--> statement-breakpoint")) {
+          if (statement.trim()) await pool.query(statement);
+        }
       }
-    }
-  });
+    },
+    30_000,
+  );
 
   beforeEach(async () => {
     await pool.query(
