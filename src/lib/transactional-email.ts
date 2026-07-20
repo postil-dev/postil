@@ -194,6 +194,7 @@ export async function sendTransactionalEmail(input: {
   subject: string;
   content: TransactionalEmailContent;
   idempotencyKey: string;
+  /** Brevo HTTPS API credential, resolved through a required env boundary by every production caller. */
   apiKey: string;
   fetchImpl?: Fetch;
 }): Promise<{ messageId: string | null }> {
