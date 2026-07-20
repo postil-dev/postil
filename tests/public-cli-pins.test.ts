@@ -48,6 +48,13 @@ describe("public CLI pins", () => {
     });
     expect(() => assertPublicCliPins(pins, "fixture")).not.toThrow();
     expect(() =>
+      assertPublicCliPins(
+        { ...pins, actionCommit: "f".repeat(40) },
+        "consumer fixture",
+        { requireCanonicalAction: false },
+      ),
+    ).not.toThrow();
+    expect(() =>
       assertPublicCliPins({ ...pins, cliRelease: "v99.0.0" }, "fixture"),
     ).toThrow(`expected ${release.cliRelease}`);
     expect(() =>

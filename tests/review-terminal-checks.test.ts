@@ -96,6 +96,7 @@ const {
   failCheckRuns,
   runCheckRunCleanupJob,
   supersedeActiveReviews,
+  validateCheckRunCleanupPayload,
 } = await import("@/worker/review");
 
 beforeEach(() => {
@@ -107,6 +108,19 @@ beforeEach(() => {
 });
 
 describe("review terminal check-runs", () => {
+  test("requires immutable identity evidence for ambiguous cleanup", () => {
+    expect(() =>
+      validateCheckRunCleanupPayload({
+        installationId: 42,
+        repoFullName: "postil-dev/postil",
+        advisoryCheckRunId: null,
+        gateCheckRunId: null,
+        advisoryCheckRunMayExist: true,
+        message: "GitHub check-run creation was ambiguous",
+      }),
+    ).toThrow("check-run cleanup job payload is malformed");
+  });
+
   test("disabled hosted inference leaves both checks neutral without provider detail", async () => {
     await completeHostedInferenceDisabledCheckRuns(
       "test-token",
