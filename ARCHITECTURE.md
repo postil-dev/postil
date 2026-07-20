@@ -355,7 +355,7 @@ external collector alarms on a missing scrape or stale aggregate heartbeat.
 PostHog operational telemetry is a separate private signal for process failures
 when enabled; it is not the source of incident state or alert deduplication.
 
-PostHog is configured for anonymous cookieless capture on public pages only. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Event payloads omit arbitrary query strings and protected dashboard paths.
+PostHog is configured for anonymous cookieless capture on an exact allowlist of public pages. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Browser event payloads are rebuilt from an allowlist that keeps the public path, bounded campaign labels, referrer origin, numeric engagement metrics, and numeric Web Vitals. Query strings, persistent device or session identifiers, arbitrary SDK properties, and protected dashboard paths are discarded.
 
 ## Transactional email
 
