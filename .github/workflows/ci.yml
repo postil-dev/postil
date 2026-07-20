@@ -71,6 +71,14 @@ jobs:
           PGHOST: localhost
           PGUSER: postgres
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postil_webhook_recovery
+      - name: Verify GitHub onboarding lifecycle on fresh Postgres
+        run: |
+          createdb postil_webhook_lifecycle
+          bun test --isolate tests/webhook-handlers.test.ts
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postil_webhook_lifecycle
       - name: Verify review dedupe migration with preexisting jobs
         run: |
           createdb postil_review_dedupe
