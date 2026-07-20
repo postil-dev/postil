@@ -1112,7 +1112,7 @@ async function enqueueMentionReview(
     sourceDeliveryId,
   });
   if (triggerFollowupDrain) {
-    triggerQueueDrain("github-reaction");
+    triggerQueueDrain("requested-review-admitted");
   }
 }
 
