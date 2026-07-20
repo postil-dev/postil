@@ -128,7 +128,12 @@ describe("public CLI pins", () => {
     expect(deploy).toContain(
       "bun run scripts/verify-postil-cli-contract.ts --binary vendor/postil",
     );
-    expect(deploy).toContain("version: 0.4.71");
+    expect(deploy).toContain("FLYCTL_VERSION: 0.4.71");
+    expect(deploy).toContain(
+      "FLYCTL_LINUX_X86_64_SHA256: a782dceed173d215c000ab94e2b08623c22267edff6d90ebe3010b3f9b671dc2",
+    );
+    expect(deploy).toContain("--retry 5 --retry-all-errors --retry-delay 2");
+    expect(deploy).not.toContain("superfly/flyctl-actions/setup-flyctl");
     expect(deploy).not.toContain("version: latest");
   });
 
