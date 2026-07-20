@@ -28,12 +28,9 @@ import {
   shutdownServerObservability,
 } from "@/lib/server-observability";
 
-const INTERVAL_MS = positiveIntEnv("POSTIL_MONITOR_INTERVAL_MS", 5 * 60 * 1_000);
-const WORKER_HEARTBEAT_INTERVAL_MS =
-  configuredWorkerHeartbeatIntervalMs() ?? 30_000;
-const WORKER_HEARTBEAT_MAX_AGE_SECONDS = Math.max(
-  180,
-  Math.ceil((WORKER_HEARTBEAT_INTERVAL_MS * 3) / 1_000),
+const INTERVAL_MS = positiveIntEnv(
+  "POSTIL_MONITOR_INTERVAL_MS",
+  5 * 60 * 1_000,
 );
 const BYPASS_ALERT_AFTER_FAILURES = 2;
 const owner = `${hostname()}-${process.pid}`;
@@ -45,6 +42,16 @@ let monitorAlertSent = false;
 
 async function main(): Promise<void> {
   validateEnv("monitor");
+  const workerHeartbeatIntervalMs = configuredWorkerHeartbeatIntervalMs();
+  if (workerHeartbeatIntervalMs === null) {
+    throw new Error(
+      "WORKER_HEARTBEAT_INTERVAL_MS is required for the private monitor",
+    );
+  }
+  const workerHeartbeatMaxAgeSeconds = Math.max(
+    180,
+    Math.ceil((workerHeartbeatIntervalMs * 3) / 1_000),
+  );
   const publicOrigin = required("POSTIL_PUBLIC_URL");
   const recipient = normalizeVerificationEmail(
     required("POSTIL_OPERATOR_ALERT_EMAIL"),
@@ -80,7 +87,7 @@ async function main(): Promise<void> {
       const [publicChecks, databaseChecks] = await Promise.all([
         runPublicMonitoringChecks(publicOrigin),
         runDatabaseMonitoringChecks(pool, {
-          workerHeartbeatMaxAgeSeconds: WORKER_HEARTBEAT_MAX_AGE_SECONDS,
+          workerHeartbeatMaxAgeSeconds,
         }),
       ]);
       await finishPrivateMonitoringPass(
@@ -105,7 +112,11 @@ async function main(): Promise<void> {
             publicOrigin,
           });
         } catch (error) {
-          reportOperationalFailure("monitor", "monitor_notification_failed", error);
+          reportOperationalFailure(
+            "monitor",
+            "monitor_notification_failed",
+            error,
+          );
           console.error(
             `[monitor] notification ${notification.incidentKey} failed: ${redactSecrets(error)}`,
           );
@@ -122,9 +133,13 @@ async function main(): Promise<void> {
       reportOperationalFailure("monitor", "monitor_pass_failed", error);
       console.error(`[monitor] pass failed: ${redactSecrets(error)}`);
       if (pass) {
-        await failPrivateMonitoringPass(getPool(), pass, error).catch((recordError) => {
-          console.error(`[monitor] failed to record pass failure: ${redactSecrets(recordError)}`);
-        });
+        await failPrivateMonitoringPass(getPool(), pass, error).catch(
+          (recordError) => {
+            console.error(
+              `[monitor] failed to record pass failure: ${redactSecrets(recordError)}`,
+            );
+          },
+        );
       }
       if (
         monitorFailureCount >= BYPASS_ALERT_AFTER_FAILURES &&
@@ -190,7 +205,11 @@ function positiveIntEnv(name: string, fallback: number): number {
   const raw = optionalEnv(name);
   if (!raw) return fallback;
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 30_000 || value > 60 * 60 * 1_000) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 30_000 ||
+    value > 60 * 60 * 1_000
+  ) {
     throw new Error(`${name} must be between 30000 and 3600000 milliseconds`);
   }
   return value;
