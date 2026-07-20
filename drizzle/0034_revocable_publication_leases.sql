@@ -64,7 +64,13 @@ WHERE "kind" IN ('review', 'respond', 'respond-failure-comment', 'webhook-commen
       "kind" IN ('respond', 'respond-failure-comment', 'webhook-comment')
       AND (
         jsonb_typeof("payload"->'isPr') IS DISTINCT FROM 'boolean' OR
-        ("payload"->>'isPr')::boolean AND "payload"->>'sourceHeadSha' IS NULL
+        (
+          "payload"->'isPr' = 'true'::jsonb
+          AND (
+            jsonb_typeof("payload"->'sourceHeadSha') IS DISTINCT FROM 'string' OR
+            NULLIF(btrim("payload"->>'sourceHeadSha'), '') IS NULL
+          )
+        )
       )
     )
   );
@@ -103,6 +109,7 @@ ALTER TABLE "respond_deliveries"
   ADD COLUMN "source_github_repo_id" bigint,
   ADD COLUMN "is_pr" boolean NOT NULL DEFAULT false,
   ADD COLUMN "source_head_sha" text,
+  ADD COLUMN "publication_identity_state" text NOT NULL DEFAULT 'complete',
   ADD COLUMN "publication_lease_id" uuid,
   ADD COLUMN "publication_lease_expires_at" timestamptz,
   ADD COLUMN "cancelled_at" timestamptz;
@@ -112,7 +119,13 @@ SET "source_org_id" = installation."org_id",
     "source_installation_id" = installation."id",
     "source_github_installation_id" = installation."github_installation_id",
     "source_github_repo_id" = repository."github_repo_id",
-    "is_pr" = COALESCE((job."payload"->>'isPr')::boolean, false)
+    "is_pr" = COALESCE(job."payload"->'isPr' = 'true'::jsonb, false),
+    "source_head_sha" = CASE
+      WHEN job."payload"->'isPr' = 'true'::jsonb
+       AND jsonb_typeof(job."payload"->'sourceHeadSha') = 'string'
+      THEN NULLIF(btrim(job."payload"->>'sourceHeadSha'), '')
+      ELSE NULL
+    END
 FROM "jobs" job, "repositories" repository
 JOIN "installations" installation ON installation."id" = repository."installation_id"
 WHERE job."id" = delivery."job_id"
@@ -124,19 +137,60 @@ ALTER TABLE "respond_deliveries"
     CHECK ("state" IN ('prepared', 'delivering', 'delivered', 'cancelled'));
 
 UPDATE "respond_deliveries"
-SET "state" = 'cancelled', "cancelled_at" = now()
-WHERE "state" IN ('prepared', 'delivering')
+SET "state" = 'cancelled',
+    "publication_identity_state" = 'cancelled_incomplete',
+    "cancelled_at" = COALESCE("cancelled_at", now())
+WHERE "state" IN ('prepared', 'delivering', 'cancelled')
   AND (
     "source_org_id" IS NULL OR
     "source_installation_id" IS NULL OR
     "source_github_installation_id" IS NULL OR
     "source_github_repo_id" IS NULL OR
-    ("is_pr" AND "source_head_sha" IS NULL)
+    ("is_pr" AND "source_head_sha" IS NULL) OR
+    EXISTS (
+      SELECT 1
+      FROM "jobs" job
+      WHERE job."id" = "respond_deliveries"."job_id"
+        AND jsonb_typeof(job."payload"->'isPr') IS DISTINCT FROM 'boolean'
+    )
+  );
+
+UPDATE "respond_deliveries"
+SET "publication_identity_state" = 'legacy_delivered'
+WHERE "state" = 'delivered'
+  AND (
+    "source_org_id" IS NULL OR
+    "source_installation_id" IS NULL OR
+    "source_github_installation_id" IS NULL OR
+    "source_github_repo_id" IS NULL OR
+    ("is_pr" AND "source_head_sha" IS NULL) OR
+    EXISTS (
+      SELECT 1
+      FROM "jobs" job
+      WHERE job."id" = "respond_deliveries"."job_id"
+        AND jsonb_typeof(job."payload"->'isPr') IS DISTINCT FROM 'boolean'
+    )
   );
 
 ALTER TABLE "respond_deliveries"
-  ADD CONSTRAINT "respond_deliveries_pr_head_check"
-    CHECK (NOT "is_pr" OR "source_head_sha" IS NOT NULL OR "state" = 'cancelled');
+  ADD CONSTRAINT "respond_deliveries_publication_identity_state_check"
+    CHECK ("publication_identity_state" IN (
+      'complete', 'legacy_delivered', 'cancelled_incomplete'
+    )),
+  ADD CONSTRAINT "respond_deliveries_publication_identity_check"
+    CHECK (
+      "source_org_id" IS NOT NULL
+      AND "source_installation_id" IS NOT NULL
+      AND "source_github_installation_id" IS NOT NULL
+      AND "source_github_repo_id" IS NOT NULL
+      AND (NOT "is_pr" OR "source_head_sha" IS NOT NULL)
+    ) NOT VALID,
+  ADD CONSTRAINT "respond_deliveries_publication_identity_state_matches_row_check"
+    CHECK (
+      "publication_identity_state" = 'complete'
+      OR ("publication_identity_state" = 'legacy_delivered' AND "state" = 'delivered')
+      OR ("publication_identity_state" = 'cancelled_incomplete' AND "state" = 'cancelled')
+    );
 
 CREATE FUNCTION "postil_guard_respond_publication_identity"()
 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -149,7 +203,8 @@ BEGIN
      OR NEW."source_github_installation_id" IS DISTINCT FROM OLD."source_github_installation_id"
      OR NEW."source_github_repo_id" IS DISTINCT FROM OLD."source_github_repo_id"
      OR NEW."is_pr" IS DISTINCT FROM OLD."is_pr"
-     OR NEW."source_head_sha" IS DISTINCT FROM OLD."source_head_sha" THEN
+     OR NEW."source_head_sha" IS DISTINCT FROM OLD."source_head_sha"
+     OR NEW."publication_identity_state" IS DISTINCT FROM OLD."publication_identity_state" THEN
     RAISE EXCEPTION 'respond publication identity is immutable';
   END IF;
   RETURN NEW;

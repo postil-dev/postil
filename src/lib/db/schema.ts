@@ -1151,6 +1151,9 @@ export const respondDeliveries = pgTable(
     issueNumber: integer("issue_number").notNull(),
     isPr: boolean("is_pr").notNull().default(false),
     sourceHeadSha: text("source_head_sha"),
+    publicationIdentityState: text("publication_identity_state")
+      .notNull()
+      .default("complete"),
     body: text("body").notNull(),
     state: text("state").notNull().default("prepared"),
     deliveryLeaseExpiresAt: timestamp("delivery_lease_expires_at", {
@@ -1186,6 +1189,28 @@ export const respondDeliveries = pgTable(
     check(
       "respond_deliveries_body_nonempty",
       sql`length(btrim(${t.body})) > 0`,
+    ),
+    check(
+      "respond_deliveries_publication_identity_state_check",
+      sql`${t.publicationIdentityState} IN ('complete', 'legacy_delivered', 'cancelled_incomplete')`,
+    ),
+    check(
+      "respond_deliveries_publication_identity_check",
+      sql`(
+        ${t.sourceOrgId} IS NOT NULL
+        AND ${t.sourceInstallationId} IS NOT NULL
+        AND ${t.sourceGithubInstallationId} IS NOT NULL
+        AND ${t.sourceGithubRepoId} IS NOT NULL
+        AND (NOT ${t.isPr} OR ${t.sourceHeadSha} IS NOT NULL)
+      )`,
+    ),
+    check(
+      "respond_deliveries_publication_identity_state_matches_row_check",
+      sql`(
+        ${t.publicationIdentityState} = 'complete'
+        OR (${t.publicationIdentityState} = 'legacy_delivered' AND ${t.state} = 'delivered')
+        OR (${t.publicationIdentityState} = 'cancelled_incomplete' AND ${t.state} = 'cancelled')
+      )`,
     ),
   ],
 );

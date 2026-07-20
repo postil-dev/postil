@@ -3270,6 +3270,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "publication_identity_state": {
+          "name": "publication_identity_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'complete'"
+        },
         "body": {
           "name": "body",
           "type": "text",
@@ -3413,6 +3420,18 @@
         "respond_deliveries_body_nonempty": {
           "name": "respond_deliveries_body_nonempty",
           "value": "length(btrim(\"respond_deliveries\".\"body\")) > 0"
+        },
+        "respond_deliveries_publication_identity_state_check": {
+          "name": "respond_deliveries_publication_identity_state_check",
+          "value": "\"respond_deliveries\".\"publication_identity_state\" IN ('complete', 'legacy_delivered', 'cancelled_incomplete')"
+        },
+        "respond_deliveries_publication_identity_check": {
+          "name": "respond_deliveries_publication_identity_check",
+          "value": "(\n        \"respond_deliveries\".\"source_org_id\" IS NOT NULL\n        AND \"respond_deliveries\".\"source_installation_id\" IS NOT NULL\n        AND \"respond_deliveries\".\"source_github_installation_id\" IS NOT NULL\n        AND \"respond_deliveries\".\"source_github_repo_id\" IS NOT NULL\n        AND (NOT \"respond_deliveries\".\"is_pr\" OR \"respond_deliveries\".\"source_head_sha\" IS NOT NULL)\n      )"
+        },
+        "respond_deliveries_publication_identity_state_matches_row_check": {
+          "name": "respond_deliveries_publication_identity_state_matches_row_check",
+          "value": "(\n        \"respond_deliveries\".\"publication_identity_state\" = 'complete'\n        OR (\"respond_deliveries\".\"publication_identity_state\" = 'legacy_delivered' AND \"respond_deliveries\".\"state\" = 'delivered')\n        OR (\"respond_deliveries\".\"publication_identity_state\" = 'cancelled_incomplete' AND \"respond_deliveries\".\"state\" = 'cancelled')\n      )"
         }
       },
       "isRLSEnabled": false
