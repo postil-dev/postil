@@ -139,10 +139,25 @@ jobs:
           install -m 0755 "${tmp}/postil" vendor/postil.tmp
           mv -f vendor/postil.tmp vendor/postil
           bun run scripts/verify-postil-cli-contract.ts --binary vendor/postil
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1.4
-        with:
-          # Avoid the action's mutable latest-version lookup during Fly API outages.
-          version: 0.4.71
+      - name: Install checksum-pinned flyctl
+        env:
+          FLYCTL_VERSION: 0.4.71
+          FLYCTL_LINUX_X86_64_SHA256: a782dceed173d215c000ab94e2b08623c22267edff6d90ebe3010b3f9b671dc2
+        run: |
+          set -euo pipefail
+          archive="flyctl_${FLYCTL_VERSION}_Linux_x86_64.tar.gz"
+          url="https://github.com/superfly/flyctl/releases/download/v${FLYCTL_VERSION}/${archive}"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "${tmp}"' EXIT
+          curl --fail --location --silent --show-error \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --output "${tmp}/${archive}" "${url}"
+          printf '%s  %s\n' "${FLYCTL_LINUX_X86_64_SHA256}" "${tmp}/${archive}" \
+            | sha256sum --check --strict
+          tar -xzf "${tmp}/${archive}" -C "${tmp}" flyctl
+          install -m 0755 "${tmp}/flyctl" "${RUNNER_TEMP}/flyctl"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/flyctl" version
       - name: Load deployment secrets from Infisical
         uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
         with:
