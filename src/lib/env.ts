@@ -370,6 +370,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_MONITOR_ALERT_STATE_PATH",
+    purpose:
+      "Durable file used to deduplicate database-outage alerts across monitor restarts",
+    example: "/var/lib/postil-monitor/alert-state.json",
+    scope: ["monitor"],
+  },
+  {
     name: "METRICS_TOKEN",
     purpose: "Bearer token protecting /api/metrics",
     example: "openssl rand -hex 24",

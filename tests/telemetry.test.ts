@@ -39,7 +39,7 @@ describe("public telemetry sanitization", () => {
           "$pageview",
           properties,
           "https://postil.dev",
-          "phc_test",
+          "public-project-token",
         ),
       ).toBe(false);
     }
@@ -76,7 +76,7 @@ describe("public telemetry sanitization", () => {
 
   test("allowlists PostHog properties and bounds campaign values", () => {
     const properties: Record<string, unknown> = {
-      token: "phc_test",
+      token: "public-project-token",
       distinct_id: "$posthog_cookieless",
       $cookieless_mode: true,
       $process_person_profile: false,
@@ -99,11 +99,11 @@ describe("public telemetry sanitization", () => {
         "$pageview",
         properties,
         "https://postil.dev",
-        "phc_test",
+        "public-project-token",
       ),
     ).toBe(true);
     expect(properties).toEqual({
-      token: "phc_test",
+      token: "public-project-token",
       distinct_id: "$posthog_cookieless",
       $cookieless_mode: true,
       $process_person_profile: false,
@@ -131,7 +131,7 @@ describe("public telemetry sanitization", () => {
         "$pageleave",
         properties,
         "https://postil.dev",
-        "phc_test",
+        "public-project-token",
       ),
     ).toBe(true);
     expect(properties).toEqual({
@@ -158,7 +158,7 @@ describe("public telemetry sanitization", () => {
         "$web_vitals",
         properties,
         "https://postil.dev",
-        "phc_test",
+        "public-project-token",
       ),
     ).toBe(true);
     expect(properties).toEqual({
@@ -183,7 +183,7 @@ describe("public telemetry sanitization", () => {
           },
         },
         "https://postil.dev",
-        "phc_test",
+        "public-project-token",
       ),
     ).toBe(false);
   });
@@ -203,7 +203,7 @@ describe("public telemetry sanitization", () => {
         "$web_vitals",
         unbounded,
         "https://postil.dev",
-        "phc_test",
+        "public-project-token",
       ),
     ).toBe(true);
     expect(unbounded.$web_vitals_INP_event).toEqual({
@@ -223,7 +223,7 @@ describe("public telemetry sanitization", () => {
           },
         },
         "https://postil.dev",
-        "phc_test",
+        "public-project-token",
       ),
     ).toBe(false);
   });

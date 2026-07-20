@@ -201,6 +201,24 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+      - name: Provision private monitor state volume
+        id: monitor-volume
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          volumes=$(flyctl volumes list --app postil-web --json)
+          count=$(jq -r '[.[] | select((.name // .Name) == "postil_monitor_state" and (.region // .Region) == "lhr")] | length' <<<"${volumes}")
+          if [ "${count}" -eq 0 ]; then
+            flyctl volumes create postil_monitor_state --app postil-web --region lhr --size 1 --yes
+            volumes=$(flyctl volumes list --app postil-web --json)
+          elif [ "${count}" -ne 1 ]; then
+            echo "::error::Expected exactly one private monitor state volume in lhr."
+            exit 1
+          fi
+          volume_id=$(jq -er '[.[] | select((.name // .Name) == "postil_monitor_state" and (.region // .Region) == "lhr")] | if length == 1 then (.[0].id // .[0].ID) else error("private monitor volume is not unique") end' <<<"${volumes}")
+          echo "volume-id=${volume_id}" >> "${GITHUB_OUTPUT}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Deploy managed fleet
         id: deploy
         timeout-minutes: 10
@@ -274,8 +292,22 @@ jobs:
             echo "::error::Refusing to activate release capabilities: fleet image, process, or hosted-inference configuration is inconsistent."
             exit 1
           fi
+          if ! jq -e --arg volume "${MONITOR_VOLUME_ID}" '
+            [.[] | select(
+              .config.metadata.fly_process_group == "monitor" and
+              .state == "started" and
+              any(.config.mounts[]?;
+                (.path == "/var/lib/postil-monitor") and
+                ((.volume // .volume_id) == $volume)
+              )
+            )] | length == 1
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::Private monitor is not using the provisioned durable state volume."
+            exit 1
+          fi
           echo "Managed fleet verified."
           flyctl ssh console --app postil-web --command "bun run hosted:verify-provider"
           flyctl ssh console --app postil-web --command "bun run jobs:activate-release"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          MONITOR_VOLUME_ID: ${{ steps.monitor-volume.outputs.volume-id }}

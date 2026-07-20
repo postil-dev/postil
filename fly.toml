@@ -35,12 +35,12 @@ kill_timeout = "30s"
 NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 
 [deploy]
-release_command = "bun run release:prepare"
+release_command = "bun scripts/start-managed-process.ts release"
 
 [processes]
-web = "bun scripts/start-web.ts"
-worker = "bun src/worker/index.ts"
-monitor = "bun src/monitor/index.ts"
+web = "bun scripts/start-managed-process.ts web"
+worker = "bun scripts/start-managed-process.ts worker"
+monitor = "bun scripts/start-managed-process.ts monitor"
 
 [env]
 NODE_ENV = "production"
@@ -61,11 +61,19 @@ WORKER_IDLE_POLL_MAX_MS = "900000"
 WORKER_WATCHDOG_INTERVAL_MS = "60000"
 WORKER_HEARTBEAT_INTERVAL_MS = "30000"
 POSTIL_MONITOR_INTERVAL_MS = "300000"
+POSTIL_MONITOR_ALERT_STATE_PATH = "/var/lib/postil-monitor/alert-state.json"
 POSTHOG_CLIENT_CAPTURE = "1"
 POSTHOG_ERROR_CAPTURE = "0"
 POSTHOG_LOG_CAPTURE = "0"
 NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 POSTIL_OPERATOR_ALERT_EMAIL = "hello@postil.dev"
+
+[[mounts]]
+source = "postil_monitor_state"
+destination = "/var/lib/postil-monitor"
+processes = ["monitor"]
+initial_size = "1gb"
+snapshot_retention = 1
 
 [http_service]
 processes = ["web"]

@@ -55,7 +55,7 @@ describe("browser PostHog instrumentation", () => {
       configurable: true,
       value: async () =>
         Response.json({
-          key: "phc_test_project_token",
+          key: "public-project-token",
           apiHost: "https://eu.i.posthog.com",
           uiHost: "https://eu.posthog.com",
         }),
@@ -69,7 +69,7 @@ describe("browser PostHog instrumentation", () => {
 
     expect(initCalls).toHaveLength(1);
     expect(initCalls[0]).toMatchObject({
-      key: "phc_test_project_token",
+      key: "public-project-token",
       config: {
         api_host: "https://eu.i.posthog.com",
         ui_host: "https://eu.posthog.com",
@@ -200,7 +200,7 @@ describe("browser PostHog instrumentation", () => {
     const hostileAutomaticProperties = beforeSend?.({
       event: "$pageview",
       properties: {
-        token: "phc_test_project_token",
+        token: "public-project-token",
         distinct_id: "$posthog_cookieless",
         $cookieless_mode: true,
         $process_person_profile: false,
@@ -221,7 +221,7 @@ describe("browser PostHog instrumentation", () => {
     expect(hostileAutomaticProperties).toEqual({
       event: "$pageview",
       properties: {
-        token: "phc_test_project_token",
+        token: "public-project-token",
         distinct_id: "$posthog_cookieless",
         $cookieless_mode: true,
         $process_person_profile: false,

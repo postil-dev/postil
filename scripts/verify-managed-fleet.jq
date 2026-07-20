@@ -18,6 +18,9 @@ release_group as $release
 | [$managed[] | select(
     .config.metadata.fly_process_group == "monitor" and .state == "started"
   )] as $started_monitors
+| [$started_monitors[] | select(
+    ([.config.mounts[]? | select(.path == "/var/lib/postil-monitor")] | length) == 1
+  )] as $mounted_monitors
 | [$all_workers[].config.env.POSTIL_HOSTED_INFERENCE_ENABLED] | unique as $worker_modes
 | [$all_workers[].config.env.POSTIL_PROVISIONAL_HOSTED_ROSTER] | unique as $worker_roster_modes
 | [$web[].config.env.POSTIL_HOSTED_INFERENCE_ENABLED] | unique as $web_modes
@@ -29,6 +32,7 @@ release_group as $release
     web_started: ($web | length),
     worker_started: ($started_workers | length),
     monitor_started: ($started_monitors | length),
+    monitor_state_mounted: ($mounted_monitors | length),
     worker_hosted_inference_modes: $worker_modes,
     worker_provisional_roster_modes: $worker_roster_modes,
     web_hosted_inference_modes: $web_modes,
@@ -40,7 +44,8 @@ release_group as $release
     $summary.image_count == 1 and
     $summary.web_started >= 2 and
     $summary.worker_started >= 1 and
-    $summary.monitor_started >= 1 and
+    $summary.monitor_started == 1 and
+    $summary.monitor_state_mounted == 1 and
     $summary.worker_hosted_inference_modes == ["1"] and
     $summary.worker_provisional_roster_modes == ["1"] and
     $summary.web_hosted_inference_modes == ["1"] and

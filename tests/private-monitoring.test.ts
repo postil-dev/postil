@@ -14,12 +14,16 @@ import {
   deliverPrivateMonitoringNotification,
   finishPrivateMonitoringPass,
   getPrivateMonitoringDashboard,
+  markMonitorPassAlertSent,
   monitorPassAlertBucket,
+  recordMonitorPassFailure,
+  recordMonitorPassSuccess,
   recordServiceHeartbeat,
   runDatabaseMonitoringChecks,
   runPublicMonitoringChecks,
   sendMonitorPassFailureNotification,
   startPrivateMonitoringPass,
+  type MonitorPassFailureState,
   type PrivateMonitoringCheck,
 } from "@/lib/private-monitoring";
 
@@ -29,6 +33,35 @@ const NOW = new Date("2026-07-19T12:00:00.000Z");
 const BUCKET = new Date("2026-07-19T12:00:00.000Z");
 
 describe("private monitoring public probes", () => {
+  test("alerts once in every six-hour database-outage bucket", () => {
+    let state: MonitorPassFailureState = {
+      bucket: null,
+      failuresInBucket: 0,
+      lastAlertBucket: null,
+    };
+    let failure = recordMonitorPassFailure(state, NOW);
+    expect(failure.shouldAlert).toBe(false);
+    failure = recordMonitorPassFailure(failure.state, new Date(NOW.getTime() + 1_000));
+    expect(failure.shouldAlert).toBe(true);
+    state = markMonitorPassAlertSent(failure.state);
+
+    failure = recordMonitorPassFailure(state, new Date(NOW.getTime() + 2_000));
+    expect(failure.shouldAlert).toBe(false);
+    state = recordMonitorPassSuccess(failure.state);
+    failure = recordMonitorPassFailure(state, new Date(NOW.getTime() + 3_000));
+    failure = recordMonitorPassFailure(failure.state, new Date(NOW.getTime() + 4_000));
+    expect(failure.shouldAlert).toBe(false);
+
+    const nextBucket = new Date(NOW.getTime() + 6 * 60 * 60 * 1_000);
+    failure = recordMonitorPassFailure(failure.state, nextBucket);
+    expect(failure.shouldAlert).toBe(false);
+    failure = recordMonitorPassFailure(
+      failure.state,
+      new Date(nextBucket.getTime() + 1_000),
+    );
+    expect(failure.shouldAlert).toBe(true);
+  });
+
   test("sends monitor-pass alerts without the database outbox", async () => {
     const sent: OperatorNotification[] = [];
     const bucket = monitorPassAlertBucket(NOW);
@@ -169,6 +202,43 @@ describeDb("private monitoring durability", () => {
       startPrivateMonitoringPass(pool, "monitor-b", BUCKET, NOW),
     ]);
     expect([first, duplicate].filter(Boolean)).toHaveLength(1);
+  });
+
+  test("terminalizes stale passes and prunes completed run history", async () => {
+    await pool.query(
+      `INSERT INTO private_monitor_runs
+         (scheduled_for, owner, status, check_count, failure_count, started_at, finished_at)
+       VALUES
+         ($1, 'stale-owner', 'running', 0, 0, $1, NULL),
+         ($2, 'old-owner', 'completed', 1, 0, $2, $2)`,
+      [
+        new Date(NOW.getTime() - 31 * 60_000),
+        new Date(NOW.getTime() - 31 * 24 * 60 * 60_000),
+      ],
+    );
+    expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
+    const pass = await startPrivateMonitoringPass(pool, "monitor-a", BUCKET, NOW);
+    expect(pass).not.toBeNull();
+
+    const rows = await pool.query<{
+      owner: string;
+      status: string;
+      check_count: number;
+      failure_count: number;
+      error: string | null;
+    }>(
+      `SELECT owner, status, check_count, failure_count, error
+         FROM private_monitor_runs ORDER BY id`,
+    );
+    expect(rows.rows).toHaveLength(2);
+    expect(rows.rows[0]).toMatchObject({
+      owner: "stale-owner",
+      status: "failed",
+      check_count: 1,
+      failure_count: 1,
+      error: "Monitor process stopped before pass completion.",
+    });
+    expect(rows.rows[1]).toMatchObject({ owner: "monitor-a", status: "running" });
   });
 
   test("rejects results from a monitor that lost its lease", async () => {
@@ -489,7 +559,7 @@ describeDb("private monitoring durability", () => {
     expect(rearmed[0]?.attempt).toBe(1);
   });
 
-  test("resolves repaired and aged operational failures", async () => {
+  test("keeps terminal operational failures open until repaired", async () => {
     await pool.query(
       `INSERT INTO jobs (kind, payload, status, run_after)
        VALUES ('check-run-cleanup', '{}'::jsonb, 'failed', now() - interval '31 minutes')`,
@@ -523,24 +593,7 @@ describeDb("private monitoring durability", () => {
           "billing-settlement-failures",
         ].includes(check.key),
     );
-    expect(operationalChecks.every((check) => check.healthy)).toBe(true);
-
-    await pool.query(
-      `UPDATE jobs SET run_after = now()
-        WHERE kind = 'check-run-cleanup' AND status = 'failed'`,
-    );
-    await pool.query(
-      `UPDATE operator_alert_deliveries SET updated_at = now()
-        WHERE event_key = 'monitor-test-alert'`,
-    );
-    await pool.query(
-      `UPDATE billing_author_settlements SET updated_at = now()
-        WHERE provider_subscription_id = 'sub_monitor_test'`,
-    );
-    const failedChecks = (await runDatabaseMonitoringChecks(pool)).filter(
-      (check) => operationalChecks.some((candidate) => candidate.key === check.key),
-    );
-    expect(failedChecks.every((check) => !check.healthy)).toBe(true);
+    expect(operationalChecks.every((check) => !check.healthy)).toBe(true);
 
     await pool.query(
       `UPDATE jobs SET status = 'done'
@@ -558,6 +611,63 @@ describeDb("private monitoring durability", () => {
       (check) => operationalChecks.some((candidate) => candidate.key === check.key),
     );
     expect(repairedChecks.every((check) => check.healthy)).toBe(true);
+  });
+
+  test("requires a delivered operator alert for every trial grant", async () => {
+    const githubActorId = 998877;
+    const eventKey = `trial-started:${githubActorId}`;
+    const organization = await pool.query<{ id: string }>(
+      `INSERT INTO organizations (slug, name)
+       VALUES ('monitor-trial-alert', 'Monitor Trial Alert') RETURNING id`,
+    );
+    const orgId = organization.rows[0]!.id;
+    try {
+      await pool.query(
+        `INSERT INTO organization_entitlements
+           (org_id, subscription_mode, status, trial_ends_at, updated_by)
+         VALUES ($1, 'byok', 'trialing', now() + interval '30 days', 'test')`,
+        [orgId],
+      );
+      await pool.query(
+        `INSERT INTO self_service_trial_grants
+           (org_id, initiated_by_github_id, requested_mode, granted_mode)
+         VALUES ($1, $2, 'byok', 'byok')`,
+        [orgId, githubActorId],
+      );
+      await pool.query(
+        `INSERT INTO operator_alert_deliveries
+           (event_key, event, org_id, status, created_at, updated_at)
+         VALUES ($1, 'trial_started', $2, 'failed',
+                 now() - interval '2 days', now() - interval '2 days')`,
+        [eventKey, orgId],
+      );
+
+      const failed = (await runDatabaseMonitoringChecks(pool)).find(
+        (check) => check.key === "trial-alert-gaps",
+      );
+      expect(failed?.healthy).toBe(false);
+
+      await pool.query(
+        `UPDATE operator_alert_deliveries
+            SET status = 'delivered', delivered_at = now(), updated_at = now()
+          WHERE event_key = $1`,
+        [eventKey],
+      );
+      const delivered = (await runDatabaseMonitoringChecks(pool)).find(
+        (check) => check.key === "trial-alert-gaps",
+      );
+      expect(delivered?.healthy).toBe(true);
+    } finally {
+      await pool.query(
+        "DELETE FROM operator_alert_deliveries WHERE event_key = $1",
+        [eventKey],
+      );
+      await pool.query(
+        "DELETE FROM self_service_trial_grants WHERE org_id = $1",
+        [orgId],
+      );
+      await pool.query("DELETE FROM organizations WHERE id = $1", [orgId]);
+    }
   });
 
   test("uses the configured heartbeat threshold", async () => {

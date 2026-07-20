@@ -33,6 +33,7 @@ const MANAGED_ENV = [
   "POSTIL_OPERATOR_ALERT_EMAIL",
   "BREVO_API_KEY",
   "WORKER_HEARTBEAT_INTERVAL_MS",
+  "POSTIL_MONITOR_ALERT_STATE_PATH",
   "POSTIL_PADDLE_BILLING_ENABLED",
   "PADDLE_API_KEY",
   "PADDLE_WEBHOOK_SECRET",
@@ -103,6 +104,15 @@ describe("worker startup environment validation", () => {
 
     expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
     expect(flyConfig).toContain('POSTIL_PROVISIONAL_HOSTED_ROSTER = "1"');
+    expect(flyConfig).toContain('source = "postil_monitor_state"');
+    expect(flyConfig).toContain('destination = "/var/lib/postil-monitor"');
+    expect(flyConfig).toContain('processes = ["monitor"]');
+    expect(deployWorkflow).toContain(
+      "flyctl volumes create postil_monitor_state",
+    );
+    expect(deployWorkflow).toContain(
+      "Private monitor is not using the provisioned durable state volume.",
+    );
     expect(deployWorkflow).toContain(
       "jq -ce -f scripts/verify-managed-fleet.jq",
     );
@@ -157,6 +167,14 @@ describe("worker startup environment validation", () => {
         .exitCode,
     ).not.toBe(0);
     expect(
+      verifyManagedFleet(root, [
+        managedMachine("web", "1", "1"),
+        managedMachine("web", "1", "1"),
+        managedMachine("worker", "1", "1"),
+        managedMachine("monitor", undefined, undefined, "started", undefined, []),
+      ]).exitCode,
+    ).not.toBe(0);
+    expect(
       verifyManagedFleet(root, [...validFleet, managedMachine("worker", "1", "0")])
         .exitCode,
     ).not.toBe(0);
@@ -203,6 +221,9 @@ function managedMachine(
   provisionalRosterMode?: string,
   state = "started",
   image = "registry.fly.io/postil-web:verified",
+  mounts = group === "monitor"
+    ? [{ volume: "vol_monitor", path: "/var/lib/postil-monitor" }]
+    : [],
 ) {
   return {
     state,
@@ -220,6 +241,7 @@ function managedMachine(
           ? {}
           : { POSTIL_PROVISIONAL_HOSTED_ROSTER: provisionalRosterMode }),
       },
+      mounts,
     },
   };
 }
@@ -241,6 +263,8 @@ describe("web startup environment validation", () => {
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
     process.env.BREVO_API_KEY = "brevo-test-key";
     process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
+    process.env.POSTIL_MONITOR_ALERT_STATE_PATH =
+      "/var/lib/postil-monitor/alert-state.json";
 
     expect(() => validateEnv("monitor")).not.toThrow();
     delete process.env.BREVO_API_KEY;
@@ -254,6 +278,11 @@ describe("web startup environment validation", () => {
     process.env.DATABASE_URL = "postgres://postil:postil@localhost:5432/postil";
     delete process.env.WORKER_HEARTBEAT_INTERVAL_MS;
     expect(() => validateEnv("monitor")).toThrow(/WORKER_HEARTBEAT_INTERVAL_MS/);
+    process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
+    delete process.env.POSTIL_MONITOR_ALERT_STATE_PATH;
+    expect(() => validateEnv("monitor")).toThrow(
+      /POSTIL_MONITOR_ALERT_STATE_PATH/,
+    );
   });
 
   test("requires POSTIL_PUBLIC_URL in production", () => {

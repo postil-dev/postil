@@ -25,7 +25,7 @@ describe("/api/analytics/posthog", () => {
   test("returns the public project config from runtime env", async () => {
     process.env.POSTHOG_CLIENT_CAPTURE = "1";
     delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
-    process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
+    process.env.POSTHOG_PROJECT_TOKEN = "public-project-token";
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com";
 
     const response = await route.GET(request());
@@ -33,14 +33,14 @@ describe("/api/analytics/posthog", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({
-      key: "phc_test_project_token",
+      key: "public-project-token",
       apiHost: "https://eu.i.posthog.com",
       uiHost: "https://eu.posthog.com",
     });
   });
 
   test("requires POSTHOG_CLIENT_CAPTURE to be exactly 1", async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_project_token";
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "public-project-token";
     for (const value of [undefined, "0", "true", "yes"]) {
       if (value === undefined) delete process.env.POSTHOG_CLIENT_CAPTURE;
       else process.env.POSTHOG_CLIENT_CAPTURE = value;
@@ -52,7 +52,7 @@ describe("/api/analytics/posthog", () => {
 
   test("rejects a credentialed or non-origin ingestion host", async () => {
     process.env.POSTHOG_CLIENT_CAPTURE = "1";
-    process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
+    process.env.POSTHOG_PROJECT_TOKEN = "public-project-token";
     process.env.NEXT_PUBLIC_POSTHOG_HOST =
       "https://user:secret@posthog.invalid/path";
 
@@ -61,7 +61,7 @@ describe("/api/analytics/posthog", () => {
 
   test("honors Global Privacy Control and Do Not Track", async () => {
     process.env.POSTHOG_CLIENT_CAPTURE = "1";
-    process.env.POSTHOG_PROJECT_TOKEN = "phc_test_project_token";
+    process.env.POSTHOG_PROJECT_TOKEN = "public-project-token";
 
     const gpc = await route.GET(
       new Request("https://postil.dev/api/analytics/posthog", {
