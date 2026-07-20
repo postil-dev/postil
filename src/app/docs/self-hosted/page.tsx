@@ -282,6 +282,7 @@ ${doctorTranscript}`}</code>
           <code>pull_request</code>, <code>installation</code>, and{" "}
           <code>installation_repositories</code> events. For the interactive{" "}
           <code>@postil</code> bot, also add <code>issues: write</code>,{" "}
+          <code>members: read</code>,{" "}
           <code>issue_comment</code>, and pull request review comment events.
           Also add the <code>check_run</code> event so the "Re-run" button on
           a failed <code>postil/gate</code> or <code>postil/review</code>{" "}

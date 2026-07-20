@@ -321,7 +321,9 @@ export default function WhereDoesYourCodeGoArticle() {
           <code>contents: read</code> to fetch the diff,{" "}
           <code>pull_requests: write</code> to post one batched review,{" "}
           <code>checks: write</code> for the two check-runs, and{" "}
-          <code>metadata: read</code>. It never requests{" "}
+          <code>issues: write</code> for explicit command replies,{" "}
+          <code>members: read</code> to verify organization owners before
+          recording approvals, and <code>metadata: read</code>. It never requests{" "}
           <code>contents: write</code>, so even a full compromise of an
           installation token cannot push a commit. That is the structural
           counterpart to the RCE lesson above: hold no credential a reviewer does

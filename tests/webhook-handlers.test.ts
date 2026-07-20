@@ -46,6 +46,10 @@ let pullRequestHeadSha = "head-sha";
 let liveMembershipStatus = 200;
 let liveMembershipRole: "admin" | "member" = "admin";
 let liveMembershipState = "active";
+let liveMembershipUserId = 501;
+let liveMembershipUserLogin = "admin";
+let liveMembershipOrgId = 999;
+let liveMembershipOrgLogin = "octo";
 let membershipFetchCount = 0;
 let pullRequestReviewContext = {
   headSha: "head-sha",
@@ -169,18 +173,27 @@ describeDb("webhook handler behaviour", () => {
     liveMembershipStatus = 200;
     liveMembershipRole = "admin";
     liveMembershipState = "active";
+    liveMembershipUserId = 501;
+    liveMembershipUserLogin = "admin";
+    liveMembershipOrgId = 999;
+    liveMembershipOrgLogin = "octo";
     membershipFetchCount = 0;
     globalThis.fetch = Object.assign(
       async (input: string | URL | Request) => {
         const url =
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (!url.includes("/user/memberships/orgs/")) {
+        if (!url.includes("/orgs/octo/memberships/admin")) {
           throw new Error(`unexpected GitHub request: ${url}`);
         }
         membershipFetchCount += 1;
         return new Response(
           liveMembershipStatus === 200
-            ? JSON.stringify({ state: liveMembershipState, role: liveMembershipRole })
+            ? JSON.stringify({
+                state: liveMembershipState,
+                role: liveMembershipRole,
+                user: { id: liveMembershipUserId, login: liveMembershipUserLogin },
+                organization: { id: liveMembershipOrgId, login: liveMembershipOrgLogin },
+              })
             : "unavailable",
           {
             status: liveMembershipStatus,
@@ -1021,6 +1034,54 @@ describeDb("webhook handler behaviour", () => {
     expect(replies[0]).toContain("head-sha");
   });
 
+  test("approval command verifies and records a live admin who has never signed in", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    expect((await approvalComment("approval-without-session")).status).toBe(200);
+
+    const approval = await pool.query<{
+      actor_github_id: string;
+      actor_login_snapshot: string;
+      actor_role_snapshot: string;
+      rationale: string;
+    }>(
+      `SELECT actor_github_id, actor_login_snapshot, actor_role_snapshot, rationale
+         FROM finding_approvals
+        WHERE review_id = $1`,
+      [reviewId],
+    );
+    expect(approval.rows).toEqual([
+      {
+        actor_github_id: "501",
+        actor_login_snapshot: "admin",
+        actor_role_snapshot: "admin",
+        rationale: "reviewed",
+      },
+    ]);
+    expect(membershipFetchCount).toBe(1);
+  });
+
+  test("approval command does not depend on an unexpired web session", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await pool.query("UPDATE sessions SET expires_at = now() - interval '1 hour'");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    expect((await approvalComment("approval-expired-session")).status).toBe(200);
+
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows[0]!.c).toBe(1);
+    expect(membershipFetchCount).toBe(1);
+  });
+
   test("free-form mentions continue through respond path without approvals", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
@@ -1223,16 +1284,18 @@ describeDb("webhook handler behaviour", () => {
     expect((await queuedWebhookCommentBodies())[0]).toContain("absent");
   });
 
-  test("approval command rejects unverified and non-admin commenters", async () => {
+  test("approval command rejects incomplete identities and live non-admin members", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedCompletedApprovalReview(repoId);
 
+    liveMembershipUserId = 0;
     expect((await approvalComment("approval-unverified")).status).toBe(200);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not be verified");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
 
-    await seedUser(501, "admin", orgId, "member");
+    liveMembershipUserId = 501;
+    liveMembershipRole = "member";
     expect((await approvalComment("approval-member")).status).toBe(200);
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
       "requires an organization admin",
@@ -1269,7 +1332,7 @@ describeDb("webhook handler behaviour", () => {
         )
       ).rows[0]!.c,
     ).toBe(0);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not be verified");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
   });
 
   test("approval command applies a live admin demotion before authorizing", async () => {
@@ -1320,6 +1383,50 @@ describeDb("webhook handler behaviour", () => {
         )
       ).rows[0]!.c,
     ).toBe(0);
+  });
+
+  test("approval command fails closed on an ambiguous membership response", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    liveMembershipOrgId = 12345;
+
+    expect((await approvalComment("approval-membership-mismatch")).status).toBe(200);
+
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals",
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+    expect(
+      (
+        await pool.query<{ role: string }>(
+          "SELECT role FROM org_members WHERE org_id = $1",
+          [orgId],
+        )
+      ).rows[0]!.role,
+    ).toBe("admin");
+  });
+
+  test("approval command replay cannot create a second approval", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    expect((await approvalComment("approval-first-delivery")).status).toBe(200);
+    expect((await approvalComment("approval-replayed-comment")).status).toBe(200);
+
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows[0]!.c).toBe(1);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("already approved");
   });
 
   test("approval command recognizes a personal-account owner without an organization lookup", async () => {

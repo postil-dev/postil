@@ -1080,11 +1080,16 @@ async function handleApproveCommand(
     return true;
   }
 
-  const actor = await loadLiveApprovalActor(review, payload.comment?.user, repo.full_name);
+  const actor = await loadLiveApprovalActor(
+    review,
+    payload.comment?.user,
+    repo.full_name,
+    token,
+  );
   if (!actor) {
     await queueWebhookComment(
       payload,
-      "Approval rejected: this GitHub account could not be verified as a logged-in organization admin.",
+      "Approval rejected: GitHub could not verify this account as an active organization member.",
       sourceDeliveryId,
       triggerFollowupDrain,
     );

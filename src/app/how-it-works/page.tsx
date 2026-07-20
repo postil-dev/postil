@@ -144,7 +144,7 @@ export default function HowItWorksPage() {
       <Section
         number="02"
         eyebrow="Permissions"
-        title="Minimal permissions: read your code, write your checks."
+        title="Minimal permissions for reviews, checks, and approvals."
       >
         <div className="grid gap-8 md:grid-cols-2">
           <div>
@@ -171,6 +171,14 @@ export default function HowItWorksPage() {
                 <tr className="border-b border-stone">
                   <td className="py-2 pr-4 font-mono text-xs">checks</td>
                   <td className="py-2">write (the two check-runs)</td>
+                </tr>
+                <tr className="border-b border-stone">
+                  <td className="py-2 pr-4 font-mono text-xs">issues</td>
+                  <td className="py-2">write (explicit command replies)</td>
+                </tr>
+                <tr className="border-b border-stone">
+                  <td className="py-2 pr-4 font-mono text-xs">members</td>
+                  <td className="py-2">read (live approval authorization)</td>
                 </tr>
                 <tr className="border-b border-stone">
                   <td className="py-2 pr-4 font-mono text-xs">metadata</td>
