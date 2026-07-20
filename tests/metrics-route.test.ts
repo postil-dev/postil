@@ -40,6 +40,9 @@ function queryResponse(text: string): {
 } {
   const sql = text.replace(/\s+/g, " ");
   if (sql.includes("pg_database_size(current_database())")) {
+    expect(sql).toContain("kind = 'check-run-cleanup'");
+    expect(sql).toContain("status = 'failed'");
+    expect(sql).toContain("run_after >= now() - interval '30 minutes'");
     return {
       rows: [
         {
@@ -71,6 +74,7 @@ function queryResponse(text: string): {
           unmatched_billing_provider_events_24h: "4",
           oldest_billing_checkout_open_age_seconds: "150",
           billing_checkout_failures_24h: "5",
+          check_run_cleanup_failures_30m: "2",
           watchdog_kills: "5",
         },
       ],
@@ -122,6 +126,19 @@ function queryResponse(text: string): {
     };
   }
   if (sql.includes("WHERE status IN ('queued', 'running')")) {
+    return {
+      rows: [
+        { status: "queued", age_seconds: "300" },
+        { status: "running", age_seconds: "45" },
+      ],
+    };
+  }
+  if (
+    sql.includes("OR (status = 'queued' AND run_after <= now())") &&
+    sql.includes("GROUP BY status")
+  ) {
+    expect(sql).toContain("ELSE run_after");
+    expect(sql).not.toContain("ELSE created_at");
     return {
       rows: [
         { status: "queued", age_seconds: "300" },
@@ -281,6 +298,7 @@ describe("/api/metrics", () => {
       "postil_oldest_billing_checkout_open_age_seconds 150",
     );
     expect(text).toContain("postil_billing_checkout_failures_24h 5");
+    expect(text).toContain("postil_check_run_cleanup_failures_30m 2");
     expect(text).toContain(
       'postil_oldest_job_age_seconds{status="queued"} 300',
     );

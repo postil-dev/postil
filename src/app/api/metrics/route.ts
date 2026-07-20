@@ -54,6 +54,7 @@ interface DatabaseMetrics {
   unmatchedBillingProviderEvents24h: number;
   oldestBillingCheckoutOpenAge: number;
   billingCheckoutFailures24h: number;
+  checkRunCleanupFailures30m: number;
   oldestJobAges: Map<string, number>;
   oldestRunningReviewAge: number;
   usageTokens: Array<{
@@ -222,6 +223,9 @@ export async function GET(request: Request): Promise<NextResponse> {
       "# HELP postil_billing_checkout_failures_24h Self-service checkout attempts that failed before completion.",
       "# TYPE postil_billing_checkout_failures_24h gauge",
       `postil_billing_checkout_failures_24h ${dbMetrics.billingCheckoutFailures24h}`,
+      "# HELP postil_check_run_cleanup_failures_30m GitHub check cleanup jobs that reached terminal failure in the last 30 minutes.",
+      "# TYPE postil_check_run_cleanup_failures_30m gauge",
+      `postil_check_run_cleanup_failures_30m ${dbMetrics.checkRunCleanupFailures30m}`,
       "# HELP postil_oldest_job_age_seconds Age in seconds of the oldest queued or running job.",
       "# TYPE postil_oldest_job_age_seconds gauge",
       ...JOB_AGE_STATUSES.map(
@@ -319,6 +323,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       unmatched_billing_provider_events_24h: string;
       oldest_billing_checkout_open_age_seconds: string;
       billing_checkout_failures_24h: string;
+      check_run_cleanup_failures_30m: string;
       watchdog_kills: string;
     }>(`
       SELECT
@@ -355,6 +360,10 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         (SELECT count(*)::text FROM billing_provider_events WHERE outcome = 'unmatched' AND occurred_at >= now() - interval '24 hours') AS unmatched_billing_provider_events_24h,
         (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int::text FROM billing_checkout_transactions WHERE status IN ('creating', 'pending')) AS oldest_billing_checkout_open_age_seconds,
         (SELECT count(*)::text FROM billing_checkout_transactions WHERE status = 'failed' AND updated_at >= now() - interval '24 hours') AS billing_checkout_failures_24h,
+        (SELECT count(*)::text FROM jobs
+          WHERE kind = 'check-run-cleanup'
+            AND status = 'failed'
+            AND run_after >= now() - interval '30 minutes') AS check_run_cleanup_failures_30m,
         (SELECT count(*)::text FROM reviews WHERE status = 'failed' AND error_message LIKE 'watchdog:%') AS watchdog_kills
     `),
     pool.query<{ status: string; count: string }>(`
@@ -399,11 +408,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         EXTRACT(EPOCH FROM now() - MIN(
           CASE
             WHEN status = 'running' THEN COALESCE(locked_at, created_at)
-            ELSE created_at
+            ELSE run_after
           END
         ))::int::text AS age_seconds
       FROM jobs
-      WHERE status IN ('queued', 'running')
+      WHERE status = 'running'
+         OR (status = 'queued' AND run_after <= now())
       GROUP BY status
     `),
     pool.query<{ age_seconds: string | null }>(`
@@ -583,6 +593,9 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       row.oldest_billing_checkout_open_age_seconds,
     ),
     billingCheckoutFailures24h: toNumber(row.billing_checkout_failures_24h),
+    checkRunCleanupFailures30m: toNumber(
+      row.check_run_cleanup_failures_30m,
+    ),
     oldestJobAges: new Map(
       oldestJobs.rows.map((jobRow) => [
         jobRow.status,
