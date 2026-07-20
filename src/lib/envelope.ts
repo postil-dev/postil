@@ -45,6 +45,7 @@ export const suppressionReasonSchema = z.enum([
   "belowSeverity",
   "belowConfidence",
   "maxFindings",
+  "nonActionable",
 ]);
 
 export const suppressedFindingSchema = z.object({

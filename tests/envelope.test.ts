@@ -80,6 +80,25 @@ describe("envelope ingestion", () => {
     expect(ingested.envelope.suppressedFindings).toEqual([suppressedFinding]);
   });
 
+  test("accepts the CLI non-actionable suppression reason", () => {
+    const suppressedFinding = {
+      finding: {
+        path: "src/billing/invoice.ts",
+        line: 92,
+        severity: "info" as const,
+        kind: "risk" as const,
+        confidence: 0.8,
+        title: "No concrete action",
+        body: "The finding does not identify a change that needs correction.",
+      },
+      reason: "nonActionable" as const,
+    };
+    const ingested = ingestEnvelope(
+      JSON.stringify(validEnvelope({ suppressedFindings: [suppressedFinding] })),
+    );
+    expect(ingested.envelope.suppressedFindings).toEqual([suppressedFinding]);
+  });
+
   test("preserves exact model incidents and enforces recovery consistency", () => {
     const modelIncidents = [
       {

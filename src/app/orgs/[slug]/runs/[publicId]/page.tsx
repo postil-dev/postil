@@ -180,6 +180,7 @@ const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
   belowSeverity: "Below the configured severity threshold",
   belowConfidence: "Below the configured confidence threshold",
   maxFindings: "Beyond the configured finding limit",
+  nonActionable: "No concrete action identified",
 };
 
 const PUBLICATION_STATE_LABELS: Record<PublicationState, string> = {
