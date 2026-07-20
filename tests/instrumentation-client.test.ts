@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from "bun:test";
 type CapturedEvent = {
   event: string;
   properties?: Record<string, unknown>;
+  $set?: Record<string, unknown>;
   $set_once?: Record<string, unknown>;
   options?: Record<string, unknown>;
 };
@@ -55,7 +56,7 @@ describe("browser PostHog instrumentation", () => {
       value: async () =>
         Response.json({
           key: "phc_test_project_token",
-          apiHost: "/relay",
+          apiHost: "https://eu.i.posthog.com",
           uiHost: "https://eu.posthog.com",
         }),
     });
@@ -70,7 +71,7 @@ describe("browser PostHog instrumentation", () => {
     expect(initCalls[0]).toMatchObject({
       key: "phc_test_project_token",
       config: {
-        api_host: "/relay",
+        api_host: "https://eu.i.posthog.com",
         ui_host: "https://eu.posthog.com",
         cookieless_mode: "always",
         disable_persistence: true,
@@ -97,8 +98,9 @@ describe("browser PostHog instrumentation", () => {
     });
     expect(capturedEvents.map((event) => event.event)).toEqual(["$pageview"]);
     expect(capturedEvents[0]?.properties?.$current_url).toBe(
-      "https://postil.dev/docs?utm_source=launch",
+      "https://postil.dev/docs",
     );
+    expect(capturedEvents[0]?.properties?.$utm_source).toBe("launch");
     expect(JSON.stringify(capturedEvents[0]?.properties)).not.toContain("secret");
     expect(JSON.stringify(capturedEvents[0]?.properties)).not.toContain("private");
 
@@ -106,8 +108,9 @@ describe("browser PostHog instrumentation", () => {
     await capturePublicPageview(window.location.href, document.referrer);
     expect(capturedEvents).toHaveLength(2);
     expect(capturedEvents[1]?.properties?.$current_url).toBe(
-      "https://postil.dev/pricing?utm_campaign=summer",
+      "https://postil.dev/pricing",
     );
+    expect(capturedEvents[1]?.properties?.$utm_campaign).toBe("summer");
 
     browser.navigate("/dashboard?secret=drop");
     await capturePublicPageview(window.location.href, document.referrer);
@@ -135,6 +138,7 @@ describe("browser PostHog instrumentation", () => {
     });
     expect(returnPageview?.properties).toEqual({
       $current_url: "https://postil.dev/pricing",
+      $host: "postil.dev",
       $pathname: "/pricing",
     });
 
@@ -150,7 +154,7 @@ describe("browser PostHog instrumentation", () => {
       },
     });
     expect(publicPageleave?.properties?.$current_url).toBe(
-      "https://postil.dev/pricing?utm_campaign=summer",
+      "https://postil.dev/pricing",
     );
     expect(
       beforeSend?.({ event: "$pageleave", properties: { $pathname: "/dashboard" } }),
@@ -181,7 +185,7 @@ describe("browser PostHog instrumentation", () => {
       },
     });
     expect(publicVitals?.properties?.$current_url).toBe(
-      "https://postil.dev/docs?utm_source=docs",
+      "https://postil.dev/docs",
     );
     expect(publicVitals?.properties?.$web_vitals_LCP_event).toEqual({
       name: "LCP",
@@ -189,10 +193,45 @@ describe("browser PostHog instrumentation", () => {
       rating: "good",
       delta: 1200,
       navigationType: "navigate",
-      $current_url: "https://postil.dev/docs?utm_source=docs",
+      $current_url: "https://postil.dev/docs",
       timestamp: 10,
     });
     expect(JSON.stringify(publicVitals)).not.toContain("secret");
+    const hostileAutomaticProperties = beforeSend?.({
+      event: "$pageview",
+      properties: {
+        token: "phc_test_project_token",
+        distinct_id: "$posthog_cookieless",
+        $cookieless_mode: true,
+        $process_person_profile: false,
+        $current_url:
+          "https://postil.dev/docs?utm_source=release&gclid=click-id&secret=drop",
+        $pathname: "/docs",
+        $referrer: "https://example.com/path?query=private",
+        $device_id: "persistent-id",
+        $session_id: "session-id",
+        $initial_current_url: "https://postil.dev/orgs/private",
+        $utm_source: "release",
+        $utm_medium: "x".repeat(65),
+        gclid: "click-id",
+      },
+      $set: { email: "private@example.com" },
+      $set_once: { $initial_current_url: "https://postil.dev/orgs/private" },
+    });
+    expect(hostileAutomaticProperties).toEqual({
+      event: "$pageview",
+      properties: {
+        token: "phc_test_project_token",
+        distinct_id: "$posthog_cookieless",
+        $cookieless_mode: true,
+        $process_person_profile: false,
+        $current_url: "https://postil.dev/docs",
+        $host: "postil.dev",
+        $pathname: "/docs",
+        $referrer: "https://example.com/",
+        $utm_source: "release",
+      },
+    });
     expect(
       beforeSend?.({
         event: "$web_vitals",

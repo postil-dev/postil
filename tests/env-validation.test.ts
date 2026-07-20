@@ -22,6 +22,7 @@ const MANAGED_ENV = [
   "POSTIL_PROVISIONAL_HOSTED_ROSTER",
   "GITHUB_APP_ID",
   "GITHUB_APP_PRIVATE_KEY",
+  "POSTHOG_CLIENT_CAPTURE",
   "POSTHOG_ERROR_CAPTURE",
   "POSTHOG_LOG_CAPTURE",
   "POSTHOG_PROJECT_TOKEN",
@@ -298,12 +299,31 @@ describe("web startup environment validation", () => {
     expect(message).not.toContain("credential");
   });
 
-  test("requires a project token when operational telemetry is enabled", () => {
+  test("requires a project token when any PostHog capture is enabled", () => {
     configureRequiredWebEnvironment();
-    process.env.POSTHOG_ERROR_CAPTURE = "1";
     delete process.env.POSTHOG_PROJECT_TOKEN;
+    for (const name of [
+      "POSTHOG_CLIENT_CAPTURE",
+      "POSTHOG_ERROR_CAPTURE",
+      "POSTHOG_LOG_CAPTURE",
+    ] as const) {
+      process.env[name] = "1";
+      expect(() => validateEnv("web")).toThrow(/requires POSTHOG_PROJECT_TOKEN/);
+      process.env[name] = "0";
+    }
+  });
 
-    expect(() => validateEnv("web")).toThrow(/requires POSTHOG_PROJECT_TOKEN/);
+  test("accepts only exact binary PostHog capture flags", () => {
+    configureRequiredWebEnvironment();
+    for (const name of [
+      "POSTHOG_CLIENT_CAPTURE",
+      "POSTHOG_ERROR_CAPTURE",
+      "POSTHOG_LOG_CAPTURE",
+    ] as const) {
+      process.env[name] = "true";
+      expect(() => validateEnv("web")).toThrow(/must be 0 or 1/);
+      process.env[name] = "0";
+    }
   });
 
   test("rejects unsafe or malformed operational telemetry settings", () => {

@@ -125,10 +125,8 @@ export default function PrivacyPage() {
             storage for accounts, installations, and review envelopes.
           </li>
           <li>
-            <strong>PostHog</strong> provides privacy-scoped analytics: it
-            stores aggregate pageview and request telemetry so we can understand
-            traffic sources, documentation usage, and likely bot or automation
-            traffic.
+            <strong>PostHog EU Cloud</strong> provides privacy-scoped browser
+            analytics.
           </li>
           <li>
             <strong>Paddle</strong> provides checkout, payment methods, tax,
@@ -165,24 +163,18 @@ export default function PrivacyPage() {
           public marketing, documentation, blog, install, pricing, and
           comparison pages. Browser analytics use PostHog&apos;s cookieless mode
           to record pageviews, pageleave engagement, scroll depth, Core Web
-          Vitals, sanitized referrers, and campaign parameters. Postil relays
-          these requests through its own domain, but PostHog remains the data
-          processor. Analytics set no cookies and write no local or session
-          storage; daily anonymous aggregation is not linked to an account or
-          retained as a durable browser identity. PostHog forms that rotating
-          daily identifier from the project, hostname, IP address, and user
-          agent, then discards the raw IP address. DNT and Global Privacy
-          Control disable browser and request analytics. Session replay, person
-          profiles, surveys, heatmaps, and autocaptured clicks are disabled.
-          Server-side request telemetry records sanitized path, referrer
-          origin/public path, campaign parameters, user agent, and Cloudflare
-          bot metadata when present; it does not send IP addresses, arbitrary
-          query strings, or protected dashboard paths. Operational monitoring
-          sends fixed event names and scrubbed exception stacks with
-          project-relative code locations. It excludes request content, source
-          code, repository names, prompts, model output, credentials, email
-          addresses, and absolute file paths. Authentication sets one
-          first-party session cookie after sign-in; analytics do not use it.
+          Vitals, referrer origins, and bounded campaign source, medium, and
+          campaign values. The browser sends these events directly to PostHog
+          EU Cloud. Analytics URLs contain exact published public paths without
+          query strings. The client sets no analytics cookies and writes no
+          PostHog data to local or session storage. It sends no IP property;
+          PostHog receives the connection metadata needed to accept the event,
+          and its project IP-capture policy controls whether that metadata is
+          stored. DNT and Global Privacy Control disable browser analytics.
+          Session replay, person profiles, surveys, heatmaps, browser exceptions,
+          and autocaptured clicks are disabled. Hosted PostHog Error Tracking
+          and Logs are disabled. Authentication sets one first-party session
+          cookie after sign-in; analytics do not use it.
         </p>
 
         <h2>Where data is processed (residency)</h2>

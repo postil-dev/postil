@@ -7,26 +7,9 @@ import nextConfig from "../next.config";
 const root = join(import.meta.dir, "..");
 
 describe("PostHog deployment privacy", () => {
-  test("uses a fixed same-origin relay and a first-party-only CSP", async () => {
+  test("uses direct regional ingestion with a narrowly scoped CSP", async () => {
     const rewrites = await nextConfig.rewrites?.();
-    expect(rewrites).toEqual([
-      {
-        source: "/relay/static/:path*",
-        destination: "https://eu-assets.i.posthog.com/static/:path*",
-      },
-      {
-        source: "/relay/array/:path*",
-        destination: "https://eu-assets.i.posthog.com/array/:path*",
-      },
-      {
-        source: "/relay/i/v0/e/:path*",
-        destination: "https://eu.i.posthog.com/i/v0/e/:path*",
-      },
-      {
-        source: "/relay/e/:path*",
-        destination: "https://eu.i.posthog.com/e/:path*",
-      },
-    ]);
+    expect(rewrites).toBeUndefined();
     expect(nextConfig.skipTrailingSlashRedirect).toBe(true);
 
     const headers = await nextConfig.headers?.();
@@ -34,8 +17,11 @@ describe("PostHog deployment privacy", () => {
       (header) => header.key === "Content-Security-Policy",
     )?.value;
     expect(csp).toContain("connect-src 'self'");
-    expect(csp).not.toContain("i.posthog.com");
-    expect(csp).not.toContain("assets.i.posthog.com");
+    expect(csp).toContain("connect-src 'self' https://eu.i.posthog.com");
+    expect(csp).toContain(
+      "script-src 'self' 'unsafe-inline' https://eu-assets.i.posthog.com",
+    );
+    expect(csp).not.toContain("/relay");
   });
 
   test("does not bake the project token into browser build artifacts", async () => {
@@ -49,5 +35,9 @@ describe("PostHog deployment privacy", () => {
     expect(compose).not.toContain("NEXT_PUBLIC_POSTHOG_KEY");
     expect(deploy).not.toContain("--build-arg NEXT_PUBLIC_POSTHOG_KEY");
     expect(fly).toContain('POSTHOG_CLIENT_CAPTURE = "1"');
+    expect(fly).toContain('POSTHOG_ERROR_CAPTURE = "0"');
+    expect(fly).toContain('POSTHOG_LOG_CAPTURE = "0"');
+    expect(fly).not.toContain("POSTHOG_SERVER_CAPTURE");
+    expect(fly).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
   });
 });

@@ -1,11 +1,10 @@
 import type { NextConfig } from "next";
 import { resolve } from "node:path";
 
-// Enforced CSP. The site loads only first-party assets plus a small,
-// same-origin PostHog relay, so the policy is restrictive by default. Next.js
-// emits inline bootstrap scripts and the
-// pages embed inline JSON-LD, so script-src needs 'unsafe-inline' until nonces
-// are wired through middleware; inline style attributes need it on style-src.
+// Enforced CSP. PostHog browser capture connects directly to its configured
+// regional ingestion and asset hosts. Next.js emits inline bootstrap scripts,
+// and the pages embed inline JSON-LD, so script-src needs 'unsafe-inline' until
+// nonces are wired through middleware; inline style attributes need it on style-src.
 const developmentScriptPolicy =
   process.env.NODE_ENV === "production" ? "" : " 'unsafe-eval'";
 const posthogIngestionHost = normalizedPosthogHost(
@@ -14,12 +13,12 @@ const posthogIngestionHost = normalizedPosthogHost(
 const posthogAssetHost = posthogAssetsHost(posthogIngestionHost);
 const csp = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${developmentScriptPolicy}`,
+  `script-src 'self' 'unsafe-inline' ${posthogAssetHost}${developmentScriptPolicy}`,
   "script-src-attr 'none'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self'",
+  `connect-src 'self' ${posthogIngestionHost}`,
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -66,26 +65,6 @@ const nextConfig: NextConfig = {
       {
         source: "/(.*)",
         headers: securityHeaders,
-      },
-    ];
-  },
-  async rewrites() {
-    return [
-      {
-        source: "/relay/static/:path*",
-        destination: `${posthogAssetHost}/static/:path*`,
-      },
-      {
-        source: "/relay/array/:path*",
-        destination: `${posthogAssetHost}/array/:path*`,
-      },
-      {
-        source: "/relay/i/v0/e/:path*",
-        destination: `${posthogIngestionHost}/i/v0/e/:path*`,
-      },
-      {
-        source: "/relay/e/:path*",
-        destination: `${posthogIngestionHost}/e/:path*`,
       },
     ];
   },
