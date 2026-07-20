@@ -90,15 +90,15 @@ describe("trusted local Postil pre-push hook", () => {
     expect(await readRecord(fixture)).toMatchObject({
       base: remoteBase,
       head: topicHead,
-      model: "openai/gpt-5-mini",
-      cascade: "openai/gpt-5-mini",
+      model: "z-ai/glm-5.2",
+      cascade: "z-ai/glm-5.2",
       scorer: "",
       scorerDisabled: "1",
       hostedMode: "0",
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
       modelCredential: "present",
-      invocation: `review --base ${remoteBase} --no-post --output json --fail-on info --model openai/gpt-5-mini`,
+      invocation: `review --base ${remoteBase} --no-post --output json --fail-on info --model z-ai/glm-5.2`,
     });
     expect(await refExists(fixture.remote, "refs/heads/topic")).toBe(true);
   });
@@ -206,8 +206,8 @@ describe("trusted local Postil pre-push hook", () => {
 
     expect(result.exitCode).toBe(0);
     const record = await readRecord(fixture);
-    expect(record.model).toBe("openai/gpt-5-mini");
-    expect(record.cascade).toBe("openai/gpt-5-mini");
+    expect(record.model).toBe("z-ai/glm-5.2");
+    expect(record.cascade).toBe("z-ai/glm-5.2");
     expect(record.scorer).toBe("");
     expect(record.scorerDisabled).toBe("1");
     expect(record.hostedMode).toBe("0");
