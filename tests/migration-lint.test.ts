@@ -243,6 +243,9 @@ describe("migration lint", () => {
     expect(releaseScript).toContain("DROP INDEX CONCURRENTLY IF EXISTS");
     expect(releaseScript).toContain("pg_try_advisory_lock($1, $2)");
     expect(releaseScript).toContain("pg_advisory_unlock($1, $2)");
+    expect(releaseScript).toContain(
+      'CREATE TABLE IF NOT EXISTS "release_steps"',
+    );
     expect(releaseScript).toContain("INSERT INTO release_steps");
     expect(packageJson.scripts["release:prepare"]).toContain("operational:indexes");
   });
