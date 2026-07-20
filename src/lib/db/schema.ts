@@ -222,6 +222,11 @@ export const reviews = pgTable(
     repositoryId: bigint("repository_id", { mode: "number" })
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
+    sourceOrgId: bigint("source_org_id", { mode: "number" }),
+    sourceInstallationId: bigint("source_installation_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", { mode: "number" }),
+    sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
+    sourceRepoFullName: text("source_repo_full_name"),
     prNumber: integer("pr_number").notNull(),
     authorGithubId: bigint("author_github_id", { mode: "number" }),
     authorLogin: text("author_login"),
@@ -1017,14 +1022,25 @@ export const respondDeliveries = pgTable(
         onDelete: "set null",
       },
     ),
+    sourceOrgId: bigint("source_org_id", { mode: "number" }),
+    sourceInstallationId: bigint("source_installation_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", { mode: "number" }),
+    sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
     repoFullName: text("repo_full_name").notNull(),
     issueNumber: integer("issue_number").notNull(),
+    isPr: boolean("is_pr").notNull().default(false),
+    sourceHeadSha: text("source_head_sha"),
     body: text("body").notNull(),
     state: text("state").notNull().default("prepared"),
     deliveryLeaseExpiresAt: timestamp("delivery_lease_expires_at", {
       withTimezone: true,
     }),
     githubCommentId: bigint("github_comment_id", { mode: "number" }),
+    publicationLeaseId: uuid("publication_lease_id"),
+    publicationLeaseExpiresAt: timestamp("publication_lease_expires_at", {
+      withTimezone: true,
+    }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1040,7 +1056,7 @@ export const respondDeliveries = pgTable(
     ),
     check(
       "respond_deliveries_state_check",
-      sql`${t.state} IN ('prepared', 'delivering', 'delivered')`,
+      sql`${t.state} IN ('prepared', 'delivering', 'delivered', 'cancelled')`,
     ),
     check(
       "respond_deliveries_issue_number_positive",

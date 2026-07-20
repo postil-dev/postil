@@ -389,8 +389,14 @@ export async function reconcileHostedRespondSpend(
     triggerSource?: "github_mention" | "unknown";
     delivery?: {
       jobId: number;
+      sourceOrgId?: number;
+      sourceInstallationId?: number;
+      sourceGithubInstallationId?: number;
+      sourceGithubRepoId?: number;
       repoFullName: string;
       issueNumber: number;
+      isPr?: boolean;
+      sourceHeadSha?: string;
       body: string;
     };
     now?: Date;
@@ -465,8 +471,14 @@ export async function reconcileHostedRespondSpend(
         jobId: input.delivery.jobId,
         repositoryId: input.repositoryId,
         reservationId: input.reservationId,
+        sourceOrgId: input.delivery.sourceOrgId,
+        sourceInstallationId: input.delivery.sourceInstallationId,
+        sourceGithubInstallationId: input.delivery.sourceGithubInstallationId,
+        sourceGithubRepoId: input.delivery.sourceGithubRepoId,
         repoFullName: input.delivery.repoFullName,
         issueNumber: input.delivery.issueNumber,
+        isPr: input.delivery.isPr,
+        sourceHeadSha: input.delivery.sourceHeadSha,
         body: input.delivery.body,
         createdAt: now,
         updatedAt: now,

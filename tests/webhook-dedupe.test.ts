@@ -1,19 +1,39 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Pool } from "pg";
 
-import { POST } from "@/app/api/webhooks/github/route";
 import { signWebhookBody } from "@/lib/crypto/webhook";
-import { dispatchWebhookDelivery } from "@/lib/github/webhook-handler";
 import {
   claimJob,
   enqueueRespondJobOnce,
   loadWebhookDelivery,
   pruneCompletedWebhookDeliveries,
 } from "@/lib/queue";
-import { drainQueueOnce, drainWebhookDispatch } from "@/worker/runner";
+
+const realAppAuth = await import("@/lib/github/app-auth");
+mock.module("@/lib/github/app-auth", () => ({
+  ...realAppAuth,
+  getInstallationToken: async () => "test-installation-token",
+}));
+const realChecks = await import("@/lib/github/checks");
+mock.module("@/lib/github/checks", () => ({
+  ...realChecks,
+  getPullRequestReviewContext: async () => ({
+    open: true,
+    merged: false,
+    draft: false,
+    headSha: "headsha",
+    baseSha: "basesha",
+    authorGithubId: 100,
+    authorLogin: "octocat",
+  }),
+}));
+
+const { POST } = await import("@/app/api/webhooks/github/route");
+const { dispatchWebhookDelivery } = await import("@/lib/github/webhook-handler");
+const { drainQueueOnce, drainWebhookDispatch } = await import("@/worker/runner");
 
 /**
  * Webhook inbox durability against a real Postgres. Acceptance commits the

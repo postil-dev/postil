@@ -7,17 +7,21 @@ import { getDb, getPool, schema } from "@/lib/db";
 import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import {
+  deleteIssueComment,
   findIssueCommentByMarker,
+  getPullRequestReviewContext,
   postIssueComment,
 } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import type {
+  ExternalSideEffectLease,
   RespondDeliveryJobPayload,
   RespondFailureCommentJobPayload,
   RespondJobPayload,
   WebhookCommentJobPayload,
 } from "@/lib/queue";
+import { externalSideEffectLeaseActive } from "@/lib/queue";
 import {
   canProcessRepositoryInference,
   providerModeMatchesRepositoryAccess,
@@ -33,9 +37,11 @@ import { readRespondUsageReceipt } from "@/lib/respond-usage-receipt";
 import {
   claimRespondDelivery,
   getRespondDelivery,
+  markRespondCancelled,
   markRespondDelivered,
   prepareUnmeteredRespondDelivery,
   RESPOND_DELIVERY_REQUEST_TIMEOUT_MS,
+  respondPublicationLeaseActive,
   respondDeliveryMarker,
 } from "@/lib/respond-delivery";
 import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
@@ -47,10 +53,17 @@ import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
  * environment, and let the CLI fetch context, generate the answer, and post
  * the reply. Postil only reviews and answers; it never opens PRs or pushes.
  */
-export async function runRespondJob(payload: RespondJobPayload, jobId: number): Promise<void> {
+export async function runRespondJob(
+  payload: RespondJobPayload,
+  lease: ExternalSideEffectLease,
+): Promise<void> {
+  const jobId = lease.id;
   // A malformed row must fail loudly, not spawn the CLI with "undefined" argv.
   if (
     typeof payload.installationId !== "number" ||
+    typeof payload.sourceInstallationId !== "number" ||
+    typeof payload.sourceOrgId !== "number" ||
+    typeof payload.githubRepoId !== "number" ||
     typeof payload.repoFullName !== "string" ||
     typeof payload.number !== "number" ||
     typeof payload.comment !== "string" ||
@@ -68,7 +81,12 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
       .where(eq(schema.installations.githubInstallationId, payload.installationId))
       .limit(1)
   )[0];
-  if (!installation || installation.suspended) {
+  if (
+    !installation ||
+    installation.suspended ||
+    installation.id !== payload.sourceInstallationId ||
+    installation.orgId !== payload.sourceOrgId
+  ) {
     console.warn(`respond job skipped: installation ${payload.installationId} missing/suspended`);
     return;
   }
@@ -80,12 +98,12 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
       .where(
         and(
           eq(schema.repositories.installationId, installation.id),
-          eq(schema.repositories.fullName, payload.repoFullName),
+          eq(schema.repositories.githubRepoId, payload.githubRepoId),
         ),
       )
       .limit(1)
   )[0];
-  if (!repository || !repository.enabled) {
+  if (!repository || !repository.enabled || repository.fullName !== payload.repoFullName) {
     console.warn(`respond job skipped: repository ${payload.repoFullName} missing or disabled`);
     return;
   }
@@ -113,6 +131,13 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
 
   const token = await getInstallationToken(payload.installationId);
   const currentRepository = await fetchRepositorySummary(token, payload.repoFullName);
+  if (
+    currentRepository.id !== payload.githubRepoId ||
+    currentRepository.full_name !== payload.repoFullName
+  ) {
+    console.warn(`respond job skipped: repository identity changed for ${payload.repoFullName}`);
+    return;
+  }
   await db
     .update(schema.repositories)
     .set({ fullName: currentRepository.full_name, private: currentRepository.private })
@@ -133,7 +158,7 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
   const existingDelivery = await getRespondDelivery(db, jobId);
   if (existingDelivery?.state === "delivered") return;
   if (existingDelivery) {
-    await deliverPreparedRespond(db, token, jobId);
+    await deliverPreparedRespond(db, token, jobId, lease);
     return;
   }
   const args = [
@@ -224,8 +249,14 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
         triggerSource: payload.trigger?.source === "github_mention" ? "github_mention" : "unknown",
         delivery: {
           jobId,
+          sourceOrgId: payload.sourceOrgId,
+          sourceInstallationId: payload.sourceInstallationId,
+          sourceGithubInstallationId: payload.installationId,
+          sourceGithubRepoId: payload.githubRepoId,
           repoFullName: currentRepository.full_name,
           issueNumber: payload.number,
+          isPr: payload.isPr,
+          sourceHeadSha: payload.sourceHeadSha,
           body,
         },
       });
@@ -234,12 +265,18 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
       await prepareUnmeteredRespondDelivery(db, {
         jobId,
         repositoryId: repository.id,
+        sourceOrgId: payload.sourceOrgId,
+        sourceInstallationId: payload.sourceInstallationId,
+        sourceGithubInstallationId: payload.installationId,
+        sourceGithubRepoId: payload.githubRepoId,
         repoFullName: currentRepository.full_name,
         issueNumber: payload.number,
+        isPr: payload.isPr,
+        sourceHeadSha: payload.sourceHeadSha,
         body,
       });
     }
-    await deliverPreparedRespond(db, token, jobId);
+    await deliverPreparedRespond(db, token, jobId, lease);
   } catch (error) {
     if (hostedUsageReservationId && cliStarted && !hostedSpendReconciled) {
       // Once the CLI can reach inference, absence of a validated receipt is
@@ -272,24 +309,29 @@ export async function runRespondJob(payload: RespondJobPayload, jobId: number): 
 
 export async function runRespondDeliveryJob(
   payload: RespondDeliveryJobPayload,
+  lease: ExternalSideEffectLease,
 ): Promise<void> {
   if (!Number.isSafeInteger(payload.respondJobId) || payload.respondJobId <= 0) {
     throw new Error("respond delivery payload malformed");
   }
   const db = getDb();
   const delivery = await getRespondDelivery(db, payload.respondJobId);
-  if (!delivery || delivery.state === "delivered") return;
+  if (!delivery || delivery.state === "delivered" || delivery.state === "cancelled") return;
   const token = await getInstallationToken(delivery.githubInstallationId);
-  await deliverPreparedRespond(db, token, payload.respondJobId);
+  await deliverPreparedRespond(db, token, payload.respondJobId, lease);
 }
 
 /** Deliver a fixed webhook reply through the same marker-reconciled path as a model response. */
 export async function runWebhookCommentJob(
   payload: WebhookCommentJobPayload,
-  jobId: number,
+  lease: ExternalSideEffectLease,
 ): Promise<void> {
+  const jobId = lease.id;
   if (
     typeof payload.installationId !== "number" ||
+    typeof payload.sourceInstallationId !== "number" ||
+    typeof payload.sourceOrgId !== "number" ||
+    typeof payload.githubRepoId !== "number" ||
     typeof payload.repoFullName !== "string" ||
     typeof payload.number !== "number" ||
     typeof payload.body !== "string" ||
@@ -310,7 +352,12 @@ export async function runWebhookCommentJob(
       .where(eq(schema.installations.githubInstallationId, payload.installationId))
       .limit(1)
   )[0];
-  if (!installation || installation.suspended) {
+  if (
+    !installation ||
+    installation.suspended ||
+    installation.id !== payload.sourceInstallationId ||
+    installation.orgId !== payload.sourceOrgId
+  ) {
     console.warn(
       `webhook comment skipped: installation ${payload.installationId} missing/suspended`,
     );
@@ -323,12 +370,12 @@ export async function runWebhookCommentJob(
       .where(
         and(
           eq(schema.repositories.installationId, installation.id),
-          eq(schema.repositories.fullName, payload.repoFullName),
+          eq(schema.repositories.githubRepoId, payload.githubRepoId),
         ),
       )
       .limit(1)
   )[0];
-  if (!repository || !repository.enabled) {
+  if (!repository || !repository.enabled || repository.fullName !== payload.repoFullName) {
     console.warn(`webhook comment skipped: repository ${payload.repoFullName} missing/disabled`);
     return;
   }
@@ -339,18 +386,30 @@ export async function runWebhookCommentJob(
     await prepareUnmeteredRespondDelivery(db, {
       jobId,
       repositoryId: repository.id,
+      sourceOrgId: payload.sourceOrgId,
+      sourceInstallationId: payload.sourceInstallationId,
+      sourceGithubInstallationId: payload.installationId,
+      sourceGithubRepoId: payload.githubRepoId,
       repoFullName: repository.fullName,
       issueNumber: payload.number,
+      isPr: payload.isPr,
+      sourceHeadSha: payload.sourceHeadSha,
       body: `${payload.body}\n\n${respondDeliveryMarker(jobId)}`,
     });
   }
-  await runRespondDeliveryJob({ respondJobId: jobId });
+  await deliverPreparedRespond(
+    db,
+    await getInstallationToken(payload.installationId),
+    jobId,
+    lease,
+  );
 }
 
 async function deliverPreparedRespond(
   db: ReturnType<typeof getDb>,
   token: string,
   jobId: number,
+  queueLease: ExternalSideEffectLease,
   signal?: AbortSignal,
 ): Promise<void> {
   const delivery = await claimRespondDelivery(db, jobId);
@@ -359,6 +418,8 @@ async function deliverPreparedRespond(
     if (existing?.state === "delivered") return;
     throw new Error("respond delivery is already in progress");
   }
+  const publicationLeaseId = delivery.publicationLeaseId;
+  if (!publicationLeaseId) throw new Error("respond publication lease was not created");
   const marker = respondDeliveryMarker(jobId);
   const requestSignal = signal ?? AbortSignal.timeout(RESPOND_DELIVERY_REQUEST_TIMEOUT_MS);
   const existingCommentId = await findIssueCommentByMarker(
@@ -369,6 +430,20 @@ async function deliverPreparedRespond(
     new Date(delivery.createdAt.getTime() - 5 * 60_000),
     requestSignal,
   );
+  if (!(await authorizeRespondPublication(
+    db,
+    delivery,
+    publicationLeaseId,
+    queueLease,
+    token,
+    requestSignal,
+  ))) {
+    if (existingCommentId !== null) {
+      await deleteIssueComment(token, delivery.repoFullName, existingCommentId, requestSignal);
+    }
+    await markRespondCancelled(db, jobId, publicationLeaseId);
+    return;
+  }
   const commentId = existingCommentId ?? await postIssueComment(
     token,
     delivery.repoFullName,
@@ -376,7 +451,103 @@ async function deliverPreparedRespond(
     delivery.body,
     requestSignal,
   );
-  await markRespondDelivered(db, jobId, commentId);
+  if (!(await authorizeRespondPublication(
+    db,
+    delivery,
+    publicationLeaseId,
+    queueLease,
+    token,
+    requestSignal,
+  ))) {
+    await deleteIssueComment(token, delivery.repoFullName, commentId, requestSignal);
+    await markRespondCancelled(db, jobId, publicationLeaseId);
+    return;
+  }
+  const committed = await markRespondDelivered(
+    db,
+    jobId,
+    commentId,
+    publicationLeaseId,
+  );
+  if (!committed) {
+    await deleteIssueComment(token, delivery.repoFullName, commentId, requestSignal);
+  }
+}
+
+/** Revalidate GitHub and durable authority immediately around the POST. */
+async function authorizeRespondPublication(
+  db: ReturnType<typeof getDb>,
+  delivery: NonNullable<Awaited<ReturnType<typeof getRespondDelivery>>>,
+  publicationLeaseId: string,
+  queueLease: ExternalSideEffectLease,
+  token: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const queueActive = await externalSideEffectLeaseActive(getPool(), queueLease);
+  const publicationActive = await respondPublicationLeaseActive(
+    db,
+    delivery.jobId,
+    publicationLeaseId,
+  );
+  if (!queueActive || !publicationActive) {
+    return false;
+  }
+  if (
+    delivery.sourceOrgId === null ||
+    delivery.sourceInstallationId === null ||
+    delivery.sourceGithubInstallationId === null ||
+    delivery.sourceGithubRepoId === null
+  ) {
+    return false;
+  }
+  const repository = await fetchRepositorySummary(token, delivery.repoFullName, signal);
+  if (
+    repository.id !== delivery.sourceGithubRepoId ||
+    repository.full_name !== delivery.repoFullName
+  ) {
+    return false;
+  }
+  if (delivery.isPr) {
+    if (!delivery.sourceHeadSha) return false;
+    const current = await getPullRequestReviewContext(
+      token,
+      delivery.repoFullName,
+      delivery.issueNumber,
+      signal,
+    );
+    if (
+      !current.open ||
+      current.merged ||
+      current.draft ||
+      current.headSha !== delivery.sourceHeadSha
+    ) return false;
+  }
+  const authority = (
+    await db
+      .select({ repositoryId: schema.repositories.id })
+      .from(schema.repositories)
+      .innerJoin(
+        schema.installations,
+        eq(schema.repositories.installationId, schema.installations.id),
+      )
+      .where(and(
+        eq(schema.repositories.id, delivery.repositoryId),
+        eq(schema.repositories.installationId, delivery.sourceInstallationId),
+        eq(schema.repositories.githubRepoId, delivery.sourceGithubRepoId),
+        eq(schema.repositories.fullName, delivery.repoFullName),
+        eq(schema.repositories.enabled, true),
+        eq(
+          schema.installations.githubInstallationId,
+          delivery.sourceGithubInstallationId,
+        ),
+        eq(schema.installations.orgId, delivery.sourceOrgId),
+        eq(schema.installations.suspended, false),
+      ))
+      .limit(1)
+  )[0];
+  return authority !== undefined &&
+    await externalSideEffectLeaseActive(getPool(), queueLease) &&
+    await respondPublicationLeaseActive(db, delivery.jobId, publicationLeaseId);
 }
 
 /** The user-facing message posted when a respond job exhausts its retries. */
@@ -399,6 +570,7 @@ export const RESPOND_FAILURE_COMMENT_TIMEOUT_MS = 10_000;
 export async function postRespondFailureComment(
   payload: RespondJobPayload,
   respondJobId: number,
+  lease: ExternalSideEffectLease,
   signal?: AbortSignal,
   timeoutMs = RESPOND_FAILURE_COMMENT_TIMEOUT_MS,
   throwOnError = false,
@@ -409,6 +581,9 @@ export async function postRespondFailureComment(
     // fields; there is nothing to post to.
     if (
       typeof payload.installationId !== "number" ||
+      typeof payload.sourceInstallationId !== "number" ||
+      typeof payload.sourceOrgId !== "number" ||
+      typeof payload.githubRepoId !== "number" ||
       typeof payload.repoFullName !== "string" ||
       typeof payload.number !== "number" ||
       !Number.isSafeInteger(respondJobId) ||
@@ -428,7 +603,12 @@ export async function postRespondFailureComment(
         .where(eq(schema.installations.githubInstallationId, payload.installationId))
         .limit(1)
     )[0];
-    if (!installation || installation.suspended) {
+    if (
+      !installation ||
+      installation.suspended ||
+      installation.id !== payload.sourceInstallationId ||
+      installation.orgId !== payload.sourceOrgId
+    ) {
       console.warn(
         `respond failure comment skipped: installation ${payload.installationId} missing/suspended`,
       );
@@ -441,12 +621,12 @@ export async function postRespondFailureComment(
         .where(
           and(
             eq(schema.repositories.installationId, installation.id),
-            eq(schema.repositories.fullName, payload.repoFullName),
+            eq(schema.repositories.githubRepoId, payload.githubRepoId),
           ),
         )
         .limit(1)
     )[0];
-    if (!repository || !repository.enabled) {
+    if (!repository || !repository.enabled || repository.fullName !== payload.repoFullName) {
       console.warn(
         `respond failure comment skipped: repository ${payload.repoFullName} missing/disabled`,
       );
@@ -472,13 +652,19 @@ export async function postRespondFailureComment(
       await prepareUnmeteredRespondDelivery(db, {
         jobId: respondJobId,
         repositoryId: repository.id,
+        sourceOrgId: payload.sourceOrgId,
+        sourceInstallationId: payload.sourceInstallationId,
+        sourceGithubInstallationId: payload.installationId,
+        sourceGithubRepoId: payload.githubRepoId,
         repoFullName: payload.repoFullName,
         issueNumber: payload.number,
+        isPr: payload.isPr,
+        sourceHeadSha: payload.sourceHeadSha,
         body: `${RESPOND_FAILURE_COMMENT}\n\n${respondDeliveryMarker(respondJobId)}`,
       });
     }
     const token = await getInstallationToken(payload.installationId, requestSignal);
-    await deliverPreparedRespond(db, token, respondJobId, requestSignal);
+    await deliverPreparedRespond(db, token, respondJobId, lease, requestSignal);
     console.warn(
       `respond failure comment posted to ${payload.repoFullName}#${payload.number}`,
     );
@@ -495,10 +681,12 @@ export async function postRespondFailureComment(
 /** Retryable worker job for a terminal respond-job fallback comment. */
 export async function runRespondFailureCommentJob(
   payload: RespondFailureCommentJobPayload,
+  lease: ExternalSideEffectLease,
 ): Promise<void> {
   await postRespondFailureComment(
     payload,
     payload.respondJobId,
+    lease,
     undefined,
     RESPOND_FAILURE_COMMENT_TIMEOUT_MS,
     true,

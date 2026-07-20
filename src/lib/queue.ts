@@ -34,6 +34,9 @@ export interface ClaimedJob {
 
 export interface ReviewJobPayload extends Record<string, unknown> {
   installationId: number; // GitHub installation id
+  sourceInstallationId?: number;
+  sourceOrgId?: number;
+  githubRepoId?: number;
   repoFullName: string;
   repositoryPrivate?: boolean;
   prNumber: number;
@@ -49,10 +52,14 @@ export interface ReviewJobPayload extends Record<string, unknown> {
 /** An @postil mention on a PR or issue the bot should reply to. */
 export interface RespondJobPayload extends Record<string, unknown> {
   installationId: number;
+  sourceInstallationId?: number;
+  sourceOrgId?: number;
+  githubRepoId?: number;
   repoFullName: string;
   repositoryPrivate?: boolean;
   number: number; // PR or issue number
   isPr: boolean;
+  sourceHeadSha?: string;
   comment: string; // the maintainer's message text
   // "path:line" anchor when the mention is a PR review comment, so the bot
   // knows which code the question is about.
@@ -73,10 +80,109 @@ export interface RespondJobPayload extends Record<string, unknown> {
 /** A fixed webhook reply delivered through the marker-reconciled comment path. */
 export interface WebhookCommentJobPayload extends Record<string, unknown> {
   installationId: number;
+  sourceInstallationId?: number;
+  sourceOrgId?: number;
+  githubRepoId?: number;
   repoFullName: string;
   number: number;
+  isPr: boolean;
+  sourceHeadSha?: string;
   body: string;
   sourceDeliveryId: string;
+}
+
+export interface ExternalSideEffectLease {
+  id: number;
+  lockedBy: string;
+  lockedAt: Date;
+}
+
+/** Verify a queue claim without retaining a row or connection lock. */
+export async function externalSideEffectLeaseActive(
+  pool: Pick<Pool, "query">,
+  lease: ExternalSideEffectLease,
+): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT 1
+       FROM jobs
+      WHERE id = $1
+        AND status = 'running'
+        AND locked_by = $2
+        AND locked_at = $3
+      LIMIT 1`,
+    [lease.id, lease.lockedBy, lease.lockedAt],
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+/** Revoke every publication path bound to one exact pull request identity. */
+export async function cancelPullRequestPublication(
+  pool: Pick<Pool, "query">,
+  input: {
+    installationId: number;
+    sourceInstallationId: number;
+    sourceOrgId: number;
+    githubRepoId: number;
+    repoFullName: string;
+    prNumber: number;
+  },
+): Promise<number> {
+  const result = await pool.query(
+    `WITH matching_jobs AS MATERIALIZED (
+       SELECT id
+         FROM jobs
+        WHERE kind IN ('review', 'respond', 'respond-failure-comment', 'webhook-comment')
+          AND status IN ('queued', 'running')
+          AND payload->>'installationId' = $1::text
+          AND payload->>'sourceInstallationId' = $2::text
+          AND payload->>'sourceOrgId' = $3::text
+          AND payload->>'githubRepoId' = $4::text
+          AND lower(payload->>'repoFullName') = lower($5)
+          AND COALESCE((payload->>'prNumber')::integer, (payload->>'number')::integer) = $6
+          AND COALESCE((payload->>'isPr')::boolean, kind = 'review')
+     ), cancelled_deliveries AS (
+       UPDATE respond_deliveries delivery
+          SET state = 'cancelled',
+              publication_lease_id = NULL,
+              publication_lease_expires_at = NULL,
+              delivery_lease_expires_at = NULL,
+              cancelled_at = now(),
+              updated_at = now()
+        WHERE delivery.source_github_installation_id = $1::bigint
+          AND delivery.source_installation_id = $2::bigint
+          AND delivery.source_org_id = $3::bigint
+          AND delivery.source_github_repo_id = $4::bigint
+          AND lower(delivery.repo_full_name) = lower($5)
+          AND delivery.issue_number = $6
+          AND delivery.is_pr
+          AND delivery.state IN ('prepared', 'delivering')
+      RETURNING delivery.job_id
+     ), delivery_jobs AS (
+       SELECT job.id
+         FROM jobs job
+         JOIN cancelled_deliveries delivery
+           ON job.kind = 'respond-delivery'
+          AND job.payload->>'respondJobId' = delivery.job_id::text
+        WHERE job.status IN ('queued', 'running')
+     ), terminal_ids AS (
+       SELECT id FROM matching_jobs
+       UNION SELECT id FROM delivery_jobs
+     )
+     UPDATE jobs job
+        SET status = 'done', locked_at = NULL, locked_by = NULL,
+            last_error = 'pull request closed'
+      WHERE job.id IN (SELECT id FROM terminal_ids)
+        AND job.status IN ('queued', 'running')`,
+    [
+      String(input.installationId),
+      String(input.sourceInstallationId),
+      String(input.sourceOrgId),
+      String(input.githubRepoId),
+      input.repoFullName,
+      input.prNumber,
+    ],
+  );
+  return result.rowCount ?? 0;
 }
 
 export interface RespondDeliveryJobPayload extends Record<string, unknown> {
@@ -384,7 +490,8 @@ export async function claimJob(
     }
     const claimed = await client.query<{ locked_at: Date }>(
       `UPDATE jobs
-       SET status = 'running', attempts = attempts + 1, locked_at = now(), locked_by = $2
+       SET status = 'running', attempts = attempts + 1,
+           locked_at = date_trunc('milliseconds', clock_timestamp()), locked_by = $2
        WHERE id = $1
        RETURNING locked_at`,
       [row.id, workerId],

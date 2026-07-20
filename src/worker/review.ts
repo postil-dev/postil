@@ -62,8 +62,10 @@ import {
 import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import {
+  externalSideEffectLeaseActive,
   PermanentJobError,
   type CheckRunCleanupJobPayload,
+  type ExternalSideEffectLease,
   type ReviewJobPayload,
 } from "@/lib/queue";
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
@@ -86,6 +88,7 @@ export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
 // or scorer, and the worker retains one minute for process and persistence work.
 const HOSTED_LLM_REQUEST_TIMEOUT_SECS = "420";
 const HOSTED_LLM_TOTAL_TIMEOUT_SECS = "540";
+const REVIEW_CANCELLATION_POLL_MS = 250;
 
 const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 
@@ -607,7 +610,7 @@ function throwIfWorkerStopping(signal?: AbortSignal): void {
  */
 export async function runReviewJob(
   payload: ReviewJobPayload,
-  timing: { queuedAt: Date; startedAt: Date } = {
+  timing: { queuedAt: Date; startedAt: Date; lease?: ExternalSideEffectLease } = {
     queuedAt: new Date(),
     startedAt: new Date(),
   },
@@ -616,7 +619,18 @@ export async function runReviewJob(
   onPublicationStarted?: () => void,
 ): Promise<void> {
   throwIfWorkerStopping(signal);
+  if (
+    typeof payload.sourceInstallationId !== "number" ||
+    typeof payload.sourceOrgId !== "number" ||
+    typeof payload.githubRepoId !== "number"
+  ) {
+    throw new PermanentJobError("review job lacks immutable source identity");
+  }
   const db = getDb();
+  const leaseActive = () => timing.lease
+    ? externalSideEffectLeaseActive(getPool(), timing.lease)
+    : Promise.resolve(true);
+  if (!(await leaseActive())) return;
 
   const installation = (
     await db
@@ -637,7 +651,11 @@ export async function runReviewJob(
       )
       .limit(1)
   )[0];
-  if (!installation) {
+  if (
+    !installation ||
+    installation.id !== payload.sourceInstallationId ||
+    installation.orgId !== payload.sourceOrgId
+  ) {
     throw new PermanentJobError(
       `review job cannot start: unknown installation ${payload.installationId}`,
     );
@@ -655,12 +673,12 @@ export async function runReviewJob(
       .where(
         and(
           eq(schema.repositories.installationId, installation.id),
-          eq(schema.repositories.fullName, payload.repoFullName),
+          eq(schema.repositories.githubRepoId, payload.githubRepoId),
         ),
       )
       .limit(1)
   )[0];
-  if (!repository || !repository.enabled) {
+  if (!repository || !repository.enabled || repository.fullName !== payload.repoFullName) {
     throw new PermanentJobError(
       `review job cannot start: repository ${payload.repoFullName} is missing or disabled`,
     );
@@ -715,6 +733,32 @@ export async function runReviewJob(
     fetchRepositorySummary(token, payload.repoFullName, signal),
     signal,
   );
+  if (
+    currentRepository.id !== payload.githubRepoId ||
+    currentRepository.full_name !== payload.repoFullName
+  ) {
+    throw new PermanentJobError("review job repository identity changed");
+  }
+  const liveContext = await translateWorkerAbort(
+    getPullRequestReviewContext(
+      token,
+      currentRepository.full_name,
+      payload.prNumber,
+      signal,
+    ),
+    signal,
+  );
+  if (
+    !liveContext.open ||
+    liveContext.merged ||
+    liveContext.draft ||
+    liveContext.headSha !== payload.headSha ||
+    liveContext.baseSha !== payload.baseSha ||
+    !(await leaseActive())
+  ) {
+    console.warn(`review job skipped: pull request closed, changed, or lost its lease`);
+    return;
+  }
   await db
     .update(schema.repositories)
     .set({
@@ -740,24 +784,7 @@ export async function runReviewJob(
   let authorGithubId = payload.authorGithubId;
   let authorLogin = payload.authorLogin;
   if (currentRepository.private) {
-    const context = await translateWorkerAbort(
-      getPullRequestReviewContext(
-        token,
-        currentRepository.full_name,
-        payload.prNumber,
-        signal,
-      ),
-      signal,
-    );
-    if (
-      context.headSha !== payload.headSha ||
-      context.baseSha !== payload.baseSha
-    ) {
-      console.warn(
-        `review job skipped: ${currentRepository.full_name}#${payload.prNumber} refs changed before author verification`,
-      );
-      return;
-    }
+    const context = liveContext;
     if (
       typeof context.authorGithubId !== "number" ||
       !Number.isSafeInteger(context.authorGithubId) ||
@@ -800,6 +827,11 @@ export async function runReviewJob(
   const trigger = normalizeReviewTriggerContext(payload.trigger);
   const reviewValues = {
     repositoryId: repository.id,
+    sourceOrgId: payload.sourceOrgId,
+    sourceInstallationId: payload.sourceInstallationId,
+    sourceGithubInstallationId: payload.installationId,
+    sourceGithubRepoId: payload.githubRepoId,
+    sourceRepoFullName: payload.repoFullName,
     prNumber: payload.prNumber,
     authorGithubId: authorGithubId ?? null,
     authorLogin: authorLogin ?? null,
@@ -846,6 +878,44 @@ export async function runReviewJob(
   let usageAccountingCompleteForRace = false;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
+  const leaseAbortController = new AbortController();
+  const reviewSignal = signal
+    ? AbortSignal.any([signal, leaseAbortController.signal])
+    : leaseAbortController.signal;
+  let leasePollInFlight = false;
+  const leasePoll = timing.lease
+    ? setInterval(() => {
+        if (leasePollInFlight || leaseAbortController.signal.aborted) return;
+        leasePollInFlight = true;
+        void leaseActive()
+          .then((active) => {
+            if (!active) leaseAbortController.abort();
+          })
+          .catch(() => leaseAbortController.abort())
+          .finally(() => {
+            leasePollInFlight = false;
+          });
+      }, REVIEW_CANCELLATION_POLL_MS)
+    : undefined;
+  leasePoll?.unref?.();
+  const publicationAuthorized = async (): Promise<boolean> => {
+    if (!(await leaseActive())) return false;
+    const current = await translateWorkerAbort(
+      getPullRequestReviewContext(
+        token,
+        payload.repoFullName,
+        payload.prNumber,
+        reviewSignal,
+      ),
+      reviewSignal,
+    );
+    return current.open &&
+      !current.merged &&
+      !current.draft &&
+      current.headSha === payload.headSha &&
+      current.baseSha === payload.baseSha &&
+      await leaseActive();
+  };
   const advisoryCheckExternalId = checkRunExternalId(publicId, "review");
   const gateCheckExternalId = checkRunExternalId(publicId, "gate");
   const expectedFailureCheckRuns = (
@@ -875,9 +945,13 @@ export async function runReviewJob(
   });
 
   try {
-    throwIfWorkerStopping(signal);
+    throwIfWorkerStopping(reviewSignal);
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
+    if (!(await publicationAuthorized())) {
+      reviewLog.line("publication cancelled before forge writes");
+      throw new TerminalReviewError("pull request is no longer eligible for publication");
+    }
     publicationStarted = true;
     onPublicationStarted?.();
     const superseded = await supersedeActiveReviews({
@@ -896,7 +970,7 @@ export async function runReviewJob(
       payload.repoFullName,
       ADVISORY_CHECK_NAME,
       payload.headSha,
-      { signal, externalId: advisoryCheckExternalId },
+      { signal: reviewSignal, externalId: advisoryCheckExternalId },
     ).catch((error) => {
       advisoryCheckRunMayExist =
         error instanceof AmbiguousCheckRunCreationError;
@@ -911,7 +985,7 @@ export async function runReviewJob(
       payload.repoFullName,
       GATE_CHECK_NAME,
       payload.headSha,
-      { signal, externalId: gateCheckExternalId },
+      { signal: reviewSignal, externalId: gateCheckExternalId },
     ).catch((error) => {
       gateCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
       throw error;
@@ -928,7 +1002,7 @@ export async function runReviewJob(
       );
     }
 
-    throwIfWorkerStopping(signal);
+    throwIfWorkerStopping(reviewSignal);
     reviewLog.line(await postilCliVersionLogLine());
     const spendReservation = !llm.byok
       ? await reserveHostedReviewSpend(db, {
@@ -1127,7 +1201,7 @@ export async function runReviewJob(
       llm.apiAuthValue,
     ].filter((value): value is string => Boolean(value));
     reviewLog.setSensitiveValues(sensitiveValues);
-    throwIfWorkerStopping(signal);
+    throwIfWorkerStopping(reviewSignal);
     const cliEnv = buildCliEnv(llm, {
       GITHUB_TOKEN: token,
       POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId),
@@ -1140,11 +1214,15 @@ export async function runReviewJob(
       ),
     });
 
+    if (!(await publicationAuthorized())) {
+      reviewLog.line("publication cancelled before CLI start");
+      throw new TerminalReviewError("pull request is no longer eligible for publication");
+    }
     reviewLog.line("postil CLI spawned");
     cliStarted = true;
     const result = await runCli(args, cliEnv, workDir, {
       onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
-      signal,
+      signal: reviewSignal,
     });
     reviewLog.line(
       `postil CLI exited with code ${result.exitCode}${result.timedOut ? " after timeout" : ""}`,
@@ -1444,6 +1522,7 @@ export async function runReviewJob(
     }
     throw interruptedAfterPublication ? new OperationalError(message) : err;
   } finally {
+    if (leasePoll) clearInterval(leasePoll);
     if (baselinePath)
       await rm(baselinePath, { force: true }).catch(() => undefined);
     if (workDir)
@@ -1463,6 +1542,7 @@ interface SupersedeActiveReviewsInput {
   onlyDifferentHead?: boolean;
   token?: string;
   githubInstallationId?: number;
+  message?: string;
 }
 
 /** Mark active reviews stale and neutralize every recorded forge check-run. */
@@ -1508,7 +1588,7 @@ export async function supersedeActiveReviews(
     token = await getInstallationToken(input.githubInstallationId);
   }
 
-  const message = `superseded by a newer review of ${input.newHeadSha}`;
+  const message = input.message ?? `superseded by a newer review of ${input.newHeadSha}`;
   let superseded = 0;
   for (const review of active) {
     const changed = await db
