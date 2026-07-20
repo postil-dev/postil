@@ -17,11 +17,12 @@ import {
   providerModeMatchesRepositoryAccess,
 } from "@/lib/private-repository-entitlement";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
-import { getDb, getPool, schema } from "@/lib/db";
+import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
 import {
   classifyOperationalModelIncidents,
   ingestEnvelope,
+  type Envelope,
 } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
@@ -72,7 +73,8 @@ import {
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
-  persistReviewCompletionWithGateMode,
+  finalizeStagedReviewCompletionWithGateMode,
+  stageReviewCompletionCandidate,
   type ReviewCompletionInput,
 } from "@/lib/review-completion";
 import {
@@ -111,6 +113,13 @@ export class WorkerShutdownError extends OperationalError {
   constructor() {
     super("review interrupted by worker shutdown");
     this.name = "WorkerShutdownError";
+  }
+}
+
+export class ReviewPublicationReconciliationError extends OperationalError {
+  constructor(message = "review publication reconciliation is pending") {
+    super(message);
+    this.name = "ReviewPublicationReconciliationError";
   }
 }
 
@@ -321,6 +330,7 @@ interface CliResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  interrupted: boolean;
 }
 
 const REQUIRED_HOSTED_PUBLICATION_FAILURE =
@@ -333,9 +343,16 @@ const REQUIRED_HOSTED_PUBLICATION_FAILURE =
  * durable reconciliation. Other exit-2 results remain operational failures.
  */
 export function ingestCompletedHostedReview(
-  result: Pick<CliResult, "exitCode" | "stdout" | "stderr">,
+  result: Pick<CliResult, "exitCode" | "stdout" | "stderr"> & {
+    interrupted?: boolean;
+  },
   sensitiveValues: string[] = [],
 ) {
+  // The CLI emits the complete envelope before any forge I/O. A late worker
+  // interruption can therefore terminate the process with no exit code after
+  // GitHub accepted both terminal checks. The validated envelope, not the
+  // signal-derived exit status, is the durable recovery input in that case.
+  if (result.interrupted) return ingestEnvelope(result.stdout);
   if (result.exitCode === 0 || result.exitCode === 1) {
     return ingestEnvelope(result.stdout);
   }
@@ -359,6 +376,7 @@ export function ingestCompletedHostedReview(
 interface CliObservers {
   onStderrLine?: (line: string) => void;
   signal?: AbortSignal;
+  preserveOutputOnInterrupt?: boolean;
 }
 
 const POSTIL_CLI_VERSION_TIMEOUT_MS = 3_000;
@@ -596,11 +614,11 @@ export function runCli(
       settled = true;
       cleanup();
       stderrLines.end();
-      if (interrupted) {
+      if (interrupted && !observers.preserveOutputOnInterrupt) {
         reject(new WorkerShutdownError());
         return;
       }
-      resolvePromise({ exitCode: code, stdout, stderr, timedOut });
+      resolvePromise({ exitCode: code, stdout, stderr, timedOut, interrupted });
     });
   });
 }
@@ -608,6 +626,211 @@ export function runCli(
 function throwIfWorkerStopping(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new WorkerShutdownError();
+  }
+}
+
+function reviewUsageFromEnvelope(
+  envelope: Envelope,
+  input: { orgId: number | null; repositoryId: number; byok: boolean },
+): ReviewCompletionInput["usage"] {
+  return (
+    envelope.modelUsage ?? [
+      {
+        model: envelope.modelUsed,
+        promptTokens: envelope.usage.promptTokens,
+        completionTokens: envelope.usage.completionTokens,
+      },
+    ]
+  ).map((entry) => ({
+    orgId: input.orgId,
+    repositoryId: input.repositoryId,
+    promptTokens: entry.promptTokens,
+    completionTokens: entry.completionTokens,
+    modelUsed: entry.model,
+    costMicros: calculateUsageCostMicrosForModel(
+      entry.model,
+      entry.promptTokens,
+      entry.completionTokens,
+    ),
+    billingScope: input.byok
+      ? ("analytics" as const)
+      : ("private_hosted" as const),
+  }));
+}
+
+async function resumeStagedReviewCompletion(input: {
+  db: Database;
+  payload: ReviewJobPayload;
+  installation: { id: number; orgId: number | null };
+  repository: { id: number; githubRepoId: number; fullName: string };
+  signal?: AbortSignal;
+}): Promise<boolean> {
+  const { db, payload, installation, repository, signal } = input;
+  const trigger = normalizeReviewTriggerContext(payload.trigger);
+  const selection = {
+    id: schema.reviews.id,
+    publicId: schema.reviews.publicId,
+    status: schema.reviews.status,
+    repositoryId: schema.reviews.repositoryId,
+    sourceOrgId: schema.reviews.sourceOrgId,
+    sourceInstallationId: schema.reviews.sourceInstallationId,
+    sourceGithubInstallationId: schema.reviews.sourceGithubInstallationId,
+    sourceGithubRepoId: schema.reviews.sourceGithubRepoId,
+    sourceRepoFullName: schema.reviews.sourceRepoFullName,
+    prNumber: schema.reviews.prNumber,
+    headSha: schema.reviews.headSha,
+    baseSha: schema.reviews.baseSha,
+    envelope: schema.reviews.envelope,
+    advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
+    gateCheckRunId: schema.reviews.gateCheckRunId,
+  };
+  const stagedReview = payload.recoveryReviewId
+    ? (
+        await db
+          .select(selection)
+          .from(schema.reviews)
+          .where(eq(schema.reviews.id, payload.recoveryReviewId))
+          .limit(1)
+      )[0]
+    : (
+        await db
+          .select(selection)
+          .from(schema.reviews)
+          .where(
+            and(
+              eq(schema.reviews.repositoryId, repository.id),
+              eq(schema.reviews.prNumber, payload.prNumber),
+              eq(schema.reviews.headSha, payload.headSha),
+              eq(schema.reviews.baseSha, payload.baseSha),
+              eq(schema.reviews.triggerSource, trigger.source),
+              eq(schema.reviews.triggerContext, trigger),
+              eq(schema.reviews.status, "running"),
+              isNotNull(schema.reviews.envelope),
+            ),
+          )
+          .orderBy(desc(schema.reviews.id))
+          .limit(1)
+      )[0];
+  if (!stagedReview) {
+    if (payload.recoveryReviewId !== undefined) {
+      throw new PermanentJobError("review publication recovery row is missing");
+    }
+    return false;
+  }
+  if (
+    stagedReview.repositoryId !== repository.id ||
+    stagedReview.sourceOrgId !== payload.sourceOrgId ||
+    stagedReview.sourceInstallationId !== payload.sourceInstallationId ||
+    stagedReview.sourceGithubInstallationId !== payload.installationId ||
+    stagedReview.sourceGithubRepoId !== payload.githubRepoId ||
+    stagedReview.sourceRepoFullName !== payload.repoFullName ||
+    stagedReview.prNumber !== payload.prNumber ||
+    stagedReview.headSha !== payload.headSha ||
+    stagedReview.baseSha !== payload.baseSha
+  ) {
+    throw new PermanentJobError("review publication recovery identity changed");
+  }
+  if (stagedReview.status !== "running") {
+    console.warn(
+      `review publication recovery ${stagedReview.id} is already ${stagedReview.status}`,
+    );
+    return true;
+  }
+  if (
+    !stagedReview.envelope ||
+    stagedReview.advisoryCheckRunId == null ||
+    stagedReview.gateCheckRunId == null
+  ) {
+    throw new PermanentJobError("review publication recovery state is incomplete");
+  }
+
+  const token = await translateWorkerAbort(
+    getInstallationToken(payload.installationId, signal),
+    signal,
+  );
+  const currentRepository = await translateWorkerAbort(
+    fetchRepositorySummary(token, payload.repoFullName, signal),
+    signal,
+  );
+  if (
+    currentRepository.id !== payload.githubRepoId ||
+    currentRepository.full_name !== payload.repoFullName
+  ) {
+    throw new PermanentJobError("review publication recovery repository identity changed");
+  }
+  const gateEnabled = await getOrganizationGateEnabled(db, installation.orgId);
+  const hasOperationalFinding = stagedReview.envelope.findings.some(
+    (finding) =>
+      finding.path === ".postil/operational" ||
+      finding.path === ".postil/provider",
+  );
+  try {
+    await Promise.all([
+      verifyCompletedCheckRun(
+        token,
+        payload.repoFullName,
+        {
+          id: stagedReview.advisoryCheckRunId,
+          name: ADVISORY_CHECK_NAME,
+          externalId: checkRunExternalId(stagedReview.publicId, "review"),
+          headSha: payload.headSha,
+          conclusion: hasOperationalFinding ? "neutral" : "success",
+          requireOutput: true,
+        },
+        signal,
+      ),
+      verifyCompletedCheckRun(
+        token,
+        payload.repoFullName,
+        {
+          id: stagedReview.gateCheckRunId,
+          name: GATE_CHECK_NAME,
+          externalId: checkRunExternalId(stagedReview.publicId, "gate"),
+          headSha: payload.headSha,
+          conclusion: payload.recoveryGateConclusion ?? (
+            gateEnabled
+              ? stagedReview.envelope.gate.failing
+                ? "failure"
+                : "success"
+              : "neutral"
+          ),
+          requireOutput: true,
+        },
+        signal,
+      ),
+    ]);
+    const reservation = (
+      await db
+        .select({ id: schema.hostedUsageReservations.id })
+        .from(schema.hostedUsageReservations)
+        .where(eq(schema.hostedUsageReservations.reviewId, stagedReview.id))
+        .limit(1)
+    )[0];
+    const completion = await finalizeStagedReviewCompletionWithGateMode(
+      db,
+      {
+        reviewId: stagedReview.id,
+        usage: reviewUsageFromEnvelope(stagedReview.envelope, {
+          orgId: installation.orgId,
+          repositoryId: repository.id,
+          byok: !reservation,
+        }),
+        hostedUsageReservationId: reservation?.id ?? null,
+        usageAccountingComplete:
+          stagedReview.envelope.usageAccountingComplete === true,
+      },
+      installation.orgId,
+    );
+    if (completion.completed) {
+      void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+        triggerQueueDrain("gate-state-sync"),
+      );
+    }
+    console.log(`review publication recovery ${stagedReview.id} completed`);
+    return true;
+  } catch (error) {
+    if (signal?.aborted) throw new WorkerShutdownError();
+    throw new ReviewPublicationReconciliationError(redactSecrets(error));
   }
 }
 
@@ -671,12 +894,6 @@ export async function runReviewJob(
       `review job cannot start: unknown installation ${payload.installationId}`,
     );
   }
-  if (installation.suspended) {
-    throw new PermanentJobError(
-      `review job cannot start: installation ${payload.installationId} is suspended`,
-    );
-  }
-
   const repository = (
     await db
       .select()
@@ -689,9 +906,30 @@ export async function runReviewJob(
       )
       .limit(1)
   )[0];
-  if (!repository || !repository.enabled || repository.fullName !== payload.repoFullName) {
+  if (!repository || repository.fullName !== payload.repoFullName) {
     throw new PermanentJobError(
-      `review job cannot start: repository ${payload.repoFullName} is missing or disabled`,
+      `review job cannot start: repository ${payload.repoFullName} is missing`,
+    );
+  }
+  if (
+    await resumeStagedReviewCompletion({
+      db,
+      payload,
+      installation,
+      repository,
+      signal,
+    })
+  ) {
+    return;
+  }
+  if (installation.suspended) {
+    throw new PermanentJobError(
+      `review job cannot start: installation ${payload.installationId} is suspended`,
+    );
+  }
+  if (!repository.enabled) {
+    throw new PermanentJobError(
+      `review job cannot start: repository ${payload.repoFullName} is disabled`,
     );
   }
   const signedOrStoredPrivate =
@@ -886,6 +1124,7 @@ export async function runReviewJob(
   let hostedUsageReservationId: string | null = null;
   let cliStarted = false;
   let publicationStarted = false;
+  let completionStaged = false;
   let receiptUsageForRace: ReviewCompletionInput["usage"] | undefined;
   let usageAccountingCompleteForRace = false;
   let advisoryCheckRunMayExist = false;
@@ -1242,9 +1481,10 @@ export async function runReviewJob(
     const result = await runCli(args, cliEnv, workDir, {
       onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
       signal: reviewSignal,
+      preserveOutputOnInterrupt: true,
     });
     reviewLog.line(
-      `postil CLI exited with code ${result.exitCode}${result.timedOut ? " after timeout" : ""}`,
+      `postil CLI exited with code ${result.exitCode}${result.timedOut ? " after timeout" : ""}${result.interrupted ? " during worker interruption" : ""}`,
     );
 
     if (result.timedOut) {
@@ -1260,6 +1500,7 @@ export async function runReviewJob(
       exitCode: result.exitCode,
       stdout: result.stdout,
       stderr: result.stderr,
+      interrupted: result.interrupted,
     }, sensitiveValues);
     for (const incident of classifyOperationalModelIncidents(
       ingested.envelope,
@@ -1287,32 +1528,11 @@ export async function runReviewJob(
         finding.path === ".postil/operational" ||
         finding.path === ".postil/provider",
     );
-    const receiptUsage = (
-      ingested.modelUsage ?? [
-        {
-          model: ingested.modelUsed,
-          promptTokens: ingested.promptTokens,
-          completionTokens: ingested.completionTokens,
-        },
-      ]
-    ).map((entry) => ({
+    const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
       orgId: installation.orgId,
       repositoryId: repository.id,
-      promptTokens: entry.promptTokens,
-      completionTokens: entry.completionTokens,
-      modelUsed: entry.model,
-      // A legacy aggregate is priced only when modelUsed names one known
-      // catalog model. Chains/consensus remain unpriced and consume the
-      // full reservation rather than undercharging a fallback.
-      costMicros: calculateUsageCostMicrosForModel(
-        entry.model,
-        entry.promptTokens,
-        entry.completionTokens,
-      ),
-      billingScope: !llm.byok
-        ? ("private_hosted" as const)
-        : ("analytics" as const),
-    }));
+      byok: llm.byok,
+    });
     receiptUsageForRace = receiptUsage;
     usageAccountingCompleteForRace = ingested.usageAccountingComplete;
     if (!gateEnabled) {
@@ -1323,10 +1543,36 @@ export async function runReviewJob(
         "neutral",
         "Postil gate is advisory",
         "Merge blocking is disabled. Review findings remain advisory.",
-        reviewSignal,
+        result.interrupted ? undefined : reviewSignal,
       );
       reviewLog.line("forge gate check-run set to advisory");
     }
+    const staged = await stageReviewCompletionCandidate(
+      db,
+      {
+        reviewId,
+        reviewJobId: timing.lease?.id,
+        expectedGateConclusion: gateEnabled
+          ? ingested.gateFailing
+            ? "failure"
+            : "success"
+          : "neutral",
+        envelope: ingested.envelope,
+        configFiles,
+        configProvenance,
+        silent: ingested.silent,
+        gateFailing: ingested.gateFailing,
+        publicationReceipt,
+      },
+      installation.orgId,
+    );
+    if (!staged.staged) {
+      throw new ReviewPublicationReconciliationError(
+        "review completion lost its terminal-state race",
+      );
+    }
+    completionStaged = true;
+    reviewLog.line("review result and publication receipt staged durably");
     try {
       await Promise.all([
         verifyCompletedCheckRun(
@@ -1340,7 +1586,7 @@ export async function runReviewJob(
             conclusion: hasOperationalFinding ? "neutral" : "success",
             requireOutput: true,
           },
-          signal,
+          result.interrupted ? undefined : signal,
         ),
         verifyCompletedCheckRun(
           token,
@@ -1357,7 +1603,7 @@ export async function runReviewJob(
               : "neutral",
             requireOutput: true,
           },
-          signal,
+          result.interrupted ? undefined : signal,
         ),
       ]);
     } catch (error) {
@@ -1374,17 +1620,11 @@ export async function runReviewJob(
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
     // no longer owns the result. The CLI owns the success-path check-runs.
-    const completion = await persistReviewCompletionWithGateMode(db, {
+    const completion = await finalizeStagedReviewCompletionWithGateMode(db, {
       reviewId,
-      envelope: ingested.envelope,
-      configFiles,
-      configProvenance,
-      silent: ingested.silent,
-      gateFailing: ingested.gateFailing,
       usage: receiptUsage,
       hostedUsageReservationId,
       usageAccountingComplete: ingested.usageAccountingComplete,
-      publicationReceipt,
     }, installation.orgId);
     const completed = completion.completed;
     if (completed) {
@@ -1492,6 +1732,15 @@ export async function runReviewJob(
         );
         return;
       }
+    }
+    if (completionStaged) {
+      const message = err instanceof WorkerShutdownError
+        ? "worker stopped after the review result was staged"
+        : `publication verification deferred: ${redactSecrets(err, sensitiveValues)}`;
+      reviewLog.line(message);
+      if (err instanceof WorkerShutdownError) throw err;
+      if (err instanceof ReviewPublicationReconciliationError) throw err;
+      throw new ReviewPublicationReconciliationError(message);
     }
     if (err instanceof WorkerShutdownError && !publicationStarted) {
       reviewLog.line(err.message);

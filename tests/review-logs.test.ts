@@ -62,6 +62,36 @@ describe("runCli log observation", () => {
       else process.env.POSTIL_BIN = oldBin;
     }
   });
+
+  test("preserves completed stdout for publication reconciliation during shutdown", async () => {
+    const oldBin = process.env.POSTIL_BIN;
+    process.env.POSTIL_BIN = process.execPath;
+    const controller = new AbortController();
+    try {
+      const run = runCli(
+        [
+          "-e",
+          'process.stdout.write("durable-envelope"); process.stderr.write("ready\\n"); setInterval(() => undefined, 1000);',
+        ],
+        {},
+        undefined,
+        {
+          signal: controller.signal,
+          preserveOutputOnInterrupt: true,
+          onStderrLine: (line) => {
+            if (line === "ready") controller.abort();
+          },
+        },
+      );
+
+      const result = await run;
+      expect(result.interrupted).toBe(true);
+      expect(result.stdout).toBe("durable-envelope");
+    } finally {
+      if (oldBin === undefined) delete process.env.POSTIL_BIN;
+      else process.env.POSTIL_BIN = oldBin;
+    }
+  });
 });
 
 async function versionFixture(source: string): Promise<{ directory: string; executable: string }> {

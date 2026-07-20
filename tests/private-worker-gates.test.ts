@@ -246,30 +246,38 @@ describe("private repository worker defense in depth", () => {
     expect(cliEnv).not.toContain("payload.githubRepoId");
   });
 
-  test("hosted review cannot persist completion before forge publication is verified", () => {
+  test("hosted review stages recovery before verification and terminalizes only after", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const reviewStart = source.indexOf("export async function runReviewJob");
     const cliCompletion = source.indexOf(
       "const result = await runCli",
       reviewStart,
     );
-    const publication = source.indexOf("await Promise.all([", cliCompletion);
+    const staging = source.indexOf(
+      "const staged = await stageReviewCompletionCandidate",
+      cliCompletion,
+    );
+    const publication = source.indexOf("await Promise.all([", staging);
     const verification = source.indexOf("verifyCompletedCheckRun", publication);
-    const persistence = source.indexOf(
-      "const completion = await persistReviewCompletionWithGateMode",
+    const finalization = source.indexOf(
+      "const completion = await finalizeStagedReviewCompletionWithGateMode",
       verification,
     );
 
+    expect(staging).toBeGreaterThan(cliCompletion);
     expect(publication).toBeGreaterThan(cliCompletion);
     expect(verification).toBeGreaterThan(publication);
-    expect(persistence).toBeGreaterThan(verification);
-    expect(source.slice(publication, persistence)).toContain(
+    expect(finalization).toBeGreaterThan(verification);
+    expect(source.slice(staging, finalization)).toContain(
+      'reviewLog.line("review result and publication receipt staged durably")',
+    );
+    expect(source.slice(publication, finalization)).toContain(
       'reviewLog.line("forge check-runs verified completed by the CLI")',
     );
-    expect(source.slice(publication, persistence)).toContain(
+    expect(source.slice(publication, finalization)).toContain(
       '"GitHub review publication could not be verified"',
     );
-    expect(source.slice(publication, persistence)).toContain(
+    expect(source.slice(publication, finalization)).toContain(
       "{ cause: error }",
     );
   });
@@ -291,21 +299,22 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
       "} catch (err) {",
-      source.indexOf("await persistReviewCompletionWithGateMode"),
+      source.indexOf('reviewLog.line("publication lifecycle observation deferred")'),
     );
     const catchEnd = source.indexOf("} finally {", catchStart);
     const failureBody = source.slice(catchStart, catchEnd);
 
     expect(failureBody).toContain("err instanceof WorkerShutdownError");
-    expect(
-      failureBody.indexOf("err instanceof WorkerShutdownError"),
-    ).toBeLessThan(failureBody.indexOf("db.transaction"));
-    expect(
-      failureBody.slice(0, failureBody.indexOf("const message")),
-    ).not.toContain('kind: "check-run-cleanup"');
-    expect(
-      failureBody.slice(0, failureBody.indexOf("const message")),
-    ).toContain('.set({ status: "stale", finishedAt: new Date() })');
+    expect(failureBody.indexOf("if (completionStaged)")).toBeLessThan(
+      failureBody.indexOf("const failedRows"),
+    );
+    const stagedBranch = failureBody.slice(
+      failureBody.indexOf("if (completionStaged)"),
+      failureBody.indexOf("if (err instanceof WorkerShutdownError && !publicationStarted)"),
+    );
+    expect(stagedBranch).not.toContain('kind: "check-run-cleanup"');
+    expect(stagedBranch).toContain("ReviewPublicationReconciliationError");
+    expect(failureBody).toContain('.set({ status: "stale", finishedAt: new Date() })');
     expect(failureBody).toContain("db.transaction");
     expect(failureBody).toContain('kind: "check-run-cleanup"');
     expect(failureBody).toContain('intent: "fail"');
@@ -327,7 +336,7 @@ describe("private repository worker defense in depth", () => {
       checkCreation,
     );
     const persistence = source.indexOf(
-      "const completion = await persistReviewCompletionWithGateMode",
+      "const completion = await finalizeStagedReviewCompletionWithGateMode",
       cliCompletion,
     );
     expect(publicationBoundary).toBeGreaterThan(reviewStart);
@@ -357,7 +366,7 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
       "} catch (err) {",
-      source.indexOf("await persistReviewCompletionWithGateMode"),
+      source.indexOf('reviewLog.line("publication lifecycle observation deferred")'),
     );
     const failureUpdate = source.indexOf("const failedRows", catchStart);
     const supersessionRace = source.slice(catchStart, failureUpdate);

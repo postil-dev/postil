@@ -13,7 +13,11 @@ import {
   getReviewPublicationCounts,
   type PublicationReceipt,
 } from "@/lib/publication-receipt";
-import { persistReviewCompletionWithGateMode } from "@/lib/review-completion";
+import {
+  finalizeStagedReviewCompletionWithGateMode,
+  persistReviewCompletionWithGateMode,
+  stageReviewCompletionCandidate,
+} from "@/lib/review-completion";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
@@ -153,6 +157,119 @@ describeDb("publication receipt migration and lifecycle", () => {
   afterAll(async () => {
     await pool.end();
       }, orgId);
+
+  test("resumes a staged terminal publication after worker interruption without duplicates", async () => {
+    const reviewEnvelope = envelope({ head: "9".repeat(40) });
+    const review = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+        (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at, started_at)
+       VALUES ($1, 70, $2, $3, 'running', 'unknown', now(), now())
+       RETURNING id`,
+      [repositoryId, reviewEnvelope.headSha!, "a".repeat(40)],
+    );
+    const reviewId = Number(review.rows[0]!.id);
+    const job = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, locked_at, locked_by)
+       VALUES ('review', '{"repoFullName":"publication/repo","prNumber":7}', 'running', now(), 'worker-before-restart')
+       RETURNING id`,
+    );
+    const reviewJobId = Number(job.rows[0]!.id);
+    const usage = [
+      {
+        orgId,
+        repositoryId,
+        promptTokens: 1,
+        completionTokens: 1,
+        modelUsed: "test/model",
+        costMicros: 0,
+        billingScope: "analytics" as const,
+      },
+    ];
+
+    expect(
+      await stageReviewCompletionCandidate(
+        db,
+        {
+          reviewId,
+          reviewJobId,
+          expectedGateConclusion: "success",
+          envelope: reviewEnvelope,
+          configFiles: [],
+          silent: true,
+          gateFailing: false,
+          publicationReceipt: {
+            version: 1,
+            receiptId: "github-review-v1:restart",
+            findings: [],
+          },
+        },
+        orgId,
+      ),
+    ).toMatchObject({ staged: true, completed: false });
+
+    const staged = await pool.query<{
+      status: string;
+      has_envelope: boolean;
+      recovery_review_id: string;
+      recovery_gate_conclusion: string;
+      receipts: string;
+      usage: string;
+    }>(
+      `SELECT review.status,
+              review.envelope IS NOT NULL AS has_envelope,
+              job.payload->>'recoveryReviewId' AS recovery_review_id,
+              job.payload->>'recoveryGateConclusion' AS recovery_gate_conclusion,
+              (SELECT count(*) FROM review_publication_receipts receipt WHERE receipt.review_id = review.id) AS receipts,
+              (SELECT count(*) FROM usage_events usage WHERE usage.review_id = review.id) AS usage
+         FROM reviews review
+         JOIN jobs job ON job.id = $2
+        WHERE review.id = $1`,
+      [reviewId, reviewJobId],
+    );
+    expect(staged.rows[0]).toEqual({
+      status: "running",
+      has_envelope: true,
+      recovery_review_id: String(reviewId),
+      recovery_gate_conclusion: "success",
+      receipts: "1",
+      usage: "0",
+    });
+
+    expect(
+      await finalizeStagedReviewCompletionWithGateMode(
+        db,
+        { reviewId, usage, usageAccountingComplete: true },
+        orgId,
+      ),
+    ).toMatchObject({ completed: true });
+    expect(
+      await finalizeStagedReviewCompletionWithGateMode(
+        db,
+        { reviewId, usage, usageAccountingComplete: true },
+        orgId,
+      ),
+    ).toMatchObject({ completed: false });
+
+    const terminal = await pool.query<{
+      status: string;
+      receipts: string;
+      usage: string;
+      sync_jobs: string;
+    }>(
+      `SELECT review.status,
+              (SELECT count(*) FROM review_publication_receipts receipt WHERE receipt.review_id = review.id) AS receipts,
+              (SELECT count(*) FROM usage_events usage WHERE usage.review_id = review.id) AS usage,
+              (SELECT count(*) FROM jobs sync WHERE sync.kind = 'gate-state-sync' AND (sync.payload->>'reviewId')::bigint = review.id) AS sync_jobs
+         FROM reviews review WHERE review.id = $1`,
+      [reviewId],
+    );
+    expect(terminal.rows[0]).toEqual({
+      status: "completed",
+      receipts: "1",
+      usage: "1",
+      sync_jobs: "1",
+    });
+  });
 
   test("persists exact initial channels and reconciles later carried and resolved states", async () => {
     const firstId = await createRunningReview("b".repeat(40));

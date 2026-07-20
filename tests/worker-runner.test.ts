@@ -37,6 +37,7 @@ const operationalFailures: string[] = [];
 const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
+class MockReviewPublicationReconciliationError extends Error {}
 class MockPermanentJobError extends Error {
   permanent = true;
 }
@@ -134,6 +135,8 @@ mock.module("@/worker/watchdog", () => ({
 }));
 
 mock.module("@/worker/review", () => ({
+  ReviewPublicationReconciliationError:
+    MockReviewPublicationReconciliationError,
   WorkerShutdownError: MockWorkerShutdownError,
   validateCheckRunCleanupPayload: (payload: Record<string, unknown>) => {
     if (payload.malformed === true) {
@@ -300,6 +303,22 @@ describe("drainQueueOnce", () => {
     expect(failed).toEqual([]);
     expect(completed).toEqual([]);
     expect(operationalWarnings).toEqual([]);
+  });
+
+  test("retries staged publication reconciliation without exhausting attempts", async () => {
+    reviewRun = async () => {
+      throw new MockReviewPublicationReconciliationError(
+        "exact terminal checks are not observable yet",
+      );
+    };
+
+    await runClaimedJob(reviewJob(9), "worker 0", "worker");
+
+    expect(retriedIndefinitely).toEqual([
+      { id: 9, error: "exact terminal checks are not observable yet" },
+    ]);
+    expect(failed).toEqual([]);
+    expect(completed).toEqual([]);
   });
 
   test("does not mask an ordinary failure that races with shutdown", async () => {

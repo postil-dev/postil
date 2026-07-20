@@ -20,6 +20,19 @@ const envelope = JSON.stringify({
 });
 
 describe("hosted CLI publication result", () => {
+  test("trusts a validated pre-publication envelope when shutdown removes the exit code", () => {
+    const result = ingestCompletedHostedReview({
+      exitCode: null,
+      stdout: envelope,
+      stderr: "worker sent SIGTERM after terminal check publication",
+      interrupted: true,
+    });
+
+    expect(result.silent).toBe(true);
+    expect(result.gateFailing).toBe(false);
+    expect(result.modelUsed).toBe("z-ai/glm-5.2");
+  });
+
   test("retains a completed envelope after strict GitHub publication fails", () => {
     const result = ingestCompletedHostedReview({
       exitCode: 2,
