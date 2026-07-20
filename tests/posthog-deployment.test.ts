@@ -40,4 +40,13 @@ describe("PostHog deployment privacy", () => {
     expect(fly).not.toContain("POSTHOG_SERVER_CAPTURE");
     expect(fly).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
   });
+
+  test("does not rerun the pageview effect for query-only navigation", async () => {
+    const source = await readFile(
+      join(root, "src/components/posthog-pageview.tsx"),
+      "utf8",
+    );
+    expect(source).not.toContain("useSearchParams");
+    expect(source).toContain("}, [pathname]);");
+  });
 });

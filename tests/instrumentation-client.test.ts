@@ -104,6 +104,41 @@ describe("browser PostHog instrumentation", () => {
     expect(JSON.stringify(capturedEvents[0]?.properties)).not.toContain("secret");
     expect(JSON.stringify(capturedEvents[0]?.properties)).not.toContain("private");
 
+    browser.navigate("/docs?secret=changed");
+    await capturePublicPageview(window.location.href, document.referrer);
+    browser.navigate("/docs?utm_source=other&secret=changed-again");
+    await capturePublicPageview(window.location.href, document.referrer);
+    expect(capturedEvents).toHaveLength(1);
+    expect(capturedEvents[0]?.properties?.$utm_source).toBe("launch");
+
+    const queryOnlyPageleave = beforeSend?.({
+      event: "$pageleave",
+      properties: {
+        $current_url: "https://postil.dev/docs?secret=changed-again",
+        $pathname: "/docs",
+        $prev_pageview_duration: 500,
+      },
+    });
+    expect(queryOnlyPageleave?.properties).toMatchObject({
+      $current_url: "https://postil.dev/docs",
+      $pathname: "/docs",
+      $prev_pageview_duration: 500,
+    });
+    const queryOnlyVitals = beforeSend?.({
+      event: "$web_vitals",
+      properties: {
+        $web_vitals_LCP_event: {
+          name: "LCP",
+          value: 1200,
+          $current_url: "https://postil.dev/docs?secret=changed-again",
+        },
+      },
+    });
+    expect(queryOnlyVitals?.properties).toMatchObject({
+      $current_url: "https://postil.dev/docs",
+      $pathname: "/docs",
+    });
+
     browser.navigate("/pricing?utm_campaign=summer&secret=drop");
     await capturePublicPageview(window.location.href, document.referrer);
     expect(capturedEvents).toHaveLength(2);

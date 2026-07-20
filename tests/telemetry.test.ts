@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   isPublicTelemetryPath,
+  publicTelemetryKey,
   publicTelemetryProperties,
   sanitizePostHogEventProperties,
   sanitizedPublicUrl,
@@ -51,6 +52,20 @@ describe("public telemetry sanitization", () => {
         "https://postil.dev/docs?utm_source=hn&secret=keep-out&ref=launch#section",
       ),
     ).toBe("https://postil.dev/docs");
+  });
+
+  test("uses the public origin and exact path as the pageview identity", () => {
+    expect(
+      publicTelemetryKey(
+        "https://postil.dev/docs?utm_source=launch&secret=first#section",
+      ),
+    ).toBe("https://postil.dev/docs");
+    expect(
+      publicTelemetryKey(
+        "https://postil.dev/docs?utm_source=other&secret=second#different",
+      ),
+    ).toBe("https://postil.dev/docs");
+    expect(publicTelemetryKey("https://postil.dev/orgs/private?secret=value")).toBeUndefined();
   });
 
   test("reduces referrers to their origin", () => {

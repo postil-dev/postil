@@ -94,23 +94,25 @@ async function runtimeConfig(): Promise<PostHogConfig | undefined> {
   }
 }
 
-let lastCapturedUrl = "";
+let lastCapturedKey = "";
 let crossedProtectedRoute = false;
 
 export async function capturePublicPageview(
   currentUrl: string,
   referrer: string,
 ): Promise<void> {
-  if (currentUrl === lastCapturedUrl) return;
   const properties = publicTelemetryProperties(currentUrl, referrer);
   if (!properties) {
-    lastCapturedUrl = "";
+    lastCapturedKey = "";
     crossedProtectedRoute = true;
     return;
   }
+  const telemetryKey = properties.$current_url;
+  if (typeof telemetryKey !== "string" || telemetryKey === lastCapturedKey) return;
   bootPromise ??= bootPostHog();
   if (!(await bootPromise)) return;
-  lastCapturedUrl = currentUrl;
+  if (telemetryKey === lastCapturedKey) return;
+  lastCapturedKey = telemetryKey;
   posthog.capture("$pageview", properties);
 }
 

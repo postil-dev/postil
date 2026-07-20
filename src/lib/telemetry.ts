@@ -75,6 +75,12 @@ export function isPublicTelemetryPath(pathname: string): boolean {
   return PUBLIC_EXACT_PATHS.has(pathname);
 }
 
+export function publicTelemetryKey(source: URL | string): string | undefined {
+  const url = new URL(source.toString());
+  if (!isPublicTelemetryPath(url.pathname)) return undefined;
+  return sanitizedPublicUrl(url);
+}
+
 export function sanitizedPublicUrl(source: URL | string): string {
   const url = new URL(source.toString());
   if (url.protocol !== "https:" && url.protocol !== "http:") {
@@ -111,9 +117,10 @@ export function publicTelemetryProperties(
   referrer?: string | null,
 ): Record<string, string | number | boolean> | undefined {
   const url = new URL(currentUrl.toString());
-  if (!isPublicTelemetryPath(url.pathname)) return undefined;
+  const telemetryKey = publicTelemetryKey(url);
+  if (!telemetryKey) return undefined;
   return removeEmpty({
-    $current_url: sanitizedPublicUrl(url),
+    $current_url: telemetryKey,
     $host: url.host,
     $pathname: url.pathname,
     $referrer: sanitizedReferrer(referrer, url.origin),
