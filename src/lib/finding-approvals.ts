@@ -33,6 +33,7 @@ export interface ApprovalRow {
   sourceWebhookDeliveryId: string | null;
   sourceGithubCommentId: number | null;
   sourceCommentKind: string | null;
+  sourceBindingState: "exact" | "legacy";
   createdAt: Date;
   revokedAt: Date | null;
   revokedByUserId: number | null;
@@ -273,6 +274,7 @@ export async function insertFindingApproval(
       sourceWebhookDeliveryId: input.githubSource?.webhookDeliveryId ?? null,
       sourceGithubCommentId: input.githubSource?.githubCommentId ?? null,
       sourceCommentKind: input.githubSource?.commentKind ?? null,
+      sourceBindingState: "exact",
     })
     .returning({ id: schema.findingApprovals.id });
   return rows[0]!.id;
