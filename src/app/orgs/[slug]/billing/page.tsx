@@ -383,6 +383,9 @@ export default async function OrgBillingPage({
               verified={Boolean(contactState?.verifiedAt)}
             />
             <NotificationPreferencesForm
+              key={`${notificationPreferences?.billingSummaryEmail ?? true}:${
+                notificationPreferences?.serviceSummaryEmail ?? true
+              }`}
               slug={org.slug}
               billingSummaryEmail={
                 notificationPreferences?.billingSummaryEmail ?? true
