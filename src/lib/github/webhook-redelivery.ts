@@ -17,8 +17,13 @@ const MAX_RESPONSE_BYTES = 1_000_000;
 const RECOVERY_METADATA_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const RECOVERY_METADATA_PRUNE_BATCH = 1_000;
 
+const deliveryIdSchema = z
+  .string()
+  .regex(/^(0|[1-9]\d{0,18})$/)
+  .refine((value) => BigInt(value) <= 9_223_372_036_854_775_807n);
+
 const deliverySchema = z.object({
-  id: z.number().int().safe().nonnegative(),
+  id: deliveryIdSchema,
   guid: z.string().min(1).max(128),
   delivered_at: z.string().datetime({ offset: true }),
   redelivery: z.boolean(),
@@ -149,6 +154,16 @@ function nextCursor(link: string | null, base: string): string | null {
   return null;
 }
 
+function parseDeliveryJson(text: string): unknown {
+  // GitHub declares delivery IDs as int64 JSON numbers. Preserve their decimal
+  // representation before JSON.parse rounds values above Number.MAX_SAFE_INTEGER.
+  const losslessDeliveryIds = text.replace(
+    /("id"\s*:\s*)(\d+)(?=\s*[,}])/g,
+    '$1"$2"',
+  );
+  return JSON.parse(losslessDeliveryIds);
+}
+
 async function boundedJson(response: Response, signal?: AbortSignal): Promise<unknown> {
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_RESPONSE_BYTES) {
@@ -197,7 +212,7 @@ async function boundedJson(response: Response, signal?: AbortSignal): Promise<un
     offset += chunk.byteLength;
   }
   try {
-    return JSON.parse(new TextDecoder().decode(bytes));
+    return parseDeliveryJson(new TextDecoder().decode(bytes));
   } catch {
     throw new GitHubWebhookRecoveryError(
       "invalid_response",
@@ -374,7 +389,7 @@ async function persistPage(
              observed_at = EXCLUDED.observed_at,
              updated_at = EXCLUDED.updated_at`,
       [
-        String(delivery.id),
+        delivery.id,
         delivery.guid,
         new Date(delivery.delivered_at),
         delivery.event,

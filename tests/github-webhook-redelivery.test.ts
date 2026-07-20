@@ -133,6 +133,50 @@ describeDb("GitHub App webhook redelivery", () => {
     });
   });
 
+  test("preserves int64 delivery IDs that exceed JavaScript's safe integer range", async () => {
+    const deliveryId = "9007199254740993";
+    const fixture = JSON.stringify({ ...failedDelivery(), id: "delivery-id" });
+    const response = new Response(
+      `[${fixture.replace('"delivery-id"', deliveryId)}]`,
+      {
+        headers: {
+          "content-type": "application/json",
+          "x-ratelimit-remaining": "5000",
+          "x-ratelimit-reset": String(Math.floor(NOW.getTime() / 1_000) + 3_600),
+        },
+      },
+    );
+
+    const result = await runWebhookRedeliveryPass(pool, {
+      now: NOW,
+      owner: "worker-a",
+      appJwt: "test-jwt",
+      maxRedeliveries: 0,
+      fetchImpl: fetchQueue([response], []),
+    });
+
+    expect(result.pages).toBe(1);
+    expect(result.observed).toBe(1);
+    const receipt = await pool.query<{ delivery_id: string }>(
+      "SELECT delivery_id FROM github_webhook_delivery_recoveries",
+    );
+    expect(receipt.rows[0]?.delivery_id).toBe(deliveryId);
+    const state = await pool.query<{
+      last_page_at: Date | null;
+      last_sweep_completed_at: Date | null;
+      last_error_category: string | null;
+    }>(
+      `SELECT last_page_at, last_sweep_completed_at, last_error_category
+         FROM github_webhook_redelivery_state
+        WHERE id = 1`,
+    );
+    expect(state.rows[0]).toEqual({
+      last_page_at: NOW,
+      last_sweep_completed_at: NOW,
+      last_error_category: null,
+    });
+  });
+
   test("links a later successful redelivery and does not retry the original failure", async () => {
     await pool.query(
       `INSERT INTO github_webhook_delivery_recoveries
