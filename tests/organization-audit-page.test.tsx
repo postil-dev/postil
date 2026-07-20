@@ -55,8 +55,9 @@ describe("organization audit page", () => {
       {
         eventId: "2",
         occurredAt: "2026-07-15T10:00:00.000Z",
-        action: "enable",
-        repositoryFullName: "acme/service",
+        eventType: "repository",
+        value: "enable",
+        subject: "acme/service",
         repositoryPrivate: true,
         source: "github_installation",
         actorLogin: "octocat",
@@ -64,11 +65,22 @@ describe("organization audit page", () => {
       {
         eventId: "1",
         occurredAt: new Date("2026-07-15T09:00:00.000Z"),
-        action: "disable",
-        repositoryFullName: "acme/old-service",
+        eventType: "repository",
+        value: "disable",
+        subject: "acme/old-service",
         repositoryPrivate: false,
         source: "migration_baseline",
         actorLogin: null,
+      },
+      {
+        eventId: "3",
+        occurredAt: new Date("2026-07-15T11:00:00.000Z"),
+        eventType: "setting",
+        value: "enabled",
+        subject: "gate_enabled",
+        repositoryPrivate: null,
+        source: "dashboard",
+        actorLogin: "octocat",
       },
     ];
 
@@ -87,6 +99,8 @@ describe("organization audit page", () => {
     expect(markup).toContain("Disabled");
     expect(markup).toContain("Imported baseline");
     expect(markup).toContain("System");
+    expect(markup).toContain("Enabled merge gate");
+    expect(markup).toContain("Dashboard");
     expect(markup).not.toContain("github_installation");
     expect(markup).not.toContain("migration_baseline");
   });
@@ -96,8 +110,9 @@ describe("organization audit page", () => {
     rows = Array.from({ length: AUDIT_PAGE_SIZE + 1 }, (_, index) => ({
       eventId: String(index + 1),
       occurredAt: new Date("2026-07-15T10:00:00.000Z"),
-      action: "enable",
-      repositoryFullName: `acme/repo-${index}`,
+      eventType: "repository",
+      value: "enable",
+      subject: `acme/repo-${index}`,
       repositoryPrivate: false,
       source: "dashboard",
       actorLogin: "octocat",
@@ -138,9 +153,8 @@ describe("organization audit page", () => {
       "utf8",
     );
     expect(source).not.toMatch(/\bOFFSET\b/);
-    expect(source).toContain("repositoryEnablementEvents.occurredAt} DESC");
-    expect(source).toContain("repositoryEnablementEvents.id} DESC");
-    expect(source).toContain("< (${cursor.occurredAt}, ${cursor.eventId}::bigint)");
+    expect(source).toContain('ORDER BY "occurredAt" DESC, "eventType" DESC, "eventId"::bigint DESC');
+    expect(source).toContain("<\n      (${cursor.occurredAt}, ${cursor.eventType}, ${cursor.eventId}::bigint)");
     expect(source).toContain("!/^[1-9]\\d*$/.test(value.eventId)");
     expect(source).not.toContain("Number(event.eventId)");
   });

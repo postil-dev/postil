@@ -23,6 +23,7 @@ interface SettingsFormProps {
         guardrailsMd: string | null;
         contentPolicyMd: string | null;
         sharedConfigEnabled: boolean;
+        gateEnabled: boolean;
       }
     | undefined;
   sharedSnapshot:
@@ -75,6 +76,24 @@ export function SettingsForm({
       <input type="hidden" name="apiAuthAction" value={apiAuthAction} />
 
       <div className="space-y-4">
+        <label className="flex items-start justify-between gap-4 rounded-card border border-stone/80 p-4">
+          <span>
+            <span className="font-medium">Merge gate</span>
+            <span className="mt-1 block text-xs leading-relaxed text-charcoal/60">
+              Fail <code>postil/gate</code> on blocking findings. GitHub blocks merges only when
+              repository rules require that check. Turn this off for advisory reviews. See the{" "}
+              <Link href="/docs/gate" className="text-rust hover:underline">gate guide</Link>.
+            </span>
+          </span>
+          <input type="hidden" name="gateEnabled" value="off" />
+          <input
+            type="checkbox"
+            name="gateEnabled"
+            defaultChecked={settings?.gateEnabled ?? false}
+            value="on"
+            className="mt-1 h-4 w-4 shrink-0 accent-[#2F6F4E]"
+          />
+        </label>
         <div className="rounded-card border border-stone/80 p-4">
           <p className="font-medium">Inference</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">

@@ -78,10 +78,21 @@ export interface ApprovalInsert {
   sourceUrl?: string | null;
 }
 
-export interface GateStateSyncJobPayload extends Record<string, unknown> {
+export interface ReviewGateStateSyncJobPayload extends Record<string, unknown> {
   reviewId: number;
   reviewPublicId: string;
+  modeVersion?: number;
 }
+
+export interface OrganizationGateStateSyncJobPayload extends Record<string, unknown> {
+  orgId: number;
+  modeVersion: number;
+  cursor?: { queuedAt: string; reviewId: number };
+}
+
+export type GateStateSyncJobPayload =
+  | ReviewGateStateSyncJobPayload
+  | OrganizationGateStateSyncJobPayload;
 
 export function validateApprovalRationale(value: string): string {
   const rationale = value.trim();
@@ -179,6 +190,19 @@ export async function enqueueGateStateSync(
   });
 }
 
+/** Reconcile the gate mode onto each pull request's latest terminal check. */
+export async function enqueueLatestGateStateSyncsForOrganization(
+  db: Database,
+  orgId: number,
+  modeVersion: number,
+): Promise<void> {
+  await db.insert(schema.jobs).values({
+    kind: "gate-state-sync",
+    payload: { orgId, modeVersion } satisfies OrganizationGateStateSyncJobPayload,
+    maxAttempts: 5,
+  });
+}
+
 export async function lockReviewApprovalState(
   db: Database,
   reviewId: number,
@@ -190,8 +214,12 @@ export async function updateStoredEffectiveGate(
   db: Database,
   reviewId: number,
   failing: boolean,
+  gateEnabled = true,
 ): Promise<void> {
-  await db.update(schema.reviews).set({ gateFailing: failing }).where(eq(schema.reviews.id, reviewId));
+  await db
+    .update(schema.reviews)
+    .set({ gateFailing: gateEnabled && failing })
+    .where(eq(schema.reviews.id, reviewId));
 }
 
 export async function insertFindingApproval(

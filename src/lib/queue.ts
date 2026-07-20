@@ -209,6 +209,89 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   publicationIncomplete?: boolean;
 }
 
+export interface GateEnforcementSweepJobPayload extends Record<string, unknown> {
+  scopeKey: string;
+  orgId?: number;
+  afterRepositoryId?: number;
+  requestedAt: string;
+}
+
+export type GateEnforcementSweepStatus = "queued" | "running" | "done" | "failed";
+
+export async function enqueueGateEnforcementSweepOnce(
+  pool: Pool,
+  input: { orgId?: number; minIntervalMs?: number } = {},
+): Promise<number | null> {
+  const scopeKey = input.orgId === undefined ? "global" : `org:${input.orgId}`;
+  const payload: GateEnforcementSweepJobPayload = {
+    scopeKey,
+    ...(input.orgId === undefined ? {} : { orgId: input.orgId }),
+    requestedAt: new Date().toISOString(),
+  };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`postil:gate-enforcement-sweep:${scopeKey}`],
+    );
+    const result = await client.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       SELECT 'gate-enforcement-sweep', $1::jsonb, 'queued', now(), 20
+       WHERE NOT EXISTS (
+         SELECT 1 FROM jobs
+         WHERE kind = 'gate-enforcement-sweep'
+           AND payload->>'scopeKey' = $3
+           AND (
+             status IN ('queued', 'running')
+             OR ($2::bigint IS NOT NULL AND created_at >= now() - ($2 || ' milliseconds')::interval)
+           )
+       )
+       RETURNING id`,
+      [JSON.stringify(payload), input.minIntervalMs ?? null, scopeKey],
+    );
+    await client.query("COMMIT");
+    return result.rows[0] ? Number(result.rows[0].id) : null;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function findActiveGateEnforcementSweep(
+  pool: Pick<Pool, "query">,
+  orgId: number,
+): Promise<number | null> {
+  const result = await pool.query<{ id: string }>(
+    `SELECT id FROM jobs
+      WHERE kind = 'gate-enforcement-sweep'
+        AND status IN ('queued', 'running')
+        AND payload->>'scopeKey' = $1
+      ORDER BY id LIMIT 1`,
+    [`org:${orgId}`],
+  );
+  return result.rows[0] ? Number(result.rows[0].id) : null;
+}
+
+export async function getGateEnforcementSweepStatus(
+  pool: Pick<Pool, "query">,
+  input: { jobId: number; orgId: number },
+): Promise<GateEnforcementSweepStatus | null> {
+  if (!Number.isInteger(input.jobId) || input.jobId <= 0) return null;
+  const result = await pool.query<{ status: GateEnforcementSweepStatus }>(
+    `SELECT status FROM jobs
+      WHERE id = $1
+        AND kind = 'gate-enforcement-sweep'
+        AND payload->>'scopeKey' = $2
+        AND status IN ('queued', 'running', 'done', 'failed')
+      LIMIT 1`,
+    [input.jobId, `org:${input.orgId}`],
+  );
+  return result.rows[0]?.status ?? null;
+}
+
 export interface WebhookDispatchJobPayload extends Record<string, unknown> {
   deliveryId: string;
 }
@@ -532,6 +615,25 @@ export async function completeJob(
      WHERE id = $1 AND status = 'running' AND locked_by = $2`,
     [job.id, job.lockedBy],
   );
+}
+
+export async function continueClaimedJob(
+  pool: Pool,
+  job: Pick<ClaimedJob, "id" | "lockedBy">,
+  payload: Record<string, unknown>,
+  options: { runAfter?: Date } = {},
+): Promise<void> {
+  const result = await pool.query(
+    `UPDATE jobs
+        SET payload = $3, status = 'queued', attempts = 0,
+            run_after = COALESCE($4, now()), locked_at = NULL,
+            locked_by = NULL, last_error = NULL
+      WHERE id = $1 AND status = 'running' AND locked_by = $2`,
+    [job.id, job.lockedBy, JSON.stringify(payload), options.runAfter ?? null],
+  );
+  if ((result.rowCount ?? 0) !== 1) {
+    throw new Error("job continuation lost its lease");
+  }
 }
 
 /** Requeue claims owned by one stopping worker without consuming an attempt. */

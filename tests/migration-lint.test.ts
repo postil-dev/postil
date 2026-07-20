@@ -239,6 +239,9 @@ describe("migration lint", () => {
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "webhook_deliveries_completed_at_idx"',
     );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "respond_deliveries_pr_identity_idx"',
+    );
     expect(releaseScript).toContain("!state.indisvalid || !state.indisready");
     expect(releaseScript).toContain("DROP INDEX CONCURRENTLY IF EXISTS");
     expect(releaseScript).toContain("pg_try_advisory_lock($1, $2)");

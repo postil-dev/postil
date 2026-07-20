@@ -84,6 +84,7 @@ mock.module("@/lib/queue", () => ({
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
     completed.push(job.id);
   },
+  continueClaimedJob: async () => undefined,
   completeWebhookDelivery: async () => undefined,
   loadWebhookDelivery: async () => {
     if (webhookDeliveryLoadError) throw webhookDeliveryLoadError;
@@ -184,6 +185,10 @@ mock.module("@/worker/gate-state-sync", () => ({
   runGateStateSyncJob: async () => {
     await gateStateSyncRun?.();
   },
+}));
+
+mock.module("@/worker/gate-enforcement-sweep", () => ({
+  runGateEnforcementSweepJob: async () => null,
 }));
 
 const { drainQueueOnce, runClaimedJob, triggerQueueDrain } =

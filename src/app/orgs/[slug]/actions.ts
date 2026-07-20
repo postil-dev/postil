@@ -20,12 +20,14 @@ import {
 import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
 import { getDb, getPool, schema } from "@/lib/db";
 import { hostedInferenceAvailable } from "@/lib/env";
+import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import { getOrgMembership } from "@/lib/org-access";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
 import { getSessionUser } from "@/lib/session";
 import {
   enqueueGateStateSync,
+  enqueueLatestGateStateSyncsForOrganization,
   findKindBlockingState,
   getReviewApprovalState,
   hasNewerCompletedReviewForHead,
@@ -37,8 +39,13 @@ import {
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { completeCheckRun, getPullRequestHeadSha } from "@/lib/github/checks";
+import { getPullRequestHeadSha } from "@/lib/github/checks";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
+import {
+  enqueueGateEnforcementSweepOnce,
+  findActiveGateEnforcementSweep,
+  getGateEnforcementSweepStatus,
+} from "@/lib/queue";
 
 export interface OrgSettingsActionState {
   status: "error" | "success";
@@ -62,6 +69,17 @@ export type ConfigProbeRefreshState =
       message: string;
     }
   | { status: "error"; message: string };
+
+export type GateEnforcementRefreshState =
+  | { status: "idle"; pollGeneration: number }
+  | { status: "queued" | "active"; message: string; jobId: number; pollGeneration: number }
+  | { status: "error"; message: string; pollGeneration: number };
+
+export type GateEnforcementRefreshProgress =
+  | { status: "pending" }
+  | { status: "completed" }
+  | { status: "failed" }
+  | { status: "missing" };
 
 /**
  * Resolve org by slug and load the current user's membership row, returning
@@ -417,12 +435,68 @@ export async function refreshOrgConfigProbes(
   }
 }
 
+export async function refreshGateEnforcement(
+  previousState: GateEnforcementRefreshState,
+  formData: FormData,
+): Promise<GateEnforcementRefreshState> {
+  const slug = String(formData.get("slug") ?? "");
+  const pollGeneration = previousState.pollGeneration + 1;
+  try {
+    const { orgId } = await requireAdmin(slug);
+    const pool = getPool();
+    const queuedJobId = await enqueueGateEnforcementSweepOnce(pool, { orgId });
+    if (queuedJobId !== null) {
+      return {
+        status: "queued",
+        message: "Repository rules are being checked.",
+        jobId: queuedJobId,
+        pollGeneration,
+      };
+    }
+    const activeJobId = await findActiveGateEnforcementSweep(pool, orgId);
+    if (activeJobId === null) {
+      return {
+        status: "error",
+        message: "Could not locate the active check. Try again.",
+        pollGeneration,
+      };
+    }
+    return {
+      status: "active",
+      message: "Repository rules are being checked.",
+      jobId: activeJobId,
+      pollGeneration,
+    };
+  } catch (error) {
+    console.error("gate enforcement re-check failed", error);
+    return {
+      status: "error",
+      message: "Could not queue the checks. Try again.",
+      pollGeneration,
+    };
+  }
+}
+
+export async function getGateEnforcementRefreshProgress(
+  slug: string,
+  jobId: number,
+): Promise<GateEnforcementRefreshProgress> {
+  const { orgId } = await requireAdmin(slug);
+  const status = await getGateEnforcementSweepStatus(getPool(), { jobId, orgId });
+  if (status === "queued" || status === "running") return { status: "pending" };
+  if (status === "done") {
+    revalidatePath(`/orgs/${slug}/settings`);
+    return { status: "completed" };
+  }
+  return { status: status === "failed" ? "failed" : "missing" };
+}
+
 export async function saveOrgSettings(
   _previousState: OrgSettingsActionState | null,
   formData: FormData,
 ): Promise<OrgSettingsActionState> {
   const slug = String(formData.get("slug") ?? "");
-  const { orgId } = await requireAdmin(slug);
+  const { orgId, userId } = await requireAdmin(slug);
 
   const providerMode = String(formData.get("providerMode") ?? "hosted").trim();
   if (providerMode !== "hosted" && providerMode !== "byok") {
@@ -448,6 +522,7 @@ export async function saveOrgSettings(
   const sharedConfigValues = formData.getAll("sharedConfigEnabled").map(String);
   const sharedConfigEnabled =
     sharedConfigValues.length === 0 || sharedConfigValues.includes("on");
+  const gateEnabled = formData.getAll("gateEnabled").map(String).includes("on");
   if (configYaml) {
     try {
       validateOrgConfigYaml(configYaml);
@@ -487,8 +562,10 @@ export async function saveOrgSettings(
     guardrailsMd,
     contentPolicyMd,
     sharedConfigEnabled,
+    gateEnabled,
     updatedAt: now,
   };
+  let gateModeChanged = false;
 
   // The key is write-only: set when provided, cleared when requested,
   // otherwise left untouched. It is never read back to the form.
@@ -535,6 +612,9 @@ export async function saveOrgSettings(
 
   const managedHostedInferenceAvailable = await hostedInferenceAvailable(getPool());
   const modeError = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:gate-mode:${orgId}`}, 0))`,
+    );
     await tx.execute(sql`
       SELECT "org_id"
       FROM "organization_entitlements"
@@ -563,11 +643,13 @@ export async function saveOrgSettings(
         .select({
           apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
           apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
+          gateEnabled: schema.orgSettings.gateEnabled,
         })
         .from(schema.orgSettings)
         .where(eq(schema.orgSettings.orgId, orgId))
         .limit(1)
     )[0];
+    gateModeChanged = (currentSettings?.gateEnabled ?? false) !== gateEnabled;
     const activeTrial = Boolean(
       entitlement?.status === "trialing" &&
         entitlement.trialEndsAt &&
@@ -644,9 +726,30 @@ export async function saveOrgSettings(
         throw new Error("The free trial ended before the provider change was saved.");
       }
     }
+    if (gateModeChanged) {
+      const event = (
+        await tx
+          .insert(schema.organizationSettingEvents)
+          .values({
+            orgId,
+            setting: "gate_enabled",
+            value: gateEnabled ? "enabled" : "advisory",
+            actorUserId: userId,
+            source: "dashboard",
+          })
+          .returning({ id: schema.organizationSettingEvents.id })
+      )[0];
+      if (!event) throw new Error("gate setting audit event was not recorded");
+      await enqueueLatestGateStateSyncsForOrganization(tx, orgId, event.id);
+    }
     return null;
   });
   if (modeError) return modeError;
+  if (gateModeChanged) {
+    void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+      triggerQueueDrain("gate-state-sync"),
+    );
+  }
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);
   return { status: "success", message: "Organization settings saved." };
@@ -712,7 +815,13 @@ export async function approveFinding(formData: FormData): Promise<void> {
       source: "dashboard",
     });
     const nextState = await getReviewApprovalState(tx, review);
-    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing);
+    const gateEnabled = await lockOrganizationGateMode(tx, orgId);
+    await updateStoredEffectiveGate(
+      tx,
+      review.id,
+      nextState.effectiveGate.failing,
+      gateEnabled,
+    );
     await enqueueGateStateSync(tx, review);
   });
   void import("@/worker/runner").then(({ triggerQueueDrain }) =>
@@ -731,26 +840,22 @@ export async function revokeFinding(formData: FormData): Promise<void> {
   const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
   if (!review) throw new Error("review not found in this organization");
   await assertDashboardReviewApprovable(review);
-  const token = await requireCurrentReviewHead(review);
+  await requireCurrentReviewHead(review);
   await db.transaction(async (tx) => {
     await lockReviewApprovalState(tx, review.id);
     const state = await getReviewApprovalState(tx, review);
     const finding = findKindBlockingState(state, findingId);
     if (!finding?.activeApproval) throw new Error("that finding has no active approval");
-    if (!review.gateCheckRunId) throw new Error("review has no gate check-run");
-    await completeCheckRun(
-      token,
-      review.repoFullName,
-      review.gateCheckRunId,
-      "failure",
-      "Postil gate approval revoked",
-      "An organization admin revoked a human judgment approval. The pull request is blocked until a new review resolves the finding or an eligible approval is recorded.",
-      AbortSignal.timeout(10_000),
-    );
     const revokedApprovalId = await revokeFindingApproval(tx, review.id, findingId, userId);
     if (!revokedApprovalId) throw new Error("that finding has no active approval");
     const nextState = await getReviewApprovalState(tx, review);
-    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing);
+    const gateEnabled = await lockOrganizationGateMode(tx, orgId);
+    await updateStoredEffectiveGate(
+      tx,
+      review.id,
+      nextState.effectiveGate.failing,
+      gateEnabled,
+    );
     await enqueueGateStateSync(tx, review);
   });
   void import("@/worker/runner").then(({ triggerQueueDrain }) =>

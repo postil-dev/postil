@@ -256,7 +256,7 @@ describe("private repository worker defense in depth", () => {
     const publication = source.indexOf("await Promise.all([", cliCompletion);
     const verification = source.indexOf("verifyCompletedCheckRun", publication);
     const persistence = source.indexOf(
-      "const completed = await persistReviewCompletion",
+      "const completion = await persistReviewCompletionWithGateMode",
       verification,
     );
 
@@ -274,11 +274,24 @@ describe("private repository worker defense in depth", () => {
     );
   });
 
+  test("advisory organizations neutralize the CLI gate result before verification", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const completion = source.indexOf("receiptUsageForRace = receiptUsage");
+    const verification = source.indexOf("await Promise.all([", completion);
+    const advisory = source.slice(completion, verification);
+
+    expect(advisory).toContain("if (!gateEnabled)");
+    expect(advisory).toContain('"neutral"');
+    expect(advisory).toContain('"Postil gate is advisory"');
+    expect(source.slice(verification, source.indexOf("const completion =", verification)))
+      .toContain(": \"neutral\"");
+  });
+
   test("operational review failures durably queue terminal check cleanup", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
       "} catch (err) {",
-      source.indexOf("await persistReviewCompletion"),
+      source.indexOf("await persistReviewCompletionWithGateMode"),
     );
     const catchEnd = source.indexOf("} finally {", catchStart);
     const failureBody = source.slice(catchStart, catchEnd);
@@ -314,7 +327,7 @@ describe("private repository worker defense in depth", () => {
       checkCreation,
     );
     const persistence = source.indexOf(
-      "const completed = await persistReviewCompletion",
+      "const completion = await persistReviewCompletionWithGateMode",
       cliCompletion,
     );
     expect(publicationBoundary).toBeGreaterThan(reviewStart);
@@ -334,7 +347,7 @@ describe("private repository worker defense in depth", () => {
     expect(advisoryPersistence).toBeGreaterThan(checkCreation);
     expect(advisoryPersistence).toBeLessThan(gateCreation);
     expect(gatePersistence).toBeGreaterThan(gateCreation);
-    expect(source.slice(checkCreation, gatePersistence)).toContain("signal,");
+    expect(source.slice(checkCreation, gatePersistence)).toContain("reviewSignal,");
     expect(source.slice(cliCompletion, persistence)).not.toContain(
       "throwIfWorkerStopping(signal)",
     );
@@ -344,7 +357,7 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
       "} catch (err) {",
-      source.indexOf("await persistReviewCompletion"),
+      source.indexOf("await persistReviewCompletionWithGateMode"),
     );
     const failureUpdate = source.indexOf("const failedRows", catchStart);
     const supersessionRace = source.slice(catchStart, failureUpdate);
@@ -435,7 +448,7 @@ describe("private repository worker defense in depth", () => {
       pullStart,
     );
     expect(
-      source.indexOf("await supersedeActiveReviews", pullStart),
+      source.indexOf("await supersedeActiveReviews", pullGate),
     ).toBeGreaterThan(pullGate);
     expect(source.indexOf("await enqueueReviewJob", pullStart)).toBeGreaterThan(
       pullGate,

@@ -31,6 +31,7 @@ import {
   loadLatestCompletedReviewForPr,
   updateStoredEffectiveGate,
 } from "@/lib/finding-approvals";
+import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import {
   isPostilReviewCommand,
   mentionsPostil,
@@ -1221,7 +1222,10 @@ async function handleApproveCommand(
       });
       const nextState = await getReviewApprovalState(tx, review);
       effectiveFailing = nextState.effectiveGate.failing;
-      await updateStoredEffectiveGate(tx, review.id, effectiveFailing);
+      const gateEnabled = review.orgId
+        ? await lockOrganizationGateMode(tx, review.orgId)
+        : false;
+      await updateStoredEffectiveGate(tx, review.id, effectiveFailing, gateEnabled);
       await enqueueGateStateSync(tx, review);
       await enqueueWebhookComment(tx, {
         installationId,

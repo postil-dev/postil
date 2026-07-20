@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import type { Envelope } from "@/lib/envelope";
-import { persistReviewCompletion } from "@/lib/review-completion";
+import { persistReviewCompletionWithGateMode } from "@/lib/review-completion";
 
 function fakeDb(reviewUpdated = true): {
   db: Database;
@@ -13,6 +13,9 @@ function fakeDb(reviewUpdated = true): {
   const inserted: Array<{ table: unknown; values: unknown }> = [];
   let transactions = 0;
   const tx = {
+    execute() {
+      return Promise.resolve();
+    },
     update() {
       const chain = {
         set() {
@@ -85,9 +88,9 @@ const base = {
 };
 
 describe("review completion transaction", () => {
-  test("atomically records review usage without a notification outbox", async () => {
+  test("atomically records review usage and schedules gate reconciliation", async () => {
     const state = fakeDb();
-    const completed = await persistReviewCompletion(state.db, base);
+    const completed = (await persistReviewCompletionWithGateMode(state.db, base, null)).completed;
 
     expect(completed).toBe(true);
     expect(state.transactions).toBe(1);
@@ -97,7 +100,7 @@ describe("review completion transaction", () => {
       { ...base.usage[0], reviewId: 7, triggerSource: "requested_review" },
       { ...base.usage[1], reviewId: 7, triggerSource: "requested_review" },
     ]);
-    expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(0);
+    expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(1);
   });
 
   test("records repeated model usage rows as separate events", async () => {
@@ -108,8 +111,12 @@ describe("review completion transaction", () => {
     }));
 
     expect(
-      await persistReviewCompletion(state.db, { ...base, usage: sameModelUsage }),
-    ).toBe(true);
+      await persistReviewCompletionWithGateMode(
+        state.db,
+        { ...base, usage: sameModelUsage },
+        null,
+      ),
+    ).toMatchObject({ completed: true });
     const usageInsert = state.inserted.find((row) => row.table === schema.usageEvents);
     expect(usageInsert?.values).toEqual([
       { ...sameModelUsage[0], reviewId: 7, triggerSource: "requested_review" },
@@ -119,7 +126,8 @@ describe("review completion transaction", () => {
 
   test("records no accounting after losing the completion race", async () => {
     const state = fakeDb(false);
-    expect(await persistReviewCompletion(state.db, base)).toBe(false);
+    expect(await persistReviewCompletionWithGateMode(state.db, base, null))
+      .toMatchObject({ completed: false });
     expect(state.inserted).toEqual([]);
   });
 });

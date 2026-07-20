@@ -71,9 +71,13 @@ import {
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
-  persistReviewCompletion,
+  persistReviewCompletionWithGateMode,
   type ReviewCompletionInput,
 } from "@/lib/review-completion";
+import {
+  getInstallationGateEnabled,
+  getOrganizationGateEnabled,
+} from "@/lib/gate-mode";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
@@ -878,6 +882,7 @@ export async function runReviewJob(
   let usageAccountingCompleteForRace = false;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
+  let gateEnabled = false;
   const leaseAbortController = new AbortController();
   const reviewSignal = signal
     ? AbortSignal.any([signal, leaseAbortController.signal])
@@ -945,6 +950,7 @@ export async function runReviewJob(
   });
 
   try {
+    gateEnabled = await getOrganizationGateEnabled(db, installation.orgId);
     throwIfWorkerStopping(reviewSignal);
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
@@ -1061,6 +1067,7 @@ export async function runReviewJob(
           false,
           detailsUrl,
           expectedFailureCheckRuns(),
+          gateEnabled,
         );
       }
       reviewLog.line(
@@ -1283,6 +1290,18 @@ export async function runReviewJob(
     }));
     receiptUsageForRace = receiptUsage;
     usageAccountingCompleteForRace = ingested.usageAccountingComplete;
+    if (!gateEnabled) {
+      await completeCheckRun(
+        token,
+        payload.repoFullName,
+        gateCheckRunId,
+        "neutral",
+        "Postil gate is advisory",
+        "Merge blocking is disabled. Review findings remain advisory.",
+        reviewSignal,
+      );
+      reviewLog.line("forge gate check-run set to advisory");
+    }
     try {
       await Promise.all([
         verifyCompletedCheckRun(
@@ -1306,7 +1325,11 @@ export async function runReviewJob(
             name: GATE_CHECK_NAME,
             externalId: gateCheckExternalId,
             headSha: payload.headSha,
-            conclusion: ingested.gateFailing ? "failure" : "success",
+            conclusion: gateEnabled
+              ? ingested.gateFailing
+                ? "failure"
+                : "success"
+              : "neutral",
             requireOutput: true,
           },
           signal,
@@ -1326,7 +1349,7 @@ export async function runReviewJob(
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
     // no longer owns the result. The CLI owns the success-path check-runs.
-    const completed = await persistReviewCompletion(db, {
+    const completion = await persistReviewCompletionWithGateMode(db, {
       reviewId,
       envelope: ingested.envelope,
       configFiles,
@@ -1336,7 +1359,13 @@ export async function runReviewJob(
       usage: receiptUsage,
       hostedUsageReservationId,
       usageAccountingComplete: ingested.usageAccountingComplete,
-    });
+    }, installation.orgId);
+    const completed = completion.completed;
+    if (completed) {
+      void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+        triggerQueueDrain("gate-state-sync"),
+      );
+    }
 
     if (!completed) {
       if (hostedUsageReservationId) {
@@ -1508,6 +1537,7 @@ export async function runReviewJob(
         false,
         detailsUrl,
         expectedFailureCheckRuns(publicationIncomplete),
+        gateEnabled,
       );
       reviewLog.line("forge check-runs updated for review failure");
     }
@@ -1679,9 +1709,8 @@ export async function completeHostedInferenceDisabledCheckRuns(
 }
 
 /**
- * Complete both check-runs after an operational failure. The gate fails
- * closed (`failure`); the advisory check is `neutral` because there is no
- * review verdict, only an operational error.
+ * Complete both check-runs after an operational failure. Enforced gates fail
+ * closed; advisory gates and the review check remain neutral.
  */
 export async function failCheckRuns(
   token: string,
@@ -1693,6 +1722,7 @@ export async function failCheckRuns(
   throwOnError = false,
   detailsUrl?: string,
   expectedChecks?: ExpectedFailureCheckRuns,
+  gateEnabled = true,
 ): Promise<void> {
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
   const publicationIncomplete = expectedChecks?.publicationIncomplete === true;
@@ -1705,9 +1735,11 @@ export async function failCheckRuns(
       "publication cleanup requires the exact GitHub check-run identities",
     );
   }
-  const title = publicationIncomplete
-    ? "Review publication incomplete"
-    : "Review did not complete";
+  const title = gateEnabled
+    ? publicationIncomplete
+      ? "Review publication incomplete"
+      : "Review did not complete"
+    : "Postil gate is advisory";
   const summary = publicationIncomplete
     ? `Postil completed the review, but GitHub did not receive the complete result. This run is not a published review verdict.${details}`
     : `Postil could not complete this review, so no review verdict exists.${details}`;
@@ -1745,13 +1777,15 @@ export async function failCheckRuns(
     );
   };
   if (gateCheckRunId != null) {
-    const gateSummary = publicationIncomplete
-      ? `${summary}\n\nThe merge check remains blocked because the reviewed result was not fully published. Re-request the check.`
-      : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`;
+    const gateSummary = gateEnabled
+      ? publicationIncomplete
+        ? `${summary}\n\nThe merge check remains blocked because the reviewed result was not fully published. Re-request the check.`
+        : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`
+      : `${summary}\n\nMerge blocking is disabled for this organization.`;
     await complete(
       gateCheckRunId,
       expectedChecks?.gate,
-      "failure",
+      gateEnabled ? "failure" : "neutral",
       gateSummary,
     ).catch((error) => {
       errors.push(error);
@@ -1790,6 +1824,10 @@ export async function runCheckRunCleanupJob(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const gateEnabled = await getInstallationGateEnabled(
+      getDb(),
+      payload.installationId,
+    );
     const token = await getInstallationToken(
       payload.installationId,
       controller.signal,
@@ -1846,6 +1884,7 @@ export async function runCheckRunCleanupJob(
         true,
         payload.detailsUrl,
         expectedChecks,
+        gateEnabled,
       );
     };
 

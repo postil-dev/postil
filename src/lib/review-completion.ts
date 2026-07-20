@@ -4,6 +4,8 @@ import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import type { Envelope } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
+import { lockReviewApprovalState } from "@/lib/finding-approvals";
+import { lockOrganizationGateMode } from "@/lib/gate-mode";
 
 export interface ReviewCompletionInput {
   reviewId: number;
@@ -25,14 +27,24 @@ export interface ReviewCompletionInput {
   usageAccountingComplete: boolean;
 }
 
-/**
- * Persist the terminal review and its accounting atomically.
- */
-export async function persistReviewCompletion(
+export interface ReviewCompletionWithGateModeResult {
+  completed: boolean;
+  gateEnabled: boolean;
+  gateFailing: boolean;
+}
+
+/** Persist the terminal review, effective gate state, and accounting atomically. */
+export async function persistReviewCompletionWithGateMode(
   db: Database,
   input: ReviewCompletionInput,
-): Promise<boolean> {
+  orgId: number | null,
+): Promise<ReviewCompletionWithGateModeResult> {
   return db.transaction(async (tx) => {
+    await lockReviewApprovalState(tx, input.reviewId);
+    const gateEnabled = orgId === null
+      ? false
+      : await lockOrganizationGateMode(tx, orgId);
+    const effectiveGateFailing = gateEnabled && input.gateFailing;
     const rows = await tx
       .update(schema.reviews)
       .set({
@@ -42,7 +54,7 @@ export async function persistReviewCompletion(
         configProvenance: input.configProvenance ?? { entries: [], degraded: false },
         silent: input.silent,
         engineGateFailing: input.gateFailing,
-        gateFailing: input.gateFailing,
+        gateFailing: effectiveGateFailing,
         finishedAt: new Date(),
       })
       .where(
@@ -53,9 +65,12 @@ export async function persistReviewCompletion(
       )
       .returning({
         id: schema.reviews.id,
+        publicId: schema.reviews.publicId,
         triggerSource: schema.reviews.triggerSource,
       });
-    if (rows.length === 0) return false;
+    if (rows.length === 0) {
+      return { completed: false, gateEnabled, gateFailing: effectiveGateFailing };
+    }
 
     const persistedUsageRows = input.usage.map((usage) => ({
       ...usage,
@@ -116,6 +131,14 @@ export async function persistReviewCompletion(
       }
     }
     await tx.insert(schema.usageEvents).values(persistedUsageRows);
-    return true;
+    await tx.insert(schema.jobs).values({
+      kind: "gate-state-sync",
+      payload: {
+        reviewId: input.reviewId,
+        reviewPublicId: rows[0]!.publicId,
+      },
+      maxAttempts: 5,
+    });
+    return { completed: true, gateEnabled, gateFailing: effectiveGateFailing };
   });
 }

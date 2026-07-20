@@ -16,7 +16,7 @@ import {
 } from "@/lib/hosted-usage-reservations";
 import * as schema from "@/lib/db/schema";
 import type { Envelope } from "@/lib/envelope";
-import { persistReviewCompletion } from "@/lib/review-completion";
+import { persistReviewCompletionWithGateMode } from "@/lib/review-completion";
 import {
   canProcessRepositoryInference,
   providerModeMatchesRepositoryAccess,
@@ -117,7 +117,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
   afterAll(async () => {
     await pool?.end();
     if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
       await adminClient.end();
     }
   }, 30_000);
@@ -150,7 +150,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     expect(statuses.rows.map((row) => row.status).sort()).toEqual(["active", "released"]);
 
     expect(
-      await persistReviewCompletion(db, {
+      await persistReviewCompletionWithGateMode(db, {
         reviewId: rejectedReviewId,
         envelope: { version: 1 } as Envelope,
         configFiles: [],
@@ -167,8 +167,8 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
         }],
         hostedUsageReservationId: recovered.reservationId,
         usageAccountingComplete: false,
-      }),
-    ).toBe(true);
+      }, orgId),
+    ).toMatchObject({ completed: true });
     const reconciled = await pool!.query<{ status: string; actual_micros: string }>(
       `SELECT status, actual_micros FROM hosted_usage_reservations WHERE id = $1`,
       [recovered.reservationId],
@@ -631,7 +631,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       usesByok: false,
     });
     expect(first.allowed).toBe(true);
-    expect(await persistReviewCompletion(db, {
+    expect(await persistReviewCompletionWithGateMode(db, {
       reviewId: Number(row.first_review_id),
       envelope: { version: 1 } as Envelope,
       configFiles: [],
@@ -651,7 +651,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       ],
       hostedUsageReservationId: first.reservationId,
       usageAccountingComplete: true,
-    })).toBe(true);
+    }, Number(row.org_id))).toMatchObject({ completed: true });
     const usage = await pool!.query<{ null_costs: number; total_micros: string }>(
       `SELECT count(*) FILTER (WHERE cost_micros IS NULL)::int AS null_costs,
               sum(cost_micros)::bigint AS total_micros

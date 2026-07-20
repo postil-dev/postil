@@ -15,6 +15,7 @@ const completions: Array<{
 const failingCompletionIds = new Set<number>();
 let reconciledCheckRunId: number | null = null;
 const verifiedCompletionIds: number[] = [];
+let organizationGateEnabled = true;
 
 function fakeDb() {
   return {
@@ -91,6 +92,12 @@ mock.module("@/lib/github/checks", () => ({
   },
 }));
 
+mock.module("@/lib/gate-mode", () => ({
+  getInstallationGateEnabled: async () => organizationGateEnabled,
+  getOrganizationGateEnabled: async () => organizationGateEnabled,
+  lockOrganizationGateMode: async () => organizationGateEnabled,
+}));
+
 const {
   completeHostedInferenceDisabledCheckRuns,
   failCheckRuns,
@@ -105,6 +112,7 @@ beforeEach(() => {
   failingCompletionIds.clear();
   reconciledCheckRunId = null;
   verifiedCompletionIds.length = 0;
+  organizationGateEnabled = true;
 });
 
 describe("review terminal check-runs", () => {
@@ -357,6 +365,44 @@ describe("review terminal check-runs", () => {
       { id: 22, conclusion: "failure" },
       { id: 11, conclusion: "neutral" },
     ]);
+  });
+
+  test("operational failure leaves an advisory gate neutral", async () => {
+    await failCheckRuns(
+      "test-token",
+      "postil-dev/postil",
+      11,
+      22,
+      "publication failed",
+      undefined,
+      false,
+      undefined,
+      undefined,
+      false,
+    );
+
+    expect(completions.map(({ id, conclusion, title }) => ({ id, conclusion, title })))
+      .toEqual([
+        { id: 22, conclusion: "neutral", title: "Postil gate is advisory" },
+        { id: 11, conclusion: "neutral", title: "Postil gate is advisory" },
+      ]);
+  });
+
+  test("durable watchdog cleanup resolves advisory mode at execution time", async () => {
+    organizationGateEnabled = false;
+    await runCheckRunCleanupJob({
+      installationId: 42,
+      repoFullName: "postil-dev/postil",
+      advisoryCheckRunId: 11,
+      gateCheckRunId: 22,
+      message: "worker stopped",
+    });
+
+    expect(completions.map(({ id, conclusion, title }) => ({ id, conclusion, title })))
+      .toEqual([
+        { id: 22, conclusion: "neutral", title: "Postil gate is advisory" },
+        { id: 11, conclusion: "neutral", title: "Postil gate is advisory" },
+      ]);
   });
 
   test("queued publication cleanup keeps the exact run identity", async () => {

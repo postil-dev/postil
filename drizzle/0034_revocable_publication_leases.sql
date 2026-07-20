@@ -158,11 +158,3 @@ END $$;
 CREATE TRIGGER "respond_deliveries_guard_publication_identity"
 BEFORE UPDATE ON "respond_deliveries"
 FOR EACH ROW EXECUTE FUNCTION "postil_guard_respond_publication_identity"();
-
-CREATE INDEX "respond_deliveries_pr_identity_idx"
-  ON "respond_deliveries" (
-    "source_github_installation_id",
-    "source_github_repo_id",
-    "issue_number",
-    "source_head_sha"
-  ) WHERE "is_pr" AND "state" IN ('prepared', 'delivering');
