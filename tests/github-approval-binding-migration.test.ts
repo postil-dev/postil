@@ -110,6 +110,7 @@ describeDb("GitHub approval binding migration", () => {
       source_github_repo_id: string;
       source_pr_number: number;
       source_head_sha: string;
+      source_binding_state: string;
     }>("SELECT * FROM finding_approvals WHERE finding_id = 'legacy-finding'" )).rows[0]!;
 
     expect(row).toMatchObject({
@@ -119,11 +120,12 @@ describeDb("GitHub approval binding migration", () => {
       source_github_repo_id: "303",
       source_pr_number: 5,
       source_head_sha: "head-sha",
+      source_binding_state: "exact",
     });
   });
 
   test("accepts an exact GitHub event binding and permits only revocation changes", async () => {
-    const result = await client!.query<{ id: string }>(
+    const result = await client!.query<{ id: string; source_binding_state: string }>(
       `INSERT INTO finding_approvals (
          review_id, finding_id, actor_user_id, actor_github_id,
          actor_login_snapshot, actor_role_snapshot, rationale, source,
@@ -135,10 +137,11 @@ describeDb("GitHub approval binding migration", () => {
          $1, 'github-finding', $2, '404', 'admin', 'admin', 'accepted risk', 'github',
          'https://github.com/approval-binding/repo/pull/5#issuecomment-505',
          $3, $4, 202, 303, 5, 'head-sha', 'delivery-505', 505, 'issue_comment'
-       ) RETURNING id`,
+       ) RETURNING id, source_binding_state`,
       [reviewId, actorUserId, orgId, repositoryId],
     );
     const approvalId = result.rows[0]!.id;
+    expect(result.rows[0]!.source_binding_state).toBe("exact");
 
     await client!.query(
       "UPDATE finding_approvals SET revoked_at = now(), revoked_by_user_id = $2 WHERE id = $1",
@@ -150,6 +153,27 @@ describeDb("GitHub approval binding migration", () => {
         [approvalId],
       ),
     ).rejects.toThrow("immutable");
+    await expect(
+      client!.query(
+        "UPDATE finding_approvals SET source_binding_state = 'legacy' WHERE id = $1",
+        [approvalId],
+      ),
+    ).rejects.toThrow("immutable");
+  });
+
+  test("records a new dashboard approval with exact binding", async () => {
+    const row = (await client!.query<{ source_binding_state: string }>(
+      `INSERT INTO finding_approvals (
+         review_id, finding_id, actor_user_id, actor_github_id,
+         actor_login_snapshot, actor_role_snapshot, rationale, source,
+         source_org_id, source_repository_id, source_github_installation_id,
+         source_github_repo_id, source_pr_number, source_head_sha
+       ) VALUES ($1, 'dashboard-exact', $2, '404', 'admin', 'admin',
+         'accepted risk', 'dashboard', $3, $4, 202, 303, 5, 'head-sha')
+       RETURNING source_binding_state`,
+      [reviewId, actorUserId, orgId, repositoryId],
+    )).rows[0]!;
+    expect(row.source_binding_state).toBe("exact");
   });
 
   test("keeps an approval with unavailable legacy identity revocable", async () => {
@@ -157,11 +181,33 @@ describeDb("GitHub approval binding migration", () => {
       "UPDATE finding_approvals SET revoked_at = now(), revoked_by_user_id = $2 WHERE id = $1",
       [incompleteApprovalId, actorUserId],
     );
-    const row = (await client!.query<{ revoked: boolean; source_org_id: string | null }>(
-      "SELECT revoked_at IS NOT NULL AS revoked, source_org_id FROM finding_approvals WHERE id = $1",
+    const row = (await client!.query<{
+      revoked: boolean;
+      source_binding_state: string;
+      source_org_id: string | null;
+    }>(
+      "SELECT revoked_at IS NOT NULL AS revoked, source_binding_state, source_org_id FROM finding_approvals WHERE id = $1",
       [incompleteApprovalId],
     )).rows[0]!;
-    expect(row).toEqual({ revoked: true, source_org_id: null });
+    expect(row).toEqual({
+      revoked: true,
+      source_binding_state: "legacy",
+      source_org_id: null,
+    });
+  });
+
+  test("rejects attempts to create a new legacy-bound approval", async () => {
+    await expect(
+      client!.query(
+        `INSERT INTO finding_approvals (
+           review_id, finding_id, actor_user_id, actor_github_id,
+           actor_login_snapshot, actor_role_snapshot, rationale, source,
+           source_binding_state
+         ) VALUES ($1, 'new-legacy', $2, '404', 'admin', 'admin',
+           'accepted risk', 'dashboard', 'legacy')`,
+        [reviewId, actorUserId],
+      ),
+    ).rejects.toThrow("require exact source binding");
   });
 
   test("rejects mismatched review identity and replayed webhook provenance", async () => {

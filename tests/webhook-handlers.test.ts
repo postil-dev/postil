@@ -1175,8 +1175,10 @@ describeDb("webhook handler behaviour", () => {
       actor_login_snapshot: string;
       actor_role_snapshot: string;
       rationale: string;
+      source_binding_state: string;
     }>(
-      `SELECT actor_github_id, actor_login_snapshot, actor_role_snapshot, rationale
+      `SELECT actor_github_id, actor_login_snapshot, actor_role_snapshot, rationale,
+              source_binding_state
          FROM finding_approvals
         WHERE review_id = $1`,
       [reviewId],
@@ -1187,6 +1189,7 @@ describeDb("webhook handler behaviour", () => {
         actor_login_snapshot: "admin",
         actor_role_snapshot: "admin",
         rationale: "reviewed",
+        source_binding_state: "exact",
       },
     ]);
     expect(membershipFetchCount).toBe(1);

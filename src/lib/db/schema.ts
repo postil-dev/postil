@@ -420,6 +420,9 @@ export const findingApprovals = pgTable(
     sourceWebhookDeliveryId: text("source_webhook_delivery_id"),
     sourceGithubCommentId: bigint("source_github_comment_id", { mode: "number" }),
     sourceCommentKind: text("source_comment_kind"),
+    sourceBindingState: text("source_binding_state", {
+      enum: ["exact", "legacy"],
+    }).notNull().default("exact"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -450,7 +453,7 @@ export const findingApprovals = pgTable(
     ),
     check(
       "finding_approvals_binding_check",
-      sql`(${t.sourceOrgId} IS NULL AND ${t.sourceRepositoryId} IS NULL AND ${t.sourceGithubInstallationId} IS NULL AND ${t.sourceGithubRepoId} IS NULL AND ${t.sourcePrNumber} IS NULL AND ${t.sourceHeadSha} IS NULL) OR (${t.sourceOrgId} > 0 AND ${t.sourceRepositoryId} > 0 AND ${t.sourceGithubInstallationId} > 0 AND ${t.sourceGithubRepoId} > 0 AND ${t.sourcePrNumber} > 0 AND length(btrim(${t.sourceHeadSha})) BETWEEN 1 AND 200)`,
+      sql`(${t.sourceBindingState} = 'legacy' AND ${t.sourceOrgId} IS NULL AND ${t.sourceRepositoryId} IS NULL AND ${t.sourceGithubInstallationId} IS NULL AND ${t.sourceGithubRepoId} IS NULL AND ${t.sourcePrNumber} IS NULL AND ${t.sourceHeadSha} IS NULL) OR (${t.sourceBindingState} = 'exact' AND ${t.sourceOrgId} > 0 AND ${t.sourceRepositoryId} > 0 AND ${t.sourceGithubInstallationId} > 0 AND ${t.sourceGithubRepoId} > 0 AND ${t.sourcePrNumber} > 0 AND length(btrim(${t.sourceHeadSha})) BETWEEN 1 AND 200)`,
     ),
     check(
       "finding_approvals_github_source_check",

@@ -980,6 +980,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "source_binding_state": {
+          "name": "source_binding_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'exact'"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1140,7 +1147,7 @@
         },
         "finding_approvals_binding_check": {
           "name": "finding_approvals_binding_check",
-          "value": "(\"finding_approvals\".\"source_org_id\" IS NULL AND \"finding_approvals\".\"source_repository_id\" IS NULL AND \"finding_approvals\".\"source_github_installation_id\" IS NULL AND \"finding_approvals\".\"source_github_repo_id\" IS NULL AND \"finding_approvals\".\"source_pr_number\" IS NULL AND \"finding_approvals\".\"source_head_sha\" IS NULL) OR (\"finding_approvals\".\"source_org_id\" > 0 AND \"finding_approvals\".\"source_repository_id\" > 0 AND \"finding_approvals\".\"source_github_installation_id\" > 0 AND \"finding_approvals\".\"source_github_repo_id\" > 0 AND \"finding_approvals\".\"source_pr_number\" > 0 AND length(btrim(\"finding_approvals\".\"source_head_sha\")) BETWEEN 1 AND 200)"
+          "value": "(\"finding_approvals\".\"source_binding_state\" = 'legacy' AND \"finding_approvals\".\"source_org_id\" IS NULL AND \"finding_approvals\".\"source_repository_id\" IS NULL AND \"finding_approvals\".\"source_github_installation_id\" IS NULL AND \"finding_approvals\".\"source_github_repo_id\" IS NULL AND \"finding_approvals\".\"source_pr_number\" IS NULL AND \"finding_approvals\".\"source_head_sha\" IS NULL) OR (\"finding_approvals\".\"source_binding_state\" = 'exact' AND \"finding_approvals\".\"source_org_id\" > 0 AND \"finding_approvals\".\"source_repository_id\" > 0 AND \"finding_approvals\".\"source_github_installation_id\" > 0 AND \"finding_approvals\".\"source_github_repo_id\" > 0 AND \"finding_approvals\".\"source_pr_number\" > 0 AND length(btrim(\"finding_approvals\".\"source_head_sha\")) BETWEEN 1 AND 200)"
         },
         "finding_approvals_github_source_check": {
           "name": "finding_approvals_github_source_check",
