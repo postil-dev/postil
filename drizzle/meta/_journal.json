@@ -260,6 +260,13 @@
       "when": 1784548802000,
       "tag": "0036_review_publication_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784549927454,
+      "tag": "0037_github_approval_bindings",
+      "breakpoints": true
     }
   ]
 }

@@ -123,6 +123,8 @@ async function loadDesiredGateState(
         orgId: schema.installations.orgId,
         installationSuspended: schema.installations.suspended,
         githubInstallationId: schema.installations.githubInstallationId,
+        githubRepoId: schema.repositories.githubRepoId,
+        installationAccountType: schema.installations.accountType,
       })
       .from(schema.reviews)
       .innerJoin(
@@ -172,7 +174,7 @@ async function loadDesiredGateState(
   if (row.status === "completed" && !envelope) {
     throw new Error("gate state sync review is incomplete");
   }
-  const review: ReviewForApproval = { ...row, envelope };
+  const review: ReviewForApproval = { ...row, orgId: row.orgId, envelope };
   const failing = row.status === "failed"
     ? true
     : (await getReviewApprovalState(tx, review)).effectiveGate.failing;

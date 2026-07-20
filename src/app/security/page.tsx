@@ -30,6 +30,16 @@ const PERMISSIONS = [
     level: "write",
     note: "Create and complete postil/gate and postil/review.",
   },
+  {
+    scope: "issues",
+    level: "write",
+    note: "Reply to explicit commands on pull requests and issues.",
+  },
+  {
+    scope: "members",
+    level: "read",
+    note: "Verify organization admins before recording approvals.",
+  },
   { scope: "metadata", level: "read", note: "Resolve repository identity." },
 ] as const;
 
@@ -52,7 +62,7 @@ export default function SecurityPage() {
       <Section
         number="01"
         eyebrow="Least privilege"
-        title="Minimal permissions: read your code, write your checks."
+        title="Minimal permissions for reviews, checks, and approvals."
       >
         <div className="grid gap-8 md:grid-cols-2">
           <div>

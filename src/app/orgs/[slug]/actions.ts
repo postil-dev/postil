@@ -813,6 +813,14 @@ export async function approveFinding(formData: FormData): Promise<void> {
       },
       rationale,
       source: "dashboard",
+      binding: {
+        orgId: review.orgId,
+        repositoryId: review.repositoryId,
+        githubInstallationId: review.githubInstallationId,
+        githubRepoId: review.githubRepoId,
+        prNumber: review.prNumber,
+        headSha: review.headSha,
+      },
     });
     const nextState = await getReviewApprovalState(tx, review);
     const gateEnabled = await lockOrganizationGateMode(tx, orgId);
