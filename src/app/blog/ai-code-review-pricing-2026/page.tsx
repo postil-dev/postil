@@ -1,6 +1,7 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 import {
   BYOK_ACTIVE_AUTHOR_MONTHLY_USD,
   HOSTED_ACTIVE_AUTHOR_MONTHLY_USD,
@@ -10,39 +11,9 @@ const TEAM_SIZE = 20;
 const HOSTED_TEAM_MONTHLY_USD = TEAM_SIZE * HOSTED_ACTIVE_AUTHOR_MONTHLY_USD;
 const BYOK_TEAM_MONTHLY_USD = TEAM_SIZE * BYOK_ACTIVE_AUTHOR_MONTHLY_USD;
 
-export const metadata: Metadata = {
-  title: "AI code review pricing in 2026: what a 20-developer team actually pays",
-  description:
-    "Four AI code review vendors changed pricing models in roughly ninety days. We run the same 20-developer team through CodeRabbit, Qodo, Greptile, Macroscope, Copilot, Bugbot, and Postil, with every assumption stated and every price sourced.",
-  alternates: { canonical: "/blog/ai-code-review-pricing-2026" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-07-08T00:00:00.000Z",
-    title:
-      "AI code review pricing in 2026: what a 20-developer team actually pays",
-    description:
-      "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
-    url: "https://postil.dev/blog/ai-code-review-pricing-2026",
-    images: ["/opengraph-image"],
-  },
-};
-
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline:
-    "AI code review pricing in 2026: what a 20-developer team actually pays",
-  description:
-    "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
-  url: "https://postil.dev/blog/ai-code-review-pricing-2026",
-  datePublished: "2026-07-08",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("ai-code-review-pricing-2026");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function PricingArticle() {
   return (
@@ -51,13 +22,7 @@ export default function PricingArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        AI code review pricing in 2026: what a 20-developer team actually pays
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        July 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>

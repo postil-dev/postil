@@ -1,37 +1,11 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  title: "Best AI code review tools in 2026: an evidence-first comparison",
-  description:
-    "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and source-linked pricing.",
-  alternates: { canonical: "/blog/best-ai-code-review-tools-2026" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-07-08T00:00:00.000Z",
-    title: "Best AI code review tools in 2026: an evidence-first comparison",
-    description:
-      "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim sourced.",
-    url: "https://postil.dev/blog/best-ai-code-review-tools-2026",
-    images: ["/opengraph-image"],
-  },
-};
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline: "Best AI code review tools in 2026: an evidence-first comparison",
-  description:
-    "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and source-linked pricing.",
-  url: "https://postil.dev/blog/best-ai-code-review-tools-2026",
-  datePublished: "2026-07-08",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("best-ai-code-review-tools-2026");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function BestToolsArticle() {
   return (
@@ -40,13 +14,7 @@ export default function BestToolsArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        Best AI code review tools in 2026: an evidence-first comparison
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        July 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>

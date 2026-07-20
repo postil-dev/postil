@@ -1,37 +1,11 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  title: "The gate is separate from the review",
-  description:
-    "Postil splits advisory review output from the branch-protection gate: postil/review explains findings, while postil/gate carries the required merge verdict.",
-  alternates: { canonical: "/blog/the-gate-is-separate-from-the-review" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-07-11T00:00:00.000Z",
-    title: "The gate is separate from the review",
-    description:
-      "A merge gate and a review comment stream are different controls. Postil keeps them separate as postil/gate and postil/review.",
-    url: "https://postil.dev/blog/the-gate-is-separate-from-the-review",
-    images: ["/opengraph-image"],
-  },
-};
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline: "The gate is separate from the review",
-  description:
-    "Postil splits advisory review output from the branch-protection gate: postil/review explains findings, while postil/gate carries the required merge verdict.",
-  url: "https://postil.dev/blog/the-gate-is-separate-from-the-review",
-  datePublished: "2026-07-11",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("the-gate-is-separate-from-the-review");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function GateSeparateFromReviewArticle() {
   return (
@@ -40,13 +14,7 @@ export default function GateSeparateFromReviewArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        The gate is separate from the review
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        July 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>

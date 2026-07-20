@@ -1,37 +1,11 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  title: "Four AI code review benchmarks, four home-team winners",
-  description:
-    "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
-  alternates: { canonical: "/blog/ai-code-review-benchmarks" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-07-08T00:00:00.000Z",
-    title: "Four AI code review benchmarks, four home-team winners",
-    description:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
-    url: "https://postil.dev/blog/ai-code-review-benchmarks",
-    images: ["/opengraph-image"],
-  },
-};
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline: "Four AI code review benchmarks, four home-team winners",
-  description:
-    "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
-  url: "https://postil.dev/blog/ai-code-review-benchmarks",
-  datePublished: "2026-07-08",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("ai-code-review-benchmarks");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function BenchmarkAuthorArticle() {
   return (
@@ -40,13 +14,7 @@ export default function BenchmarkAuthorArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        Four AI code review benchmarks, four home-team winners
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        July 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>
