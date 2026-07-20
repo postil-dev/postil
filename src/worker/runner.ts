@@ -59,6 +59,7 @@ import {
 import {
   runCheckRunCleanupJob,
   runReviewJob,
+  validateCheckRunCleanupPayload,
   WorkerShutdownError,
 } from "./review";
 import { watchdogPass } from "./watchdog";
@@ -154,6 +155,9 @@ async function handleJob(
       await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
       break;
     case "check-run-cleanup":
+      validateCheckRunCleanupPayload(
+        job.payload as CheckRunCleanupJobPayload,
+      );
       await runCheckRunCleanupJob(job.payload as CheckRunCleanupJobPayload);
       break;
     case "respond-failure-comment":
@@ -210,12 +214,16 @@ export async function runClaimedJob(
     const malformedWebhookComment =
       job.kind === "webhook-comment" &&
       message.includes("webhook comment job payload malformed");
+    const malformedCheckRunCleanup =
+      job.kind === "check-run-cleanup" &&
+      message.includes("check-run cleanup job payload is malformed");
     const permanent =
       isPermanentJobError(err) ||
       malformedGateSync ||
       malformedWebhookDispatch ||
       invalidWebhookDelivery ||
       malformedWebhookComment ||
+      malformedCheckRunCleanup ||
       (job.kind !== "gate-state-sync" &&
         job.kind !== "webhook-dispatch" &&
         job.kind !== "webhook-comment" &&
@@ -226,7 +234,10 @@ export async function runClaimedJob(
         !malformedWebhookDispatch &&
         !invalidWebhookDelivery) ||
       (job.kind === "webhook-comment" && !malformedWebhookComment);
-    const outcome = reconcileIndefinitely
+    const durableReconciliation =
+      reconcileIndefinitely ||
+      (job.kind === "check-run-cleanup" && !permanent);
+    const outcome = durableReconciliation
       ? await retryJobIndefinitely(getPool(), job, message)
       : await failJob(getPool(), job, message, { permanent });
     if (job.kind === "operator-alert") {

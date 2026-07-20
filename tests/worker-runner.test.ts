@@ -123,6 +123,13 @@ mock.module("@/worker/watchdog", () => ({
 
 mock.module("@/worker/review", () => ({
   WorkerShutdownError: MockWorkerShutdownError,
+  validateCheckRunCleanupPayload: (payload: Record<string, unknown>) => {
+    if (payload.malformed === true) {
+      throw new MockPermanentJobError(
+        "check-run cleanup job payload is malformed",
+      );
+    }
+  },
   runCheckRunCleanupJob: async () => {
     await cleanupRun?.();
   },
@@ -566,6 +573,40 @@ describe("drainQueueOnce", () => {
     expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
     expect(called).toBe(true);
     expect(completed).toEqual([1]);
+  });
+
+  test("retries terminal check reconciliation beyond its ordinary budget", async () => {
+    const job = reviewJob(2);
+    job.kind = "check-run-cleanup";
+    job.attempts = job.maxAttempts;
+    job.payload = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      advisoryCheckRunId: 101,
+      gateCheckRunId: 102,
+      message: "GitHub 503",
+    };
+    cleanupRun = async () => {
+      throw new Error("check-run cleanup remains incomplete");
+    };
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(retriedIndefinitely).toEqual([
+      { id: 2, error: "check-run cleanup remains incomplete" },
+    ]);
+    expect(failed).toEqual([]);
+  });
+
+  test("rejects malformed terminal cleanup instead of retrying forever", async () => {
+    const job = reviewJob(3);
+    job.kind = "check-run-cleanup";
+    job.payload = { malformed: true };
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(permanentFailures).toEqual([3]);
+    expect(retriedIndefinitely).toEqual([]);
   });
 
   test("dispatches durable respond failure comment jobs", async () => {

@@ -55,8 +55,12 @@ export function parsePublicCliPins(
 export function assertPublicCliPins(
   actual: PublicCliPins,
   label: string,
+  options: { requireCanonicalAction?: boolean } = {},
 ): void {
-  for (const key of ["actionCommit", "cliCommit", "cliRelease"] as const) {
+  const keys = options.requireCanonicalAction === false
+    ? (["cliCommit", "cliRelease"] as const)
+    : (["actionCommit", "cliCommit", "cliRelease"] as const);
+  for (const key of keys) {
     if (actual[key] !== release[key]) {
       throw new Error(
         `${label} ${key} is ${actual[key]}, expected ${release[key]} from public-cli-release.json`,
@@ -139,18 +143,30 @@ async function main(): Promise<void> {
     },
   ];
 
-  for (const consumer of consumers) {
+  const consumerPins: Array<{
+    label: string;
+    url: string;
+    pins: PublicCliPins;
+  }> = [];
+  for (const [index, consumer] of consumers.entries()) {
     const source = await fetchText(consumer.url, consumer.label);
+    const pins = parsePublicCliPins(source, consumer.label);
     assertPublicCliPins(
-      parsePublicCliPins(source, consumer.label),
+      pins,
       consumer.label,
+      { requireCanonicalAction: index === 0 },
     );
+    consumerPins.push({ ...consumer, pins });
   }
 
-  const [releaseCommit, actionCommit, hostedCommit, publishedChecksum] =
+  const [
+    releaseCommit,
+    hostedCommit,
+    publishedChecksum,
+    ...consumerActionCommits
+  ] =
     await Promise.all([
       resolveCommit("postil-dev/postil-cli", release.cliRelease),
-      resolveCommit("postil-dev/postil-action", release.actionCommit),
       resolveCommit("postil-dev/postil-cli", release.hostedCliRelease),
       fetchText(
         `https://github.com/postil-dev/postil-cli/releases/download/${release.hostedCliRelease}/${LINUX_X86_64_ARCHIVE}.sha256`,
@@ -162,14 +178,22 @@ async function main(): Promise<void> {
           `${release.hostedCliRelease} Linux x86_64 checksum`,
         ),
       ),
+      ...consumerPins.map(({ pins }) =>
+        resolveCommit("postil-dev/postil-action", pins.actionCommit),
+      ),
     ]);
   if (releaseCommit !== release.cliCommit) {
     throw new Error(
       `${release.cliRelease} resolves to ${releaseCommit}, expected ${release.cliCommit}`,
     );
   }
-  if (actionCommit !== release.actionCommit) {
-    throw new Error(`Action commit ${release.actionCommit} is not reachable`);
+  for (const [index, resolved] of consumerActionCommits.entries()) {
+    const consumer = consumerPins[index];
+    if (!consumer || resolved !== consumer.pins.actionCommit) {
+      throw new Error(
+        `${consumer?.label ?? "consumer"} Action commit could not be resolved`,
+      );
+    }
   }
   if (hostedCommit !== release.hostedCliCommit) {
     throw new Error(
