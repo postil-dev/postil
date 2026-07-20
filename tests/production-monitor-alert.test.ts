@@ -43,6 +43,10 @@ describe("production monitor email", () => {
       "postil_oldest_billing_checkout_open_age_seconds",
     );
     expect(workflow).toContain("postil_billing_checkout_failures_24h");
+    expect(workflow).toContain("postil_check_run_cleanup_failures_30m");
+    expect(workflow).not.toContain(
+      'postil_jobs_current{kind=\\"check-run-cleanup\\",status=\\"failed\\"}',
+    );
   });
 
   test("sends a bounded idempotent failure alert without production output", async () => {

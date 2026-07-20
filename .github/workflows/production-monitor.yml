@@ -192,11 +192,12 @@ jobs:
               stale_found=1
             fi
             cleanup_failures=$(awk \
-              '$1 == "postil_jobs_current{kind=\"check-run-cleanup\",status=\"failed\"}" { print $2 }' \
+              '$1 == "postil_check_run_cleanup_failures_30m" { print $2 }' \
               .cache/metrics.out)
-            echo "Failed check-run cleanup jobs: ${cleanup_failures:-0}"
-            if [[ -n "${cleanup_failures:-}" ]] && (( $(printf '%.0f' "${cleanup_failures}") > 0 )); then
-              echo "Check-run cleanup exhausted all retries; a GitHub check may remain in progress"
+            echo "Recent failed check-run cleanup jobs: ${cleanup_failures:-missing}"
+            if [[ -z "${cleanup_failures:-}" ]] || \
+               (( $(printf '%.0f' "${cleanup_failures:-0}") > 0 )); then
+              echo "Recent check-run cleanup reached terminal failure or its metric is missing"
               stale_found=1
             fi
             operator_alert_failures=$(awk \
