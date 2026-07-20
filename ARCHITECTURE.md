@@ -182,6 +182,17 @@ survives removal of the related repository or review row. Conversational replies
 remain `respond` jobs, record their GitHub mention context in the job payload,
 and use the separate `github_mention` usage class.
 
+Published review findings have a separate durable lifecycle. CLI publication
+receipts bind each review and stable finding ID to its initial channel and
+GitHub review/comment identities. The initial record is immutable. Later
+envelopes can mark the same stable finding carried, resolved, or suppressed;
+GitHub review-thread flags can mark an inline comment resolved, outdated, or
+deleted. Comment prose, reactions, and dismissed reviews do not change finding
+state. Reviews produced by a CLI without the receipt contract record their
+unobserved findings as `unknown`. Dashboard publication counts and confidence
+metrics read this normalized state instead of assuming every envelope finding
+reached the pull request.
+
 ## Dashboard
 
 The signed-in product surface is three pages, all server-rendered and
@@ -198,7 +209,7 @@ noindexed:
   model cascade, and one constrained additional authentication header. Banners
   surface suspended installations and enabled
   repositories that have never completed their first review.
-- `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope:
+- `/orgs/[slug]/runs/[publicId]` renders one review from its stored envelope and publication receipt:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file
   links), resolved findings, retained policy-suppressed findings in collapsed
   detail, suppressed/ungrounded counts, gate verdict,

@@ -37,6 +37,7 @@ import {
   reviewTriggerLabel,
   type ReviewTriggerSource,
 } from "@/lib/review-trigger";
+import type { PublicationState } from "@/lib/publication-receipt";
 
 import { approveFinding, revokeFinding } from "../../actions";
 import {
@@ -181,16 +182,30 @@ const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
   maxFindings: "Beyond the configured finding limit",
 };
 
+const PUBLICATION_STATE_LABELS: Record<PublicationState, string> = {
+  inline: "inline",
+  summaryOnly: "summary",
+  carried: "carried",
+  resolved: "resolved",
+  suppressed: "suppressed",
+  inlineRejected: "summary (inline unavailable)",
+  outdated: "outdated",
+  deleted: "deleted",
+  unknown: "not recorded",
+};
+
 function FindingCard({
   finding,
   repoFullName,
   headSha,
   reviewUrl,
+  publicationState,
 }: {
   finding: Finding;
   repoFullName: string;
   headSha: string;
   reviewUrl: string;
+  publicationState?: PublicationState;
 }) {
   const location = `${finding.path}:${finding.line}${
     finding.endLine && finding.endLine > finding.line ? `-${finding.endLine}` : ""
@@ -214,6 +229,11 @@ function FindingCard({
           {findingKindLabel(finding.kind)}
         </span>
         <FindingConfidenceLabel finding={finding} />
+        {publicationState && (
+          <span className="font-mono text-[10px] text-charcoal/70">
+            publication: {PUBLICATION_STATE_LABELS[publicationState]}
+          </span>
+        )}
         {locationUrl ? (
           <a
             href={locationUrl}
@@ -433,7 +453,7 @@ export default async function RunDetailPage({
   )[0];
   if (!review) notFound();
 
-  const [usageEvents, byokSettings] = await Promise.all([
+  const [usageEvents, byokSettings, publicationRows, publicationReceiptRows] = await Promise.all([
     db
       .select({
         id: schema.usageEvents.id,
@@ -454,6 +474,18 @@ export default async function RunDetailPage({
           isNotNull(schema.orgSettings.apiKeyCiphertext),
         ),
       )
+      .limit(1),
+    db
+      .select({
+        findingId: schema.findingPublications.findingId,
+        currentState: schema.findingPublications.currentState,
+      })
+      .from(schema.findingPublications)
+      .where(eq(schema.findingPublications.reviewId, review.id)),
+    db
+      .select({ receiptVersion: schema.reviewPublicationReceipts.receiptVersion })
+      .from(schema.reviewPublicationReceipts)
+      .where(eq(schema.reviewPublicationReceipts.reviewId, review.id))
       .limit(1),
   ]);
   const usesByok = byokSettings.length > 0;
@@ -497,6 +529,33 @@ export default async function RunDetailPage({
   );
   const triggerSource = review.triggerSource as ReviewTriggerSource;
   const triggerContext = normalizeReviewTriggerContext(review.triggerContext);
+  const publicationByFindingId = new Map(
+    publicationRows.map((row) => [row.findingId, row.currentState as PublicationState]),
+  );
+  const publicationCounts = publicationRows.reduce<Record<PublicationState, number>>(
+    (counts, row) => {
+      const state = row.currentState as PublicationState;
+      counts[state] += 1;
+      return counts;
+    },
+    {
+      inline: 0,
+      summaryOnly: 0,
+      carried: 0,
+      resolved: 0,
+      suppressed: 0,
+      inlineRejected: 0,
+      outdated: 0,
+      deleted: 0,
+      unknown: 0,
+    },
+  );
+  const publishedFindingCount =
+    publicationCounts.inline +
+    publicationCounts.summaryOnly +
+    publicationCounts.carried +
+    publicationCounts.inlineRejected;
+  const publicationObserved = publicationReceiptRows[0]?.receiptVersion === 1;
 
   return (
     <LiveRunProvider
@@ -681,7 +740,9 @@ export default async function RunDetailPage({
           <>
             <section className="mt-8">
               <p className="eyebrow">
-                Findings ({findings.length}) · {envelope.counts.suppressed} suppressed by policy ·{" "}
+                {!publicationObserved || publicationCounts.unknown > 0
+                  ? "Publication not recorded"
+                  : `Published findings (${publishedFindingCount})`} · {publicationCounts.suppressed} suppressed by policy ·{" "}
                 {envelope.counts.ungrounded} dropped ungrounded
               </p>
               <div className="card mt-3 divide-y divide-stone/60">
@@ -692,6 +753,7 @@ export default async function RunDetailPage({
                     repoFullName={review.repoFullName}
                     headSha={review.headSha}
                     reviewUrl={reviewUrl}
+                    publicationState={finding.id ? (publicationByFindingId.get(finding.id) ?? "unknown") : "unknown"}
                   />
                 ))}
                 {findings.length > MAX_RENDERED_FINDINGS && (
@@ -726,6 +788,7 @@ export default async function RunDetailPage({
                             repoFullName={review.repoFullName}
                             headSha={review.headSha}
                             reviewUrl={reviewUrl}
+                            publicationState={entry.finding.id ? (publicationByFindingId.get(entry.finding.id) ?? "unknown") : "unknown"}
                           />
                         </div>
                       ))}
@@ -754,6 +817,7 @@ export default async function RunDetailPage({
                       repoFullName={review.repoFullName}
                       headSha={review.headSha}
                       reviewUrl={reviewUrl}
+                      publicationState={finding.id ? (publicationByFindingId.get(finding.id) ?? "unknown") : "unknown"}
                     />
                   ))}
                   {resolved.length > MAX_RENDERED_FINDINGS && (

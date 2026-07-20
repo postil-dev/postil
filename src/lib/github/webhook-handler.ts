@@ -37,6 +37,7 @@ import {
   parsePostilApproveCommand,
 } from "@/lib/mentions";
 import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
+import { applyPublicationThreadObservations } from "@/lib/publication-receipt";
 import {
   enqueueOperatorAlert,
   installationRemovedAlertPayload,
@@ -915,6 +916,12 @@ async function handleReviewComment(
   sourceDeliveryId: string,
   triggerFollowupDrain: boolean,
 ): Promise<void> {
+  if (payload.action === "deleted" && typeof payload.comment?.id === "number") {
+    await applyPublicationThreadObservations(getDb(), [
+      { githubCommentId: String(payload.comment.id), state: "deleted" },
+    ]);
+    return;
+  }
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
   if (await handleApproveCommand(payload, sourceDeliveryId, triggerFollowupDrain)) return;

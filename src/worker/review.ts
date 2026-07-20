@@ -24,6 +24,7 @@ import {
   ingestEnvelope,
 } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
@@ -75,6 +76,12 @@ import {
 import { discoverPreventionCommands } from "@/lib/review-guidance";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
+import {
+  applyPublicationThreadObservations,
+  getPullRequestPublicationCommentIds,
+  readPublicationReceipt,
+  type PublicationReceipt,
+} from "@/lib/publication-receipt";
 import {
   reportOperationalModelIncident,
   type ObservabilityProcessGroup,
@@ -838,6 +845,7 @@ export async function runReviewJob(
   let gateCheckRunId: number | undefined;
   let baselinePath: string | undefined;
   let workDir: string | undefined;
+  let publicationReceiptPath: string | undefined;
   let sensitiveValues: string[] = [];
   let hostedUsageReservationId: string | null = null;
   let cliStarted = false;
@@ -1043,6 +1051,7 @@ export async function runReviewJob(
     // trust model (default branch only, never the PR head).
     workDir = resolve(CACHE_DIR, "workdirs", `review-${reviewId}`);
     await mkdir(workDir, { recursive: true });
+    publicationReceiptPath = join(workDir, "publication-receipt.json");
     const repoConfigFiles = await materializeRepoConfig(
       token,
       payload.repoFullName,
@@ -1138,6 +1147,9 @@ export async function runReviewJob(
           ? await discoverPreventionCommands(token, payload.repoFullName)
           : [],
       ),
+      // CLI v1 writes an immutable publication result here. Deployed v0.7.4
+      // ignores this additive variable; absence is persisted as legacy unknown.
+      POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
     });
 
     reviewLog.line("postil CLI spawned");
@@ -1172,6 +1184,19 @@ export async function runReviewJob(
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
+    let publicationReceipt: PublicationReceipt | undefined;
+    try {
+      publicationReceipt = await readPublicationReceipt(publicationReceiptPath);
+      reviewLog.line(
+        `publication receipt ingested (${publicationReceipt.findings.length} finding states)`,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        reviewLog.line("publication receipt absent; lifecycle recorded as legacy unknown");
+      } else {
+        throw error;
+      }
+    }
     const hasOperationalFinding = ingested.envelope.findings.some(
       (finding) =>
         finding.path === ".postil/operational" ||
@@ -1258,6 +1283,7 @@ export async function runReviewJob(
       usage: receiptUsage,
       hostedUsageReservationId,
       usageAccountingComplete: ingested.usageAccountingComplete,
+      publicationReceipt,
     });
 
     if (!completed) {
@@ -1296,6 +1322,34 @@ export async function runReviewJob(
       console.warn(
         `review ${reviewId} completed after it was already superseded or failed`,
       );
+    } else {
+      try {
+        const commentIds = await getPullRequestPublicationCommentIds(
+          db,
+          repository.id,
+          payload.prNumber,
+        );
+        const observations = await observeGitHubReviewThreads(
+          token,
+          payload.repoFullName,
+          payload.prNumber,
+          commentIds,
+          signal,
+        );
+        await applyPublicationThreadObservations(db, observations);
+        if (observations.length > 0) {
+          reviewLog.line(
+            `publication lifecycle reconciled (${observations.length} GitHub threads)`,
+          );
+        }
+      } catch (error) {
+        // The immutable CLI receipt is already committed. A transient GitHub
+        // read must not turn a completed review into a failed run.
+        console.warn(
+          `review ${reviewId} publication lifecycle observation deferred: ${redactSecrets(error)}`,
+        );
+        reviewLog.line("publication lifecycle observation deferred");
+      }
     }
   } catch (err) {
     if (err instanceof CheckRunPublicationError && receiptUsageForRace) {

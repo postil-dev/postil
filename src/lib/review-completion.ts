@@ -4,6 +4,10 @@ import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import type { Envelope } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
+import {
+  persistPublicationReceipt,
+  type PublicationReceipt,
+} from "@/lib/publication-receipt";
 
 export interface ReviewCompletionInput {
   reviewId: number;
@@ -23,6 +27,7 @@ export interface ReviewCompletionInput {
   }>;
   hostedUsageReservationId?: string | null;
   usageAccountingComplete: boolean;
+  publicationReceipt?: PublicationReceipt;
 }
 
 /**
@@ -56,6 +61,12 @@ export async function persistReviewCompletion(
         triggerSource: schema.reviews.triggerSource,
       });
     if (rows.length === 0) return false;
+
+    await persistPublicationReceipt(tx as Database, {
+      reviewId: input.reviewId,
+      envelope: input.envelope,
+      receipt: input.publicationReceipt,
+    });
 
     const persistedUsageRows = input.usage.map((usage) => ({
       ...usage,

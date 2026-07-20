@@ -265,6 +265,77 @@ export const reviews = pgTable(
   ],
 );
 
+/**
+ * Immutable identity for the CLI's publication result. A row without a CLI
+ * receipt records a legacy review whose publication could not be observed.
+ */
+export const reviewPublicationReceipts = pgTable(
+  "review_publication_receipts",
+  {
+    reviewId: bigint("review_id", { mode: "number" })
+      .primaryKey()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    receiptVersion: integer("receipt_version"),
+    receiptId: text("receipt_id"),
+    githubReviewId: text("github_review_id"),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    check(
+      "review_publication_receipts_identity_check",
+      sql`(${t.receiptVersion} IS NULL AND ${t.receiptId} IS NULL) OR (${t.receiptVersion} = 1 AND length(btrim(${t.receiptId})) BETWEEN 1 AND 200)`,
+    ),
+    check(
+      "review_publication_receipts_github_review_id_check",
+      sql`${t.githubReviewId} IS NULL OR ${t.githubReviewId} ~ '^[1-9][0-9]{0,19}$'`,
+    ),
+  ],
+);
+
+/** Per-finding publication identity and its normalized, observed lifecycle. */
+export const findingPublications = pgTable(
+  "finding_publications",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    reviewId: bigint("review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    findingId: text("finding_id").notNull(),
+    stableIdentity: boolean("stable_identity").notNull(),
+    initialState: text("initial_state").notNull(),
+    currentState: text("current_state").notNull(),
+    githubCommentId: text("github_comment_id"),
+    lifecycleObservedAt: timestamp("lifecycle_observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("finding_publications_review_finding_idx").on(t.reviewId, t.findingId),
+    index("finding_publications_comment_idx").on(t.githubCommentId),
+    index("finding_publications_stable_finding_idx").on(t.findingId, t.stableIdentity),
+    check(
+      "finding_publications_finding_id_check",
+      sql`length(btrim(${t.findingId})) BETWEEN 1 AND 500`,
+    ),
+    check(
+      "finding_publications_initial_state_check",
+      sql`${t.initialState} IN ('inline', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown')`,
+    ),
+    check(
+      "finding_publications_current_state_check",
+      sql`${t.currentState} IN ('inline', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown')`,
+    ),
+    check(
+      "finding_publications_github_comment_id_check",
+      sql`${t.githubCommentId} IS NULL OR ${t.githubCommentId} ~ '^[1-9][0-9]{0,19}$'`,
+    ),
+  ],
+);
+
 export const findingApprovals = pgTable(
   "finding_approvals",
   {

@@ -9,6 +9,10 @@ import {
   type ReviewDisplayStatus,
 } from "@/lib/review-outcome";
 import type { ReviewTriggerSource } from "@/lib/review-trigger";
+import {
+  getReviewPublicationCounts,
+  type PublicationCounts,
+} from "@/lib/publication-receipt";
 
 export type OrgReviewStatus = ReviewDisplayStatus;
 
@@ -25,6 +29,7 @@ export interface OrgReviewRow {
   finishedAt: string | null;
   repoFullName: string;
   triggerSource: ReviewTriggerSource;
+  publicationCounts: PublicationCounts | null;
 }
 
 /**
@@ -63,6 +68,11 @@ export async function getOrgReviewRows(
     .orderBy(desc(schema.reviews.queuedAt))
     .limit(limit);
 
+  const publicationCounts = await getReviewPublicationCounts(
+    db,
+    rows.map((row) => row.id),
+  );
+
   // The table needs only the finding count and model name; keep the full
   // envelope (finding bodies, summaries) out of the RSC payload and the
   // polling responses.
@@ -70,6 +80,10 @@ export async function getOrgReviewRows(
     rows.map(async ({ envelope: rawEnvelope, engineGateFailing, errorMessage, ...row }) => {
       const envelope = parseEnvelopeForApprovals(rawEnvelope);
       const approvalIds = await getActiveApprovalIds(db, row.id);
+      const counts = publicationCounts.get(row.id) ?? null;
+      const activePublished = counts
+        ? counts.inline + counts.summaryOnly + counts.carried + counts.inlineRejected
+        : null;
       return {
         ...row,
         status: reviewDisplayStatus(row.status, errorMessage),
@@ -81,7 +95,8 @@ export async function getOrgReviewRows(
               engineGateFailing ?? row.gateFailing ?? false,
             ).failing
           : row.gateFailing,
-        findingsCount: envelope?.findings.length ?? null,
+        findingsCount: counts && counts.unknown === 0 ? activePublished : null,
+        publicationCounts: counts,
         modelUsed: envelope?.modelUsed ?? null,
         startedAt: row.startedAt?.toISOString() ?? null,
         finishedAt: row.finishedAt?.toISOString() ?? null,
