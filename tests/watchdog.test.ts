@@ -259,6 +259,24 @@ describeDb("watchdog stuck-review kill", () => {
     expect(job.rows[0]?.status).toBe("queued");
   });
 
+  test("requeues exhausted check cleanup until both checks are terminal", async () => {
+    await pool.query(`
+      INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
+      VALUES (
+        'check-run-cleanup',
+        '{"installationId":42,"repoFullName":"octo/repo","advisoryCheckRunId":101,"gateCheckRunId":102,"message":"GitHub 503"}',
+        'running', 5, 5, now() - interval '20 minutes', 'dead-worker'
+      )
+    `);
+
+    await watchdogPass(new Date());
+
+    const job = await pool.query<{ status: string }>(
+      "SELECT status FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(job.rows[0]?.status).toBe("queued");
+  });
+
   test("requeues exhausted durable webhook work until its side effects complete", async () => {
     await pool.query(`
       INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
