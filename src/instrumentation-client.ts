@@ -1,10 +1,12 @@
 import posthog from "posthog-js";
+import { onCLS, onINP, onLCP, type MetricType } from "web-vitals";
 
 import {
   publicTelemetryProperties,
   sanitizePostHogEventProperties,
 } from "@/lib/telemetry";
 const ALLOWED_EVENTS = new Set(["$pageview", "$pageleave", "$web_vitals"]);
+const CORE_WEB_VITAL_NAMES = new Set(["CLS", "INP", "LCP"]);
 
 clearLegacyPostHogPersistence();
 
@@ -31,11 +33,7 @@ async function bootPostHog(): Promise<boolean> {
     capture_pageview: false,
     capture_pageleave: true,
     disable_beacon: false,
-    capture_performance: {
-      web_vitals: true,
-      network_timing: false,
-      web_vitals_attribution: false,
-    },
+    capture_performance: false,
     capture_heatmaps: false,
     capture_dead_clicks: false,
     capture_exceptions: false,
@@ -96,24 +94,75 @@ async function runtimeConfig(): Promise<PostHogConfig | undefined> {
 
 let lastCapturedKey = "";
 let crossedProtectedRoute = false;
+let navigationEpoch = 0;
+let latestTelemetryKey: string | undefined;
+let pendingCapture: { epoch: number; key: string } | undefined;
+let firstNavigationObserved = false;
+let coreWebVitalsLifecycleKey: string | undefined;
+let coreWebVitalsStarted = false;
 
 export async function capturePublicPageview(
   currentUrl: string,
   referrer: string,
 ): Promise<void> {
   const properties = publicTelemetryProperties(currentUrl, referrer);
+  const telemetryKey = properties?.$current_url;
+  const publicKey = typeof telemetryKey === "string" ? telemetryKey : undefined;
+  if (!firstNavigationObserved) {
+    firstNavigationObserved = true;
+    coreWebVitalsLifecycleKey = publicKey;
+  }
   if (!properties) {
+    if (latestTelemetryKey !== undefined) navigationEpoch += 1;
+    latestTelemetryKey = undefined;
     lastCapturedKey = "";
     crossedProtectedRoute = true;
     return;
   }
-  const telemetryKey = properties.$current_url;
-  if (typeof telemetryKey !== "string" || telemetryKey === lastCapturedKey) return;
+  if (!publicKey) return;
+  if (latestTelemetryKey !== publicKey) {
+    navigationEpoch += 1;
+    latestTelemetryKey = publicKey;
+  }
+  const epoch = navigationEpoch;
+  if (publicKey === lastCapturedKey) return;
+  if (pendingCapture?.epoch === epoch && pendingCapture.key === publicKey) return;
+  pendingCapture = { epoch, key: publicKey };
   bootPromise ??= bootPostHog();
-  if (!(await bootPromise)) return;
-  if (telemetryKey === lastCapturedKey) return;
-  lastCapturedKey = telemetryKey;
+  const booted = await bootPromise;
+  if (pendingCapture?.epoch === epoch && pendingCapture.key === publicKey) {
+    pendingCapture = undefined;
+  }
+  if (!booted || epoch !== navigationEpoch || latestTelemetryKey !== publicKey) return;
+  if (publicKey === lastCapturedKey) return;
+  lastCapturedKey = publicKey;
   posthog.capture("$pageview", properties);
+  if (coreWebVitalsLifecycleKey === publicKey) startCoreWebVitals(publicKey);
+}
+
+function startCoreWebVitals(lifecycleKey: string): void {
+  if (coreWebVitalsStarted) return;
+  coreWebVitalsStarted = true;
+  const report = (metric: MetricType) => captureCoreWebVital(lifecycleKey, metric);
+  onCLS(report);
+  onINP(report);
+  onLCP(report);
+}
+
+function captureCoreWebVital(lifecycleKey: string, metric: MetricType): void {
+  if (latestTelemetryKey !== lifecycleKey || lastCapturedKey !== lifecycleKey) return;
+  if (!CORE_WEB_VITAL_NAMES.has(metric.name)) return;
+  posthog.capture("$web_vitals", {
+    $current_url: lifecycleKey,
+    [`$web_vitals_${metric.name}_event`]: {
+      name: metric.name,
+      value: metric.value,
+      rating: metric.rating,
+      delta: metric.delta,
+      navigationType: metric.navigationType,
+      $current_url: lifecycleKey,
+    },
+  });
 }
 
 function clearLegacyPostHogPersistence(): void {

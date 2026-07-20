@@ -11,6 +11,29 @@ type CapturedEvent = {
 const capturedEvents: CapturedEvent[] = [];
 const initCalls: Array<{ key: string; config: Record<string, unknown> }> = [];
 let beforeSend: ((event: CapturedEvent) => CapturedEvent | null) | undefined;
+type CoreWebVitalName = "CLS" | "INP" | "LCP";
+type CoreWebVitalMetric = {
+  name: CoreWebVitalName;
+  value: number;
+  rating: "good" | "needs-improvement" | "poor";
+  delta: number;
+  id: string;
+  entries: Array<Record<string, unknown>>;
+  navigationType: "navigate" | "reload" | "back-forward";
+};
+const coreWebVitalCallbacks: Record<
+  CoreWebVitalName,
+  Array<(metric: CoreWebVitalMetric) => void>
+> = { CLS: [], INP: [], LCP: [] };
+
+mock.module("web-vitals", () => ({
+  onCLS: (callback: (metric: CoreWebVitalMetric) => void) =>
+    coreWebVitalCallbacks.CLS.push(callback),
+  onINP: (callback: (metric: CoreWebVitalMetric) => void) =>
+    coreWebVitalCallbacks.INP.push(callback),
+  onLCP: (callback: (metric: CoreWebVitalMetric) => void) =>
+    coreWebVitalCallbacks.LCP.push(callback),
+}));
 
 mock.module("posthog-js", () => ({
   default: {
@@ -31,7 +54,7 @@ mock.module("posthog-js", () => ({
 }));
 
 describe("browser PostHog instrumentation", () => {
-  test("captures public routes with strict cookieless privacy controls", async () => {
+  test("keeps one canonical public lifecycle across delayed boot and raw query changes", async () => {
     const browser = installFakeBrowser(
       "https://postil.dev/docs?utm_source=launch&secret=drop",
       "https://google.com/search?q=private&utm_campaign=launch",
@@ -51,21 +74,40 @@ describe("browser PostHog instrumentation", () => {
         },
       },
     );
+    let resolveConfig!: (response: Response) => void;
+    const configResponse = new Promise<Response>((resolve) => {
+      resolveConfig = resolve;
+    });
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
-      value: async () =>
-        Response.json({
-          key: "public-project-token",
-          apiHost: "https://eu.i.posthog.com",
-          uiHost: "https://eu.posthog.com",
-        }),
+      value: async () => configResponse,
     });
 
     const { capturePublicPageview } = await import("@/instrumentation-client");
+    const pageviews = () =>
+      capturedEvents.filter((event) => event.event === "$pageview");
     expect(browser.cookies()).toEqual({ postil_session: "keep" });
     expect(browser.localStorage.entries()).toEqual({ postil_preference: "keep" });
     expect(browser.sessionStorage.entries()).toEqual({ postil_draft: "keep" });
+    const stalePublicCapture = capturePublicPageview(
+      window.location.href,
+      document.referrer,
+    );
+    browser.navigate("/dashboard?secret=protected");
     await capturePublicPageview(window.location.href, document.referrer);
+    browser.navigate("/docs?utm_source=return&secret=drop");
+    const returnedPublicCapture = capturePublicPageview(
+      window.location.href,
+      document.referrer,
+    );
+    resolveConfig(
+      Response.json({
+        key: "public-project-token",
+        apiHost: "https://eu.i.posthog.com",
+        uiHost: "https://eu.posthog.com",
+      }),
+    );
+    await Promise.all([stalePublicCapture, returnedPublicCapture]);
 
     expect(initCalls).toHaveLength(1);
     expect(initCalls[0]).toMatchObject({
@@ -89,27 +131,65 @@ describe("browser PostHog instrumentation", () => {
         capture_dead_clicks: false,
         capture_exceptions: false,
         advanced_disable_flags: true,
-        capture_performance: {
-          web_vitals: true,
-          network_timing: false,
-          web_vitals_attribution: false,
-        },
+        capture_performance: false,
       },
     });
     expect(capturedEvents.map((event) => event.event)).toEqual(["$pageview"]);
     expect(capturedEvents[0]?.properties?.$current_url).toBe(
       "https://postil.dev/docs",
     );
-    expect(capturedEvents[0]?.properties?.$utm_source).toBe("launch");
+    expect(capturedEvents[0]?.properties?.$utm_source).toBe("return");
     expect(JSON.stringify(capturedEvents[0]?.properties)).not.toContain("secret");
     expect(JSON.stringify(capturedEvents[0]?.properties)).not.toContain("private");
+    expect(coreWebVitalCallbacks.CLS).toHaveLength(1);
+    expect(coreWebVitalCallbacks.INP).toHaveLength(1);
+    expect(coreWebVitalCallbacks.LCP).toHaveLength(1);
 
     browser.navigate("/docs?secret=changed");
     await capturePublicPageview(window.location.href, document.referrer);
     browser.navigate("/docs?utm_source=other&secret=changed-again");
     await capturePublicPageview(window.location.href, document.referrer);
-    expect(capturedEvents).toHaveLength(1);
-    expect(capturedEvents[0]?.properties?.$utm_source).toBe("launch");
+    expect(pageviews()).toHaveLength(1);
+    expect(capturedEvents[0]?.properties?.$utm_source).toBe("return");
+
+    coreWebVitalCallbacks.LCP[0]?.(
+      coreWebVital("LCP", 1_200, "good", "navigate"),
+    );
+    coreWebVitalCallbacks.INP[0]?.(
+      coreWebVital("INP", 220, "needs-improvement", "navigate"),
+    );
+    coreWebVitalCallbacks.CLS[0]?.(
+      coreWebVital("CLS", 0.12, "poor", "navigate"),
+    );
+    const appOwnedVitals = capturedEvents.filter(
+      (event) => event.event === "$web_vitals",
+    );
+    expect(appOwnedVitals).toHaveLength(3);
+    expect(appOwnedVitals.map((event) => event.properties?.$current_url)).toEqual([
+      "https://postil.dev/docs",
+      "https://postil.dev/docs",
+      "https://postil.dev/docs",
+    ]);
+    expect(appOwnedVitals[0]?.properties?.$web_vitals_LCP_event).toEqual({
+      name: "LCP",
+      value: 1_200,
+      rating: "good",
+      delta: 1_200,
+      navigationType: "navigate",
+      $current_url: "https://postil.dev/docs",
+    });
+    expect(appOwnedVitals[1]?.properties?.$web_vitals_INP_event).toMatchObject({
+      name: "INP",
+      value: 220,
+      rating: "needs-improvement",
+    });
+    expect(appOwnedVitals[2]?.properties?.$web_vitals_CLS_event).toMatchObject({
+      name: "CLS",
+      value: 0.12,
+      rating: "poor",
+    });
+    expect(JSON.stringify(appOwnedVitals)).not.toContain("raw-query-secret");
+    expect(JSON.stringify(appOwnedVitals)).not.toContain("metric-instance");
 
     const queryOnlyPageleave = beforeSend?.({
       event: "$pageleave",
@@ -141,15 +221,21 @@ describe("browser PostHog instrumentation", () => {
 
     browser.navigate("/pricing?utm_campaign=summer&secret=drop");
     await capturePublicPageview(window.location.href, document.referrer);
-    expect(capturedEvents).toHaveLength(2);
-    expect(capturedEvents[1]?.properties?.$current_url).toBe(
+    expect(pageviews()).toHaveLength(2);
+    expect(pageviews()[1]?.properties?.$current_url).toBe(
       "https://postil.dev/pricing",
     );
-    expect(capturedEvents[1]?.properties?.$utm_campaign).toBe("summer");
+    expect(pageviews()[1]?.properties?.$utm_campaign).toBe("summer");
+    coreWebVitalCallbacks.LCP[0]?.(
+      coreWebVital("LCP", 1_500, "good", "navigate"),
+    );
+    expect(
+      capturedEvents.filter((event) => event.event === "$web_vitals"),
+    ).toHaveLength(3);
 
     browser.navigate("/dashboard?secret=drop");
     await capturePublicPageview(window.location.href, document.referrer);
-    expect(capturedEvents).toHaveLength(2);
+    expect(pageviews()).toHaveLength(2);
 
     expect(
       beforeSend?.({
@@ -179,7 +265,7 @@ describe("browser PostHog instrumentation", () => {
 
     browser.navigate("/pricing?utm_campaign=summer&secret=drop");
     await capturePublicPageview(window.location.href, document.referrer);
-    expect(capturedEvents).toHaveLength(3);
+    expect(pageviews()).toHaveLength(3);
 
     const publicPageleave = beforeSend?.({
       event: "$pageleave",
@@ -339,4 +425,21 @@ function fakeStorage(seed: Record<string, string> = {}) {
 function updateLocation(location: URL & { href: string }, next: string | URL): void {
   const url = new URL(next.toString(), location.href);
   location.href = url.href;
+}
+
+function coreWebVital(
+  name: CoreWebVitalName,
+  value: number,
+  rating: CoreWebVitalMetric["rating"],
+  navigationType: CoreWebVitalMetric["navigationType"],
+): CoreWebVitalMetric {
+  return {
+    name,
+    value,
+    rating,
+    delta: value,
+    id: "metric-instance-raw-query-secret",
+    entries: [{ name: "https://postil.dev/docs?raw-query-secret=value" }],
+    navigationType,
+  };
 }
