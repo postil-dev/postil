@@ -3,6 +3,10 @@ import { and, desc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import {
+  enqueueCustomerNotification,
+  trialStartedNotification,
+} from "@/lib/customer-notifications";
+import {
   enqueueOperatorAlert,
   trialStartedAlertPayload,
 } from "@/lib/operator-alerts";
@@ -135,6 +139,15 @@ export async function grantSelfServiceTrial(
     await enqueueOperatorAlert(
       tx,
       trialStartedAlertPayload({ ...input, trialEndsAt }),
+    );
+    await enqueueCustomerNotification(
+      tx,
+      trialStartedNotification({
+        orgId: input.orgId,
+        orgSlug: input.orgSlug,
+        githubOwnerId: input.githubOwnerId,
+      }),
+      now,
     );
 
     return { granted: true, trialEndsAt };

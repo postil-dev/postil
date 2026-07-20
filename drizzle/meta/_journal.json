@@ -281,6 +281,13 @@
       "when": 1784570812168,
       "tag": "0039_organization_notification_preferences",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1784573699185,
+      "tag": "0040_customer_notification_inbox",
+      "breakpoints": true
     }
   ]
 }

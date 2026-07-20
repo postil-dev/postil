@@ -1,6 +1,7 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 
 import { getDb, getPool, schema } from "@/lib/db";
+import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
 import { checkRunExternalId } from "@/lib/github/checks";
 import {
   reconcileOperatorAlertDeliveries,
@@ -145,6 +146,10 @@ export async function watchdogPass(
   const scheduledSettlements = await scheduleBillingSettlementJobs(db, now);
   if (scheduledSettlements > 0) {
     console.log(`[billing settlement] scheduled=${scheduledSettlements}`);
+  }
+  const prunedNotifications = await pruneExpiredCustomerNotifications(db, now);
+  if (prunedNotifications > 0) {
+    console.log(`[customer notifications] pruned=${prunedNotifications}`);
   }
 
   return { killed };

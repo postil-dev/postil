@@ -702,6 +702,93 @@ export const organizationNotificationPreferences = pgTable(
   },
 );
 
+/** Customer-facing organization events. Operator incidents use a separate store. */
+export const customerNotificationEvents = pgTable(
+  "customer_notification_events",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    severity: text("severity").notNull(),
+    category: text("category").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    actionLabel: text("action_label"),
+    actionHref: text("action_href"),
+    visibility: text("visibility").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("customer_notification_events_org_key_idx").on(
+      t.orgId,
+      t.idempotencyKey,
+    ),
+    index("customer_notification_events_org_created_idx").on(
+      t.orgId,
+      t.createdAt,
+      t.id,
+    ),
+    index("customer_notification_events_expiry_idx").on(t.expiresAt, t.id),
+    check(
+      "customer_notification_events_severity_check",
+      sql`${t.severity} IN ('info', 'warning', 'critical')`,
+    ),
+    check(
+      "customer_notification_events_category_check",
+      sql`${t.category} IN ('trial', 'billing', 'service', 'security')`,
+    ),
+    check(
+      "customer_notification_events_visibility_check",
+      sql`${t.visibility} IN ('members', 'admins')`,
+    ),
+    check(
+      "customer_notification_events_content_check",
+      sql`length(btrim(${t.idempotencyKey})) BETWEEN 1 AND 200 AND length(btrim(${t.title})) BETWEEN 1 AND 120 AND length(btrim(${t.body})) BETWEEN 1 AND 500`,
+    ),
+    check(
+      "customer_notification_events_action_check",
+      sql`(${t.actionLabel} IS NULL AND ${t.actionHref} IS NULL) OR (${t.actionLabel} IS NOT NULL AND ${t.actionHref} IS NOT NULL AND length(btrim(${t.actionLabel})) BETWEEN 1 AND 60 AND ${t.actionHref} ~ '^/orgs/')`,
+    ),
+    check(
+      "customer_notification_events_expiry_check",
+      sql`${t.expiresAt} > ${t.createdAt}`,
+    ),
+  ],
+);
+
+/** Per-user read state keeps member and administrator inboxes independent. */
+export const customerNotificationReads = pgTable(
+  "customer_notification_reads",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    eventId: bigint("event_id", { mode: "number" })
+      .notNull()
+      .references(() => customerNotificationEvents.id, { onDelete: "cascade" }),
+    userId: bigint("user_id", { mode: "number" })
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    readAt: timestamp("read_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("customer_notification_reads_event_user_idx").on(
+      t.eventId,
+      t.userId,
+    ),
+    index("customer_notification_reads_user_event_idx").on(t.userId, t.eventId),
+  ],
+);
+
 /** One immutable trial grant per GitHub owner, with the initiating identity for abuse controls. */
 export const selfServiceTrialGrants = pgTable(
   "self_service_trial_grants",

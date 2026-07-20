@@ -111,6 +111,16 @@ cooldown. The post-deploy release activation queues verification for every migra
 unverified contact without exposing addresses or tokens in output. Operator entitlement
 updates preserve the dashboard-managed billing contact.
 
+Customer notifications are immutable, organization-scoped events with a stable
+producer key, bounded copy, optional organization-local action, role visibility,
+and a 180-day expiry. Per-user receipts preserve the first read time. Members see
+shared trial and service state; administrators also see billing and account actions.
+The inbox excludes expired events from reads and counts, and the worker deletes them
+in bounded batches. Trial lifecycle and customer-actionable billing failures write
+the event in the same database transaction as the source state change. Operator
+incidents and model, provider, cost, or stack details remain outside the customer
+store. Transactional email delivery is independent of inbox read state.
+
 Private-repository product access is organization-scoped and fail-closed.
 `organization_entitlements` records hosted or BYOK subscription mode, lifecycle
 state, trial and past-due grace boundaries, operator promotions, verified billing

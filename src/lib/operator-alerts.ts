@@ -2,6 +2,10 @@ import { and, eq, lte, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
+import {
+  enqueueCustomerNotification,
+  trialExpiredNotification,
+} from "@/lib/customer-notifications";
 import { optionalEnv } from "@/lib/env";
 
 export type OperatorAlertEvent =
@@ -231,6 +235,15 @@ export async function sweepExpiredSelfServiceTrials(
         githubOwnerId: row.githubOwnerId,
         trialEndsAt: trialEndsAt.toISOString(),
       };
+      await enqueueCustomerNotification(
+        tx,
+        trialExpiredNotification({
+          orgId: row.orgId,
+          orgSlug: row.orgSlug,
+          trialEndsAt,
+        }),
+        now,
+      );
       return {
         transitioned: true,
         alerted: await enqueueOperatorAlert(tx, payload),
