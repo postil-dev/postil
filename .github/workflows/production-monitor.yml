@@ -2,7 +2,7 @@ name: Production monitor
 
 on:
   schedule:
-    # Every 15 minutes: this external monitor remains independent of the
+    # Every 15 minutes: this external monitor is independent of the
     # in-platform private monitor and detects a dead or stopped worker through
     # postil_oldest_job_age_seconds staleness.
     - cron: "*/15 * * * *"

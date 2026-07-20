@@ -323,7 +323,7 @@ acknowledged. Missing, expired, or invalid state enables delivery instead of
 suppressing an alert. Monitoring state and target details are visible only on
 the operator dashboard. The bearer-protected metrics endpoint exposes aggregate
 monitor-heartbeat age and freshness gauges for an external dead-man alarm. The
-scheduled GitHub monitor remains an independent check of public reachability,
+scheduled GitHub monitor is an independent check of public reachability,
 aggregate operational metrics, and operator email delivery without receiving
 private monitor targets.
 
