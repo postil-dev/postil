@@ -20,6 +20,7 @@ let respondRun: (() => Promise<void>) | undefined;
 let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let webhookCommentRun: (() => Promise<void>) | undefined;
+let githubReactionRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
 let billingSettlementRun: (() => Promise<void>) | undefined;
 let operatorAlertRun: (() => Promise<void>) | undefined;
@@ -174,6 +175,15 @@ mock.module("@/worker/respond", () => ({
   },
 }));
 
+mock.module("@/worker/github-reaction", () => ({
+  runGithubReactionJob: async (payload: Record<string, unknown>) => {
+    if (payload.malformed === true) {
+      throw new Error("github reaction job payload is malformed");
+    }
+    await githubReactionRun?.();
+  },
+}));
+
 mock.module("@/worker/billing-contact-verification", () => ({
   runBillingContactVerificationJob: async () => {
     await billingContactVerificationRun?.();
@@ -236,6 +246,7 @@ beforeEach(() => {
   respondDeliveryRun = async () => undefined;
   respondFailureCommentRun = async () => undefined;
   webhookCommentRun = async () => undefined;
+  githubReactionRun = async () => undefined;
   billingContactVerificationRun = async () => undefined;
   billingSettlementRun = async () => undefined;
   operatorAlertRun = async () => undefined;
@@ -407,6 +418,7 @@ describe("drainQueueOnce", () => {
         "check-run-cleanup",
         "respond-failure-comment",
         "webhook-comment",
+        "github-reaction",
       ],
     ]);
   });
@@ -430,6 +442,46 @@ describe("drainQueueOnce", () => {
     expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
     expect(called).toBe(true);
     expect(completed).toEqual([2]);
+  });
+
+  test("dispatches GitHub reaction acknowledgements through a durable job", async () => {
+    const job = reviewJob(12);
+    job.kind = "github-reaction";
+    job.payload = { sourceDeliveryId: "reaction-delivery" };
+    let called = false;
+    githubReactionRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("reaction-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toContain(12);
+  });
+
+  test("retries transient GitHub reaction failures indefinitely", async () => {
+    const job = reviewJob(13);
+    job.kind = "github-reaction";
+    job.payload = { sourceDeliveryId: "reaction-delivery" };
+    githubReactionRun = async () => {
+      throw new Error("GitHub POST failed: HTTP 503 unavailable");
+    };
+
+    await runClaimedJob(job, "reaction-retry", "worker");
+    expect(retriedIndefinitely).toEqual([
+      { id: 13, error: "GitHub POST failed: HTTP 503 unavailable" },
+    ]);
+    expect(permanentFailures).toEqual([]);
+  });
+
+  test("fails malformed GitHub reaction jobs permanently", async () => {
+    const job = reviewJob(14);
+    job.kind = "github-reaction";
+    job.payload = { malformed: true };
+
+    await runClaimedJob(job, "reaction-malformed", "worker");
+    expect(permanentFailures).toContain(14);
+    expect(retriedIndefinitely).toEqual([]);
   });
 
   test("retries durable webhook dispatch until the delivery completes", async () => {

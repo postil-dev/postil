@@ -113,7 +113,7 @@ export async function watchdogPass(
     `WITH updated AS (
        UPDATE jobs
        SET status = CASE
-             WHEN kind IN ('gate-state-sync', 'check-run-cleanup', 'webhook-dispatch', 'webhook-comment')
+             WHEN kind IN ('gate-state-sync', 'check-run-cleanup', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
                   OR attempts < max_attempts
                THEN 'queued'::job_status
              ELSE 'failed'::job_status

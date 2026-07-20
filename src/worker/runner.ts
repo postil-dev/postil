@@ -16,6 +16,7 @@ import {
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
   type GateEnforcementSweepJobPayload,
+  type GithubReactionJobPayload,
   type RespondDeliveryJobPayload,
   type RespondFailureCommentJobPayload,
   type RespondJobPayload,
@@ -45,6 +46,7 @@ import {
   type BillingContactVerificationJobPayload,
 } from "./billing-contact-verification";
 import { isPermanentFailure } from "./failure-classifier";
+import { runGithubReactionJob } from "./github-reaction";
 import { runGateStateSyncJob } from "./gate-state-sync";
 import { runGateEnforcementSweepJob } from "./gate-enforcement-sweep";
 import {
@@ -90,6 +92,7 @@ export const WEB_PROCESSABLE_JOB_KINDS = [
   "check-run-cleanup",
   "respond-failure-comment",
   "webhook-comment",
+  "github-reaction",
 ] as const;
 
 export const PROCESSABLE_JOB_KINDS = [
@@ -189,6 +192,12 @@ async function handleJob(
         job,
       );
       break;
+    case "github-reaction":
+      await runGithubReactionJob(
+        job.payload as GithubReactionJobPayload,
+        job,
+      );
+      break;
     default:
       throw new Error(`unknown job kind: ${job.kind}`);
   }
@@ -247,6 +256,9 @@ export async function runClaimedJob(
     const malformedWebhookComment =
       job.kind === "webhook-comment" &&
       message.includes("webhook comment job payload malformed");
+    const malformedGithubReaction =
+      job.kind === "github-reaction" &&
+      message.includes("github reaction job payload is malformed");
     const malformedCheckRunCleanup =
       job.kind === "check-run-cleanup" &&
       message.includes("check-run cleanup job payload is malformed");
@@ -257,18 +269,21 @@ export async function runClaimedJob(
       malformedWebhookDispatch ||
       invalidWebhookDelivery ||
       malformedWebhookComment ||
+      malformedGithubReaction ||
       malformedCheckRunCleanup ||
       (job.kind !== "gate-state-sync" &&
         job.kind !== "gate-enforcement-sweep" &&
         job.kind !== "webhook-dispatch" &&
         job.kind !== "webhook-comment" &&
+        job.kind !== "github-reaction" &&
         isPermanentFailure(message));
     const reconcileIndefinitely =
       (job.kind === "gate-state-sync" && !malformedGateSync) ||
       (job.kind === "webhook-dispatch" &&
         !malformedWebhookDispatch &&
         !invalidWebhookDelivery) ||
-      (job.kind === "webhook-comment" && !malformedWebhookComment);
+      (job.kind === "webhook-comment" && !malformedWebhookComment) ||
+      (job.kind === "github-reaction" && !malformedGithubReaction);
     const durableReconciliation =
       reconcileIndefinitely ||
       (job.kind === "check-run-cleanup" && !permanent);

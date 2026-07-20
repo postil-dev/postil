@@ -66,6 +66,39 @@ class GitHubHttpError extends Error {
   }
 }
 
+export type GithubCommentKind = "issue_comment" | "pull_request_review_comment";
+
+/**
+ * Add the App's acknowledgement to the exact comment that requested work.
+ * GitHub treats an identical reaction by the same user as idempotent, so a
+ * queue retry after an ambiguous response cannot create another reaction.
+ */
+export async function addCommentReaction(
+  token: string,
+  repoFullName: string,
+  commentId: number,
+  commentKind: GithubCommentKind,
+  content: "eyes",
+  signal?: AbortSignal,
+): Promise<"created" | "already_exists" | "missing"> {
+  const collection = commentKind === "issue_comment" ? "issues" : "pulls";
+  try {
+    const response = await githubFetch(
+      token,
+      "POST",
+      `/repos/${repoFullName}/${collection}/comments/${commentId}/reactions`,
+      { content },
+      signal ?? AbortSignal.timeout(10_000),
+    );
+    return response.status === 200 ? "already_exists" : "created";
+  } catch (error) {
+    // A deleted source comment has nothing left to acknowledge. Treat it as
+    // reconciled rather than retrying a permanent absence forever.
+    if (error instanceof GitHubHttpError && error.status === 404) return "missing";
+    throw error;
+  }
+}
+
 export class AmbiguousCheckRunCreationError extends Error {
   constructor(
     readonly externalId: string,

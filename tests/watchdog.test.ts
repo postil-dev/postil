@@ -289,6 +289,11 @@ describeDb("watchdog stuck-review kill", () => {
           'webhook-comment',
           '{"installationId":42,"repoFullName":"octo/repo","number":7,"body":"reply","sourceDeliveryId":"delivery-8"}',
           'running', 5, 5, now() - interval '20 minutes', 'dead-worker'
+        ),
+        (
+          'github-reaction',
+          '{"installationId":42,"repoFullName":"octo/repo","commentId":9,"sourceDeliveryId":"delivery-9"}',
+          'running', 5, 5, now() - interval '20 minutes', 'dead-worker'
         )
     `);
 
@@ -297,10 +302,11 @@ describeDb("watchdog stuck-review kill", () => {
     const jobs = await pool.query<{ kind: string; status: string }>(
       `SELECT kind, status
          FROM jobs
-        WHERE kind IN ('webhook-dispatch', 'webhook-comment')
+        WHERE kind IN ('webhook-dispatch', 'webhook-comment', 'github-reaction')
         ORDER BY kind`,
     );
     expect(jobs.rows).toEqual([
+      { kind: "github-reaction", status: "queued" },
       { kind: "webhook-comment", status: "queued" },
       { kind: "webhook-dispatch", status: "queued" },
     ]);
