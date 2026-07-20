@@ -359,9 +359,10 @@ ${doctorTranscript}`}</code>
           capture stores no cookies or browser-persistent identifiers, honors
           DNT/GPC, and is limited to public marketing, docs, blog, install,
           pricing, and comparison pages. The server event
-          sends sanitized path, referrer origin/public path, campaign
-          parameters, user agent, and Cloudflare bot metadata when present; it
-          does not send IP addresses or protected dashboard paths.
+          sends the public path, referrer origin, bounded campaign labels, user
+          agent, and Cloudflare country and bot classification when present; it
+          does not send IP addresses, request identifiers, arbitrary query
+          strings, or protected dashboard paths.
         </li>
         <li>
           Operational PostHog telemetry is separate and disabled by default. Set{" "}

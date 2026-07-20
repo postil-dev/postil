@@ -106,6 +106,7 @@ describe("server request telemetry privacy", () => {
     await middleware(
       new NextRequest("https://localhost:3000/docs?utm_source=release&private=discard", {
         headers: {
+          "cf-ray": "request-identifier",
           forwarded: "host=evil.example;proto=http",
           "x-forwarded-host": "evil.example",
           "x-forwarded-proto": "http",
@@ -119,10 +120,10 @@ describe("server request telemetry privacy", () => {
     const payload = (await requests[0]!.json()) as {
       properties: Record<string, unknown>;
     };
-    expect(payload.properties.$current_url).toBe(
-      "https://postil.dev/docs?utm_source=release",
-    );
+    expect(payload.properties.$current_url).toBe("https://postil.dev/docs");
+    expect(payload.properties.$utm_source).toBe("release");
     expect(payload.properties.$host).toBe("postil.dev");
     expect(payload.properties.$pathname).toBe("/docs");
+    expect(payload.properties.cf_ray).toBeUndefined();
   });
 });

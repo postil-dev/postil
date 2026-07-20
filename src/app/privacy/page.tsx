@@ -164,7 +164,7 @@ export default function PrivacyPage() {
           public marketing, documentation, blog, install, pricing, and
           comparison pages. Browser analytics use PostHog&apos;s cookieless mode
           to record pageviews, pageleave engagement, scroll depth, Core Web
-          Vitals, sanitized referrers, and campaign parameters. Postil relays
+          Vitals, referrer origins, and bounded campaign labels. Postil relays
           these requests through its own domain, but PostHog remains the data
           processor. Analytics set no cookies and write no local or session
           storage; daily anonymous aggregation is not linked to an account or
@@ -173,10 +173,12 @@ export default function PrivacyPage() {
           agent, then discards the raw IP address. DNT and Global Privacy
           Control disable browser and request analytics. Session replay, person
           profiles, surveys, heatmaps, and autocaptured clicks are disabled.
-          Server-side request telemetry records sanitized path, referrer
-          origin/public path, campaign parameters, user agent, and Cloudflare
-          bot metadata when present; it does not send IP addresses, arbitrary
-          query strings, or protected dashboard paths. Operational monitoring
+          Browser event payloads discard query strings and persistent device or
+          session identifiers. Server-side request telemetry records the public
+          path, referrer origin, bounded campaign labels, user agent, and
+          Cloudflare country and bot classification when present; it does not
+          send IP addresses, request identifiers, arbitrary query strings, or
+          protected dashboard paths. Operational monitoring
           sends fixed event names and scrubbed exception stacks with
           project-relative code locations. It excludes request content, source
           code, repository names, prompts, model output, credentials, email

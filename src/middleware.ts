@@ -187,7 +187,6 @@ async function captureTraffic(request: NextRequest): Promise<void> {
     ...publicProperties,
     $raw_user_agent: request.headers.get("user-agent"),
     cf_country: request.headers.get("cf-ipcountry"),
-    cf_ray: request.headers.get("cf-ray"),
     cf_bot_score: numericHeader(request, "cf-bot-score"),
     method: request.method,
   });
