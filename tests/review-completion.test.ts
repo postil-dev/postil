@@ -16,6 +16,20 @@ function fakeDb(reviewUpdated = true): {
     execute() {
       return Promise.resolve();
     },
+    select() {
+      const chain = {
+        from() {
+          return chain;
+        },
+        where() {
+          return chain;
+        },
+        limit() {
+          return Promise.resolve([{ repositoryId: 2, prNumber: 1 }]);
+        },
+      };
+      return chain;
+    },
     update() {
       const chain = {
         set() {
@@ -26,7 +40,9 @@ function fakeDb(reviewUpdated = true): {
         },
         returning() {
           return Promise.resolve(
-            reviewUpdated ? [{ id: 7, triggerSource: "requested_review" }] : [],
+            reviewUpdated
+              ? [{ id: 7, publicId: "review-public-id", triggerSource: "requested_review" }]
+              : [],
           );
         },
       };
@@ -56,7 +72,22 @@ function fakeDb(reviewUpdated = true): {
   };
 }
 
-const envelope = { version: 1 } as Envelope;
+const envelope = {
+  version: 1,
+  summary: "",
+  silent: true,
+  findings: [],
+  resolved: [],
+  counts: { info: 0, warn: 0, error: 0, suppressed: 0, ungrounded: 0 },
+  confidenceBuckets: [0, 0, 0, 0, 0],
+  gate: { failOn: "error", failing: false },
+  modelUsed: "test/model",
+  usage: { promptTokens: 0, completionTokens: 0 },
+  durationMs: 1,
+  baseSha: "a".repeat(40),
+  headSha: "b".repeat(40),
+  sinceSha: null,
+} as Envelope;
 const base = {
   reviewId: 7,
   envelope,

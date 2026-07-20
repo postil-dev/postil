@@ -52,6 +52,22 @@ describe("hosted usage reservation arithmetic", () => {
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+const completedEnvelope = {
+  version: 1,
+  summary: "",
+  silent: true,
+  findings: [],
+  resolved: [],
+  counts: { info: 0, warn: 0, error: 0, suppressed: 0, ungrounded: 0 },
+  confidenceBuckets: [0, 0, 0, 0, 0],
+  gate: { failOn: "error", failing: false },
+  modelUsed: "test/model",
+  usage: { promptTokens: 0, completionTokens: 0 },
+  durationMs: 1,
+  baseSha: "base",
+  headSha: "head",
+  sinceSha: null,
+} as Envelope;
 
 describeDb("hosted usage reservations on PostgreSQL", () => {
   const databaseName = `postil_usage_reservations_${process.pid}_${Date.now()}`;
@@ -152,7 +168,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     expect(
       await persistReviewCompletionWithGateMode(db, {
         reviewId: rejectedReviewId,
-        envelope: { version: 1 } as Envelope,
+        envelope: completedEnvelope,
         configFiles: [],
         silent: true,
         gateFailing: false,
@@ -633,7 +649,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     expect(first.allowed).toBe(true);
     expect(await persistReviewCompletionWithGateMode(db, {
       reviewId: Number(row.first_review_id),
-      envelope: { version: 1 } as Envelope,
+      envelope: completedEnvelope,
       configFiles: [],
       silent: true,
       gateFailing: false,

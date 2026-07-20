@@ -253,6 +253,13 @@
       "when": 1784548801000,
       "tag": "0035_gate_control_and_enforcement",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784548802000,
+      "tag": "0036_review_publication_receipts",
+      "breakpoints": true
     }
   ]
 }

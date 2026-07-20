@@ -6,6 +6,10 @@ import type { Envelope } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
 import { lockReviewApprovalState } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
+import {
+  persistPublicationReceipt,
+  type PublicationReceipt,
+} from "@/lib/publication-receipt";
 
 export interface ReviewCompletionInput {
   reviewId: number;
@@ -25,6 +29,7 @@ export interface ReviewCompletionInput {
   }>;
   hostedUsageReservationId?: string | null;
   usageAccountingComplete: boolean;
+  publicationReceipt?: PublicationReceipt;
 }
 
 export interface ReviewCompletionWithGateModeResult {
@@ -71,6 +76,12 @@ export async function persistReviewCompletionWithGateMode(
     if (rows.length === 0) {
       return { completed: false, gateEnabled, gateFailing: effectiveGateFailing };
     }
+
+    await persistPublicationReceipt(tx as Database, {
+      reviewId: input.reviewId,
+      envelope: input.envelope,
+      receipt: input.publicationReceipt,
+    });
 
     const persistedUsageRows = input.usage.map((usage) => ({
       ...usage,
