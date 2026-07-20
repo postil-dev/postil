@@ -116,9 +116,9 @@ describe("transactional email renderer", () => {
     expect(body.htmlContent).toContain("Verify billing contact email");
     expect(body.textContent).toContain("Why you received this:");
     expect(body.headers).toEqual({
-      idempotencyKey: brevoIdempotencyUuid("verification-preview"),
+      "Idempotency-Key": brevoIdempotencyUuid("verification-preview"),
     });
-    expect((body.headers as Record<string, string>).idempotencyKey).toMatch(
+    expect((body.headers as Record<string, string>)["Idempotency-Key"]).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(body).not.toHaveProperty("templateId");

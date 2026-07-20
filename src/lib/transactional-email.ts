@@ -271,7 +271,7 @@ async function deliverWithBrevo(
       htmlContent: input.rendered.html,
       textContent: input.rendered.text,
       headers: {
-        idempotencyKey: brevoIdempotencyUuid(input.stableIdempotencyKey),
+        "Idempotency-Key": brevoIdempotencyUuid(input.stableIdempotencyKey),
       },
     }),
     redirect: "error",

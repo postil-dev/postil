@@ -67,7 +67,7 @@ describe("production monitor email", () => {
       /metrics|repository content|secret|token/i,
     );
     expect(body.headers).toEqual({
-      idempotencyKey: brevoIdempotencyUuid(
+      "Idempotency-Key": brevoIdempotencyUuid(
         "production-monitor-failure-29654572437-1",
       ),
     });

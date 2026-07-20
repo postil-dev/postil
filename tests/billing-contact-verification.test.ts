@@ -117,7 +117,7 @@ describe("billing verification sender", () => {
     expect(body.subject).toBe("Verify your Postil billing contact");
     expect(body.textContent).toContain("billing contact for Acme Injected");
     expect(body.htmlContent).toContain("Verify billing contact email");
-    expect(body.headers.idempotencyKey).toBe(
+    expect(body.headers["Idempotency-Key"]).toBe(
       brevoIdempotencyUuid("verification-digest"),
     );
   });
