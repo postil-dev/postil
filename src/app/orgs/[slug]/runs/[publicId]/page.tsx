@@ -439,9 +439,12 @@ export default async function RunDetailPage({
         finishedAt: schema.reviews.finishedAt,
         triggerSource: schema.reviews.triggerSource,
         triggerContext: schema.reviews.triggerContext,
+        repositoryId: schema.reviews.repositoryId,
         repoFullName: schema.repositories.fullName,
         orgId: schema.installations.orgId,
         githubInstallationId: schema.installations.githubInstallationId,
+        githubRepoId: schema.repositories.githubRepoId,
+        installationAccountType: schema.installations.accountType,
       })
       .from(schema.reviews)
       .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
@@ -452,7 +455,7 @@ export default async function RunDetailPage({
       .where(and(eq(schema.reviews.publicId, publicId), eq(schema.installations.orgId, org.id)))
       .limit(1)
   )[0];
-  if (!review) notFound();
+  if (!review || review.orgId === null) notFound();
 
   const [usageEvents, byokSettings, publicationRows, publicationReceiptRows] = await Promise.all([
     db
@@ -499,7 +502,7 @@ export default async function RunDetailPage({
   const reviewForApproval: ReviewForApproval = {
     id: review.id,
     publicId: review.publicId,
-    repositoryId: 0,
+    repositoryId: review.repositoryId,
     prNumber: review.prNumber,
     headSha: review.headSha,
     status: review.status,
@@ -510,6 +513,8 @@ export default async function RunDetailPage({
     repoFullName: review.repoFullName,
     orgId: review.orgId,
     githubInstallationId: review.githubInstallationId,
+    githubRepoId: review.githubRepoId,
+    installationAccountType: review.installationAccountType,
   };
   const approvalState = envelope ? await getReviewApprovalState(db, reviewForApproval) : null;
   const envelopeInvalid = parsedEnvelope !== null && !parsedEnvelope.success;

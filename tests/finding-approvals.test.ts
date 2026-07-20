@@ -79,6 +79,8 @@ const review: ReviewForApproval = {
   repoFullName: "acme/repo",
   orgId: 20,
   githubInstallationId: 42,
+  githubRepoId: 21,
+  installationAccountType: "Organization",
 };
 
 describe("finding approval scope", () => {

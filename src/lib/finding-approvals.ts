@@ -24,6 +24,16 @@ export interface ApprovalRow {
   source: "github" | "dashboard";
   sourceCommentId: string | null;
   sourceUrl: string | null;
+  sourceOrgId: number | null;
+  sourceRepositoryId: number | null;
+  sourceGithubInstallationId: number | null;
+  sourceGithubRepoId: number | null;
+  sourcePrNumber: number | null;
+  sourceHeadSha: string | null;
+  sourceWebhookDeliveryId: string | null;
+  sourceGithubCommentId: number | null;
+  sourceCommentKind: string | null;
+  sourceBindingState: "exact" | "legacy";
   createdAt: Date;
   revokedAt: Date | null;
   revokedByUserId: number | null;
@@ -41,8 +51,10 @@ export interface ReviewForApproval {
   gateFailing: boolean | null;
   gateCheckRunId: number | null;
   repoFullName: string;
-  orgId: number | null;
+  orgId: number;
   githubInstallationId: number;
+  githubRepoId: number;
+  installationAccountType: string;
 }
 
 export interface FindingApprovalState {
@@ -76,6 +88,19 @@ export interface ApprovalInsert {
   source: "github" | "dashboard";
   sourceCommentId?: string | null;
   sourceUrl?: string | null;
+  binding: {
+    orgId: number;
+    repositoryId: number;
+    githubInstallationId: number;
+    githubRepoId: number;
+    prNumber: number;
+    headSha: string;
+  };
+  githubSource?: {
+    webhookDeliveryId: string;
+    githubCommentId: number;
+    commentKind: "issue_comment" | "pull_request_review_comment";
+  };
 }
 
 export interface ReviewGateStateSyncJobPayload extends Record<string, unknown> {
@@ -240,6 +265,16 @@ export async function insertFindingApproval(
       source: input.source,
       sourceCommentId: input.sourceCommentId ?? null,
       sourceUrl: input.sourceUrl ?? null,
+      sourceOrgId: input.binding.orgId,
+      sourceRepositoryId: input.binding.repositoryId,
+      sourceGithubInstallationId: input.binding.githubInstallationId,
+      sourceGithubRepoId: input.binding.githubRepoId,
+      sourcePrNumber: input.binding.prNumber,
+      sourceHeadSha: input.binding.headSha,
+      sourceWebhookDeliveryId: input.githubSource?.webhookDeliveryId ?? null,
+      sourceGithubCommentId: input.githubSource?.githubCommentId ?? null,
+      sourceCommentKind: input.githubSource?.commentKind ?? null,
+      sourceBindingState: "exact",
     })
     .returning({ id: schema.findingApprovals.id });
   return rows[0]!.id;
@@ -284,9 +319,11 @@ export async function loadLatestCompletedReviewForPr(
         engineGateFailing: schema.reviews.engineGateFailing,
         gateFailing: schema.reviews.gateFailing,
         gateCheckRunId: schema.reviews.gateCheckRunId,
-        repoFullName: schema.repositories.fullName,
-        orgId: schema.installations.orgId,
-        githubInstallationId: schema.installations.githubInstallationId,
+        repoFullName: schema.reviews.sourceRepoFullName,
+        orgId: schema.reviews.sourceOrgId,
+        githubInstallationId: schema.reviews.sourceGithubInstallationId,
+        githubRepoId: schema.reviews.sourceGithubRepoId,
+        installationAccountType: schema.installations.accountType,
       })
       .from(schema.reviews)
       .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
@@ -298,6 +335,8 @@ export async function loadLatestCompletedReviewForPr(
         and(
           eq(schema.installations.githubInstallationId, githubInstallationId),
           eq(schema.repositories.githubRepoId, githubRepoId),
+          eq(schema.reviews.sourceGithubInstallationId, githubInstallationId),
+          eq(schema.reviews.sourceGithubRepoId, githubRepoId),
           eq(schema.reviews.prNumber, prNumber),
           eq(schema.reviews.status, "completed"),
           isNotNull(schema.reviews.envelope),
@@ -306,8 +345,21 @@ export async function loadLatestCompletedReviewForPr(
       .orderBy(desc(schema.reviews.finishedAt), desc(schema.reviews.id))
       .limit(1)
   )[0];
-  if (!row) return null;
-  return { ...row, envelope: parseEnvelopeForApprovals(row.envelope) };
+  if (
+    !row ||
+    row.orgId == null ||
+    row.githubInstallationId == null ||
+    row.githubRepoId == null ||
+    !row.repoFullName
+  ) return null;
+  return {
+    ...row,
+    repoFullName: row.repoFullName,
+    orgId: row.orgId,
+    githubInstallationId: row.githubInstallationId,
+    githubRepoId: row.githubRepoId,
+    envelope: parseEnvelopeForApprovals(row.envelope),
+  };
 }
 
 export async function loadReviewForApprovalByPublicId(
@@ -328,9 +380,11 @@ export async function loadReviewForApprovalByPublicId(
         engineGateFailing: schema.reviews.engineGateFailing,
         gateFailing: schema.reviews.gateFailing,
         gateCheckRunId: schema.reviews.gateCheckRunId,
-        repoFullName: schema.repositories.fullName,
-        orgId: schema.installations.orgId,
-        githubInstallationId: schema.installations.githubInstallationId,
+        repoFullName: schema.reviews.sourceRepoFullName,
+        orgId: schema.reviews.sourceOrgId,
+        githubInstallationId: schema.reviews.sourceGithubInstallationId,
+        githubRepoId: schema.reviews.sourceGithubRepoId,
+        installationAccountType: schema.installations.accountType,
       })
       .from(schema.reviews)
       .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
@@ -338,11 +392,32 @@ export async function loadReviewForApprovalByPublicId(
         schema.installations,
         eq(schema.installations.id, schema.repositories.installationId),
       )
-      .where(and(eq(schema.reviews.publicId, publicId), eq(schema.installations.orgId, orgId)))
+      .where(
+        and(
+          // Approval intentionally fails closed for reviews without the
+          // immutable publication identity established by migration 0034.
+          eq(schema.reviews.publicId, publicId),
+          eq(schema.installations.orgId, orgId),
+          eq(schema.reviews.sourceOrgId, orgId),
+        ),
+      )
       .limit(1)
   )[0];
-  if (!row) return null;
-  return { ...row, envelope: parseEnvelopeForApprovals(row.envelope) };
+  if (
+    !row ||
+    row.orgId == null ||
+    row.githubInstallationId == null ||
+    row.githubRepoId == null ||
+    !row.repoFullName
+  ) return null;
+  return {
+    ...row,
+    repoFullName: row.repoFullName,
+    orgId: row.orgId,
+    githubInstallationId: row.githubInstallationId,
+    githubRepoId: row.githubRepoId,
+    envelope: parseEnvelopeForApprovals(row.envelope),
+  };
 }
 
 export async function hasNewerCompletedReviewForHead(
