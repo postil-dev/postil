@@ -52,6 +52,7 @@ export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
   try {
     await acquireReleaseLock(client);
     locked = true;
+    await ensureReleaseStepsTable(client);
     const completed: string[] = [];
     for (const index of OPERATIONAL_INDEXES) {
       let state = await loadIndexState(client, index.name);
@@ -87,6 +88,16 @@ export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
     }
     client.release();
   }
+}
+
+async function ensureReleaseStepsTable(client: PoolClient): Promise<void> {
+  await client.query(
+    `CREATE TABLE IF NOT EXISTS "release_steps" (
+       "name" text PRIMARY KEY NOT NULL,
+       "completed_at" timestamp with time zone NOT NULL,
+       "details" jsonb NOT NULL
+     )`,
+  );
 }
 
 async function acquireReleaseLock(client: PoolClient): Promise<void> {
