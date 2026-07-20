@@ -218,4 +218,25 @@ describe("transactional email renderer", () => {
       }),
     ).rejects.toThrow("API key is invalid");
   });
+
+  test("rejects incomplete or structurally unsafe content before delivery", () => {
+    expect(() =>
+      renderTransactionalEmail({ ...representative, title: " " }),
+    ).toThrow("transactional email title is invalid");
+    expect(() =>
+      renderTransactionalEmail({
+        ...representative,
+        details: Array.from({ length: 21 }, (_, index) => ({
+          label: "Detail",
+          value: String(index),
+        })),
+      }),
+    ).toThrow("transactional email has too many detail rows");
+    expect(() =>
+      renderTransactionalEmail({
+        ...representative,
+        reason: "Configured recipient\u0007",
+      }),
+    ).toThrow("transactional email reason is invalid");
+  });
 });

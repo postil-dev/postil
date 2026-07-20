@@ -18,6 +18,16 @@ type Fetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+interface TransactionalEmailProviderInput {
+  recipient: string;
+  sender: { name: string; email: string };
+  subject: string;
+  rendered: RenderedTransactionalEmail;
+  stableIdempotencyKey: string;
+  credential: string;
+  fetchImpl: Fetch;
+}
+
 export type TransactionalEmailIntent =
   "action" | "notice" | "success" | "warning" | "critical";
 
@@ -55,6 +65,7 @@ const INTENT_COLORS: Record<TransactionalEmailIntent, string> = {
 export function renderTransactionalEmail(
   content: TransactionalEmailContent,
 ): RenderedTransactionalEmail {
+  validateTransactionalEmailContent(content);
   if (content.action) validateActionUrl(content.action.url);
   const accent = INTENT_COLORS[content.intent ?? "notice"];
   const details = content.details ?? [];
@@ -212,33 +223,56 @@ export async function sendTransactionalEmail(input: {
   if (!input.apiKey.trim() || /[\r\n]/.test(input.apiKey)) {
     throw new Error("API key is invalid");
   }
-  const providerIdempotencyKey = brevoIdempotencyUuid(input.idempotencyKey);
   const rendered = renderTransactionalEmail(input.content);
   assertApplicationEmailBody(rendered.html, input.content.action?.url);
-  const response = await (input.fetchImpl ?? fetch)(BREVO_SEND_URL, {
+  const sender = {
+    name:
+      optionalEnv("POSTIL_EMAIL_FROM_NAME") ??
+      (optionalEnv("POSTIL_ESCALATION_FROM_NAME", "Postil") as string),
+    email:
+      optionalEnv("POSTIL_EMAIL_FROM_EMAIL") ??
+      (optionalEnv(
+        "POSTIL_ESCALATION_FROM_EMAIL",
+        "reviews@mail.postil.dev",
+      ) as string),
+  };
+  if (!isEmailAddress(sender.email) || /[\r\n]/.test(sender.name)) {
+    throw new Error("transactional email sender is invalid");
+  }
+  return deliverWithBrevo({
+    recipient: input.recipient,
+    sender,
+    subject: input.subject,
+    rendered,
+    stableIdempotencyKey: input.idempotencyKey,
+    credential: input.apiKey,
+    fetchImpl: input.fetchImpl ?? fetch,
+  });
+}
+
+/**
+ * Provider-specific delivery is isolated from message construction. Product
+ * and operator callers depend only on the transport-neutral send contract.
+ */
+async function deliverWithBrevo(
+  input: TransactionalEmailProviderInput,
+): Promise<{ messageId: string | null }> {
+  const response = await input.fetchImpl(BREVO_SEND_URL, {
     method: "POST",
     headers: {
       accept: "application/json",
-      "api-key": input.apiKey,
+      "api-key": input.credential,
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      sender: {
-        name:
-          optionalEnv("POSTIL_EMAIL_FROM_NAME") ??
-          (optionalEnv("POSTIL_ESCALATION_FROM_NAME", "Postil") as string),
-        email:
-          optionalEnv("POSTIL_EMAIL_FROM_EMAIL") ??
-          (optionalEnv(
-            "POSTIL_ESCALATION_FROM_EMAIL",
-            "reviews@mail.postil.dev",
-          ) as string),
-      },
+      sender: input.sender,
       to: [{ email: input.recipient }],
       subject: input.subject,
-      htmlContent: rendered.html,
-      textContent: rendered.text,
-      headers: { "Idempotency-Key": providerIdempotencyKey },
+      htmlContent: input.rendered.html,
+      textContent: input.rendered.text,
+      headers: {
+        "Idempotency-Key": brevoIdempotencyUuid(input.stableIdempotencyKey),
+      },
     }),
     redirect: "error",
     signal: AbortSignal.timeout(BREVO_TIMEOUT_MS),
@@ -309,5 +343,43 @@ function validateActionUrl(value: string): void {
     throw new Error(
       "transactional email action URL must be an HTTPS URL without credentials",
     );
+  }
+}
+
+function validateTransactionalEmailContent(
+  content: TransactionalEmailContent,
+): void {
+  validateReadableField("preheader", content.preheader, 240);
+  validateReadableField("category", content.category, 80);
+  validateReadableField("title", content.title, 160);
+  validateReadableField("summary", content.summary, 1_000);
+  validateReadableField("reason", content.reason, 1_000);
+  if (content.organization) {
+    validateReadableField("organization", content.organization, 320);
+  }
+  if ((content.details?.length ?? 0) > 20) {
+    throw new Error("transactional email has too many detail rows");
+  }
+  for (const detail of content.details ?? []) {
+    validateReadableField("detail label", detail.label, 120);
+    validateReadableField("detail value", detail.value, 1_000);
+  }
+  if (content.action) {
+    validateReadableField("action label", content.action.label, 120);
+  }
+  if (content.note) validateReadableField("note", content.note, 1_000);
+}
+
+function validateReadableField(
+  field: string,
+  value: string,
+  maxLength: number,
+): void {
+  if (
+    !value.trim() ||
+    value.length > maxLength ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
+  ) {
+    throw new Error(`transactional email ${field} is invalid`);
   }
 }

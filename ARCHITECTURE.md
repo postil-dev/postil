@@ -327,6 +327,9 @@ previews cover every production message type.
 Delivery uses Brevo's transactional email API as an authenticated HTTPS REST
 call to `https://api.brevo.com/v3/smtp/email` with provider idempotency. The
 `smtp` path segment is Brevo's API naming; Postil does not use SMTP transport.
+Production callers use one provider-neutral send function. A Brevo adapter owns
+the endpoint, authentication, idempotency translation, and response handling,
+so product and operator message code contains no provider-specific behavior.
 Stable logical delivery keys become deterministic UUIDs for Brevo's 30-minute
 idempotency window. The five-attempt queue schedule and ten-minute watchdog
 reclaim fit inside that window during normal operation. Brevo's anonymous
