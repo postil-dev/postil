@@ -47,6 +47,10 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   sourceDeliveryId?: string;
   /** Optional only for jobs queued by an older release during a rolling deploy. */
   trigger?: ReviewTriggerContext;
+  /** Durable pointer written after the CLI result and publication receipt are staged. */
+  recoveryReviewId?: number;
+  /** Gate conclusion already published by the CLI for the staged review. */
+  recoveryGateConclusion?: "success" | "failure" | "neutral";
 }
 
 /** An @postil mention on a PR or issue the bot should reply to. */

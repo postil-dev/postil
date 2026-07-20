@@ -168,6 +168,26 @@ describeDb("watchdog stuck-review kill", () => {
     expect(failCheckRunsCalls).toBe(0);
   });
 
+  test("does not fail a staged publication while its exact checks are reconciled", async () => {
+    const repositoryId = await seedRepo();
+    const reviewId = await seedStuckReview(repositoryId);
+    await pool.query(
+      `UPDATE reviews
+          SET envelope = '{"version":1,"findings":[],"gate":{"failing":false}}'::jsonb
+        WHERE id = $1`,
+      [reviewId],
+    );
+
+    const result = await watchdogPass();
+
+    expect(result.killed).toBe(0);
+    expect(await reviewStatus(reviewId)).toBe("running");
+    const cleanup = await pool.query(
+      "SELECT id FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(cleanup.rows).toHaveLength(0);
+  });
+
   test("two concurrent passes over the same stuck review only kill it once", async () => {
     const repositoryId = await seedRepo();
     await seedStuckReview(repositoryId);

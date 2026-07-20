@@ -63,6 +63,7 @@ import {
 import {
   runCheckRunCleanupJob,
   runReviewJob,
+  ReviewPublicationReconciliationError,
   validateCheckRunCleanupPayload,
   WorkerShutdownError,
 } from "./review";
@@ -283,7 +284,8 @@ export async function runClaimedJob(
         !malformedWebhookDispatch &&
         !invalidWebhookDelivery) ||
       (job.kind === "webhook-comment" && !malformedWebhookComment) ||
-      (job.kind === "github-reaction" && !malformedGithubReaction);
+      (job.kind === "github-reaction" && !malformedGithubReaction) ||
+      err instanceof ReviewPublicationReconciliationError;
     const durableReconciliation =
       reconcileIndefinitely ||
       (job.kind === "check-run-cleanup" && !permanent);

@@ -50,6 +50,7 @@ export async function watchdogPass(
     .where(
       and(
         eq(schema.reviews.status, "running"),
+        sql`${schema.reviews.envelope} IS NULL`,
         lt(schema.reviews.startedAt, cutoff),
       ),
     );
@@ -114,6 +115,7 @@ export async function watchdogPass(
        UPDATE jobs
        SET status = CASE
              WHEN kind IN ('gate-state-sync', 'check-run-cleanup', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
+                  OR (kind = 'review' AND payload ? 'recoveryReviewId')
                   OR attempts < max_attempts
                THEN 'queued'::job_status
              ELSE 'failed'::job_status
