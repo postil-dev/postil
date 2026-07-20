@@ -35,8 +35,8 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.7.0–0.7.2",
-    date: "July 19, 2026",
+    version: "0.7.0–0.7.3",
+    date: "July 19–20, 2026",
     summary:
       "Self-service trials and bounded hosted reviews use release-scoped activation checks.",
     changes: [
