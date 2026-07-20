@@ -116,9 +116,9 @@ describe("transactional email renderer", () => {
     expect(body.htmlContent).toContain("Verify billing contact email");
     expect(body.textContent).toContain("Why you received this:");
     expect(body.headers).toEqual({
-      "Idempotency-Key": brevoIdempotencyUuid("verification-preview"),
+      idempotencyKey: brevoIdempotencyUuid("verification-preview"),
     });
-    expect((body.headers as Record<string, string>)["Idempotency-Key"]).toMatch(
+    expect((body.headers as Record<string, string>).idempotencyKey).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(body).not.toHaveProperty("templateId");
@@ -217,5 +217,26 @@ describe("transactional email renderer", () => {
         fetchImpl,
       }),
     ).rejects.toThrow("API key is invalid");
+  });
+
+  test("rejects incomplete or structurally unsafe content before delivery", () => {
+    expect(() =>
+      renderTransactionalEmail({ ...representative, title: " " }),
+    ).toThrow("transactional email title is invalid");
+    expect(() =>
+      renderTransactionalEmail({
+        ...representative,
+        details: Array.from({ length: 21 }, (_, index) => ({
+          label: "Detail",
+          value: String(index),
+        })),
+      }),
+    ).toThrow("transactional email has too many detail rows");
+    expect(() =>
+      renderTransactionalEmail({
+        ...representative,
+        reason: "Configured recipient\u0007",
+      }),
+    ).toThrow("transactional email reason is invalid");
   });
 });

@@ -185,6 +185,9 @@ account, installation, billing, and service-monitor messages.
   retention are separate from the application HTML. Configure anonymous
   transactional-email tracking and an appropriate log-retention period in the
   Brevo account when available. Delivery does not depend on either setting.
+- Product and operator message code uses the shared send function. Provider
+  endpoints, authentication, idempotency fields, and response handling stay in
+  its adapter. Do not call a provider API directly from a message producer.
 
 ## Favicon Scaling
 
