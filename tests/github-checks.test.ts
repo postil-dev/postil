@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  addCommentReaction,
   completeExpectedCheckRun,
   createCheckRun,
   findCheckRunByExternalId,
@@ -22,6 +23,56 @@ function comments(count: number, page: number) {
     body: `comment ${page}-${index}`,
   }));
 }
+
+describe("review request reactions", () => {
+  test("uses the comment-kind endpoint and recognizes GitHub idempotency", async () => {
+    const requests: Array<{ url: string; body: unknown }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(JSON.stringify({ id: 1 }), {
+        status: requests.length === 1 ? 201 : 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      addCommentReaction("token", "octo/repo", 41, "issue_comment", "eyes"),
+    ).resolves.toBe("created");
+    await expect(
+      addCommentReaction(
+        "token",
+        "octo/repo",
+        42,
+        "pull_request_review_comment",
+        "eyes",
+      ),
+    ).resolves.toBe("already_exists");
+    expect(requests).toEqual([
+      {
+        url: expect.stringContaining("/repos/octo/repo/issues/comments/41/reactions"),
+        body: { content: "eyes" },
+      },
+      {
+        url: expect.stringContaining("/repos/octo/repo/pulls/comments/42/reactions"),
+        body: { content: "eyes" },
+      },
+    ]);
+  });
+
+  test("treats a deleted source comment as reconciled", async () => {
+    globalThis.fetch = Object.assign(
+      async () => new Response("missing", { status: 404 }),
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    await expect(
+      addCommentReaction("token", "octo/repo", 41, "issue_comment", "eyes"),
+    ).resolves.toBe("missing");
+  });
+});
 
 describe("respond delivery marker lookup", () => {
   test("finds a marker after the first 100 issue comments", async () => {

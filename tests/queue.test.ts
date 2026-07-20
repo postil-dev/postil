@@ -9,6 +9,7 @@ import {
   backoffMs,
   claimJob as claimJobWithCapabilities,
   completeJob,
+  enqueueGithubReactionJobOnce,
   enqueueJob,
   enqueueReviewJobOnce,
   failJob,
@@ -116,6 +117,42 @@ describeDb("postgres job queue", () => {
       attempts: 0,
       locked_by: null,
     });
+  });
+
+  test("claims admitted acknowledgement work ahead of long review work", async () => {
+    const reviewId = await enqueueJob(pool, "review", { prNumber: 1 });
+    const reactionId = await enqueueJob(pool, "github-reaction", {
+      sourceDeliveryId: "priority-reaction",
+    });
+
+    const claimed = await claimJobWithCapabilities(pool, "reaction-worker", [
+      "review",
+      "github-reaction",
+    ]);
+    expect(claimed?.id).toBe(reactionId);
+    expect(claimed?.kind).toBe("github-reaction");
+    expect(claimed?.id).not.toBe(reviewId);
+  });
+
+  test("reaction enqueue is lifetime-idempotent under concurrent redelivery", async () => {
+    const payload = {
+      installationId: 1,
+      sourceInstallationId: 2,
+      sourceOrgId: 3,
+      githubRepoId: 4,
+      repoFullName: "octo/repo",
+      commentId: 5,
+      commentKind: "issue_comment" as const,
+      content: "eyes" as const,
+      sourceDeliveryId: "reaction-delivery",
+    };
+    const inserted = await Promise.all(
+      Array.from({ length: 12 }, () => enqueueGithubReactionJobOnce(pool, payload)),
+    );
+    expect(inserted.filter((id) => id !== null)).toHaveLength(1);
+
+    await pool.query("UPDATE jobs SET status = 'done' WHERE kind = 'github-reaction'");
+    expect(await enqueueGithubReactionJobOnce(pool, payload)).toBeNull();
   });
 
   test("stages new job kinds until the post-deploy capability activation", async () => {

@@ -91,6 +91,19 @@ export interface WebhookCommentJobPayload extends Record<string, unknown> {
   sourceDeliveryId: string;
 }
 
+/** Idempotent acknowledgement of an admitted structured review request. */
+export interface GithubReactionJobPayload extends Record<string, unknown> {
+  installationId: number;
+  sourceInstallationId: number;
+  sourceOrgId: number;
+  githubRepoId: number;
+  repoFullName: string;
+  commentId: number;
+  commentKind: "issue_comment" | "pull_request_review_comment";
+  content: "eyes";
+  sourceDeliveryId: string;
+}
+
 export interface ExternalSideEffectLease {
   id: number;
   lockedBy: string;
@@ -503,6 +516,43 @@ export async function enqueueRespondJobOnce(
   return result.rows[0] ? Number(result.rows[0].id) : null;
 }
 
+/**
+ * Enqueue one reaction for one signed webhook delivery. The lifetime lookup,
+ * serialized by an advisory lock, covers terminal jobs too: a redelivery must
+ * not recreate an external side effect after its first job completes.
+ */
+export async function enqueueGithubReactionJobOnce(
+  pool: Pool,
+  payload: GithubReactionJobPayload,
+): Promise<number | null> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `postil:github-reaction:${payload.sourceDeliveryId}`,
+    ]);
+    const result = await client.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       SELECT 'github-reaction', $1::jsonb, 'queued', now(), 3
+       WHERE NOT EXISTS (
+         SELECT 1
+           FROM jobs
+          WHERE kind = 'github-reaction'
+            AND payload->>'sourceDeliveryId' = $2
+       )
+       RETURNING id`,
+      [JSON.stringify(payload), payload.sourceDeliveryId],
+    );
+    await client.query("COMMIT");
+    return result.rows[0] ? Number(result.rows[0].id) : null;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Atomically enqueue one active review for an exact repository, PR, and head. */
 export async function enqueueReviewJobOnce(
   pool: Pool,
@@ -538,7 +588,7 @@ export async function claimJob(
   pool: Pool,
   workerId: string,
   allowedKinds: readonly string[],
-  options: { webhookDeliveryId?: string } = {},
+  options: { exactWebhookDispatchDeliveryId?: string } = {},
 ): Promise<ClaimedJob | null> {
   const capabilities = [...new Set(allowedKinds.filter(Boolean))];
   if (capabilities.length === 0) {
@@ -560,11 +610,14 @@ export async function claimJob(
        WHERE status = 'queued'
          AND run_after <= now()
          AND kind = ANY($1::text[])
-         AND ($2::text IS NULL OR payload->>'deliveryId' = $2)
-       ORDER BY id
+         AND (
+           $2::text IS NULL
+           OR (kind = 'webhook-dispatch' AND payload->>'deliveryId' = $2)
+         )
+       ORDER BY CASE WHEN kind = 'github-reaction' THEN 0 ELSE 1 END, id
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
-      [capabilities, options.webhookDeliveryId ?? null],
+      [capabilities, options.exactWebhookDispatchDeliveryId ?? null],
     );
     const row = selected.rows[0];
     if (!row) {

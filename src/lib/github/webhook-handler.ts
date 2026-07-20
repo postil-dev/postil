@@ -46,6 +46,7 @@ import {
 import {
   acceptWebhookDelivery,
   cancelPullRequestPublication,
+  enqueueGithubReactionJobOnce,
   enqueueRespondJobOnce,
   enqueueReviewJobOnce,
   type RespondJobPayload,
@@ -1056,12 +1057,21 @@ async function enqueueMentionReview(
 ): Promise<void> {
   const installationId = payload.installation?.id;
   const repo = payload.repository;
-  if (!installationId || !repo) return;
+  const commentId = payload.comment?.id;
+  if (
+    !installationId ||
+    !repo ||
+    !Number.isSafeInteger(commentId) ||
+    commentId === undefined ||
+    commentId <= 0
+  ) return;
   const token = await getInstallationToken(installationId);
   const context = await getPullRequestReviewContext(token, repo.full_name, prNumber);
   if (!context.open || context.merged || context.draft) return;
   const authority = await enabledRepoForMention(installationId, repo);
   if (!authority) return;
+  // Admit both durable jobs before waking a web drain so the short reaction
+  // can be claimed ahead of the model-backed review.
   await enqueueReviewJob({
     installationId,
     ...authority,
@@ -1091,7 +1101,19 @@ async function enqueueMentionReview(
         ? { requestedByLogin: payload.comment.user.login }
         : {}),
     },
-  }, triggerFollowupDrain);
+  }, false);
+  await enqueueGithubReactionJobOnce(getPool(), {
+    installationId,
+    ...authority,
+    repoFullName: repo.full_name,
+    commentId,
+    commentKind: webhookEvent,
+    content: "eyes",
+    sourceDeliveryId,
+  });
+  if (triggerFollowupDrain) {
+    triggerQueueDrain("requested-review-admitted");
+  }
 }
 
 async function handleApproveCommand(

@@ -42,6 +42,7 @@ const ORIGINAL_FETCH = globalThis.fetch;
 // object would break their import chains.
 const completedCheckRuns: Array<{ repoFullName: string; conclusion: string }> = [];
 const postedComments: Array<{ repoFullName: string; number: number; body: string }> = [];
+const addedReactions: Array<{ repoFullName: string; commentId: number; kind: string }> = [];
 let pullRequestHeadSha = "head-sha";
 let liveMembershipStatus = 200;
 let liveMembershipRole: "admin" | "member" = "admin";
@@ -67,6 +68,15 @@ mock.module("@/lib/github/checks", () => ({
   ADVISORY_CHECK_NAME: "postil/review",
   GATE_CHECK_NAME: "postil/gate",
   createCheckRun: async () => 1,
+  addCommentReaction: async (
+    _token: string,
+    repoFullName: string,
+    commentId: number,
+    kind: string,
+  ) => {
+    addedReactions.push({ repoFullName, commentId, kind });
+    return "created" as const;
+  },
   completeCheckRun: async (
     _token: string,
     repoFullName: string,
@@ -167,6 +177,7 @@ describeDb("webhook handler behaviour", () => {
   beforeEach(async () => {
     completedCheckRuns.length = 0;
     postedComments.length = 0;
+    addedReactions.length = 0;
     pullRequestHeadSha = "head-sha";
     liveMembershipStatus = 200;
     liveMembershipRole = "admin";
@@ -1192,6 +1203,40 @@ describeDb("webhook handler behaviour", () => {
           },
         }),
       },
+      {
+        kind: "github-reaction",
+        payload: {
+          installationId: 700,
+          sourceInstallationId: inst,
+          sourceOrgId: orgId,
+          githubRepoId: 7000,
+          repoFullName: "octo/approvals",
+          commentId: 123456,
+          commentKind: "issue_comment",
+          content: "eyes",
+          sourceDeliveryId: "mention-review-current-head",
+        },
+      },
+    ]);
+
+    const duplicate = await approvalComment(
+      "mention-review-current-head",
+      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
+    );
+    expect(duplicate.status).toBe(200);
+    const reactionCount = await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM jobs WHERE kind = 'github-reaction'",
+    );
+    expect(reactionCount.rows[0]!.count).toBe(1);
+    const reactionJob = await claimJob(getPool(), "reaction-test", ["github-reaction"]);
+    expect(reactionJob?.kind).toBe("github-reaction");
+    await runClaimedJob(reactionJob!, "reaction-test", "worker");
+    expect(addedReactions).toEqual([
+      {
+        repoFullName: "octo/approvals",
+        commentId: 123456,
+        kind: "issue_comment",
+      },
     ]);
   });
 
@@ -1235,6 +1280,52 @@ describeDb("webhook handler behaviour", () => {
       requestedByGithubId: 502,
       requestedByLogin: "reviewer",
     });
+    const reactions = await pool.query<{ payload: Record<string, unknown> }>(
+      "SELECT payload FROM jobs WHERE kind = 'github-reaction'",
+    );
+    expect(reactions.rows[0]!.payload).toEqual({
+      installationId: 702,
+      sourceInstallationId: inst,
+      sourceOrgId: orgId,
+      githubRepoId: 7002,
+      repoFullName: "octo/threaded",
+      commentId: 654321,
+      commentKind: "pull_request_review_comment",
+      content: "eyes",
+      sourceDeliveryId: "review-thread-command",
+    });
+  });
+
+  test("does not acknowledge an exact command from an unauthorized commenter", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 703);
+    await seedRepo(inst, 7003, "octo/public");
+
+    const res = await post(
+      "issue_comment",
+      {
+        action: "created",
+        installation: { id: 703 },
+        repository: { id: 7003, full_name: "octo/public", private: false },
+        sender: { id: 999, login: "visitor", type: "User" },
+        comment: {
+          id: 777777,
+          body: "@postil review the current head",
+          user: { id: 999, login: "visitor", type: "User" },
+          author_association: "NONE",
+        },
+        issue: { number: 6, pull_request: {} },
+      },
+      "unauthorized-review-command",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count
+         FROM jobs
+        WHERE kind IN ('review', 'github-reaction')`,
+    );
+    expect(jobs.rows[0]!.count).toBe(0);
   });
 
   test("issue review mentions cannot invoke the pull-request reviewer", async () => {
