@@ -4,10 +4,16 @@ import { getDb, schema } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import {
   type AccountRef,
+  findAccessibleInstallationOrgSlug,
   syncInstallationsFromGithub,
 } from "@/lib/github/installation-sync";
 import { fetchAllActiveOrgMemberships } from "@/lib/github/user-memberships";
-import { oauthCallbackUrl, OAUTH_STATE_COOKIE, publicOrigin } from "@/lib/oauth";
+import {
+  GITHUB_SETUP_INSTALLATION_COOKIE,
+  oauthCallbackUrl,
+  OAUTH_STATE_COOKIE,
+  publicOrigin,
+} from "@/lib/oauth";
 import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
 import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/lib/session";
 
@@ -144,8 +150,17 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
   await reconcileOrgMemberships(db, userId, accounts);
 
+  const setupOrgSlug = await findAccessibleInstallationOrgSlug(
+    userId,
+    getCookie(request, GITHUB_SETUP_INSTALLATION_COOKIE),
+  );
   const sessionToken = await createSession(userId, accessToken, new Date());
-  const response = NextResponse.redirect(new URL("/reports", origin));
+  const response = NextResponse.redirect(
+    new URL(
+      setupOrgSlug ? `/orgs/${encodeURIComponent(setupOrgSlug)}` : "/reports",
+      origin,
+    ),
+  );
   response.cookies.set(SESSION_COOKIE, sessionToken, {
     httpOnly: true,
     sameSite: "lax",
@@ -154,5 +169,6 @@ export async function GET(request: Request): Promise<NextResponse> {
     path: "/",
   });
   response.cookies.delete(OAUTH_STATE_COOKIE);
+  response.cookies.delete(GITHUB_SETUP_INSTALLATION_COOKIE);
   return response;
 }

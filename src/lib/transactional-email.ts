@@ -1,7 +1,17 @@
+import { createHash } from "node:crypto";
+
 import { optionalEnv } from "@/lib/env";
 
+/**
+ * Brevo retains `smtp` in this Messaging API route name. Postil calls it only
+ * as an authenticated HTTPS REST endpoint and does not use an SMTP transport.
+ */
 const BREVO_SEND_URL = "https://api.brevo.com/v3/smtp/email";
 const BREVO_TIMEOUT_MS = 10_000;
+const UUID_DNS_NAMESPACE = Buffer.from(
+  "6ba7b8109dad11d180b400c04fd430c8",
+  "hex",
+);
 
 type Fetch = (
   input: RequestInfo | URL,
@@ -184,6 +194,7 @@ export async function sendTransactionalEmail(input: {
   subject: string;
   content: TransactionalEmailContent;
   idempotencyKey: string;
+  /** Brevo HTTPS API credential, resolved through a required env boundary by every production caller. */
   apiKey: string;
   fetchImpl?: Fetch;
 }): Promise<{ messageId: string | null }> {
@@ -196,8 +207,12 @@ export async function sendTransactionalEmail(input: {
     throw new Error("transactional email subject is invalid");
   }
   if (!/^[!-~]{1,200}$/.test(input.idempotencyKey)) {
-    throw new Error("transactional email idempotency key is invalid");
+    throw new Error("idempotency key is invalid");
   }
+  if (!input.apiKey.trim() || /[\r\n]/.test(input.apiKey)) {
+    throw new Error("API key is invalid");
+  }
+  const providerIdempotencyKey = brevoIdempotencyUuid(input.idempotencyKey);
   const rendered = renderTransactionalEmail(input.content);
   assertApplicationEmailBody(rendered.html, input.content.action?.url);
   const response = await (input.fetchImpl ?? fetch)(BREVO_SEND_URL, {
@@ -223,8 +238,9 @@ export async function sendTransactionalEmail(input: {
       subject: input.subject,
       htmlContent: rendered.html,
       textContent: rendered.text,
-      headers: { "Idempotency-Key": input.idempotencyKey },
+      headers: { "Idempotency-Key": providerIdempotencyKey },
     }),
+    redirect: "error",
     signal: AbortSignal.timeout(BREVO_TIMEOUT_MS),
   });
   const responseText = await response.text();
@@ -234,12 +250,40 @@ export async function sendTransactionalEmail(input: {
   } catch {
     parsed = {};
   }
-  if (!response.ok && parsed.code !== "duplicate_parameter") {
+  const providerDuplicate =
+    response.status === 400 && parsed.code === "duplicate_parameter";
+  if (!response.ok && !providerDuplicate) {
     throw new Error(`Brevo transactional email failed: ${response.status}`);
+  }
+  if (
+    response.ok &&
+    (typeof parsed.messageId !== "string" || !parsed.messageId.trim())
+  ) {
+    throw new Error("Brevo transactional email returned no message ID");
   }
   return {
     messageId: typeof parsed.messageId === "string" ? parsed.messageId : null,
   };
+}
+
+/** Derive the provider's required UUID from Postil's stable logical key. */
+export function brevoIdempotencyUuid(stableKey: string): string {
+  const bytes = createHash("sha1")
+    .update(UUID_DNS_NAMESPACE)
+    .update("postil.dev:transactional-email:", "utf8")
+    .update(stableKey, "utf8")
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
 }
 
 function isEmailAddress(value: string): boolean {

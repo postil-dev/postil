@@ -75,6 +75,7 @@ jobs:
         run: |
           createdb postil_webhook_lifecycle
           bun test --isolate tests/webhook-handlers.test.ts
+          bun test --isolate tests/github-setup-destination.test.ts
         env:
           PGHOST: localhost
           PGUSER: postgres

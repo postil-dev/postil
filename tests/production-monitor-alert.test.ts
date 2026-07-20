@@ -5,6 +5,7 @@ import {
   sendProductionMonitorAlert,
   type ProductionMonitorAlertEnvironment,
 } from "@/../scripts/send-production-monitor-alert";
+import { brevoIdempotencyUuid } from "@/lib/transactional-email";
 
 const baseEnvironment: ProductionMonitorAlertEnvironment = {
   BREVO_API_KEY: "brevo-test-key",
@@ -66,7 +67,9 @@ describe("production monitor email", () => {
       /metrics|repository content|secret|token/i,
     );
     expect(body.headers).toEqual({
-      "Idempotency-Key": "production-monitor-failure-29654572437-1",
+      "Idempotency-Key": brevoIdempotencyUuid(
+        "production-monitor-failure-29654572437-1",
+      ),
     });
   });
 
