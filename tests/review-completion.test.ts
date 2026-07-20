@@ -94,7 +94,7 @@ const base = {
   configFiles: [],
   configProvenance: { entries: [], degraded: false },
   silent: false,
-  gateFailing: true,
+  gateFailing: false,
   usageAccountingComplete: true,
   usage: [
     {
@@ -157,8 +157,21 @@ describe("review completion transaction", () => {
 
   test("records no accounting after losing the completion race", async () => {
     const state = fakeDb(false);
-    expect(await persistReviewCompletionWithGateMode(state.db, base, null))
-      .toMatchObject({ completed: false });
+    expect(
+      await persistReviewCompletionWithGateMode(state.db, base, null),
+    ).toMatchObject({ completed: false });
+    expect(state.inserted).toEqual([]);
+  });
+
+  test("rejects a completion whose claimed gate contradicts its envelope", async () => {
+    const state = fakeDb();
+    await expect(
+      persistReviewCompletionWithGateMode(
+        state.db,
+        { ...base, gateFailing: true },
+        1,
+      ),
+    ).rejects.toThrow("gate truth does not match its envelope");
     expect(state.inserted).toEqual([]);
   });
 });

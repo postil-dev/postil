@@ -137,6 +137,10 @@ describeDb("publication receipt migration and lifecycle", () => {
       "INSERT INTO organizations (slug, name, github_org_id) VALUES ('publication', 'Publication', 1001) RETURNING id",
     );
     orgId = Number(organization.rows[0]!.id);
+    await pool.query(
+      "INSERT INTO org_settings (org_id, gate_enabled) VALUES ($1, true)",
+      [orgId],
+    );
     const installation = await pool.query<{ id: string }>(
       `INSERT INTO installations
         (github_installation_id, account_login, account_type, org_id)
@@ -192,7 +196,6 @@ describeDb("publication receipt migration and lifecycle", () => {
         {
           reviewId,
           reviewJobId,
-          expectedGateConclusion: "success",
           envelope: reviewEnvelope,
           configFiles: [],
           silent: true,

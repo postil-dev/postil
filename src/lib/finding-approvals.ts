@@ -109,15 +109,17 @@ export interface ReviewGateStateSyncJobPayload extends Record<string, unknown> {
   modeVersion?: number;
 }
 
-export interface OrganizationGateStateSyncJobPayload extends Record<string, unknown> {
+export interface OrganizationGateStateSyncJobPayload extends Record<
+  string,
+  unknown
+> {
   orgId: number;
   modeVersion: number;
   cursor?: { queuedAt: string; reviewId: number };
 }
 
 export type GateStateSyncJobPayload =
-  | ReviewGateStateSyncJobPayload
-  | OrganizationGateStateSyncJobPayload;
+  ReviewGateStateSyncJobPayload | OrganizationGateStateSyncJobPayload;
 
 export function validateApprovalRationale(value: string): string {
   const rationale = value.trim();
@@ -170,9 +172,11 @@ export async function getReviewApprovalState(
     }),
   );
   const activeIds = new Set(
-    Array.from(activeByFinding.keys()).filter((findingId) => approvableIds.has(findingId)),
+    Array.from(activeByFinding.keys()).filter((findingId) =>
+      approvableIds.has(findingId),
+    ),
   );
-  const effectiveGate = computeEffectiveGate(envelope, activeIds, review.engineGateFailing ?? false);
+  const effectiveGate = computeEffectiveGate(envelope, activeIds);
   const blockById = new Map(
     effectiveGate.kindBlockers
       .filter((state) => state.findingId)

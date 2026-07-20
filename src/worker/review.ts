@@ -21,8 +21,11 @@ import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
 import {
   classifyOperationalModelIncidents,
+  gateCheckConclusionForEnvelope,
   ingestEnvelope,
+  isEnvelopeOperationallyUnavailable,
   type Envelope,
+  type GateCheckConclusion,
 } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
@@ -760,49 +763,27 @@ async function resumeStagedReviewCompletion(input: {
     currentRepository.id !== payload.githubRepoId ||
     currentRepository.full_name !== payload.repoFullName
   ) {
-    throw new PermanentJobError("review publication recovery repository identity changed");
+    throw new PermanentJobError(
+      "review publication recovery repository identity changed",
+    );
   }
-  const gateEnabled = await getOrganizationGateEnabled(db, installation.orgId);
-  const hasOperationalFinding = stagedReview.envelope.findings.some(
-    (finding) =>
-      finding.path === ".postil/operational" ||
-      finding.path === ".postil/provider",
+  const operationallyUnavailable = isEnvelopeOperationallyUnavailable(
+    stagedReview.envelope,
   );
   try {
-    await Promise.all([
-      verifyCompletedCheckRun(
-        token,
-        payload.repoFullName,
-        {
-          id: stagedReview.advisoryCheckRunId,
-          name: ADVISORY_CHECK_NAME,
-          externalId: checkRunExternalId(stagedReview.publicId, "review"),
-          headSha: payload.headSha,
-          conclusion: hasOperationalFinding ? "neutral" : "success",
-          requireOutput: true,
-        },
-        signal,
-      ),
-      verifyCompletedCheckRun(
-        token,
-        payload.repoFullName,
-        {
-          id: stagedReview.gateCheckRunId,
-          name: GATE_CHECK_NAME,
-          externalId: checkRunExternalId(stagedReview.publicId, "gate"),
-          headSha: payload.headSha,
-          conclusion: payload.recoveryGateConclusion ?? (
-            gateEnabled
-              ? stagedReview.envelope.gate.failing
-                ? "failure"
-                : "success"
-              : "neutral"
-          ),
-          requireOutput: true,
-        },
-        signal,
-      ),
-    ]);
+    await verifyCompletedCheckRun(
+      token,
+      payload.repoFullName,
+      {
+        id: stagedReview.advisoryCheckRunId,
+        name: ADVISORY_CHECK_NAME,
+        externalId: checkRunExternalId(stagedReview.publicId, "review"),
+        headSha: payload.headSha,
+        conclusion: operationallyUnavailable ? "neutral" : "success",
+        requireOutput: true,
+      },
+      signal,
+    );
     const reservation = (
       await db
         .select({ id: schema.hostedUsageReservations.id })
@@ -829,13 +810,75 @@ async function resumeStagedReviewCompletion(input: {
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );
+    } else {
+      throw new ReviewPublicationReconciliationError(
+        "review publication recovery lost its terminal-state race",
+      );
     }
+    const gateConclusion = gateCheckConclusionForEnvelope(
+      stagedReview.envelope,
+      new Set(),
+      completion.gateEnabled,
+    );
+    const gateOutput = gateCheckOutput(
+      gateConclusion,
+      completion.gateEnabled,
+      operationallyUnavailable,
+    );
+    await completeExpectedCheckRun(
+      token,
+      payload.repoFullName,
+      {
+        id: stagedReview.gateCheckRunId,
+        name: GATE_CHECK_NAME,
+        externalId: checkRunExternalId(stagedReview.publicId, "gate"),
+        headSha: payload.headSha,
+        conclusion: gateConclusion,
+      },
+      gateOutput.title,
+      gateOutput.summary,
+      signal,
+    );
     console.log(`review publication recovery ${stagedReview.id} completed`);
     return true;
   } catch (error) {
     if (signal?.aborted) throw new WorkerShutdownError();
     throw new ReviewPublicationReconciliationError(redactSecrets(error));
   }
+}
+
+function gateCheckOutput(
+  conclusion: GateCheckConclusion,
+  gateEnabled: boolean,
+  unavailable: boolean,
+): { title: string; summary: string } {
+  if (!gateEnabled) {
+    return {
+      title: "Postil gate is advisory",
+      summary: "Merge blocking is disabled. Review findings remain advisory.",
+    };
+  }
+  if (unavailable) {
+    return conclusion === "failure"
+      ? {
+          title: "Review unavailable",
+          summary:
+            "Postil could not complete this review. The merge check remains blocked.",
+        }
+      : {
+          title: "Review unavailable",
+          summary: "Postil could not produce a merge verdict for this commit.",
+        };
+  }
+  return conclusion === "failure"
+    ? {
+        title: "Postil gate blocked",
+        summary: "One or more review findings block this commit.",
+      }
+    : {
+        title: "Postil gate passed",
+        summary: "No review findings block this commit.",
+      };
 }
 
 /**
@@ -1340,6 +1383,9 @@ export async function runReviewJob(
       // Remote CLI invocations are local-only by default. The hosted worker is
       // the explicit publication boundary, so it must opt in deliberately.
       "--publish",
+      // The CLI publishes only the advisory result. The worker completes the
+      // merge gate after the envelope and accounting are terminal in Postil.
+      "--defer-gate-check",
       "--repo",
       payload.repoFullName,
       "--pr",
@@ -1527,10 +1573,8 @@ export async function runReviewJob(
         throw error;
       }
     }
-    const hasOperationalFinding = ingested.envelope.findings.some(
-      (finding) =>
-        finding.path === ".postil/operational" ||
-        finding.path === ".postil/provider",
+    const operationallyUnavailable = isEnvelopeOperationallyUnavailable(
+      ingested.envelope,
     );
     const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
       orgId: installation.orgId,
@@ -1539,28 +1583,11 @@ export async function runReviewJob(
     });
     receiptUsageForRace = receiptUsage;
     usageAccountingCompleteForRace = ingested.usageAccountingComplete;
-    if (!gateEnabled) {
-      await completeCheckRun(
-        token,
-        payload.repoFullName,
-        gateCheckRunId,
-        "neutral",
-        "Postil gate is advisory",
-        "Merge blocking is disabled. Review findings remain advisory.",
-        result.interrupted ? undefined : reviewSignal,
-      );
-      reviewLog.line("forge gate check-run set to advisory");
-    }
     const staged = await stageReviewCompletionCandidate(
       db,
       {
         reviewId,
         reviewJobId: timing.lease?.id,
-        expectedGateConclusion: gateEnabled
-          ? ingested.gateFailing
-            ? "failure"
-            : "success"
-          : "neutral",
         envelope: ingested.envelope,
         configFiles,
         configProvenance,
@@ -1596,38 +1623,19 @@ export async function runReviewJob(
       }
     }
     try {
-      await Promise.all([
-        verifyCompletedCheckRun(
-          token,
-          payload.repoFullName,
-          {
-            id: advisoryCheckRunId,
-            name: ADVISORY_CHECK_NAME,
-            externalId: advisoryCheckExternalId,
-            headSha: payload.headSha,
-            conclusion: hasOperationalFinding ? "neutral" : "success",
-            requireOutput: true,
-          },
-          result.interrupted ? undefined : signal,
-        ),
-        verifyCompletedCheckRun(
-          token,
-          payload.repoFullName,
-          {
-            id: gateCheckRunId,
-            name: GATE_CHECK_NAME,
-            externalId: gateCheckExternalId,
-            headSha: payload.headSha,
-            conclusion: gateEnabled
-              ? ingested.gateFailing
-                ? "failure"
-                : "success"
-              : "neutral",
-            requireOutput: true,
-          },
-          result.interrupted ? undefined : signal,
-        ),
-      ]);
+      await verifyCompletedCheckRun(
+        token,
+        payload.repoFullName,
+        {
+          id: advisoryCheckRunId,
+          name: ADVISORY_CHECK_NAME,
+          externalId: advisoryCheckExternalId,
+          headSha: payload.headSha,
+          conclusion: operationallyUnavailable ? "neutral" : "success",
+          requireOutput: true,
+        },
+        result.interrupted ? undefined : signal,
+      );
     } catch (error) {
       if (error instanceof CheckRunPublicationError) {
         throw error;
@@ -1637,22 +1645,52 @@ export async function runReviewJob(
         { cause: error },
       );
     }
-    reviewLog.line("forge check-runs verified completed by the CLI");
+    reviewLog.line("forge advisory check-run verified completed by the CLI");
 
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
-    // no longer owns the result. The CLI owns the success-path check-runs.
-    const completion = await finalizeStagedReviewCompletionWithGateMode(db, {
-      reviewId,
-      usage: receiptUsage,
-      hostedUsageReservationId,
-      usageAccountingComplete: ingested.usageAccountingComplete,
-    }, installation.orgId);
+    // no longer owns the result. The worker publishes the gate only after
+    // this durable terminal transition succeeds.
+    const completion = await finalizeStagedReviewCompletionWithGateMode(
+      db,
+      {
+        reviewId,
+        usage: receiptUsage,
+        hostedUsageReservationId,
+        usageAccountingComplete: ingested.usageAccountingComplete,
+      },
+      installation.orgId,
+    );
     const completed = completion.completed;
     if (completed) {
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );
+      const gateConclusion = gateCheckConclusionForEnvelope(
+        ingested.envelope,
+        new Set(),
+        completion.gateEnabled,
+      );
+      const gateOutput = gateCheckOutput(
+        gateConclusion,
+        completion.gateEnabled,
+        operationallyUnavailable,
+      );
+      await completeExpectedCheckRun(
+        token,
+        payload.repoFullName,
+        {
+          id: gateCheckRunId,
+          name: GATE_CHECK_NAME,
+          externalId: gateCheckExternalId,
+          headSha: payload.headSha,
+          conclusion: gateConclusion,
+        },
+        gateOutput.title,
+        gateOutput.summary,
+        result.interrupted ? undefined : signal,
+      );
+      reviewLog.line("forge gate check-run completed from stored review truth");
     }
 
     if (!completed) {

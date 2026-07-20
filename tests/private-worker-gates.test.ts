@@ -229,6 +229,12 @@ describe("private repository worker defense in depth", () => {
     expect(args.indexOf('"--publish"')).toBeGreaterThan(
       args.indexOf('"github"'),
     );
+    expect(args.indexOf('"--defer-gate-check"')).toBeGreaterThan(
+      args.indexOf('"--publish"'),
+    );
+    expect(args.indexOf('"--defer-gate-check"')).toBeLessThan(
+      args.indexOf('"--repo"'),
+    );
     expect(args.indexOf('"--publish"')).toBeLessThan(args.indexOf('"--repo"'));
     expect(args).not.toContain('"--no-post"');
   });
@@ -246,7 +252,7 @@ describe("private repository worker defense in depth", () => {
     expect(cliEnv).not.toContain("payload.githubRepoId");
   });
 
-  test("hosted review stages recovery before verification and terminalizes only after", () => {
+  test("hosted review terminalizes before publishing the exact gate verdict", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const reviewStart = source.indexOf("export async function runReviewJob");
     const cliCompletion = source.indexOf(
@@ -257,49 +263,82 @@ describe("private repository worker defense in depth", () => {
       "const staged = await stageReviewCompletionCandidate",
       cliCompletion,
     );
-    const publication = source.indexOf("await Promise.all([", staging);
-    const verification = source.indexOf("verifyCompletedCheckRun", publication);
+    const verification = source.indexOf("verifyCompletedCheckRun", staging);
     const finalization = source.indexOf(
       "const completion = await finalizeStagedReviewCompletionWithGateMode",
       verification,
     );
+    const gatePublication = source.indexOf(
+      "await completeExpectedCheckRun",
+      finalization,
+    );
 
     expect(staging).toBeGreaterThan(cliCompletion);
-    expect(publication).toBeGreaterThan(cliCompletion);
-    expect(verification).toBeGreaterThan(publication);
+    expect(verification).toBeGreaterThan(staging);
     expect(finalization).toBeGreaterThan(verification);
+    expect(gatePublication).toBeGreaterThan(finalization);
     expect(source.slice(staging, finalization)).toContain(
       'reviewLog.line("review result and publication receipt staged durably")',
     );
-    expect(source.slice(publication, finalization)).toContain(
-      'reviewLog.line("forge check-runs verified completed by the CLI")',
+    expect(source.slice(verification, finalization)).toContain(
+      'reviewLog.line("forge advisory check-run verified completed by the CLI")',
     );
-    expect(source.slice(publication, finalization)).toContain(
+    expect(source.slice(verification, finalization)).toContain(
       '"GitHub review publication could not be verified"',
     );
-    expect(source.slice(publication, finalization)).toContain(
+    expect(source.slice(verification, finalization)).toContain(
       "{ cause: error }",
+    );
+    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
+      "id: gateCheckRunId",
+    );
+    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
+      "externalId: gateCheckExternalId",
+    );
+    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
+      "headSha: payload.headSha",
     );
   });
 
-  test("advisory organizations neutralize the CLI gate result before verification", () => {
+  test("advisory organizations derive a neutral exact gate verdict", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
-    const completion = source.indexOf("receiptUsageForRace = receiptUsage");
-    const verification = source.indexOf("await Promise.all([", completion);
-    const advisory = source.slice(completion, verification);
+    const reviewStart = source.indexOf("export async function runReviewJob");
+    const staging = source.indexOf(
+      "const staged = await stageReviewCompletionCandidate",
+      reviewStart,
+    );
+    const finalization = source.indexOf(
+      "const completion = await finalizeStagedReviewCompletionWithGateMode",
+      staging,
+    );
+    const conclusion = source.indexOf(
+      "const gateConclusion = gateCheckConclusionForEnvelope",
+      finalization,
+    );
+    const gatePublication = source.indexOf(
+      "await completeExpectedCheckRun",
+      conclusion,
+    );
 
-    expect(advisory).toContain("if (!gateEnabled)");
-    expect(advisory).toContain('"neutral"');
-    expect(advisory).toContain('"Postil gate is advisory"');
-    expect(source.slice(verification, source.indexOf("const completion =", verification)))
-      .toContain(": \"neutral\"");
+    expect(staging).toBeGreaterThan(reviewStart);
+    expect(finalization).toBeGreaterThan(staging);
+    expect(conclusion).toBeGreaterThan(finalization);
+    expect(gatePublication).toBeGreaterThan(conclusion);
+    expect(source.slice(conclusion, gatePublication)).toContain(
+      "completion.gateEnabled",
+    );
+    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
+      "conclusion: gateConclusion",
+    );
   });
 
   test("operational review failures durably queue terminal check cleanup", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
       "} catch (err) {",
-      source.indexOf('reviewLog.line("publication lifecycle observation deferred")'),
+      source.indexOf(
+        'reviewLog.line("publication lifecycle observation deferred")',
+      ),
     );
     const catchEnd = source.indexOf("} finally {", catchStart);
     const failureBody = source.slice(catchStart, catchEnd);

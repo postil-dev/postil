@@ -5,6 +5,7 @@ let checkCalls: Array<Record<string, unknown>> = [];
 let checkTitles: string[] = [];
 let checkError: Error | null = null;
 let effectiveFailing = false;
+let effectiveUnavailable = false;
 let storedStates: boolean[] = [];
 let tokenWaitForAbort = false;
 let transactionsFinalized = 0;
@@ -135,7 +136,11 @@ mock.module("@/lib/gate-mode", () => ({
 mock.module("@/lib/finding-approvals", () => ({
   formatRemainingGateBlockers: () => "- remaining finding",
   getReviewApprovalState: async () => ({
-    effectiveGate: { failing: effectiveFailing, blockers: [] },
+    effectiveGate: {
+      failing: effectiveFailing,
+      unavailable: effectiveUnavailable,
+      blockers: [],
+    },
   }),
   hasNewerCompletedReviewForHead: async () => false,
   lockReviewApprovalState: async () => {
@@ -168,14 +173,20 @@ mock.module("@/lib/github/app-auth", () => ({
 }));
 
 mock.module("@/lib/github/checks", () => ({
-  completeCheckRun: async (
+  GATE_CHECK_NAME: "postil/gate",
+  checkRunExternalId: (publicId: string, kind: string) =>
+    `postil:${publicId}:${kind}`,
+  completeExpectedCheckRun: async (
     _token: string,
     repoFullName: string,
-    checkRunId: number,
-    conclusion: string,
+    expected: { id: number; conclusion: string },
     title: string,
   ) => {
-    checkCalls.push({ repoFullName, checkRunId, conclusion });
+    checkCalls.push({
+      repoFullName,
+      checkRunId: expected.id,
+      conclusion: expected.conclusion,
+    });
     checkTitles.push(title);
     if (loseLeaseAfterCheck) leaseHeld = false;
     if (checkError) throw checkError;
@@ -191,6 +202,7 @@ beforeEach(() => {
   checkTitles = [];
   checkError = null;
   effectiveFailing = false;
+  effectiveUnavailable = false;
   storedStates = [];
   tokenWaitForAbort = false;
   transactionsFinalized = 0;
@@ -273,6 +285,28 @@ describe("durable gate state synchronization", () => {
     expect(checkTitles).toEqual(["Postil gate is advisory"]);
     expect(storedStates).toEqual([true]);
     expect(storedEnforcement).toEqual([false]);
+  });
+
+  test("never describes an operationally unavailable review as passing", async () => {
+    effectiveUnavailable = true;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls[0]?.conclusion).toBe("neutral");
+    expect(checkTitles).toEqual(["Review unavailable"]);
+    expect(storedStates).toEqual([false]);
+  });
+
+  test("does not write through a stale or mismatched check identity", async () => {
+    checkError = new Error(
+      "GitHub check-run 99 does not match its review identity",
+    );
+
+    await expect(
+      runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId }),
+    ).rejects.toThrow("does not match its review identity");
+
+    expect(storedStates).toEqual([]);
   });
 
   test("bounds GitHub calls and releases the transaction for retry", async () => {

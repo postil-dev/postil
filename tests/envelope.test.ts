@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyOperationalModelIncidents,
   computeEffectiveGate,
+  gateCheckConclusionForEnvelope,
   hasLegacyCombinedModelUsage,
   ingestEnvelope,
   type Envelope,
@@ -402,14 +403,20 @@ describe("envelope ingestion", () => {
       counts: { info: 0, warn: 2, error: 0, suppressed: 0, ungrounded: 0 },
     });
 
-    expect(() => ingestEnvelope(JSON.stringify(env))).toThrow("duplicate finding id");
+    expect(() => ingestEnvelope(JSON.stringify(env))).toThrow(
+      "duplicate finding id",
+    );
   });
 });
 
 describe("effective gate recomputation", () => {
-  test("does not fail when the engine gate did not fail", () => {
+  test("does not let a declared pass suppress an admitted blocker", () => {
     const env = validEnvelope({
-      gate: { failOn: "error", failing: false, blockOnKinds: ["humanEscalation"] },
+      gate: {
+        failOn: "error",
+        failing: false,
+        blockOnKinds: ["humanEscalation"],
+      },
       findings: [
         {
           id: "kind-only",
@@ -424,7 +431,103 @@ describe("effective gate recomputation", () => {
       ],
     });
 
-    expect(computeEffectiveGate(env, new Set(), false).failing).toBe(false);
+    expect(computeEffectiveGate(env, new Set()).failing).toBe(true);
+    expect(() => ingestEnvelope(JSON.stringify(env))).toThrow(/gate\.failing/);
+  });
+
+  test("keeps advisory findings passing alongside a blocking finding", () => {
+    const env = validEnvelope({
+      gate: { failOn: "error", failing: true, blockOnKinds: [] },
+      findings: [
+        {
+          id: "advisory",
+          path: "src/app.ts",
+          line: 1,
+          severity: "warn",
+          kind: "risk",
+          confidence: 0.8,
+          title: "Worth checking",
+          body: "This finding remains advisory.",
+        },
+        {
+          id: "blocking",
+          path: "src/db.ts",
+          line: 2,
+          severity: "error",
+          kind: "risk",
+          confidence: 0.9,
+          title: "Breaks writes",
+          body: "This finding blocks the gate.",
+        },
+      ],
+      counts: { info: 0, warn: 1, error: 1, suppressed: 0, ungrounded: 0 },
+    });
+
+    const state = computeEffectiveGate(env, new Set());
+    expect(state.blockers.map(({ findingId }) => findingId)).toEqual([
+      "blocking",
+    ]);
+    expect(gateCheckConclusionForEnvelope(env, new Set(), true)).toBe(
+      "failure",
+    );
+  });
+
+  test("blocks carried findings only while they remain active", () => {
+    const carried = {
+      id: "carried-blocker",
+      path: "src/cache.ts",
+      line: 8,
+      severity: "error" as const,
+      kind: "risk" as const,
+      confidence: 0.94,
+      title: "Cache invalidation can lose writes",
+      body: "[carried from previous review]\nThe active defect remains in this head.",
+    };
+    const activeEnvelope = validEnvelope({
+      gate: { failOn: "error", failing: true, blockOnKinds: [] },
+      findings: [carried],
+      resolved: [],
+      counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+    });
+    const resolvedEnvelope = validEnvelope({
+      gate: { failOn: "error", failing: false, blockOnKinds: [] },
+      findings: [],
+      resolved: [carried],
+      counts: { info: 0, warn: 0, error: 0, suppressed: 0, ungrounded: 0 },
+    });
+
+    expect(
+      gateCheckConclusionForEnvelope(activeEnvelope, new Set(), true),
+    ).toBe("failure");
+    expect(
+      gateCheckConclusionForEnvelope(resolvedEnvelope, new Set(), true),
+    ).toBe("success");
+  });
+
+  test("reports an operational advisory as unavailable instead of passing", () => {
+    const env = validEnvelope({
+      gate: { failOn: "error", failing: false, blockOnKinds: [] },
+      findings: [
+        {
+          id: "provider-unavailable",
+          path: ".postil/provider",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: "Review unavailable",
+          body: "The review provider did not return a usable result.",
+        },
+      ],
+      counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+    });
+
+    const state = computeEffectiveGate(env, new Set());
+    expect(state).toMatchObject({ failing: false, unavailable: true });
+    expect(gateCheckConclusionForEnvelope(env, new Set(), true)).toBe(
+      "neutral",
+    );
+    expect(ingestEnvelope(JSON.stringify(env)).gateFailing).toBe(false);
   });
 
   test("active approval clears kind-only blockers", () => {
