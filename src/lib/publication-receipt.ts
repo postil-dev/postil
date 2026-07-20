@@ -277,9 +277,12 @@ export async function applyPublicationThreadObservations(
   for (const observation of observations) {
     const id = rowIds.get(observation.githubCommentId);
     if (id === undefined) continue;
+    const update = observation.state === "inline"
+      ? { lifecycleObservedAt: new Date() }
+      : { currentState: observation.state, lifecycleObservedAt: new Date() };
     await db
       .update(schema.findingPublications)
-      .set({ currentState: observation.state, lifecycleObservedAt: new Date() })
+      .set(update)
       .where(eq(schema.findingPublications.id, id));
   }
 }
