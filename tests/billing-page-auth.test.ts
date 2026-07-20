@@ -205,6 +205,16 @@ describe("organization billing page auth", () => {
     expect(markup).toContain('dateTime="2099-08-17T12:00:00.000Z"');
     expect(markup).toContain("No card is required");
     expect(markup).toContain("then pause unless a paid plan is active");
+    expect(markup).toContain("Email preferences");
+    expect(markup).toContain("Billing summaries");
+    expect(markup).toContain("Service summaries");
+    expect(markup).toContain(
+      "These preferences do not apply to security, verification, payment failure",
+    );
+    expect(markup).toContain('name="billingSummaryEmail" value="on"');
+    expect(markup).toMatch(
+      /name="serviceSummaryEmail" checked="" value="on"/,
+    );
   });
 
   test("explains why private reviews pause after trial expiry", async () => {
@@ -263,6 +273,8 @@ function fakeDb(): any {
       const kind =
         "hasKey" in selection
           ? "provider"
+          : "billingSummaryEmail" in selection
+            ? "notificationPreferences"
           : "activeEmail" in selection
             ? "contact"
             : "status" in selection && "currentPeriodEndsAt" in selection
@@ -287,6 +299,8 @@ function fakeDb(): any {
                 ? usageRows
                 : kind === "provider"
                   ? [{ hasKey: false }]
+                  : kind === "notificationPreferences"
+                    ? [{ billingSummaryEmail: false, serviceSummaryEmail: true }]
                   : kind === "contact"
                     ? [
                         {

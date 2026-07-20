@@ -683,6 +683,25 @@ export const organizationEntitlements = pgTable(
   ],
 );
 
+/** Optional organization email choices. Transactional safety notices bypass these flags. */
+export const organizationNotificationPreferences = pgTable(
+  "organization_notification_preferences",
+  {
+    orgId: bigint("org_id", { mode: "number" })
+      .primaryKey()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    billingSummaryEmail: boolean("billing_summary_email")
+      .notNull()
+      .default(true),
+    serviceSummaryEmail: boolean("service_summary_email")
+      .notNull()
+      .default(true),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
 /** One immutable trial grant per GitHub owner, with the initiating identity for abuse controls. */
 export const selfServiceTrialGrants = pgTable(
   "self_service_trial_grants",
@@ -1478,11 +1497,11 @@ export const organizationSettingEvents = pgTable(
     ),
     check(
       "organization_setting_events_setting_check",
-      sql`${t.setting} IN ('gate_enabled')`,
+      sql`${t.setting} IN ('gate_enabled', 'billing_summary_email', 'service_summary_email')`,
     ),
     check(
       "organization_setting_events_value_check",
-      sql`${t.value} IN ('enabled', 'advisory')`,
+      sql`${t.value} IN ('enabled', 'disabled', 'advisory')`,
     ),
     check(
       "organization_setting_events_source_check",
