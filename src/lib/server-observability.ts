@@ -9,7 +9,10 @@ import {
 import { PostHog } from "posthog-node/edge";
 import type { BeforeSendFn, PostHogOptions } from "posthog-node";
 
-import type { OperationalModelIncidentClassification } from "@/lib/envelope";
+import {
+  MODEL_INCIDENT_PHASES,
+  type OperationalModelIncidentClassification,
+} from "@/lib/envelope";
 
 export type ObservabilityProcessGroup = "web" | "worker";
 export type OperationalFailureClass =
@@ -99,7 +102,7 @@ const FAILURE_CLASSES = new Set<OperationalFailureClass>(
   Object.keys(FAILURE_EVENTS) as OperationalFailureClass[],
 );
 const PROCESS_GROUPS = new Set<ObservabilityProcessGroup>(["web", "worker"]);
-const MODEL_INCIDENT_PHASES = new Set(["review", "scorer"]);
+const MODEL_INCIDENT_PHASE_SET = new Set<string>(MODEL_INCIDENT_PHASES);
 const TYPED_MODEL_INCIDENT_CATEGORIES = new Set([
   "providerError",
   "invalidOutput",
@@ -555,7 +558,7 @@ function sanitizePostHogModelIncident(
     typeof processGroup !== "string" ||
     !PROCESS_GROUPS.has(processGroup as ObservabilityProcessGroup) ||
     typeof phase !== "string" ||
-    !MODEL_INCIDENT_PHASES.has(phase) ||
+    !MODEL_INCIDENT_PHASE_SET.has(phase) ||
     typeof category !== "string" ||
     !MODEL_INCIDENT_CATEGORIES.has(category) ||
     typeof recovered !== "boolean" ||
@@ -651,7 +654,7 @@ function isValidModelIncidentTuple(incident: {
     typeof incident.source !== "string" ||
     !MODEL_INCIDENT_SOURCES.has(incident.source) ||
     typeof incident.phase !== "string" ||
-    !MODEL_INCIDENT_PHASES.has(incident.phase) ||
+    !MODEL_INCIDENT_PHASE_SET.has(incident.phase) ||
     typeof incident.category !== "string" ||
     !MODEL_INCIDENT_CATEGORIES.has(incident.category) ||
     typeof incident.recovered !== "boolean"
