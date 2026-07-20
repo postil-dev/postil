@@ -1102,7 +1102,7 @@ async function enqueueMentionReview(
         : {}),
     },
   }, false);
-  const reactionId = await enqueueGithubReactionJobOnce(getPool(), {
+  await enqueueGithubReactionJobOnce(getPool(), {
     installationId,
     ...authority,
     repoFullName: repo.full_name,
@@ -1111,7 +1111,7 @@ async function enqueueMentionReview(
     content: "eyes",
     sourceDeliveryId,
   });
-  if (reactionId !== null && triggerFollowupDrain) {
+  if (triggerFollowupDrain) {
     triggerQueueDrain("github-reaction");
   }
 }
