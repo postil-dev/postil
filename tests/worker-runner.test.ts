@@ -406,8 +406,16 @@ describe("drainQueueOnce", () => {
     );
     expect(launcher).toContain("process.setgid(targetGid)");
     expect(launcher).toContain("process.setuid(targetUid)");
+    expect(launcher).toContain("process.setgroups([targetGid])");
     expect(launcher).toContain("actualUid !== targetUid");
     expect(launcher).toContain("actualGid !== targetGid");
+    expect(launcher).toContain("supplementaryGroups.includes(0)");
+    expect(launcher).toContain(
+      "supplementaryGroups.some((group) => group !== targetGid)",
+    );
+    expect(launcher.indexOf("process.setgroups([targetGid])")).toBeLessThan(
+      launcher.indexOf("process.setgid(targetGid)"),
+    );
     expect(launcher.indexOf("process.setgid(targetGid)")).toBeLessThan(
       launcher.indexOf("process.setuid(targetUid)"),
     );

@@ -49,26 +49,34 @@ function dropPrivileges(targetUid: number, targetGid: number): void {
   if (
     typeof process.getuid !== "function" ||
     typeof process.getgid !== "function" ||
+    typeof process.getgroups !== "function" ||
     typeof process.setuid !== "function" ||
-    typeof process.setgid !== "function"
+    typeof process.setgid !== "function" ||
+    typeof process.setgroups !== "function"
   ) {
     throw new Error("managed process requires POSIX identity controls");
   }
 
   if (process.getuid() === 0) {
+    process.setgroups([targetGid]);
     process.setgid(targetGid);
     process.setuid(targetUid);
   }
 
   const actualUid = process.getuid();
   const actualGid = process.getgid();
+  const supplementaryGroups = process.getgroups();
   if (
     actualUid !== targetUid ||
     actualGid !== targetGid ||
     actualUid === 0 ||
-    actualGid === 0
+    actualGid === 0 ||
+    supplementaryGroups.includes(0) ||
+    supplementaryGroups.some((group) => group !== targetGid)
   ) {
-    throw new Error("managed process did not assume the application UID and GID");
+    throw new Error(
+      "managed process did not assume the application UID and group set",
+    );
   }
 }
 
