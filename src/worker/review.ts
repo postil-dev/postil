@@ -309,6 +309,39 @@ interface CliResult {
   timedOut: boolean;
 }
 
+const REQUIRED_HOSTED_PUBLICATION_FAILURE =
+  /required hosted (?:check )?publication failed/i;
+
+/**
+ * A strict hosted CLI can compute and emit a complete envelope before one of
+ * GitHub's publication calls fails. Preserve that result so the worker can
+ * account for the completed inference and hand the exact check identities to
+ * durable reconciliation. Other exit-2 results remain operational failures.
+ */
+export function ingestCompletedHostedReview(
+  result: Pick<CliResult, "exitCode" | "stdout" | "stderr">,
+  sensitiveValues: string[] = [],
+) {
+  if (result.exitCode === 0 || result.exitCode === 1) {
+    return ingestEnvelope(result.stdout);
+  }
+  if (
+    result.exitCode === 2 &&
+    REQUIRED_HOSTED_PUBLICATION_FAILURE.test(result.stderr)
+  ) {
+    try {
+      return ingestEnvelope(result.stdout);
+    } catch (error) {
+      throw new OperationalError(
+        `postil CLI publication failed without a valid envelope: ${redactSecrets(error)}`,
+      );
+    }
+  }
+  throw new OperationalError(
+    `postil CLI exited with code ${result.exitCode}: ${redactAndTruncate(result.stderr, 500, sensitiveValues)}`,
+  );
+}
+
 interface CliObservers {
   onStderrLine?: (line: string) => void;
   signal?: AbortSignal;
@@ -1122,16 +1155,15 @@ export async function runReviewJob(
         `review exceeded ${REVIEW_DEADLINE_MS / 60000} minute deadline`,
       );
     }
-    // Exit 0 = clean/below gate, 1 = gate-failing findings; both produce a
-    // valid envelope. 2 (or anything else) is an operational error.
-    if (result.exitCode !== 0 && result.exitCode !== 1) {
-      const stderr = redactAndTruncate(result.stderr, 500, sensitiveValues);
-      throw new OperationalError(
-        `postil CLI exited with code ${result.exitCode}: ${stderr}`,
-      );
-    }
-
-    const ingested = ingestEnvelope(result.stdout);
+    // Exit 0 = clean/below gate, 1 = gate-failing findings. Strict hosted
+    // publication can emit the completed envelope and then exit 2 when GitHub
+    // accepts only part of the result. Retain that envelope and let the exact
+    // check identities move to durable cleanup instead of rerunning inference.
+    const ingested = ingestCompletedHostedReview({
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }, sensitiveValues);
     for (const incident of classifyOperationalModelIncidents(
       ingested.envelope,
     )) {
@@ -1404,7 +1436,12 @@ export async function runReviewJob(
     // A preflight rejection becomes one durable failed review and one exact
     // terminal check pair. Retrying the review job would create duplicate
     // review/check identities for a condition that cannot change mid-job.
-    if (err instanceof TerminalReviewError) return;
+    if (
+      err instanceof TerminalReviewError ||
+      (err instanceof CheckRunPublicationError && failedRows.length > 0)
+    ) {
+      return;
+    }
     throw interruptedAfterPublication ? new OperationalError(message) : err;
   } finally {
     if (baselinePath)
@@ -1669,6 +1706,7 @@ export async function runCheckRunCleanupJob(
   payload: CheckRunCleanupJobPayload,
   timeoutMs = 10_000,
 ): Promise<void> {
+  validateCheckRunCleanupPayload(payload);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -1796,5 +1834,50 @@ export async function runCheckRunCleanupJob(
     }
   } finally {
     clearTimeout(timer);
+  }
+}
+
+export function validateCheckRunCleanupPayload(
+  payload: CheckRunCleanupJobPayload,
+): void {
+  const validId = (value: unknown): value is number | null =>
+    value === null ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+  if (
+    !Number.isSafeInteger(payload.installationId) ||
+    payload.installationId <= 0 ||
+    typeof payload.repoFullName !== "string" ||
+    !/^[^/\s]+\/[^/\s]+$/.test(payload.repoFullName) ||
+    !validId(payload.advisoryCheckRunId) ||
+    !validId(payload.gateCheckRunId) ||
+    typeof payload.message !== "string" ||
+    (payload.intent !== undefined &&
+      payload.intent !== "fail" &&
+      payload.intent !== "neutralize")
+  ) {
+    throw new PermanentJobError("check-run cleanup job payload is malformed");
+  }
+  for (const [mayExist, externalId] of [
+    [payload.advisoryCheckRunMayExist, payload.advisoryCheckExternalId],
+    [payload.gateCheckRunMayExist, payload.gateCheckExternalId],
+  ] as const) {
+    if (
+      mayExist === true &&
+      (typeof payload.headSha !== "string" ||
+        !payload.headSha ||
+        typeof externalId !== "string" ||
+        !externalId)
+    ) {
+      throw new PermanentJobError("check-run cleanup job payload is malformed");
+    }
+  }
+  if (
+    payload.publicationIncomplete === true &&
+    ((payload.advisoryCheckRunId != null &&
+      !payload.advisoryCheckExternalId) ||
+      (payload.gateCheckRunId != null && !payload.gateCheckExternalId) ||
+      !payload.headSha)
+  ) {
+    throw new PermanentJobError("check-run cleanup job payload is malformed");
   }
 }

@@ -82,7 +82,7 @@ describe("private repository worker defense in depth", () => {
     expect(runner).not.toContain("err instanceof PermanentJobError");
 
     const failureCatch = source.indexOf(
-      "if (err instanceof TerminalReviewError) return;",
+      "err instanceof TerminalReviewError ||",
       providerFailure,
     );
     expect(failureCatch).toBeGreaterThan(providerFailure);
