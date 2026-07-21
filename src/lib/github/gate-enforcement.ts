@@ -57,6 +57,7 @@ interface RequiredStatusCheck {
 
 interface BranchStatusCheck {
   context?: unknown;
+  app_id?: unknown;
 }
 
 interface ActiveRule {
@@ -70,11 +71,10 @@ type FetchLike = typeof fetch;
 
 /**
  * Read GitHub's effective default-branch rules with the App's existing
- * metadata permission. Active rulesets expose the required integration id.
- * GitHub guarantees context names, but not App identity, in classic branch
- * read responses. Extra checks can corroborate context presence only, so a
- * matching classic rule remains unknown rather than being guessed from
- * undocumented fields or check-run history.
+ * metadata permission. Active rulesets expose the required integration id;
+ * GitHub's REST OpenAPI schema exposes checks[].app_id for classic branch
+ * protection. Missing or malformed source identity remains unknown rather
+ * than being guessed from check-run history.
  */
 export async function fetchGateEnforcementObservation(
   token: string,
@@ -118,7 +118,7 @@ export async function fetchGateEnforcementObservation(
   let branchProtectionMatch: GateEnforcementSignalMatch = "none";
   let protectionError: string | null = null;
   if (branchResponse.ok) {
-    const branchEvidence = parseBranchEvidence(await branchResponse.json());
+    const branchEvidence = parseBranchEvidence(await branchResponse.json(), expectedAppId);
     protectionAvailable = branchEvidence.available;
     branchProtection = branchEvidence.branchProtection;
     requiredStatusChecksPresent = branchEvidence.requiredStatusChecksPresent;
@@ -206,7 +206,7 @@ export async function fetchGateEnforcementObservation(
   };
 }
 
-function parseBranchEvidence(value: unknown): {
+function parseBranchEvidence(value: unknown, expectedAppId: number): {
   available: boolean;
   branchProtection: BranchProtectionStatus;
   requiredStatusChecksPresent: boolean;
@@ -252,17 +252,19 @@ function parseBranchEvidence(value: unknown): {
   const checkContexts = Array.isArray(checks)
     ? checks.map((check) => check.context)
     : [];
-  const match = required.contexts.includes(GATE_ENFORCEMENT_CONTEXT) ||
-      checkContexts.includes(GATE_ENFORCEMENT_CONTEXT)
-    ? "unknown_identity"
-    : "none";
+  const matchingChecks = Array.isArray(checks)
+    ? checks.filter((check) => check.context === GATE_ENFORCEMENT_CONTEXT)
+    : [];
+  const match = matchingChecks.length > 0
+    ? classifySignalMatch(matchingChecks.map((check) => check.app_id), expectedAppId)
+    : required.contexts.includes(GATE_ENFORCEMENT_CONTEXT)
+      ? "unknown_identity"
+      : "none";
   return {
     available: true,
     branchProtection: "protected",
     requiredStatusChecksPresent: required.contexts.length > 0 || checkContexts.length > 0,
-    // app_id is documented for branch-protection writes, not reads. Only the
-    // active-rules endpoint's documented integration_id can prove source binding.
-    exactMatch: false,
+    exactMatch: match === "exact_app",
     match,
     error: null,
   };
@@ -332,7 +334,8 @@ function isActiveRequiredStatusCheck(value: unknown): value is RequiredStatusChe
 }
 
 function isBranchStatusCheck(value: unknown): value is BranchStatusCheck {
-  return isRecord(value) && typeof value.context === "string";
+  return isRecord(value) && typeof value.context === "string" &&
+    (value.app_id === undefined || value.app_id === null || Number.isInteger(value.app_id));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

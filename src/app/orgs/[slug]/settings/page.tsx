@@ -396,13 +396,9 @@ function GateEnforcementCoverage({
 }) {
   const enforcementCounts = repositories.reduce(
     (counts, repository) => {
-      const storedStatus = repository.gateEnforcementStatus === "required" &&
-          !repository.gateEvidence?.activeRules.exactMatch
-        ? "unknown"
-        : repository.gateEnforcementStatus;
       const status = deriveGateEnforcementPresentation(
         {
-          status: storedStatus,
+          status: repository.gateEnforcementStatus,
           checkedAt: repository.gateCheckedAt,
           lastError: repository.gateLastError,
         },
@@ -432,15 +428,9 @@ function GateEnforcementCoverage({
       </div>
       <div className="card mt-3 divide-y divide-stone/60">
         {repositories.map((repository) => {
-          // Older observations could claim classic branch protection exposed an App
-          // identity. GitHub's read contract does not. Only active ruleset evidence is proof.
-          const storedStatus = repository.gateEnforcementStatus === "required" &&
-              !repository.gateEvidence?.activeRules.exactMatch
-            ? "unknown"
-            : repository.gateEnforcementStatus;
           const presentation = deriveGateEnforcementPresentation(
             {
-              status: storedStatus,
+              status: repository.gateEnforcementStatus,
               checkedAt: repository.gateCheckedAt,
               lastError: repository.gateLastError,
             },
@@ -459,8 +449,12 @@ function GateEnforcementCoverage({
           const foreignSource =
             repository.gateEvidence?.branchProtection.match === "foreign_app" ||
             repository.gateEvidence?.activeRules.match === "foreign_app";
-          const detail = presentation.status === "required"
-            ? "exact App and context required by an active ruleset"
+          const detail = presentation.status === "required" &&
+              repository.gateEvidence?.branchProtection.exactMatch
+            ? "exact App and context required by classic branch protection"
+            : presentation.status === "required" &&
+                repository.gateEvidence?.activeRules.exactMatch
+              ? "exact App and context required by an active ruleset"
             : anySource
               ? "postil/gate accepts any source"
               : foreignSource
@@ -530,9 +524,8 @@ function GateEnforcementCoverage({
         })}
       </div>
       <p className="mt-3 text-xs text-charcoal/60">
-        Enforced means an active GitHub ruleset names <code>postil/gate</code> and binds it
-        to the Postil App. Classic branch protection and unreadable rules stay unverified.
-        See the{" "}
+        Enforced means GitHub names <code>postil/gate</code> and binds it to the Postil
+        App. Missing identities and unreadable rules stay unverified. See the{" "}
         <Link href="/docs/gate" className="text-rust hover:underline">gate guide</Link>.
       </p>
     </section>

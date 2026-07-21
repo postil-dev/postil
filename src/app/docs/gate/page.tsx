@@ -103,11 +103,10 @@ export default function GatePage() {
       </p>
       <p>
         Bind the required check to the <strong>Postil GitHub App</strong>, not
-        any source. An active ruleset records that source as an integration id,
-        which Postil verifies under <strong>Settings → Installation health</strong>.
-        Classic branch protection exposes the context name but not its App
-        identity under Postil&apos;s current App permissions, so that setup is shown
-        as <strong>unverified</strong> rather than enforced.
+        any source. Rulesets record that source as an integration id, and classic
+        branch protection records it as an App id. Postil verifies either exact
+        binding under <strong>Settings → Installation health</strong>. Missing or
+        unreadable source identity is shown as <strong>unverified</strong>.
       </p>
       <p>
         For merges covered by this rule, a PR with an <code>error</code>-severity

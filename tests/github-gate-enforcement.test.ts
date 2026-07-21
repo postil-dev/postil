@@ -48,7 +48,7 @@ describe("GitHub gate enforcement evidence", () => {
     expect(requests[1]?.endsWith("/protection")).toBe(false);
   });
 
-  test("keeps classic branch protection unverified because its summary omits App identity", async () => {
+  test("keeps classic branch protection unverified when its summary omits App identity", async () => {
     const observation = await fetchGateEnforcementObservation(
       "token",
       "acme/widget",
@@ -76,7 +76,7 @@ describe("GitHub gate enforcement evidence", () => {
     });
   });
 
-  test("counts checks-only classic summaries without trusting their App identity", async () => {
+  test("accepts an exact App binding from a checks-only classic summary", async () => {
     const observation = await fetchGateEnforcementObservation(
       "token",
       "acme/widget",
@@ -98,12 +98,43 @@ describe("GitHub gate enforcement evidence", () => {
       },
     );
 
-    expect(observation.status).toBe("unknown");
+    expect(observation.status).toBe("required");
     expect(observation.evidence.branchProtection).toMatchObject({
       requiredStatusChecksPresent: true,
-      exactMatch: false,
-      match: "unknown_identity",
+      exactMatch: true,
+      match: "exact_app",
     });
+  });
+
+  test("rejects any-source and foreign-App classic bindings", async () => {
+    for (const testCase of [
+      { appId: null, match: "any_source" },
+      { appId: -1, match: "any_source" },
+      { appId: APP_ID + 1, match: "foreign_app" },
+    ] as const) {
+      const observation = await fetchGateEnforcementObservation(
+        "token",
+        "acme/widget",
+        APP_ID,
+        {
+          fetchImpl: sequenceFetch([
+            json({ default_branch: "main" }),
+            json({
+              protected: true,
+              protection: {
+                required_status_checks: {
+                  contexts: ["postil/gate"],
+                  checks: [{ context: "postil/gate", app_id: testCase.appId }],
+                },
+              },
+            }),
+            json([]),
+          ]),
+        },
+      );
+      expect(observation.status).toBe("not_required");
+      expect(observation.evidence.branchProtection.match).toBe(testCase.match);
+    }
   });
 
   test("paginates active branch rules and accepts their exact integration", async () => {

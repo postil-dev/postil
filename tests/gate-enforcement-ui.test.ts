@@ -14,7 +14,8 @@ describe("gate enforcement settings UI", () => {
     expect(page).toContain("Installation health");
     expect(page).toContain("GitHub blocks a merge only when the");
     expect(page).toContain("exact App and context required by an active ruleset");
-    expect(page).toContain("Classic branch protection and unreadable rules stay unverified");
+    expect(page).toContain("exact App and context required by classic branch protection");
+    expect(page).toContain("Missing identities and unreadable rules stay unverified");
     expect(page).toContain("No changes are applied from this page");
     expect(page).toContain("Rollback:");
     expect(page).toContain("any source");
