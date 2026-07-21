@@ -344,8 +344,16 @@ acknowledged. Missing, expired, or invalid state enables delivery instead of
 suppressing an alert. Monitoring state and target details are visible only on
 the operator dashboard. Active incidents and retained resolved alerts use separate
 operator-only views. Alert messages identify the affected capability, state, first
-and last observation, bounded evidence, and the recommended operator action. The
-bearer-protected metrics endpoint exposes aggregate
+and last observation, bounded evidence, and the recommended operator action.
+The monitor uses a non-inference OpenRouter management credential to read
+account credits and paginated key metadata. Account-wide credit depletion and
+each review key's daily-cap depletion are separate incidents. The configured
+outage threshold defaults to the maximum hosted review reservation. The
+emergency production key has its own daily cap; its enabled state and zero
+lifetime, period, and BYOK usage are checked without retrieving or storing its
+value. These incidents use the same PostgreSQL history and private operator
+email path and never publish to GitHub. The bearer-protected metrics endpoint
+exposes aggregate
 monitor-heartbeat age and freshness gauges for an external dead-man alarm. The
 scheduled GitHub monitor is an independent check of public reachability,
 aggregate operational metrics, and operator email delivery without receiving

@@ -184,6 +184,20 @@ jobs:
           if [[ -n "${BREVO_API_KEY:-}" ]]; then
             staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
           fi
+          monitor_secret_names=(
+            OPENROUTER_MANAGEMENT_API_KEY
+            POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME
+            POSTIL_OPENROUTER_PRODUCTION_KEY_NAME
+            POSTIL_OPENROUTER_EMERGENCY_KEY_NAME
+          )
+          for name in "${monitor_secret_names[@]}"; do
+            value="${!name:-}"
+            if [[ -z "${value}" ]]; then
+              echo "::error::Infisical did not provide ${name}."
+              exit 1
+            fi
+            staged+="${name}=${value}"$'\n'
+          done
           paddle_secret_names=(
             PADDLE_API_KEY
             PADDLE_CLIENT_TOKEN
