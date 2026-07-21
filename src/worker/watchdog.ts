@@ -1,6 +1,7 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 
 import { getDb, getPool, schema } from "@/lib/db";
+import { scheduleCustomerNotificationEmailJobs } from "@/lib/customer-notification-email";
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
 import { checkRunExternalId } from "@/lib/github/checks";
 import { reviewDetailsUrl } from "@/lib/oauth";
@@ -119,9 +120,10 @@ export async function watchdogPass(
   // its retries here in the same statement. The conditional
   // `status = 'running'` guard means only this transition wins the row; the
   // runner's failJob would affect 0 rows and stay silent (no double-post).
-  // Reconciliation jobs ignore max_attempts here because a dead worker is not
-  // a handled attempt. Their runner rejects malformed or impossible durable
-  // state permanently and retries only recoverable delivery failures.
+  // Indefinite reconciliation jobs ignore max_attempts here because a dead
+  // worker is not a handled attempt. Check-run cleanup is deliberately absent:
+  // an ambiguous check-run can remain absent forever, so cleanup honors its
+  // declared retry budget in both the runner and watchdog recovery paths.
   const pool = getPool();
   await pool.query(
     `WITH updated AS (
@@ -131,7 +133,7 @@ export async function watchdogPass(
                   AND NOT payload ? 'recoveryReviewId'
                   AND jsonb_typeof(payload -> $2) = 'object'
                THEN 'done'::job_status
-             WHEN kind IN ('gate-state-sync', 'check-run-cleanup', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
+             WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
                   OR (kind = 'review' AND payload ? 'recoveryReviewId')
                   OR attempts < max_attempts
                THEN 'queued'::job_status
@@ -150,7 +152,14 @@ export async function watchdogPass(
                   AND NOT payload ? 'recoveryReviewId'
                   AND jsonb_typeof(payload -> $2) = 'object'
                THEN NULL
-             ELSE COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
+             ELSE COALESCE(last_error, '') ||
+               CASE
+                 WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
+                      OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                      OR attempts < max_attempts
+                   THEN ' [watchdog: requeued stuck job]'
+                 ELSE ' [watchdog: failed stuck job after retry budget exhausted]'
+               END
            END
        WHERE status = 'running' AND locked_at < $1
          AND NOT EXISTS (
@@ -190,6 +199,12 @@ export async function watchdogPass(
   const scheduledSettlements = await scheduleBillingSettlementJobs(db, now);
   if (scheduledSettlements > 0) {
     console.log(`[billing settlement] scheduled=${scheduledSettlements}`);
+  }
+  const customerEmail = await scheduleCustomerNotificationEmailJobs(db, now);
+  if (customerEmail.queued > 0 || customerEmail.suppressed > 0) {
+    console.log(
+      `[customer email] queued=${customerEmail.queued} suppressed=${customerEmail.suppressed} events=${customerEmail.events}`,
+    );
   }
   const prunedNotifications = await pruneExpiredCustomerNotifications(db, now);
   if (prunedNotifications > 0) {

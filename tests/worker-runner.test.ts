@@ -26,6 +26,11 @@ let githubReactionRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
 let billingSettlementRun: (() => Promise<void>) | undefined;
 let operatorAlertRun: (() => Promise<void>) | undefined;
+let customerNotificationEmailRun: (() => Promise<void>) | undefined;
+const customerNotificationEmailFailures: Array<{
+  payload: Record<string, unknown>;
+  terminal: boolean;
+}> = [];
 let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let webhookDeliveryLoadError: Error | undefined;
@@ -71,6 +76,20 @@ mock.module("@/lib/operator-alerts", () => ({
 mock.module("@/lib/paddle-billing", () => ({
   runBillingSettlement: async () => {
     await billingSettlementRun?.();
+  },
+}));
+
+mock.module("@/lib/customer-notification-email", () => ({
+  runCustomerNotificationEmailJob: async () => {
+    await customerNotificationEmailRun?.();
+  },
+  recordCustomerNotificationEmailFailure: async (
+    _db: unknown,
+    payload: Record<string, unknown>,
+    _error: string,
+    terminal: boolean,
+  ) => {
+    customerNotificationEmailFailures.push({ payload, terminal });
   },
 }));
 
@@ -259,6 +278,8 @@ beforeEach(() => {
   billingContactVerificationRun = async () => undefined;
   billingSettlementRun = async () => undefined;
   operatorAlertRun = async () => undefined;
+  customerNotificationEmailRun = async () => undefined;
+  customerNotificationEmailFailures.length = 0;
   gateStateSyncRun = async () => undefined;
   cleanupRun = async () => undefined;
   webhookDeliveryLoadError = undefined;
@@ -479,6 +500,7 @@ describe("drainQueueOnce", () => {
         "billing-contact-verification",
         "billing-settlement",
         "operator-alert",
+        "customer-notification-email",
         "gate-state-sync",
         "check-run-cleanup",
         "respond-failure-comment",
@@ -653,6 +675,64 @@ describe("drainQueueOnce", () => {
     expect(completed).toEqual([1]);
   });
 
+  test("dispatches durable customer notification email jobs", async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.BREVO_API_KEY = "test-api-key";
+    const job = reviewJob(1);
+    job.kind = "customer-notification-email";
+    job.payload = { deliveryId: "00000000-0000-4000-8000-000000000001" };
+    let called = false;
+    customerNotificationEmailRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("records terminal customer notification email delivery failure", async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    process.env.BREVO_API_KEY = "test-api-key";
+    const job = reviewJob(2);
+    job.kind = "customer-notification-email";
+    job.attempts = job.maxAttempts;
+    job.payload = { deliveryId: "00000000-0000-4000-8000-000000000002" };
+    customerNotificationEmailRun = async () => {
+      throw new Error("customer email transport failed");
+    };
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(failed).toEqual([
+      { id: 2, error: "customer email transport failed" },
+    ]);
+    expect(customerNotificationEmailFailures).toEqual([
+      { payload: job.payload, terminal: true },
+    ]);
+  });
+
+  test("records missing customer email configuration without escaping the worker loop", async () => {
+    delete process.env.POSTIL_PUBLIC_URL;
+    delete process.env.BREVO_API_KEY;
+    const job = reviewJob(3);
+    job.kind = "customer-notification-email";
+    job.attempts = job.maxAttempts;
+    job.payload = { deliveryId: "00000000-0000-4000-8000-000000000003" };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.id).toBe(3);
+    expect(failed[0]?.error).toContain(
+      "Missing required environment variable POSTIL_PUBLIC_URL",
+    );
+    expect(customerNotificationEmailFailures).toEqual([
+      { payload: job.payload, terminal: true },
+    ]);
+  });
+
   test("dispatches durable billing settlement jobs", async () => {
     const job = reviewJob(1);
     job.kind = "billing-settlement";
@@ -727,7 +807,7 @@ describe("drainQueueOnce", () => {
     expect(completed).toEqual([1]);
   });
 
-  test("retries terminal check reconciliation beyond its ordinary budget", async () => {
+  test("fails terminal check reconciliation when its retry budget is exhausted", async () => {
     const job = reviewJob(2);
     job.kind = "check-run-cleanup";
     job.attempts = job.maxAttempts;
@@ -739,15 +819,22 @@ describe("drainQueueOnce", () => {
       message: "GitHub 503",
     };
     cleanupRun = async () => {
-      throw new Error("check-run cleanup remains incomplete");
+      throw new Error(
+        "check-run cleanup remains incomplete: ambiguous gate check-run postil:run:gate is not visible on GitHub",
+      );
     };
 
     await runClaimedJob(job, "worker 0", "worker");
 
-    expect(retriedIndefinitely).toEqual([
-      { id: 2, error: "check-run cleanup remains incomplete" },
+    expect(retriedIndefinitely).toEqual([]);
+    expect(failed).toEqual([
+      {
+        id: 2,
+        error:
+          "check-run cleanup remains incomplete: ambiguous gate check-run postil:run:gate is not visible on GitHub",
+      },
     ]);
-    expect(failed).toEqual([]);
+    expect(operationalFailures).toEqual(["job_permanently_failed"]);
   });
 
   test("rejects malformed terminal cleanup instead of retrying forever", async () => {
