@@ -18,6 +18,7 @@ import {
   type LargeReviewRunIdentity,
   type StoredProviderResponse,
 } from "@/lib/large-review-resume";
+import { redactSecrets } from "@/lib/redact";
 
 const PLAN_SHA = "a".repeat(64);
 const HEAD_SHA = "b".repeat(40);
@@ -206,6 +207,15 @@ describe("durable large-review provider proxy", () => {
     expect(await response.text()).toBe(successfulBody);
     expect(providerCalls).toBe(1);
     expect(proxy.billingOutcome()).toBe("resumable");
+    expect(
+      redactSecrets(
+        `${proxy.apiBase} ${proxy.planEndpoint} ${proxy.planToken}`,
+        [...proxy.redactionValues],
+      ),
+    ).not.toContain(proxy.planToken);
+    expect(
+      redactSecrets(proxy.apiBase, [...proxy.redactionValues]),
+    ).not.toContain(new URL(proxy.apiBase).pathname.slice(1));
     proxy.close();
   });
 

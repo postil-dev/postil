@@ -1601,6 +1601,7 @@ export async function runReviewJob(
       llm.apiKey,
       llm.apiAuthHeader,
       llm.apiAuthValue,
+      ...activeLargeReviewProxy.redactionValues,
     ].filter((value): value is string => Boolean(value));
     reviewLog.setSensitiveValues(sensitiveValues);
     throwIfWorkerStopping(reviewSignal);

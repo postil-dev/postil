@@ -593,6 +593,7 @@ export interface LargeReviewProviderProxy {
   apiBase: string;
   planEndpoint: string;
   planToken: string;
+  redactionValues: readonly string[];
   close(): void;
   discardCompletedRun(): Promise<void>;
   billingOutcome(): "unused" | "resumable" | "ambiguous";
@@ -964,10 +965,13 @@ export async function startLargeReviewProviderProxy(input: {
     },
   });
 
+  const apiBase = `http://127.0.0.1:${server.port}/${token}`;
+  const planEndpoint = `${apiBase}/large-review-plan`;
   return {
-    apiBase: `http://127.0.0.1:${server.port}/${token}`,
-    planEndpoint: `http://127.0.0.1:${server.port}/${token}/large-review-plan`,
+    apiBase,
+    planEndpoint,
     planToken,
+    redactionValues: [token, planToken, apiBase, planEndpoint],
     close() {
       server.stop(true);
     },
