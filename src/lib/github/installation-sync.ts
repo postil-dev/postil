@@ -1,5 +1,10 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
+import {
+  enqueueCustomerNotification,
+  installationRestoredNotification,
+  installationSuspendedNotification,
+} from "@/lib/customer-notifications";
 import { getDb, schema } from "@/lib/db";
 import { hostedInferenceEnabled, optionalEnv, requireEnv } from "@/lib/env";
 import {
@@ -304,11 +309,23 @@ export async function upsertInstallation(
   installation: { id: number; suspended?: boolean },
   account: GithubAccount,
   initiatedByGithubId?: number,
+  sourceEventId?: string,
 ): Promise<number | undefined> {
   const db = getDb();
   const orgId = await findOrCreateOrg(account);
   const accountType = account.type ?? "User";
   const saved = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`github-installation:${installation.id}`}, 0))`,
+    );
+    const previous = (
+      await tx
+        .select({ suspended: schema.installations.suspended })
+        .from(schema.installations)
+        .where(eq(schema.installations.githubInstallationId, installation.id))
+        .limit(1)
+    )[0];
+    const suspended = installation.suspended ?? false;
     const upserted = await tx
       .insert(schema.installations)
       .values({
@@ -316,7 +333,7 @@ export async function upsertInstallation(
         orgId,
         accountLogin: account.login,
         accountType,
-        suspended: installation.suspended ?? false,
+        suspended,
       })
       .onConflictDoUpdate({
         target: schema.installations.githubInstallationId,
@@ -324,7 +341,7 @@ export async function upsertInstallation(
           orgId,
           accountLogin: account.login,
           accountType,
-          suspended: installation.suspended ?? false,
+          suspended,
         },
       })
       .returning({ id: schema.installations.id });
@@ -338,6 +355,25 @@ export async function upsertInstallation(
         .limit(1)
     )[0];
     if (!organization) throw new Error("installation organization is missing");
+
+    if (sourceEventId && previous && previous.suspended !== suspended) {
+      await enqueueCustomerNotification(
+        tx,
+        suspended
+          ? installationSuspendedNotification({
+              orgId,
+              orgSlug: organization.slug,
+              githubInstallationId: installation.id,
+              sourceEventId,
+            })
+          : installationRestoredNotification({
+              orgId,
+              orgSlug: organization.slug,
+              githubInstallationId: installation.id,
+              sourceEventId,
+            }),
+      );
+    }
 
     return { installationRowId, orgSlug: organization.slug };
   });
@@ -367,6 +403,50 @@ export async function upsertInstallation(
     });
   }
   return saved.installationRowId;
+}
+
+/** Suspend one known installation and record the customer transition atomically. */
+export async function suspendInstallation(
+  githubInstallationId: number,
+  sourceEventId: string,
+): Promise<boolean> {
+  const db = getDb();
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`github-installation:${githubInstallationId}`}, 0))`,
+    );
+    const existing = (
+      await tx
+        .select({
+          id: schema.installations.id,
+          orgId: schema.installations.orgId,
+          orgSlug: schema.organizations.slug,
+          suspended: schema.installations.suspended,
+        })
+        .from(schema.installations)
+        .innerJoin(
+          schema.organizations,
+          eq(schema.organizations.id, schema.installations.orgId),
+        )
+        .where(eq(schema.installations.githubInstallationId, githubInstallationId))
+        .limit(1)
+    )[0];
+    if (!existing || existing.orgId === null || existing.suspended) return false;
+    await tx
+      .update(schema.installations)
+      .set({ suspended: true })
+      .where(eq(schema.installations.id, existing.id));
+    await enqueueCustomerNotification(
+      tx,
+      installationSuspendedNotification({
+        orgId: existing.orgId,
+        orgSlug: existing.orgSlug,
+        githubInstallationId,
+        sourceEventId,
+      }),
+    );
+    return true;
+  });
 }
 
 function githubHeaders(bearer: string): Record<string, string> {

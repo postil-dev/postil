@@ -126,11 +126,12 @@ producer key, bounded copy, optional organization-local action, role visibility,
 and a 180-day expiry. Per-user receipts preserve the first read time. Members see
 shared trial and service state; administrators also see billing and account actions.
 The inbox separates unread events from retained past notifications, excludes expired
-events from reads and counts, and deletes them in bounded worker batches. Trial
-lifecycle and customer-actionable billing failures write
-the event in the same database transaction as the source state change. Operator
-incidents and model, provider, cost, or stack details remain outside the customer
-store. Transactional email delivery is independent of inbox read state.
+events from reads and counts, and deletes them in bounded worker batches. Trial,
+subscription, GitHub App access, and customer-visible service transitions write the
+event in the same database transaction as the source state change. Service events
+fan out to the organizations that exist when a global disruption opens or recovers.
+Operator incidents and model, provider, cost, or stack details remain outside the
+customer store. Transactional email delivery is independent of inbox read state.
 
 Private-repository product access is organization-scoped and fail-closed.
 `organization_entitlements` records hosted or BYOK subscription mode, lifecycle

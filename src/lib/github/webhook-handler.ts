@@ -4,6 +4,10 @@ import { after, NextResponse } from "next/server";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { readBoundedWebhookBody, verifyWebhookSignature } from "@/lib/crypto/webhook";
+import {
+  enqueueCustomerNotification,
+  installationRemovedNotification,
+} from "@/lib/customer-notifications";
 import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
@@ -25,6 +29,7 @@ import {
 import {
   type GithubAccount,
   type RepoSummary,
+  suspendInstallation,
   upsertInstallation,
   upsertRepository,
   upsertRepositories,
@@ -266,7 +271,7 @@ export async function dispatchWebhookDelivery(
   const triggerFollowupDrain = options.triggerFollowupDrain ?? true;
   switch (event) {
     case "installation":
-      await handleInstallation(payload as InstallationEventPayload);
+      await handleInstallation(payload as InstallationEventPayload, options.deliveryId);
       break;
     case "installation_repositories":
       await handleInstallationRepositories(payload as InstallationEventPayload);
@@ -318,7 +323,10 @@ export async function dispatchWebhookDelivery(
   }
 }
 
-async function handleInstallation(payload: InstallationEventPayload): Promise<void> {
+async function handleInstallation(
+  payload: InstallationEventPayload,
+  sourceEventId: string,
+): Promise<void> {
   const db = getDb();
   const installation = payload.installation;
   const account = installation?.account;
@@ -376,6 +384,15 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
               githubInstallationId: installation.id,
             }),
           );
+          await enqueueCustomerNotification(
+            tx,
+            installationRemovedNotification({
+              orgId: existing.orgId,
+              orgSlug: existing.orgSlug,
+              githubInstallationId: installation.id,
+              sourceEventId,
+            }),
+          );
         }
         await tx
           .delete(schema.installations)
@@ -383,16 +400,14 @@ async function handleInstallation(payload: InstallationEventPayload): Promise<vo
       });
       break;
     case "suspend":
-      await db
-        .update(schema.installations)
-        .set({ suspended: true })
-        .where(eq(schema.installations.githubInstallationId, installation.id));
+      await suspendInstallation(installation.id, sourceEventId);
       break;
     case "unsuspend":
       await upsertInstallation(
         { id: installation.id, suspended: false },
         account,
         payload.sender?.id,
+        sourceEventId,
       );
       break;
     default:

@@ -6,7 +6,10 @@ import { schema } from "@/lib/db";
 import {
   enqueueCustomerNotification,
   settlementFailedNotification,
+  subscriptionCanceledNotification,
+  subscriptionPausedNotification,
   subscriptionPastDueNotification,
+  subscriptionRestoredNotification,
 } from "@/lib/customer-notifications";
 import { optionalEnv, requireEnv } from "@/lib/env";
 import {
@@ -721,17 +724,35 @@ export async function applyPaddleWebhookEvent(
               .where(eq(schema.organizations.id, orgId))
               .limit(1)
           )[0];
-          if (alertEvent === "subscription_past_due" && organization) {
-            await enqueueCustomerNotification(
-              tx,
-              subscriptionPastDueNotification({
-                orgId,
-                orgSlug: organization.slug,
-                providerSubscriptionId: providerObjectId,
-                eventId: event.eventId,
-              }),
-              now,
-            );
+          if (organization) {
+            const notification = alertEvent === "subscription_started"
+              ? subscriptionRestoredNotification({
+                  orgId,
+                  orgSlug: organization.slug,
+                  providerSubscriptionId: providerObjectId,
+                  eventId: event.eventId,
+                })
+              : alertEvent === "subscription_past_due"
+                ? subscriptionPastDueNotification({
+                    orgId,
+                    orgSlug: organization.slug,
+                    providerSubscriptionId: providerObjectId,
+                    eventId: event.eventId,
+                  })
+                : alertEvent === "subscription_paused"
+                  ? subscriptionPausedNotification({
+                      orgId,
+                      orgSlug: organization.slug,
+                      providerSubscriptionId: providerObjectId,
+                      eventId: event.eventId,
+                    })
+                  : subscriptionCanceledNotification({
+                      orgId,
+                      orgSlug: organization.slug,
+                      providerSubscriptionId: providerObjectId,
+                      eventId: event.eventId,
+                    });
+            await enqueueCustomerNotification(tx, notification, now);
           }
           if (organization?.githubOwnerId) {
             await enqueueOperatorAlert(tx, {
