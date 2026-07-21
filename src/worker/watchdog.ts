@@ -115,22 +115,30 @@ export async function watchdogPass(
   // its retries here in the same statement. The conditional
   // `status = 'running'` guard means only this transition wins the row; the
   // runner's failJob would affect 0 rows and stay silent (no double-post).
-  // Reconciliation jobs ignore max_attempts here because a dead worker is not
-  // a handled attempt. Their runner rejects malformed or impossible durable
-  // state permanently and retries only recoverable delivery failures.
+  // Indefinite reconciliation jobs ignore max_attempts here because a dead
+  // worker is not a handled attempt. Check-run cleanup is deliberately absent:
+  // an ambiguous check-run can remain absent forever, so cleanup honors its
+  // declared retry budget in both the runner and watchdog recovery paths.
   const pool = getPool();
   await pool.query(
     `WITH updated AS (
        UPDATE jobs
        SET status = CASE
-             WHEN kind IN ('gate-state-sync', 'check-run-cleanup', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
+             WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
                   OR (kind = 'review' AND payload ? 'recoveryReviewId')
                   OR attempts < max_attempts
                THEN 'queued'::job_status
              ELSE 'failed'::job_status
            END,
            locked_at = NULL, locked_by = NULL, run_after = now(),
-           last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
+           last_error = COALESCE(last_error, '') ||
+             CASE
+               WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
+                    OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                    OR attempts < max_attempts
+                 THEN ' [watchdog: requeued stuck job]'
+               ELSE ' [watchdog: failed stuck job after retry budget exhausted]'
+             END
        WHERE status = 'running' AND locked_at < $1
          AND NOT EXISTS (
            SELECT 1

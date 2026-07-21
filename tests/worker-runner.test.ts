@@ -807,7 +807,7 @@ describe("drainQueueOnce", () => {
     expect(completed).toEqual([1]);
   });
 
-  test("retries terminal check reconciliation beyond its ordinary budget", async () => {
+  test("fails terminal check reconciliation when its retry budget is exhausted", async () => {
     const job = reviewJob(2);
     job.kind = "check-run-cleanup";
     job.attempts = job.maxAttempts;
@@ -824,10 +824,11 @@ describe("drainQueueOnce", () => {
 
     await runClaimedJob(job, "worker 0", "worker");
 
-    expect(retriedIndefinitely).toEqual([
+    expect(retriedIndefinitely).toEqual([]);
+    expect(failed).toEqual([
       { id: 2, error: "check-run cleanup remains incomplete" },
     ]);
-    expect(failed).toEqual([]);
+    expect(operationalFailures).toEqual(["job_permanently_failed"]);
   });
 
   test("rejects malformed terminal cleanup instead of retrying forever", async () => {

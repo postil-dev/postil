@@ -460,7 +460,9 @@ describe("review terminal check-runs", () => {
         gateCheckRunMayExist: true,
         message: "worker stopped",
       }),
-    ).rejects.toThrow("check-run cleanup remains incomplete");
+    ).rejects.toThrow(
+      "check-run cleanup remains incomplete: ambiguous gate check-run postil:run:gate is not visible on GitHub",
+    );
 
     expect(
       completions.map(({ id, conclusion }) => ({ id, conclusion })),
