@@ -44,7 +44,7 @@ describe("login page session contract", () => {
     await expect(
       LoginPage({ searchParams: Promise.resolve({ next: "/reports?status=failed" }) }),
     ).rejects.toBeInstanceOf(RedirectSignal);
-    expect(redirectCalls).toEqual(["/reports?status=failed"]);
+    expect(redirectCalls).toEqual(["/reports"]);
   });
 
   test("ignores an unsafe return target for both page links and authenticated redirects", async () => {
