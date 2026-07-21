@@ -134,11 +134,14 @@ describeDb("paused hosted review claims", () => {
       "SELECT payload FROM jobs WHERE kind = 'check-run-cleanup' ORDER BY id",
     );
     expect(cleanupJobs.rows).toHaveLength(2);
-    expect(cleanupJobs.rows.every(({ payload }) => payload.intent === "neutralize")).toBe(true);
+    expect(
+      cleanupJobs.rows.every(({ payload }) => payload.intent === "fail"),
+    ).toBe(true);
     expect(
       cleanupJobs.rows.every(
         ({ payload }) =>
-          payload.advisoryCheckRunMayExist === true && payload.gateCheckRunMayExist === true,
+          payload.advisoryCheckRunMayExist === true &&
+          payload.gateCheckRunMayExist === true,
       ),
     ).toBe(true);
 
@@ -158,7 +161,7 @@ describeDb("paused hosted review claims", () => {
     expect(darkCleanup.rows[0]?.payload).toMatchObject({
       advisoryCheckRunMayExist: false,
       gateCheckRunMayExist: false,
-      intent: "neutralize",
+      intent: "fail",
     });
 
     await pool!.query(
