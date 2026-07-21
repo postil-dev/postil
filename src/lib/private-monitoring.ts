@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
 import {
+  type CustomerServiceIncidentKey,
+  enqueueCustomerServiceTransitionForAllOrganizationsSql,
+} from "@/lib/customer-notifications";
+import {
   sendOperatorNotification,
   type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
@@ -1152,6 +1156,7 @@ async function reconcileCheck(
         notificationKey,
       ],
     );
+    await broadcastCustomerServiceTransition(client, check.key, "opened", now, now);
     return;
   }
 
@@ -1200,6 +1205,9 @@ async function reconcileCheck(
         notificationKind,
       ],
     );
+    if (reopened) {
+      await broadcastCustomerServiceTransition(client, check.key, "opened", now, now);
+    }
     return;
   }
 
@@ -1241,6 +1249,38 @@ async function reconcileCheck(
       now,
       notificationKey,
     ],
+  );
+  await broadcastCustomerServiceTransition(
+    client,
+    check.key,
+    "resolved",
+    row.first_detected_at,
+    now,
+  );
+}
+
+function customerServiceIncidentKey(key: string): CustomerServiceIncidentKey | null {
+  return key === "public-site" ||
+      key === "public-liveness" ||
+      key === "public-dependencies" ||
+      key === "worker-heartbeat"
+    ? key
+    : null;
+}
+
+async function broadcastCustomerServiceTransition(
+  client: PoolClient,
+  incidentKey: string,
+  transition: "opened" | "resolved",
+  firstObservedAt: Date,
+  now: Date,
+): Promise<void> {
+  const customerIncidentKey = customerServiceIncidentKey(incidentKey);
+  if (!customerIncidentKey) return;
+  await enqueueCustomerServiceTransitionForAllOrganizationsSql(
+    client,
+    { incidentKey: customerIncidentKey, transition, firstObservedAt },
+    now,
   );
 }
 

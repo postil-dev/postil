@@ -738,6 +738,64 @@ describeDb("webhook handler behaviour", () => {
     }, "trial-unsuspended")).status).toBe(200);
     expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(1);
     expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(1);
+
+    expect((await post("installation", {
+      action: "suspend",
+      installation: { id: 8181, account, suspended_at: "2026-07-18T01:00:00Z" },
+    }, "trial-suspended-again")).status).toBe(200);
+    expect((await post("installation", {
+      action: "suspend",
+      installation: { id: 8181, account, suspended_at: "2026-07-18T01:00:00Z" },
+    }, "trial-suspended-repeat")).status).toBe(200);
+    expect((await post("installation", {
+      action: "unsuspend",
+      installation: { id: 8181, account, suspended_at: null },
+      sender: { id: 7002, login: "installer", type: "User" },
+    }, "trial-restored-again")).status).toBe(200);
+    expect((await post("installation", {
+      action: "deleted",
+      installation: { id: 8181, account },
+    }, "trial-installation-removed")).status).toBe(200);
+
+    const notifications = await pool.query<{
+      idempotency_key: string;
+      category: string;
+      visibility: string;
+    }>(
+      `SELECT idempotency_key, category, visibility
+         FROM customer_notification_events
+        WHERE org_id = (SELECT id FROM organizations WHERE github_org_id = $1)
+          AND category = 'security'
+        ORDER BY id`,
+      [account.id],
+    );
+    expect(notifications.rows).toEqual([
+      {
+        idempotency_key: "installation-restored:8181:trial-unsuspended",
+        category: "security",
+        visibility: "admins",
+      },
+      {
+        idempotency_key: "installation-suspended:8181:trial-suspended-again",
+        category: "security",
+        visibility: "admins",
+      },
+      {
+        idempotency_key: "installation-restored:8181:trial-restored-again",
+        category: "security",
+        visibility: "admins",
+      },
+      {
+        idempotency_key: "installation-removed:8181:trial-installation-removed",
+        category: "security",
+        visibility: "admins",
+      },
+    ]);
+    expect((await post("installation", {
+      action: "suspend",
+      installation: { id: 8181, account, suspended_at: "2026-07-18T02:00:00Z" },
+    }, "trial-suspended-after-removal")).status).toBe(200);
+    expect((await pool.query("SELECT 1 FROM installations")).rowCount).toBe(0);
   });
 
   test("hosted pause starts a BYOK trial without consuming hosted inference", async () => {

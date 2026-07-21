@@ -193,6 +193,9 @@ describeDb("private monitoring durability", () => {
     await pool.query(
       "TRUNCATE private_monitor_incidents, private_monitor_runs, private_monitor_state, service_heartbeats RESTART IDENTITY",
     );
+    await pool.query(
+      "TRUNCATE customer_notification_events, organizations RESTART IDENTITY CASCADE",
+    );
   });
 
   afterAll(async () => {
@@ -402,6 +405,12 @@ describeDb("private monitoring durability", () => {
   });
 
   test("deduplicates incident delivery and records resolution", async () => {
+    const organization = await pool.query<{ id: string }>(
+      `INSERT INTO organizations (slug, name)
+       VALUES ('monitor-customer', 'Monitor Customer')
+       RETURNING id`,
+    );
+    const orgId = Number(organization.rows[0]!.id);
     expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
     const firstPass = await startPrivateMonitoringPass(pool, "monitor-a", BUCKET, NOW);
     expect(firstPass).not.toBeNull();
@@ -414,6 +423,10 @@ describeDb("private monitoring durability", () => {
       detail: "No worker heartbeat has been recorded.",
     };
     await finishPrivateMonitoringPass(pool, firstPass!, [failure], NOW);
+    expect((await customerServiceNotifications(pool, orgId)).map((row) => row.idempotency_key))
+      .toEqual([
+        "service-disruption:worker-heartbeat:2026-07-19T12:00:00.000Z",
+      ]);
 
     const [firstClaim, duplicateClaim] = await Promise.all([
       claimPrivateMonitoringNotifications(pool, "monitor-a", NOW),
@@ -466,6 +479,11 @@ describeDb("private monitoring durability", () => {
       [{ ...failure, healthy: true, detail: "12 seconds since the worker heartbeat; threshold 180." }],
       resolvedAt,
     );
+    expect((await customerServiceNotifications(pool, orgId)).map((row) => row.idempotency_key))
+      .toEqual([
+        "service-disruption:worker-heartbeat:2026-07-19T12:00:00.000Z",
+        "service-recovery:worker-heartbeat:2026-07-19T12:00:00.000Z",
+      ]);
     const resolution = await claimPrivateMonitoringNotifications(
       pool,
       "monitor-a",
@@ -510,6 +528,23 @@ describeDb("private monitoring durability", () => {
       reopenedAt,
     );
     await finishPrivateMonitoringPass(pool, thirdPass!, [failure], reopenedAt);
+    expect(await customerServiceNotifications(pool, orgId)).toEqual([
+      {
+        idempotency_key: "service-disruption:worker-heartbeat:2026-07-19T12:00:00.000Z",
+        category: "service",
+        visibility: "members",
+      },
+      {
+        idempotency_key: "service-recovery:worker-heartbeat:2026-07-19T12:00:00.000Z",
+        category: "service",
+        visibility: "members",
+      },
+      {
+        idempotency_key: "service-disruption:worker-heartbeat:2026-07-19T12:10:00.000Z",
+        category: "service",
+        visibility: "members",
+      },
+    ]);
     const reopened = await pool.query<{
       state: string;
       pending_notification_kind: string | null;
@@ -1057,3 +1092,23 @@ describeDb("private monitoring durability", () => {
     }
   });
 });
+
+async function customerServiceNotifications(pool: Pool, orgId: number): Promise<Array<{
+  idempotency_key: string;
+  category: string;
+  visibility: string;
+}>> {
+  return (
+    await pool.query<{
+      idempotency_key: string;
+      category: string;
+      visibility: string;
+    }>(
+      `SELECT idempotency_key, category, visibility
+         FROM customer_notification_events
+        WHERE org_id = $1
+        ORDER BY id`,
+      [orgId],
+    )
+  ).rows;
+}

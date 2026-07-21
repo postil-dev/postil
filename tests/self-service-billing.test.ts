@@ -194,6 +194,52 @@ describeDb("self-service billing", () => {
     expect(results.filter((result) => !result.duplicate)).toHaveLength(1);
   });
 
+  test("records customer-visible subscription transitions with provider event keys", async () => {
+    const transitions = [
+      { eventId: "evt_past_due", status: "past_due", second: 2 },
+      { eventId: "evt_paused", status: "paused", second: 3 },
+      { eventId: "evt_restored", status: "active", second: 4 },
+      { eventId: "evt_canceled", status: "canceled", second: 5 },
+      { eventId: "evt_reactivated", status: "active", second: 6 },
+    ] as const;
+    for (const transition of transitions) {
+      const event = subscriptionEvent({
+        eventId: transition.eventId,
+        eventType: transition.status === "canceled"
+          ? "subscription.canceled"
+          : "subscription.updated",
+        occurredAt: `2026-07-18T00:00:0${transition.second}Z`,
+        status: transition.status,
+        periodStartsAt: "2026-07-18T00:00:00Z",
+        periodEndsAt: "2026-08-18T00:00:00Z",
+        checkoutId,
+      });
+      expect(await applyPaddleWebhookEvent(db, event)).toMatchObject({
+        duplicate: false,
+        outcome: "applied",
+      });
+    }
+
+    const notifications = await pool.query<{
+      idempotency_key: string;
+      visibility: string;
+    }>(
+      `SELECT idempotency_key, visibility
+         FROM customer_notification_events
+        WHERE org_id = $1 AND category = 'billing'
+        ORDER BY id`,
+      [orgId],
+    );
+    expect(notifications.rows).toEqual([
+      { idempotency_key: "subscription-restored:sub_test:evt_created", visibility: "admins" },
+      { idempotency_key: "subscription-past-due:sub_test:evt_past_due", visibility: "admins" },
+      { idempotency_key: "subscription-paused:sub_test:evt_paused", visibility: "admins" },
+      { idempotency_key: "subscription-restored:sub_test:evt_restored", visibility: "admins" },
+      { idempotency_key: "subscription-canceled:sub_test:evt_canceled", visibility: "admins" },
+      { idempotency_key: "subscription-restored:sub_test:evt_reactivated", visibility: "admins" },
+    ]);
+  });
+
   test("records and alerts on an unmatched verified subscription event", async () => {
     const event = subscriptionEvent({
       eventId: "evt_unmatched",
@@ -507,7 +553,7 @@ function subscriptionEvent(input: {
   eventType:
     "subscription.created" | "subscription.updated" | "subscription.canceled";
   occurredAt: string;
-  status: "active" | "canceled";
+  status: "active" | "trialing" | "past_due" | "paused" | "canceled";
   periodStartsAt: string;
   periodEndsAt: string;
   checkoutId: string;
