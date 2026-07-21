@@ -1,6 +1,7 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 
 import { getDb, getPool, schema } from "@/lib/db";
+import { scheduleCustomerNotificationEmailJobs } from "@/lib/customer-notification-email";
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
 import { checkRunExternalId } from "@/lib/github/checks";
 import { reviewDetailsUrl } from "@/lib/oauth";
@@ -159,6 +160,12 @@ export async function watchdogPass(
   const scheduledSettlements = await scheduleBillingSettlementJobs(db, now);
   if (scheduledSettlements > 0) {
     console.log(`[billing settlement] scheduled=${scheduledSettlements}`);
+  }
+  const customerEmail = await scheduleCustomerNotificationEmailJobs(db, now);
+  if (customerEmail.queued > 0 || customerEmail.suppressed > 0) {
+    console.log(
+      `[customer email] queued=${customerEmail.queued} suppressed=${customerEmail.suppressed} events=${customerEmail.events}`,
+    );
   }
   const prunedNotifications = await pruneExpiredCustomerNotifications(db, now);
   if (prunedNotifications > 0) {

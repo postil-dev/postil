@@ -131,7 +131,16 @@ subscription, GitHub App access, and customer-visible service transitions write 
 event in the same database transaction as the source state change. Service events
 fan out to the organizations that exist when a global disruption opens or recovers.
 Operator incidents and model, provider, cost, or stack details remain outside the
-customer store. Transactional email delivery is independent of inbox read state.
+customer store. Customer email batches use only the verified billing contact and
+retain content-free delivery audit state. Security, payment-failure, trial-expiry,
+and service-incident events queue immediately and ignore optional summary choices.
+Restored, paused, and canceled subscription events enter a billing summary after a
+24-hour aggregation delay when billing summaries are enabled. Provider delivery uses
+one stable logical key per batch through the shared authenticated HTTPS API. An
+exclusive, stale-reclaimable sending state admits one worker per batch; inbox read
+state does not affect email delivery. Trial-start events are inbox-only. Service
+summary email has no producer because the service ledger contains incident
+transitions rather than periodic review-health events.
 
 Private-repository product access is organization-scoped and fail-closed.
 `organization_entitlements` records hosted or BYOK subscription mode, lifecycle
