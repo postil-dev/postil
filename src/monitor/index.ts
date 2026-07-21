@@ -28,6 +28,9 @@ import {
   configuredPrivateWorkerRehearsalSandbox,
   reconcilePrivateWorkerRehearsals,
 } from "@/lib/private-worker-rehearsal";
+import {
+  runOpenRouterCapMonitoringChecks,
+} from "@/lib/openrouter-cap-monitoring";
 import { redactSecrets } from "@/lib/redact";
 import {
   loadMonitorAlertState,
@@ -75,6 +78,15 @@ async function main(): Promise<void> {
     Math.ceil((workerHeartbeatIntervalMs * 3) / 1_000),
   );
   const publicOrigin = required("POSTIL_PUBLIC_URL");
+  const openRouterManagementKey = optionalEnv("OPENROUTER_MANAGEMENT_API_KEY");
+  const openRouterReviewOutageThresholdUsd = optionalEnv(
+    "POSTIL_OPENROUTER_REVIEW_OUTAGE_THRESHOLD_USD",
+  );
+  const openRouterKeyNames = {
+    development: optionalEnv("POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME"),
+    production: optionalEnv("POSTIL_OPENROUTER_PRODUCTION_KEY_NAME"),
+    emergency: optionalEnv("POSTIL_OPENROUTER_EMERGENCY_KEY_NAME"),
+  };
   const recipient = normalizeVerificationEmail(
     required("POSTIL_OPERATOR_ALERT_EMAIL"),
     "POSTIL_OPERATOR_ALERT_EMAIL must be a valid email address.",
@@ -118,16 +130,21 @@ async function main(): Promise<void> {
         continue;
       }
 
-      const [publicChecks, databaseChecks] = await Promise.all([
+      const [publicChecks, databaseChecks, openRouterChecks] = await Promise.all([
         runPublicMonitoringChecks(publicOrigin),
         runDatabaseMonitoringChecks(pool, {
           workerHeartbeatMaxAgeSeconds,
+        }),
+        runOpenRouterCapMonitoringChecks({
+          managementKey: openRouterManagementKey,
+          keyNames: openRouterKeyNames,
+          reviewOutageThresholdUsd: openRouterReviewOutageThresholdUsd,
         }),
       ]);
       await finishPrivateMonitoringPass(
         pool,
         pass,
-        [...publicChecks, ...databaseChecks],
+        [...publicChecks, ...databaseChecks, ...openRouterChecks],
         new Date(),
       );
       await recordServiceHeartbeat(pool, "monitor", owner, new Date());
@@ -155,7 +172,7 @@ async function main(): Promise<void> {
         }
       }
       console.log(
-        `[monitor] pass ${pass.runId} completed with ${publicChecks.length + databaseChecks.length} checks and ${notifications.length} notification claim(s)`,
+        `[monitor] pass ${pass.runId} completed with ${publicChecks.length + databaseChecks.length + openRouterChecks.length} checks and ${notifications.length} notification claim(s)`,
       );
     } catch (error) {
       const failure = recordMonitorPassFailure(

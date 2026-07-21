@@ -198,6 +198,7 @@ export function buildCliEnv(
     MODEL_API_KEY: "",
     POSTIL_API_KEY: "",
     OPENROUTER_API_KEY: "",
+    OPENROUTER_MANAGEMENT_API_KEY: "",
     LLM_API_KEY: "",
     OPENAI_API_KEY: "",
     ANTHROPIC_API_KEY: "",

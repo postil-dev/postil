@@ -33,6 +33,11 @@ const MANAGED_ENV = [
   "BREVO_API_KEY",
   "WORKER_HEARTBEAT_INTERVAL_MS",
   "POSTIL_MONITOR_ALERT_STATE_PATH",
+  "OPENROUTER_MANAGEMENT_API_KEY",
+  "POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME",
+  "POSTIL_OPENROUTER_PRODUCTION_KEY_NAME",
+  "POSTIL_OPENROUTER_EMERGENCY_KEY_NAME",
+  "POSTIL_OPENROUTER_REVIEW_OUTAGE_THRESHOLD_USD",
   "POSTIL_PADDLE_BILLING_ENABLED",
   "PADDLE_API_KEY",
   "PADDLE_WEBHOOK_SECRET",
@@ -148,6 +153,21 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).toContain(
       'flyctl secrets unset --stage "${runtime_override_secrets[@]}"',
     );
+    expect(deployWorkflow).toContain("monitor_secret_names=(");
+    expect(deployWorkflow).toContain("OPENROUTER_MANAGEMENT_API_KEY");
+    expect(deployWorkflow).toContain("POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME");
+    expect(deployWorkflow).toContain("POSTIL_OPENROUTER_PRODUCTION_KEY_NAME");
+    expect(deployWorkflow).toContain("POSTIL_OPENROUTER_EMERGENCY_KEY_NAME");
+    expect(deployWorkflow).toContain('if [[ -n "${value}" ]]; then');
+    expect(deployWorkflow).not.toContain(
+      'Infisical did not provide ${name}',
+    );
+    const monitorSecretBlock = deployWorkflow.slice(
+      deployWorkflow.indexOf("monitor_secret_names=("),
+      deployWorkflow.indexOf("paddle_secret_names=("),
+    );
+    expect(monitorSecretBlock).toContain('if [[ -n "${value}" ]]; then');
+    expect(monitorSecretBlock).not.toContain("exit 1");
     const failedSecretList = Bun.spawnSync(
       [
         "bash",
@@ -269,6 +289,10 @@ describe("web startup environment validation", () => {
     process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
     process.env.POSTIL_MONITOR_ALERT_STATE_PATH =
       "/var/lib/postil-monitor/alert-state.json";
+    process.env.OPENROUTER_MANAGEMENT_API_KEY = "management-test-key";
+    process.env.POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME = "development-test-key";
+    process.env.POSTIL_OPENROUTER_PRODUCTION_KEY_NAME = "production-test-key";
+    process.env.POSTIL_OPENROUTER_EMERGENCY_KEY_NAME = "emergency-test-key";
 
     expect(() => validateEnv("monitor")).not.toThrow();
     delete process.env.BREVO_API_KEY;
@@ -283,6 +307,12 @@ describe("web startup environment validation", () => {
     delete process.env.WORKER_HEARTBEAT_INTERVAL_MS;
     expect(() => validateEnv("monitor")).toThrow(/WORKER_HEARTBEAT_INTERVAL_MS/);
     process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
+    delete process.env.OPENROUTER_MANAGEMENT_API_KEY;
+    delete process.env.POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME;
+    delete process.env.POSTIL_OPENROUTER_PRODUCTION_KEY_NAME;
+    delete process.env.POSTIL_OPENROUTER_EMERGENCY_KEY_NAME;
+    expect(() => validateEnv("monitor")).not.toThrow();
+    process.env.OPENROUTER_MANAGEMENT_API_KEY = "management-test-key";
     delete process.env.POSTIL_MONITOR_ALERT_STATE_PATH;
     expect(() => validateEnv("monitor")).toThrow(
       /POSTIL_MONITOR_ALERT_STATE_PATH/,
