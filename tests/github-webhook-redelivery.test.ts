@@ -177,6 +177,32 @@ describeDb("GitHub App webhook redelivery", () => {
     });
   });
 
+  test("continues past incidental delivery metadata changes", async () => {
+    const delivery = {
+      id: 103,
+      guid: "pending-guid",
+      delivered_at: FAILED_AT,
+      redelivery: false,
+      status: null,
+      status_code: null,
+      event: "x".repeat(180),
+      action: null,
+    };
+    const result = await runWebhookRedeliveryPass(pool, {
+      now: NOW,
+      owner: "worker-a",
+      appJwt: "test-jwt",
+      maxRedeliveries: 0,
+      fetchImpl: fetchQueue([Response.json([delivery])], []),
+    });
+
+    expect(result).toMatchObject({ pages: 1, observed: 1, requested: 0 });
+    const receipt = await pool.query<{ event: string; outcome: string }>(
+      "SELECT event, outcome FROM github_webhook_delivery_recoveries WHERE delivery_id = '103'",
+    );
+    expect(receipt.rows[0]).toEqual({ event: "x".repeat(120), outcome: "pending" });
+  });
+
   test("links a later successful redelivery and does not retry the original failure", async () => {
     await pool.query(
       `INSERT INTO github_webhook_delivery_recoveries
