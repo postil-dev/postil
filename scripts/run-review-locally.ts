@@ -13,10 +13,11 @@
  * to that localhost server for both the worker and the spawned CLI, so this
  * harness never posts a real GitHub comment, check-run, or review.
  *
- * POSTIL_BIN, when set, must be an absolute executable Postil v0.6.0+ path. The
- * harness resolves and validates it before loading a model credential.
+ * POSTIL_BIN, when set, must be an absolute executable path for the hosted CLI
+ * release pinned by this repository. The harness resolves and validates it
+ * before loading a model credential.
  */
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -24,6 +25,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 
 import { Client } from "pg";
 
+import release from "@/data/public-cli-release.json";
 import { seal } from "@/lib/crypto/seal";
 import type { Envelope, Finding } from "@/lib/envelope";
 
@@ -31,6 +33,8 @@ const root = join(import.meta.dir, "..");
 const DEFAULT_INSTALLATION_ID = 990_001;
 const DEFAULT_REPOSITORY_ID = 990_002;
 const DEFAULT_PR_NUMBER = 1;
+const HOSTED_CLI_ARCHIVE = "postil-x86_64-unknown-linux-gnu.tar.gz";
+const MAX_HOSTED_CLI_ARCHIVE_BYTES = 32 * 1024 * 1024;
 
 type DiffTarget =
   | { kind: "staged" }
@@ -1073,34 +1077,112 @@ async function ensureLocalModelCredential(): Promise<void> {
   delete process.env.REVIEW_SCORER_MODEL;
 }
 
-async function ensureTrustedPostilExecutable(): Promise<void> {
-  const trustedHome = await resolveTrustedHome();
-  const explicit = process.env.POSTIL_BIN?.trim();
-  if (explicit && !isAbsolute(explicit)) {
-    throw new Error("POSTIL_BIN must be an absolute path for local review");
-  }
-  const candidates = explicit
-    ? [explicit]
-    : [
-        join(trustedHome, ".local", "bin", "postil"),
-        "/usr/local/bin/postil",
-        "/usr/bin/postil",
-      ];
-  let executable: string | undefined;
-  for (const candidate of candidates) {
-    try {
-      const resolved = await realpath(candidate);
-      const metadata = await stat(resolved);
-      if (metadata.isFile() && (metadata.mode & 0o111) !== 0) {
-        executable = resolved;
-        break;
-      }
-    } catch {
-      // Try the next trusted installation location.
+async function readBoundedResponse(response: Response): Promise<Uint8Array> {
+  if (!response.body) throw new Error("hosted CLI download returned no body");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_HOSTED_CLI_ARCHIVE_BYTES) {
+      await reader.cancel();
+      throw new Error("hosted CLI download exceeded the archive size limit");
     }
+    chunks.push(value);
   }
-  if (!executable) {
-    throw new Error("no executable Postil binary exists in a trusted installation location");
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+export async function downloadHostedPostilExecutable(
+  options: {
+    url?: string;
+    expectedSha256?: string;
+    temporaryRoot?: string;
+    attempts?: number;
+  } = {},
+): Promise<{
+  executable: string;
+  cleanup(): Promise<void>;
+}> {
+  const directory = await mkdtemp(
+    join(options.temporaryRoot ?? tmpdir(), "postil-local-review-cli-"),
+  );
+  try {
+    const url = options.url ??
+      `https://github.com/postil-dev/postil-cli/releases/download/` +
+        `${release.hostedCliRelease}/${HOSTED_CLI_ARCHIVE}`;
+    const attempts = options.attempts ?? 3;
+    let bytes: Uint8Array | undefined;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const response = await fetch(url, {
+          redirect: "follow",
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        bytes = await readBoundedResponse(response);
+        break;
+      } catch {
+        if (attempt === attempts) {
+          throw new Error(
+            `could not download the pinned hosted CLI ${release.hostedCliRelease}`,
+          );
+        }
+        await Bun.sleep(250 * 2 ** (attempt - 1));
+      }
+    }
+    if (!bytes) throw new Error("hosted CLI download returned no archive");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    if (checksum !== (options.expectedSha256 ?? release.hostedCliLinuxX86_64Sha256)) {
+      throw new Error("downloaded hosted CLI archive failed checksum verification");
+    }
+    const archive = join(directory, HOSTED_CLI_ARCHIVE);
+    await Bun.write(archive, bytes);
+    const extract = Bun.spawn(
+      ["/usr/bin/tar", "-xzf", archive, "-C", directory],
+      { stdout: "ignore", stderr: "pipe" },
+    );
+    const [stderr, exitCode] = await Promise.all([
+      new Response(extract.stderr).text(),
+      extract.exited,
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(
+        `could not extract the pinned hosted CLI archive` +
+          (stderr.trim() ? `: ${stderr.trim()}` : ""),
+      );
+    }
+    return {
+      executable: join(directory, "postil"),
+      cleanup: () => rm(directory, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function configurePostilExecutable(
+  executable: string,
+  trustedHome: string,
+): Promise<void> {
+  let resolved: string;
+  try {
+    resolved = await realpath(executable);
+    const metadata = await stat(resolved);
+    if (!metadata.isFile() || (metadata.mode & 0o111) === 0) throw new Error();
+  } catch {
+    throw new Error("Postil binary is unavailable or not executable");
   }
   const trustedPath = [
     "/usr/bin",
@@ -1109,9 +1191,9 @@ async function ensureTrustedPostilExecutable(): Promise<void> {
     join(trustedHome, ".volta", "bin"),
     join(trustedHome, ".bun", "bin"),
     join(trustedHome, ".local", "bin"),
-    dirname(executable),
+    dirname(resolved),
   ].join(":");
-  const child = Bun.spawn([executable, "--version"], {
+  const child = Bun.spawn([resolved, "--version"], {
     env: { HOME: trustedHome, PATH: trustedPath },
     stdout: "pipe",
     stderr: "pipe",
@@ -1121,21 +1203,48 @@ async function ensureTrustedPostilExecutable(): Promise<void> {
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  const versionMatch = /^postil (\d+)\.(\d+)\.(\d+)(?:\+[^\s]+)?$/m.exec(stdout.trim());
-  const supported =
-    exitCode === 0 &&
-    versionMatch !== null &&
-    (Number(versionMatch[1]) > 0 || Number(versionMatch[2]) >= 6);
-  if (!supported) {
+  const expectedVersion = `postil ${release.hostedCliRelease.slice(1)}`;
+  if (exitCode !== 0 || stdout.trim() !== expectedVersion) {
     throw new Error(
-      `local review requires Postil v0.6.0 or newer; ${executable} reported ${JSON.stringify((stdout || stderr).trim())}`,
+      `local review requires ${release.hostedCliRelease}; ` +
+        `${resolved} reported ${JSON.stringify((stdout || stderr).trim())}`,
     );
   }
-  const supportsBoundedReview =
-    Number(versionMatch[1]) > 0 || Number(versionMatch[2]) >= 7;
-  process.env.POSTIL_LOCAL_REVIEW_BOUNDED = supportsBoundedReview ? "1" : "0";
-  process.env.POSTIL_BIN = executable;
+  process.env.POSTIL_LOCAL_REVIEW_BOUNDED = "1";
+  process.env.POSTIL_BIN = resolved;
   process.env.PATH = trustedPath;
+}
+
+async function ensureTrustedPostilExecutable(): Promise<() => Promise<void>> {
+  const trustedHome = await resolveTrustedHome();
+  const explicit = process.env.POSTIL_BIN?.trim();
+  if (explicit && !isAbsolute(explicit)) {
+    throw new Error("POSTIL_BIN must be an absolute path for local review");
+  }
+  if (explicit) {
+    await configurePostilExecutable(explicit, trustedHome);
+    return async () => undefined;
+  }
+  for (const candidate of [
+    join(trustedHome, ".local", "bin", "postil"),
+    "/usr/local/bin/postil",
+    "/usr/bin/postil",
+  ]) {
+    try {
+      await configurePostilExecutable(candidate, trustedHome);
+      return async () => undefined;
+    } catch {
+      // Download the repository-authoritative release if no installed candidate matches.
+    }
+  }
+  const downloaded = await downloadHostedPostilExecutable();
+  try {
+    await configurePostilExecutable(downloaded.executable, trustedHome);
+    return downloaded.cleanup;
+  } catch (error) {
+    await downloaded.cleanup().catch(() => undefined);
+    throw error;
+  }
 }
 
 async function resolveTrustedHome(): Promise<string> {
@@ -1167,9 +1276,10 @@ function clearInjectedGitEnvironment(): void {
 }
 
 if (import.meta.main) {
+  let cleanupPostil: () => Promise<void> = async () => undefined;
   try {
     const options = parseArgs(process.argv.slice(2));
-    await ensureTrustedPostilExecutable();
+    cleanupPostil = await ensureTrustedPostilExecutable();
     clearInjectedGitEnvironment();
     await ensureLocalModelCredential();
     const result = await runHarness(options);
@@ -1180,5 +1290,7 @@ if (import.meta.main) {
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 2;
+  } finally {
+    await cleanupPostil().catch(() => undefined);
   }
 }

@@ -62,6 +62,20 @@ export const modelIncidentSchema = z.object({
   recovered: z.boolean(),
   recovery: z.enum(["repair", "fallback"]).optional(),
 });
+
+export const reviewCoverageSchema = z.object({
+  mode: z.enum(["exhaustive", "bounded"]),
+  selectedBatches: z.number().int().nonnegative(),
+  totalBatches: z.number().int().nonnegative(),
+  plannerFallback: z.boolean().optional().default(false),
+});
+
+export const reviewAdmissionSchema = z.object({
+  providerAttempts: z.number().int().nonnegative(),
+  serializedInputBytes: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  projectedCostMicros: z.number().int().nonnegative().max(1_000_000),
+});
 export const envelopeSchema = z
   .object({
     version: z.literal(1),
@@ -114,6 +128,10 @@ export const envelopeSchema = z
     // CLI >= v0.5.1 emits safe structured degradation signals. Raw provider
     // responses and generated content never enter this monitoring field.
     modelIncidents: z.array(modelIncidentSchema).optional(),
+    // CLI coverage and preflight fields are additive v1 records. Persisting
+    // them verbatim is required for durable large-review audit and recovery.
+    reviewCoverage: reviewCoverageSchema.optional(),
+    reviewAdmission: reviewAdmissionSchema.optional(),
     usageAccountingComplete: z.boolean().optional(),
     // Engine wall-clock duration in milliseconds (0 when emitted by older CLIs).
     durationMs: z.number().int().nonnegative().optional().default(0),
@@ -122,6 +140,16 @@ export const envelopeSchema = z
     sinceSha: z.string().nullable(),
   })
   .superRefine((envelope, ctx) => {
+    const coverage = envelope.reviewCoverage;
+    if (coverage) {
+      if (coverage.selectedBatches > coverage.totalBatches) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["reviewCoverage", "selectedBatches"],
+          message: "selected review batches cannot exceed total batches",
+        });
+      }
+    }
     if (envelope.modelUsage) {
       const totals = envelope.modelUsage.reduce(
         (sum, entry) => ({

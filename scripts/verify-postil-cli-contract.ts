@@ -156,12 +156,55 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
 
   let rejectCheckCompletion = false;
   let rejectFileFetch = false;
+  let registeredPlan = false;
+  const planToken = "contract-plan-token";
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    async fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === "/v1/chat/completions") return modelResponse();
+      if (path === "/plan") {
+        if (request.headers.get("authorization") !== `Bearer ${planToken}`) {
+          return new Response("unauthorized", { status: 401 });
+        }
+        const plan = (await request.json()) as Record<string, unknown>;
+        const keys = [
+          "version",
+          "planSha256",
+          "directHunks",
+          "semanticHunks",
+          "unreviewedHunks",
+          "selectedBatches",
+          "totalBatches",
+          "concurrency",
+          "requestTimeoutSeconds",
+          "reviewBudgetSeconds",
+        ];
+        const counters = keys.slice(2);
+        if (
+          Object.keys(plan).sort().join("\0") !== keys.sort().join("\0") ||
+          plan.version !== 1 ||
+          typeof plan.planSha256 !== "string" ||
+          !/^[0-9a-f]{64}$/.test(plan.planSha256) ||
+          counters.some(
+            (key) =>
+              !Number.isSafeInteger(plan[key]) || (plan[key] as number) < 0,
+          ) ||
+          (plan.selectedBatches as number) > (plan.totalBatches as number) ||
+          (plan.concurrency as number) < 1 ||
+          (plan.requestTimeoutSeconds as number) < 1 ||
+          (plan.reviewBudgetSeconds as number) < 1
+        ) {
+          return new Response("invalid registration", { status: 400 });
+        }
+        registeredPlan = true;
+        return new Response(null, { status: 204 });
+      }
+      if (path === "/v1/chat/completions") {
+        return registeredPlan
+          ? modelResponse()
+          : new Response("plan required", { status: 428 });
+      }
       if (path.endsWith("/pulls/1")) {
         return Response.json({
           title: "Contract smoke",
@@ -207,6 +250,8 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
       POSTIL_API_FORMAT: "openai-compatible",
       POSTIL_API_KEY: "contract-smoke",
       POSTIL_ALLOW_PRIVATE_API_BASE: "1",
+      POSTIL_LARGE_REVIEW_PLAN_ENDPOINT: `http://127.0.0.1:${server.port}/plan`,
+      POSTIL_LARGE_REVIEW_PLAN_TOKEN: planToken,
       POSTIL_DISABLE_SCORER: "1",
       REVIEW_MODEL: "openai/contract-smoke",
       REVIEW_MODEL_CASCADE: "openai/contract-smoke",
@@ -244,9 +289,13 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
       );
     }
     assertEnvelopeContract(envelope.stdout, BASE_SHA, HEAD_SHA);
+    if (!registeredPlan) {
+      throw new Error("postil review did not register its provider-request plan");
+    }
 
     rejectFileFetch = true;
     rejectCheckCompletion = true;
+    registeredPlan = false;
     const operationalFailure = await run(binary, hostedArgs, {
       cwd: workDir,
       env: {

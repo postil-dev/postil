@@ -13,11 +13,10 @@ import { lookup } from "node:dns/promises";
  * Beyond the syntactic/literal checks, the hostname is resolved and every
  * returned address is checked, so a public-looking hostname that resolves to
  * private/loopback/link-local/metadata space is rejected too. This is
- * best-effort against time-of-check/time-of-use DNS changes: the resolved
- * address here may differ from the one the CLI later connects to. The
- * authoritative control is the CLI-side pin — the worker always sets
- * POSTIL_API_BASE explicitly in the spawned env — this check is defense in
- * depth on top of it.
+ * best-effort against time-of-check/time-of-use DNS changes. The worker-owned
+ * provider proxy performs the authoritative resolution and pins the validated
+ * address for the upstream connection. This write-time check is defense in
+ * depth on top of that connection-time control.
  */
 
 /** Resolver seam so tests can stay hermetic; defaults to node:dns lookup. */
@@ -93,7 +92,7 @@ function isIpLiteral(hostname: string): boolean {
   return hostname.includes(":");
 }
 
-function isPrivateIpLiteral(hostname: string): boolean {
+export function isPrivateIpLiteral(hostname: string): boolean {
   // The WHATWG URL parser already normalizes IPv4 forms (hex, octal,
   // dword) to dotted-quad, so a strict dotted-quad check covers them.
   const v4 = parseIpv4(hostname);

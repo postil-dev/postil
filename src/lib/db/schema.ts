@@ -349,6 +349,128 @@ export const reviewPublicationReceipts = pgTable(
   ],
 );
 
+/**
+ * Immutable identity for a deterministic large-review run. The run key binds
+ * the CLI release, effective configuration, provider, repository, head, and
+ * deterministic coverage plan before any provider request is allowed through
+ * the worker-owned proxy.
+ */
+export const largeReviewRuns = pgTable(
+  "large_review_runs",
+  {
+    runKey: text("run_key").primaryKey(),
+    currentReviewId: bigint("current_review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    repositoryId: bigint("repository_id", { mode: "number" })
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    prNumber: integer("pr_number").notNull(),
+    cliVersion: text("cli_version").notNull(),
+    configurationSha256: text("configuration_sha256").notNull(),
+    providerIdentity: text("provider_identity").notNull(),
+    headSha: text("head_sha").notNull(),
+    baseSha: text("base_sha").notNull(),
+    retryLineage: text("retry_lineage").notNull(),
+    planSha256: text("plan_sha256").notNull(),
+    hostedReservationId: uuid("hosted_reservation_id"),
+    billingState: text("billing_state").notNull().default("active"),
+    conservativelySettledAt: timestamp("conservatively_settled_at", {
+      withTimezone: true,
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("large_review_runs_expiry_idx").on(t.expiresAt),
+    index("large_review_runs_resume_identity_idx").on(
+      t.repositoryId,
+      t.prNumber,
+      t.headSha,
+      t.baseSha,
+      t.cliVersion,
+      t.configurationSha256,
+      t.retryLineage,
+    ),
+    check("large_review_runs_key_check", sql`${t.runKey} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "large_review_runs_configuration_check",
+      sql`${t.configurationSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "large_review_runs_plan_check",
+      sql`${t.planSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "large_review_runs_identity_lengths_check",
+      sql`${t.prNumber} > 0 AND length(btrim(${t.cliVersion})) BETWEEN 1 AND 100 AND length(btrim(${t.providerIdentity})) BETWEEN 1 AND 2048 AND length(btrim(${t.headSha})) BETWEEN 1 AND 200 AND length(btrim(${t.baseSha})) BETWEEN 1 AND 200 AND length(btrim(${t.retryLineage})) BETWEEN 1 AND 200`,
+    ),
+    check(
+      "large_review_runs_billing_state_check",
+      sql`(${t.billingState} = 'active' AND ${t.conservativelySettledAt} IS NULL) OR (${t.billingState} = 'conservative' AND ${t.conservativelySettledAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/** Provider responses that can be replayed byte-for-byte after worker loss. */
+export const largeReviewAttempts = pgTable(
+  "large_review_attempts",
+  {
+    attemptKey: text("attempt_key").primaryKey(),
+    runKey: text("run_key")
+      .notNull()
+      .references(() => largeReviewRuns.runKey, { onDelete: "cascade" }),
+    requestSha256: text("request_sha256").notNull(),
+    batchIdentity: text("batch_identity").notNull(),
+    attempt: integer("attempt").notNull(),
+    model: text("model").notNull(),
+    state: text("state").notNull(),
+    leaseId: uuid("lease_id").notNull(),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+    responseStatus: integer("response_status"),
+    responseHeaders: jsonb("response_headers").$type<Record<string, string>>(),
+    responseBody: text("response_body"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("large_review_attempts_run_request_attempt_idx").on(
+      t.runKey,
+      t.requestSha256,
+      t.attempt,
+    ),
+    uniqueIndex("large_review_attempts_pending_request_idx")
+      .on(t.runKey, t.requestSha256)
+      .where(sql`${t.state} = 'pending'`),
+    index("large_review_attempts_run_idx").on(t.runKey),
+    check(
+      "large_review_attempts_key_check",
+      sql`${t.attemptKey} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "large_review_attempts_request_check",
+      sql`${t.requestSha256} ~ '^[0-9a-f]{64}$' AND ${t.batchIdentity} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check("large_review_attempts_attempt_check", sql`${t.attempt} BETWEEN 1 AND 10`),
+    check(
+      "large_review_attempts_state_check",
+      sql`${t.state} IN ('pending', 'completed')`,
+    ),
+    check(
+      "large_review_attempts_response_check",
+      sql`(${t.state} = 'pending' AND ${t.responseStatus} IS NULL AND ${t.responseHeaders} IS NULL AND ${t.responseBody} IS NULL AND ${t.completedAt} IS NULL) OR (${t.state} = 'completed' AND ${t.responseStatus} BETWEEN 200 AND 299 AND ${t.responseHeaders} IS NOT NULL AND ${t.responseBody} IS NOT NULL AND ${t.completedAt} IS NOT NULL)`,
+    ),
+    check(
+      "large_review_attempts_model_check",
+      sql`length(btrim(${t.model})) BETWEEN 1 AND 500`,
+    ),
+  ],
+);
+
 /** Per-finding publication identity and its normalized, observed lifecycle. */
 export const findingPublications = pgTable(
   "finding_publications",

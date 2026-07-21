@@ -261,6 +261,7 @@ async function reconcileHostedReviewSpendAfterCompletionRace(
     triggerSource: HostedReviewTriggerSource;
     usage: HostedReviewReceiptUsage[];
     usageAccountingComplete: boolean;
+    largeReviewRunKey?: string;
     now?: Date;
   },
 ): Promise<number> {
@@ -338,6 +339,23 @@ async function reconcileHostedReviewSpendAfterCompletionRace(
       });
     }
     if (usageRows.length > 0) await tx.insert(schema.usageEvents).values(usageRows);
+    if (input.largeReviewRunKey) {
+      const settledRun = await tx
+        .update(schema.largeReviewRuns)
+        .set({ billingState: "conservative", conservativelySettledAt: now })
+        .where(
+          and(
+            eq(schema.largeReviewRuns.runKey, input.largeReviewRunKey),
+            eq(schema.largeReviewRuns.currentReviewId, input.reviewId),
+            eq(schema.largeReviewRuns.hostedReservationId, input.reservationId),
+            eq(schema.largeReviewRuns.billingState, "active"),
+          ),
+        )
+        .returning({ runKey: schema.largeReviewRuns.runKey });
+      if (settledRun.length !== 1) {
+        throw new Error("large-review run does not own the conservative settlement");
+      }
+    }
     return actualMicros;
   });
 }
@@ -350,6 +368,7 @@ export async function reconcileConservativeHostedReviewSpend(
     repositoryId: number;
     reviewId: number;
     triggerSource: HostedReviewTriggerSource;
+    largeReviewRunKey?: string;
     now?: Date;
   },
 ): Promise<number> {

@@ -1,9 +1,23 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { pullFilesFromDiff } from "../scripts/run-review-locally";
+import release from "@/data/public-cli-release.json";
+import {
+  downloadHostedPostilExecutable,
+  pullFilesFromDiff,
+} from "../scripts/run-review-locally";
 
 import "./quiet-console";
 
@@ -41,6 +55,69 @@ deleted file mode 100644
     { filename: "added.ts", status: "added", changes: 1 },
     { filename: "removed.ts", status: "removed", changes: 1 },
   ]);
+});
+
+test("downloads, verifies, and cleans up the authoritative local-review CLI", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "postil-cli-download-test-"));
+  const payload = join(directory, "payload");
+  const downloads = join(directory, "downloads");
+  await mkdir(payload);
+  await mkdir(downloads);
+  await writeFile(
+    join(payload, "postil"),
+    `#!/bin/sh\nprintf 'postil ${release.hostedCliRelease.slice(1)}\\n'\n`,
+    { mode: 0o755 },
+  );
+  const archive = join(directory, "postil.tar.gz");
+  await run(["tar", "-czf", archive, "-C", payload, "postil"]);
+  const archiveBytes = await readFile(archive);
+  const checksum = createHash("sha256").update(archiveBytes).digest("hex");
+  let status = 200;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch() {
+      return status === 200
+        ? new Response(archiveBytes)
+        : new Response("unavailable", { status });
+    },
+  });
+  const url = `http://127.0.0.1:${server.port}/postil.tar.gz`;
+  try {
+    const downloaded = await downloadHostedPostilExecutable({
+      url,
+      expectedSha256: checksum,
+      temporaryRoot: downloads,
+      attempts: 1,
+    });
+    expect(await Bun.file(downloaded.executable).exists()).toBe(true);
+    await downloaded.cleanup();
+    expect(await readdir(downloads)).toEqual([]);
+
+    await expect(
+      downloadHostedPostilExecutable({
+        url,
+        expectedSha256: "0".repeat(64),
+        temporaryRoot: downloads,
+        attempts: 1,
+      }),
+    ).rejects.toThrow("checksum verification");
+    expect(await readdir(downloads)).toEqual([]);
+
+    status = 503;
+    await expect(
+      downloadHostedPostilExecutable({
+        url,
+        expectedSha256: checksum,
+        temporaryRoot: downloads,
+        attempts: 1,
+      }),
+    ).rejects.toThrow(`could not download the pinned hosted CLI`);
+    expect(await readdir(downloads)).toEqual([]);
+  } finally {
+    server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 const canRunHarness =
@@ -117,7 +194,9 @@ console.log("fixture-key");
       legacyCredentialPresent: true,
       legacyCredential: "fixture-key",
       openRouterCredentialPresent: false,
-      apiBase: "https://openrouter.ai/api/v1",
+      apiBase: expect.stringMatching(
+        /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f-]{36}$/,
+      ),
       apiFormat: "openai-compatible",
       model: "z-ai/glm-5.2",
       cascade: "z-ai/glm-5.2",
@@ -126,6 +205,11 @@ console.log("fixture-key");
       expectedGithubRepoId: "990002",
       endpointAuthPresent: false,
       configApiBaseAllowed: false,
+      privateApiBaseAllowed: true,
+      planEndpoint: expect.stringMatching(
+        /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f-]{36}\/large-review-plan$/,
+      ),
+      planTokenPresent: true,
     });
   }, 120_000);
 
@@ -141,17 +225,20 @@ console.log("fixture-key");
     expect(invocation.cascade).toBe("openai/gpt-5-mini");
   }, 120_000);
 
-  test("rejects a prerelease that can predate the hosted-mode contract", async () => {
-    const repo = await createFixtureRepo("prerelease-version");
-    const prereleasePostil = join(dir, "prerelease-postil");
-    await writeFile(prereleasePostil, "#!/bin/sh\nprintf 'postil 0.6.0-alpha.1\\n'\n", {
+  test("rejects an installed CLI older than the hosted release", async () => {
+    const repo = await createFixtureRepo("stale-version");
+    const stalePostil = join(dir, "stale-postil");
+    await writeFile(stalePostil, "#!/bin/sh\nprintf 'postil 0.7.6\\n'\n", {
       mode: 0o755,
     });
 
     const result = await runLocalReview(repo, "0", 2, {
-      env: { POSTIL_BIN: prereleasePostil },
+      env: { POSTIL_BIN: stalePostil },
     });
-    expect(result.stderr).toContain("requires Postil v0.6.0 or newer");
+    expect(result.stderr).toContain(
+      `requires ${release.hostedCliRelease}`,
+    );
+    expect(result.stderr).toContain('reported "postil 0.7.6"');
   }, 120_000);
 
   test("loads only the local OpenRouter credential when no key is exported", async () => {
@@ -188,15 +275,20 @@ console.log("fixture-key");
       legacyCredentialPresent: true,
       legacyCredential: "fixture-key",
       openRouterCredentialPresent: false,
-      apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
     });
+    expect(invocation.apiBase).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f-]{36}$/,
+    );
   }, 120_000);
 
   test("ignores a PATH-shadowed Postil binary before any credential is loaded", async () => {
     const shadowDirectory = join(dir, "shadow-path");
     const shadowMarker = join(dir, "shadow-command-key");
+    const trustedHome = join(dir, "trusted-home");
     await mkdir(shadowDirectory, { recursive: true });
+    await mkdir(join(trustedHome, ".local", "bin"), { recursive: true });
+    await symlink(fakePostil, join(trustedHome, ".local", "bin", "postil"));
     await writeFile(
       join(shadowDirectory, "postil"),
       `#!/bin/sh\nprintf '%s' "\${MODEL_API_KEY:-missing}" >'${shadowMarker}'\nexit 99\n`,
@@ -213,6 +305,7 @@ console.log("fixture-key");
     const result = await runLocalReview(join(dir, "missing-repository"), "0", 2, {
       includePostilBin: false,
       env: {
+        HOME: trustedHome,
         OPENROUTER_API_KEY: "must-not-reach-shadow",
         PATH: `${shadowDirectory}:${process.env.PATH ?? ""}`,
       },
@@ -523,7 +616,7 @@ function fakePostilSource(): string {
   return `#!/usr/bin/env bun
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
-  console.log("postil 0.7.0");
+  console.log("postil ${release.hostedCliRelease.slice(1)}");
   process.exit(0);
 }
 if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {
@@ -543,6 +636,9 @@ if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {
     expectedGithubRepoId: process.env.POSTIL_EXPECTED_GITHUB_REPO_ID,
     endpointAuthPresent: Boolean(process.env.POSTIL_ENDPOINT_AUTH_HEADER || process.env.POSTIL_ENDPOINT_AUTH_VALUE),
     configApiBaseAllowed: Boolean(process.env.POSTIL_ALLOW_CONFIG_API_BASE),
+    privateApiBaseAllowed: process.env.POSTIL_ALLOW_PRIVATE_API_BASE === "1",
+    planEndpoint: process.env.POSTIL_LARGE_REVIEW_PLAN_ENDPOINT,
+    planTokenPresent: Boolean(process.env.POSTIL_LARGE_REVIEW_PLAN_TOKEN),
   }));
 }
 const valueAfter = (flag) => {
