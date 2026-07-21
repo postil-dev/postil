@@ -232,6 +232,41 @@ describe("GET /api/auth/callback", () => {
       "postil_setup_installation=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
     );
   });
+
+  test("returns to a safe protected path after authorization", async () => {
+    githubResponses = [
+      jsonResponse({ access_token: "user-access-token" }),
+      githubUserResponse(),
+      jsonResponse([]),
+    ];
+
+    const response = await GET(
+      callbackRequest(
+        "postil_oauth_return_to=%2Forgs%2Fpostil-dev%2Fsettings%3Ftab%3Dbilling",
+      ),
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/orgs/postil-dev/settings?tab=billing",
+    );
+    expect(response.headers.get("set-cookie")).toContain(
+      "postil_oauth_return_to=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    );
+  });
+
+  test("ignores a forged external return cookie", async () => {
+    githubResponses = [
+      jsonResponse({ access_token: "user-access-token" }),
+      githubUserResponse(),
+      jsonResponse([]),
+    ];
+
+    const response = await GET(
+      callbackRequest("postil_oauth_return_to=https%3A%2F%2Fevil.example%2Faccount"),
+    );
+
+    expect(response.headers.get("location")).toBe("https://postil.dev/reports");
+  });
 });
 
 function callbackRequest(extraCookie?: string): Request {
