@@ -358,7 +358,7 @@ describeDb("watchdog stuck-review kill", () => {
       `INSERT INTO jobs
          (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
        VALUES (
-         'review', $1::jsonb, 'running', 3, 3,
+         'review', $1::jsonb, 'running', 3, 7,
          now() - interval '20 minutes', 'dead-review-worker'
        )`,
       [
@@ -377,16 +377,30 @@ describeDb("watchdog stuck-review kill", () => {
     const row = await pool.query<{
       status: string;
       attempts: number;
+      max_attempts: number;
       last_error: string | null;
       payload: Record<string, unknown>;
     }>(
-      "SELECT status, attempts, last_error, payload FROM jobs WHERE kind = 'review' AND status = 'queued'",
+      `SELECT status, attempts, max_attempts, last_error, payload
+         FROM jobs
+        WHERE kind = 'review' AND status = 'queued'`,
     );
     expect(row.rows[0]).toEqual({
       status: "queued",
       attempts: 0,
+      max_attempts: 7,
       last_error: null,
       payload: pending,
+    });
+    const failed = await pool.query<{ status: string; attempts: number; last_error: string }>(
+      `SELECT status, attempts, last_error
+         FROM jobs
+        WHERE kind = 'review' AND status = 'failed'`,
+    );
+    expect(failed.rows[0]).toEqual({
+      status: "failed",
+      attempts: 3,
+      last_error: "[watchdog: failed stuck job and retained newer review]",
     });
   });
 

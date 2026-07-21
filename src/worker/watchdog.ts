@@ -112,7 +112,8 @@ export async function watchdogPass(
   }
 
   // Requeue or fail jobs whose worker died mid-run. A retained review request
-  // replaces an abandoned pre-publication attempt with a fresh retry budget.
+  // replaces an abandoned pre-publication attempt with a fresh job that keeps
+  // the configured retry budget.
   // Publication recovery remains on its original payload and promotes the
   // retained request only after that external reconciliation completes.
   // The data-modifying CTE
@@ -132,26 +133,22 @@ export async function watchdogPass(
              WHEN kind = 'review'
                   AND NOT payload ? 'recoveryReviewId'
                   AND jsonb_typeof(payload -> $2) = 'object'
-               THEN 'done'::job_status
+               THEN 'failed'::job_status
              WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
                   OR (kind = 'review' AND payload ? 'recoveryReviewId')
                   OR attempts < max_attempts
                THEN 'queued'::job_status
              ELSE 'failed'::job_status
            END,
-           attempts = CASE
-             WHEN kind = 'review'
-                  AND NOT payload ? 'recoveryReviewId'
-                  AND jsonb_typeof(payload -> $2) = 'object'
-               THEN 0
-             ELSE attempts
-           END,
            locked_at = NULL, locked_by = NULL, run_after = now(),
            last_error = CASE
              WHEN kind = 'review'
                   AND NOT payload ? 'recoveryReviewId'
                   AND jsonb_typeof(payload -> $2) = 'object'
-               THEN NULL
+               THEN concat_ws(
+                 ' ', NULLIF(last_error, ''),
+                 '[watchdog: failed stuck job and retained newer review]'
+               )
              ELSE COALESCE(last_error, '') ||
                CASE
                  WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
@@ -168,16 +165,16 @@ export async function watchdogPass(
             WHERE rehearsal.job_id = jobs.id
               AND rehearsal.state = 'awaiting_replacement'
          )
-       RETURNING id, kind, status, payload
+       RETURNING id, kind, status, payload, max_attempts
      )
      INSERT INTO jobs (kind, payload, max_attempts)
      SELECT
        'review',
        payload -> $2,
-       3
+       max_attempts
      FROM updated
      WHERE kind = 'review'
-       AND status = 'done'
+       AND status = 'failed'
        AND jsonb_typeof(payload -> $2) = 'object'
      UNION ALL
      SELECT

@@ -618,6 +618,7 @@ describeDb("postgres job queue", () => {
     };
     const id = await enqueueReviewJobOnce(pool, initial);
     if (id === null) throw new Error("initial review job was not retained");
+    await pool.query("UPDATE jobs SET max_attempts = 7 WHERE id = $1", [id]);
     const running = await claimJob(pool, "failing-worker");
     await enqueueReviewJobOnce(pool, {
       ...initial,
@@ -638,28 +639,89 @@ describeDb("postgres job queue", () => {
     const row = await pool.query<{
       status: string;
       attempts: number;
+      max_attempts: number;
       last_error: string | null;
       payload: Record<string, unknown>;
     }>(
-      "SELECT status, attempts, last_error, payload FROM jobs WHERE kind = 'review' AND status = 'queued'",
+      `SELECT status, attempts, max_attempts, last_error, payload
+         FROM jobs
+        WHERE kind = 'review' AND status = 'queued'`,
     );
     expect(row.rows[0]).toMatchObject({
       status: "queued",
       attempts: 0,
+      max_attempts: 7,
       last_error: null,
       payload: { forceFullReview: true, sourceDeliveryId: "edited" },
+    });
+    const failed = await pool.query<{ status: string; last_error: string | null }>(
+      "SELECT status, last_error FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(failed.rows[0]).toEqual({
+      status: "failed",
+      last_error: "permanent failure",
     });
     expect(
       await pool.query("SELECT 1 FROM jobs WHERE kind = 'respond-failure-comment'"),
     ).toHaveProperty("rowCount", 0);
   });
 
+  test("a transient failure records the old attempt before promoting retained intent", async () => {
+    const initial = {
+      installationId: 1,
+      repoFullName: "octo/transient-upgrade",
+      prNumber: 45,
+      headSha: "e".repeat(40),
+      baseSha: "base",
+    };
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("initial review job was not retained");
+    const running = await claimJob(pool, "transient-worker");
+    await enqueueReviewJobOnce(pool, {
+      ...initial,
+      forceFullReview: true,
+      sourceDeliveryId: "requested",
+    });
+
+    expect(await failJob(pool, running!, "provider unavailable")).toBe("coalesced");
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      attempts: number;
+      max_attempts: number;
+      last_error: string | null;
+    }>(
+      `SELECT id, status, attempts, max_attempts, last_error
+         FROM jobs
+        WHERE kind = 'review'
+        ORDER BY id`,
+    );
+    expect(rows.rows).toEqual([
+      {
+        id: String(id),
+        status: "failed",
+        attempts: 1,
+        max_attempts: 3,
+        last_error: "provider unavailable",
+      },
+      {
+        id: expect.any(String),
+        status: "queued",
+        attempts: 0,
+        max_attempts: 3,
+        last_error: null,
+      },
+    ]);
+    expect(rows.rows[1]?.id).not.toBe(String(id));
+  });
+
   test("a queued base retarget creates a fresh immutable publication identity", async () => {
     const initial = {
       installationId: 1,
       repoFullName: "octo/base-retarget",
-      prNumber: 45,
-      headSha: "e".repeat(40),
+      prNumber: 46,
+      headSha: "f".repeat(40),
       baseSha: "old-base",
     };
     const initialId = await enqueueReviewJobOnce(pool, initial);

@@ -669,10 +669,10 @@ export async function enqueueReviewJobOnce(
               SET status = 'done', locked_at = NULL, locked_by = NULL,
                   last_error = 'superseded by newer same-head review metadata'
             WHERE id = $1 AND status = 'queued'
-          RETURNING id
+          RETURNING id, max_attempts
          )
          INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-         SELECT 'review', $2, 'queued', now(), 3 FROM retired
+         SELECT 'review', $2, 'queued', now(), max_attempts FROM retired
          RETURNING id`,
         [active.id, JSON.stringify(merged)],
       );
@@ -878,10 +878,10 @@ export async function completeJob(
           SET status = 'done', locked_at = NULL, locked_by = NULL,
               last_error = NULL
         WHERE id = $1 AND status = 'running' AND locked_by = $2
-      RETURNING kind, payload -> $3 AS pending
+      RETURNING kind, payload -> $3 AS pending, max_attempts
      ), inserted AS (
        INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-       SELECT 'review', pending, 'queued', now(), 3
+       SELECT 'review', pending, 'queued', now(), max_attempts
          FROM transitioned
         WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
        RETURNING id
@@ -945,20 +945,16 @@ export async function requeueJobsOwnedBy(
                 ELSE GREATEST(attempts - 1, 0)
               END,
               locked_at = NULL, locked_by = NULL,
-              last_error = CASE
-                WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
-                  THEN NULL
-                ELSE $2
-              END,
+              last_error = $2,
               run_after = now()
         WHERE status = 'running'
           AND left(locked_by, length($1)) = $1
           AND kind = ANY($3::text[])
           AND id = ANY($4::bigint[])
-      RETURNING kind, payload -> $5 AS pending
+      RETURNING kind, payload -> $5 AS pending, max_attempts
      ), inserted AS (
        INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-       SELECT 'review', pending, 'queued', now(), 3
+       SELECT 'review', pending, 'queued', now(), max_attempts
          FROM transitioned
         WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
        RETURNING id
@@ -1023,25 +1019,21 @@ export async function failJob(
          UPDATE jobs
             SET status = CASE
                   WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
-                    THEN 'done'::job_status
+                    THEN 'failed'::job_status
                   ELSE 'queued'::job_status
                 END,
                 locked_at = NULL, locked_by = NULL,
-                last_error = CASE
-                  WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
-                    THEN NULL
-                  ELSE $2
-                END,
+                last_error = $2,
                 run_after = CASE
                   WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
                     THEN now()
                   ELSE now() + ($3 || ' milliseconds')::interval
                 END
           WHERE id = $1 AND status = 'running' AND locked_by = $4
-        RETURNING status, kind, payload -> $5 AS pending
+        RETURNING status, kind, payload -> $5 AS pending, max_attempts
        ), inserted AS (
          INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-         SELECT 'review', pending, 'queued', now(), 3
+         SELECT 'review', pending, 'queued', now(), max_attempts
            FROM transitioned
           WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
          RETURNING id
@@ -1064,18 +1056,14 @@ export async function failJob(
     ? await pool.query<{ outcome: "coalesced" | "failed" | "lost" }>(
         `WITH transitioned AS (
            UPDATE jobs
-              SET status = CASE
-                    WHEN kind = 'review' AND jsonb_typeof(payload -> $4) = 'object'
-                      THEN 'done'::job_status
-                    ELSE 'failed'::job_status
-                  END,
+              SET status = 'failed',
                   locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
             WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING status, kind, payload -> $4 AS pending
+          RETURNING status, kind, payload -> $4 AS pending, max_attempts
          ), inserted_review AS (
            INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-           SELECT 'review', pending, 'queued', now(), 3
+           SELECT 'review', pending, 'queued', now(), max_attempts
              FROM transitioned
             WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
            RETURNING id
@@ -1084,6 +1072,7 @@ export async function failJob(
          SELECT $5, $6::jsonb, $7
            FROM transitioned
           WHERE status = 'failed'
+            AND NOT (kind = 'review' AND jsonb_typeof(pending) = 'object')
          RETURNING id
          )
          SELECT CASE
@@ -1104,18 +1093,14 @@ export async function failJob(
     : await pool.query<{ outcome: "coalesced" | "failed" | "lost" }>(
         `WITH transitioned AS (
            UPDATE jobs
-              SET status = CASE
-                    WHEN kind = 'review' AND jsonb_typeof(payload -> $4) = 'object'
-                      THEN 'done'::job_status
-                    ELSE 'failed'::job_status
-                  END,
+              SET status = 'failed',
                   locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
             WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING status, kind, payload -> $4 AS pending
+          RETURNING status, kind, payload -> $4 AS pending, max_attempts
          ), inserted AS (
            INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-           SELECT 'review', pending, 'queued', now(), 3
+           SELECT 'review', pending, 'queued', now(), max_attempts
              FROM transitioned
             WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
            RETURNING id
