@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import { checkRunExternalId } from "@/lib/github/checks";
+import { reviewDetailsUrl } from "@/lib/oauth";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 import type {
   ReviewTriggerContext,
@@ -30,6 +31,7 @@ export async function claimPausedHostedReview(
   publication: {
     installationId: number;
     repoFullName: string;
+    orgSlug?: string | null;
     checkRunsMayExist?: boolean;
   },
   finishedAt = new Date(),
@@ -95,6 +97,7 @@ export async function claimPausedHostedReview(
           advisoryCheckRunMayExist: review.advisoryCheckRunId === null,
           gateCheckRunMayExist: review.gateCheckRunId === null,
           message: HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+          detailsUrl: reviewDetailsUrl(review.publicId, publication.orgSlug),
           intent: "neutralize",
         },
         maxAttempts: 5,
@@ -113,6 +116,7 @@ export async function claimPausedHostedReview(
     if (!review) throw new Error("paused review insert returned no row");
     const advisoryCheckExternalId = checkRunExternalId(review.publicId, "review");
     const gateCheckExternalId = checkRunExternalId(review.publicId, "gate");
+    const detailsUrl = reviewDetailsUrl(review.publicId, publication.orgSlug);
     await tx.insert(schema.jobs).values({
       kind: "check-run-cleanup",
       payload: {
@@ -126,6 +130,7 @@ export async function claimPausedHostedReview(
         advisoryCheckRunMayExist: publication.checkRunsMayExist ?? true,
         gateCheckRunMayExist: publication.checkRunsMayExist ?? true,
         message: HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+        detailsUrl,
         intent: "fail",
       },
       runAfter: new Date(finishedAt.getTime() + 30_000),

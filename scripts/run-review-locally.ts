@@ -58,6 +58,7 @@ interface CheckCreated {
   id: number;
   name: string;
   headSha: string;
+  detailsUrl: string | null;
   body: unknown;
 }
 
@@ -68,6 +69,7 @@ interface CheckCompleted {
   title: string;
   summary: string;
   annotations: number;
+  detailsUrl: string | null;
   body: unknown;
 }
 
@@ -75,6 +77,7 @@ interface LocalCheckRunState {
   id: number;
   name: string;
   external_id: string | null;
+  details_url: string | null;
   head_sha: string;
   status: "in_progress" | "completed";
   conclusion: CheckConclusion | null;
@@ -232,6 +235,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     process.env.DATABASE_URL = database.databaseUrl;
     process.env.POSTIL_CACHE_DIR = cacheDir;
     process.env.GITHUB_API_URL = github.origin;
+    process.env.POSTIL_PUBLIC_URL = github.origin;
     process.env.GITHUB_APP_ID = "1";
     process.env.GITHUB_APP_PRIVATE_KEY = privateKey;
     process.env.POSTIL_SEALING_KEY = sealingKey.toString("hex");
@@ -354,7 +358,10 @@ export function formatRunSummary(result: RunResult): string {
     lines.push("  none");
   } else {
     for (const event of created) {
-      lines.push(`  #${event.id} ${event.name} head=${event.headSha}`);
+      lines.push(
+        `  #${event.id} ${event.name} head=${event.headSha}` +
+          (event.detailsUrl ? ` details=${event.detailsUrl}` : ""),
+      );
     }
   }
 
@@ -368,6 +375,7 @@ export function formatRunSummary(result: RunResult): string {
   } else {
     for (const event of completed) {
       lines.push(`  #${event.id} ${event.conclusion}: ${event.title}`);
+      if (event.detailsUrl) lines.push(`    details=${event.detailsUrl}`);
       for (const line of firstLines(event.summary, 3)) lines.push(`    ${line}`);
       if (event.annotations > 0) lines.push(`    annotations=${event.annotations}`);
     }
@@ -503,16 +511,25 @@ function createLocalGitHubServer(input: {
         const name = readString(body, "name", "unknown");
         const headSha = readString(body, "head_sha", input.headSha);
         const externalId = readString(body, "external_id", "") || null;
+        const detailsUrl = readString(body, "details_url", "") || null;
         checkRuns.set(id, {
           id,
           name,
           external_id: externalId,
+          details_url: detailsUrl,
           head_sha: headSha,
           status: "in_progress",
           conclusion: null,
           output: null,
         });
-        events.push({ type: "check-created", id, name, headSha, body });
+        events.push({
+          type: "check-created",
+          id,
+          name,
+          headSha,
+          detailsUrl,
+          body,
+        });
         console.log(`[local github] would create check-run #${id} ${name} on ${headSha}`);
         return json({ id });
       }
@@ -563,6 +580,12 @@ function createLocalGitHubServer(input: {
         checkRun.conclusion = conclusion;
         const title = readString(output, "title", "No title");
         const summary = readString(output, "summary", "");
+        const detailsUrl = readString(
+          body,
+          "details_url",
+          checkRun.details_url ?? "",
+        ) || null;
+        checkRun.details_url = detailsUrl;
         checkRun.output = { title, summary };
         const annotations = Array.isArray(output.annotations) ? output.annotations.length : 0;
         events.push({
@@ -572,6 +595,7 @@ function createLocalGitHubServer(input: {
           title,
           summary,
           annotations,
+          detailsUrl,
           body,
         });
         console.log(`[local github] would complete check-run #${id} as ${conclusion}: ${title}`);

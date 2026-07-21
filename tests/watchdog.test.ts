@@ -16,6 +16,7 @@ import { Pool } from "pg";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+const ORIGINAL_PUBLIC_URL = process.env.POSTIL_PUBLIC_URL;
 
 let tokenCalls = 0;
 let failCheckRunsCalls = 0;
@@ -71,6 +72,7 @@ describeDb("watchdog stuck-review kill", () => {
   });
 
   beforeEach(async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
     tokenCalls = 0;
     failCheckRunsCalls = 0;
     await pool.query(
@@ -83,6 +85,8 @@ describeDb("watchdog stuck-review kill", () => {
 
   afterAll(async () => {
     await pool?.end();
+    if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
+    else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
   });
 
   async function seedRepo(): Promise<number> {
@@ -143,6 +147,9 @@ describeDb("watchdog stuck-review kill", () => {
       repoFullName: "octo/repo",
       headSha: "head",
       advisoryCheckRunMayExist: true,
+      detailsUrl: expect.stringMatching(
+        /^https:\/\/postil\.dev\/orgs\/octo\/runs\/[0-9a-f-]+$/,
+      ),
       message: expect.stringContaining("watchdog:"),
     });
     const timestamps = await pool.query<{

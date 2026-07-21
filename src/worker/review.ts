@@ -58,7 +58,7 @@ import {
   createOwnerConfigStore,
   resolveOwnerGithubConfig,
 } from "@/lib/github/owner-config";
-import { configuredPublicOrigin } from "@/lib/oauth";
+import { configuredPublicOrigin, reviewDetailsUrl } from "@/lib/oauth";
 import {
   reconcileConservativeHostedReviewSpend,
   reconcileHostedReviewSpendFromReceipt,
@@ -670,7 +670,7 @@ function reviewUsageFromEnvelope(
 async function resumeStagedReviewCompletion(input: {
   db: Database;
   payload: ReviewJobPayload;
-  installation: { id: number; orgId: number | null };
+  installation: { id: number; orgId: number | null; orgSlug: string | null };
   repository: { id: number; githubRepoId: number; fullName: string };
   signal?: AbortSignal;
 }): Promise<boolean> {
@@ -775,6 +775,10 @@ async function resumeStagedReviewCompletion(input: {
   const operationallyUnavailable = isEnvelopeOperationallyUnavailable(
     stagedReview.envelope,
   );
+  const detailsUrl = reviewDetailsUrl(
+    stagedReview.publicId,
+    installation.orgSlug,
+  );
   try {
     await verifyCompletedCheckRun(
       token,
@@ -786,6 +790,7 @@ async function resumeStagedReviewCompletion(input: {
         headSha: payload.headSha,
         conclusion: operationallyUnavailable ? "neutral" : "success",
         requireOutput: true,
+        detailsUrl,
       },
       signal,
     );
@@ -848,6 +853,7 @@ async function resumeStagedReviewCompletion(input: {
         externalId: checkRunExternalId(stagedReview.publicId, "gate"),
         headSha: payload.headSha,
         conclusion: gateConclusion,
+        detailsUrl,
       },
       gateOutput.title,
       gateOutput.summary,
@@ -1004,6 +1010,9 @@ export async function runReviewJob(
       `review job cannot start: repository ${payload.repoFullName} is not entitled to inference`,
     );
   }
+  // Validate the configured origin before inserting any review. A bad
+  // deployment setting must not create a row whose check-runs cannot link to it.
+  configuredPublicOrigin();
   const llm = await resolveLlmConfig(installation.orgId);
   const hostedReviewUnavailable =
     !llm.byok && !(await hostedInferenceAvailable(getPool()));
@@ -1027,6 +1036,7 @@ export async function runReviewJob(
       {
         installationId: payload.installationId,
         repoFullName: payload.repoFullName,
+        orgSlug: installation.orgSlug,
         checkRunsMayExist: false,
       },
     );
@@ -1130,10 +1140,6 @@ export async function runReviewJob(
     repository.id,
     payload.prNumber,
   );
-  // Validate the configured origin before inserting a running review. A bad
-  // deployment setting must not create a row that only the watchdog can close.
-  const publicOrigin = configuredPublicOrigin();
-
   const trigger = normalizeReviewTriggerContext(payload.trigger);
   const reviewValues = {
     repositoryId: repository.id,
@@ -1163,13 +1169,7 @@ export async function runReviewJob(
   const publicId = inserted?.publicId;
   if (reviewId === undefined || !publicId)
     throw new Error("review insert returned no row");
-  const detailsUrl =
-    publicOrigin && installation.orgSlug
-      ? new URL(
-          `/orgs/${encodeURIComponent(installation.orgSlug)}/runs/${publicId}`,
-          publicOrigin,
-        ).toString()
-      : undefined;
+  const detailsUrl = reviewDetailsUrl(publicId, installation.orgSlug);
 
   const reviewLog = new ReviewLogWriter(reviewId);
   reviewLog.line(
@@ -1242,6 +1242,7 @@ export async function runReviewJob(
             name: ADVISORY_CHECK_NAME,
             externalId: advisoryCheckExternalId,
             headSha: payload.headSha,
+            detailsUrl,
           },
         }),
     ...(gateCheckRunId === undefined
@@ -1252,6 +1253,7 @@ export async function runReviewJob(
             name: GATE_CHECK_NAME,
             externalId: gateCheckExternalId,
             headSha: payload.headSha,
+            detailsUrl,
           },
         }),
     publicationIncomplete,
@@ -1275,6 +1277,7 @@ export async function runReviewJob(
       repoFullName: payload.repoFullName,
       token,
       excludeReviewId: reviewId,
+      orgSlug: installation.orgSlug,
     });
     if (superseded > 0)
       reviewLog.line(`superseded ${superseded} earlier active review(s)`);
@@ -1299,7 +1302,11 @@ export async function runReviewJob(
       payload.repoFullName,
       GATE_CHECK_NAME,
       payload.headSha,
-      { signal: reviewSignal, externalId: gateCheckExternalId },
+      {
+        signal: reviewSignal,
+        externalId: gateCheckExternalId,
+        detailsUrl,
+      },
     ).catch((error) => {
       gateCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
       throw error;
@@ -1647,6 +1654,7 @@ export async function runReviewJob(
           headSha: payload.headSha,
           conclusion: operationallyUnavailable ? "neutral" : "success",
           requireOutput: true,
+          detailsUrl,
         },
         result.interrupted ? undefined : signal,
       );
@@ -1700,6 +1708,7 @@ export async function runReviewJob(
           externalId: gateCheckExternalId,
           headSha: payload.headSha,
           conclusion: gateConclusion,
+          detailsUrl,
         },
         gateOutput.title,
         gateOutput.summary,
@@ -1736,6 +1745,7 @@ export async function runReviewJob(
           advisoryCheckRunId ?? null,
           gateCheckRunId ?? null,
           "superseded by a newer review",
+          detailsUrl,
         );
         reviewLog.line(
           "forge check-runs restored to neutral after supersession",
@@ -1798,6 +1808,7 @@ export async function runReviewJob(
           advisoryCheckRunId ?? null,
           gateCheckRunId ?? null,
           "superseded by a newer review",
+          detailsUrl,
         );
         reviewLog.line(
           "forge check-runs restored to neutral after supersession",
@@ -1951,6 +1962,7 @@ interface SupersedeActiveReviewsInput {
   token?: string;
   githubInstallationId?: number;
   message?: string;
+  orgSlug?: string | null;
 }
 
 /** Mark active reviews stale and neutralize every recorded forge check-run. */
@@ -1961,6 +1973,7 @@ export async function supersedeActiveReviews(
   const active = await db
     .select({
       id: schema.reviews.id,
+      publicId: schema.reviews.publicId,
       advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
       gateCheckRunId: schema.reviews.gateCheckRunId,
     })
@@ -2018,6 +2031,7 @@ export async function supersedeActiveReviews(
         review.advisoryCheckRunId,
         review.gateCheckRunId,
         message,
+        reviewDetailsUrl(review.publicId, input.orgSlug),
       );
     }
   }
@@ -2030,6 +2044,7 @@ async function neutralizeSupersededCheckRuns(
   advisoryCheckRunId: number | null,
   gateCheckRunId: number | null,
   message: string,
+  detailsUrl?: string,
 ): Promise<void> {
   for (const checkRunId of [gateCheckRunId, advisoryCheckRunId]) {
     if (checkRunId == null) continue;
@@ -2040,6 +2055,8 @@ async function neutralizeSupersededCheckRuns(
       "neutral",
       "Review superseded",
       message,
+      undefined,
+      detailsUrl,
     ).catch((err) =>
       console.error(
         `failed to complete superseded check-run ${checkRunId}: ${redactSecrets(err, [token])}`,
@@ -2054,6 +2071,7 @@ export async function completeHostedInferenceDisabledCheckRuns(
   advisoryCheckRunId: number | undefined,
   gateCheckRunId: number | undefined,
   throwOnError = false,
+  detailsUrl?: string,
 ): Promise<boolean> {
   const summary =
     "Postil did not run a review for this commit. No review comment or verdict was published.";
@@ -2070,6 +2088,8 @@ export async function completeHostedInferenceDisabledCheckRuns(
       "neutral",
       "Review unavailable",
       summary,
+      undefined,
+      detailsUrl,
     ).catch((error) => {
       errors.push(error);
       console.error(
@@ -2137,6 +2157,7 @@ export async function failCheckRuns(
         title,
         checkSummary,
         signal,
+        detailsUrl,
       );
       return;
     }
@@ -2222,6 +2243,7 @@ export async function runCheckRunCleanupJob(
           advisoryCheckRunId ?? undefined,
           gateCheckRunId ?? undefined,
           true,
+          payload.detailsUrl,
         );
         return;
       }
@@ -2235,6 +2257,7 @@ export async function runCheckRunCleanupJob(
                 name: ADVISORY_CHECK_NAME,
                 externalId: payload.advisoryCheckExternalId,
                 headSha: payload.headSha,
+                detailsUrl: payload.detailsUrl,
               },
             }
           : {}),
@@ -2247,6 +2270,7 @@ export async function runCheckRunCleanupJob(
                 name: GATE_CHECK_NAME,
                 externalId: payload.gateCheckExternalId,
                 headSha: payload.headSha,
+                detailsUrl: payload.detailsUrl,
               },
             }
           : {}),

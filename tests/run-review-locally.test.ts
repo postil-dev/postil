@@ -83,6 +83,12 @@ console.log("fixture-key");
     expect(result.stdout).toContain("Gate: passed");
     expect(result.stdout).toContain("[local github] would create check-run");
     expect(result.stdout).toContain("[local github] would complete check-run");
+    expect(result.stdout).toMatch(
+      /postil\/gate head=[^\s]+ details=http:\/\/127\.0\.0\.1:\d+\/orgs\/local\/runs\/[0-9a-f-]+/,
+    );
+    expect(result.stdout).toMatch(
+      /#1001 success: Postil gate passed\n\s+details=http:\/\/127\.0\.0\.1:\d+\/orgs\/local\/runs\/[0-9a-f-]+/,
+    );
     expect(result.stdout).toContain("Review findings:\n  none");
     expect(result.stdout).not.toContain("https://api.github.com");
     const invocation = JSON.parse(await readFile(invocationMarker, "utf8"));
@@ -612,6 +618,7 @@ async function patchCheck(id, conclusion, title, summary) {
     body: JSON.stringify({
       status: "completed",
       conclusion,
+      details_url: process.env.POSTIL_DETAILS_URL,
       output: {
         title,
         summary,
