@@ -2,7 +2,11 @@ import { and, eq, isNotNull, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
-import type { Envelope } from "@/lib/envelope";
+import {
+  computeEffectiveGate,
+  envelopeSchema,
+  type Envelope,
+} from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
 import { lockReviewApprovalState } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
@@ -52,7 +56,25 @@ export interface StagedReviewCompletionInput extends Pick<
   | "publicationReceipt"
 > {
   reviewJobId?: number;
-  expectedGateConclusion: "success" | "failure" | "neutral";
+}
+
+function requireEnvelopeGateTruth(
+  envelopeValue: unknown,
+  claimedGateFailing?: boolean | null,
+): { envelope: Envelope; gateFailing: boolean } {
+  const parsed = envelopeSchema.safeParse(envelopeValue);
+  if (!parsed.success) {
+    throw new Error("review completion envelope is invalid");
+  }
+  const gateFailing = computeEffectiveGate(parsed.data, new Set()).failing;
+  if (
+    claimedGateFailing !== undefined &&
+    claimedGateFailing !== null &&
+    claimedGateFailing !== gateFailing
+  ) {
+    throw new Error("review completion gate truth does not match its envelope");
+  }
+  return { envelope: parsed.data, gateFailing };
 }
 
 async function persistReviewCompletionAccounting(
@@ -142,18 +164,24 @@ export async function stageReviewCompletionCandidate(
 ): Promise<ReviewCompletionWithGateModeResult & { staged: boolean }> {
   return db.transaction(async (tx) => {
     await lockReviewApprovalState(tx, input.reviewId);
-    const gateEnabled = orgId === null
-      ? false
-      : await lockOrganizationGateMode(tx, orgId);
-    const effectiveGateFailing = gateEnabled && input.gateFailing;
+    const gateTruth = requireEnvelopeGateTruth(
+      input.envelope,
+      input.gateFailing,
+    );
+    const gateEnabled =
+      orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
+    const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
     const rows = await tx
       .update(schema.reviews)
       .set({
-        envelope: input.envelope,
+        envelope: gateTruth.envelope,
         configFiles: input.configFiles,
-        configProvenance: input.configProvenance ?? { entries: [], degraded: false },
+        configProvenance: input.configProvenance ?? {
+          entries: [],
+          degraded: false,
+        },
         silent: input.silent,
-        engineGateFailing: input.gateFailing,
+        engineGateFailing: gateTruth.gateFailing,
         gateFailing: effectiveGateFailing,
       })
       .where(
@@ -174,7 +202,7 @@ export async function stageReviewCompletionCandidate(
 
     await persistPublicationReceipt(tx as Database, {
       reviewId: input.reviewId,
-      envelope: input.envelope,
+      envelope: gateTruth.envelope,
       receipt: input.publicationReceipt,
     });
     if (input.reviewJobId !== undefined) {
@@ -182,8 +210,7 @@ export async function stageReviewCompletionCandidate(
         .update(schema.jobs)
         .set({
           payload: sql`${schema.jobs.payload} || jsonb_build_object(
-            'recoveryReviewId', ${input.reviewId}::bigint,
-            'recoveryGateConclusion', ${input.expectedGateConclusion}::text
+            'recoveryReviewId', ${input.reviewId}::bigint
           )`,
         })
         .where(eq(schema.jobs.id, input.reviewJobId));
@@ -206,12 +233,14 @@ export async function finalizeStagedReviewCompletionWithGateMode(
 ): Promise<ReviewCompletionWithGateModeResult> {
   return db.transaction(async (tx) => {
     await lockReviewApprovalState(tx, input.reviewId);
-    const gateEnabled = orgId === null
-      ? false
-      : await lockOrganizationGateMode(tx, orgId);
+    const gateEnabled =
+      orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
     const staged = (
       await tx
-        .select({ engineGateFailing: schema.reviews.engineGateFailing })
+        .select({
+          envelope: schema.reviews.envelope,
+          engineGateFailing: schema.reviews.engineGateFailing,
+        })
         .from(schema.reviews)
         .where(
           and(
@@ -222,10 +251,14 @@ export async function finalizeStagedReviewCompletionWithGateMode(
         )
         .limit(1)
     )[0];
-    const effectiveGateFailing = gateEnabled && staged?.engineGateFailing === true;
     if (!staged) {
-      return { completed: false, gateEnabled, gateFailing: effectiveGateFailing };
+      return { completed: false, gateEnabled, gateFailing: false };
     }
+    const gateTruth = requireEnvelopeGateTruth(
+      staged.envelope,
+      staged.engineGateFailing,
+    );
+    const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
 
     const rows = await tx
       .update(schema.reviews)
@@ -263,19 +296,25 @@ export async function persistReviewCompletionWithGateMode(
 ): Promise<ReviewCompletionWithGateModeResult> {
   return db.transaction(async (tx) => {
     await lockReviewApprovalState(tx, input.reviewId);
-    const gateEnabled = orgId === null
-      ? false
-      : await lockOrganizationGateMode(tx, orgId);
-    const effectiveGateFailing = gateEnabled && input.gateFailing;
+    const gateTruth = requireEnvelopeGateTruth(
+      input.envelope,
+      input.gateFailing,
+    );
+    const gateEnabled =
+      orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
+    const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
     const rows = await tx
       .update(schema.reviews)
       .set({
         status: "completed",
-        envelope: input.envelope,
+        envelope: gateTruth.envelope,
         configFiles: input.configFiles,
-        configProvenance: input.configProvenance ?? { entries: [], degraded: false },
+        configProvenance: input.configProvenance ?? {
+          entries: [],
+          degraded: false,
+        },
         silent: input.silent,
-        engineGateFailing: input.gateFailing,
+        engineGateFailing: gateTruth.gateFailing,
         gateFailing: effectiveGateFailing,
         finishedAt: new Date(),
       })
@@ -296,7 +335,7 @@ export async function persistReviewCompletionWithGateMode(
 
     await persistPublicationReceipt(tx as Database, {
       reviewId: input.reviewId,
-      envelope: input.envelope,
+      envelope: gateTruth.envelope,
       receipt: input.publicationReceipt,
     });
 

@@ -92,6 +92,7 @@ console.log("fixture-key");
         "--forge",
         "github",
         "--publish",
+        "--defer-gate-check",
         "--repo",
         "local/postil-local",
         "--pr",
@@ -114,7 +115,6 @@ console.log("fixture-key");
       apiFormat: "openai-compatible",
       model: "z-ai/glm-5.2",
       cascade: "z-ai/glm-5.2",
-      scorer: undefined,
       scorerDisabled: "1",
       hostedMode: "0",
       expectedGithubRepoId: "990002",
@@ -285,6 +285,23 @@ console.log("fixture-key");
     expect(result.stdout).toContain("Local provider unavailable");
     expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
     expect(result.stdout).toContain("Gate: passed");
+  }, 120_000);
+
+  test("persists a model-output sentinel omitted from the GitHub receipt", async () => {
+    const repo = await createFixtureRepo("model-output-sentinel");
+
+    const result = await runLocalReview(repo, "1", 1, {
+      args: ["--require-clean"],
+      env: {
+        POSTIL_FAKE_ADVISORY_NEUTRAL: "1",
+        POSTIL_FAKE_OPERATIONAL_PATH: ".postil/model-output",
+      },
+    });
+
+    expect(result.stdout).toContain("would complete check-run #1000 as neutral");
+    expect(result.stdout).toContain(".postil/model-output:1");
+    expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
+    expect(result.stdout).toContain("Gate: failed");
   }, 120_000);
 
   test("base mode uses the exact selected head and serves files from its tree", async () => {
@@ -533,6 +550,7 @@ const advisory = valueAfter("--check-run-id");
 const gate = valueAfter("--gate-check-run-id");
 const failing = process.env.POSTIL_FAKE_GATE_FAILING === "1";
 const operational = process.env.POSTIL_FAKE_ADVISORY_NEUTRAL === "1";
+const operationalPath = process.env.POSTIL_FAKE_OPERATIONAL_PATH ?? ".postil/provider";
 const hasFinding = failing || operational || process.env.POSTIL_FAKE_FINDING === "1";
 let servedContent;
 if (process.env.POSTIL_FAKE_READ_PATH) {
@@ -546,7 +564,7 @@ if (process.env.POSTIL_FAKE_READ_PR_TITLE === "1") {
 }
 const finding = {
   id: "local-finding-1",
-  path: operational ? ".postil/provider" : "app.txt",
+  path: operational ? operationalPath : "app.txt",
   line: operational ? 1 : 2,
   severity: failing || operational ? "error" : "warn",
   kind: operational ? "uncertainty" : "risk",

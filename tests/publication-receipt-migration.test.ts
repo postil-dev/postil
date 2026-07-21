@@ -137,6 +137,10 @@ describeDb("publication receipt migration and lifecycle", () => {
       "INSERT INTO organizations (slug, name, github_org_id) VALUES ('publication', 'Publication', 1001) RETURNING id",
     );
     orgId = Number(organization.rows[0]!.id);
+    await pool.query(
+      "INSERT INTO org_settings (org_id, gate_enabled) VALUES ($1, true)",
+      [orgId],
+    );
     const installation = await pool.query<{ id: string }>(
       `INSERT INTO installations
         (github_installation_id, account_login, account_type, org_id)
@@ -192,7 +196,6 @@ describeDb("publication receipt migration and lifecycle", () => {
         {
           reviewId,
           reviewJobId,
-          expectedGateConclusion: "success",
           envelope: reviewEnvelope,
           configFiles: [],
           silent: true,
@@ -211,14 +214,12 @@ describeDb("publication receipt migration and lifecycle", () => {
       status: string;
       has_envelope: boolean;
       recovery_review_id: string;
-      recovery_gate_conclusion: string;
       receipts: string;
       usage: string;
     }>(
       `SELECT review.status,
               review.envelope IS NOT NULL AS has_envelope,
               job.payload->>'recoveryReviewId' AS recovery_review_id,
-              job.payload->>'recoveryGateConclusion' AS recovery_gate_conclusion,
               (SELECT count(*) FROM review_publication_receipts receipt WHERE receipt.review_id = review.id) AS receipts,
               (SELECT count(*) FROM usage_events usage WHERE usage.review_id = review.id) AS usage
          FROM reviews review
@@ -230,7 +231,6 @@ describeDb("publication receipt migration and lifecycle", () => {
       status: "running",
       has_envelope: true,
       recovery_review_id: String(reviewId),
-      recovery_gate_conclusion: "success",
       receipts: "1",
       usage: "0",
     });
@@ -364,46 +364,49 @@ describeDb("publication receipt migration and lifecycle", () => {
     ).rejects.toThrow("immutable");
   });
 
-  test("does not persist operational receipt entries as finding lifecycle rows", async () => {
-    const reviewId = await createRunningReview("d".repeat(40));
-    const publishedFinding = finding("published-id");
-    const operationalFinding = {
-      ...finding("operational-id"),
-      path: ".postil/provider",
-    };
+  test.each([".postil/provider", ".postil/model-output"])(
+    "does not persist %s receipt entries as finding lifecycle rows",
+    async (operationalPath) => {
+      const reviewId = await createRunningReview("d".repeat(40));
+      const publishedFinding = finding("published-id");
+      const operationalFinding = {
+        ...finding("operational-id"),
+        path: operationalPath,
+      };
 
-    await complete(
-      reviewId,
-      envelope({
-        head: "d".repeat(40),
-        findings: [publishedFinding, operationalFinding],
-      }),
-      {
-        version: 1,
-        receiptId: "forge-review-v1:operational",
-        findings: [
-          {
-            findingId: "published-id",
-            stableIdentity: true,
-            initialOutcome: "inline",
-            inlineRejected: false,
-          },
-          {
-            findingId: "operational-id",
-            stableIdentity: true,
-            initialOutcome: "unknown",
-            inlineRejected: false,
-          },
-        ],
-      },
-    );
+      await complete(
+        reviewId,
+        envelope({
+          head: "d".repeat(40),
+          findings: [publishedFinding, operationalFinding],
+        }),
+        {
+          version: 1,
+          receiptId: "forge-review-v1:operational",
+          findings: [
+            {
+              findingId: "published-id",
+              stableIdentity: true,
+              initialOutcome: "inline",
+              inlineRejected: false,
+            },
+            {
+              findingId: "operational-id",
+              stableIdentity: true,
+              initialOutcome: "unknown",
+              inlineRejected: false,
+            },
+          ],
+        },
+      );
 
-    const rows = await pool.query<{ finding_id: string }>(
-      "SELECT finding_id FROM finding_publications WHERE review_id = $1 ORDER BY finding_id",
-      [reviewId],
-    );
-    expect(rows.rows).toEqual([{ finding_id: "published-id" }]);
-  });
+      const rows = await pool.query<{ finding_id: string }>(
+        "SELECT finding_id FROM finding_publications WHERE review_id = $1 ORDER BY finding_id",
+        [reviewId],
+      );
+      expect(rows.rows).toEqual([{ finding_id: "published-id" }]);
+    },
+  );
 
   test("authoritative observations produce resolved, outdated, and deleted lifecycle states", async () => {
     const firstId = reviewIds[0]!;

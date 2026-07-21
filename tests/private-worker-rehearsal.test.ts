@@ -234,7 +234,6 @@ describeDb("private worker interruption rehearsal", () => {
           prNumber: TARGET.prNumber,
           headSha: TARGET.headSha,
           recoveryReviewId: reviewId,
-          recoveryGateConclusion: "success",
         }),
         NOW,
       ],
