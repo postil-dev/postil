@@ -71,8 +71,10 @@ type FetchLike = typeof fetch;
 /**
  * Read GitHub's effective default-branch rules with the App's existing
  * metadata permission. Active rulesets expose the required integration id.
- * Classic branch summaries expose context names only, so a matching classic
- * rule remains unknown rather than being guessed from check-run history.
+ * GitHub guarantees context names, but not App identity, in classic branch
+ * read responses. Extra checks can corroborate context presence only, so a
+ * matching classic rule remains unknown rather than being guessed from
+ * undocumented fields or check-run history.
  */
 export async function fetchGateEnforcementObservation(
   token: string,
@@ -258,6 +260,8 @@ function parseBranchEvidence(value: unknown): {
     available: true,
     branchProtection: "protected",
     requiredStatusChecksPresent: required.contexts.length > 0 || checkContexts.length > 0,
+    // app_id is documented for branch-protection writes, not reads. Only the
+    // active-rules endpoint's documented integration_id can prove source binding.
     exactMatch: false,
     match,
     error: null,
