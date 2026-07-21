@@ -164,6 +164,15 @@ export const envelopeSchema = z
         message: "recovery must be present exactly when the incident recovered",
       });
     });
+    const effectiveGate = computeEffectiveGate(envelope, new Set());
+    if (effectiveGate.failing !== envelope.gate.failing) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["gate", "failing"],
+        message:
+          "declared gate verdict does not match the admitted findings and policy",
+      });
+    }
   });
 
 export type Severity = z.infer<typeof severitySchema>;
@@ -185,7 +194,8 @@ export function hasLegacyCombinedModelUsage(envelope: Envelope): boolean {
   );
 }
 
-export type OperationalModelIncidentCategory = ModelIncident["category"] | "operational";
+export type OperationalModelIncidentCategory =
+  ModelIncident["category"] | "operational";
 export type OperationalModelIncidentSource =
   | "model_incident"
   | "provider_sentinel"
@@ -244,9 +254,12 @@ export interface FindingBlockState {
 
 export interface EffectiveGateState {
   failing: boolean;
+  unavailable: boolean;
   blockers: FindingBlockState[];
   kindBlockers: FindingBlockState[];
 }
+
+export type GateCheckConclusion = "success" | "failure" | "neutral";
 
 export interface IngestedEnvelope {
   envelope: Envelope;
@@ -282,10 +295,11 @@ export function ingestEnvelope(raw: string): IngestedEnvelope {
     throw new Error(`CLI output does not match envelope schema v1 (${where})`);
   }
   const envelope = result.data;
+  const effectiveGate = computeEffectiveGate(envelope, new Set());
   return {
     envelope,
     silent: envelope.silent,
-    gateFailing: envelope.gate.failing,
+    gateFailing: effectiveGate.failing,
     findingCount: envelope.findings.length,
     promptTokens: envelope.usage.promptTokens,
     completionTokens: envelope.usage.completionTokens,
@@ -368,6 +382,21 @@ export function severityBlocksGate(severity: Severity, failOn: Severity): boolea
   return SEVERITY_RANK[severity] <= SEVERITY_RANK[failOn];
 }
 
+export function isOperationalFinding(finding: Pick<Finding, "path">): boolean {
+  return (
+    finding.path === ".postil/operational" ||
+    finding.path === ".postil/provider" ||
+    finding.path === ".postil/model-output"
+  );
+}
+
+/** An unrecovered review failure is not a clean review verdict. */
+export function isEnvelopeOperationallyUnavailable(
+  envelope: Pick<Envelope, "findings">,
+): boolean {
+  return envelope.findings.some(isOperationalFinding);
+}
+
 export function findingStableId(finding: Finding): string | null {
   return finding.id?.trim() || null;
 }
@@ -375,16 +404,34 @@ export function findingStableId(finding: Finding): string | null {
 export function computeEffectiveGate(
   envelope: Envelope | null | undefined,
   activeApprovalIds: ReadonlySet<string>,
-  engineGateFailing = envelope?.gate.failing ?? false,
 ): EffectiveGateState {
-  if (!envelope || !engineGateFailing) {
-    return { failing: false, blockers: [], kindBlockers: [] };
+  if (!envelope) {
+    return {
+      failing: false,
+      unavailable: true,
+      blockers: [],
+      kindBlockers: [],
+    };
   }
 
+  const unavailable = isEnvelopeOperationallyUnavailable(envelope);
   const blockOnKinds = new Set(getGateBlockOnKinds(envelope));
   const states = envelope.findings.map((finding): FindingBlockState => {
     const findingId = findingStableId(finding);
     const approved = Boolean(findingId && activeApprovalIds.has(findingId));
+    if (isOperationalFinding(finding)) {
+      return {
+        finding,
+        findingId,
+        kindBlocking: false,
+        severityBlocking: envelope.gate.failing,
+        approved: false,
+        // gate.onError is not present in envelope v1. The CLI's declared
+        // verdict remains authoritative only for exact operational sentinels:
+        // block means failure, advisory means unavailable/neutral.
+        blocking: envelope.gate.failing,
+      };
+    }
     const escalationEligible =
       finding.kind !== "humanEscalation" || qualifiesHumanEscalation(finding);
     const kindBlocking = escalationEligible && blockOnKinds.has(finding.kind);
@@ -403,9 +450,22 @@ export function computeEffectiveGate(
   const blockers = states.filter((state) => state.blocking);
   return {
     failing: blockers.length > 0,
+    unavailable,
     blockers,
     kindBlockers: states.filter((state) => state.kindBlocking),
   };
+}
+
+/** Derive the only check conclusion consistent with one validated envelope. */
+export function gateCheckConclusionForEnvelope(
+  envelope: Envelope,
+  activeApprovalIds: ReadonlySet<string>,
+  gateEnabled: boolean,
+): GateCheckConclusion {
+  if (!gateEnabled) return "neutral";
+  const gate = computeEffectiveGate(envelope, activeApprovalIds);
+  if (gate.unavailable && !gate.failing) return "neutral";
+  return gate.failing ? "failure" : "success";
 }
 
 export function getGateBlockOnKinds(envelope: Envelope): FindingKind[] {

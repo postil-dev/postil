@@ -126,7 +126,7 @@ export async function claimPausedHostedReview(
         advisoryCheckRunMayExist: publication.checkRunsMayExist ?? true,
         gateCheckRunMayExist: publication.checkRunsMayExist ?? true,
         message: HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
-        intent: "neutralize",
+        intent: "fail",
       },
       runAfter: new Date(finishedAt.getTime() + 30_000),
       maxAttempts: 5,

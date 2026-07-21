@@ -49,7 +49,6 @@ export async function getOrgReviewRows(
       errorMessage: schema.reviews.errorMessage,
       silent: schema.reviews.silent,
       gateFailing: schema.reviews.gateFailing,
-      engineGateFailing: schema.reviews.engineGateFailing,
       envelope: schema.reviews.envelope,
       startedAt: schema.reviews.startedAt,
       finishedAt: schema.reviews.finishedAt,
@@ -75,23 +74,22 @@ export async function getOrgReviewRows(
   // envelope (finding bodies, summaries) out of the RSC payload and the
   // polling responses.
   return Promise.all(
-    rows.map(async ({ envelope: rawEnvelope, engineGateFailing, errorMessage, ...row }) => {
+    rows.map(async ({ envelope: rawEnvelope, errorMessage, ...row }) => {
       const envelope = parseEnvelopeForApprovals(rawEnvelope);
       const approvalIds = await getActiveApprovalIds(db, row.id);
       const counts = publicationCounts.get(row.id) ?? null;
       const activePublished = counts
-        ? counts.inline + counts.summaryOnly + counts.carried + counts.inlineRejected
+        ? counts.inline +
+          counts.summaryOnly +
+          counts.carried +
+          counts.inlineRejected
         : null;
       return {
         ...row,
         status: reviewDisplayStatus(row.status, errorMessage),
         triggerSource: row.triggerSource as ReviewTriggerSource,
         gateFailing: envelope
-          ? computeEffectiveGate(
-              envelope,
-              approvalIds,
-              engineGateFailing ?? row.gateFailing ?? false,
-            ).failing
+          ? computeEffectiveGate(envelope, approvalIds).failing
           : row.gateFailing,
         findingsCount: counts && counts.unknown === 0 ? activePublished : null,
         modelUsed: envelope?.modelUsed ?? null,

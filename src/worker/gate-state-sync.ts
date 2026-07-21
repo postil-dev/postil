@@ -16,13 +16,19 @@ import {
 } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { completeCheckRun, getPullRequestHeadSha } from "@/lib/github/checks";
+import {
+  GATE_CHECK_NAME,
+  checkRunExternalId,
+  completeExpectedCheckRun,
+  getPullRequestHeadSha,
+} from "@/lib/github/checks";
 
 interface DesiredGateState {
   review: ReviewForApproval;
   gateCheckRunId: number;
   enforced: boolean;
   failing: boolean;
+  conclusion: "success" | "failure" | "neutral";
   title: string;
   summary: string;
   generation: string;
@@ -59,16 +65,22 @@ export async function runGateStateSyncJob(
         signal,
       );
       if (currentHeadSha !== desired.review.headSha) return;
-      await completeCheckRun(
+      await completeExpectedCheckRun(
         token,
         desired.review.repoFullName,
-        desired.gateCheckRunId,
-        desired.enforced ? (desired.failing ? "failure" : "success") : "neutral",
+        {
+          id: desired.gateCheckRunId,
+          name: GATE_CHECK_NAME,
+          externalId: checkRunExternalId(desired.review.publicId, "gate"),
+          headSha: desired.review.headSha,
+          conclusion: desired.conclusion,
+        },
         desired.title,
         desired.summary,
         signal,
       );
-      if (!(await renewGatePublisherLease(db, payload.reviewId, leaseId))) return;
+      if (!(await renewGatePublisherLease(db, payload.reviewId, leaseId)))
+        return;
       const converged = await db.transaction(async (tx) => {
         const latest = await loadDesiredGateState(tx, payload);
         if (!latest) return true;
@@ -175,32 +187,45 @@ async function loadDesiredGateState(
     throw new Error("gate state sync review is incomplete");
   }
   const review: ReviewForApproval = { ...row, orgId: row.orgId, envelope };
-  const failing = row.status === "failed"
-    ? true
-    : (await getReviewApprovalState(tx, review)).effectiveGate.failing;
+  const approvalState =
+    row.status === "failed" ? null : await getReviewApprovalState(tx, review);
+  const effectiveGate = approvalState?.effectiveGate;
+  const failing = row.status === "failed" || effectiveGate?.failing === true;
+  const unavailable =
+    row.status === "failed" || effectiveGate?.unavailable === true;
+  const conclusion = !enforced
+    ? "neutral"
+    : failing
+      ? "failure"
+      : unavailable
+        ? "neutral"
+        : "success";
   const title = enforced
-    ? row.status === "failed"
+    ? unavailable
       ? "Review unavailable"
       : failing
-        ? "Postil gate still failing"
-        : "Postil gate approved"
+        ? "Postil gate blocked"
+        : "Postil gate passed"
     : "Postil gate is advisory";
   const summary = !enforced
     ? row.status === "failed"
       ? "Merge blocking is disabled. The incomplete review remains advisory."
       : "Merge blocking is disabled. Review findings remain advisory."
-    : row.status === "failed"
-      ? "Postil could not complete this review. Open the Postil run for details."
+    : unavailable
+      ? failing
+        ? "Postil could not complete this review. The merge check remains blocked."
+        : "Postil could not produce a merge verdict for this commit."
       : failing
         ? `One or more blocking findings remain.\n\n${formatRemainingGateBlockers(
-            (await getReviewApprovalState(tx, review)).effectiveGate,
+            effectiveGate!,
           )}`
-        : "An organization admin approved every eligible human judgment finding for this commit.";
+        : "No blocking findings remain for this commit.";
   const generation = JSON.stringify({
     status: row.status,
     gateCheckRunId: row.gateCheckRunId,
     enforced,
     failing,
+    conclusion,
     title,
     summary,
     headSha: row.headSha,
@@ -210,6 +235,7 @@ async function loadDesiredGateState(
     gateCheckRunId: row.gateCheckRunId,
     enforced,
     failing,
+    conclusion,
     title,
     summary,
     generation,
