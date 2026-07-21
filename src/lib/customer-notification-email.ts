@@ -41,10 +41,14 @@ interface CustomerNotificationEmailEvent {
 }
 
 type CustomerEmailSender = typeof sendTransactionalEmail;
+type CustomerNotificationEmailSourceCategory = Exclude<
+  OrganizationEmailCategory,
+  "verification" | "service_summary"
+>;
 
 export function customerNotificationEmailCategory(
   idempotencyKey: string,
-): OrganizationEmailCategory | null {
+): CustomerNotificationEmailSourceCategory | null {
   if (
     idempotencyKey.startsWith("installation-suspended:") ||
     idempotencyKey.startsWith("installation-restored:") ||
@@ -185,7 +189,7 @@ export async function scheduleCustomerNotificationEmailJobs(
       string,
       {
         orgId: number;
-        emailCategory: OrganizationEmailCategory;
+        emailCategory: CustomerNotificationEmailSourceCategory;
         eventIds: number[];
         hasVerifiedContact: boolean;
         billingSummaryEmail: boolean;
@@ -343,7 +347,7 @@ export async function runCustomerNotificationEmailJob(
     return "noop";
   }
   if (delivery.status === "failed") return "noop";
-  const emailCategory = validateOrganizationEmailCategory(
+  const emailCategory = validateCustomerNotificationEmailSourceCategory(
     delivery.emailCategory,
   );
   const preferences = {
@@ -631,23 +635,21 @@ function validateCustomerNotificationEmailJobPayload(
   }
 }
 
-function validateOrganizationEmailCategory(
+function validateCustomerNotificationEmailSourceCategory(
   value: string,
-): OrganizationEmailCategory {
+): CustomerNotificationEmailSourceCategory {
   if (
     [
       "security",
-      "verification",
       "payment_failure",
       "trial_expiry",
       "service_incident",
       "billing_summary",
-      "service_summary",
     ].includes(value)
   ) {
-    return value as OrganizationEmailCategory;
+    return value as CustomerNotificationEmailSourceCategory;
   }
   throw new PermanentJobError(
-    "customer notification email category is invalid",
+    "customer notification email category has no durable source",
   );
 }

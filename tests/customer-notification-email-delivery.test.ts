@@ -287,6 +287,34 @@ describeDb("customer notification email delivery", () => {
     );
     expect(failed.rows[0]).toEqual({ status: "failed", error_length: 2_000 });
   });
+
+  test("rejects an outbox category without a durable source before sending", async () => {
+    const orgId = await seedOrganization(pool, "unsupported");
+    const delivery = await pool.query<{ id: string }>(
+      `INSERT INTO customer_notification_email_deliveries
+         (org_id, email_category, event_count)
+       VALUES ($1, 'service_summary', 1)
+       RETURNING id`,
+      [orgId],
+    );
+    let sendCalls = 0;
+
+    await expect(
+      runCustomerNotificationEmailJob(
+        db,
+        { deliveryId: delivery.rows[0]!.id },
+        {
+          publicOrigin: "https://postil.dev",
+          apiKey: "test-api-key",
+          send: async () => {
+            sendCalls += 1;
+            return { messageId: "unexpected" };
+          },
+        },
+      ),
+    ).rejects.toThrow("has no durable source");
+    expect(sendCalls).toBe(0);
+  });
 });
 
 async function seedOrganization(
