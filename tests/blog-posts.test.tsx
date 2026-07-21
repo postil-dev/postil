@@ -51,7 +51,8 @@ describe("blog publication metadata", () => {
   });
 
   test("derives canonical, Open Graph, and structured data from each record", () => {
-    for (const post of BLOG_POSTS) {
+    for (const record of BLOG_POSTS) {
+      const post: BlogPost = record;
       expect(blogPostMetadata(post)).toMatchObject({
         title: post.title,
         description: post.description,
@@ -66,11 +67,23 @@ describe("blog publication metadata", () => {
       });
       expect(blogPostJsonLd(post)).toMatchObject({
         headline: post.title,
-        description: post.description,
+        description: post.structuredDescription ?? post.description,
         url: `https://postil.dev/blog/${post.slug}`,
         datePublished: post.publishedOn,
       });
     }
+  });
+
+  test("preserves distinct page, social, and structured descriptions", () => {
+    const post: BlogPost | undefined = BLOG_POSTS.find(
+      (candidate) => candidate.slug === "ai-code-review-pricing-2026",
+    );
+    if (!post) throw new Error("pricing article is missing from the blog registry");
+
+    const metadata = blogPostMetadata(post);
+    expect(metadata.description).toBe(post.description);
+    expect(metadata.openGraph?.description).toBe(post.socialDescription);
+    expect(blogPostJsonLd(post).description).toBe(post.structuredDescription);
   });
 
   test("renders semantic exact dates in registry order", () => {

@@ -15,6 +15,7 @@ export interface BlogPost {
   title: string;
   description: string;
   socialDescription: string;
+  structuredDescription?: string;
   excerpt: string;
 }
 
@@ -81,6 +82,8 @@ export const BLOG_POSTS = [
     description:
       "Four AI code review vendors changed pricing models in roughly ninety days. We run the same 20-developer team through CodeRabbit, Qodo, Greptile, Macroscope, Copilot, Bugbot, and Postil, with every assumption stated and every price sourced.",
     socialDescription:
+      "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
+    structuredDescription:
       "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
     excerpt:
       "Four vendors changed pricing models in ninety days. We run the same 20-developer team through seven tools, assumptions stated, arithmetic shown, every price sourced.",
@@ -170,7 +173,7 @@ export function blogPostJsonLd(post: BlogPost): Record<string, unknown> {
     "@context": "https://schema.org",
     "@type": "BlogPosting",
     headline: post.title,
-    description: post.description,
+    description: post.structuredDescription ?? post.description,
     url,
     datePublished: post.publishedOn,
     image: `${SITE_ORIGIN}/opengraph-image`,
