@@ -367,46 +367,49 @@ describeDb("publication receipt migration and lifecycle", () => {
     ).rejects.toThrow("immutable");
   });
 
-  test("does not persist operational receipt entries as finding lifecycle rows", async () => {
-    const reviewId = await createRunningReview("d".repeat(40));
-    const publishedFinding = finding("published-id");
-    const operationalFinding = {
-      ...finding("operational-id"),
-      path: ".postil/provider",
-    };
+  test.each([".postil/provider", ".postil/model-output"])(
+    "does not persist %s receipt entries as finding lifecycle rows",
+    async (operationalPath) => {
+      const reviewId = await createRunningReview("d".repeat(40));
+      const publishedFinding = finding("published-id");
+      const operationalFinding = {
+        ...finding("operational-id"),
+        path: operationalPath,
+      };
 
-    await complete(
-      reviewId,
-      envelope({
-        head: "d".repeat(40),
-        findings: [publishedFinding, operationalFinding],
-      }),
-      {
-        version: 1,
-        receiptId: "forge-review-v1:operational",
-        findings: [
-          {
-            findingId: "published-id",
-            stableIdentity: true,
-            initialOutcome: "inline",
-            inlineRejected: false,
-          },
-          {
-            findingId: "operational-id",
-            stableIdentity: true,
-            initialOutcome: "unknown",
-            inlineRejected: false,
-          },
-        ],
-      },
-    );
+      await complete(
+        reviewId,
+        envelope({
+          head: "d".repeat(40),
+          findings: [publishedFinding, operationalFinding],
+        }),
+        {
+          version: 1,
+          receiptId: "forge-review-v1:operational",
+          findings: [
+            {
+              findingId: "published-id",
+              stableIdentity: true,
+              initialOutcome: "inline",
+              inlineRejected: false,
+            },
+            {
+              findingId: "operational-id",
+              stableIdentity: true,
+              initialOutcome: "unknown",
+              inlineRejected: false,
+            },
+          ],
+        },
+      );
 
-    const rows = await pool.query<{ finding_id: string }>(
-      "SELECT finding_id FROM finding_publications WHERE review_id = $1 ORDER BY finding_id",
-      [reviewId],
-    );
-    expect(rows.rows).toEqual([{ finding_id: "published-id" }]);
-  });
+      const rows = await pool.query<{ finding_id: string }>(
+        "SELECT finding_id FROM finding_publications WHERE review_id = $1 ORDER BY finding_id",
+        [reviewId],
+      );
+      expect(rows.rows).toEqual([{ finding_id: "published-id" }]);
+    },
+  );
 
   test("authoritative observations produce resolved, outdated, and deleted lifecycle states", async () => {
     const firstId = reviewIds[0]!;

@@ -5,7 +5,11 @@ import { z } from "zod";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
-import type { Envelope, Finding } from "@/lib/envelope";
+import {
+  isOperationalFinding,
+  type Envelope,
+  type Finding,
+} from "@/lib/envelope";
 
 const MAX_RECEIPT_BYTES = 512 * 1024;
 const MAX_RECEIPT_FINDINGS = 1_000;
@@ -104,14 +108,10 @@ export async function readPublicationReceipt(path: string): Promise<PublicationR
   return parsed.data;
 }
 
-function isOperational(finding: Finding): boolean {
-  return finding.path === ".postil/operational" || finding.path === ".postil/provider";
-}
-
 function envelopeFindingIds(envelope: Envelope): Set<string> {
   const ids = new Set<string>();
   for (const finding of [
-    ...envelope.findings.filter((entry) => !isOperational(entry)),
+    ...envelope.findings.filter((entry) => !isOperationalFinding(entry)),
     ...envelope.resolved,
     ...(envelope.suppressedFindings?.map((entry) => entry.finding) ?? []),
   ]) {
@@ -123,14 +123,14 @@ function envelopeFindingIds(envelope: Envelope): Set<string> {
 function operationalFindingIds(envelope: Envelope): Set<string> {
   return new Set(
     envelope.findings
-      .filter(isOperational)
+      .filter(isOperationalFinding)
       .flatMap((finding) => (finding.id ? [finding.id] : [])),
   );
 }
 
 function envelopePublicationFindings(envelope: Envelope): Finding[] {
   return [
-    ...envelope.findings.filter((entry) => !isOperational(entry)),
+    ...envelope.findings.filter((entry) => !isOperationalFinding(entry)),
     ...envelope.resolved,
     ...(envelope.suppressedFindings?.map((entry) => entry.finding) ?? []),
   ];
@@ -200,7 +200,9 @@ function legacyRows(reviewId: number, envelope: Envelope) {
     });
     ordinal += 1;
   };
-  envelope.findings.filter((finding) => !isOperational(finding)).forEach(add);
+  envelope.findings
+    .filter((finding) => !isOperationalFinding(finding))
+    .forEach(add);
   envelope.resolved.forEach(add);
   envelope.suppressedFindings?.forEach((entry) => add(entry.finding));
   const retainedSuppressed = envelope.suppressedFindings?.length ?? 0;
@@ -247,7 +249,7 @@ export async function persistPublicationReceipt(
 
   const transitions = new Map<string, PublicationState>();
   for (const finding of input.envelope.findings) {
-    if (!finding.id || isOperational(finding)) continue;
+    if (!finding.id || isOperationalFinding(finding)) continue;
     if (finding.body.startsWith(CARRIED_MARKER)) transitions.set(finding.id, "carried");
   }
   for (const finding of input.envelope.resolved) {
