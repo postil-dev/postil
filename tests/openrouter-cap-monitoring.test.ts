@@ -195,7 +195,8 @@ describe("OpenRouter key-cap monitoring", () => {
     const localInferenceSources = sources.join("\n");
 
     expect(localInferenceSources).not.toContain("POSTIL_OPENROUTER_EMERGENCY_KEY_NAME");
-    expect(localInferenceSources).not.toContain("OPENROUTER_MANAGEMENT_API_KEY");
+    expect(sources[0]).not.toContain("OPENROUTER_MANAGEMENT_API_KEY");
+    expect(localInferenceSources).toContain('OPENROUTER_MANAGEMENT_API_KEY: ""');
     expect(sources[0]).toContain('"OPENROUTER_API_KEY"');
   });
 });
