@@ -215,6 +215,26 @@ describe("pull-request review context", () => {
 });
 
 describe("check-run creation", () => {
+  test("publishes the exact review URL with the initial gate", async () => {
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ id: 42 });
+    }) as typeof fetch;
+
+    await createCheckRun("token", "octo/repo", "postil/gate", "head-sha", {
+      externalId: "postil:run:gate",
+      detailsUrl: "https://postil.dev/orgs/octo/runs/run",
+    });
+
+    expect(body).toMatchObject({
+      name: "postil/gate",
+      head_sha: "head-sha",
+      external_id: "postil:run:gate",
+      details_url: "https://postil.dev/orgs/octo/runs/run",
+    });
+  });
+
   test("forwards a bounded caller cancellation signal", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -455,6 +475,51 @@ describe("check-run publication verification", () => {
     );
 
     expect(methods).toEqual(["GET", "PATCH", "GET"]);
+  });
+
+  test("cleanup replaces a generic details URL even when the verdict is terminal", async () => {
+    const methods: string[] = [];
+    const patchBodies: Array<Record<string, unknown>> = [];
+    let detailsUrl = "https://postil.dev";
+    globalThis.fetch = (async (_input, init) => {
+      const method = init?.method ?? "GET";
+      methods.push(method);
+      if (method === "PATCH") {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        patchBodies.push(body);
+        detailsUrl = String(body.details_url);
+        return new Response(null, { status: 200 });
+      }
+      return Response.json({
+        id: 42,
+        name: "postil/review",
+        external_id: "postil:run:review",
+        head_sha: "head-sha",
+        status: "completed",
+        conclusion: "success",
+        details_url: detailsUrl,
+        output: {
+          title: "Review complete",
+          summary: "The review completed.",
+        },
+      });
+    }) as typeof fetch;
+
+    await completeExpectedCheckRun(
+      "token",
+      "octo/repo",
+      {
+        ...expected,
+        detailsUrl: "https://postil.dev/orgs/octo/runs/run",
+      },
+      "Review complete",
+      "The review completed.",
+    );
+
+    expect(methods).toEqual(["GET", "PATCH", "GET"]);
+    expect(patchBodies[0]?.details_url).toBe(
+      "https://postil.dev/orgs/octo/runs/run",
+    );
   });
 
   test("cleanup verifies identity before and terminal state after its patch", async () => {

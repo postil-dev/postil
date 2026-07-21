@@ -11,6 +11,7 @@ import { getOperatorReviewRows } from "@/lib/operator-reviews";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+const ORIGINAL_PUBLIC_URL = process.env.POSTIL_PUBLIC_URL;
 
 describeDb("paused hosted review claims", () => {
   const databaseName = `postil_hosted_pause_${process.pid}_${Date.now()}`;
@@ -19,6 +20,7 @@ describeDb("paused hosted review claims", () => {
   let repositoryId = 0;
 
   beforeAll(async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
     adminClient = new Client({ connectionString: TEST_URL });
     await adminClient.connect();
     await adminClient.query(`CREATE DATABASE "${databaseName}"`);
@@ -60,6 +62,8 @@ describeDb("paused hosted review claims", () => {
       await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
       await adminClient.end();
     }
+    if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
+    else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
   }, 30_000);
 
   test("admits one concurrent claim for the same head and separate claims for new heads", async () => {
@@ -86,6 +90,7 @@ describeDb("paused hosted review claims", () => {
         claimPausedHostedReview(db, baseClaim, {
           installationId: 81001,
           repoFullName: "pause-test/repo",
+          orgSlug: "pause-test",
         }),
       ),
     );
@@ -100,6 +105,7 @@ describeDb("paused hosted review claims", () => {
       {
         installationId: 81001,
         repoFullName: "pause-test/repo",
+        orgSlug: "pause-test",
       },
     );
     expect(secondHead).not.toBeNull();
@@ -140,6 +146,15 @@ describeDb("paused hosted review claims", () => {
     expect(
       cleanupJobs.rows.every(
         ({ payload }) =>
+          typeof payload.detailsUrl === "string" &&
+          /^https:\/\/postil\.dev\/orgs\/pause-test\/runs\/[0-9a-f-]+$/.test(
+            payload.detailsUrl,
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      cleanupJobs.rows.every(
+        ({ payload }) =>
           payload.advisoryCheckRunMayExist === true &&
           payload.gateCheckRunMayExist === true,
       ),
@@ -151,6 +166,7 @@ describeDb("paused hosted review claims", () => {
       {
         installationId: 81001,
         repoFullName: "pause-test/repo",
+        orgSlug: "pause-test",
         checkRunsMayExist: false,
       },
     );

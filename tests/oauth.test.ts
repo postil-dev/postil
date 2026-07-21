@@ -4,6 +4,7 @@ import {
   oauthCallbackUrl,
   publicOrigin,
   publicRequestUrl,
+  reviewDetailsUrl,
   safeReturnTarget,
 } from "@/lib/oauth";
 
@@ -63,6 +64,22 @@ describe("post-authentication return targets", () => {
 });
 
 describe("Public origin for browser-facing redirects", () => {
+  test("builds a privacy-bounded dashboard run URL only from configured public data", () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+
+    expect(reviewDetailsUrl("run-id", "customer org")).toBe(
+      "https://postil.dev/orgs/customer%20org/runs/run-id",
+    );
+  });
+
+  test("omits dashboard run URLs when no public origin or organization is available", () => {
+    delete process.env.POSTIL_PUBLIC_URL;
+
+    expect(reviewDetailsUrl("run-id", "customer")).toBeUndefined();
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+    expect(reviewDetailsUrl("run-id", null)).toBeUndefined();
+  });
+
   test("uses POSTIL_PUBLIC_URL, ignoring the proxy-internal request origin", () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
 

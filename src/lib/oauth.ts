@@ -86,6 +86,19 @@ export function configuredPublicOrigin(): string | undefined {
   return normalizeOrigin(configuredOrigin, "POSTIL_PUBLIC_URL");
 }
 
+/** Build the authenticated dashboard URL for one persisted review. */
+export function reviewDetailsUrl(
+  publicId: string,
+  orgSlug: string | null | undefined,
+): string | undefined {
+  const origin = configuredPublicOrigin();
+  if (!origin || !orgSlug) return undefined;
+  return new URL(
+    `/orgs/${encodeURIComponent(orgSlug)}/runs/${encodeURIComponent(publicId)}`,
+    origin,
+  ).toString();
+}
+
 function normalizeOrigin(value: string, source: string): string {
   const url = new URL(value);
   if (url.username || url.password) {

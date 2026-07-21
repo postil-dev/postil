@@ -38,12 +38,17 @@ const describeDb = TEST_URL ? describe : describe.skip;
 
 const WEBHOOK_SECRET = "test-webhook-secret-for-handlers";
 const ORIGINAL_FETCH = globalThis.fetch;
+const ORIGINAL_PUBLIC_URL = process.env.POSTIL_PUBLIC_URL;
 
 // Record check-run completions the removal path drives, and hand back a fake
 // installation token so no real GitHub App credentials are needed. Spread the
 // real module: other importers use its remaining exports, and a bare override
 // object would break their import chains.
-const completedCheckRuns: Array<{ repoFullName: string; conclusion: string }> = [];
+const completedCheckRuns: Array<{
+  repoFullName: string;
+  conclusion: string;
+  detailsUrl?: string;
+}> = [];
 const postedComments: Array<{ repoFullName: string; number: number; body: string }> = [];
 const addedReactions: Array<{ repoFullName: string; commentId: number; kind: string }> = [];
 let pullRequestHeadSha = "head-sha";
@@ -89,8 +94,16 @@ mock.module("@/lib/github/checks", () => ({
     repoFullName: string,
     _id: number,
     conclusion: string,
+    _title: string,
+    _summary: string,
+    _signal?: AbortSignal,
+    detailsUrl?: string,
   ) => {
-    completedCheckRuns.push({ repoFullName, conclusion });
+    completedCheckRuns.push({
+      repoFullName,
+      conclusion,
+      ...(detailsUrl ? { detailsUrl } : {}),
+    });
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
   getPullRequestReviewContext: async () => pullRequestReviewContext,
@@ -182,6 +195,7 @@ describeDb("webhook handler behaviour", () => {
   });
 
   beforeEach(async () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
     completedCheckRuns.length = 0;
     postedComments.length = 0;
     addedReactions.length = 0;
@@ -262,6 +276,8 @@ describeDb("webhook handler behaviour", () => {
 
   afterAll(async () => {
     globalThis.fetch = ORIGINAL_FETCH;
+    if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
+    else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
     await pool?.end();
   });
 
@@ -849,7 +865,12 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(review.rows[0]!.status).toBe("stale");
     expect(review.rows[0]!.finished_at).toBeInstanceOf(Date);
-    expect(completedCheckRuns).toEqual([
+    expect(
+      completedCheckRuns.map(({ repoFullName, conclusion }) => ({
+        repoFullName,
+        conclusion,
+      })),
+    ).toEqual([
       { repoFullName: "octo/repo", conclusion: "neutral" },
       { repoFullName: "octo/repo", conclusion: "neutral" },
     ]);
@@ -1023,7 +1044,12 @@ describeDb("webhook handler behaviour", () => {
       job_status: "done",
       delivery_state: "cancelled",
     });
-    expect(completedCheckRuns).toEqual([
+    expect(
+      completedCheckRuns.map(({ repoFullName, conclusion }) => ({
+        repoFullName,
+        conclusion,
+      })),
+    ).toEqual([
       { repoFullName: "octo/closing", conclusion: "neutral" },
       { repoFullName: "octo/closing", conclusion: "neutral" },
     ]);
@@ -1133,6 +1159,13 @@ describeDb("webhook handler behaviour", () => {
     expect(completedCheckRuns).toHaveLength(2);
     expect(completedCheckRuns.map((c) => c.conclusion).sort()).toEqual(["failure", "neutral"]);
     expect(completedCheckRuns.every((c) => c.repoFullName === "octo/gone")).toBe(true);
+    expect(
+      completedCheckRuns.every((c) =>
+        /^https:\/\/postil\.dev\/orgs\/octo\/runs\/[0-9a-f-]+$/.test(
+          c.detailsUrl ?? "",
+        ),
+      ),
+    ).toBe(true);
 
     const repos = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM repositories WHERE github_repo_id = 8888",

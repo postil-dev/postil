@@ -35,6 +35,7 @@ const row = {
   orgId: 20,
   installationSuspended: false,
   githubInstallationId: 42,
+  orgSlug: "acme",
 };
 
 const selectChain = {
@@ -126,7 +127,16 @@ mock.module("@/lib/db", () => ({
       githubInstallationId: "installations.github_installation_id",
       suspended: "installations.suspended",
     },
+    organizations: {
+      id: "organizations.id",
+      slug: "organizations.slug",
+    },
   },
+}));
+
+mock.module("@/lib/oauth", () => ({
+  reviewDetailsUrl: (publicId: string, orgSlug: string) =>
+    `https://postil.dev/orgs/${orgSlug}/runs/${publicId}`,
 }));
 
 mock.module("@/lib/gate-mode", () => ({
@@ -179,13 +189,14 @@ mock.module("@/lib/github/checks", () => ({
   completeExpectedCheckRun: async (
     _token: string,
     repoFullName: string,
-    expected: { id: number; conclusion: string },
+    expected: { id: number; conclusion: string; detailsUrl?: string },
     title: string,
   ) => {
     checkCalls.push({
       repoFullName,
       checkRunId: expected.id,
       conclusion: expected.conclusion,
+      detailsUrl: expected.detailsUrl,
     });
     checkTitles.push(title);
     if (loseLeaseAfterCheck) leaseHeld = false;
@@ -226,7 +237,13 @@ describe("durable gate state synchronization", () => {
     expect(lockCalls).toBe(2);
     expect(storedStates).toEqual([false]);
     expect(checkCalls).toEqual([
-      { repoFullName: "acme/repo", checkRunId: 99, conclusion: "success" },
+      {
+        repoFullName: "acme/repo",
+        checkRunId: 99,
+        conclusion: "success",
+        detailsUrl:
+          "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
+      },
     ]);
   });
 
@@ -243,6 +260,9 @@ describe("durable gate state synchronization", () => {
     expect(lockCalls).toBe(3);
     expect(storedStates).toEqual([true]);
     expect(checkCalls.map((call) => call.conclusion)).toEqual(["success", "failure"]);
+    expect(checkCalls[1]?.detailsUrl).toBe(
+      "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
+    );
   });
 
   test("rejects malformed internal job payloads", async () => {
@@ -283,6 +303,9 @@ describe("durable gate state synchronization", () => {
 
     expect(checkCalls[0]?.conclusion).toBe("neutral");
     expect(checkTitles).toEqual(["Postil gate is advisory"]);
+    expect(checkCalls[0]?.detailsUrl).toBe(
+      "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
+    );
     expect(storedStates).toEqual([true]);
     expect(storedEnforcement).toEqual([false]);
   });
@@ -294,6 +317,9 @@ describe("durable gate state synchronization", () => {
 
     expect(checkCalls[0]?.conclusion).toBe("neutral");
     expect(checkTitles).toEqual(["Review unavailable"]);
+    expect(checkCalls[0]?.detailsUrl).toBe(
+      "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
+    );
     expect(storedStates).toEqual([false]);
   });
 
