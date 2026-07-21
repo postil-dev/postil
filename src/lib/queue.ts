@@ -68,6 +68,10 @@ export interface RespondJobPayload extends Record<string, unknown> {
   // "path:line" anchor when the mention is a PR review comment, so the bot
   // knows which code the question is about.
   commentAnchor?: string;
+  /** Bounded Postil-authored root comment for a clarification reply. */
+  threadContext?: string;
+  /** Root review-comment id used to keep success and failure replies in-thread. */
+  replyToReviewCommentId?: number;
   sourceDeliveryId?: string;
   trigger?: {
     source: "github_mention";
@@ -95,7 +99,7 @@ export interface WebhookCommentJobPayload extends Record<string, unknown> {
   sourceDeliveryId: string;
 }
 
-/** Idempotent acknowledgement of an admitted structured review request. */
+/** Idempotent acknowledgement of an admitted GitHub conversation request. */
 export interface GithubReactionJobPayload extends Record<string, unknown> {
   installationId: number;
   sourceInstallationId: number;
@@ -104,7 +108,7 @@ export interface GithubReactionJobPayload extends Record<string, unknown> {
   repoFullName: string;
   commentId: number;
   commentKind: "issue_comment" | "pull_request_review_comment";
-  content: "eyes";
+  content: "+1" | "eyes";
   sourceDeliveryId: string;
 }
 
@@ -518,6 +522,63 @@ export async function enqueueRespondJobOnce(
     [JSON.stringify(payload)],
   );
   return result.rows[0] ? Number(result.rows[0].id) : null;
+}
+
+/** Serialize the rolling cap check with response admission. */
+export async function enqueueRespondJobWithinHourlyCap(
+  pool: Pool,
+  payload: RespondJobPayload,
+  hourlyCap: number,
+): Promise<{ id: number | null; rateLimited: boolean }> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `postil:respond-rate:${payload.installationId}`,
+    ]);
+    if (payload.sourceDeliveryId) {
+      const existing = await client.query(
+        `SELECT 1 FROM jobs
+          WHERE kind = 'respond'
+            AND payload->>'sourceDeliveryId' = $1
+          LIMIT 1`,
+        [payload.sourceDeliveryId],
+      );
+      if ((existing.rowCount ?? 0) > 0) {
+        await client.query("COMMIT");
+        return { id: null, rateLimited: false };
+      }
+    }
+    const count = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM jobs
+        WHERE kind = 'respond'
+          AND created_at >= now() - interval '1 hour'
+          AND payload->>'installationId' = $1`,
+      [String(payload.installationId)],
+    );
+    if (Number(count.rows[0]?.count ?? 0) >= hourlyCap) {
+      await client.query("COMMIT");
+      return { id: null, rateLimited: true };
+    }
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       VALUES ('respond', $1, 'queued', now(), 2)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [JSON.stringify(payload)],
+    );
+    await client.query("COMMIT");
+    return {
+      id: inserted.rows[0] ? Number(inserted.rows[0].id) : null,
+      rateLimited: false,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

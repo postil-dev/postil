@@ -1,4 +1,5 @@
 import { apiBase } from "./app-auth";
+import { isPostilBotLogin } from "./conversation";
 
 /**
  * Check-run REST helpers.
@@ -69,6 +70,14 @@ class GitHubHttpError extends Error {
 }
 
 export type GithubCommentKind = "issue_comment" | "pull_request_review_comment";
+export type CommentReaction = "+1" | "eyes";
+
+export interface PullRequestReviewComment {
+  id: number;
+  body: string;
+  userLogin?: string;
+  inReplyToId?: number;
+}
 
 /**
  * Add the App's acknowledgement to the exact comment that requested work.
@@ -80,7 +89,7 @@ export async function addCommentReaction(
   repoFullName: string,
   commentId: number,
   commentKind: GithubCommentKind,
-  content: "eyes",
+  content: CommentReaction,
   signal?: AbortSignal,
 ): Promise<"created" | "already_exists" | "missing"> {
   const collection = commentKind === "issue_comment" ? "issues" : "pulls";
@@ -99,6 +108,39 @@ export async function addCommentReaction(
     if (error instanceof GitHubHttpError && error.status === 404) return "missing";
     throw error;
   }
+}
+
+/** Load the root review comment before accepting an unmentioned thread reply. */
+export async function getPullRequestReviewComment(
+  token: string,
+  repoFullName: string,
+  commentId: number,
+  signal?: AbortSignal,
+): Promise<PullRequestReviewComment> {
+  const response = await githubFetch(
+    token,
+    "GET",
+    `/repos/${repoFullName}/pulls/comments/${commentId}`,
+    undefined,
+    signal,
+  );
+  const value = (await response.json()) as {
+    id?: number;
+    body?: string;
+    user?: { login?: string };
+    in_reply_to_id?: number;
+  };
+  if (!Number.isSafeInteger(value.id) || typeof value.body !== "string") {
+    throw new Error("GitHub review comment response is malformed");
+  }
+  return {
+    id: value.id!,
+    body: value.body,
+    ...(value.user?.login ? { userLogin: value.user.login } : {}),
+    ...(Number.isSafeInteger(value.in_reply_to_id)
+      ? { inReplyToId: value.in_reply_to_id }
+      : {}),
+  };
 }
 
 export class AmbiguousCheckRunCreationError extends Error {
@@ -457,6 +499,29 @@ export async function postIssueComment(
   return data.id!;
 }
 
+/** Reply inside an existing pull-request review thread. */
+export async function postPullRequestReviewCommentReply(
+  token: string,
+  repoFullName: string,
+  pullNumber: number,
+  rootCommentId: number,
+  body: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  const response = await githubFetch(
+    token,
+    "POST",
+    `/repos/${repoFullName}/pulls/${pullNumber}/comments/${rootCommentId}/replies`,
+    { body },
+    signal,
+  );
+  const data = (await response.json()) as { id?: number };
+  if (!Number.isSafeInteger(data.id)) {
+    throw new Error("GitHub review reply response has no valid id");
+  }
+  return data.id!;
+}
+
 /** Remove a comment that GitHub accepted after its publication lease ended. */
 export async function deleteIssueComment(
   token: string,
@@ -468,6 +533,22 @@ export async function deleteIssueComment(
     token,
     "DELETE",
     `/repos/${repoFullName}/issues/comments/${commentId}`,
+    undefined,
+    signal,
+  );
+}
+
+/** Remove a pull-request review reply accepted after its lease ended. */
+export async function deletePullRequestReviewComment(
+  token: string,
+  repoFullName: string,
+  commentId: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  await githubFetch(
+    token,
+    "DELETE",
+    `/repos/${repoFullName}/pulls/comments/${commentId}`,
     undefined,
     signal,
   );
@@ -498,16 +579,60 @@ export async function findIssueCommentByMarker(
     const comments = (await response.json()) as Array<{
       id?: number;
       body?: string;
+      user?: { login?: string };
     }>;
     const match = comments.find(
       (comment) =>
-        Number.isSafeInteger(comment.id) && comment.body?.includes(marker),
+        Number.isSafeInteger(comment.id) &&
+        comment.body?.includes(marker) &&
+        isPostilBotLogin(comment.user?.login),
     );
     if (match?.id !== undefined) return match.id;
     if (comments.length < ISSUE_COMMENTS_PAGE_SIZE) return null;
   }
   throw new Error(
     `GitHub comment marker search is inconclusive after ${RESPOND_MARKER_MAX_PAGES} full pages`,
+  );
+}
+
+/** Find a previously posted inline reply after an ambiguous delivery. */
+export async function findPullRequestReviewCommentByMarker(
+  token: string,
+  repoFullName: string,
+  pullNumber: number,
+  marker: string,
+  since: Date,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  for (let page = 1; page <= RESPOND_MARKER_MAX_PAGES; page += 1) {
+    const query = new URLSearchParams({
+      per_page: String(ISSUE_COMMENTS_PAGE_SIZE),
+      page: String(page),
+      since: since.toISOString(),
+    });
+    const response = await githubFetch(
+      token,
+      "GET",
+      `/repos/${repoFullName}/pulls/${pullNumber}/comments?${query}`,
+      undefined,
+      signal,
+    );
+    const comments = (await response.json()) as Array<{
+      id?: number;
+      body?: string;
+      user?: { login?: string };
+    }>;
+    const match = comments.find(
+      (comment) =>
+        Number.isSafeInteger(comment.id) &&
+        comment.body?.includes(marker) &&
+        isPostilBotLogin(comment.user?.login),
+    );
+    if (match?.id !== undefined) return match.id;
+    if (comments.length < ISSUE_COMMENTS_PAGE_SIZE) return null;
+  }
+  throw new Error(
+    `GitHub review comment marker search is inconclusive after ${RESPOND_MARKER_MAX_PAGES} full pages`,
   );
 }
 

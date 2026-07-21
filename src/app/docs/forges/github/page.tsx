@@ -73,9 +73,13 @@ postil review --repo owner/name --pr 123`}</code>
         such as <code>@postil review the current head</code> or{" "}
         <code>@postil re-review</code> runs the structured reviewer, with
         inline findings and the compact review summary. Other mentions are
-        treated as questions and receive a bounded thread reply. Issue
-        comments cannot start a pull-request review. The CLI equivalent for a
-        question is:
+        treated as questions and receive a bounded reply. Postil reacts with
+        eyes when it accepts a comment request. In an inline Postil review
+        thread, a collaborator can ask a clear follow-up question without
+        mentioning the bot again; the answer stays in that thread. A brief
+        thank-you receives a thumbs-up without a model call. Issue comments
+        cannot start a pull-request review. The CLI equivalent for a question
+        is:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`postil respond --repo owner/name --pr 123 --comment "@postil is this safe?"

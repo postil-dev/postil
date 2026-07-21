@@ -1516,6 +1516,10 @@ export const respondDeliveries = pgTable(
     issueNumber: integer("issue_number").notNull(),
     isPr: boolean("is_pr").notNull().default(false),
     sourceHeadSha: text("source_head_sha"),
+    markerNonce: uuid("marker_nonce"),
+    replyToReviewCommentId: bigint("reply_to_review_comment_id", {
+      mode: "number",
+    }),
     publicationIdentityState: text("publication_identity_state")
       .notNull()
       .default("complete"),

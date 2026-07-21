@@ -11,9 +11,17 @@ import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
 import {
   ADVISORY_CHECK_NAME,
   GATE_CHECK_NAME,
+  getPullRequestReviewComment,
   getPullRequestHeadSha,
   getPullRequestReviewContext,
 } from "@/lib/github/checks";
+import {
+  boundedThreadContext,
+  isAcceptableConversationRequest,
+  isClarificationRequest,
+  isGratitudeOnly,
+  isPostilBotLogin,
+} from "@/lib/github/conversation";
 import {
   type GithubAccount,
   type RepoSummary,
@@ -48,7 +56,7 @@ import {
   acceptWebhookDelivery,
   cancelPullRequestPublication,
   enqueueGithubReactionJobOnce,
-  enqueueRespondJobOnce,
+  enqueueRespondJobWithinHourlyCap,
   enqueueReviewJobOnce,
   type RespondJobPayload,
   type ReviewJobPayload,
@@ -169,6 +177,7 @@ interface CommentEventPayload {
     // Present on pull_request_review_comment: the thread's anchor.
     path?: string;
     line?: number;
+    in_reply_to_id?: number;
   };
   issue?: { number: number; body?: string; pull_request?: unknown };
   pull_request?: { number: number };
@@ -894,42 +903,54 @@ function respondHourlyCap(): number {
   return readPositiveIntEnv("POSTIL_RESPOND_HOURLY_CAP", 30);
 }
 
-/**
- * True when this installation has already enqueued at least `cap` respond jobs
- * in the last hour. Cheap count against the existing jobs table keyed on the
- * payload's installationId; no new table or state.
- */
-async function respondRateLimited(installationId: number, cap: number): Promise<boolean> {
-  const res = await getPool().query<{ count: string }>(
-    `SELECT count(*)::text AS count
-       FROM jobs
-      WHERE kind = 'respond'
-        AND created_at >= now() - interval '1 hour'
-        AND (payload->>'installationId')::bigint = $1`,
-    [installationId],
-  );
-  return Number(res.rows[0]?.count ?? 0) >= cap;
-}
-
 // Respond jobs inherit delivery-id dedupe from the durable webhook inbox. A
 // completed issue_comment/issues delivery is acknowledged without dispatch.
 async function enqueueRespond(
   payload: RespondJobPayload,
   triggerFollowupDrain: boolean,
-): Promise<void> {
+): Promise<"admitted" | "duplicate" | "rate_limited"> {
   const cap = respondHourlyCap();
-  if (await respondRateLimited(payload.installationId, cap)) {
+  const admitted = await enqueueRespondJobWithinHourlyCap(getPool(), payload, cap);
+  if (admitted.rateLimited) {
     console.warn(
       `respond job skipped: installation ${payload.installationId} exceeded ${cap} respond jobs/hour`,
     );
-    return;
+    return "rate_limited";
   }
-  const id = await enqueueRespondJobOnce(getPool(), payload);
-  if (id === null) {
+  if (admitted.id === null) {
     console.log(`respond job skipped: delivery ${payload.sourceDeliveryId} already enqueued`);
-    return;
+    return "duplicate";
   }
   if (triggerFollowupDrain) triggerQueueDrain("respond");
+  return "admitted";
+}
+
+async function enqueueConversationReaction(
+  payload: CommentEventPayload,
+  sourceDeliveryId: string,
+  authority: { sourceInstallationId: number; sourceOrgId: number; githubRepoId: number },
+  commentKind: "issue_comment" | "pull_request_review_comment",
+  content: "+1" | "eyes",
+): Promise<void> {
+  const installationId = payload.installation?.id;
+  const repo = payload.repository;
+  const commentId = payload.comment?.id;
+  if (
+    !installationId ||
+    !repo ||
+    !Number.isSafeInteger(commentId) ||
+    commentId === undefined ||
+    commentId <= 0
+  ) return;
+  await enqueueGithubReactionJobOnce(getPool(), {
+    installationId,
+    ...authority,
+    repoFullName: repo.full_name,
+    commentId,
+    commentKind,
+    content,
+    sourceDeliveryId,
+  });
 }
 
 async function handleIssueComment(
@@ -947,11 +968,28 @@ async function handleIssueComment(
       triggerFollowupDrain,
     )
   ) return;
-  if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
+  if (
+    typeof body !== "string" ||
+    !isAcceptableConversationRequest(body) ||
+    !mentionsPostil(body) ||
+    isBot(payload.comment?.user) ||
+    isBot(payload.sender)
+  ) return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
   const authority = await enabledRepoForMention(payload.installation?.id, payload.repository);
   if (!authority) return;
+  if (isGratitudeOnly(body)) {
+    await enqueueConversationReaction(
+      payload,
+      sourceDeliveryId,
+      authority,
+      "issue_comment",
+      "+1",
+    );
+    if (triggerFollowupDrain) triggerQueueDrain("conversation-gratitude");
+    return;
+  }
   if (isPostilReviewCommand(body)) {
     if (payload.issue.pull_request != null) {
       await enqueueMentionReview(
@@ -971,7 +1009,7 @@ async function handleIssueComment(
     }
     return;
   }
-  await enqueueRespond({
+  const admission = await enqueueRespond({
     installationId: payload.installation!.id,
     ...authority,
     repoFullName: payload.repository.full_name,
@@ -991,10 +1029,19 @@ async function handleIssueComment(
           ).headSha,
         }
       : {}),
-    comment: body!,
+    comment: body,
     sourceDeliveryId,
     trigger: respondTrigger(payload, sourceDeliveryId, "issue_comment"),
-  }, triggerFollowupDrain);
+  }, false);
+  if (admission === "rate_limited") return;
+  await enqueueConversationReaction(
+    payload,
+    sourceDeliveryId,
+    authority,
+    "issue_comment",
+    "eyes",
+  );
+  if (triggerFollowupDrain) triggerQueueDrain("conversation-request-admitted");
 }
 
 async function handleReviewComment(
@@ -1018,12 +1065,20 @@ async function handleReviewComment(
       triggerFollowupDrain,
     )
   ) return;
-  if (!mentionsPostil(body) || isBot(payload.comment?.user) || isBot(payload.sender)) return;
+  if (typeof body !== "string" || !isAcceptableConversationRequest(body)) return;
+  const explicitMention = mentionsPostil(body);
+  const inReplyToId = payload.comment?.in_reply_to_id;
+  if (
+    (!explicitMention &&
+      (!Number.isSafeInteger(inReplyToId) || inReplyToId === undefined || inReplyToId <= 0)) ||
+    isBot(payload.comment?.user) ||
+    isBot(payload.sender)
+  ) return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
   const authority = await enabledRepoForMention(payload.installation?.id, payload.repository);
   if (!authority) return;
-  if (isPostilReviewCommand(body)) {
+  if (explicitMention && isPostilReviewCommand(body)) {
     await enqueueMentionReview(
       payload,
       payload.pull_request.number,
@@ -1033,13 +1088,52 @@ async function handleReviewComment(
     );
     return;
   }
+  const token = await getInstallationToken(payload.installation!.id);
+  let threadContext: string | undefined;
+  if (!explicitMention) {
+    const root = await getPullRequestReviewComment(
+      token,
+      payload.repository.full_name,
+      inReplyToId!,
+    );
+    if (!isPostilBotLogin(root.userLogin)) return;
+    if (isGratitudeOnly(body!)) {
+      await enqueueConversationReaction(
+        payload,
+        sourceDeliveryId,
+        authority,
+        "pull_request_review_comment",
+        "+1",
+      );
+      if (triggerFollowupDrain) triggerQueueDrain("conversation-gratitude");
+      return;
+    }
+    if (!isClarificationRequest(body!)) return;
+    threadContext = boundedThreadContext(root.body);
+  } else if (isGratitudeOnly(body!)) {
+    await enqueueConversationReaction(
+      payload,
+      sourceDeliveryId,
+      authority,
+      "pull_request_review_comment",
+      "+1",
+    );
+    if (triggerFollowupDrain) triggerQueueDrain("conversation-gratitude");
+    return;
+  }
   // Review comments anchor to a file/line; without it the bot answers blind
   // to which code the question is about.
   const anchor =
     payload.comment?.path != null
       ? `${payload.comment.path}${payload.comment.line != null ? `:${payload.comment.line}` : ""}`
       : undefined;
-  await enqueueRespond({
+  const sourceCommentId = payload.comment?.id;
+  if (
+    !Number.isSafeInteger(sourceCommentId) ||
+    sourceCommentId === undefined ||
+    sourceCommentId <= 0
+  ) return;
+  const admission = await enqueueRespond({
     installationId: payload.installation!.id,
     ...authority,
     repoFullName: payload.repository.full_name,
@@ -1048,16 +1142,27 @@ async function handleReviewComment(
     isPr: true,
     sourceHeadSha: (
       await getPullRequestReviewContext(
-        await getInstallationToken(payload.installation!.id),
+        token,
         payload.repository.full_name,
         payload.pull_request.number,
       )
     ).headSha,
     comment: body!,
     commentAnchor: anchor,
+    ...(threadContext ? { threadContext } : {}),
+    replyToReviewCommentId: inReplyToId ?? sourceCommentId,
     sourceDeliveryId,
     trigger: respondTrigger(payload, sourceDeliveryId, "pull_request_review_comment"),
-  }, triggerFollowupDrain);
+  }, false);
+  if (admission === "rate_limited") return;
+  await enqueueConversationReaction(
+    payload,
+    sourceDeliveryId,
+    authority,
+    "pull_request_review_comment",
+    "eyes",
+  );
+  if (triggerFollowupDrain) triggerQueueDrain("conversation-request-admitted");
 }
 
 function respondTrigger(

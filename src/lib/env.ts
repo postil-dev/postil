@@ -80,6 +80,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     scope: ["worker"],
   },
   {
+    name: "GITHUB_APP_SLUG",
+    purpose: "GitHub App slug used for install links and bot-comment ownership checks",
+    example: "postil-dev",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
     name: "GITHUB_APP_PRIVATE_KEY",
     purpose: "GitHub App private key, PEM or base64-encoded PEM",
     example: "-----BEGIN RSA PRIVATE KEY----- ... (or its base64)",

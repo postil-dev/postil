@@ -8,6 +8,12 @@ export function githubAppInstallUrl(): string {
   return `https://github.com/apps/${slug}/installations/new`;
 }
 
+/** Login GitHub assigns to comments created by this App installation. */
+export function githubAppBotLogin(): string {
+  const slug = process.env.GITHUB_APP_SLUG?.trim() || "postil-dev";
+  return `${slug}[bot]`;
+}
+
 interface GithubInstallationRef {
   githubInstallationId: number;
   accountLogin: string;

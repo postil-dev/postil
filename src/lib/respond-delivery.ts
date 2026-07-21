@@ -11,6 +11,7 @@ export const RESPOND_DELIVERY_MAX_ATTEMPTS = 2_147_483_647;
 
 export interface RespondDelivery {
   jobId: number;
+  markerNonce: string | null;
   repoFullName: string;
   issueNumber: number;
   body: string;
@@ -24,6 +25,7 @@ export interface RespondDelivery {
   sourceGithubRepoId: number | null;
   isPr: boolean;
   sourceHeadSha: string | null;
+  replyToReviewCommentId: number | null;
   publicationLeaseId: string | null;
 }
 
@@ -35,6 +37,7 @@ export async function getRespondDelivery(
     await db
       .select({
         jobId: schema.respondDeliveries.jobId,
+        markerNonce: schema.respondDeliveries.markerNonce,
         repoFullName: schema.respondDeliveries.repoFullName,
         issueNumber: schema.respondDeliveries.issueNumber,
         body: schema.respondDeliveries.body,
@@ -49,6 +52,8 @@ export async function getRespondDelivery(
         sourceGithubRepoId: schema.respondDeliveries.sourceGithubRepoId,
         isPr: schema.respondDeliveries.isPr,
         sourceHeadSha: schema.respondDeliveries.sourceHeadSha,
+        replyToReviewCommentId:
+          schema.respondDeliveries.replyToReviewCommentId,
         publicationLeaseId: schema.respondDeliveries.publicationLeaseId,
       })
       .from(schema.respondDeliveries)
@@ -78,6 +83,8 @@ export async function prepareUnmeteredRespondDelivery(
     issueNumber: number;
     isPr: boolean;
     sourceHeadSha?: string;
+    markerNonce?: string;
+    replyToReviewCommentId?: number;
     body: string;
   },
 ): Promise<void> {
@@ -241,7 +248,33 @@ export async function markRespondCancelled(
     ));
 }
 
-export function respondDeliveryMarker(jobId: number): string {
-  if (!Number.isSafeInteger(jobId) || jobId <= 0) throw new Error("respond job id is invalid");
+export function respondDeliveryMarker(markerNonce: string): string {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      markerNonce,
+    )
+  ) {
+    throw new Error("respond delivery marker nonce is invalid");
+  }
+  return `<!-- postil-respond:${markerNonce.toLowerCase()} -->`;
+}
+
+export function legacyRespondDeliveryMarker(jobId: number): string {
+  if (!Number.isSafeInteger(jobId) || jobId <= 0) {
+    throw new Error("respond delivery job id is invalid");
+  }
   return `<!-- postil-respond-job:${jobId} -->`;
+}
+
+/** Dual markers remain discoverable by workers on either side of deployment. */
+export function respondDeliveryMarkers(jobId: number, markerNonce: string): string {
+  return `${respondDeliveryMarker(markerNonce)}\n${legacyRespondDeliveryMarker(jobId)}`;
+}
+
+export function respondDeliveryMarkerForDelivery(
+  delivery: Pick<RespondDelivery, "jobId" | "markerNonce">,
+): string {
+  return delivery.markerNonce
+    ? respondDeliveryMarker(delivery.markerNonce)
+    : legacyRespondDeliveryMarker(delivery.jobId);
 }
