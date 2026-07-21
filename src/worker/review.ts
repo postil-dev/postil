@@ -737,7 +737,10 @@ async function resumeStagedReviewCompletion(input: {
   ) {
     throw new PermanentJobError("review publication recovery identity changed");
   }
-  if (stagedReview.status !== "running") {
+  if (
+    stagedReview.status !== "running" &&
+    stagedReview.status !== "completed"
+  ) {
     console.warn(
       `review publication recovery ${stagedReview.id} is already ${stagedReview.status}`,
     );
@@ -784,45 +787,53 @@ async function resumeStagedReviewCompletion(input: {
       },
       signal,
     );
-    const reservation = (
-      await db
-        .select({ id: schema.hostedUsageReservations.id })
-        .from(schema.hostedUsageReservations)
-        .where(eq(schema.hostedUsageReservations.reviewId, stagedReview.id))
-        .limit(1)
-    )[0];
-    const completion = await finalizeStagedReviewCompletionWithGateMode(
-      db,
-      {
-        reviewId: stagedReview.id,
-        usage: reviewUsageFromEnvelope(stagedReview.envelope, {
-          orgId: installation.orgId,
-          repositoryId: repository.id,
-          byok: !reservation,
-        }),
-        hostedUsageReservationId: reservation?.id ?? null,
-        usageAccountingComplete:
-          stagedReview.envelope.usageAccountingComplete === true,
-      },
-      installation.orgId,
-    );
-    if (completion.completed) {
+    let gateEnabled: boolean;
+    if (stagedReview.status === "running") {
+      const reservation = (
+        await db
+          .select({ id: schema.hostedUsageReservations.id })
+          .from(schema.hostedUsageReservations)
+          .where(eq(schema.hostedUsageReservations.reviewId, stagedReview.id))
+          .limit(1)
+      )[0];
+      const completion = await finalizeStagedReviewCompletionWithGateMode(
+        db,
+        {
+          reviewId: stagedReview.id,
+          usage: reviewUsageFromEnvelope(stagedReview.envelope, {
+            orgId: installation.orgId,
+            repositoryId: repository.id,
+            byok: !reservation,
+          }),
+          hostedUsageReservationId: reservation?.id ?? null,
+          usageAccountingComplete:
+            stagedReview.envelope.usageAccountingComplete === true,
+        },
+        installation.orgId,
+      );
+      if (!completion.completed) {
+        throw new ReviewPublicationReconciliationError(
+          "review publication recovery lost its terminal-state race",
+        );
+      }
+      gateEnabled = completion.gateEnabled;
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );
     } else {
-      throw new ReviewPublicationReconciliationError(
-        "review publication recovery lost its terminal-state race",
-      );
+      // The database transition can commit before the exact GitHub PATCH.
+      // Retry that final publication for completed rows without repeating
+      // accounting or model work.
+      gateEnabled = await getOrganizationGateEnabled(db, installation.orgId);
     }
     const gateConclusion = gateCheckConclusionForEnvelope(
       stagedReview.envelope,
       new Set(),
-      completion.gateEnabled,
+      gateEnabled,
     );
     const gateOutput = gateCheckOutput(
       gateConclusion,
-      completion.gateEnabled,
+      gateEnabled,
       operationallyUnavailable,
     );
     await completeExpectedCheckRun(

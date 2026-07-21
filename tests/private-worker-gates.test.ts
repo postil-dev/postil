@@ -300,6 +300,28 @@ describe("private repository worker defense in depth", () => {
     );
   });
 
+  test("publication recovery retries the exact gate after database completion", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const recoveryStart = source.indexOf(
+      "async function resumeStagedReviewCompletion",
+    );
+    const recoveryEnd = source.indexOf(
+      "function gateCheckOutput",
+      recoveryStart,
+    );
+    const recovery = source.slice(recoveryStart, recoveryEnd);
+
+    expect(recovery).toContain('stagedReview.status !== "running"');
+    expect(recovery).toContain('stagedReview.status !== "completed"');
+    expect(recovery).toContain('if (stagedReview.status === "running")');
+    expect(recovery).toContain(
+      "gateEnabled = await getOrganizationGateEnabled(db, installation.orgId)",
+    );
+    expect(recovery.indexOf("completeExpectedCheckRun")).toBeGreaterThan(
+      recovery.indexOf("getOrganizationGateEnabled"),
+    );
+  });
+
   test("advisory organizations derive a neutral exact gate verdict", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const reviewStart = source.indexOf("export async function runReviewJob");
