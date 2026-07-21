@@ -289,6 +289,9 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(verification, finalization)).toContain(
       "{ cause: error }",
     );
+    expect(source.slice(finalization, gatePublication)).toContain(
+      "getActiveApprovalIds(db, reviewId)",
+    );
     expect(source.slice(gatePublication, gatePublication + 500)).toContain(
       "id: gateCheckRunId",
     );
@@ -319,6 +322,9 @@ describe("private repository worker defense in depth", () => {
     );
     expect(recovery.indexOf("completeExpectedCheckRun")).toBeGreaterThan(
       recovery.indexOf("getOrganizationGateEnabled"),
+    );
+    expect(recovery).toContain(
+      "getActiveApprovalIds(db, stagedReview.id)",
     );
   });
 

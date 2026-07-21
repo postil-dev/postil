@@ -5,7 +5,6 @@ import { schema } from "@/lib/db";
 import {
   computeEffectiveGate,
   envelopeSchema,
-  gateCheckConclusionForEnvelope,
   type Envelope,
 } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
@@ -172,11 +171,6 @@ export async function stageReviewCompletionCandidate(
     const gateEnabled =
       orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
     const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
-    const gateConclusion = gateCheckConclusionForEnvelope(
-      gateTruth.envelope,
-      new Set(),
-      gateEnabled,
-    );
     const rows = await tx
       .update(schema.reviews)
       .set({
@@ -216,8 +210,7 @@ export async function stageReviewCompletionCandidate(
         .update(schema.jobs)
         .set({
           payload: sql`${schema.jobs.payload} || jsonb_build_object(
-            'recoveryReviewId', ${input.reviewId}::bigint,
-            'recoveryGateConclusion', ${gateConclusion}::text
+            'recoveryReviewId', ${input.reviewId}::bigint
           )`,
         })
         .where(eq(schema.jobs.id, input.reviewJobId));

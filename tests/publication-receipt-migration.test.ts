@@ -214,14 +214,12 @@ describeDb("publication receipt migration and lifecycle", () => {
       status: string;
       has_envelope: boolean;
       recovery_review_id: string;
-      recovery_gate_conclusion: string;
       receipts: string;
       usage: string;
     }>(
       `SELECT review.status,
               review.envelope IS NOT NULL AS has_envelope,
               job.payload->>'recoveryReviewId' AS recovery_review_id,
-              job.payload->>'recoveryGateConclusion' AS recovery_gate_conclusion,
               (SELECT count(*) FROM review_publication_receipts receipt WHERE receipt.review_id = review.id) AS receipts,
               (SELECT count(*) FROM usage_events usage WHERE usage.review_id = review.id) AS usage
          FROM reviews review
@@ -233,7 +231,6 @@ describeDb("publication receipt migration and lifecycle", () => {
       status: "running",
       has_envelope: true,
       recovery_review_id: String(reviewId),
-      recovery_gate_conclusion: "success",
       receipts: "1",
       usage: "0",
     });

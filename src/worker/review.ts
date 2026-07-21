@@ -27,6 +27,7 @@ import {
   type Envelope,
   type GateCheckConclusion,
 } from "@/lib/envelope";
+import { getActiveApprovalIds } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
@@ -826,9 +827,10 @@ async function resumeStagedReviewCompletion(input: {
       // accounting or model work.
       gateEnabled = await getOrganizationGateEnabled(db, installation.orgId);
     }
+    const activeApprovalIds = await getActiveApprovalIds(db, stagedReview.id);
     const gateConclusion = gateCheckConclusionForEnvelope(
       stagedReview.envelope,
-      new Set(),
+      activeApprovalIds,
       gateEnabled,
     );
     const gateOutput = gateCheckOutput(
@@ -1677,9 +1679,10 @@ export async function runReviewJob(
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );
+      const activeApprovalIds = await getActiveApprovalIds(db, reviewId);
       const gateConclusion = gateCheckConclusionForEnvelope(
         ingested.envelope,
-        new Set(),
+        activeApprovalIds,
         completion.gateEnabled,
       );
       const gateOutput = gateCheckOutput(

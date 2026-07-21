@@ -49,8 +49,6 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   trigger?: ReviewTriggerContext;
   /** Durable pointer written after the CLI result and publication receipt are staged. */
   recoveryReviewId?: number;
-  /** Gate conclusion already published by the CLI for the staged review. */
-  recoveryGateConclusion?: "success" | "failure" | "neutral";
   /** Private marker that prevents a web-process queue drain from claiming a rehearsal recovery. */
   privateWorkerRehearsalNonce?: string;
 }
