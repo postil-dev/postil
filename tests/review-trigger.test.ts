@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
+import {
+  normalizeReviewTriggerContext,
+  reviewRequiresFullDiff,
+} from "@/lib/review-trigger";
 
 describe("review trigger context", () => {
   test("keeps auditable fields from a valid requested review", () => {
@@ -73,5 +76,31 @@ describe("review trigger context", () => {
       webhookDeliveryId: "delivery-4",
       webhookEvent: "issue_comment",
     });
+  });
+});
+
+describe("review diff selection", () => {
+  test("uses a full diff for explicit intent or a changed base", () => {
+    expect(
+      reviewRequiresFullDiff({
+        requested: true,
+        baselineBaseSha: "base",
+        currentBaseSha: "base",
+      }),
+    ).toBe(true);
+    expect(
+      reviewRequiresFullDiff({
+        requested: false,
+        baselineBaseSha: "old-base",
+        currentBaseSha: "new-base",
+      }),
+    ).toBe(true);
+    expect(
+      reviewRequiresFullDiff({
+        requested: false,
+        baselineBaseSha: "base",
+        currentBaseSha: "base",
+      }),
+    ).toBe(false);
   });
 });

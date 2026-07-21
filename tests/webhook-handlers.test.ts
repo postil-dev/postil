@@ -950,6 +950,42 @@ describeDb("webhook handler behaviour", () => {
     expect(jobs.rows[0]!.payload.headSha).toBe("new-head");
   });
 
+  test("pull request description edits enqueue a full same-head review", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 251);
+    await seedRepo(inst, 7879, "octo/metadata");
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      headSha: "same-head",
+      baseSha: "base",
+    };
+
+    const res = await post(
+      "pull_request",
+      {
+        action: "edited",
+        installation: { id: 251 },
+        repository: { id: 7879, full_name: "octo/metadata", private: false },
+        pull_request: {
+          number: 8,
+          head: { sha: "same-head" },
+          base: { sha: "base" },
+        },
+      },
+      "delivery-edit-1",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{
+      payload: { forceFullReview?: boolean; sourceDeliveryId?: string };
+    }>("SELECT payload FROM jobs WHERE kind = 'review'");
+    expect(jobs.rows).toHaveLength(1);
+    expect(jobs.rows[0]?.payload).toMatchObject({
+      forceFullReview: true,
+      sourceDeliveryId: "delivery-edit-1",
+    });
+  });
+
   for (const action of ["opened", "synchronize"] as const) {
     test(`signed pull_request ${action} stays queued through exact release activation`, async () => {
       const releaseSha = action === "opened" ? "1".repeat(40) : "2".repeat(40);

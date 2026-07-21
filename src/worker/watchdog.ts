@@ -5,6 +5,7 @@ import { scheduleCustomerNotificationEmailJobs } from "@/lib/customer-notificati
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
 import { checkRunExternalId } from "@/lib/github/checks";
 import { reviewDetailsUrl } from "@/lib/oauth";
+import { COALESCED_REVIEW_PAYLOAD_KEY } from "@/lib/queue";
 import {
   reconcileOperatorAlertDeliveries,
   sweepExpiredSelfServiceTrials,
@@ -110,7 +111,12 @@ export async function watchdogPass(
     if (claimed) killed += 1;
   }
 
-  // Requeue or fail jobs whose worker died mid-run. The data-modifying CTE
+  // Requeue or fail jobs whose worker died mid-run. A retained review request
+  // replaces an abandoned pre-publication attempt with a fresh job that keeps
+  // the configured retry budget.
+  // Publication recovery remains on its original payload and promotes the
+  // retained request only after that external reconciliation completes.
+  // The data-modifying CTE
   // durably queues the user-facing reply for any respond job that exhausts
   // its retries here in the same statement. The conditional
   // `status = 'running'` guard means only this transition wins the row; the
@@ -124,6 +130,10 @@ export async function watchdogPass(
     `WITH updated AS (
        UPDATE jobs
        SET status = CASE
+             WHEN kind = 'review'
+                  AND NOT payload ? 'recoveryReviewId'
+                  AND jsonb_typeof(payload -> $2) = 'object'
+               THEN 'failed'::job_status
              WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
                   OR (kind = 'review' AND payload ? 'recoveryReviewId')
                   OR attempts < max_attempts
@@ -131,14 +141,23 @@ export async function watchdogPass(
              ELSE 'failed'::job_status
            END,
            locked_at = NULL, locked_by = NULL, run_after = now(),
-           last_error = COALESCE(last_error, '') ||
-             CASE
-               WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
-                    OR (kind = 'review' AND payload ? 'recoveryReviewId')
-                    OR attempts < max_attempts
-                 THEN ' [watchdog: requeued stuck job]'
-               ELSE ' [watchdog: failed stuck job after retry budget exhausted]'
-             END
+           last_error = CASE
+             WHEN kind = 'review'
+                  AND NOT payload ? 'recoveryReviewId'
+                  AND jsonb_typeof(payload -> $2) = 'object'
+               THEN concat_ws(
+                 ' ', NULLIF(last_error, ''),
+                 '[watchdog: failed stuck job and retained newer review]'
+               )
+             ELSE COALESCE(last_error, '') ||
+               CASE
+                 WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
+                      OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                      OR attempts < max_attempts
+                   THEN ' [watchdog: requeued stuck job]'
+                 ELSE ' [watchdog: failed stuck job after retry budget exhausted]'
+               END
+           END
        WHERE status = 'running' AND locked_at < $1
          AND NOT EXISTS (
            SELECT 1
@@ -146,16 +165,25 @@ export async function watchdogPass(
             WHERE rehearsal.job_id = jobs.id
               AND rehearsal.state = 'awaiting_replacement'
          )
-       RETURNING id, kind, status, payload
+       RETURNING id, kind, status, payload, max_attempts
      )
      INSERT INTO jobs (kind, payload, max_attempts)
+     SELECT
+       'review',
+       payload -> $2,
+       max_attempts
+     FROM updated
+     WHERE kind = 'review'
+       AND status = 'failed'
+       AND jsonb_typeof(payload -> $2) = 'object'
+     UNION ALL
      SELECT
        'respond-failure-comment',
        payload || jsonb_build_object('respondJobId', id),
        5
      FROM updated
      WHERE kind = 'respond' AND status = 'failed'`,
-    [cutoff],
+    [cutoff, COALESCED_REVIEW_PAYLOAD_KEY],
   );
 
   await reconcileOperatorAlertDeliveries(db);

@@ -44,6 +44,16 @@ export function reviewTriggerDescription(source: ReviewTriggerSource): string {
   return "Origin not recorded";
 }
 
+/** Select a complete base-to-head diff for explicit reruns or a changed PR base. */
+export function reviewRequiresFullDiff(input: {
+  requested: boolean;
+  baselineBaseSha?: string;
+  currentBaseSha: string;
+}): boolean {
+  return input.requested ||
+    (input.baselineBaseSha !== undefined && input.baselineBaseSha !== input.currentBaseSha);
+}
+
 export function normalizeReviewTriggerContext(value: unknown): ReviewTriggerContext {
   if (typeof value !== "object" || value === null) return { source: "unknown" };
   const candidate = value as Partial<ReviewTriggerContext>;

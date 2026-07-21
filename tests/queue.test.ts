@@ -502,6 +502,255 @@ describeDb("postgres job queue", () => {
     expect(await enqueueReviewJobOnce(pool, payload)).not.toBeNull();
   });
 
+  test("same-head queued reviews retain newest metadata and sticky full-review intent", async () => {
+    const initial = {
+      installationId: 1,
+      repoFullName: "octo/queued-upgrade",
+      prNumber: 42,
+      headSha: "a".repeat(40),
+      baseSha: "old-base",
+      sourceDeliveryId: "initial",
+      trigger: {
+        source: "automatic_pull_request" as const,
+        webhookDeliveryId: "initial",
+        webhookEvent: "pull_request" as const,
+      },
+    };
+    const id = await enqueueReviewJobOnce(pool, initial);
+    expect(id).not.toBeNull();
+    if (id === null) throw new Error("initial review job was not retained");
+
+    expect(
+      await enqueueReviewJobOnce(pool, {
+        ...initial,
+        sourceDeliveryId: "requested",
+        forceFullReview: true,
+        trigger: {
+          source: "requested_review",
+          webhookDeliveryId: "requested",
+          webhookEvent: "issue_comment",
+          sourceCommentId: 987,
+        },
+      }),
+    ).toBe(id);
+    expect(
+      await enqueueReviewJobOnce(pool, {
+        ...initial,
+        sourceDeliveryId: "newest",
+        trigger: {
+          source: "automatic_pull_request",
+          webhookDeliveryId: "newest",
+          webhookEvent: "pull_request",
+          webhookAction: "edited",
+        },
+      }),
+    ).toBe(id);
+
+    const row = await pool.query<{ payload: Record<string, unknown> }>(
+      "SELECT payload FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(row.rows[0]?.payload).toMatchObject({
+      baseSha: "old-base",
+      sourceDeliveryId: "newest",
+      forceFullReview: true,
+      trigger: {
+        source: "requested_review",
+        webhookDeliveryId: "requested",
+        sourceCommentId: 987,
+      },
+    });
+  });
+
+  test("same-head requests during a running review produce one retained rerun", async () => {
+    const initial = {
+      installationId: 1,
+      repoFullName: "octo/running-upgrade",
+      prNumber: 43,
+      headSha: "c".repeat(40),
+      baseSha: "base",
+      sourceDeliveryId: "initial",
+    };
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("initial review job was not retained");
+    const running = await claimJob(pool, "running-worker");
+    expect(running?.id).toBe(id);
+
+    const requested = {
+      ...initial,
+      baseSha: "new-base",
+      sourceDeliveryId: "requested",
+      forceFullReview: true,
+      trigger: {
+        source: "requested_review" as const,
+        webhookDeliveryId: "requested",
+        webhookEvent: "issue_comment" as const,
+        sourceCommentId: 988,
+      },
+    };
+    const retained = await Promise.all(
+      Array.from({ length: 12 }, () => enqueueReviewJobOnce(pool, requested)),
+    );
+    expect(retained.filter((result) => result !== null)).toEqual([id]);
+
+    expect(await completeJob(pool, running!)).toBe("coalesced");
+    const rerun = await claimJob(pool, "rerun-worker");
+    expect(rerun).toMatchObject({
+      attempts: 1,
+      payload: {
+        baseSha: "new-base",
+        sourceDeliveryId: "requested",
+        forceFullReview: true,
+      },
+    });
+    expect(rerun?.id).not.toBe(id);
+    expect(await completeJob(pool, rerun!)).toBe("done");
+    expect(await claimJob(pool, "extra-worker")).toBeNull();
+  });
+
+  test("a terminal failure promotes its retained review", async () => {
+    const initial = {
+      installationId: 1,
+      repoFullName: "octo/failed-upgrade",
+      prNumber: 44,
+      headSha: "d".repeat(40),
+      baseSha: "base",
+    };
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("initial review job was not retained");
+    await pool.query("UPDATE jobs SET max_attempts = 7 WHERE id = $1", [id]);
+    const running = await claimJob(pool, "failing-worker");
+    await enqueueReviewJobOnce(pool, {
+      ...initial,
+      forceFullReview: true,
+      sourceDeliveryId: "edited",
+    });
+
+    expect(
+      await failJob(pool, running!, "permanent failure", {
+        permanent: true,
+        failureFollowup: {
+          kind: "respond-failure-comment",
+          payload: { respondJobId: running!.id },
+          maxAttempts: 5,
+        },
+      }),
+    ).toBe("coalesced");
+    const row = await pool.query<{
+      status: string;
+      attempts: number;
+      max_attempts: number;
+      last_error: string | null;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT status, attempts, max_attempts, last_error, payload
+         FROM jobs
+        WHERE kind = 'review' AND status = 'queued'`,
+    );
+    expect(row.rows[0]).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      max_attempts: 7,
+      last_error: null,
+      payload: { forceFullReview: true, sourceDeliveryId: "edited" },
+    });
+    const failed = await pool.query<{ status: string; last_error: string | null }>(
+      "SELECT status, last_error FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(failed.rows[0]).toEqual({
+      status: "failed",
+      last_error: "permanent failure",
+    });
+    expect(
+      await pool.query("SELECT 1 FROM jobs WHERE kind = 'respond-failure-comment'"),
+    ).toHaveProperty("rowCount", 0);
+  });
+
+  test("a transient failure records the old attempt before promoting retained intent", async () => {
+    const initial = {
+      installationId: 1,
+      repoFullName: "octo/transient-upgrade",
+      prNumber: 45,
+      headSha: "e".repeat(40),
+      baseSha: "base",
+    };
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("initial review job was not retained");
+    const running = await claimJob(pool, "transient-worker");
+    await enqueueReviewJobOnce(pool, {
+      ...initial,
+      forceFullReview: true,
+      sourceDeliveryId: "requested",
+    });
+
+    expect(await failJob(pool, running!, "provider unavailable")).toBe("coalesced");
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      attempts: number;
+      max_attempts: number;
+      last_error: string | null;
+    }>(
+      `SELECT id, status, attempts, max_attempts, last_error
+         FROM jobs
+        WHERE kind = 'review'
+        ORDER BY id`,
+    );
+    expect(rows.rows).toEqual([
+      {
+        id: String(id),
+        status: "failed",
+        attempts: 1,
+        max_attempts: 3,
+        last_error: "provider unavailable",
+      },
+      {
+        id: expect.any(String),
+        status: "queued",
+        attempts: 0,
+        max_attempts: 3,
+        last_error: null,
+      },
+    ]);
+    expect(rows.rows[1]?.id).not.toBe(String(id));
+  });
+
+  test("a queued base retarget creates a fresh immutable publication identity", async () => {
+    const initial = {
+      installationId: 1,
+      repoFullName: "octo/base-retarget",
+      prNumber: 46,
+      headSha: "f".repeat(40),
+      baseSha: "old-base",
+    };
+    const initialId = await enqueueReviewJobOnce(pool, initial);
+    if (initialId === null) throw new Error("initial review job was not retained");
+
+    const replacementId = await enqueueReviewJobOnce(pool, {
+      ...initial,
+      baseSha: "new-base",
+      forceFullReview: true,
+      sourceDeliveryId: "base-retarget",
+    });
+    expect(replacementId).not.toBeNull();
+    expect(replacementId).not.toBe(initialId);
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      base_sha: string;
+    }>(
+      `SELECT id, status, payload->>'baseSha' AS base_sha
+         FROM jobs
+        WHERE kind = 'review'
+        ORDER BY id`,
+    );
+    expect(rows.rows).toEqual([
+      { id: String(initialId), status: "done", base_sha: "old-base" },
+      { id: String(replacementId), status: "queued", base_sha: "new-base" },
+    ]);
+  });
+
   test("jobs scheduled in the future are not claimed", async () => {
     await enqueueJob(pool, "review", { n: 1 }, { runAfter: new Date(Date.now() + 60_000) });
     expect(await claimJob(pool, "w")).toBeNull();

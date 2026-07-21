@@ -344,6 +344,66 @@ describeDb("watchdog stuck-review kill", () => {
     ]);
   });
 
+  test("promotes retained metadata after a review worker lease expires", async () => {
+    const pending = {
+      installationId: 42,
+      repoFullName: "octo/repo",
+      prNumber: 7,
+      headSha: "same-head",
+      baseSha: "new-base",
+      sourceDeliveryId: "edited-delivery",
+      forceFullReview: true,
+    };
+    await pool.query(
+      `INSERT INTO jobs
+         (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
+       VALUES (
+         'review', $1::jsonb, 'running', 3, 7,
+         now() - interval '20 minutes', 'dead-review-worker'
+       )`,
+      [
+        JSON.stringify({
+          ...pending,
+          baseSha: "old-base",
+          sourceDeliveryId: "original-delivery",
+          forceFullReview: false,
+          _postilCoalescedReviewPayload: pending,
+        }),
+      ],
+    );
+
+    await watchdogPass(new Date());
+
+    const row = await pool.query<{
+      status: string;
+      attempts: number;
+      max_attempts: number;
+      last_error: string | null;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT status, attempts, max_attempts, last_error, payload
+         FROM jobs
+        WHERE kind = 'review' AND status = 'queued'`,
+    );
+    expect(row.rows[0]).toEqual({
+      status: "queued",
+      attempts: 0,
+      max_attempts: 7,
+      last_error: null,
+      payload: pending,
+    });
+    const failed = await pool.query<{ status: string; attempts: number; last_error: string }>(
+      `SELECT status, attempts, last_error
+         FROM jobs
+        WHERE kind = 'review' AND status = 'failed'`,
+    );
+    expect(failed.rows[0]).toEqual({
+      status: "failed",
+      attempts: 3,
+      last_error: "[watchdog: failed stuck job and retained newer review]",
+    });
+  });
+
   test("a review within the deadline is left alone", async () => {
     const repositoryId = await seedRepo();
     const row = await pool.query<{ id: string }>(

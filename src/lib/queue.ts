@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { redactAndTruncate } from "@/lib/redact";
 import type { ReviewTriggerContext } from "@/lib/review-trigger";
@@ -47,11 +47,19 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   sourceDeliveryId?: string;
   /** Optional only for jobs queued by an older release during a rolling deploy. */
   trigger?: ReviewTriggerContext;
+  /** Use the complete base-to-head diff even when a completed baseline exists. */
+  forceFullReview?: boolean;
   /** Durable pointer written after the CLI result and publication receipt are staged. */
   recoveryReviewId?: number;
   /** Private marker that prevents a web-process queue drain from claiming a rehearsal recovery. */
   privateWorkerRehearsalNonce?: string;
 }
+
+export const COALESCED_REVIEW_PAYLOAD_KEY = "_postilCoalescedReviewPayload";
+
+type StoredReviewJobPayload = ReviewJobPayload & {
+  [COALESCED_REVIEW_PAYLOAD_KEY]?: ReviewJobPayload;
+};
 
 /** An @postil mention on a PR or issue the bot should reply to. */
 export interface RespondJobPayload extends Record<string, unknown> {
@@ -618,7 +626,11 @@ export async function enqueueGithubReactionJobOnce(
   }
 }
 
-/** Atomically enqueue one active review for an exact repository, PR, and head. */
+/**
+ * Atomically retain the newest review intent for an exact repository, PR, and
+ * head. Queued work is upgraded in place. Work requested during a running
+ * review is retained as one coalesced rerun payload on that job.
+ */
 export async function enqueueReviewJobOnce(
   pool: Pool,
   payload: ReviewJobPayload,
@@ -626,27 +638,148 @@ export async function enqueueReviewJobOnce(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const identity = [payload.repoFullName, String(payload.prNumber), payload.headSha].join(
-      "\u001f",
-    );
+    const identity = reviewJobIdentity(payload);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:active-review:${identity}`,
     ]);
-    const result = await client.query<{ id: string }>(
-      `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-       VALUES ('review', $1, 'queued', now(), 3)
-       ON CONFLICT DO NOTHING
-       RETURNING id`,
-      [JSON.stringify(payload)],
+    const active = await selectActiveReviewJob(client, payload);
+    if (!active) {
+      const result = await client.query<{ id: string }>(
+        `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         VALUES ('review', $1, 'queued', now(), 3)
+         RETURNING id`,
+        [JSON.stringify(withoutCoalescedReviewPayload(payload))],
+      );
+      await client.query("COMMIT");
+      return result.rows[0] ? Number(result.rows[0].id) : null;
+    }
+
+    const previous =
+      active.status === "running"
+        ? (active.payload[COALESCED_REVIEW_PAYLOAD_KEY] ?? active.payload)
+        : active.payload;
+    const merged = mergeReviewJobPayload(previous, payload);
+    if (
+      active.status === "queued" &&
+      !sameReviewPublicationIdentity(active.payload, merged)
+    ) {
+      const replacement = await client.query<{ id: string }>(
+        `WITH retired AS (
+           UPDATE jobs
+              SET status = 'done', locked_at = NULL, locked_by = NULL,
+                  last_error = 'superseded by newer same-head review metadata'
+            WHERE id = $1 AND status = 'queued'
+          RETURNING id, max_attempts
+         )
+         INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         SELECT 'review', $2, 'queued', now(), max_attempts FROM retired
+         RETURNING id`,
+        [active.id, JSON.stringify(merged)],
+      );
+      await client.query("COMMIT");
+      return replacement.rows[0] ? Number(replacement.rows[0].id) : null;
+    }
+    const stored: StoredReviewJobPayload =
+      active.status === "running"
+        ? { ...active.payload, [COALESCED_REVIEW_PAYLOAD_KEY]: merged }
+        : merged;
+    const updated = await client.query<{ id: string }>(
+      `UPDATE jobs
+          SET payload = $2
+        WHERE id = $1 AND status = $3
+          AND payload IS DISTINCT FROM $2::jsonb
+        RETURNING id`,
+      [active.id, JSON.stringify(stored), active.status],
     );
     await client.query("COMMIT");
-    return result.rows[0] ? Number(result.rows[0].id) : null;
+    return updated.rows[0] ? Number(updated.rows[0].id) : null;
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
   } finally {
     client.release();
   }
+}
+
+async function selectActiveReviewJob(
+  client: Pick<PoolClient, "query">,
+  payload: ReviewJobPayload,
+): Promise<{
+  id: number;
+  status: "queued" | "running";
+  payload: StoredReviewJobPayload;
+} | null> {
+  const result = await client.query<{
+    id: string;
+    status: "queued" | "running";
+    payload: StoredReviewJobPayload;
+  }>(
+    `SELECT id, status, payload
+       FROM jobs
+      WHERE kind = 'review'
+        AND status IN ('queued', 'running')
+        AND payload->>'repoFullName' = $1
+        AND payload->>'prNumber' = $2
+        AND payload->>'headSha' = $3
+      ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, id
+      FOR UPDATE
+      LIMIT 1`,
+    [payload.repoFullName, String(payload.prNumber), payload.headSha],
+  );
+  const row = result.rows[0];
+  return row
+    ? { id: Number(row.id), status: row.status, payload: row.payload }
+    : null;
+}
+
+function reviewJobIdentity(payload: ReviewJobPayload): string {
+  return [payload.repoFullName, String(payload.prNumber), payload.headSha].join("\u001f");
+}
+
+function sameReviewPublicationIdentity(
+  left: ReviewJobPayload,
+  right: ReviewJobPayload,
+): boolean {
+  return left.installationId === right.installationId &&
+    left.sourceOrgId === right.sourceOrgId &&
+    left.sourceInstallationId === right.sourceInstallationId &&
+    left.githubRepoId === right.githubRepoId &&
+    left.repoFullName === right.repoFullName &&
+    left.prNumber === right.prNumber &&
+    left.headSha === right.headSha &&
+    left.baseSha === right.baseSha;
+}
+
+function withoutCoalescedReviewPayload(payload: ReviewJobPayload): ReviewJobPayload {
+  const { [COALESCED_REVIEW_PAYLOAD_KEY]: _pending, ...clean } =
+    payload as StoredReviewJobPayload;
+  return clean as ReviewJobPayload;
+}
+
+function mergeReviewJobPayload(
+  previous: ReviewJobPayload,
+  incoming: ReviewJobPayload,
+): ReviewJobPayload {
+  const previousClean = withoutCoalescedReviewPayload(previous);
+  const incomingClean = withoutCoalescedReviewPayload(incoming);
+  const triggerPriority: Record<ReviewTriggerContext["source"], number> = {
+    unknown: 0,
+    automatic_pull_request: 1,
+    github_check_rerun: 2,
+    requested_review: 3,
+  };
+  const previousPriority = triggerPriority[previousClean.trigger?.source ?? "unknown"];
+  const incomingPriority = triggerPriority[incomingClean.trigger?.source ?? "unknown"];
+  const trigger = previousPriority > incomingPriority
+    ? previousClean.trigger
+    : incomingClean.trigger;
+  const forceFullReview =
+    previousClean.forceFullReview === true || incomingClean.forceFullReview === true;
+  return {
+    ...incomingClean,
+    ...(trigger ? { trigger } : {}),
+    ...(forceFullReview ? { forceFullReview: true } : {}),
+  };
 }
 
 export async function claimJob(
@@ -738,12 +871,29 @@ export async function claimJob(
 export async function completeJob(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "lockedBy">,
-): Promise<void> {
-  await pool.query(
-    `UPDATE jobs SET status = 'done', locked_at = NULL, locked_by = NULL
-     WHERE id = $1 AND status = 'running' AND locked_by = $2`,
-    [job.id, job.lockedBy],
+): Promise<"done" | "coalesced" | "lost"> {
+  const result = await pool.query<{ outcome: "done" | "coalesced" | "lost" }>(
+    `WITH transitioned AS (
+       UPDATE jobs
+          SET status = 'done', locked_at = NULL, locked_by = NULL,
+              last_error = NULL
+        WHERE id = $1 AND status = 'running' AND locked_by = $2
+      RETURNING kind, payload -> $3 AS pending, max_attempts
+     ), inserted AS (
+       INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       SELECT 'review', pending, 'queued', now(), max_attempts
+         FROM transitioned
+        WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
+       RETURNING id
+     )
+     SELECT CASE
+       WHEN EXISTS (SELECT 1 FROM inserted) THEN 'coalesced'
+       WHEN EXISTS (SELECT 1 FROM transitioned) THEN 'done'
+       ELSE 'lost'
+     END AS outcome`,
+    [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
   );
+  return result.rows[0]?.outcome ?? "lost";
 }
 
 export async function continueClaimedJob(
@@ -781,17 +931,44 @@ export async function requeueJobsOwnedBy(
   const ownedJobIds = [...new Set(jobIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
   if (ownedJobIds.length === 0) return 0;
   const redactedReason = redactAndTruncate(reason, 2000);
-  const result = await pool.query(
-    `UPDATE jobs
-     SET status = 'queued', attempts = GREATEST(attempts - 1, 0),
-         locked_at = NULL, locked_by = NULL, last_error = $2, run_after = now()
-     WHERE status = 'running'
-       AND left(locked_by, length($1)) = $1
-       AND kind = ANY($3::text[])
-       AND id = ANY($4::bigint[])`,
-    [lockedByPrefix, redactedReason, allowedKinds, ownedJobIds],
+  const result = await pool.query<{ count: string }>(
+    `WITH transitioned AS (
+       UPDATE jobs
+          SET status = CASE
+                WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
+                  THEN 'done'::job_status
+                ELSE 'queued'::job_status
+              END,
+              attempts = CASE
+                WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
+                  THEN attempts
+                ELSE GREATEST(attempts - 1, 0)
+              END,
+              locked_at = NULL, locked_by = NULL,
+              last_error = $2,
+              run_after = now()
+        WHERE status = 'running'
+          AND left(locked_by, length($1)) = $1
+          AND kind = ANY($3::text[])
+          AND id = ANY($4::bigint[])
+      RETURNING kind, payload -> $5 AS pending, max_attempts
+     ), inserted AS (
+       INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       SELECT 'review', pending, 'queued', now(), max_attempts
+         FROM transitioned
+        WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
+       RETURNING id
+     )
+     SELECT count(*)::text AS count FROM transitioned`,
+    [
+      lockedByPrefix,
+      redactedReason,
+      allowedKinds,
+      ownedJobIds,
+      COALESCED_REVIEW_PAYLOAD_KEY,
+    ],
   );
-  return result.rowCount ?? 0;
+  return Number(result.rows[0]?.count ?? 0);
 }
 
 export function backoffMs(attempts: number): number {
@@ -801,20 +978,17 @@ export function backoffMs(attempts: number): number {
 /**
  * Mark a job failed; requeue with backoff while attempts remain.
  *
- * Returns "retried" if requeued, "failed" if this call performed the
- * permanent transition, or "lost" if another path (the watchdog, or a
- * re-claim after a watchdog requeue) already owns the row. Both the retry
- * and the final-fail UPDATEs are conditioned on `status = 'running'`, so a
- * late call that lost the row to a re-claim returns "lost" rather than
- * resurrecting or re-failing it. Only "failed" owns post-failure side effects.
+ * Returns "coalesced" when a pending review intent replaces this attempt,
+ * "retried" for an ordinary retry, "failed" for the permanent transition,
+ * or "lost" when another path already owns the row. Both retry and final
+ * transitions are conditioned on `status = 'running'`, so a late caller
+ * cannot resurrect or re-fail work owned by another worker.
  *
  * Pass `opts.permanent` for a deterministic, non-retryable error (e.g. a
- * broken CA store or a missing CLI binary): the job goes straight to `failed`
- * regardless of remaining attempts, since retrying the same job against the
- * same image would fail identically. The permanent path reuses the same
- * conditional `running` -> `failed` UPDATE as the exhausted-attempts path, so
- * the single-post guard (only the winner of that transition returns "failed")
- * still holds for the user-facing failure comment.
+ * broken CA store or a missing CLI binary). Without retained review intent,
+ * the job goes straight to `failed` because retrying the same work against the
+ * same image would fail identically. Retained intent becomes a fresh queued
+ * job, preserving the immutable publication identity of the failed attempt.
  */
 export async function failJob(
   pool: Pool,
@@ -828,7 +1002,7 @@ export async function failJob(
       maxAttempts: number;
     };
   } = {},
-): Promise<"retried" | "failed" | "lost"> {
+): Promise<"retried" | "failed" | "coalesced" | "lost"> {
   const redactedError = redactAndTruncate(error, 2000);
   if (!opts.permanent && job.attempts < job.maxAttempts) {
     const delay = backoffMs(job.attempts);
@@ -840,14 +1014,38 @@ export async function failJob(
     // worker owns and let a third worker run it concurrently (double review /
     // reply / check-runs / LLM spend). rowCount 0 means we lost the row; report
     // "lost" and do not resurrect it.
-    const res = await pool.query(
-      `UPDATE jobs
-       SET status = 'queued', locked_at = NULL, locked_by = NULL,
-           last_error = $2, run_after = now() + ($3 || ' milliseconds')::interval
-       WHERE id = $1 AND status = 'running' AND locked_by = $4`,
-      [job.id, redactedError, String(delay), job.lockedBy],
+    const res = await pool.query<{ outcome: "coalesced" | "retried" | "lost" }>(
+      `WITH transitioned AS (
+         UPDATE jobs
+            SET status = CASE
+                  WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
+                    THEN 'failed'::job_status
+                  ELSE 'queued'::job_status
+                END,
+                locked_at = NULL, locked_by = NULL,
+                last_error = $2,
+                run_after = CASE
+                  WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
+                    THEN now()
+                  ELSE now() + ($3 || ' milliseconds')::interval
+                END
+          WHERE id = $1 AND status = 'running' AND locked_by = $4
+        RETURNING status, kind, payload -> $5 AS pending, max_attempts
+       ), inserted AS (
+         INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         SELECT 'review', pending, 'queued', now(), max_attempts
+           FROM transitioned
+          WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
+         RETURNING id
+       )
+       SELECT CASE
+         WHEN EXISTS (SELECT 1 FROM inserted) THEN 'coalesced'
+         WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'queued') THEN 'retried'
+         ELSE 'lost'
+       END AS outcome`,
+      [job.id, redactedError, String(delay), job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
     );
-    return (res.rowCount ?? 0) > 0 ? "retried" : "lost";
+    return res.rows[0]?.outcome ?? "lost";
   }
   // Conditional transition (reached on exhausted attempts or a permanent
   // error): only the caller that flips `running` -> `failed` gets rowCount 1.
@@ -855,34 +1053,67 @@ export async function failJob(
   // affects 0 rows. The winner is the single owner of any follow-up side
   // effect (e.g. posting a user-facing failure comment).
   const res = opts.failureFollowup
-    ? await pool.query(
-        `WITH failed AS (
+    ? await pool.query<{ outcome: "coalesced" | "failed" | "lost" }>(
+        `WITH transitioned AS (
            UPDATE jobs
-              SET status = 'failed', locked_at = NULL, locked_by = NULL,
+              SET status = 'failed',
+                  locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
             WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING id
-         )
+          RETURNING status, kind, payload -> $4 AS pending, max_attempts
+         ), inserted_review AS (
+           INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+           SELECT 'review', pending, 'queued', now(), max_attempts
+             FROM transitioned
+            WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
+           RETURNING id
+         ), inserted_followup AS (
          INSERT INTO jobs (kind, payload, max_attempts)
-         SELECT $4, $5::jsonb, $6 FROM failed
-         RETURNING id`,
+         SELECT $5, $6::jsonb, $7
+           FROM transitioned
+          WHERE status = 'failed'
+            AND NOT (kind = 'review' AND jsonb_typeof(pending) = 'object')
+         RETURNING id
+         )
+         SELECT CASE
+           WHEN EXISTS (SELECT 1 FROM inserted_review) THEN 'coalesced'
+           WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'failed'
+           ELSE 'lost'
+         END AS outcome`,
         [
           job.id,
           redactedError,
           job.lockedBy,
+          COALESCED_REVIEW_PAYLOAD_KEY,
           opts.failureFollowup.kind,
           JSON.stringify(opts.failureFollowup.payload),
           opts.failureFollowup.maxAttempts,
         ],
       )
-    : await pool.query(
-        `UPDATE jobs
-            SET status = 'failed', locked_at = NULL, locked_by = NULL,
-                last_error = $2, run_after = now()
-          WHERE id = $1 AND status = 'running' AND locked_by = $3`,
-        [job.id, redactedError, job.lockedBy],
+    : await pool.query<{ outcome: "coalesced" | "failed" | "lost" }>(
+        `WITH transitioned AS (
+           UPDATE jobs
+              SET status = 'failed',
+                  locked_at = NULL, locked_by = NULL,
+                  last_error = $2, run_after = now()
+            WHERE id = $1 AND status = 'running' AND locked_by = $3
+          RETURNING status, kind, payload -> $4 AS pending, max_attempts
+         ), inserted AS (
+           INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+           SELECT 'review', pending, 'queued', now(), max_attempts
+             FROM transitioned
+            WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
+           RETURNING id
+         )
+         SELECT CASE
+           WHEN EXISTS (SELECT 1 FROM inserted) THEN 'coalesced'
+           WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'failed'
+           ELSE 'lost'
+         END AS outcome`,
+        [job.id, redactedError, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
       );
-  return (res.rowCount ?? 0) > 0 ? "failed" : "lost";
+  return (res.rows[0] as { outcome?: "coalesced" | "failed" | "lost" } | undefined)
+    ?.outcome ?? "lost";
 }
 
 /** Requeue reconciliation work until its target state is superseded or published. */
