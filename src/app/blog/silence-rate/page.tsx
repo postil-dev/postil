@@ -1,37 +1,11 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  title: "The silence rate: an ongoing AI code review metric",
-  description:
-    "GitHub published a one-off Copilot silence figure. Postil makes silence rate an ongoing per-organization metric: how often the tool correctly says nothing.",
-  alternates: { canonical: "/blog/silence-rate" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-06-13T00:00:00.000Z",
-    title: "The silence rate: an ongoing AI code review metric",
-    description:
-      "Developers stop reading AI reviewers above roughly 30% false positives. The metric that predicts it: how often the tool correctly says nothing.",
-    url: "https://postil.dev/blog/silence-rate",
-    images: ["/opengraph-image"],
-  },
-};
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline: "The silence rate: an ongoing AI code review metric",
-  description:
-    "GitHub published a one-off Copilot silence figure. Postil makes silence rate an ongoing per-organization metric: how often the tool correctly says nothing.",
-  url: "https://postil.dev/blog/silence-rate",
-  datePublished: "2026-06-13",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("silence-rate");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function SilenceRateArticle() {
   return (
@@ -40,13 +14,7 @@ export default function SilenceRateArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        The silence rate: an ongoing AI code review metric
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        June 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>

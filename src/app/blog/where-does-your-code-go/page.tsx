@@ -1,39 +1,11 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  title: "Where does your code actually go? A data-flow audit of AI code review tools",
-  description:
-    "AI code reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class data-flow audit: retention, training, and where inference runs.",
-  alternates: { canonical: "/blog/where-does-your-code-go" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-06-27T00:00:00.000Z",
-    title:
-      "Where does your code actually go? A data-flow audit of AI code review tools",
-    description:
-      "Retention, training, and where inference runs: a class-by-class data-flow audit of AI code review tools.",
-    url: "https://postil.dev/blog/where-does-your-code-go",
-    images: ["/opengraph-image"],
-  },
-};
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline:
-    "Where does your code actually go? A data-flow audit of AI code review tools",
-  description:
-    "AI code reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class data-flow audit: retention, training, and where inference runs.",
-  url: "https://postil.dev/blog/where-does-your-code-go",
-  datePublished: "2026-06-27",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("where-does-your-code-go");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function WhereDoesYourCodeGoArticle() {
   return (
@@ -42,14 +14,7 @@ export default function WhereDoesYourCodeGoArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        Where does your code actually go? A data-flow audit of AI code review
-        tools
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        June 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>
