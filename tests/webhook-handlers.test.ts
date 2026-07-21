@@ -9,7 +9,10 @@ import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   signWebhookBody,
 } from "@/lib/crypto/webhook";
-import { activateHostedInferenceRelease } from "@/lib/release-job-rollout";
+import {
+  activateHostedInferenceRelease,
+  deactivateHostedInferenceRelease,
+} from "@/lib/release-job-rollout";
 
 /**
  * Behavioural coverage for the webhook route beyond delivery dedupe:
@@ -250,7 +253,7 @@ describeDb("webhook handler behaviour", () => {
     );
     await pool.query("TRUNCATE webhook_deliveries");
     await pool.query(
-      "DELETE FROM deployment_capabilities WHERE name LIKE 'hosted-inference-release:%'",
+      "DELETE FROM deployment_capabilities WHERE name LIKE 'hosted-inference-%'",
     );
     await pool.query(
       "TRUNCATE self_service_trial_grants, reviews, repositories, installations, organizations, users RESTART IDENTITY CASCADE",
@@ -856,6 +859,100 @@ describeDb("webhook handler behaviour", () => {
     expect(jobs.rows).toHaveLength(1);
     expect(jobs.rows[0]!.payload.headSha).toBe("new-head");
   });
+
+  for (const action of ["opened", "synchronize"] as const) {
+    test(`signed pull_request ${action} stays queued through exact release activation`, async () => {
+      const releaseSha = action === "opened" ? "1".repeat(40) : "2".repeat(40);
+      process.env.POSTIL_RELEASE_SHA = releaseSha;
+      process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+      await deactivateHostedInferenceRelease(pool, releaseSha);
+      const orgId = await seedOrg();
+      const installationId = action === "opened" ? 271 : 272;
+      const githubRepoId = action === "opened" ? 8171 : 8172;
+      const installation = await seedInstallation(orgId, installationId);
+      await seedRepo(installation, githubRepoId, `octo/${action}`);
+      pullRequestReviewContext = {
+        ...pullRequestReviewContext,
+        headSha: `${action}-head`,
+        baseSha: `${action}-base`,
+      };
+      const deliveryId = `release-dark-${action}`;
+
+      expect((await post("pull_request", {
+        action,
+        installation: { id: installationId },
+        repository: {
+          id: githubRepoId,
+          full_name: `octo/${action}`,
+          private: false,
+        },
+        pull_request: {
+          number: 17,
+          head: { sha: `${action}-head` },
+          base: { sha: `${action}-base` },
+        },
+      }, deliveryId)).status).toBe(200);
+
+      const receipt = await pool.query<{
+        completed: boolean;
+        dispatch_done: boolean;
+      }>(
+        `SELECT delivery.completed_at IS NOT NULL AS completed,
+                dispatch.status = 'done' AS dispatch_done
+           FROM webhook_deliveries AS delivery
+           JOIN jobs AS dispatch
+             ON dispatch.kind = 'webhook-dispatch'
+            AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+          WHERE delivery.delivery_id = $1`,
+        [deliveryId],
+      );
+      expect(receipt.rows[0]).toEqual({ completed: true, dispatch_done: true });
+
+      const claimed = await claimJob(pool, `release-dark-${action}`, ["review"]);
+      expect(claimed?.kind).toBe("review");
+      await runClaimedJob(claimed!, `release-dark-${action}`);
+      const deferred = await pool.query<{
+        status: string;
+        staged: boolean;
+        release_sha: string | null;
+        attempts: number;
+      }>(
+        `SELECT status, run_after = 'infinity'::timestamptz AS staged,
+                payload->>'releaseDarkSha' AS release_sha, attempts
+           FROM jobs WHERE id = $1`,
+        [claimed!.id],
+      );
+      expect(deferred.rows[0]).toEqual({
+        status: "queued",
+        staged: true,
+        release_sha: releaseSha,
+        attempts: 0,
+      });
+      expect((await pool.query("SELECT 1 FROM reviews")).rowCount).toBe(0);
+
+      expect(await activateHostedInferenceRelease(pool, releaseSha)).toBe(true);
+      const released = await pool.query<{
+        status: string;
+        staged: boolean;
+        release_sha: string | null;
+      }>(
+        `SELECT status, run_after = 'infinity'::timestamptz AS staged,
+                payload->>'releaseDarkSha' AS release_sha
+           FROM jobs WHERE id = $1`,
+        [claimed!.id],
+      );
+      expect(released.rows[0]).toEqual({
+        status: "queued",
+        staged: false,
+        release_sha: null,
+      });
+      expect((await pool.query(
+        `SELECT count(*)::int AS count FROM jobs
+          WHERE kind = 'review' AND payload->>'headSha' = $1`,
+        [`${action}-head`],
+      )).rows[0]!.count).toBe(1);
+    });
+  }
 
   test("pull_request close revokes queued publication and neutralizes active checks", async () => {
     const orgId = await seedOrg();
