@@ -663,18 +663,18 @@ export async function enqueueReviewJobOnce(
       active.status === "queued" &&
       !sameReviewPublicationIdentity(active.payload, merged)
     ) {
-      await client.query(
-        `UPDATE jobs
-            SET status = 'done', locked_at = NULL, locked_by = NULL,
-                last_error = 'superseded by newer same-head review metadata'
-          WHERE id = $1 AND status = 'queued'`,
-        [active.id],
-      );
       const replacement = await client.query<{ id: string }>(
-        `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-         VALUES ('review', $1, 'queued', now(), 3)
+        `WITH retired AS (
+           UPDATE jobs
+              SET status = 'done', locked_at = NULL, locked_by = NULL,
+                  last_error = 'superseded by newer same-head review metadata'
+            WHERE id = $1 AND status = 'queued'
+          RETURNING id
+         )
+         INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         SELECT 'review', $2, 'queued', now(), 3 FROM retired
          RETURNING id`,
-        [JSON.stringify(merged)],
+        [active.id, JSON.stringify(merged)],
       );
       await client.query("COMMIT");
       return replacement.rows[0] ? Number(replacement.rows[0].id) : null;
