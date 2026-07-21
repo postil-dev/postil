@@ -301,6 +301,9 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(gatePublication, gatePublication + 500)).toContain(
       "headSha: payload.headSha",
     );
+    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
+      "detailsUrl",
+    );
   });
 
   test("publication recovery retries the exact gate after database completion", () => {
@@ -326,6 +329,14 @@ describe("private repository worker defense in depth", () => {
     expect(recovery).toContain(
       "getActiveApprovalIds(db, stagedReview.id)",
     );
+    expect(recovery).toContain("const detailsUrl = reviewDetailsUrl(");
+    expect(recovery).toContain("stagedReview.publicId");
+    const recoveryGatePublication = recovery.lastIndexOf(
+      "await completeExpectedCheckRun",
+    );
+    expect(
+      recovery.slice(recoveryGatePublication, recoveryGatePublication + 500),
+    ).toContain("detailsUrl");
   });
 
   test("advisory organizations derive a neutral exact gate verdict", () => {

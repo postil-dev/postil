@@ -32,6 +32,7 @@ import {
   updateStoredEffectiveGate,
 } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
+import { reviewDetailsUrl } from "@/lib/oauth";
 import {
   isPostilReviewCommand,
   mentionsPostil,
@@ -488,12 +489,22 @@ async function completeRunningReviewsForRemovedRepos(
   const stuck = await db
     .select({
       id: schema.reviews.id,
+      publicId: schema.reviews.publicId,
       advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
       gateCheckRunId: schema.reviews.gateCheckRunId,
       repoFullName: schema.repositories.fullName,
+      orgSlug: schema.organizations.slug,
     })
     .from(schema.reviews)
     .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+    .innerJoin(
+      schema.installations,
+      eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .leftJoin(
+      schema.organizations,
+      eq(schema.organizations.id, schema.installations.orgId),
+    )
     .where(
       and(
         eq(schema.reviews.status, "running"),
@@ -523,6 +534,9 @@ async function completeRunningReviewsForRemovedRepos(
       review.advisoryCheckRunId,
       review.gateCheckRunId,
       message,
+      undefined,
+      false,
+      reviewDetailsUrl(review.publicId, review.orgSlug),
     ).catch((err) =>
       console.error(
         `installation_repositories removed: could not complete check-runs for review ${review.id}: ${redactSecrets(err)}`,
@@ -559,9 +573,14 @@ async function handlePullRequest(
       .select({
         id: schema.installations.id,
         orgId: schema.installations.orgId,
+        orgSlug: schema.organizations.slug,
         suspended: schema.installations.suspended,
       })
       .from(schema.installations)
+      .leftJoin(
+        schema.organizations,
+        eq(schema.organizations.id, schema.installations.orgId),
+      )
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
@@ -586,6 +605,7 @@ async function handlePullRequest(
       token,
       githubInstallationId: installationId,
       message: `pull request #${pr.number} closed`,
+      orgSlug: installation.orgSlug,
     });
     return;
   }
@@ -606,6 +626,7 @@ async function handlePullRequest(
     repoFullName: repo.full_name,
     githubInstallationId: installationId,
     onlyDifferentHead: true,
+    orgSlug: installation.orgSlug,
   });
 
   await enqueueReviewJob({

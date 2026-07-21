@@ -16,6 +16,7 @@ import {
 } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { reviewDetailsUrl } from "@/lib/oauth";
 import {
   GATE_CHECK_NAME,
   checkRunExternalId,
@@ -31,6 +32,7 @@ interface DesiredGateState {
   conclusion: "success" | "failure" | "neutral";
   title: string;
   summary: string;
+  detailsUrl?: string;
   generation: string;
 }
 
@@ -74,6 +76,7 @@ export async function runGateStateSyncJob(
           externalId: checkRunExternalId(desired.review.publicId, "gate"),
           headSha: desired.review.headSha,
           conclusion: desired.conclusion,
+          detailsUrl: desired.detailsUrl,
         },
         desired.title,
         desired.summary,
@@ -137,6 +140,7 @@ async function loadDesiredGateState(
         githubInstallationId: schema.installations.githubInstallationId,
         githubRepoId: schema.repositories.githubRepoId,
         installationAccountType: schema.installations.accountType,
+        orgSlug: schema.organizations.slug,
       })
       .from(schema.reviews)
       .innerJoin(
@@ -146,6 +150,10 @@ async function loadDesiredGateState(
       .innerJoin(
         schema.installations,
         eq(schema.installations.id, schema.repositories.installationId),
+      )
+      .innerJoin(
+        schema.organizations,
+        eq(schema.organizations.id, schema.installations.orgId),
       )
       .where(
         and(
@@ -220,6 +228,7 @@ async function loadDesiredGateState(
             effectiveGate!,
           )}`
         : "No blocking findings remain for this commit.";
+  const detailsUrl = reviewDetailsUrl(row.publicId, row.orgSlug);
   const generation = JSON.stringify({
     status: row.status,
     gateCheckRunId: row.gateCheckRunId,
@@ -228,6 +237,7 @@ async function loadDesiredGateState(
     conclusion,
     title,
     summary,
+    detailsUrl,
     headSha: row.headSha,
   });
   return {
@@ -238,6 +248,7 @@ async function loadDesiredGateState(
     conclusion,
     title,
     summary,
+    detailsUrl,
     generation,
   };
 }

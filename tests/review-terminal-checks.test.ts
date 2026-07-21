@@ -11,6 +11,7 @@ const completions: Array<{
   conclusion: string;
   title: string;
   summary: string;
+  detailsUrl?: string;
 }> = [];
 const failingCompletionIds = new Set<number>();
 let reconciledCheckRunId: number | null = null;
@@ -68,15 +69,23 @@ mock.module("@/lib/github/checks", () => ({
     conclusion: string,
     title: string,
     summary: string,
+    _signal?: AbortSignal,
+    detailsUrl?: string,
   ) => {
     if (failingCompletionIds.has(id))
       throw new Error(`check-run ${id} unavailable`);
-    completions.push({ id, conclusion, title, summary });
+    completions.push({
+      id,
+      conclusion,
+      title,
+      summary,
+      ...(detailsUrl ? { detailsUrl } : {}),
+    });
   },
   completeExpectedCheckRun: async (
     _token: string,
     _repo: string,
-    expected: { id: number; conclusion: string },
+    expected: { id: number; conclusion: string; detailsUrl?: string },
     title: string,
     summary: string,
   ) => {
@@ -88,6 +97,7 @@ mock.module("@/lib/github/checks", () => ({
       conclusion: expected.conclusion,
       title,
       summary,
+      ...(expected.detailsUrl ? { detailsUrl: expected.detailsUrl } : {}),
     });
   },
 }));
@@ -265,6 +275,10 @@ describe("review terminal check-runs", () => {
     expect(completions[0]?.summary).toContain(
       "[Review details](https://postil.dev/orgs/postil-dev/runs/run-id)",
     );
+    expect(completions.map(({ detailsUrl }) => detailsUrl)).toEqual([
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+    ]);
   });
 
   test("publication cleanup verifies exact identities and names the publication failure", async () => {
@@ -376,7 +390,7 @@ describe("review terminal check-runs", () => {
       "publication failed",
       undefined,
       false,
-      undefined,
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
       undefined,
       false,
     );
@@ -386,6 +400,10 @@ describe("review terminal check-runs", () => {
         { id: 22, conclusion: "neutral", title: "Postil gate is advisory" },
         { id: 11, conclusion: "neutral", title: "Postil gate is advisory" },
       ]);
+    expect(completions.map(({ detailsUrl }) => detailsUrl)).toEqual([
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+    ]);
   });
 
   test("durable watchdog cleanup resolves advisory mode at execution time", async () => {
@@ -424,6 +442,10 @@ describe("review terminal check-runs", () => {
     expect(completions.every(({ title }) =>
       title === "Review publication incomplete"
     )).toBe(true);
+    expect(completions.map(({ detailsUrl }) => detailsUrl)).toEqual([
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+    ]);
   });
 
   test("cleanup completes known checks before retrying an unresolved ambiguous peer", async () => {

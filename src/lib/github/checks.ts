@@ -29,6 +29,7 @@ export interface ExpectedCheckRunIdentity {
   name: string;
   externalId: string;
   headSha: string;
+  detailsUrl?: string;
 }
 
 export interface ExpectedCompletedCheckRun extends ExpectedCheckRunIdentity {
@@ -43,6 +44,7 @@ interface CheckRunSnapshot {
   head_sha?: string;
   status?: string;
   conclusion?: string | null;
+  details_url?: string | null;
   output?: {
     title?: string | null;
     summary?: string | null;
@@ -145,7 +147,7 @@ export async function createCheckRun(
   repoFullName: string,
   name: string,
   headSha: string,
-  options: { signal?: AbortSignal; externalId?: string } = {},
+  options: { signal?: AbortSignal; externalId?: string; detailsUrl?: string } = {},
 ): Promise<number> {
   const requestSignal = options.signal
     ? AbortSignal.any([
@@ -164,6 +166,7 @@ export async function createCheckRun(
         status: "in_progress",
         started_at: new Date().toISOString(),
         ...(options.externalId ? { external_id: options.externalId } : {}),
+        ...(options.detailsUrl ? { details_url: options.detailsUrl } : {}),
       },
       requestSignal,
     );
@@ -251,6 +254,7 @@ export async function completeCheckRun(
   title: string,
   summary: string,
   signal?: AbortSignal,
+  detailsUrl?: string,
 ): Promise<void> {
   const requestSignal = signal
     ? AbortSignal.any([
@@ -267,6 +271,7 @@ export async function completeCheckRun(
       completed_at: new Date().toISOString(),
       conclusion,
       output: { title, summary },
+      ...(detailsUrl ? { details_url: detailsUrl } : {}),
     },
     requestSignal,
   );
@@ -321,6 +326,7 @@ export async function verifyCheckRunIdentity(
   conclusion?: string | null;
   title?: string | null;
   summary?: string | null;
+  detailsUrl?: string | null;
 }> {
   const run = await loadCheckRun(token, repoFullName, expected.id, signal);
   assertCheckRunIdentity(run, expected);
@@ -329,6 +335,7 @@ export async function verifyCheckRunIdentity(
     conclusion: run.conclusion,
     title: run.output?.title,
     summary: run.output?.summary,
+    detailsUrl: run.details_url,
   };
 }
 
@@ -354,6 +361,11 @@ export async function verifyCompletedCheckRun(
   if (run.conclusion !== expected.conclusion) {
     throw new CheckRunPublicationError(
       `GitHub check-run ${expected.id} concluded ${run.conclusion ?? "without a verdict"}; expected ${expected.conclusion}`,
+    );
+  }
+  if (expected.detailsUrl && run.details_url !== expected.detailsUrl) {
+    throw new CheckRunPublicationError(
+      `GitHub check-run ${expected.id} does not link to its review details`,
     );
   }
   if (
@@ -398,7 +410,8 @@ export async function completeExpectedCheckRun(
     existing.status === "completed" &&
     existing.conclusion === expected.conclusion &&
     existing.title === title &&
-    existing.summary === summary
+    existing.summary === summary &&
+    (!expected.detailsUrl || existing.detailsUrl === expected.detailsUrl)
   ) {
     return;
   }
@@ -410,6 +423,7 @@ export async function completeExpectedCheckRun(
     title,
     summary,
     signal,
+    expected.detailsUrl,
   );
   await verifyCompletedCheckRun(token, repoFullName, expected, signal, {
     title,

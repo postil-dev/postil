@@ -3,6 +3,7 @@ import { and, eq, lt, sql } from "drizzle-orm";
 import { getDb, getPool, schema } from "@/lib/db";
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
 import { checkRunExternalId } from "@/lib/github/checks";
+import { reviewDetailsUrl } from "@/lib/oauth";
 import {
   reconcileOperatorAlertDeliveries,
   sweepExpiredSelfServiceTrials,
@@ -38,6 +39,7 @@ export async function watchdogPass(
       gateCheckRunId: schema.reviews.gateCheckRunId,
       repoFullName: schema.repositories.fullName,
       githubInstallationId: schema.installations.githubInstallationId,
+      orgSlug: schema.organizations.slug,
     })
     .from(schema.reviews)
     .innerJoin(
@@ -47,6 +49,10 @@ export async function watchdogPass(
     .innerJoin(
       schema.installations,
       eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .leftJoin(
+      schema.organizations,
+      eq(schema.organizations.id, schema.installations.orgId),
     )
     .where(
       and(
@@ -94,6 +100,7 @@ export async function watchdogPass(
           gateCheckRunMayExist:
             review.gateCheckRunId == null && review.advisoryCheckRunId != null,
           message,
+          detailsUrl: reviewDetailsUrl(review.publicId, review.orgSlug),
         },
         maxAttempts: 5,
       });
