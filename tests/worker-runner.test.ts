@@ -807,7 +807,7 @@ describe("drainQueueOnce", () => {
     expect(completed).toEqual([1]);
   });
 
-  test("retries terminal check reconciliation beyond its ordinary budget", async () => {
+  test("fails terminal check reconciliation when its retry budget is exhausted", async () => {
     const job = reviewJob(2);
     job.kind = "check-run-cleanup";
     job.attempts = job.maxAttempts;
@@ -819,15 +819,22 @@ describe("drainQueueOnce", () => {
       message: "GitHub 503",
     };
     cleanupRun = async () => {
-      throw new Error("check-run cleanup remains incomplete");
+      throw new Error(
+        "check-run cleanup remains incomplete: ambiguous gate check-run postil:run:gate is not visible on GitHub",
+      );
     };
 
     await runClaimedJob(job, "worker 0", "worker");
 
-    expect(retriedIndefinitely).toEqual([
-      { id: 2, error: "check-run cleanup remains incomplete" },
+    expect(retriedIndefinitely).toEqual([]);
+    expect(failed).toEqual([
+      {
+        id: 2,
+        error:
+          "check-run cleanup remains incomplete: ambiguous gate check-run postil:run:gate is not visible on GitHub",
+      },
     ]);
-    expect(failed).toEqual([]);
+    expect(operationalFailures).toEqual(["job_permanently_failed"]);
   });
 
   test("rejects malformed terminal cleanup instead of retrying forever", async () => {

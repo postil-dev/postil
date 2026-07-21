@@ -319,10 +319,7 @@ export async function runClaimedJob(
       (job.kind === "webhook-comment" && !malformedWebhookComment) ||
       (job.kind === "github-reaction" && !malformedGithubReaction) ||
       err instanceof ReviewPublicationReconciliationError;
-    const durableReconciliation =
-      reconcileIndefinitely ||
-      (job.kind === "check-run-cleanup" && !permanent);
-    const outcome = durableReconciliation
+    const outcome = reconcileIndefinitely
       ? await retryJobIndefinitely(getPool(), job, message)
       : await failJob(getPool(), job, message, {
           permanent,

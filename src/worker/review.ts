@@ -2418,7 +2418,9 @@ export async function runCheckRunCleanupJob(
         );
         if (reconciledAdvisoryCheckRunId === null) {
           errors.push(
-            new Error("ambiguous advisory check-run is not visible yet"),
+            new Error(
+              `ambiguous advisory check-run ${payload.advisoryCheckExternalId} is not visible on GitHub`,
+            ),
           );
         }
       } catch (error) {
@@ -2441,7 +2443,11 @@ export async function runCheckRunCleanupJob(
           controller.signal,
         );
         if (reconciledGateCheckRunId === null) {
-          errors.push(new Error("ambiguous gate check-run is not visible yet"));
+          errors.push(
+            new Error(
+              `ambiguous gate check-run ${payload.gateCheckExternalId} is not visible on GitHub`,
+            ),
+          );
         }
       } catch (error) {
         errors.push(error);
@@ -2454,11 +2460,31 @@ export async function runCheckRunCleanupJob(
       errors.push(error);
     });
     if (errors.length > 0) {
-      throw new AggregateError(errors, "check-run cleanup remains incomplete");
+      const details = checkRunCleanupErrorDetails(errors, token);
+      throw new AggregateError(
+        errors,
+        `check-run cleanup remains incomplete: ${details}`,
+      );
     }
   } finally {
     clearTimeout(timer);
   }
+}
+
+function checkRunCleanupErrorDetails(
+  errors: readonly unknown[],
+  token: string,
+): string {
+  const messages = new Set<string>();
+  const visit = (error: unknown): void => {
+    if (error instanceof AggregateError) {
+      for (const nested of error.errors) visit(nested);
+      return;
+    }
+    messages.add(redactSecrets(error, [token]));
+  };
+  for (const error of errors) visit(error);
+  return [...messages].filter(Boolean).join("; ") || "unknown GitHub failure";
 }
 
 export function validateCheckRunCleanupPayload(

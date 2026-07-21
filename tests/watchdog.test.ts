@@ -288,7 +288,7 @@ describeDb("watchdog stuck-review kill", () => {
     expect(job.rows[0]?.status).toBe("queued");
   });
 
-  test("requeues exhausted check cleanup until both checks are terminal", async () => {
+  test("fails exhausted check cleanup when a worker dies", async () => {
     await pool.query(`
       INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
       VALUES (
@@ -300,10 +300,13 @@ describeDb("watchdog stuck-review kill", () => {
 
     await watchdogPass(new Date());
 
-    const job = await pool.query<{ status: string }>(
-      "SELECT status FROM jobs WHERE kind = 'check-run-cleanup'",
+    const job = await pool.query<{ status: string; last_error: string }>(
+      "SELECT status, last_error FROM jobs WHERE kind = 'check-run-cleanup'",
     );
-    expect(job.rows[0]?.status).toBe("queued");
+    expect(job.rows[0]?.status).toBe("failed");
+    expect(job.rows[0]?.last_error).toContain(
+      "watchdog: failed stuck job after retry budget exhausted",
+    );
   });
 
   test("requeues exhausted durable webhook work until its side effects complete", async () => {
