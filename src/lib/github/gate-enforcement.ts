@@ -55,6 +55,10 @@ interface RequiredStatusCheck {
   integration_id?: unknown;
 }
 
+interface BranchStatusCheck {
+  context?: unknown;
+}
+
 interface ActiveRule {
   type?: unknown;
   parameters?: {
@@ -239,13 +243,21 @@ function parseBranchEvidence(value: unknown): {
       !required.contexts.every((context) => typeof context === "string")) {
     return invalidBranchEvidence("GitHub default branch returned invalid required status checks");
   }
-  const match = required.contexts.includes(GATE_ENFORCEMENT_CONTEXT)
+  const checks = required.checks;
+  if (checks !== undefined && (!Array.isArray(checks) || !checks.every(isBranchStatusCheck))) {
+    return invalidBranchEvidence("GitHub default branch returned invalid status-check details");
+  }
+  const checkContexts = Array.isArray(checks)
+    ? checks.map((check) => check.context)
+    : [];
+  const match = required.contexts.includes(GATE_ENFORCEMENT_CONTEXT) ||
+      checkContexts.includes(GATE_ENFORCEMENT_CONTEXT)
     ? "unknown_identity"
     : "none";
   return {
     available: true,
     branchProtection: "protected",
-    requiredStatusChecksPresent: required.contexts.length > 0,
+    requiredStatusChecksPresent: required.contexts.length > 0 || checkContexts.length > 0,
     exactMatch: false,
     match,
     error: null,
@@ -313,6 +325,10 @@ function isActiveRequiredStatusCheck(value: unknown): value is RequiredStatusChe
   return isRecord(value) && typeof value.context === "string" &&
     (value.integration_id === undefined || value.integration_id === null ||
       Number.isInteger(value.integration_id));
+}
+
+function isBranchStatusCheck(value: unknown): value is BranchStatusCheck {
+  return isRecord(value) && typeof value.context === "string";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -76,6 +76,36 @@ describe("GitHub gate enforcement evidence", () => {
     });
   });
 
+  test("counts checks-only classic summaries without trusting their App identity", async () => {
+    const observation = await fetchGateEnforcementObservation(
+      "token",
+      "acme/widget",
+      APP_ID,
+      {
+        fetchImpl: sequenceFetch([
+          json({ default_branch: "main" }),
+          json({
+            protected: true,
+            protection: {
+              required_status_checks: {
+                contexts: [],
+                checks: [{ context: "postil/gate", app_id: APP_ID }],
+              },
+            },
+          }),
+          json([]),
+        ]),
+      },
+    );
+
+    expect(observation.status).toBe("unknown");
+    expect(observation.evidence.branchProtection).toMatchObject({
+      requiredStatusChecksPresent: true,
+      exactMatch: false,
+      match: "unknown_identity",
+    });
+  });
+
   test("paginates active branch rules and accepts their exact integration", async () => {
     const firstPage = Array.from({ length: 100 }, () => ({ type: "creation" }));
     const observation = await fetchGateEnforcementObservation(
