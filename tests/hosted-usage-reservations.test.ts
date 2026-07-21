@@ -748,6 +748,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     const db = drizzle(pool!, { schema });
     const fixture = await pool!.query<{
       org_id: string;
+      installation_id: string;
       repository_id: string;
       job_id: string;
     }>(`
@@ -771,7 +772,8 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       ), job AS (
         INSERT INTO jobs (kind, payload) VALUES ('respond', '{}') RETURNING id
       )
-      SELECT installation.org_id, repository.id AS repository_id, job.id AS job_id
+      SELECT installation.org_id, installation.id AS installation_id,
+             repository.id AS repository_id, job.id AS job_id
       FROM installation, repository, job;
     `);
     const row = fixture.rows[0]!;
@@ -799,8 +801,13 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       usageAccountingComplete: false,
       delivery: {
         jobId: Number(row.job_id),
+        sourceOrgId: Number(row.org_id),
+        sourceInstallationId: Number(row.installation_id),
+        sourceGithubInstallationId: 99317,
+        sourceGithubRepoId: 99318,
         repoFullName: "delivery-metering/private",
         issueNumber: 4,
+        isPr: false,
         body: "Prepared answer\n\n<!-- postil-respond-job:4 -->",
       },
     });

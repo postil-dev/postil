@@ -69,6 +69,11 @@ let pullRequestReviewContext = {
   authorGithubId: 501,
   authorLogin: "admin",
 };
+let reviewCommentRoot = {
+  id: 8800,
+  body: "The nullable branch can return before this check.",
+  userLogin: "postil-dev[bot]",
+};
 const realAppAuth = await import("@/lib/github/app-auth");
 const realChecks = await import("@/lib/github/checks");
 mock.module("@/lib/github/app-auth", () => ({
@@ -107,6 +112,7 @@ mock.module("@/lib/github/checks", () => ({
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
   getPullRequestReviewContext: async () => pullRequestReviewContext,
+  getPullRequestReviewComment: async () => reviewCommentRoot,
   findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
@@ -257,6 +263,11 @@ describeDb("webhook handler behaviour", () => {
       draft: false,
       authorGithubId: 501,
       authorLogin: "admin",
+    };
+    reviewCommentRoot = {
+      id: 8800,
+      body: "The nullable branch can return before this check.",
+      userLogin: "postil-dev[bot]",
     };
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
@@ -1374,6 +1385,55 @@ describeDb("webhook handler behaviour", () => {
     });
   });
 
+  test("retries a missing acknowledgement after response admission", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 707);
+    await seedRepo(inst, 7007, "octo/retry-ack");
+    await pool.query(
+      `INSERT INTO jobs (kind, payload)
+       VALUES ('respond', $1::jsonb)`,
+      [JSON.stringify({
+        installationId: 707,
+        sourceInstallationId: inst,
+        sourceOrgId: orgId,
+        githubRepoId: 7007,
+        repoFullName: "octo/retry-ack",
+        number: 9,
+        isPr: false,
+        comment: "@postil explain this",
+        sourceDeliveryId: "retry-safe-ack",
+      })],
+    );
+
+    expect((await post(
+      "issue_comment",
+      {
+        action: "created",
+        installation: { id: 707 },
+        repository: { id: 7007, full_name: "octo/retry-ack", private: false },
+        sender: { id: 507, login: "reviewer", type: "User" },
+        comment: {
+          id: 9101,
+          body: "@postil explain this",
+          user: { id: 507, login: "reviewer", type: "User" },
+          author_association: "MEMBER",
+        },
+        issue: { number: 9 },
+      },
+      "retry-safe-ack",
+    )).status).toBe(200);
+
+    const jobs = await pool.query<{ kind: string; count: number }>(
+      `SELECT kind, count(*)::int AS count FROM jobs
+        WHERE kind IN ('respond', 'github-reaction')
+        GROUP BY kind ORDER BY kind`,
+    );
+    expect(jobs.rows).toEqual([
+      { kind: "github-reaction", count: 1 },
+      { kind: "respond", count: 1 },
+    ]);
+  });
+
   test("exact PR review mentions enqueue the structured reviewer", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
@@ -1502,6 +1562,134 @@ describeDb("webhook handler behaviour", () => {
       content: "eyes",
       sourceDeliveryId: "review-thread-command",
     });
+  });
+
+  test("clarification replies to Postil stay bound to the review thread", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 704);
+    await seedRepo(inst, 7004, "octo/threaded-reply");
+
+    const res = await post(
+      "pull_request_review_comment",
+      {
+        action: "created",
+        installation: { id: 704 },
+        repository: {
+          id: 7004,
+          full_name: "octo/threaded-reply",
+          private: false,
+        },
+        sender: { id: 504, login: "reviewer", type: "User" },
+        comment: {
+          id: 8801,
+          in_reply_to_id: 8800,
+          body: "Why can this return early?",
+          user: { id: 504, login: "reviewer", type: "User" },
+          author_association: "MEMBER",
+          path: "src/app.ts",
+          line: 12,
+        },
+        pull_request: { number: 5 },
+      },
+      "review-thread-clarification",
+    );
+
+    expect(res.status).toBe(200);
+    const jobs = await pool.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT kind, payload FROM jobs
+        WHERE kind IN ('respond', 'github-reaction') ORDER BY id`,
+    );
+    expect(jobs.rows).toHaveLength(2);
+    expect(jobs.rows[0]).toMatchObject({
+      kind: "respond",
+      payload: {
+        replyToReviewCommentId: 8800,
+        threadContext: "The nullable branch can return before this check.",
+        comment: "Why can this return early?",
+      },
+    });
+    expect(jobs.rows[1]).toMatchObject({
+      kind: "github-reaction",
+      payload: { commentId: 8801, content: "eyes" },
+    });
+  });
+
+  test("gratitude in a Postil thread reacts without model work", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 705);
+    await seedRepo(inst, 7005, "octo/threaded-thanks");
+
+    expect((await post(
+      "pull_request_review_comment",
+      {
+        action: "created",
+        installation: { id: 705 },
+        repository: {
+          id: 7005,
+          full_name: "octo/threaded-thanks",
+          private: false,
+        },
+        sender: { id: 505, login: "reviewer", type: "User" },
+        comment: {
+          id: 8901,
+          in_reply_to_id: 8800,
+          body: "Thanks again!",
+          user: { id: 505, login: "reviewer", type: "User" },
+          author_association: "MEMBER",
+        },
+        pull_request: { number: 6 },
+      },
+      "review-thread-gratitude",
+    )).status).toBe(200);
+
+    const jobs = await pool.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT kind, payload FROM jobs
+        WHERE kind IN ('respond', 'github-reaction') ORDER BY id`,
+    );
+    expect(jobs.rows).toEqual([
+      expect.objectContaining({
+        kind: "github-reaction",
+        payload: expect.objectContaining({ commentId: 8901, content: "+1" }),
+      }),
+    ]);
+  });
+
+  test("ignores unmentioned replies when the thread root is not Postil", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 706);
+    await seedRepo(inst, 7006, "octo/human-thread");
+    reviewCommentRoot = { ...reviewCommentRoot, userLogin: "another-reviewer" };
+
+    expect((await post(
+      "pull_request_review_comment",
+      {
+        action: "created",
+        installation: { id: 706 },
+        repository: { id: 7006, full_name: "octo/human-thread", private: false },
+        sender: { id: 506, login: "reviewer", type: "User" },
+        comment: {
+          id: 9001,
+          in_reply_to_id: 8800,
+          body: "Why is this needed?",
+          user: { id: 506, login: "reviewer", type: "User" },
+          author_association: "MEMBER",
+        },
+        pull_request: { number: 7 },
+      },
+      "human-thread-reply",
+    )).status).toBe(200);
+
+    const jobs = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM jobs
+        WHERE kind IN ('respond', 'github-reaction')`,
+    );
+    expect(jobs.rows[0]!.count).toBe(0);
   });
 
   test("does not acknowledge an exact command from an unauthorized commenter", async () => {

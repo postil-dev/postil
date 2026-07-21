@@ -11,6 +11,7 @@ import {
   completeJob,
   enqueueGithubReactionJobOnce,
   enqueueJob,
+  enqueueRespondJobWithinHourlyCap,
   enqueueReviewJobOnce,
   failJob,
   queueDepth,
@@ -153,6 +154,44 @@ describeDb("postgres job queue", () => {
 
     await pool.query("UPDATE jobs SET status = 'done' WHERE kind = 'github-reaction'");
     expect(await enqueueGithubReactionJobOnce(pool, payload)).toBeNull();
+  });
+
+  test("serializes concurrent respond admission at the hourly cap", async () => {
+    const admitted = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        enqueueRespondJobWithinHourlyCap(
+          pool,
+          {
+            installationId: 991,
+            repoFullName: "octo/capped",
+            number: 7,
+            isPr: false,
+            comment: `request ${index}`,
+            sourceDeliveryId: `capped-${index}`,
+          },
+          2,
+        ),
+      ),
+    );
+
+    expect(admitted.filter(({ id }) => id !== null)).toHaveLength(2);
+    expect(admitted.filter(({ rateLimited }) => rateLimited)).toHaveLength(10);
+    const existingIndex = admitted.findIndex(({ id }) => id !== null);
+    expect(existingIndex).toBeGreaterThanOrEqual(0);
+    await expect(
+      enqueueRespondJobWithinHourlyCap(
+        pool,
+        {
+          installationId: 991,
+          repoFullName: "octo/capped",
+          number: 7,
+          isPr: false,
+          comment: "retry",
+          sourceDeliveryId: `capped-${existingIndex}`,
+        },
+        2,
+      ),
+    ).resolves.toEqual({ id: null, rateLimited: false });
   });
 
   test("stages new job kinds until the post-deploy capability activation", async () => {

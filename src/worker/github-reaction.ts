@@ -10,7 +10,7 @@ import {
   type GithubReactionJobPayload,
 } from "@/lib/queue";
 
-/** Deliver a durable, prose-free acknowledgement for one admitted request. */
+/** Deliver a durable, prose-free reaction for one admitted request. */
 export async function runGithubReactionJob(
   payload: GithubReactionJobPayload,
   lease: ExternalSideEffectLease,
@@ -29,7 +29,7 @@ export async function runGithubReactionJob(
     typeof payload.repoFullName !== "string" ||
     payload.repoFullName.trim() === "" ||
     !["issue_comment", "pull_request_review_comment"].includes(payload.commentKind) ||
-    payload.content !== "eyes" ||
+    !["+1", "eyes"].includes(payload.content) ||
     typeof payload.sourceDeliveryId !== "string" ||
     payload.sourceDeliveryId.trim() === ""
   ) {

@@ -6,6 +6,8 @@ import {
   createCheckRun,
   findCheckRunByExternalId,
   findIssueCommentByMarker,
+  findPullRequestReviewCommentByMarker,
+  getPullRequestReviewComment,
   getPullRequestReviewContext,
   RESPOND_MARKER_MAX_PAGES,
   verifyCompletedCheckRun,
@@ -21,6 +23,7 @@ function comments(count: number, page: number) {
   return Array.from({ length: count }, (_, index) => ({
     id: page * 1_000 + index,
     body: `comment ${page}-${index}`,
+    user: { login: "postil-dev[bot]" },
   }));
 }
 
@@ -71,6 +74,64 @@ describe("review request reactions", () => {
     await expect(
       addCommentReaction("token", "octo/repo", 41, "issue_comment", "eyes"),
     ).resolves.toBe("missing");
+  });
+});
+
+describe("pull-request review conversations", () => {
+  test("loads a bounded root identity and posts a thread reply", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if ((init?.method ?? "GET") === "GET") {
+        return Response.json({
+          id: 41,
+          body: "Could this return earlier?",
+          user: { login: "postil-dev[bot]" },
+        });
+      }
+      return Response.json({ id: 42 });
+    }) as typeof fetch;
+
+    await expect(
+      getPullRequestReviewComment("token", "octo/repo", 41),
+    ).resolves.toMatchObject({ id: 41, userLogin: "postil-dev[bot]" });
+    const { postPullRequestReviewCommentReply } = await import("@/lib/github/checks");
+    await expect(
+      postPullRequestReviewCommentReply("token", "octo/repo", 7, 41, "Because."),
+    ).resolves.toBe(42);
+    expect(requests[1]).toMatchObject({
+      url: expect.stringContaining("/repos/octo/repo/pulls/7/comments/41/replies"),
+      method: "POST",
+      body: { body: "Because." },
+    });
+  });
+
+  test("ignores a forged marker from a non-App author", async () => {
+    globalThis.fetch = Object.assign(
+      async () =>
+        Response.json([
+          {
+            id: 7,
+            body: "<!-- postil-respond:marker -->",
+            user: { login: "mallory" },
+          },
+        ]),
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    await expect(
+      findPullRequestReviewCommentByMarker(
+        "token",
+        "octo/repo",
+        7,
+        "<!-- postil-respond:marker -->",
+        new Date("2026-07-13T00:00:00.000Z"),
+      ),
+    ).resolves.toBeNull();
   });
 });
 
