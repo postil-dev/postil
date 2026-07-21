@@ -685,7 +685,13 @@ function forwardPinnedRequest(input: {
       lookup: (_hostname, options, callback) => {
         const all = typeof options === "object" && options.all;
         if (all) {
-          callback(null, input.upstream.addresses);
+          callback(
+            null,
+            input.upstream.addresses.map(({ address, family }) => ({
+              address,
+              family,
+            })),
+          );
         } else {
           const first = input.upstream.addresses[0]!;
           callback(null, first.address, first.family);

@@ -208,13 +208,18 @@ describe("durable large-review provider proxy", () => {
     expect((await register(proxy)).status).toBe(204);
     expect((await register(proxy, { planSha256: "f".repeat(64) })).status).toBe(409);
 
-    const response = await fetch(`${proxy.apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: requestBody,
-    });
-    expect(await response.text()).toBe(successfulBody);
-    expect(providerCalls).toBe(1);
+    for (let batch = 4; batch <= 6; batch += 1) {
+      const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "openai/test-model",
+          messages: [{ role: "user", content: `review batch ${batch}` }],
+        }),
+      });
+      expect(await response.text()).toBe(successfulBody);
+    }
+    expect(providerCalls).toBe(3);
     expect(resolutions).toBe(1);
     expect(proxy.billingOutcome()).toBe("resumable");
     expect(
