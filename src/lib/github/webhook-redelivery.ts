@@ -31,8 +31,8 @@ const deliverySchema = z.object({
   status: z.preprocess(
     (value) => typeof value === "string" && value.trim() !== ""
       ? value.slice(0, 80)
-      : null,
-    z.string().min(1).max(80).nullable(),
+      : "pending",
+    z.string().min(1).max(80),
   ),
   // Event labels are metadata, not recovery authority. Keep scanning when
   // GitHub adds a label or returns it late for a pending delivery.
@@ -300,8 +300,8 @@ function githubHeaders(jwt: string): Record<string, string> {
 
 function outcome(delivery: Delivery): "success" | "failure" | "pending" {
   const statusCode = delivery.status_code;
-  const status = delivery.status?.toLowerCase() ?? null;
-  if (status === "pending" || (status === null && statusCode === null)) return "pending";
+  const status = delivery.status.toLowerCase();
+  if (status === "pending") return "pending";
   if (status === "ok" || (statusCode !== null && statusCode >= 200 && statusCode <= 399)) {
     return "success";
   }
