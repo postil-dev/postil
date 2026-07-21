@@ -911,6 +911,70 @@ export const customerNotificationReads = pgTable(
   ],
 );
 
+/** Content-free audit and outbox state for customer notification email batches. */
+export const customerNotificationEmailDeliveries = pgTable(
+  "customer_notification_email_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    emailCategory: text("email_category").notNull(),
+    eventCount: integer("event_count").notNull(),
+    status: text("status").notNull().default("queued"),
+    messageId: text("message_id"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("customer_notification_email_deliveries_status_created_idx").on(
+      t.status,
+      t.createdAt,
+    ),
+    index("customer_notification_email_deliveries_org_created_idx").on(
+      t.orgId,
+      t.createdAt,
+    ),
+    check(
+      "customer_notification_email_deliveries_category_check",
+      sql`${t.emailCategory} IN ('security', 'verification', 'payment_failure', 'trial_expiry', 'service_incident', 'billing_summary', 'service_summary')`,
+    ),
+    check(
+      "customer_notification_email_deliveries_status_check",
+      sql`${t.status} IN ('queued', 'retrying', 'delivered', 'suppressed', 'failed')`,
+    ),
+    check(
+      "customer_notification_email_deliveries_event_count_check",
+      sql`${t.eventCount} BETWEEN 1 AND 20`,
+    ),
+  ],
+);
+
+/** One customer event belongs to at most one email delivery batch. */
+export const customerNotificationEmailDeliveryEvents = pgTable(
+  "customer_notification_email_delivery_events",
+  {
+    eventId: bigint("event_id", { mode: "number" }).primaryKey(),
+    deliveryId: uuid("delivery_id")
+      .notNull()
+      .references(() => customerNotificationEmailDeliveries.id, {
+        onDelete: "cascade",
+      }),
+  },
+  (t) => [
+    index("customer_notification_email_delivery_events_delivery_idx").on(
+      t.deliveryId,
+    ),
+  ],
+);
+
 /** One immutable trial grant per GitHub owner, with the initiating identity for abuse controls. */
 export const selfServiceTrialGrants = pgTable(
   "self_service_trial_grants",

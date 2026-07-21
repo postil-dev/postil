@@ -1,7 +1,12 @@
 import { hostname } from "node:os";
 
 import { getDb, getPool } from "@/lib/db";
-import { optionalEnv } from "@/lib/env";
+import { optionalEnv, requireEnv } from "@/lib/env";
+import {
+  recordCustomerNotificationEmailFailure,
+  runCustomerNotificationEmailJob,
+  type CustomerNotificationEmailJobPayload,
+} from "@/lib/customer-notification-email";
 import type { GateStateSyncJobPayload } from "@/lib/finding-approvals";
 import {
   claimJob,
@@ -94,6 +99,7 @@ export const WEB_PROCESSABLE_JOB_KINDS = [
   "billing-contact-verification",
   "billing-settlement",
   "operator-alert",
+  "customer-notification-email",
   "gate-state-sync",
   "check-run-cleanup",
   "respond-failure-comment",
@@ -173,6 +179,16 @@ async function handleJob(
       await recordOperatorAlertDelivered(getDb(), payload, result.messageId);
       break;
     }
+    case "customer-notification-email":
+      await runCustomerNotificationEmailJob(
+        getDb(),
+        job.payload as CustomerNotificationEmailJobPayload,
+        {
+          publicOrigin: requireEnv("POSTIL_PUBLIC_URL"),
+          apiKey: requireEnv("BREVO_API_KEY"),
+        },
+      );
+      break;
     case "gate-state-sync":
       await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
       break;
@@ -334,6 +350,18 @@ export async function runClaimedJob(
           );
         });
       }
+    }
+    if (job.kind === "customer-notification-email") {
+      await recordCustomerNotificationEmailFailure(
+        getDb(),
+        job.payload,
+        message,
+        outcome === "failed",
+      ).catch((auditError) => {
+        console.error(
+          `[${label}] customer notification email audit update failed: ${redactSecrets(auditError)}`,
+        );
+      });
     }
     console.error(
       `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,

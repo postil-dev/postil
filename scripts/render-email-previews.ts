@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { productionMonitorEmailContent } from "@/../scripts/send-production-monitor-alert";
 import { billingContactVerificationEmailContent } from "@/lib/billing-contact-verification";
+import { customerNotificationSummaryEmailContent } from "@/lib/customer-notification-email";
 import { operatorAlertEmailContent } from "@/lib/operator-alert-email";
 import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
 import {
@@ -42,6 +43,60 @@ const subscriptionBase = {
 
 const previews = [
   ["verification", verification],
+  customerPreview("customer-billing-summary", "billing_summary", [
+    {
+      id: 1,
+      idempotencyKey: "subscription-restored:sub_preview:event_preview",
+      severity: "info",
+      title: "Your subscription is active",
+      body: "Private-repository reviews are available.",
+    },
+  ]),
+  customerPreview("customer-payment-failure", "payment_failure", [
+    {
+      id: 2,
+      idempotencyKey: "subscription-past-due:sub_preview:event_preview",
+      severity: "critical",
+      title: "Payment needs attention",
+      body: "Update billing details to keep private-repository reviews available.",
+    },
+  ]),
+  customerPreview("customer-security", "security", [
+    {
+      id: 3,
+      idempotencyKey: "installation-suspended:701:event_preview",
+      severity: "warning",
+      title: "GitHub App access is suspended",
+      body: "Reviews are paused until access is restored.",
+    },
+  ]),
+  customerPreview("customer-trial-expiry", "trial_expiry", [
+    {
+      id: 4,
+      idempotencyKey: "trial-expired:7:2026-08-18T12:00:00.000Z",
+      severity: "warning",
+      title: "Your trial has ended",
+      body: "Choose a plan to continue private-repository reviews.",
+    },
+  ]),
+  customerPreview("customer-service-incident", "service_incident", [
+    {
+      id: 5,
+      idempotencyKey: "service-disruption:worker:2026-07-20T12:00:00.000Z",
+      severity: "critical",
+      title: "Hosted reviews are delayed",
+      body: "Queued reviews may take longer to start.",
+    },
+  ]),
+  customerPreview("customer-service-recovery", "service_incident", [
+    {
+      id: 6,
+      idempotencyKey: "service-recovery:worker:2026-07-20T12:00:00.000Z",
+      severity: "info",
+      title: "Hosted reviews are running normally",
+      body: "Queued reviews can start normally.",
+    },
+  ]),
   operatorPreview("trial-started", {
     ...operatorBase,
     event: "trial_started",
@@ -216,5 +271,36 @@ function operatorPreview(
   return [
     name,
     operatorAlertEmailContent(payload, "https://postil.dev/orgs/acme").content,
+  ];
+}
+
+function customerPreview(
+  name: string,
+  emailCategory:
+    | "billing_summary"
+    | "payment_failure"
+    | "security"
+    | "trial_expiry"
+    | "service_incident",
+  events: Array<{
+    id: number;
+    idempotencyKey: string;
+    severity: string;
+    title: string;
+    body: string;
+  }>,
+): readonly [
+  string,
+  ReturnType<typeof customerNotificationSummaryEmailContent>["content"],
+] {
+  return [
+    name,
+    customerNotificationSummaryEmailContent({
+      orgName: "Acme",
+      orgSlug: "acme",
+      emailCategory,
+      events,
+      publicOrigin: "https://postil.dev",
+    }).content,
   ];
 }

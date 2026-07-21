@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { productionMonitorEmailContent } from "@/../scripts/send-production-monitor-alert";
 import { billingContactVerificationEmailContent } from "@/lib/billing-contact-verification";
+import { customerNotificationSummaryEmailContent } from "@/lib/customer-notification-email";
 import { operatorAlertEmailContent } from "@/lib/operator-alert-email";
 import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
 import {
@@ -86,6 +87,19 @@ describe("outbound email inventory", () => {
         "Acme",
         "https://postil.dev/verify/billing-contact?org=7&token=not-a-secret%3Apreview-layout-only%3Athis-value-has-no-authority",
       ),
+      customerNotificationSummaryEmailContent({
+        orgName: "Acme",
+        orgSlug: "acme",
+        emailCategory: "billing_summary",
+        events: [{
+          id: 1,
+          idempotencyKey: "subscription-restored:sub_preview:event_preview",
+          severity: "info",
+          title: "Your subscription is active",
+          body: "Private-repository reviews are available under your subscription.",
+        }],
+        publicOrigin: "https://postil.dev",
+      }).content,
       ...operatorPayloads.map(
         (payload) =>
           operatorAlertEmailContent(
@@ -150,7 +164,7 @@ describe("outbound email inventory", () => {
       privateMonitoringPassFailureEmailContent("https://postil.dev"),
     ];
 
-    expect(content).toHaveLength(16);
+    expect(content).toHaveLength(17);
     for (const message of content) {
       expect(message.title.length).toBeGreaterThan(5);
       expect(message.summary.length).toBeGreaterThan(10);
@@ -186,6 +200,7 @@ describe("outbound email inventory", () => {
       .sort();
     expect(directSenders).toEqual([
       "scripts/send-production-monitor-alert.ts",
+      "src/lib/customer-notification-email.ts",
       "src/lib/email-verification.ts",
       "src/lib/operator-notifications.ts",
     ]);
