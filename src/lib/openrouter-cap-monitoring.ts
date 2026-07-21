@@ -22,6 +22,7 @@ interface OpenRouterKeyMetadata {
 interface MetadataResult<T> {
   value: T | null;
   detail: string;
+  authFailure?: boolean;
 }
 
 export interface OpenRouterMonitoredKeyNames {
@@ -55,48 +56,49 @@ export function configuredOpenRouterReviewOutageThresholdUsd(
 }
 
 export async function runOpenRouterCapMonitoringChecks(input: {
-  managementKey: string;
-  keyNames: OpenRouterMonitoredKeyNames;
-  reviewOutageThresholdUsd?: number;
+  managementKey?: string;
+  keyNames?: Partial<OpenRouterMonitoredKeyNames>;
+  reviewOutageThresholdUsd?: number | string;
   fetchImpl?: Fetch;
 }): Promise<PrivateMonitoringCheck[]> {
-  const managementKey = input.managementKey.trim();
-  if (!managementKey) {
-    throw new Error("OpenRouter management credential is required");
+  const configuration = resolveMonitoringConfiguration(input);
+  if (!configuration.ok) {
+    return [configurationCheck(false, configuration.detail)];
   }
-  validateKeyNames(input.keyNames);
-  const threshold =
-    input.reviewOutageThresholdUsd ??
-    DEFAULT_OPENROUTER_REVIEW_OUTAGE_THRESHOLD_USD;
-  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1_000) {
-    throw new Error(
-      "OpenRouter review outage threshold must be greater than 0 and at most 1000",
-    );
-  }
+  const { managementKey, keyNames, threshold } = configuration;
   const fetchImpl = input.fetchImpl ?? fetch;
   const [keyResult, creditResult] = await Promise.all([
-    fetchKeyMetadata(managementKey, input.keyNames, fetchImpl),
+    fetchKeyMetadata(managementKey, keyNames, fetchImpl),
     fetchAccountCredits(managementKey, fetchImpl),
   ]);
-  const checks: PrivateMonitoringCheck[] = [];
+  if (keyResult.authFailure || creditResult.authFailure) {
+    const failure = keyResult.authFailure ? keyResult : creditResult;
+    return [configurationCheck(false, failure.detail)];
+  }
+  const checks: PrivateMonitoringCheck[] = [
+    configurationCheck(
+      true,
+      "OpenRouter cap monitoring has a management credential and three distinct private key-name bindings.",
+    ),
+  ];
 
   checks.push(metadataAvailabilityCheck("keys", keyResult));
   if (keyResult.value) {
     checks.push(
       dailyCapCheck(
         "openrouter-development-daily-cap",
-        input.keyNames.development,
+        keyNames.development,
         keyResult.value,
         threshold,
       ),
       dailyCapCheck(
         "openrouter-production-daily-cap",
-        input.keyNames.production,
+        keyNames.production,
         keyResult.value,
         threshold,
       ),
-      emergencyConfigurationCheck(keyResult.value, input.keyNames.emergency),
-      emergencyUsageCheck(keyResult.value, input.keyNames.emergency),
+      emergencyConfigurationCheck(keyResult.value, keyNames.emergency),
+      emergencyUsageCheck(keyResult.value, keyNames.emergency),
     );
   }
 
@@ -115,6 +117,20 @@ export async function runOpenRouterCapMonitoringChecks(input: {
   }
 
   return checks;
+}
+
+function configurationCheck(
+  healthy: boolean,
+  detail: string,
+): PrivateMonitoringCheck {
+  return {
+    key: "openrouter-monitoring-configuration",
+    group: "provider",
+    severity: "critical",
+    healthy,
+    summary: "OpenRouter cap monitoring is configured",
+    detail,
+  };
 }
 
 function metadataAvailabilityCheck(
@@ -248,7 +264,13 @@ async function fetchKeyMetadata(
     url.searchParams.set("include_disabled", "true");
     url.searchParams.set("offset", String(page * KEY_PAGE_SIZE));
     const response = await managementRequest(url, managementKey, fetchImpl);
-    if (!response.ok) return { value: null, detail: response.detail };
+    if (!response.ok) {
+      return {
+        value: null,
+        detail: response.detail,
+        authFailure: response.authFailure,
+      };
+    }
     const data = response.value as { data?: unknown };
     if (!Array.isArray(data.data)) {
       return {
@@ -294,7 +316,13 @@ async function fetchAccountCredits(
     managementKey,
     fetchImpl,
   );
-  if (!response.ok) return { value: null, detail: response.detail };
+  if (!response.ok) {
+    return {
+      value: null,
+      detail: response.detail,
+      authFailure: response.authFailure,
+    };
+  }
   const raw = response.value as { data?: unknown };
   if (
     !isRecord(raw.data) ||
@@ -321,7 +349,7 @@ async function managementRequest(
   fetchImpl: Fetch,
 ): Promise<
   | { ok: true; value: unknown; detail: string }
-  | { ok: false; detail: string }
+  | { ok: false; detail: string; authFailure: boolean }
 > {
   let response: Response;
   try {
@@ -337,6 +365,7 @@ async function managementRequest(
     return {
       ok: false,
       detail: "OpenRouter management metadata request failed before an HTTP response was received.",
+      authFailure: false,
     };
   }
   if (!response.ok) {
@@ -348,6 +377,7 @@ async function managementRequest(
           : response.status === 403
             ? "OpenRouter management credential lacks permission (HTTP 403)."
             : `OpenRouter management metadata request returned HTTP ${response.status}.`,
+      authFailure: response.status === 401 || response.status === 403,
     };
   }
   const declaredLength = Number(response.headers.get("content-length"));
@@ -355,6 +385,7 @@ async function managementRequest(
     return {
       ok: false,
       detail: "OpenRouter management metadata response exceeded the size limit.",
+      authFailure: false,
     };
   }
   const body = await response.text();
@@ -362,6 +393,7 @@ async function managementRequest(
     return {
       ok: false,
       detail: "OpenRouter management metadata response exceeded the size limit.",
+      authFailure: false,
     };
   }
   try {
@@ -374,6 +406,7 @@ async function managementRequest(
     return {
       ok: false,
       detail: "OpenRouter management metadata response was not valid JSON.",
+      authFailure: false,
     };
   }
 }
@@ -452,4 +485,58 @@ function validateKeyNames(keyNames: OpenRouterMonitoredKeyNames): void {
       "OpenRouter monitored key names must be nonempty, distinct, and at most 160 characters",
     );
   }
+}
+
+function resolveMonitoringConfiguration(input: {
+  managementKey?: string;
+  keyNames?: Partial<OpenRouterMonitoredKeyNames>;
+  reviewOutageThresholdUsd?: number | string;
+}):
+  | {
+      ok: true;
+      managementKey: string;
+      keyNames: OpenRouterMonitoredKeyNames;
+      threshold: number;
+    }
+  | { ok: false; detail: string } {
+  const managementKey = input.managementKey?.trim() ?? "";
+  const keyNames = {
+    development: input.keyNames?.development ?? "",
+    production: input.keyNames?.production ?? "",
+    emergency: input.keyNames?.emergency ?? "",
+  };
+  if (
+    !managementKey ||
+    Object.values(keyNames).some((name) => !name.trim())
+  ) {
+    return {
+      ok: false,
+      detail:
+        "OpenRouter cap monitoring is inactive because its management credential or one of its three private key-name bindings is missing. Other private monitor checks remain active.",
+    };
+  }
+  try {
+    validateKeyNames(keyNames);
+  } catch {
+    return {
+      ok: false,
+      detail:
+        "OpenRouter cap monitoring key-name bindings are invalid; use three distinct names without leading, trailing, or control characters.",
+    };
+  }
+  let threshold: number;
+  try {
+    threshold = configuredOpenRouterReviewOutageThresholdUsd(
+      input.reviewOutageThresholdUsd === undefined
+        ? undefined
+        : String(input.reviewOutageThresholdUsd),
+    );
+  } catch {
+    return {
+      ok: false,
+      detail:
+        "OpenRouter cap monitoring outage threshold is invalid; configure a USD amount greater than 0 and at most 1000.",
+    };
+  }
+  return { ok: true, managementKey, keyNames, threshold };
 }

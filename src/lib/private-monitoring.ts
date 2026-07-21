@@ -1042,6 +1042,7 @@ function incidentTitle(check: PrivateMonitoringCheck): string {
     "scorer-fallbacks": "Finding scoring is repeatedly falling back",
     "model-fallbacks": "Review models are repeatedly falling back",
     "invalid-model-output": "Model output is invalid",
+    "openrouter-monitoring-configuration": "OpenRouter cap monitoring needs configuration",
     "openrouter-keys-metadata": "OpenRouter key metadata is unavailable",
     "openrouter-credits-metadata": "OpenRouter account credit metadata is unavailable",
     "openrouter-account-balance": "OpenRouter account balance is near exhaustion",
@@ -1087,7 +1088,7 @@ function incidentRecommendedAction(key: string): string {
     return "Inspect recent private review runs and provider incidents, then verify the configured route before changing model policy.";
   }
   if (key.startsWith("openrouter-")) {
-    return "Inspect sanitized OpenRouter management metadata, restore account or key allowance as needed, and verify the emergency key remains outside every inference binding.";
+    return "Restore the private management credential and three exact key-name bindings if needed, inspect sanitized OpenRouter metadata, and verify the emergency key remains outside every inference binding.";
   }
   if (key === "worker-heartbeat") {
     return "Inspect the worker process and heartbeat before restarting or replacing a machine.";

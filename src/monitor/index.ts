@@ -29,7 +29,6 @@ import {
   reconcilePrivateWorkerRehearsals,
 } from "@/lib/private-worker-rehearsal";
 import {
-  configuredOpenRouterReviewOutageThresholdUsd,
   runOpenRouterCapMonitoringChecks,
 } from "@/lib/openrouter-cap-monitoring";
 import { redactSecrets } from "@/lib/redact";
@@ -79,13 +78,14 @@ async function main(): Promise<void> {
     Math.ceil((workerHeartbeatIntervalMs * 3) / 1_000),
   );
   const publicOrigin = required("POSTIL_PUBLIC_URL");
-  const openRouterManagementKey = required("OPENROUTER_MANAGEMENT_API_KEY");
-  const openRouterReviewOutageThresholdUsd =
-    configuredOpenRouterReviewOutageThresholdUsd();
+  const openRouterManagementKey = optionalEnv("OPENROUTER_MANAGEMENT_API_KEY");
+  const openRouterReviewOutageThresholdUsd = optionalEnv(
+    "POSTIL_OPENROUTER_REVIEW_OUTAGE_THRESHOLD_USD",
+  );
   const openRouterKeyNames = {
-    development: required("POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME"),
-    production: required("POSTIL_OPENROUTER_PRODUCTION_KEY_NAME"),
-    emergency: required("POSTIL_OPENROUTER_EMERGENCY_KEY_NAME"),
+    development: optionalEnv("POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME"),
+    production: optionalEnv("POSTIL_OPENROUTER_PRODUCTION_KEY_NAME"),
+    emergency: optionalEnv("POSTIL_OPENROUTER_EMERGENCY_KEY_NAME"),
   };
   const recipient = normalizeVerificationEmail(
     required("POSTIL_OPERATOR_ALERT_EMAIL"),

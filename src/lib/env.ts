@@ -398,24 +398,28 @@ const ENV_SPECS: EnvVarSpec[] = [
       "Read-only polling of OpenRouter account credit and per-key cap metadata",
     example: "OpenRouter management key; it cannot run inference",
     scope: ["monitor"],
+    optional: true,
   },
   {
     name: "POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME",
     purpose: "Exact development key name expected in OpenRouter metadata",
     example: "configured in the private production environment",
     scope: ["monitor"],
+    optional: true,
   },
   {
     name: "POSTIL_OPENROUTER_PRODUCTION_KEY_NAME",
     purpose: "Exact production key name expected in OpenRouter metadata",
     example: "configured in the private production environment",
     scope: ["monitor"],
+    optional: true,
   },
   {
     name: "POSTIL_OPENROUTER_EMERGENCY_KEY_NAME",
     purpose: "Exact unused emergency key name expected in OpenRouter metadata",
     example: "configured in the private production environment",
     scope: ["monitor"],
+    optional: true,
   },
   {
     name: "POSTIL_OPENROUTER_REVIEW_OUTAGE_THRESHOLD_USD",

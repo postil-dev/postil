@@ -295,6 +295,45 @@ describeDb("private monitoring durability", () => {
     );
   });
 
+  test("retains one private auth incident when OpenRouter rejects configured monitoring", async () => {
+    const checks = await runOpenRouterCapMonitoringChecks({
+      managementKey: "rejected-management-fixture",
+      keyNames: {
+        development: "development-fixture",
+        production: "production-fixture",
+        emergency: "emergency-fixture",
+      },
+      fetchImpl: async () =>
+        new Response("untrusted-provider-body", { status: 401 }),
+    });
+    expect(checks).toHaveLength(1);
+    expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
+    const pass = await startPrivateMonitoringPass(pool, "monitor-a", BUCKET, NOW);
+    await finishPrivateMonitoringPass(pool, pass!, checks, NOW);
+
+    const notifications = await claimPrivateMonitoringNotifications(
+      pool,
+      "monitor-a",
+      NOW,
+    );
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      incidentKey: "openrouter-monitoring-configuration",
+      kind: "opened",
+      capability: "provider",
+    });
+    const dashboard = await getPrivateMonitoringDashboard(pool);
+    expect(dashboard.incidents).toContainEqual(
+      expect.objectContaining({
+        key: "openrouter-monitoring-configuration",
+        state: "open",
+        detail: "OpenRouter management credential was rejected with HTTP 401.",
+      }),
+    );
+    expect(JSON.stringify(dashboard)).not.toContain("rejected-management-fixture");
+    expect(JSON.stringify(dashboard)).not.toContain("untrusted-provider-body");
+  });
+
   test("terminalizes stale passes and prunes completed run history", async () => {
     await pool.query(
       `INSERT INTO private_monitor_runs

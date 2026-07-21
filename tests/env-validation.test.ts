@@ -158,9 +158,16 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).toContain("POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME");
     expect(deployWorkflow).toContain("POSTIL_OPENROUTER_PRODUCTION_KEY_NAME");
     expect(deployWorkflow).toContain("POSTIL_OPENROUTER_EMERGENCY_KEY_NAME");
-    expect(deployWorkflow).toContain(
-      'echo "::error::Infisical did not provide ${name}."',
+    expect(deployWorkflow).toContain('if [[ -n "${value}" ]]; then');
+    expect(deployWorkflow).not.toContain(
+      'Infisical did not provide ${name}',
     );
+    const monitorSecretBlock = deployWorkflow.slice(
+      deployWorkflow.indexOf("monitor_secret_names=("),
+      deployWorkflow.indexOf("paddle_secret_names=("),
+    );
+    expect(monitorSecretBlock).toContain('if [[ -n "${value}" ]]; then');
+    expect(monitorSecretBlock).not.toContain("exit 1");
     const failedSecretList = Bun.spawnSync(
       [
         "bash",
@@ -301,9 +308,10 @@ describe("web startup environment validation", () => {
     expect(() => validateEnv("monitor")).toThrow(/WORKER_HEARTBEAT_INTERVAL_MS/);
     process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
     delete process.env.OPENROUTER_MANAGEMENT_API_KEY;
-    expect(() => validateEnv("monitor")).toThrow(
-      /OPENROUTER_MANAGEMENT_API_KEY/,
-    );
+    delete process.env.POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME;
+    delete process.env.POSTIL_OPENROUTER_PRODUCTION_KEY_NAME;
+    delete process.env.POSTIL_OPENROUTER_EMERGENCY_KEY_NAME;
+    expect(() => validateEnv("monitor")).not.toThrow();
     process.env.OPENROUTER_MANAGEMENT_API_KEY = "management-test-key";
     delete process.env.POSTIL_MONITOR_ALERT_STATE_PATH;
     expect(() => validateEnv("monitor")).toThrow(

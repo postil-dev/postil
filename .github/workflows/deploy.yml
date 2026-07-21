@@ -192,11 +192,9 @@ jobs:
           )
           for name in "${monitor_secret_names[@]}"; do
             value="${!name:-}"
-            if [[ -z "${value}" ]]; then
-              echo "::error::Infisical did not provide ${name}."
-              exit 1
+            if [[ -n "${value}" ]]; then
+              staged+="${name}=${value}"$'\n'
             fi
-            staged+="${name}=${value}"$'\n'
           done
           paddle_secret_names=(
             PADDLE_API_KEY

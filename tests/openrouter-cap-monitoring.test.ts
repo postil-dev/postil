@@ -125,17 +125,34 @@ describe("OpenRouter key-cap monitoring", () => {
         new Response("provider-body-credential-fixture", { status: 401 }),
     });
 
-    expect(checks).toHaveLength(2);
-    expect(check(checks, "openrouter-keys-metadata")).toMatchObject({
+    expect(checks).toHaveLength(1);
+    expect(check(checks, "openrouter-monitoring-configuration")).toMatchObject({
       healthy: false,
       severity: "critical",
       detail: "OpenRouter management credential was rejected with HTTP 401.",
     });
-    expect(check(checks, "openrouter-credits-metadata").healthy).toBe(false);
     expect(JSON.stringify(checks)).not.toContain("rejected-fixture-credential");
     expect(JSON.stringify(checks)).not.toContain(
       "provider-body-credential-fixture",
     );
+  });
+
+  test("keeps other monitoring available when OpenRouter bindings are absent", async () => {
+    let requested = false;
+    const checks = await runOpenRouterCapMonitoringChecks({
+      fetchImpl: async () => {
+        requested = true;
+        throw new Error("must not request metadata without configuration");
+      },
+    });
+
+    expect(requested).toBe(false);
+    expect(checks).toHaveLength(1);
+    expect(check(checks, "openrouter-monitoring-configuration")).toMatchObject({
+      healthy: false,
+      severity: "critical",
+    });
+    expect(checks[0]?.detail).toContain("Other private monitor checks remain active");
   });
 
   test("finds exact keys on later bounded metadata pages", async () => {
@@ -167,7 +184,7 @@ describe("OpenRouter key-cap monitoring", () => {
     });
 
     expect(keyPage).toBe(2);
-    expect(checks).toHaveLength(7);
+    expect(checks).toHaveLength(8);
     expect(checks.every((candidate) => candidate.healthy)).toBe(true);
   });
 
