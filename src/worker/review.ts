@@ -83,6 +83,7 @@ import {
   claimReusableLargeReviewReservation,
   hashEffectiveReviewConfiguration,
   PostgresLargeReviewAttemptStore,
+  privateUpstreamAllowed,
   providerIdentity,
   startLargeReviewProviderProxy,
   type LargeReviewProviderProxy,
@@ -1476,18 +1477,34 @@ export async function runReviewJob(
     );
     const durableRunIdentity = {
       repositoryId: repository.id,
+      prNumber: payload.prNumber,
       cliVersion,
       configurationSha256,
-      providerIdentity: providerIdentity(llm),
+      providerIdentity: providerIdentity({
+        ...llm,
+        identityKey: getSealingKey(),
+      }),
       headSha: payload.headSha,
+      baseSha: payload.baseSha,
+      retryLineage: timing.lease
+        ? `review-job:${timing.lease.id}`
+        : `review:${reviewId}`,
     };
+    let expectedRunKey: string | undefined;
     if (!llm.byok) {
-      hostedUsageReservationId = await claimReusableLargeReviewReservation(
+      const reusableReservation = await claimReusableLargeReviewReservation(
         db,
         durableRunIdentity,
         reviewId,
       );
-      if (hostedUsageReservationId) {
+      if (reusableReservation.kind === "conservatively-settled") {
+        throw new TerminalReviewError(
+          "large-review provider outcome was already conservatively settled",
+        );
+      }
+      if (reusableReservation.kind === "resume") {
+        hostedUsageReservationId = reusableReservation.reservationId;
+        expectedRunKey = reusableReservation.expectedRunKey;
         reviewLog.line("hosted inference spend reservation resumed");
       } else {
         const spendReservation = await reserveHostedReviewSpend(db, {
@@ -1560,12 +1577,21 @@ export async function runReviewJob(
         reviewLog.line("hosted inference spend reserved");
       }
     }
-    const activeLargeReviewProxy = startLargeReviewProviderProxy({
+    const allowPrivateUpstream = privateUpstreamAllowed({
+      byok: llm.byok,
+      configuredOptIn: optionalEnv("POSTIL_ALLOW_PRIVATE_API_BASE"),
+    });
+    const activeLargeReviewProxy = await startLargeReviewProviderProxy({
       upstreamApiBase: llm.apiBase,
       apiFormat: llm.apiFormat,
       additionalAuthHeader: llm.apiAuthHeader,
+      allowPrivateUpstream,
       identity: durableRunIdentity,
-      runContext: { currentReviewId: reviewId, hostedReservationId: hostedUsageReservationId },
+      runContext: {
+        currentReviewId: reviewId,
+        hostedReservationId: hostedUsageReservationId,
+        expectedRunKey,
+      },
       store: new PostgresLargeReviewAttemptStore(db),
     });
     largeReviewProxy = activeLargeReviewProxy;
@@ -1582,6 +1608,9 @@ export async function runReviewJob(
       { ...llm, apiBase: activeLargeReviewProxy.apiBase },
       {
         GITHUB_TOKEN: token,
+        POSTIL_ALLOW_PRIVATE_API_BASE: "1",
+        POSTIL_LARGE_REVIEW_PLAN_ENDPOINT: activeLargeReviewProxy.planEndpoint,
+        POSTIL_LARGE_REVIEW_PLAN_TOKEN: activeLargeReviewProxy.planToken,
         POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId),
         ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
         POSTIL_PREVENTION_HINT: preventionHint ? "1" : "0",
@@ -1603,10 +1632,7 @@ export async function runReviewJob(
     reviewLog.line("postil CLI spawned");
     cliStarted = true;
     const result = await runCli(args, cliEnv, workDir, {
-      onStderrLine: (line) => {
-        activeLargeReviewProxy.observeCliStderr(line);
-        reviewLog.line(`[stderr] ${line}`);
-      },
+      onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
       signal: reviewSignal,
       preserveOutputOnInterrupt: true,
     });
@@ -1950,18 +1976,33 @@ export async function runReviewJob(
       return rows;
     });
     if (hostedUsageReservationId && cliStarted) {
-      const reconcile = largeReviewProxy?.billingCanResumeExactly()
-        ? releaseHostedReviewSpend(db, hostedUsageReservationId)
-        : reconcileConservativeHostedReviewSpend(db, {
-            reservationId: hostedUsageReservationId,
-            repositoryId: repository.id,
-            reviewId,
-            triggerSource: reviewValues.triggerSource,
-          });
+      const reservationId = hostedUsageReservationId;
+      const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
+      const reconcile = billingOutcome === "resumable"
+        ? Promise.resolve()
+        : billingOutcome === "ambiguous"
+          ? largeReviewProxy!.boundRunKey().then((largeReviewRunKey) => {
+              if (!largeReviewRunKey) {
+                throw new Error("ambiguous provider contact lacks a durable run");
+              }
+              return reconcileConservativeHostedReviewSpend(db, {
+                reservationId,
+                repositoryId: repository.id,
+                reviewId,
+                triggerSource: reviewValues.triggerSource,
+                largeReviewRunKey,
+              });
+            })
+          : releaseHostedReviewSpend(db, reservationId);
       await reconcile.catch((reconcileError) => {
         console.error(
           `failed to reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
         );
+        if (billingOutcome === "ambiguous") {
+          throw new PermanentJobError(
+            "ambiguous provider usage could not be settled safely",
+          );
+        }
       });
     } else {
       await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(

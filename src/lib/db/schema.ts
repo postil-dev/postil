@@ -365,12 +365,19 @@ export const largeReviewRuns = pgTable(
     repositoryId: bigint("repository_id", { mode: "number" })
       .notNull()
       .references(() => repositories.id, { onDelete: "cascade" }),
+    prNumber: integer("pr_number").notNull(),
     cliVersion: text("cli_version").notNull(),
     configurationSha256: text("configuration_sha256").notNull(),
     providerIdentity: text("provider_identity").notNull(),
     headSha: text("head_sha").notNull(),
+    baseSha: text("base_sha").notNull(),
+    retryLineage: text("retry_lineage").notNull(),
     planSha256: text("plan_sha256").notNull(),
     hostedReservationId: uuid("hosted_reservation_id"),
+    billingState: text("billing_state").notNull().default("active"),
+    conservativelySettledAt: timestamp("conservatively_settled_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -380,9 +387,12 @@ export const largeReviewRuns = pgTable(
     index("large_review_runs_expiry_idx").on(t.expiresAt),
     index("large_review_runs_resume_identity_idx").on(
       t.repositoryId,
+      t.prNumber,
       t.headSha,
+      t.baseSha,
       t.cliVersion,
       t.configurationSha256,
+      t.retryLineage,
     ),
     check("large_review_runs_key_check", sql`${t.runKey} ~ '^[0-9a-f]{64}$'`),
     check(
@@ -395,7 +405,11 @@ export const largeReviewRuns = pgTable(
     ),
     check(
       "large_review_runs_identity_lengths_check",
-      sql`length(btrim(${t.cliVersion})) BETWEEN 1 AND 100 AND length(btrim(${t.providerIdentity})) BETWEEN 1 AND 2048 AND length(btrim(${t.headSha})) BETWEEN 1 AND 200`,
+      sql`${t.prNumber} > 0 AND length(btrim(${t.cliVersion})) BETWEEN 1 AND 100 AND length(btrim(${t.providerIdentity})) BETWEEN 1 AND 2048 AND length(btrim(${t.headSha})) BETWEEN 1 AND 200 AND length(btrim(${t.baseSha})) BETWEEN 1 AND 200 AND length(btrim(${t.retryLineage})) BETWEEN 1 AND 200`,
+    ),
+    check(
+      "large_review_runs_billing_state_check",
+      sql`(${t.billingState} = 'active' AND ${t.conservativelySettledAt} IS NULL) OR (${t.billingState} = 'conservative' AND ${t.conservativelySettledAt} IS NOT NULL)`,
     ),
   ],
 );

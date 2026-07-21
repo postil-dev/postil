@@ -1,3 +1,4 @@
+import http from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import {
   hashEffectiveReviewConfiguration,
   largeReviewAttemptKey,
   largeReviewRunKey,
+  privateUpstreamAllowed,
   providerIdentity,
   startLargeReviewProviderProxy,
   type AttemptClaim,
@@ -19,8 +21,8 @@ import {
 
 const PLAN_SHA = "a".repeat(64);
 const HEAD_SHA = "b".repeat(40);
+const BASE_SHA = "d".repeat(40);
 const CONFIG_SHA = "c".repeat(64);
-
 const servers: Array<{ stop(closeActiveConnections?: boolean): void }> = [];
 
 afterEach(() => {
@@ -34,30 +36,23 @@ class MemoryAttemptStore implements LargeReviewAttemptStore {
     {
       runKey: string;
       requestSha256: string;
-      attempt: number;
       leaseId: string;
       response?: StoredProviderResponse;
     }
   >();
-  bindGate: Promise<void> | undefined;
 
-  async bindRun(
-    identity: LargeReviewRunIdentity,
-    _context: LargeReviewRunContext,
-  ): Promise<string> {
-    await this.bindGate;
+  async bindRun(identity: LargeReviewRunIdentity, context: LargeReviewRunContext) {
     const key = largeReviewRunKey(identity);
+    if (context.expectedRunKey && context.expectedRunKey !== key) {
+      throw new Error("large-review plan changed across retry");
+    }
     this.runs.set(key, identity);
     return key;
   }
 
-  async claimAttempt(input: {
-    runKey: string;
-    requestSha256: string;
-    batchIdentity: string;
-    attempt: number;
-    model: string;
-  }): Promise<AttemptClaim> {
+  async claimAttempt(
+    input: Parameters<LargeReviewAttemptStore["claimAttempt"]>[0],
+  ): Promise<AttemptClaim> {
     const replay = [...this.attempts.values()].find(
       (entry) =>
         entry.runKey === input.runKey &&
@@ -66,34 +61,29 @@ class MemoryAttemptStore implements LargeReviewAttemptStore {
     );
     if (replay?.response) return { kind: "replay", response: replay.response };
     const attemptKey = largeReviewAttemptKey(input);
-    const existing = this.attempts.get(attemptKey);
-    if (existing) return { kind: "pending" };
+    if (this.attempts.has(attemptKey)) return { kind: "pending" };
     const leaseId = crypto.randomUUID();
     this.attempts.set(attemptKey, {
       runKey: input.runKey,
       requestSha256: input.requestSha256,
-      attempt: input.attempt,
       leaseId,
     });
     return { kind: "execute", attemptKey, leaseId };
   }
 
-  async completeAttempt(input: {
-    attemptKey: string;
-    leaseId: string;
-    response: StoredProviderResponse;
-  }): Promise<void> {
+  async completeAttempt(input: Parameters<LargeReviewAttemptStore["completeAttempt"]>[0]) {
     const attempt = this.attempts.get(input.attemptKey);
     if (!attempt || attempt.leaseId !== input.leaseId) throw new Error("lost lease");
     attempt.response = input.response;
   }
 
-  async abandonAttempt(attemptKey: string, leaseId: string): Promise<void> {
-    const attempt = this.attempts.get(attemptKey);
-    if (attempt?.leaseId === leaseId) this.attempts.delete(attemptKey);
+  async abandonAttempt(attemptKey: string, leaseId: string) {
+    if (this.attempts.get(attemptKey)?.leaseId === leaseId) {
+      this.attempts.delete(attemptKey);
+    }
   }
 
-  async deleteRun(runKey: string): Promise<void> {
+  async deleteRun(runKey: string) {
     this.runs.delete(runKey);
     for (const [key, attempt] of this.attempts) {
       if (attempt.runKey === runKey) this.attempts.delete(key);
@@ -101,286 +91,286 @@ class MemoryAttemptStore implements LargeReviewAttemptStore {
   }
 }
 
-function proxyIdentity(upstreamApiBase: string) {
+function proxySeed(upstreamApiBase: string) {
   return {
     upstreamApiBase,
     apiFormat: "openai-compatible" as const,
+    allowPrivateUpstream: true,
     identity: {
       repositoryId: 17,
+      prNumber: 9,
       cliVersion: "0.8.0",
       configurationSha256: CONFIG_SHA,
       providerIdentity: providerIdentity({
         apiBase: upstreamApiBase,
         apiFormat: "openai-compatible",
         byok: false,
+        apiKey: "provider-key",
+        identityKey: "identity-key",
       }),
       headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+      retryLineage: "review-job:31",
     },
     runContext: { currentReviewId: 1, hostedReservationId: null },
   };
 }
 
-function enableLargeReview(proxy: ReturnType<typeof startLargeReviewProviderProxy>) {
-  proxy.observeCliStderr(
-    `postil: deterministic large-review plan=${PLAN_SHA} direct_hunks=1`,
-  );
-  proxy.observeCliStderr(
-    "postil: llm attempt phase=review model=test attempt=1/2 timeout=90s budget_remaining=420s",
-  );
+const plan = {
+  version: 1,
+  planSha256: PLAN_SHA,
+  directHunks: 4,
+  semanticHunks: 2,
+  unreviewedHunks: 0,
+  selectedBatches: 3,
+  totalBatches: 3,
+  concurrency: 2,
+  requestTimeoutSeconds: 60,
+  reviewBudgetSeconds: 420,
+};
+
+async function register(
+  proxy: Awaited<ReturnType<typeof startLargeReviewProviderProxy>>,
+  overrides = {},
+) {
+  return fetch(proxy.planEndpoint, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${proxy.planToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ ...plan, ...overrides }),
+  });
 }
 
 const requestBody = JSON.stringify({
   model: "openai/test-model",
   messages: [{ role: "user", content: "review batch 4" }],
 });
-
 const successfulBody = JSON.stringify({
-  id: "response-1",
   choices: [{ message: { role: "assistant", content: '{"findings":[]}' } }],
   usage: { prompt_tokens: 23, completion_tokens: 5 },
 });
 
 describe("durable large-review provider proxy", () => {
-  test("persists the plan before provider contact and replays a completed batch byte-for-byte", async () => {
-    let releaseBind: (() => void) | undefined;
-    const store = new MemoryAttemptStore();
-    store.bindGate = new Promise<void>((resolve) => {
-      releaseBind = resolve;
-    });
+  test("requires authenticated durable plan registration before provider access", async () => {
     let providerCalls = 0;
-    const gatewayHeaders: Array<string | null> = [];
     const upstream = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
-      fetch(request) {
+      fetch() {
         providerCalls += 1;
-        gatewayHeaders.push(request.headers.get("x-gateway-auth"));
         return new Response(successfulBody, {
-          headers: { "content-type": "application/json", "x-request-id": "req-1" },
+          headers: { "x-request-id": "req-1" },
         });
       },
     });
     servers.push(upstream);
-
-    const first = startLargeReviewProviderProxy({
-      ...proxyIdentity(`http://127.0.0.1:${upstream.port}/v1`),
-      additionalAuthHeader: "x-gateway-auth",
+    const store = new MemoryAttemptStore();
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://localhost:${upstream.port}/v1`),
       store,
     });
-    enableLargeReview(first);
-    const pending = fetch(`${first.apiBase}/chat/completions`, {
+    const early = await fetch(`${proxy.apiBase}/chat/completions`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-gateway-auth": "fixture-auth",
-      },
       body: requestBody,
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(early.status).toBe(428);
     expect(providerCalls).toBe(0);
-    releaseBind?.();
-    const original = await pending;
-    expect(await original.text()).toBe(successfulBody);
-    expect(original.headers.get("x-request-id")).toBe("req-1");
-    expect(providerCalls).toBe(1);
-    expect(gatewayHeaders).toEqual(["fixture-auth"]);
-    expect(first.billingCanResumeExactly()).toBe(true);
-    first.close();
+    expect(
+      (
+        await fetch(proxy.planEndpoint, {
+          method: "POST",
+          body: JSON.stringify(plan),
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await fetch(proxy.planEndpoint, {
+          method: "POST",
+          headers: { authorization: `Bearer ${proxy.planToken}` },
+          body: "x".repeat(16 * 1024 + 1),
+        })
+      ).status,
+    ).toBe(413);
+    expect((await register(proxy)).status).toBe(204);
+    expect((await register(proxy)).status).toBe(204);
+    expect((await register(proxy, { planSha256: "f".repeat(64) })).status).toBe(409);
 
-    const resumed = startLargeReviewProviderProxy({
-      ...proxyIdentity(`http://127.0.0.1:${upstream.port}/v1`),
-      additionalAuthHeader: "x-gateway-auth",
-      store,
-    });
-    enableLargeReview(resumed);
-    const replay = await fetch(`${resumed.apiBase}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-gateway-auth": "fixture-auth",
-      },
-      body: requestBody,
-    });
-    expect(await replay.text()).toBe(successfulBody);
-    expect(replay.headers.get("x-request-id")).toBe("req-1");
-    expect(providerCalls).toBe(1);
-    expect(gatewayHeaders).toEqual(["fixture-auth"]);
-    expect(resumed.billingCanResumeExactly()).toBe(true);
-    await resumed.discardCompletedRun();
-    expect(store.runs.size).toBe(0);
-    expect(store.attempts.size).toBe(0);
-    resumed.close();
-  });
-
-  test("does not persist retryable HTTP failures but resumes the later completed attempt", async () => {
-    const store = new MemoryAttemptStore();
-    let providerCalls = 0;
-    const upstream = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch() {
-        providerCalls += 1;
-        if (providerCalls === 1) {
-          return Response.json(
-            { error: { message: "try later" } },
-            { status: 429, headers: { "retry-after": "2" } },
-          );
-        }
-        if (providerCalls === 2) {
-          return Response.json(
-            { error: { message: "provider unavailable" } },
-            { status: 503 },
-          );
-        }
-        return new Response(successfulBody, {
-          headers: { "content-type": "application/json" },
-        });
-      },
-    });
-    servers.push(upstream);
-    const seed = proxyIdentity(`http://127.0.0.1:${upstream.port}/v1`);
-    const first = startLargeReviewProviderProxy({ ...seed, store });
-    enableLargeReview(first);
-
-    const throttled = await fetch(`${first.apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: requestBody,
-    });
-    expect(throttled.status).toBe(429);
-    expect(throttled.headers.get("retry-after")).toBe("2");
-    const unavailable = await fetch(`${first.apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: requestBody,
-    });
-    expect(unavailable.status).toBe(503);
-    const completed = await fetch(`${first.apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: requestBody,
-    });
-    expect(completed.status).toBe(200);
-    expect(providerCalls).toBe(3);
-    first.close();
-
-    const resumed = startLargeReviewProviderProxy({ ...seed, store });
-    enableLargeReview(resumed);
-    const replay = await fetch(`${resumed.apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: requestBody,
-    });
-    expect(replay.status).toBe(200);
-    expect(await replay.text()).toBe(successfulBody);
-    expect(providerCalls).toBe(3);
-    resumed.close();
-  });
-
-  test("does not cache an empty successful response", async () => {
-    const store = new MemoryAttemptStore();
-    let providerCalls = 0;
-    const upstream = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch() {
-        providerCalls += 1;
-        return Response.json({ choices: [{ message: { content: "" } }] });
-      },
-    });
-    servers.push(upstream);
-    const proxy = startLargeReviewProviderProxy({
-      ...proxyIdentity(`http://127.0.0.1:${upstream.port}/v1`),
-      store,
-    });
-    enableLargeReview(proxy);
     const response = await fetch(`${proxy.apiBase}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: requestBody,
     });
-    expect(response.status).toBe(200);
-    expect(store.attempts.size).toBe(0);
-    expect(proxy.billingCanResumeExactly()).toBe(false);
+    expect(await response.text()).toBe(successfulBody);
     expect(providerCalls).toBe(1);
+    expect(proxy.billingOutcome()).toBe("resumable");
     proxy.close();
   });
 
-  test("does not cache an ambiguous transport failure", async () => {
-    const unavailable = Bun.serve({
+  test("replays a completed response only under the same registered identity", async () => {
+    let providerCalls = 0;
+    const upstream = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch() {
-        return new Response("unused");
+        providerCalls += 1;
+        return new Response(successfulBody);
       },
     });
-    const port = unavailable.port;
-    unavailable.stop(true);
+    servers.push(upstream);
+    const seed = proxySeed(`http://localhost:${upstream.port}/v1`);
     const store = new MemoryAttemptStore();
-    const proxy = startLargeReviewProviderProxy({
-      ...proxyIdentity(`http://127.0.0.1:${port}/v1`),
-      store,
+    const first = await startLargeReviewProviderProxy({ ...seed, store });
+    expect((await register(first)).status).toBe(204);
+    await fetch(`${first.apiBase}/chat/completions`, {
+      method: "POST",
+      body: requestBody,
     });
-    enableLargeReview(proxy);
+    first.close();
+
+    const resumed = await startLargeReviewProviderProxy({ ...seed, store });
+    expect((await register(resumed)).status).toBe(204);
+    expect(
+      (
+        await fetch(`${resumed.apiBase}/chat/completions`, {
+          method: "POST",
+          body: requestBody,
+        })
+      ).status,
+    ).toBe(200);
+    expect(providerCalls).toBe(1);
+    await resumed.discardCompletedRun();
+    resumed.close();
+  });
+
+  test("marks a truncated response body ambiguous", async () => {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"choices":[');
+      response.destroy();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("test server address unavailable");
+    }
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://localhost:${address.port}/v1`),
+      store: new MemoryAttemptStore(),
+    });
+    expect((await register(proxy)).status).toBe(204);
     const response = await fetch(`${proxy.apiBase}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
       body: requestBody,
     });
     expect(response.status).toBe(502);
-    expect(store.attempts.size).toBe(0);
-    expect(proxy.billingCanResumeExactly()).toBe(false);
+    expect(proxy.billingOutcome()).toBe("ambiguous");
+    proxy.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  test("stops a chunked provider response at the byte limit", async () => {
+    const upstream = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return new Response(new Uint8Array(2 * 1024 * 1024 + 1));
+      },
+    });
+    servers.push(upstream);
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://localhost:${upstream.port}/v1`),
+      store: new MemoryAttemptStore(),
+    });
+    expect((await register(proxy)).status).toBe(204);
+    const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+      method: "POST",
+      body: requestBody,
+    });
+    expect(response.status).toBe(502);
+    expect(proxy.billingOutcome()).toBe("ambiguous");
     proxy.close();
   });
 
-  test("binds every required run and attempt identity component", () => {
-    const base: LargeReviewRunIdentity = {
-      repositoryId: 1,
-      cliVersion: "0.8.0",
-      configurationSha256: CONFIG_SHA,
-      providerIdentity: '["managed","openai-compatible","https://example.test/v1"]',
-      headSha: HEAD_SHA,
-      planSha256: PLAN_SHA,
-    };
-    const runKey = largeReviewRunKey(base);
-    for (const changed of [
-      { ...base, repositoryId: 2 },
-      { ...base, cliVersion: "0.8.1" },
-      { ...base, configurationSha256: "d".repeat(64) },
-      { ...base, providerIdentity: `${base.providerIdentity}/other` },
-      { ...base, headSha: "e".repeat(40) },
-      { ...base, planSha256: "f".repeat(64) },
-    ]) {
-      expect(largeReviewRunKey(changed)).not.toBe(runKey);
-    }
+  test("pins the validated upstream address for the provider connection", async () => {
+    let resolutions = 0;
+    const upstream = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return new Response(successfulBody);
+      },
+    });
+    servers.push(upstream);
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://provider.example:${upstream.port}/v1`),
+      resolveHostname: async () => {
+        resolutions += 1;
+        return [{ address: "127.0.0.1", family: 4 }];
+      },
+      store: new MemoryAttemptStore(),
+    });
+    expect((await register(proxy)).status).toBe(204);
+    expect(
+      (
+        await fetch(`${proxy.apiBase}/chat/completions`, {
+          method: "POST",
+          body: requestBody,
+        })
+      ).status,
+    ).toBe(200);
+    expect(resolutions).toBe(1);
+    proxy.close();
+  });
 
-    const attempt = {
-      runKey,
-      requestSha256: "1".repeat(64),
-      batchIdentity: "2".repeat(64),
-      attempt: 1,
-      model: "model-a",
-    };
-    const attemptKey = largeReviewAttemptKey(attempt);
-    expect(largeReviewAttemptKey({ ...attempt, requestSha256: "3".repeat(64) })).not.toBe(
-      attemptKey,
-    );
-    expect(largeReviewAttemptKey({ ...attempt, batchIdentity: "4".repeat(64) })).not.toBe(
-      attemptKey,
-    );
-    expect(largeReviewAttemptKey({ ...attempt, attempt: 2 })).not.toBe(attemptKey);
-    expect(largeReviewAttemptKey({ ...attempt, model: "model-b" })).not.toBe(attemptKey);
+  test("binds endpoint query and keyed auth context without storing credentials", () => {
+    const identity = (apiKey: string, query: string) =>
+      providerIdentity({
+        apiBase: `https://example.test/v1?tenant=${query}`,
+        apiFormat: "openai-compatible",
+        byok: true,
+        apiKey,
+        apiAuthHeader: "x-tenant-auth",
+        apiAuthValue: "gateway-secret",
+        identityKey: "identity-key",
+      });
+    expect(identity("key-a", "one")).not.toBe(identity("key-b", "one"));
+    expect(identity("key-a", "one")).not.toBe(identity("key-a", "two"));
+    expect(identity("key-a", "one")).not.toContain("key-a");
+    expect(identity("key-a", "one")).not.toContain("gateway-secret");
+  });
+
+  test("never applies the process private-endpoint opt-in to BYOK upstreams", async () => {
+    expect(
+      privateUpstreamAllowed({ byok: false, configuredOptIn: "1" }),
+    ).toBe(true);
+    expect(
+      privateUpstreamAllowed({ byok: true, configuredOptIn: "1" }),
+    ).toBe(false);
+    await expect(
+      startLargeReviewProviderProxy({
+        ...proxySeed("http://127.0.0.1:9/v1"),
+        allowPrivateUpstream: false,
+        store: new MemoryAttemptStore(),
+      }),
+    ).rejects.toThrow("explicitly allowed private endpoint");
   });
 
   test("hashes effective file labels and bytes deterministically", async () => {
     const dir = await mkdtemp(join(tmpdir(), "postil-large-review-config-"));
     try {
       await writeFile(join(dir, ".postil.yaml"), "enabled: true\n");
-      const first = await hashEffectiveReviewConfiguration(dir, ["org:.postil.yaml"]);
-      const second = await hashEffectiveReviewConfiguration(dir, ["org:.postil.yaml"]);
-      const differentSource = await hashEffectiveReviewConfiguration(dir, [".postil.yaml"]);
-      expect(first).toBe(second);
-      expect(differentSource).not.toBe(first);
+      const first = await hashEffectiveReviewConfiguration(dir, [
+        "org:.postil.yaml",
+      ]);
+      expect(
+        await hashEffectiveReviewConfiguration(dir, ["org:.postil.yaml"]),
+      ).toBe(first);
+      expect(
+        await hashEffectiveReviewConfiguration(dir, [".postil.yaml"]),
+      ).not.toBe(first);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

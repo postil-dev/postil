@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, Pool } from "pg";
 
 import * as schema from "@/lib/db/schema";
+import { reconcileConservativeHostedReviewSpend } from "@/lib/hosted-usage-reservations";
 import {
   PostgresLargeReviewAttemptStore,
   claimReusableLargeReviewReservation,
@@ -88,10 +89,13 @@ describeDb("large-review durable resume migration", () => {
     const store = new PostgresLargeReviewAttemptStore(drizzle(pool, { schema }));
     const identity: LargeReviewRunIdentity = {
       repositoryId,
+      prNumber: 1,
       cliVersion: "0.8.0",
       configurationSha256: "a".repeat(64),
       providerIdentity: '["managed","openai-compatible","https://example.test/v1"]',
       headSha: "b".repeat(40),
+      baseSha: "0".repeat(40),
+      retryLineage: "review-job:1",
       planSha256: "c".repeat(64),
     };
     const context = { currentReviewId: reviewId, hostedReservationId: null };
@@ -135,10 +139,13 @@ describeDb("large-review durable resume migration", () => {
     const store = new PostgresLargeReviewAttemptStore(drizzle(pool, { schema }));
     const identity: LargeReviewRunIdentity = {
       repositoryId,
+      prNumber: 1,
       cliVersion: "0.8.0",
       configurationSha256: "1".repeat(64),
       providerIdentity: '["managed","openai-compatible","https://example.test/v1"]',
       headSha: "2".repeat(40),
+      baseSha: "0".repeat(40),
+      retryLineage: "review-job:2",
       planSha256: "3".repeat(64),
     };
     const runKey = await store.bindRun(identity, {
@@ -189,10 +196,13 @@ describeDb("large-review durable resume migration", () => {
     const store = new PostgresLargeReviewAttemptStore(drizzle(pool, { schema }));
     const identity: LargeReviewRunIdentity = {
       repositoryId,
+      prNumber: 1,
       cliVersion: "0.8.0",
       configurationSha256: "6".repeat(64),
       providerIdentity: '["managed","openai-compatible","https://example.test/v1"]',
       headSha: "7".repeat(40),
+      baseSha: "0".repeat(40),
+      retryLineage: "review-job:3",
       planSha256: "8".repeat(64),
     };
     const context = { currentReviewId: reviewId, hostedReservationId: null };
@@ -233,30 +243,61 @@ describeDb("large-review durable resume migration", () => {
     const reservationId = reservation.rows[0]!.id;
     const identity: LargeReviewRunIdentity = {
       repositoryId,
+      prNumber: 1,
       cliVersion: "0.8.0",
       configurationSha256: "a".repeat(64),
       providerIdentity: '["managed","openai-compatible","https://example.test/v1"]',
       headSha: "b".repeat(40),
+      baseSha: "0".repeat(40),
+      retryLineage: "review-job:4",
       planSha256: "c".repeat(64),
     };
     const runKey = await store.bindRun(identity, {
       currentReviewId: reviewId,
       hostedReservationId: reservationId,
     });
+    await pool.query("UPDATE reviews SET status = 'failed' WHERE id = $1", [reviewId]);
 
+    expect(
+      await claimReusableLargeReviewReservation(
+        db,
+        { ...identity, prNumber: 99 },
+        replacementReviewId,
+      ),
+    ).toEqual({ kind: "none" });
     expect(
       await claimReusableLargeReviewReservation(
         db,
         {
           repositoryId: identity.repositoryId,
+          prNumber: identity.prNumber,
           cliVersion: identity.cliVersion,
           configurationSha256: identity.configurationSha256,
           providerIdentity: identity.providerIdentity,
           headSha: identity.headSha,
+          baseSha: identity.baseSha,
+          retryLineage: identity.retryLineage,
         },
         replacementReviewId,
       ),
-    ).toBe(reservationId);
+    ).toEqual({ kind: "resume", reservationId, expectedRunKey: runKey });
+    await expect(
+      store.bindRun(identity, {
+        currentReviewId: reviewId,
+        hostedReservationId: reservationId,
+        expectedRunKey: runKey,
+      }),
+    ).rejects.toThrow("context ownership collision");
+    await expect(
+      store.bindRun(
+        { ...identity, planSha256: "d".repeat(64) },
+        {
+          currentReviewId: replacementReviewId,
+          hostedReservationId: reservationId,
+          expectedRunKey: runKey,
+        },
+      ),
+    ).rejects.toThrow("plan changed across retry");
     const transferred = await pool.query<{
       review_id: string;
       status: string;
@@ -279,6 +320,90 @@ describeDb("large-review durable resume migration", () => {
     ]);
     await store.deleteRun(runKey);
     await pool.query("DELETE FROM hosted_usage_reservations WHERE id = $1", [reservationId]);
+  });
+
+  test("settles one ambiguous run once and refuses another billed resume", async () => {
+    const db = drizzle(pool, { schema });
+    const store = new PostgresLargeReviewAttemptStore(db);
+    const source = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+        (repository_id, pr_number, head_sha, base_sha, status, trigger_source)
+       VALUES ($1, 3, $2, $3, 'failed', 'unknown') RETURNING id`,
+      [repositoryId, "e".repeat(40), "f".repeat(40)],
+    );
+    const sourceReviewId = Number(source.rows[0]!.id);
+    const replacement = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+        (repository_id, pr_number, head_sha, base_sha, status, trigger_source)
+       VALUES ($1, 3, $2, $3, 'running', 'unknown') RETURNING id`,
+      [repositoryId, "e".repeat(40), "f".repeat(40)],
+    );
+    const replacementReviewId = Number(replacement.rows[0]!.id);
+    const reservation = await pool.query<{ id: string }>(
+      `INSERT INTO hosted_usage_reservations
+        (org_id, review_id, operation, reserved_micros, status, expires_at, updated_at)
+       VALUES ($1, $2, 'review', 1000000, 'active', now() + interval '15 minutes', now())
+       RETURNING id`,
+      [orgId, sourceReviewId],
+    );
+    const reservationId = reservation.rows[0]!.id;
+    const identity: LargeReviewRunIdentity = {
+      repositoryId,
+      prNumber: 3,
+      cliVersion: "0.8.0",
+      configurationSha256: "4".repeat(64),
+      providerIdentity: '["managed","openai-compatible","https://example.test/v1","auth"]',
+      headSha: "e".repeat(40),
+      baseSha: "f".repeat(40),
+      retryLineage: "review-job:ambiguous",
+      planSha256: "5".repeat(64),
+    };
+    const runKey = await store.bindRun(identity, {
+      currentReviewId: sourceReviewId,
+      hostedReservationId: reservationId,
+    });
+
+    expect(
+      await reconcileConservativeHostedReviewSpend(db, {
+        reservationId,
+        repositoryId,
+        reviewId: sourceReviewId,
+        triggerSource: "unknown",
+        largeReviewRunKey: runKey,
+      }),
+    ).toBe(1_000_000);
+    expect(
+      await claimReusableLargeReviewReservation(
+        db,
+        {
+          repositoryId: identity.repositoryId,
+          prNumber: identity.prNumber,
+          cliVersion: identity.cliVersion,
+          configurationSha256: identity.configurationSha256,
+          providerIdentity: identity.providerIdentity,
+          headSha: identity.headSha,
+          baseSha: identity.baseSha,
+          retryLineage: identity.retryLineage,
+        },
+        replacementReviewId,
+      ),
+    ).toEqual({ kind: "conservatively-settled" });
+    expect(
+      await reconcileConservativeHostedReviewSpend(db, {
+        reservationId,
+        repositoryId,
+        reviewId: sourceReviewId,
+        triggerSource: "unknown",
+        largeReviewRunKey: runKey,
+      }),
+    ).toBe(0);
+    const charged = await pool.query<{ count: string; micros: string }>(
+      `SELECT count(*)::text AS count, sum(cost_micros)::text AS micros
+         FROM usage_events WHERE review_id = $1`,
+      [sourceReviewId],
+    );
+    expect(charged.rows[0]).toEqual({ count: "1", micros: "1000000" });
+    await store.deleteRun(runKey);
   });
 
   test("replays a completed batch after the proxy process is killed and restarted", async () => {
@@ -359,10 +484,13 @@ describeDb("large-review durable resume migration", () => {
 
       const runKey = largeReviewRunKey({
         repositoryId,
+        prNumber: 1,
         cliVersion: "0.8.0",
         configurationSha256: "a".repeat(64),
         providerIdentity: '["managed","openai-compatible","http://fixture/v1"]',
         headSha: "b".repeat(40),
+        baseSha: "0".repeat(40),
+        retryLineage: "review-job:fixture",
         planSha256: "c".repeat(64),
       });
       const state = await pool.query<{ state: string; response_body: string }>(

@@ -128,6 +128,11 @@ console.log("fixture-key");
       expectedGithubRepoId: "990002",
       endpointAuthPresent: false,
       configApiBaseAllowed: false,
+      privateApiBaseAllowed: true,
+      planEndpoint: expect.stringMatching(
+        /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f-]{36}\/large-review-plan$/,
+      ),
+      planTokenPresent: true,
     });
   }, 120_000);
 
@@ -547,6 +552,9 @@ if (process.env.POSTIL_FAKE_INVOCATION_MARKER) {
     expectedGithubRepoId: process.env.POSTIL_EXPECTED_GITHUB_REPO_ID,
     endpointAuthPresent: Boolean(process.env.POSTIL_ENDPOINT_AUTH_HEADER || process.env.POSTIL_ENDPOINT_AUTH_VALUE),
     configApiBaseAllowed: Boolean(process.env.POSTIL_ALLOW_CONFIG_API_BASE),
+    privateApiBaseAllowed: process.env.POSTIL_ALLOW_PRIVATE_API_BASE === "1",
+    planEndpoint: process.env.POSTIL_LARGE_REVIEW_PLAN_ENDPOINT,
+    planTokenPresent: Boolean(process.env.POSTIL_LARGE_REVIEW_PLAN_TOKEN),
   }));
 }
 const valueAfter = (flag) => {

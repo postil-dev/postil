@@ -25,18 +25,24 @@ CREATE TABLE "large_review_runs" (
 	"run_key" text PRIMARY KEY NOT NULL,
 	"current_review_id" bigint NOT NULL,
 	"repository_id" bigint NOT NULL,
+	"pr_number" integer NOT NULL,
 	"cli_version" text NOT NULL,
 	"configuration_sha256" text NOT NULL,
 	"provider_identity" text NOT NULL,
 	"head_sha" text NOT NULL,
+	"base_sha" text NOT NULL,
+	"retry_lineage" text NOT NULL,
 	"plan_sha256" text NOT NULL,
 	"hosted_reservation_id" uuid,
+	"billing_state" text DEFAULT 'active' NOT NULL,
+	"conservatively_settled_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "large_review_runs_key_check" CHECK ("large_review_runs"."run_key" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "large_review_runs_configuration_check" CHECK ("large_review_runs"."configuration_sha256" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "large_review_runs_plan_check" CHECK ("large_review_runs"."plan_sha256" ~ '^[0-9a-f]{64}$'),
-	CONSTRAINT "large_review_runs_identity_lengths_check" CHECK (length(btrim("large_review_runs"."cli_version")) BETWEEN 1 AND 100 AND length(btrim("large_review_runs"."provider_identity")) BETWEEN 1 AND 2048 AND length(btrim("large_review_runs"."head_sha")) BETWEEN 1 AND 200)
+	CONSTRAINT "large_review_runs_identity_lengths_check" CHECK ("large_review_runs"."pr_number" > 0 AND length(btrim("large_review_runs"."cli_version")) BETWEEN 1 AND 100 AND length(btrim("large_review_runs"."provider_identity")) BETWEEN 1 AND 2048 AND length(btrim("large_review_runs"."head_sha")) BETWEEN 1 AND 200 AND length(btrim("large_review_runs"."base_sha")) BETWEEN 1 AND 200 AND length(btrim("large_review_runs"."retry_lineage")) BETWEEN 1 AND 200),
+	CONSTRAINT "large_review_runs_billing_state_check" CHECK (("large_review_runs"."billing_state" = 'active' AND "large_review_runs"."conservatively_settled_at" IS NULL) OR ("large_review_runs"."billing_state" = 'conservative' AND "large_review_runs"."conservatively_settled_at" IS NOT NULL))
 );
 --> statement-breakpoint
 ALTER TABLE "large_review_attempts" ADD CONSTRAINT "large_review_attempts_run_key_large_review_runs_run_key_fk" FOREIGN KEY ("run_key") REFERENCES "public"."large_review_runs"("run_key") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -46,4 +52,4 @@ CREATE UNIQUE INDEX "large_review_attempts_run_request_attempt_idx" ON "large_re
 CREATE UNIQUE INDEX "large_review_attempts_pending_request_idx" ON "large_review_attempts" USING btree ("run_key","request_sha256") WHERE "large_review_attempts"."state" = 'pending';--> statement-breakpoint
 CREATE INDEX "large_review_attempts_run_idx" ON "large_review_attempts" USING btree ("run_key");--> statement-breakpoint
 CREATE INDEX "large_review_runs_expiry_idx" ON "large_review_runs" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "large_review_runs_resume_identity_idx" ON "large_review_runs" USING btree ("repository_id","head_sha","cli_version","configuration_sha256");
+CREATE INDEX "large_review_runs_resume_identity_idx" ON "large_review_runs" USING btree ("repository_id","pr_number","head_sha","base_sha","cli_version","configuration_sha256","retry_lineage");

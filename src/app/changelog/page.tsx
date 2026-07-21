@@ -35,10 +35,10 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.7.0–0.7.7",
-    date: "July 19–20, 2026",
+    version: "0.7.0–0.7.8",
+    date: "July 19–21, 2026",
     summary:
-      "Self-service trials and bounded hosted reviews use release-scoped activation checks.",
+      "Self-service trials and bounded hosted reviews use release-scoped activation checks and durable retry accounting.",
     changes: [
       {
         label: "Added",
@@ -63,6 +63,10 @@ const RELEASES: Release[] = [
       {
         label: "Fixed",
         text: "Prior findings remain active until a current review rechecks their evidence across bounded batches and renamed files.",
+      },
+      {
+        label: "Security",
+        text: "Hosted large-review retries bind provider calls and billing to an authenticated durable plan and immutable retry identity.",
       },
     ],
   },

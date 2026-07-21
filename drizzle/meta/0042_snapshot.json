@@ -1,5 +1,5 @@
 {
-  "id": "c2e13ec1-839e-4eb1-a91b-522cd5c2fbcc",
+  "id": "cfd061e4-7aab-4414-97cb-d8fb1681f5de",
   "prevId": "9b26ec72-7860-4744-af82-cc46f10fb831",
   "version": "7",
   "dialect": "postgresql",
@@ -2512,6 +2512,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "pr_number": {
+          "name": "pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
         "cli_version": {
           "name": "cli_version",
           "type": "text",
@@ -2536,6 +2542,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "base_sha": {
+          "name": "base_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "retry_lineage": {
+          "name": "retry_lineage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "plan_sha256": {
           "name": "plan_sha256",
           "type": "text",
@@ -2545,6 +2563,19 @@
         "hosted_reservation_id": {
           "name": "hosted_reservation_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "billing_state": {
+          "name": "billing_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "conservatively_settled_at": {
+          "name": "conservatively_settled_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -2588,7 +2619,19 @@
               "nulls": "last"
             },
             {
+              "expression": "pr_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "head_sha",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "base_sha",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2601,6 +2644,12 @@
             },
             {
               "expression": "configuration_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "retry_lineage",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2658,7 +2707,11 @@
         },
         "large_review_runs_identity_lengths_check": {
           "name": "large_review_runs_identity_lengths_check",
-          "value": "length(btrim(\"large_review_runs\".\"cli_version\")) BETWEEN 1 AND 100 AND length(btrim(\"large_review_runs\".\"provider_identity\")) BETWEEN 1 AND 2048 AND length(btrim(\"large_review_runs\".\"head_sha\")) BETWEEN 1 AND 200"
+          "value": "\"large_review_runs\".\"pr_number\" > 0 AND length(btrim(\"large_review_runs\".\"cli_version\")) BETWEEN 1 AND 100 AND length(btrim(\"large_review_runs\".\"provider_identity\")) BETWEEN 1 AND 2048 AND length(btrim(\"large_review_runs\".\"head_sha\")) BETWEEN 1 AND 200 AND length(btrim(\"large_review_runs\".\"base_sha\")) BETWEEN 1 AND 200 AND length(btrim(\"large_review_runs\".\"retry_lineage\")) BETWEEN 1 AND 200"
+        },
+        "large_review_runs_billing_state_check": {
+          "name": "large_review_runs_billing_state_check",
+          "value": "(\"large_review_runs\".\"billing_state\" = 'active' AND \"large_review_runs\".\"conservatively_settled_at\" IS NULL) OR (\"large_review_runs\".\"billing_state\" = 'conservative' AND \"large_review_runs\".\"conservatively_settled_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false

@@ -158,9 +158,13 @@ Committed precise usage plus every unexpired reservation must fit within the
 allowance and hard cap. Completion records one event per model attempt and
 reconciles their summed provider-priced usage with the hold in one transaction.
 A worker-owned loopback proxy journals deterministic large-review provider
-responses before returning them to the CLI. The durable run identity binds the
-repository, CLI release, effective configuration, provider, head commit, and
-coverage-plan hash. Each attempt also binds the model, serialized request,
+responses before returning them to the CLI. The CLI registers one authenticated
+request-inventory plan with the loopback proxy before it constructs a model
+client. Unregistered provider requests fail without reaching the upstream.
+The durable run identity binds the repository, pull request, base and head
+commits, retry lineage, CLI release, effective configuration, complete provider
+endpoint and keyed authentication identity, and coverage-plan hash. Each attempt
+also binds the model, serialized request,
 batch identity, and bounded attempt number. A restarted job replays a completed
 response byte-for-byte, while 429, 5xx, timeout, and empty-response failures
 remain subject to the CLI's bounded transient retry policy. The journal expires
@@ -168,7 +172,12 @@ after 24 hours and is deleted when the review envelope and publication receipt
 are staged. The CLI applies the same schema, grounding, and publication
 validation to original and replayed response bytes. The active hosted-spend
 reservation is attached to the run and transferred to the replacement review
-before a new hold is requested, so final usage reconciliation owns one hold.
+only when the source review is terminal and every retry identity component
+matches. The registered plan must reproduce the stored run key before provider
+access. The proxy resolves and validates the upstream once, then pins that
+address while retaining TLS hostname verification for HTTPS. The loopback-only
+private-base opt-in is scoped to the spawned CLI and never relaxes BYOK upstream
+validation.
 A legacy envelope without per-model usage is priced only when its aggregate names
 one catalog model; ambiguous aggregates consume the full reservation. Failure
 before inference releases the hold, and abandoned holds expire after 15 minutes.
@@ -186,9 +195,11 @@ capacity across extended GitHub outages. A hidden comment marker lets retries
 discover a comment after an ambiguous POST rather than duplicating it. Missing,
 malformed, or unpriceable usage after CLI start consumes the full reservation.
 A failed attempt whose completed provider responses are all durable and
-replayable releases its hold so the resumed final receipt accounts for those
-calls once. Ambiguous provider contact keeps conservative accounting. BYOK
-spend remains provider-direct and never creates a Postil reservation or receipt.
+replayable retains its hold for the exact retry. Ambiguous provider contact
+reconciles the logical run conservatively once and makes that run non-resumable,
+so the settled retry lineage cannot bill or contact the provider again while its
+journal identity exists. BYOK spend remains provider-direct and never creates a
+Postil reservation or receipt.
 Review envelopes preserve the CLI's coverage plan, admission bound, and
 `usageAccountingComplete`; respond receipts carry the same accounting-completeness
 signal.
@@ -331,7 +342,8 @@ configured severity threshold. Per-review detail reads the stored envelope
 (`src/lib/envelope.ts`); the dashboard renders it and never reshapes it.
 `large_review_runs` and `large_review_attempts` contain the bounded, expiring
 resume journal. They store provider response envelopes for replay but never
-store credentials or request headers.
+store credentials or request headers. Provider authentication contributes only
+a keyed digest to the run identity.
 The worker enables local-prevention guidance on the second revision after one
 earlier completed review on the same pull request introduced an actionable
 finding. Silent and operational-only reviews do not arm the hint, and repeated
