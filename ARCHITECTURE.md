@@ -136,8 +136,9 @@ retain content-free delivery audit state. Security, payment-failure, trial-expir
 and service-incident events queue immediately and ignore optional summary choices.
 Restored, paused, and canceled subscription events enter a billing summary after a
 24-hour aggregation delay when billing summaries are enabled. Provider delivery uses
-one stable logical key per batch through the shared authenticated HTTPS API; inbox
-read state does not affect email delivery. Trial-start events are inbox-only. Service
+one stable logical key per batch through the shared authenticated HTTPS API. An
+exclusive, stale-reclaimable sending state admits one worker per batch; inbox read
+state does not affect email delivery. Trial-start events are inbox-only. Service
 summary email has no producer because the service ledger contains incident
 transitions rather than periodic review-health events.
 

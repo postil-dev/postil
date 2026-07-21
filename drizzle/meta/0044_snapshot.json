@@ -993,11 +993,11 @@
       "checkConstraints": {
         "customer_notification_email_deliveries_category_check": {
           "name": "customer_notification_email_deliveries_category_check",
-          "value": "\"customer_notification_email_deliveries\".\"email_category\" IN ('security', 'verification', 'payment_failure', 'trial_expiry', 'service_incident', 'billing_summary', 'service_summary')"
+          "value": "\"customer_notification_email_deliveries\".\"email_category\" IN ('security', 'payment_failure', 'trial_expiry', 'service_incident', 'billing_summary')"
         },
         "customer_notification_email_deliveries_status_check": {
           "name": "customer_notification_email_deliveries_status_check",
-          "value": "\"customer_notification_email_deliveries\".\"status\" IN ('queued', 'retrying', 'delivered', 'suppressed', 'failed')"
+          "value": "\"customer_notification_email_deliveries\".\"status\" IN ('queued', 'retrying', 'sending', 'delivered', 'suppressed', 'failed')"
         },
         "customer_notification_email_deliveries_event_count_check": {
           "name": "customer_notification_email_deliveries_event_count_check",

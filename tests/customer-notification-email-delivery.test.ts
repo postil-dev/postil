@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
 import {
+  CUSTOMER_EMAIL_CLAIM_TIMEOUT_MS,
   CUSTOMER_EMAIL_SUMMARY_DELAY_MS,
   recordCustomerNotificationEmailFailure,
   runCustomerNotificationEmailJob,
@@ -211,6 +212,107 @@ describeDb("customer notification email delivery", () => {
     });
   });
 
+  test("admits only one concurrent sender for a delivery", async () => {
+    const orgId = await seedOrganization(pool, "concurrent-delivery");
+    await seedEvent(
+      pool,
+      orgId,
+      "service-disruption:public-site:concurrent",
+      "service",
+      "Postil is temporarily unavailable",
+      "The dashboard may be temporarily unavailable.",
+      NOW,
+    );
+    await scheduleCustomerNotificationEmailJobs(db, NOW);
+    const job = await pool.query<{ payload: { deliveryId: string } }>(
+      "SELECT payload FROM jobs WHERE kind = 'customer-notification-email'",
+    );
+    let markSendStarted: () => void = () => undefined;
+    const sendStarted = new Promise<void>((resolve) => {
+      markSendStarted = resolve;
+    });
+    let releaseSend: () => void = () => undefined;
+    const sendReleased = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    let sendCalls = 0;
+    const options = {
+      publicOrigin: "https://postil.dev",
+      apiKey: "test-api-key",
+      now: NOW,
+      send: async () => {
+        sendCalls += 1;
+        markSendStarted();
+        await sendReleased;
+        return { messageId: "concurrent-message" };
+      },
+    };
+
+    const first = runCustomerNotificationEmailJob(
+      db,
+      job.rows[0]!.payload,
+      options,
+    );
+    await sendStarted;
+    expect(
+      await runCustomerNotificationEmailJob(
+        db,
+        job.rows[0]!.payload,
+        options,
+      ),
+    ).toBe("noop");
+    releaseSend();
+    expect(await first).toBe("delivered");
+    expect(sendCalls).toBe(1);
+    expect(
+      (
+        await pool.query<{ status: string }>(
+          "SELECT status FROM customer_notification_email_deliveries",
+        )
+      ).rows[0]?.status,
+    ).toBe("delivered");
+  });
+
+  test("reclaims a stale sending state after the transport timeout envelope", async () => {
+    const orgId = await seedOrganization(pool, "stale-delivery");
+    await seedEvent(
+      pool,
+      orgId,
+      "service-disruption:public-site:stale",
+      "service",
+      "Postil is temporarily unavailable",
+      "The dashboard may be temporarily unavailable.",
+      NOW,
+    );
+    await scheduleCustomerNotificationEmailJobs(db, NOW);
+    const job = await pool.query<{ payload: { deliveryId: string } }>(
+      "SELECT payload FROM jobs WHERE kind = 'customer-notification-email'",
+    );
+    await pool.query(
+      `UPDATE customer_notification_email_deliveries
+          SET status = 'sending', last_attempt_at = $1
+        WHERE id = $2`,
+      [
+        new Date(NOW.getTime() - CUSTOMER_EMAIL_CLAIM_TIMEOUT_MS - 1),
+        job.rows[0]!.payload.deliveryId,
+      ],
+    );
+    let sendCalls = 0;
+
+    expect(
+      await runCustomerNotificationEmailJob(db, job.rows[0]!.payload, {
+        publicOrigin: "https://postil.dev",
+        apiKey: "test-api-key",
+        now: NOW,
+        send: async () => {
+          sendCalls += 1;
+          return { messageId: "reclaimed-message" };
+        },
+      }),
+    ).toBe("delivered");
+    expect(sendCalls).toBe(1);
+  });
+
   test("rechecks preferences before provider access and preserves suppression", async () => {
     const orgId = await seedOrganization(pool, "recheck");
     await seedEvent(
@@ -288,32 +390,21 @@ describeDb("customer notification email delivery", () => {
     expect(failed.rows[0]).toEqual({ status: "failed", error_length: 2_000 });
   });
 
-  test("rejects an outbox category without a durable source before sending", async () => {
+  test("the database rejects outbox categories without durable sources", async () => {
     const orgId = await seedOrganization(pool, "unsupported");
-    const delivery = await pool.query<{ id: string }>(
-      `INSERT INTO customer_notification_email_deliveries
-         (org_id, email_category, event_count)
-       VALUES ($1, 'service_summary', 1)
-       RETURNING id`,
-      [orgId],
-    );
-    let sendCalls = 0;
-
-    await expect(
-      runCustomerNotificationEmailJob(
-        db,
-        { deliveryId: delivery.rows[0]!.id },
-        {
-          publicOrigin: "https://postil.dev",
-          apiKey: "test-api-key",
-          send: async () => {
-            sendCalls += 1;
-            return { messageId: "unexpected" };
-          },
-        },
-      ),
-    ).rejects.toThrow("has no durable source");
-    expect(sendCalls).toBe(0);
+    for (const category of ["verification", "service_summary"]) {
+      await expect(
+        pool.query(
+          `INSERT INTO customer_notification_email_deliveries
+             (org_id, email_category, event_count)
+           VALUES ($1, $2, 1)`,
+          [orgId, category],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "customer_notification_email_deliveries_category_check",
+      });
+    }
   });
 });
 

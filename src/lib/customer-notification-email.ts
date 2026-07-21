@@ -26,6 +26,8 @@ import {
 
 export const CUSTOMER_EMAIL_SUMMARY_DELAY_MS = 24 * 60 * 60 * 1_000;
 export const CUSTOMER_EMAIL_BATCH_SIZE = 20;
+/** Longer than the 10-second transport timeout and shorter than stale-job recovery. */
+export const CUSTOMER_EMAIL_CLAIM_TIMEOUT_MS = 60 * 1_000;
 const CUSTOMER_EMAIL_SCAN_LIMIT = 1_000;
 
 export interface CustomerNotificationEmailJobPayload extends Record<string, unknown> {
@@ -350,6 +352,41 @@ export async function runCustomerNotificationEmailJob(
   const emailCategory = validateCustomerNotificationEmailSourceCategory(
     delivery.emailCategory,
   );
+  const now = options.now ?? new Date();
+  const staleClaimCutoff = new Date(
+    now.getTime() - CUSTOMER_EMAIL_CLAIM_TIMEOUT_MS,
+  );
+  const claimed = await db
+    .update(schema.customerNotificationEmailDeliveries)
+    .set({
+      status: "sending",
+      lastAttemptAt: now,
+      lastError: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(schema.customerNotificationEmailDeliveries.id, delivery.id),
+        or(
+          inArray(schema.customerNotificationEmailDeliveries.status, [
+            "queued",
+            "retrying",
+          ]),
+          and(
+            eq(schema.customerNotificationEmailDeliveries.status, "sending"),
+            or(
+              isNull(schema.customerNotificationEmailDeliveries.lastAttemptAt),
+              lte(
+                schema.customerNotificationEmailDeliveries.lastAttemptAt,
+                staleClaimCutoff,
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+    .returning({ id: schema.customerNotificationEmailDeliveries.id });
+  if (claimed.length === 0) return "noop";
   const preferences = {
     billingSummaryEmail:
       delivery.billingSummaryEmail ??
@@ -369,7 +406,7 @@ export async function runCustomerNotificationEmailJob(
       delivery.billingContactEmail && delivery.billingContactVerifiedAt
         ? "email preference disabled"
         : "verified billing contact unavailable",
-      options.now ?? new Date(),
+      now,
     );
     return "suppressed";
   }
@@ -412,11 +449,6 @@ export async function runCustomerNotificationEmailJob(
     events,
     publicOrigin: options.publicOrigin,
   });
-  const now = options.now ?? new Date();
-  await db
-    .update(schema.customerNotificationEmailDeliveries)
-    .set({ status: "retrying", lastAttemptAt: now, lastError: null, updatedAt: now })
-    .where(eq(schema.customerNotificationEmailDeliveries.id, delivery.id));
   const emailInput = {
     recipient: delivery.billingContactEmail,
     subject: message.subject,
@@ -427,7 +459,7 @@ export async function runCustomerNotificationEmailJob(
   const result = options.send
     ? await options.send(emailInput)
     : await sendTransactionalEmail(emailInput);
-  await db
+  const delivered = await db
     .update(schema.customerNotificationEmailDeliveries)
     .set({
       status: "delivered",
@@ -437,7 +469,16 @@ export async function runCustomerNotificationEmailJob(
       deliveredAt: now,
       updatedAt: now,
     })
-    .where(eq(schema.customerNotificationEmailDeliveries.id, delivery.id));
+    .where(
+      and(
+        eq(schema.customerNotificationEmailDeliveries.id, delivery.id),
+        eq(schema.customerNotificationEmailDeliveries.status, "sending"),
+      ),
+    )
+    .returning({ id: schema.customerNotificationEmailDeliveries.id });
+  if (delivered.length === 0) {
+    throw new Error("customer notification email delivery claim was lost");
+  }
   return "delivered";
 }
 
@@ -470,6 +511,7 @@ export async function recordCustomerNotificationEmailFailure(
         inArray(schema.customerNotificationEmailDeliveries.status, [
           "queued",
           "retrying",
+          "sending",
         ]),
       ),
     );
@@ -612,10 +654,7 @@ async function suppressCustomerNotificationEmailDelivery(
     .where(
       and(
         eq(schema.customerNotificationEmailDeliveries.id, deliveryId),
-        inArray(schema.customerNotificationEmailDeliveries.status, [
-          "queued",
-          "retrying",
-        ]),
+        eq(schema.customerNotificationEmailDeliveries.status, "sending"),
       ),
     );
 }

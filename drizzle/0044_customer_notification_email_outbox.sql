@@ -10,8 +10,8 @@ CREATE TABLE "customer_notification_email_deliveries" (
 	"last_attempt_at" timestamp with time zone,
 	"delivered_at" timestamp with time zone,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "customer_notification_email_deliveries_category_check" CHECK ("customer_notification_email_deliveries"."email_category" IN ('security', 'verification', 'payment_failure', 'trial_expiry', 'service_incident', 'billing_summary', 'service_summary')),
-	CONSTRAINT "customer_notification_email_deliveries_status_check" CHECK ("customer_notification_email_deliveries"."status" IN ('queued', 'retrying', 'delivered', 'suppressed', 'failed')),
+	CONSTRAINT "customer_notification_email_deliveries_category_check" CHECK ("customer_notification_email_deliveries"."email_category" IN ('security', 'payment_failure', 'trial_expiry', 'service_incident', 'billing_summary')),
+	CONSTRAINT "customer_notification_email_deliveries_status_check" CHECK ("customer_notification_email_deliveries"."status" IN ('queued', 'retrying', 'sending', 'delivered', 'suppressed', 'failed')),
 	CONSTRAINT "customer_notification_email_deliveries_event_count_check" CHECK ("customer_notification_email_deliveries"."event_count" BETWEEN 1 AND 20)
 );
 --> statement-breakpoint

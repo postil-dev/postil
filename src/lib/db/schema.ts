@@ -944,11 +944,11 @@ export const customerNotificationEmailDeliveries = pgTable(
     ),
     check(
       "customer_notification_email_deliveries_category_check",
-      sql`${t.emailCategory} IN ('security', 'verification', 'payment_failure', 'trial_expiry', 'service_incident', 'billing_summary', 'service_summary')`,
+      sql`${t.emailCategory} IN ('security', 'payment_failure', 'trial_expiry', 'service_incident', 'billing_summary')`,
     ),
     check(
       "customer_notification_email_deliveries_status_check",
-      sql`${t.status} IN ('queued', 'retrying', 'delivered', 'suppressed', 'failed')`,
+      sql`${t.status} IN ('queued', 'retrying', 'sending', 'delivered', 'suppressed', 'failed')`,
     ),
     check(
       "customer_notification_email_deliveries_event_count_check",
