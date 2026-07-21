@@ -915,6 +915,16 @@ function gateCheckOutput(
       };
 }
 
+export function operationalReviewCheckOutput(
+  detailsUrl?: string,
+): { title: string; summary: string } {
+  const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
+  return {
+    title: "Review unavailable",
+    summary: `Postil could not complete this review, so no review verdict exists.${details}`,
+  };
+}
+
 /**
  * Run one hosted review end to end.
  *
@@ -1728,20 +1738,33 @@ export async function runReviewJob(
       }
     }
     try {
-      await verifyCompletedCheckRun(
-        token,
-        payload.repoFullName,
-        {
-          id: advisoryCheckRunId,
-          name: ADVISORY_CHECK_NAME,
-          externalId: advisoryCheckExternalId,
-          headSha: payload.headSha,
-          conclusion: operationallyUnavailable ? "neutral" : "success",
-          requireOutput: true,
-          detailsUrl,
-        },
-        result.interrupted ? undefined : signal,
-      );
+      const expectedAdvisoryCheck = {
+        id: advisoryCheckRunId,
+        name: ADVISORY_CHECK_NAME,
+        externalId: advisoryCheckExternalId,
+        headSha: payload.headSha,
+        conclusion: operationallyUnavailable ? "neutral" : "success",
+        requireOutput: true,
+        detailsUrl,
+      } as const;
+      if (operationallyUnavailable) {
+        const output = operationalReviewCheckOutput(detailsUrl);
+        await completeExpectedCheckRun(
+          token,
+          payload.repoFullName,
+          expectedAdvisoryCheck,
+          output.title,
+          output.summary,
+          result.interrupted ? undefined : signal,
+        );
+      } else {
+        await verifyCompletedCheckRun(
+          token,
+          payload.repoFullName,
+          expectedAdvisoryCheck,
+          result.interrupted ? undefined : signal,
+        );
+      }
     } catch (error) {
       if (error instanceof CheckRunPublicationError) {
         throw error;
@@ -1751,7 +1774,11 @@ export async function runReviewJob(
         { cause: error },
       );
     }
-    reviewLog.line("forge advisory check-run verified completed by the CLI");
+    reviewLog.line(
+      operationallyUnavailable
+        ? "forge advisory check-run replaced with bounded unavailable output"
+        : "forge advisory check-run verified completed by the CLI",
+    );
 
     // Guard on status so a completion racing a superseding push or watchdog
     // cannot flap the row back to completed or attribute usage to a run that
@@ -2243,7 +2270,7 @@ export async function failCheckRuns(
     : "Postil gate is advisory";
   const summary = publicationIncomplete
     ? `Postil completed the review, but GitHub did not receive the complete result. This run is not a published review verdict.${details}`
-    : `Postil could not complete this review, so no review verdict exists.${details}`;
+    : operationalReviewCheckOutput(detailsUrl).summary;
   const errors: unknown[] = [];
   const complete = async (
     checkRunId: number,

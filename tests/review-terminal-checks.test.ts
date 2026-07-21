@@ -111,6 +111,7 @@ mock.module("@/lib/gate-mode", () => ({
 const {
   completeHostedInferenceDisabledCheckRuns,
   failCheckRuns,
+  operationalReviewCheckOutput,
   runCheckRunCleanupJob,
   supersedeActiveReviews,
   validateCheckRunCleanupPayload,
@@ -126,6 +127,21 @@ beforeEach(() => {
 });
 
 describe("review terminal check-runs", () => {
+  test("operational advisory output excludes model and suppressed-finding prose", () => {
+    const output = operationalReviewCheckOutput(
+      "https://postil.dev/orgs/postil-dev/runs/run-id",
+    );
+
+    expect(output).toEqual({
+      title: "Review unavailable",
+      summary:
+        "Postil could not complete this review, so no review verdict exists.\n\n[Review details](https://postil.dev/orgs/postil-dev/runs/run-id)",
+    });
+    expect(JSON.stringify(output)).not.toMatch(
+      /provider|model|confidence|suppressed|before the next push/i,
+    );
+  });
+
   test("requires immutable identity evidence for ambiguous cleanup", () => {
     expect(() =>
       validateCheckRunCleanupPayload({

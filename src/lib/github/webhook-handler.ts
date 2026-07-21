@@ -34,6 +34,7 @@ import {
   upsertRepository,
   upsertRepositories,
 } from "@/lib/github/installation-sync";
+import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import {
   enqueueGateStateSync,
   findKindBlockingState,
@@ -52,7 +53,10 @@ import {
   parsePostilApproveCommand,
 } from "@/lib/mentions";
 import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
-import { applyPublicationThreadObservations } from "@/lib/publication-receipt";
+import {
+  applyPublicationThreadObservations,
+  getPullRequestPublicationCommentIds,
+} from "@/lib/publication-receipt";
 import {
   enqueueOperatorAlert,
   installationRemovedAlertPayload,
@@ -631,6 +635,18 @@ async function handlePullRequest(
       message: `pull request #${pr.number} closed`,
       orgSlug: installation.orgSlug,
     });
+    const commentIds = await getPullRequestPublicationCommentIds(
+      db,
+      repoRow.id,
+      pr.number,
+    );
+    const observations = await observeGitHubReviewThreads(
+      token,
+      repo.full_name,
+      pr.number,
+      commentIds,
+    );
+    await applyPublicationThreadObservations(db, observations);
     return;
   }
   if (

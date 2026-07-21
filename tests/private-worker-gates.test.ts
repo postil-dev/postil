@@ -281,7 +281,13 @@ describe("private repository worker defense in depth", () => {
       'reviewLog.line("review result and publication receipt staged durably")',
     );
     expect(source.slice(verification, finalization)).toContain(
-      'reviewLog.line("forge advisory check-run verified completed by the CLI")',
+      '"forge advisory check-run verified completed by the CLI"',
+    );
+    expect(source.slice(staging, finalization)).toContain(
+      "operationalReviewCheckOutput(detailsUrl)",
+    );
+    expect(source.slice(staging, finalization)).toContain(
+      "await completeExpectedCheckRun",
     );
     expect(source.slice(verification, finalization)).toContain(
       '"GitHub review publication could not be verified"',

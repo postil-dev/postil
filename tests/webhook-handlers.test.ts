@@ -51,6 +51,7 @@ const completedCheckRuns: Array<{
 }> = [];
 const postedComments: Array<{ repoFullName: string; number: number; body: string }> = [];
 const addedReactions: Array<{ repoFullName: string; commentId: number; kind: string }> = [];
+const observedPublicationCommentIds: string[][] = [];
 let pullRequestHeadSha = "head-sha";
 let liveMembershipStatus = 200;
 let liveMembershipRole: "admin" | "member" = "admin";
@@ -117,6 +118,20 @@ mock.module("@/lib/github/checks", () => ({
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
     return 123;
+  },
+}));
+mock.module("@/lib/github/publication-threads", () => ({
+  observeGitHubReviewThreads: async (
+    _token: string,
+    _repoFullName: string,
+    _prNumber: number,
+    expectedCommentIds: string[],
+  ) => {
+    observedPublicationCommentIds.push(expectedCommentIds);
+    return expectedCommentIds.map((githubCommentId) => ({
+      githubCommentId,
+      state: "deleted" as const,
+    }));
   },
 }));
 
@@ -205,6 +220,7 @@ describeDb("webhook handler behaviour", () => {
     completedCheckRuns.length = 0;
     postedComments.length = 0;
     addedReactions.length = 0;
+    observedPublicationCommentIds.length = 0;
     pullRequestHeadSha = "head-sha";
     liveMembershipStatus = 200;
     liveMembershipRole = "admin";
@@ -1048,15 +1064,34 @@ describeDb("webhook handler behaviour", () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 251);
     const repoId = await seedRepo(inst, 7879, "octo/closing");
-    await pool.query(
+    const activeReview = await pool.query<{ id: string }>(
       `INSERT INTO reviews
          (repository_id, source_org_id, source_installation_id,
           source_github_installation_id, source_github_repo_id,
           source_repo_full_name, pr_number, head_sha, base_sha, status,
           advisory_check_run_id, gate_check_run_id, queued_at, started_at)
        VALUES ($1, $2, $3, 251, 7879, 'octo/closing', 7, 'closing-head',
-               'base', 'running', 31, 32, now(), now())`,
+               'base', 'running', 31, 32, now(), now())
+       RETURNING id`,
       [repoId, orgId, inst],
+    );
+    const completedReview = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+         (repository_id, source_org_id, source_installation_id,
+          source_github_installation_id, source_github_repo_id,
+          source_repo_full_name, pr_number, head_sha, base_sha, status,
+          silent, engine_gate_failing, gate_failing, finished_at)
+       VALUES ($1, $2, $3, 251, 7879, 'octo/closing', 7, 'closing-head',
+               'base', 'completed', false, true, true, now())
+       RETURNING id`,
+      [repoId, orgId, inst],
+    );
+    await pool.query(
+      `INSERT INTO finding_publications
+         (review_id, finding_id, stable_identity, initial_state, current_state,
+          github_comment_id)
+       VALUES ($1, 'closed-pr-finding', true, 'inline', 'inline', '3619691736')`,
+      [completedReview.rows[0]!.id],
     );
     const respond = await pool.query<{ id: string }>(
       `INSERT INTO jobs (kind, payload)
@@ -1105,14 +1140,22 @@ describeDb("webhook handler behaviour", () => {
               delivery.state AS delivery_state
        FROM reviews review
        JOIN jobs job ON job.id = $1
-       JOIN respond_deliveries delivery ON delivery.job_id = job.id`,
-      [respond.rows[0]!.id],
+       JOIN respond_deliveries delivery ON delivery.job_id = job.id
+       WHERE review.id = $2`,
+      [respond.rows[0]!.id, activeReview.rows[0]!.id],
     );
     expect(state.rows[0]).toEqual({
       review_status: "stale",
       job_status: "done",
       delivery_state: "cancelled",
     });
+    expect(observedPublicationCommentIds).toEqual([["3619691736"]]);
+    const publication = await pool.query<{ current_state: string }>(
+      `SELECT current_state FROM finding_publications
+        WHERE review_id = $1 AND finding_id = 'closed-pr-finding'`,
+      [completedReview.rows[0]!.id],
+    );
+    expect(publication.rows[0]?.current_state).toBe("deleted");
     expect(
       completedCheckRuns.map(({ repoFullName, conclusion }) => ({
         repoFullName,
