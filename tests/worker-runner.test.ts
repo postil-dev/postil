@@ -713,6 +713,26 @@ describe("drainQueueOnce", () => {
     ]);
   });
 
+  test("records missing customer email configuration without escaping the worker loop", async () => {
+    delete process.env.POSTIL_PUBLIC_URL;
+    delete process.env.BREVO_API_KEY;
+    const job = reviewJob(3);
+    job.kind = "customer-notification-email";
+    job.attempts = job.maxAttempts;
+    job.payload = { deliveryId: "00000000-0000-4000-8000-000000000003" };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.id).toBe(3);
+    expect(failed[0]?.error).toContain(
+      "Missing required environment variable POSTIL_PUBLIC_URL",
+    );
+    expect(customerNotificationEmailFailures).toEqual([
+      { payload: job.payload, terminal: true },
+    ]);
+  });
+
   test("dispatches durable billing settlement jobs", async () => {
     const job = reviewJob(1);
     job.kind = "billing-settlement";
