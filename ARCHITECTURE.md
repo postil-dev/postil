@@ -181,10 +181,10 @@ per-model token and price rows remain available as analytics; an unattributed
 adjustment event makes committed billing equal the conservative charge.
 Provider credentials do not grant product access. Operators can apply the
 complete post-trial entitlement state idempotently through
-`scripts/set-org-entitlement.ts`; the billing page reports the stored state and
-lets organization administrators set the hosted overage hard cap. BYOK billing
-copy directs administrators to provider-side budgets because Postil cannot
-enforce external charges. Before
+`scripts/set-org-entitlement.ts`, including the hosted overage hard cap. The
+billing page reports plan and provider state. BYOK billing copy directs
+administrators to provider-side budgets because Postil cannot enforce external
+charges. Before
 a private review row can run, the worker resolves the pull request's author ID,
 login, head, and base from GitHub. A rollout-activated database trigger rejects
 anonymous active reviews and makes the recorded author identity immutable.
