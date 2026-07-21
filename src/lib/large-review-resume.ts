@@ -603,8 +603,13 @@ export interface LargeReviewProviderProxy {
 interface PinnedUpstream {
   url: URL;
   hostname: string;
-  address: string;
-  family: number;
+  addresses: Array<{ address: string; family: number }>;
+}
+
+interface FamilySelectingRequestOptions extends http.RequestOptions {
+  servername?: string;
+  autoSelectFamily?: boolean;
+  autoSelectFamilyAttemptTimeout?: number;
 }
 
 type ResolveAllAddresses = (
@@ -656,8 +661,7 @@ async function resolvePinnedUpstream(
   return {
     url,
     hostname,
-    address: addresses[0]!.address,
-    family: addresses[0]!.family,
+    addresses,
   };
 }
 
@@ -669,26 +673,28 @@ function forwardPinnedRequest(input: {
 }): Promise<Response> {
   return new Promise((resolve, reject) => {
     const transport = input.upstream.url.protocol === "https:" ? https : http;
+    const requestOptions: FamilySelectingRequestOptions = {
+      method: "POST",
+      headers: Object.fromEntries(input.headers.entries()),
+      signal: input.signal,
+      servername: isIP(input.upstream.hostname)
+        ? ""
+        : input.upstream.hostname,
+      autoSelectFamily: input.upstream.addresses.length > 1,
+      autoSelectFamilyAttemptTimeout: 250,
+      lookup: (_hostname, options, callback) => {
+        const all = typeof options === "object" && options.all;
+        if (all) {
+          callback(null, input.upstream.addresses);
+        } else {
+          const first = input.upstream.addresses[0]!;
+          callback(null, first.address, first.family);
+        }
+      },
+    };
     const request = transport.request(
       input.upstream.url,
-      {
-        method: "POST",
-        headers: Object.fromEntries(input.headers.entries()),
-        signal: input.signal,
-        servername: isIP(input.upstream.hostname)
-          ? ""
-          : input.upstream.hostname,
-        lookup: (_hostname, options, callback) => {
-          const all = typeof options === "object" && options.all;
-          if (all) {
-            callback(null, [
-              { address: input.upstream.address, family: input.upstream.family },
-            ]);
-          } else {
-            callback(null, input.upstream.address, input.upstream.family);
-          }
-        },
-      },
+      requestOptions,
       (response) => {
         if (response.headers["content-encoding"]) {
           response.destroy();

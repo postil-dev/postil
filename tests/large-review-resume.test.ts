@@ -25,6 +25,10 @@ const HEAD_SHA = "b".repeat(40);
 const BASE_SHA = "d".repeat(40);
 const CONFIG_SHA = "c".repeat(64);
 const servers: Array<{ stop(closeActiveConnections?: boolean): void }> = [];
+const ipv6FirstLoopback = async () => [
+  { address: "::1", family: 6 },
+  { address: "127.0.0.1", family: 4 },
+];
 
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true);
@@ -154,8 +158,9 @@ const successfulBody = JSON.stringify({
 });
 
 describe("durable large-review provider proxy", () => {
-  test("requires authenticated durable plan registration before provider access", async () => {
+  test("requires authenticated plan registration and uses the validated address set", async () => {
     let providerCalls = 0;
+    let resolutions = 0;
     const upstream = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -170,6 +175,10 @@ describe("durable large-review provider proxy", () => {
     const store = new MemoryAttemptStore();
     const proxy = await startLargeReviewProviderProxy({
       ...proxySeed(`http://localhost:${upstream.port}/v1`),
+      resolveHostname: async () => {
+        resolutions += 1;
+        return ipv6FirstLoopback();
+      },
       store,
     });
     const early = await fetch(`${proxy.apiBase}/chat/completions`, {
@@ -206,6 +215,7 @@ describe("durable large-review provider proxy", () => {
     });
     expect(await response.text()).toBe(successfulBody);
     expect(providerCalls).toBe(1);
+    expect(resolutions).toBe(1);
     expect(proxy.billingOutcome()).toBe("resumable");
     expect(
       redactSecrets(
@@ -232,7 +242,11 @@ describe("durable large-review provider proxy", () => {
     servers.push(upstream);
     const seed = proxySeed(`http://localhost:${upstream.port}/v1`);
     const store = new MemoryAttemptStore();
-    const first = await startLargeReviewProviderProxy({ ...seed, store });
+    const first = await startLargeReviewProviderProxy({
+      ...seed,
+      resolveHostname: ipv6FirstLoopback,
+      store,
+    });
     expect((await register(first)).status).toBe(204);
     await fetch(`${first.apiBase}/chat/completions`, {
       method: "POST",
@@ -240,7 +254,11 @@ describe("durable large-review provider proxy", () => {
     });
     first.close();
 
-    const resumed = await startLargeReviewProviderProxy({ ...seed, store });
+    const resumed = await startLargeReviewProviderProxy({
+      ...seed,
+      resolveHostname: ipv6FirstLoopback,
+      store,
+    });
     expect((await register(resumed)).status).toBe(204);
     expect(
       (
