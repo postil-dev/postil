@@ -1560,7 +1560,7 @@ export async function runReviewJob(
         reviewLog.line("hosted inference spend reserved");
       }
     }
-    largeReviewProxy = startLargeReviewProviderProxy({
+    const activeLargeReviewProxy = startLargeReviewProviderProxy({
       upstreamApiBase: llm.apiBase,
       apiFormat: llm.apiFormat,
       additionalAuthHeader: llm.apiAuthHeader,
@@ -1568,6 +1568,7 @@ export async function runReviewJob(
       runContext: { currentReviewId: reviewId, hostedReservationId: hostedUsageReservationId },
       store: new PostgresLargeReviewAttemptStore(db),
     });
+    largeReviewProxy = activeLargeReviewProxy;
 
     sensitiveValues = [
       token,
@@ -1578,7 +1579,7 @@ export async function runReviewJob(
     reviewLog.setSensitiveValues(sensitiveValues);
     throwIfWorkerStopping(reviewSignal);
     const cliEnv = buildCliEnv(
-      { ...llm, apiBase: largeReviewProxy.apiBase },
+      { ...llm, apiBase: activeLargeReviewProxy.apiBase },
       {
         GITHUB_TOKEN: token,
         POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId),
@@ -1603,7 +1604,7 @@ export async function runReviewJob(
     cliStarted = true;
     const result = await runCli(args, cliEnv, workDir, {
       onStderrLine: (line) => {
-        largeReviewProxy?.observeCliStderr(line);
+        activeLargeReviewProxy.observeCliStderr(line);
         reviewLog.line(`[stderr] ${line}`);
       },
       signal: reviewSignal,
@@ -1679,7 +1680,7 @@ export async function runReviewJob(
       );
     }
     completionStaged = true;
-    await largeReviewProxy.discardCompletedRun();
+    await activeLargeReviewProxy.discardCompletedRun();
     reviewLog.line("review result and publication receipt staged durably");
     const workerInstanceId = timing.lease?.lockedBy.match(/^(.+)#\d+$/)?.[1];
     if (observabilityProcessGroup === "worker" && workerInstanceId && timing.lease) {
