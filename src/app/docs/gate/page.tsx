@@ -110,10 +110,11 @@ export default function GatePage() {
         as <strong>unverified</strong> rather than enforced.
       </p>
       <p>
-        With this in place, a PR with an <code>error</code>-severity finding
-        cannot merge until the finding is fixed (the next push re-reviews
-        incrementally and resolves it) or the threshold is deliberately
-        changed in config, a reviewable, auditable act.
+        For merges covered by this rule, a PR with an <code>error</code>-severity
+        finding cannot merge until the finding is fixed (the next push
+        re-reviews incrementally and resolves it) or the threshold is
+        deliberately changed in config, a reviewable, auditable act. Configured
+        bypass actors remain exempt.
       </p>
 
       <h2>Choosing a threshold</h2>
