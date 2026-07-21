@@ -1,6 +1,49 @@
 export const OAUTH_STATE_COOKIE = "postil_oauth_state";
+export const OAUTH_RETURN_TO_COOKIE = "postil_oauth_return_to";
 export const GITHUB_SETUP_INSTALLATION_COOKIE = "postil_setup_installation";
 export const OAUTH_CALLBACK_PATH = "/api/auth/callback";
+
+const RETURN_TARGET_BASE = "https://postil.invalid";
+
+/**
+ * Accept a same-site account path for the post-authentication redirect.
+ * Keeping the allowlist aligned with middleware prevents open redirects,
+ * redirect loops, and unexpected API navigation.
+ */
+export function safeReturnTarget(
+  value: string | null | undefined,
+): string | undefined {
+  if (
+    !value ||
+    value.length > 2_048 ||
+    !value.startsWith("/") ||
+    value.startsWith("//")
+  ) {
+    return undefined;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value, RETURN_TARGET_BASE);
+  } catch {
+    return undefined;
+  }
+  if (url.origin !== RETURN_TARGET_BASE || url.username || url.password) return undefined;
+  if (!isProtectedAccountPath(url.pathname)) {
+    return undefined;
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+function isProtectedAccountPath(pathname: string): boolean {
+  return (
+    pathname === "/operator" ||
+    pathname.startsWith("/operator/") ||
+    pathname === "/reports" ||
+    pathname.startsWith("/reports/") ||
+    pathname.startsWith("/orgs/")
+  );
+}
 
 export function oauthCallbackUrl(request: Request): string {
   return `${publicOrigin(request)}${OAUTH_CALLBACK_PATH}`;

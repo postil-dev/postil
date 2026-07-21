@@ -9,10 +9,16 @@ import {
   type NavItem,
 } from "@/components/mobile-nav";
 
-interface AuthSession {
+export interface AuthSession {
   login: string;
   dashboardHref: string;
   hasActiveInstallation: boolean;
+}
+
+export function shouldRefreshSessionAfterPageShow(
+  event: Pick<PageTransitionEvent, "persisted">,
+): boolean {
+  return event.persisted;
 }
 
 /**
@@ -25,14 +31,25 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/auth/session", { cache: "no-store" })
-      .then(async (res) => {
-        if (!res.ok) {
-          if (!cancelled) setSession(null);
-          return;
-        }
-        const data = (await res.json()) as Partial<AuthSession>;
-        if (!cancelled) {
+    let requestId = 0;
+
+    function loadSession() {
+      const activeRequest = ++requestId;
+      fetch("/api/auth/session", { cache: "no-store" })
+        .then(async (res) => {
+          if (cancelled || activeRequest !== requestId) return;
+          if (res.status === 401) {
+            setSession(null);
+            return;
+          }
+          if (!res.ok) {
+            // A temporary verification or network failure is not evidence that
+            // the visitor signed out. Retain the neutral loading state rather
+            // than flashing anonymous actions into an authenticated shell.
+            return;
+          }
+          const data = (await res.json()) as Partial<AuthSession>;
+          if (cancelled || activeRequest !== requestId) return;
           setSession(
             data.login && data.dashboardHref
               ? {
@@ -40,15 +57,23 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
                   dashboardHref: data.dashboardHref,
                   hasActiveInstallation: data.hasActiveInstallation === true,
                 }
-              : null,
+              : undefined,
           );
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setSession(null);
-      });
+        })
+        .catch(() => undefined);
+    }
+
+    function refreshRestoredPage(event: PageTransitionEvent) {
+      if (!shouldRefreshSessionAfterPageShow(event)) return;
+      setSession(undefined);
+      loadSession();
+    }
+
+    loadSession();
+    window.addEventListener("pageshow", refreshRestoredPage);
     return () => {
       cancelled = true;
+      window.removeEventListener("pageshow", refreshRestoredPage);
     };
   }, []);
 
@@ -57,31 +82,7 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
   return (
     <>
       <div className="hidden shrink-0 items-center justify-end gap-5 whitespace-nowrap lg:flex lg:w-40">
-        {session === undefined ? null : session === null ? (
-          <Link
-            href="/login"
-            className="text-[15px] text-charcoal/80 hover:text-charcoal"
-          >
-            Sign in
-          </Link>
-        ) : (
-          <>
-            <Link
-              href={session.dashboardHref}
-              className="text-[15px] text-charcoal/80 hover:text-charcoal"
-            >
-              Dashboard
-            </Link>
-            <form action="/api/auth/logout" method="post">
-              <button
-                type="submit"
-                className="text-[15px] text-charcoal/80 hover:text-charcoal"
-              >
-                Sign out
-              </button>
-            </form>
-          </>
-        )}
+        <DesktopSessionActions session={session} />
       </div>
       {installAction && (
         <Link
@@ -94,6 +95,50 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
         </Link>
       )}
       <MobileNav items={items} session={session} />
+    </>
+  );
+}
+
+export function DesktopSessionActions({
+  session,
+}: {
+  session: AuthSession | null | undefined;
+}) {
+  if (session === undefined) {
+    return (
+      <span
+        role="status"
+        aria-busy="true"
+        className="h-5 w-24 rounded bg-stone/70"
+      >
+        <span className="sr-only">Checking account status</span>
+      </span>
+    );
+  }
+
+  return session === null ? (
+    <Link
+      href="/login"
+      className="text-[15px] text-charcoal/80 hover:text-charcoal"
+    >
+      Sign in
+    </Link>
+  ) : (
+    <>
+      <Link
+        href={session.dashboardHref}
+        className="text-[15px] text-charcoal/80 hover:text-charcoal"
+      >
+        Dashboard
+      </Link>
+      <form action="/api/auth/logout" method="post">
+        <button
+          type="submit"
+          className="text-[15px] text-charcoal/80 hover:text-charcoal"
+        >
+          Sign out
+        </button>
+      </form>
     </>
   );
 }

@@ -550,18 +550,7 @@ function createLocalGitHubServer(input: {
       const checkMatch = suffix.match(/^check-runs\/(\d+)$/);
       if (request.method === "GET" && checkMatch) {
         const checkRun = checkRuns.get(Number(checkMatch[1]));
-        if (!checkRun) return notFound();
-        // Preserve a local model envelope when a CLI version marks the
-        // advisory result neutral. Production verifies GitHub unchanged; only
-        // this disposable fake normalizes its verification read-back, while
-        // the recorded PATCH remains neutral for diagnostics and tests.
-        return json(
-          checkRun.name === "postil/review" &&
-              checkRun.status === "completed" &&
-              checkRun.conclusion === "neutral"
-            ? { ...checkRun, conclusion: "success" }
-            : checkRun,
-        );
+        return checkRun ? json(checkRun) : notFound();
       }
       if (request.method === "PATCH" && checkMatch) {
         const body = await request.json().catch(() => ({}));

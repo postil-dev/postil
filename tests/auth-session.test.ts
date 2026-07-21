@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
+import {
+  DesktopSessionActions,
+  shouldRefreshSessionAfterPageShow,
+} from "@/components/auth-nav";
 import { installNavigationAction } from "@/components/mobile-nav";
 import * as dbModule from "@/lib/db";
 
@@ -126,6 +132,54 @@ describe("install navigation affordance", () => {
       label: "Add account",
       variant: "secondary",
     });
+  });
+});
+
+describe("header session states", () => {
+  test("keeps loading neutral until authentication is known", () => {
+    const markup = renderToStaticMarkup(
+      createElement(DesktopSessionActions, { session: undefined }),
+    );
+
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain("Checking account status");
+    expect(markup).not.toContain("Sign in");
+    expect(markup).not.toContain("Dashboard");
+    expect(markup).not.toContain("Sign out");
+  });
+
+  test("shows only the anonymous action after a signed-out response", () => {
+    const markup = renderToStaticMarkup(
+      createElement(DesktopSessionActions, { session: null }),
+    );
+
+    expect(markup).toContain('href="/login"');
+    expect(markup).toContain("Sign in");
+    expect(markup).not.toContain("Dashboard");
+    expect(markup).not.toContain("Sign out");
+  });
+
+  test("shows only account actions for an authenticated response", () => {
+    const markup = renderToStaticMarkup(
+      createElement(DesktopSessionActions, {
+        session: {
+          login: "octocat",
+          dashboardHref: "/reports",
+          hasActiveInstallation: true,
+        },
+      }),
+    );
+
+    expect(markup).toContain('href="/reports"');
+    expect(markup).toContain("Dashboard");
+    expect(markup).toContain("Sign out");
+    expect(markup).not.toContain("Sign in");
+  });
+
+  test("rechecks the session when browser history restores a cached page", () => {
+    expect(shouldRefreshSessionAfterPageShow({ persisted: true })).toBe(true);
+    expect(shouldRefreshSessionAfterPageShow({ persisted: false })).toBe(false);
   });
 });
 

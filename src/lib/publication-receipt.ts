@@ -120,6 +120,14 @@ function envelopeFindingIds(envelope: Envelope): Set<string> {
   return ids;
 }
 
+function operationalFindingIds(envelope: Envelope): Set<string> {
+  return new Set(
+    envelope.findings
+      .filter(isOperational)
+      .flatMap((finding) => (finding.id ? [finding.id] : [])),
+  );
+}
+
 function envelopePublicationFindings(envelope: Envelope): Finding[] {
   return [
     ...envelope.findings.filter((entry) => !isOperational(entry)),
@@ -128,16 +136,30 @@ function envelopePublicationFindings(envelope: Envelope): Finding[] {
   ];
 }
 
+function receiptPublicationFindings(
+  receipt: PublicationReceipt,
+  envelope: Envelope,
+): PublicationReceipt["findings"] {
+  // GitHub's planned receipt omits operational sentinels. The forge-neutral
+  // v1 writer includes them as unknown outcomes. They describe delivery of a
+  // run failure, not a user finding with a review-thread lifecycle.
+  const operationalIds = operationalFindingIds(envelope);
+  return receipt.findings.filter(
+    (finding) => !(finding.stableIdentity && operationalIds.has(finding.findingId)),
+  );
+}
+
 export function validateReceiptAgainstEnvelope(
   receipt: PublicationReceipt,
   envelope: Envelope,
 ): void {
   const envelopeIds = envelopeFindingIds(envelope);
-  if (receipt.findings.length !== envelopePublicationFindings(envelope).length) {
+  const publicationFindings = receiptPublicationFindings(receipt, envelope);
+  if (publicationFindings.length !== envelopePublicationFindings(envelope).length) {
     throw new Error("publication receipt finding count does not match the review envelope");
   }
   const receiptStableIds = new Set(
-    receipt.findings
+    publicationFindings
       .filter((finding) => finding.stableIdentity)
       .map((finding) => finding.findingId),
   );
@@ -146,7 +168,7 @@ export function validateReceiptAgainstEnvelope(
       throw new Error("publication receipt omitted a stable review finding");
     }
   }
-  for (const finding of receipt.findings) {
+  for (const finding of publicationFindings) {
     if (finding.stableIdentity && !envelopeIds.has(finding.findingId)) {
       throw new Error("publication receipt finding does not belong to the review envelope");
     }
@@ -209,7 +231,7 @@ export async function persistPublicationReceipt(
   });
 
   const rows = input.receipt
-    ? input.receipt.findings.map((finding) => {
+    ? receiptPublicationFindings(input.receipt, input.envelope).map((finding) => {
         const state = receiptState(finding);
         return {
           reviewId: input.reviewId,

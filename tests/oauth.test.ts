@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { oauthCallbackUrl, publicOrigin, publicRequestUrl } from "@/lib/oauth";
+import {
+  oauthCallbackUrl,
+  publicOrigin,
+  publicRequestUrl,
+  safeReturnTarget,
+} from "@/lib/oauth";
 
 const ORIGINAL_PUBLIC_URL = process.env.POSTIL_PUBLIC_URL;
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -30,6 +35,30 @@ describe("OAuth callback URL", () => {
     const request = new Request("http://localhost:3000/api/auth/login");
 
     expect(oauthCallbackUrl(request)).toBe("http://localhost:3000/api/auth/callback");
+  });
+});
+
+describe("post-authentication return targets", () => {
+  test("keeps same-site paths and queries without fragments", () => {
+    expect(safeReturnTarget("/orgs/postil-dev/settings?tab=billing#private")).toBe(
+      "/orgs/postil-dev/settings?tab=billing",
+    );
+  });
+
+  test("rejects external, protocol-relative, auth-loop, malformed, and oversized targets", () => {
+    for (const target of [
+      "https://evil.example",
+      "//evil.example/path",
+      "/\\evil.example",
+      "/login",
+      "/login/retry",
+      "/api/auth/login",
+      "/api/webhooks/github",
+      "/pricing",
+      `/${"a".repeat(2_049)}`,
+    ]) {
+      expect(safeReturnTarget(target)).toBeUndefined();
+    }
   });
 });
 

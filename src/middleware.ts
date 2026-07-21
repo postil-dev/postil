@@ -42,7 +42,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     }
 
     const login = new URL("/login", publicOrigin(request));
-    login.searchParams.set("next", request.nextUrl.pathname);
+    login.searchParams.set("next", `${request.nextUrl.pathname}${request.nextUrl.search}`);
     response = NextResponse.redirect(login);
   }
 
