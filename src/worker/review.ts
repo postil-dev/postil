@@ -78,7 +78,10 @@ import {
   type ExternalSideEffectLease,
   type ReviewJobPayload,
 } from "@/lib/queue";
-import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
+import {
+  normalizeReviewTriggerContext,
+  reviewRequiresFullDiff,
+} from "@/lib/review-trigger";
 import {
   claimReusableLargeReviewReservation,
   hashEffectiveReviewConfiguration,
@@ -1159,6 +1162,11 @@ export async function runReviewJob(
     payload.prNumber,
   );
   const trigger = normalizeReviewTriggerContext(payload.trigger);
+  const forceFullReview = reviewRequiresFullDiff({
+    requested: payload.forceFullReview === true,
+    baselineBaseSha: baseline?.baseSha,
+    currentBaseSha: payload.baseSha,
+  });
   const reviewValues = {
     repositoryId: repository.id,
     sourceOrgId: payload.sourceOrgId,
@@ -1171,7 +1179,7 @@ export async function runReviewJob(
     authorLogin: authorLogin ?? null,
     headSha: payload.headSha,
     baseSha: payload.baseSha,
-    sinceSha: baseline?.headSha ?? null,
+    sinceSha: forceFullReview ? null : (baseline?.headSha ?? null),
     triggerSource: trigger.source,
     triggerContext: trigger,
     queuedAt: timing.queuedAt,
@@ -1378,12 +1386,8 @@ export async function runReviewJob(
       await writeFile(baselinePath, JSON.stringify(baseline.envelope));
       // Absolute: the CLI resolves --baseline against its own cwd, which is
       // the per-review work dir below, not the worker's.
-      args.push(
-        "--since-sha",
-        baseline.headSha,
-        "--baseline",
-        resolve(baselinePath),
-      );
+      if (!forceFullReview) args.push("--since-sha", baseline.headSha);
+      args.push("--baseline", resolve(baselinePath));
     }
     args.push("--output", "json");
 

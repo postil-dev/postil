@@ -119,6 +119,7 @@ const REVIEWABLE_PR_ACTIONS = new Set([
   "synchronize",
   "reopened",
   "ready_for_review",
+  "edited",
 ]);
 
 /**
@@ -666,6 +667,7 @@ async function handlePullRequest(
     headSha,
     baseSha,
     sourceDeliveryId,
+    ...(["edited", "reopened"].includes(action) ? { forceFullReview: true } : {}),
     trigger: {
       source: "automatic_pull_request",
       webhookDeliveryId: sourceDeliveryId,
@@ -791,6 +793,7 @@ async function handleCheckRerequest(
     headSha,
     baseSha,
     sourceDeliveryId,
+    forceFullReview: true,
     trigger: {
       source: "github_check_rerun",
       webhookDeliveryId: sourceDeliveryId,
@@ -1240,6 +1243,7 @@ async function enqueueMentionReview(
     headSha: context.headSha,
     baseSha: context.baseSha,
     sourceDeliveryId,
+    forceFullReview: true,
     trigger: {
       source: "requested_review",
       webhookDeliveryId: sourceDeliveryId,

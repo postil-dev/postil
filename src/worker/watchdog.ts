@@ -4,6 +4,7 @@ import { getDb, getPool, schema } from "@/lib/db";
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
 import { checkRunExternalId } from "@/lib/github/checks";
 import { reviewDetailsUrl } from "@/lib/oauth";
+import { COALESCED_REVIEW_PAYLOAD_KEY } from "@/lib/queue";
 import {
   reconcileOperatorAlertDeliveries,
   sweepExpiredSelfServiceTrials,
@@ -109,7 +110,11 @@ export async function watchdogPass(
     if (claimed) killed += 1;
   }
 
-  // Requeue or fail jobs whose worker died mid-run. The data-modifying CTE
+  // Requeue or fail jobs whose worker died mid-run. A retained review request
+  // replaces an abandoned pre-publication attempt with a fresh retry budget.
+  // Publication recovery remains on its original payload and promotes the
+  // retained request only after that external reconciliation completes.
+  // The data-modifying CTE
   // durably queues the user-facing reply for any respond job that exhausts
   // its retries here in the same statement. The conditional
   // `status = 'running'` guard means only this transition wins the row; the
@@ -122,14 +127,31 @@ export async function watchdogPass(
     `WITH updated AS (
        UPDATE jobs
        SET status = CASE
+             WHEN kind = 'review'
+                  AND NOT payload ? 'recoveryReviewId'
+                  AND jsonb_typeof(payload -> $2) = 'object'
+               THEN 'done'::job_status
              WHEN kind IN ('gate-state-sync', 'check-run-cleanup', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
                   OR (kind = 'review' AND payload ? 'recoveryReviewId')
                   OR attempts < max_attempts
                THEN 'queued'::job_status
              ELSE 'failed'::job_status
            END,
+           attempts = CASE
+             WHEN kind = 'review'
+                  AND NOT payload ? 'recoveryReviewId'
+                  AND jsonb_typeof(payload -> $2) = 'object'
+               THEN 0
+             ELSE attempts
+           END,
            locked_at = NULL, locked_by = NULL, run_after = now(),
-           last_error = COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
+           last_error = CASE
+             WHEN kind = 'review'
+                  AND NOT payload ? 'recoveryReviewId'
+                  AND jsonb_typeof(payload -> $2) = 'object'
+               THEN NULL
+             ELSE COALESCE(last_error, '') || ' [watchdog: requeued stuck job]'
+           END
        WHERE status = 'running' AND locked_at < $1
          AND NOT EXISTS (
            SELECT 1
@@ -141,12 +163,21 @@ export async function watchdogPass(
      )
      INSERT INTO jobs (kind, payload, max_attempts)
      SELECT
+       'review',
+       payload -> $2,
+       3
+     FROM updated
+     WHERE kind = 'review'
+       AND status = 'done'
+       AND jsonb_typeof(payload -> $2) = 'object'
+     UNION ALL
+     SELECT
        'respond-failure-comment',
        payload || jsonb_build_object('respondJobId', id),
        5
      FROM updated
      WHERE kind = 'respond' AND status = 'failed'`,
-    [cutoff],
+    [cutoff, COALESCED_REVIEW_PAYLOAD_KEY],
   );
 
   await reconcileOperatorAlertDeliveries(db);
