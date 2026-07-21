@@ -625,9 +625,16 @@ describeDb("postgres job queue", () => {
       sourceDeliveryId: "edited",
     });
 
-    expect(await failJob(pool, running!, "permanent failure", { permanent: true })).toBe(
-      "coalesced",
-    );
+    expect(
+      await failJob(pool, running!, "permanent failure", {
+        permanent: true,
+        failureFollowup: {
+          kind: "respond-failure-comment",
+          payload: { respondJobId: running!.id },
+          maxAttempts: 5,
+        },
+      }),
+    ).toBe("coalesced");
     const row = await pool.query<{
       status: string;
       attempts: number;
@@ -642,6 +649,9 @@ describeDb("postgres job queue", () => {
       last_error: null,
       payload: { forceFullReview: true, sourceDeliveryId: "edited" },
     });
+    expect(
+      await pool.query("SELECT 1 FROM jobs WHERE kind = 'respond-failure-comment'"),
+    ).toHaveProperty("rowCount", 0);
   });
 
   test("a queued base retarget creates a fresh immutable publication identity", async () => {

@@ -1061,21 +1061,41 @@ export async function failJob(
   // affects 0 rows. The winner is the single owner of any follow-up side
   // effect (e.g. posting a user-facing failure comment).
   const res = opts.failureFollowup
-    ? await pool.query(
-        `WITH failed AS (
+    ? await pool.query<{ outcome: "coalesced" | "failed" | "lost" }>(
+        `WITH transitioned AS (
            UPDATE jobs
-              SET status = 'failed', locked_at = NULL, locked_by = NULL,
+              SET status = CASE
+                    WHEN kind = 'review' AND jsonb_typeof(payload -> $4) = 'object'
+                      THEN 'done'::job_status
+                    ELSE 'failed'::job_status
+                  END,
+                  locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
             WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING id
-         )
+          RETURNING status, kind, payload -> $4 AS pending
+         ), inserted_review AS (
+           INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+           SELECT 'review', pending, 'queued', now(), 3
+             FROM transitioned
+            WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
+           RETURNING id
+         ), inserted_followup AS (
          INSERT INTO jobs (kind, payload, max_attempts)
-         SELECT $4, $5::jsonb, $6 FROM failed
-         RETURNING id`,
+         SELECT $5, $6::jsonb, $7
+           FROM transitioned
+          WHERE status = 'failed'
+         RETURNING id
+         )
+         SELECT CASE
+           WHEN EXISTS (SELECT 1 FROM inserted_review) THEN 'coalesced'
+           WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'failed'
+           ELSE 'lost'
+         END AS outcome`,
         [
           job.id,
           redactedError,
           job.lockedBy,
+          COALESCED_REVIEW_PAYLOAD_KEY,
           opts.failureFollowup.kind,
           JSON.stringify(opts.failureFollowup.payload),
           opts.failureFollowup.maxAttempts,
@@ -1107,7 +1127,6 @@ export async function failJob(
          END AS outcome`,
         [job.id, redactedError, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
       );
-  if (opts.failureFollowup) return (res.rowCount ?? 0) > 0 ? "failed" : "lost";
   return (res.rows[0] as { outcome?: "coalesced" | "failed" | "lost" } | undefined)
     ?.outcome ?? "lost";
 }
