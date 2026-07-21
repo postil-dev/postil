@@ -18,7 +18,11 @@ import {
 } from "@/lib/private-repository-entitlement";
 import { getSealingKey, unseal } from "@/lib/crypto/seal";
 import { getDb, getPool, schema, type Database } from "@/lib/db";
-import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
+import {
+  hostedInferenceAvailable,
+  hostedInferenceEnabled,
+  optionalEnv,
+} from "@/lib/env";
 import {
   classifyOperationalModelIncidents,
   gateCheckConclusionForEnvelope,
@@ -87,6 +91,7 @@ import {
 } from "@/lib/gate-mode";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
+import { HostedInferenceReleaseDarkError } from "@/lib/release-job-rollout";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
   consumePrivateWorkerRehearsalAfterStaging,
@@ -1017,6 +1022,10 @@ export async function runReviewJob(
   const hostedReviewUnavailable =
     !llm.byok && !(await hostedInferenceAvailable(getPool()));
   if (hostedReviewUnavailable) {
+    const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+    if (hostedInferenceEnabled() && releaseSha) {
+      throw new HostedInferenceReleaseDarkError(releaseSha);
+    }
     const trigger = normalizeReviewTriggerContext(payload.trigger);
     const paused = await claimPausedHostedReview(
       db,

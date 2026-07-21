@@ -14,8 +14,10 @@ import {
 import {
   activateHostedInferenceRelease,
   deactivateHostedInferenceRelease,
+  deferHostedReviewForRelease,
   hostedInferenceReleaseActivated,
 } from "@/lib/release-job-rollout";
+import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 import { backfillSelfServiceTrials } from "@/lib/self-service-trial";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
@@ -26,6 +28,9 @@ describeDb("managed hosted inference release activation", () => {
   const releaseA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const releaseB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   const releaseC = "cccccccccccccccccccccccccccccccccccccccc";
+  const releaseD = "dddddddddddddddddddddddddddddddddddddddd";
+  const releaseE = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const releaseF = "ffffffffffffffffffffffffffffffffffffffff";
   let admin: Client;
   let pool: Pool;
 
@@ -180,6 +185,131 @@ describeDb("managed hosted inference release activation", () => {
     expect(await hostedInferenceAvailable(pool)).toBe(true);
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
     expect(await hostedInferenceAvailable(pool)).toBe(false);
+  });
+
+  test("activation revives only unowned automatic reviews consumed by a dark release", async () => {
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    process.env.POSTIL_RELEASE_SHA = releaseD;
+    await deactivateHostedInferenceRelease(pool, releaseD);
+    const organization = await pool.query<{ id: string }>(`
+      INSERT INTO organizations (slug, name, github_org_id)
+      VALUES ('dark-review-reconcile', 'Dark review reconcile', 75001)
+      RETURNING id
+    `);
+    const installation = await pool.query<{ id: string }>(
+      `INSERT INTO installations
+         (github_installation_id, org_id, account_login, account_type, suspended)
+       VALUES (75002, $1, 'dark-review-reconcile', 'Organization', false)
+       RETURNING id`,
+      [organization.rows[0]!.id],
+    );
+    const repository = await pool.query<{ id: string }>(
+      `INSERT INTO repositories
+         (installation_id, github_repo_id, full_name, private, enabled)
+       VALUES ($1, 75003, 'dark-review-reconcile/repo', false, true)
+       RETURNING id`,
+      [installation.rows[0]!.id],
+    );
+    const reviewJob = (deliveryId: string, prNumber: number, headSha: string) => ({
+      installationId: 75002,
+      sourceInstallationId: Number(installation.rows[0]!.id),
+      sourceOrgId: Number(organization.rows[0]!.id),
+      githubRepoId: 75003,
+      repoFullName: "dark-review-reconcile/repo",
+      repositoryPrivate: false,
+      prNumber,
+      headSha,
+      baseSha: "base",
+      sourceDeliveryId: deliveryId,
+      trigger: {
+        source: "automatic_pull_request",
+        webhookDeliveryId: deliveryId,
+        webhookEvent: "pull_request",
+        webhookAction: prNumber === 31 ? "opened" : "synchronize",
+      },
+    });
+    const missedPayload = reviewJob("dark-opened", 31, "missed-head");
+    const ownedPayload = reviewJob("dark-synchronize", 32, "owned-head");
+    const jobs = await pool.query<{ id: string; delivery: string }>(
+      `INSERT INTO jobs (kind, payload, status)
+       VALUES ('review', $1::jsonb, 'done'), ('review', $2::jsonb, 'done')
+       RETURNING id, payload->>'sourceDeliveryId' AS delivery`,
+      [JSON.stringify(missedPayload), JSON.stringify(ownedPayload)],
+    );
+    for (const payload of [missedPayload, ownedPayload]) {
+      await pool.query(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, status, error_message,
+            trigger_source, trigger_context, queued_at, started_at, finished_at)
+         VALUES ($1, $2, $3, 'base', 'failed', $4,
+                 'automatic_pull_request', $5::jsonb, now(), now(), now())`,
+        [
+          repository.rows[0]!.id,
+          payload.prNumber,
+          payload.headSha,
+          HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+          JSON.stringify(payload.trigger),
+        ],
+      );
+    }
+    await pool.query(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status, envelope, finished_at)
+       VALUES ($1, 32, 'owned-head', 'base', 'completed', '{}'::jsonb, now())`,
+      [repository.rows[0]!.id],
+    );
+
+    expect(await activateHostedInferenceRelease(pool, releaseD)).toBe(true);
+    const states = await pool.query<{ delivery: string; status: string }>(
+      `SELECT payload->>'sourceDeliveryId' AS delivery, status
+         FROM jobs WHERE id = ANY($1::bigint[]) ORDER BY delivery`,
+      [jobs.rows.map((row) => row.id)],
+    );
+    expect(states.rows).toEqual([
+      { delivery: "dark-opened", status: "queued" },
+      { delivery: "dark-synchronize", status: "done" },
+    ]);
+    expect(await activateHostedInferenceRelease(pool, releaseD)).toBe(false);
+    expect((await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM jobs
+        WHERE kind = 'review' AND payload->>'headSha' = 'missed-head'`,
+    )).rows[0]!.count).toBe(1);
+  });
+
+  test("a verified successor release adopts work parked by an unactivated release", async () => {
+    await deactivateHostedInferenceRelease(pool, releaseE);
+    const job = await pool.query<{ id: string }>(
+      `INSERT INTO jobs
+         (kind, payload, status, attempts, locked_at, locked_by)
+       VALUES (
+         'review',
+         '{"repoFullName":"successor/repo","prNumber":1,"headSha":"head"}'::jsonb,
+         'running', 1, now(), 'release-e-worker'
+       )
+       RETURNING id`,
+    );
+    expect(await deferHostedReviewForRelease(
+      pool,
+      { id: Number(job.rows[0]!.id), lockedBy: "release-e-worker" },
+      releaseE,
+    )).toBe("deferred");
+    await deactivateHostedInferenceRelease(pool, releaseF);
+    expect(await activateHostedInferenceRelease(pool, releaseF)).toBe(true);
+    const state = await pool.query<{
+      status: string;
+      staged: boolean;
+      release_sha: string | null;
+    }>(
+      `SELECT status, run_after = 'infinity'::timestamptz AS staged,
+              payload->>'releaseDarkSha' AS release_sha
+         FROM jobs WHERE id = $1`,
+      [job.rows[0]!.id],
+    );
+    expect(state.rows[0]).toEqual({
+      status: "queued",
+      staged: false,
+      release_sha: null,
+    });
   });
 
   test("backfills bounded hosted trials only for existing personal installations", async () => {

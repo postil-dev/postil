@@ -27,6 +27,10 @@ import {
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import {
+  deferHostedReviewForRelease,
+  HostedInferenceReleaseDarkError,
+} from "@/lib/release-job-rollout";
+import {
   reportOperationalFailure,
   reportOperationalWarning,
   type ObservabilityProcessGroup,
@@ -243,6 +247,17 @@ export async function runClaimedJob(
       );
       console.warn(
         `[${label}] job ${job.id} requeued after worker shutdown (${requeued})`,
+      );
+      return;
+    }
+    if (err instanceof HostedInferenceReleaseDarkError && job.kind === "review") {
+      const outcome = await deferHostedReviewForRelease(
+        getPool(),
+        job,
+        err.releaseSha,
+      );
+      console.warn(
+        `[${label}] review job ${job.id} ${outcome} across managed release activation`,
       );
       return;
     }
