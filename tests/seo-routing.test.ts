@@ -73,6 +73,17 @@ describe("crawler routing", () => {
     expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
 
+  test("preserves a protected query in the post-login return target", async () => {
+    const response = await middleware(
+      request("https://postil.dev/reports?status=failed&gate=failing"),
+      event,
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/login?next=%2Freports%3Fstatus%3Dfailed%26gate%3Dfailing",
+    );
+  });
+
   test("login redirect targets the public origin, not the proxy-internal one", async () => {
     const previousPublicUrl = process.env.POSTIL_PUBLIC_URL;
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
