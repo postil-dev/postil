@@ -1478,7 +1478,7 @@ export async function runReviewJob(
           reviewId,
           usesByok: llm.byok,
         });
-        if (!spendReservation.allowed) {
+        if (spendReservation && !spendReservation.allowed) {
           const message =
             "Hosted inference allowance is unavailable or fully reserved.";
           const settled = await db.transaction(async (tx) => {

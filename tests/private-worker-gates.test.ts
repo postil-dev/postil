@@ -185,7 +185,7 @@ describe("private repository worker defense in depth", () => {
     const start = source.indexOf("export async function runReviewJob");
     const reservation = source.indexOf("await reserveHostedReviewSpend", start);
     const denial = source.indexOf(
-      "if (!spendReservation.allowed)",
+      "if (spendReservation && !spendReservation.allowed)",
       reservation,
     );
     const denialEnd = source.indexOf("hostedUsageReservationId =", denial);
