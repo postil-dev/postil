@@ -819,14 +819,20 @@ describe("drainQueueOnce", () => {
       message: "GitHub 503",
     };
     cleanupRun = async () => {
-      throw new Error("check-run cleanup remains incomplete");
+      throw new Error(
+        "check-run cleanup remains incomplete: ambiguous gate check-run postil:run:gate is not visible on GitHub",
+      );
     };
 
     await runClaimedJob(job, "worker 0", "worker");
 
     expect(retriedIndefinitely).toEqual([]);
     expect(failed).toEqual([
-      { id: 2, error: "check-run cleanup remains incomplete" },
+      {
+        id: 2,
+        error:
+          "check-run cleanup remains incomplete: ambiguous gate check-run postil:run:gate is not visible on GitHub",
+      },
     ]);
     expect(operationalFailures).toEqual(["job_permanently_failed"]);
   });
