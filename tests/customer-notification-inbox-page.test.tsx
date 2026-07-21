@@ -4,10 +4,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 let role = "member";
 let rows: Array<Record<string, unknown>> = [];
+let executeCall = 0;
 
 mock.module("@/lib/org-access", () => ({
   requireOrgMembership: async () => ({
-    db: { execute: async () => ({ rows }) },
+    db: { execute: async () => ({ rows: queryRows() }) },
     user: { id: 7, login: "octocat" },
     org: { id: 20, slug: "acme", name: "Acme", plan: "beta" },
     membership: { id: 1, role },
@@ -30,6 +31,7 @@ const { default: OrganizationNotificationsPage } = await import(
 beforeEach(() => {
   role = "member";
   rows = [];
+  executeCall = 0;
 });
 
 describe("customer notification inbox page", () => {
@@ -40,7 +42,8 @@ describe("customer notification inbox page", () => {
     });
     const markup = renderToStaticMarkup(page);
 
-    expect(markup).toContain("You’re all caught up.");
+    expect(markup).toContain("No unread notifications.");
+    expect(markup).toContain("Past notifications");
     expect(markup).not.toContain("Mark all read");
     expect(markup).toContain("/orgs/acme");
   });
@@ -72,6 +75,30 @@ describe("customer notification inbox page", () => {
     expect(markup).not.toMatch(/provider|model|stack trace/i);
   });
 
+  test("keeps read updates discoverable under Past notifications", async () => {
+    rows = [{
+      id: "8",
+      severity: "info",
+      category: "trial",
+      title: "Your 30-day trial is active",
+      body: "Postil can review enabled repositories during your trial.",
+      actionLabel: "Open dashboard",
+      actionHref: "/orgs/acme",
+      createdAt: "2026-07-19T12:00:00.000Z",
+      readAt: "2026-07-19T12:05:00.000Z",
+    }];
+    const page = await OrganizationNotificationsPage({
+      params: Promise.resolve({ slug: "acme" }),
+      searchParams: Promise.resolve({ view: "past" }),
+    });
+    const markup = renderToStaticMarkup(page);
+
+    expect(markup).toContain('aria-current="page"');
+    expect(markup).toContain("Your 30-day trial is active");
+    expect(markup).not.toContain("Mark read");
+    expect(markup).not.toContain("Mark all read");
+  });
+
   test("uses role-scoped keyset pagination and never queries operator incidents", async () => {
     const source = await readFile(
       new URL("../src/app/orgs/[slug]/notifications/page.tsx", import.meta.url),
@@ -85,3 +112,14 @@ describe("customer notification inbox page", () => {
     expect(source).not.toContain("private_monitor_incidents");
   });
 });
+
+function queryRows(): Array<Record<string, unknown>> {
+  executeCall += 1;
+  if (executeCall % 2 === 1) {
+    return [{
+      unreadCount: String(rows.filter((row) => row.readAt == null).length),
+      pastCount: String(rows.filter((row) => row.readAt != null).length),
+    }];
+  }
+  return rows;
+}
