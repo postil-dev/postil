@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Pool } from "pg";
 
 import { getSealingKey, seal } from "@/lib/crypto/seal";
+import type { PullRequestReviewContext } from "@/lib/github/checks";
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   signWebhookBody,
@@ -60,7 +61,7 @@ let liveMembershipUserLogin = "admin";
 let liveMembershipOrgId = 999;
 let liveMembershipOrgLogin = "octo";
 let membershipFetchCount = 0;
-let pullRequestReviewContext = {
+let pullRequestReviewContext: PullRequestReviewContext = {
   open: true,
   merged: false,
   headSha: "head-sha",
@@ -68,6 +69,7 @@ let pullRequestReviewContext = {
   draft: false,
   authorGithubId: 501,
   authorLogin: "admin",
+  updatedAt: "2026-07-21T10:24:04Z",
 };
 let reviewCommentRoot = {
   id: 8800,
@@ -263,6 +265,7 @@ describeDb("webhook handler behaviour", () => {
       draft: false,
       authorGithubId: 501,
       authorLogin: "admin",
+      updatedAt: "2026-07-21T10:24:04Z",
     };
     reviewCommentRoot = {
       id: 8800,
@@ -983,6 +986,155 @@ describeDb("webhook handler behaviour", () => {
     expect(jobs.rows[0]?.payload).toMatchObject({
       forceFullReview: true,
       sourceDeliveryId: "delivery-edit-1",
+    });
+  });
+
+  test("a newer reopened delivery retries until GitHub live state converges", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 252);
+    await seedRepo(inst, 7880, "octo/reopened");
+    pullRequestReviewContext = {
+      open: false,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-07-21T10:24:04Z",
+    };
+
+    const response = await post(
+      "pull_request",
+      {
+        action: "reopened",
+        installation: { id: 252 },
+        repository: { id: 7880, full_name: "octo/reopened", private: false },
+        pull_request: {
+          number: 9,
+          head: { sha: "same-head" },
+          base: { sha: "base" },
+          updated_at: "2026-07-21T10:24:14Z",
+        },
+      },
+      "delivery-reopened-lagging",
+    );
+
+    expect(response.status).toBe(200);
+    const deferred = await pool.query<{
+      delivery_completed: boolean;
+      dispatch_status: string;
+      attempts: number;
+      review_jobs: number;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS delivery_completed,
+              dispatch.status AS dispatch_status,
+              dispatch.attempts,
+              (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS review_jobs
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-reopened-lagging'`,
+    );
+    expect(deferred.rows[0]).toEqual({
+      delivery_completed: false,
+      dispatch_status: "queued",
+      attempts: 1,
+      review_jobs: 0,
+    });
+
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      open: true,
+      updatedAt: "2026-07-21T10:24:14Z",
+    };
+    await pool.query(
+      `UPDATE jobs
+          SET run_after = now()
+        WHERE kind = 'webhook-dispatch'
+          AND payload->>'deliveryId' = 'delivery-reopened-lagging'`,
+    );
+    const retry = await claimJob(pool, "webhook-reopened-retry", ["webhook-dispatch"]);
+    expect(retry?.kind).toBe("webhook-dispatch");
+    await runClaimedJob(retry!, "webhook-reopened-retry", "web");
+
+    const completed = await pool.query<{
+      delivery_completed: boolean;
+      dispatch_status: string;
+      review_status: string;
+      force_full_review: boolean;
+      webhook_action: string;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS delivery_completed,
+              dispatch.status AS dispatch_status,
+              review.status AS review_status,
+              (review.payload->>'forceFullReview')::boolean AS force_full_review,
+              review.payload->'trigger'->>'webhookAction' AS webhook_action
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+         JOIN jobs review
+           ON review.kind = 'review'
+          AND review.payload->>'sourceDeliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-reopened-lagging'`,
+    );
+    expect(completed.rows[0]).toEqual({
+      delivery_completed: true,
+      dispatch_status: "done",
+      review_status: "queued",
+      force_full_review: true,
+      webhook_action: "reopened",
+    });
+  });
+
+  test("an older closed delivery stays ignored after a newer reopen", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 253);
+    await seedRepo(inst, 7881, "octo/stale-close");
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-07-21T10:24:14Z",
+    };
+
+    const response = await post(
+      "pull_request",
+      {
+        action: "closed",
+        installation: { id: 253 },
+        repository: { id: 7881, full_name: "octo/stale-close", private: false },
+        pull_request: {
+          number: 10,
+          head: { sha: "same-head" },
+          base: { sha: "base" },
+          updated_at: "2026-07-21T10:24:04Z",
+        },
+      },
+      "delivery-stale-close",
+    );
+
+    expect(response.status).toBe(200);
+    const state = await pool.query<{
+      delivery_completed: boolean;
+      dispatch_status: string;
+      review_jobs: number;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS delivery_completed,
+              dispatch.status AS dispatch_status,
+              (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS review_jobs
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-stale-close'`,
+    );
+    expect(state.rows[0]).toEqual({
+      delivery_completed: true,
+      dispatch_status: "done",
+      review_jobs: 0,
     });
   });
 

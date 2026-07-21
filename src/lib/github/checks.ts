@@ -664,6 +664,7 @@ export interface PullRequestReviewContext {
   open: boolean;
   merged: boolean;
   draft: boolean;
+  updatedAt?: string;
   authorGithubId?: number;
   authorLogin?: string;
 }
@@ -688,6 +689,7 @@ export async function getPullRequestReviewContext(
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    updated_at?: string;
     user?: { id?: number; login?: string };
   };
   const headSha = data.head?.sha;
@@ -700,12 +702,17 @@ export async function getPullRequestReviewContext(
   const authorGithubId = data.user?.id;
   const authorLogin =
     typeof data.user?.login === "string" ? data.user.login.trim() : undefined;
+  const updatedAt =
+    typeof data.updated_at === "string" && Number.isFinite(Date.parse(data.updated_at))
+      ? data.updated_at
+      : undefined;
   return {
     headSha,
     baseSha,
     open: data.state === "open",
     merged: data.merged === true,
     draft: data.draft === true,
+    ...(updatedAt ? { updatedAt } : {}),
     ...(typeof authorGithubId === "number" &&
     Number.isSafeInteger(authorGithubId) &&
     authorGithubId > 0

@@ -110,6 +110,7 @@ interface PullRequestEventPayload {
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    updated_at?: string;
     user?: GithubUser;
   };
 }
@@ -121,6 +122,29 @@ const REVIEWABLE_PR_ACTIONS = new Set([
   "ready_for_review",
   "edited",
 ]);
+
+function livePullRequestSnapshotLagsEvent(
+  eventUpdatedAt: string | undefined,
+  liveUpdatedAt: string | undefined,
+): boolean {
+  if (!eventUpdatedAt || !liveUpdatedAt) return false;
+  const eventTime = Date.parse(eventUpdatedAt);
+  const liveTime = Date.parse(liveUpdatedAt);
+  return Number.isFinite(eventTime) && Number.isFinite(liveTime) && liveTime < eventTime;
+}
+
+function retryLaggingPullRequestSnapshot(
+  repoFullName: string,
+  prNumber: number,
+  action: string,
+  eventUpdatedAt: string | undefined,
+  liveUpdatedAt: string | undefined,
+): void {
+  if (!livePullRequestSnapshotLagsEvent(eventUpdatedAt, liveUpdatedAt)) return;
+  throw new Error(
+    `GitHub pull request ${repoFullName}#${prNumber} has not converged for ${action}`,
+  );
+}
 
 /**
  * The subset of a check_run/check_suite `pull_requests[]` entry we need to
@@ -586,11 +610,36 @@ async function handlePullRequest(
   const headSha = pr.head?.sha;
   const baseSha = pr.base?.sha;
   if (action === "closed") {
-    if (live.open && !live.merged) return;
+    if (live.open && !live.merged) {
+      retryLaggingPullRequestSnapshot(
+        repo.full_name,
+        pr.number,
+        action,
+        pr.updated_at,
+        live.updatedAt,
+      );
+      return;
+    }
   } else if (!live.open || live.merged || live.draft) {
+    retryLaggingPullRequestSnapshot(
+      repo.full_name,
+      pr.number,
+      action,
+      pr.updated_at,
+      live.updatedAt,
+    );
     return;
   }
-  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) return;
+  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) {
+    retryLaggingPullRequestSnapshot(
+      repo.full_name,
+      pr.number,
+      action,
+      pr.updated_at,
+      live.updatedAt,
+    );
+    return;
+  }
 
   const db = getDb();
   const installation = (
