@@ -184,6 +184,7 @@ mock.module("@/worker/runner", () => ({
   triggerQueueDrain: () => undefined,
 }));
 
+const orgSettingsActions = await import("@/app/orgs/[slug]/actions");
 const {
   approveFinding,
   resendBillingContactVerification,
@@ -191,7 +192,7 @@ const {
   saveBillingContact,
   saveNotificationPreferences,
   saveOrgSettings,
-} = await import("@/app/orgs/[slug]/actions");
+} = orgSettingsActions;
 
 function fakeDb() {
   return {
@@ -353,6 +354,12 @@ function notificationPreferencesForm(
   if (serviceSummaryEmail) form.set("serviceSummaryEmail", "on");
   return form;
 }
+
+describe("hosted overage administration", () => {
+  test("does not expose a customer-controlled overage cap action", () => {
+    expect("updateHostedOverageCap" in orgSettingsActions).toBe(false);
+  });
+});
 
 describe("billing contact verification actions", () => {
   test("preserves the verified contact while a replacement waits for verification", async () => {
