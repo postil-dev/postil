@@ -31,6 +31,10 @@ function finding(id: string): Finding {
   };
 }
 
+function findingAt(id: string, path: string): Finding {
+  return { ...finding(id), path };
+}
+
 function envelope(ids: string[]): Envelope {
   const findings = ids.map(finding);
   return {
@@ -88,6 +92,68 @@ describe("publication receipt contract", () => {
       "inline",
       "summaryOnly",
     ]);
+  });
+
+  test("accepts exact publishable populations when a forge receipt also reports an operational sentinel", () => {
+    const reviewEnvelope = envelope([]);
+    reviewEnvelope.findings = [
+      finding("admitted-id"),
+      findingAt("synthetic-id", ".postil/diff"),
+      findingAt("operational-id", ".postil/provider"),
+    ];
+    reviewEnvelope.resolved = [finding("resolved-id")];
+    reviewEnvelope.suppressedFindings = [
+      { finding: finding("suppressed-id"), reason: "belowConfidence" },
+    ];
+    reviewEnvelope.counts = {
+      info: 0,
+      warn: 2,
+      error: 1,
+      suppressed: 3,
+      ungrounded: 4,
+    };
+
+    expect(() =>
+      validateReceiptAgainstEnvelope(
+        {
+          version: 1,
+          receiptId: "forge-review-v1:mixed",
+          findings: [
+            {
+              findingId: "admitted-id",
+              stableIdentity: true,
+              initialOutcome: "inline",
+              inlineRejected: false,
+            },
+            {
+              findingId: "synthetic-id",
+              stableIdentity: true,
+              initialOutcome: "summaryOnly",
+              inlineRejected: false,
+            },
+            {
+              findingId: "operational-id",
+              stableIdentity: true,
+              initialOutcome: "unknown",
+              inlineRejected: false,
+            },
+            {
+              findingId: "resolved-id",
+              stableIdentity: true,
+              initialOutcome: "resolved",
+              inlineRejected: false,
+            },
+            {
+              findingId: "suppressed-id",
+              stableIdentity: true,
+              initialOutcome: "suppressed",
+              inlineRejected: false,
+            },
+          ],
+        },
+        reviewEnvelope,
+      ),
+    ).not.toThrow();
   });
 
   test("normalizes GitHub's 422 inline rejection as a summary-only receipt", async () => {

@@ -269,22 +269,21 @@ console.log("fixture-key");
     expect(result.stdout).toContain("Local fixture finding");
   }, 120_000);
 
-  test("preserves findings when the local advisory publication is neutral", async () => {
+  test("preserves an operational finding when the local advisory publication is neutral", async () => {
     const repo = await createFixtureRepo("neutral-advisory");
 
     const result = await runLocalReview(repo, "0", 1, {
       args: ["--require-clean"],
-      env: {
-        POSTIL_FAKE_FINDING: "1",
-        POSTIL_FAKE_ADVISORY_NEUTRAL: "1",
-      },
+      env: { POSTIL_FAKE_ADVISORY_NEUTRAL: "1" },
     });
 
     expect(result.stdout).toContain(
       "would complete check-run #1000 as neutral",
     );
     expect(result.stdout).toContain("Review findings:");
-    expect(result.stdout).toContain("Local fixture finding");
+    expect(result.stdout).toContain(".postil/provider:1");
+    expect(result.stdout).toContain("Local provider unavailable");
+    expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
     expect(result.stdout).toContain("Gate: passed");
   }, 120_000);
 
@@ -533,7 +532,8 @@ const sha = valueAfter("--sha") ?? "1".repeat(40);
 const advisory = valueAfter("--check-run-id");
 const gate = valueAfter("--gate-check-run-id");
 const failing = process.env.POSTIL_FAKE_GATE_FAILING === "1";
-const hasFinding = failing || process.env.POSTIL_FAKE_FINDING === "1";
+const operational = process.env.POSTIL_FAKE_ADVISORY_NEUTRAL === "1";
+const hasFinding = failing || operational || process.env.POSTIL_FAKE_FINDING === "1";
 let servedContent;
 if (process.env.POSTIL_FAKE_READ_PATH) {
   const response = await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/contents/\${process.env.POSTIL_FAKE_READ_PATH}?ref=\${sha}\`);
@@ -546,18 +546,20 @@ if (process.env.POSTIL_FAKE_READ_PR_TITLE === "1") {
 }
 const finding = {
   id: "local-finding-1",
-  path: "app.txt",
-  line: 2,
-  severity: failing ? "error" : "warn",
-  kind: "risk",
+  path: operational ? ".postil/provider" : "app.txt",
+  line: operational ? 1 : 2,
+  severity: failing || operational ? "error" : "warn",
+  kind: operational ? "uncertainty" : "risk",
   confidence: 0.9,
   generatorConfidence: 0.95,
   scorerConfidence: 0.9,
-  generatorKind: "risk",
-  scorerKind: "risk",
+  generatorKind: operational ? "uncertainty" : "risk",
+  scorerKind: operational ? "uncertainty" : "risk",
   scorerReason: "confirmed by fake scorer",
-  title: "Local fixture finding",
-  body: "The local fixture intentionally fails the gate."
+  title: operational ? "Local provider unavailable" : "Local fixture finding",
+  body: operational
+    ? "The local fixture simulates an unavailable model provider."
+    : "The local fixture intentionally fails the gate."
 };
 const findings = hasFinding ? [finding] : [];
 const observations = [];
@@ -572,7 +574,7 @@ const envelope = {
   silent: !hasFinding,
   findings,
   resolved: [],
-  counts: { info: 0, warn: hasFinding && !failing ? 1 : 0, error: failing ? 1 : 0, suppressed: 0, ungrounded: 0 },
+  counts: { info: 0, warn: hasFinding && !failing && !operational ? 1 : 0, error: failing || operational ? 1 : 0, suppressed: 0, ungrounded: 0 },
   confidenceBuckets: hasFinding ? [0, 0, 0, 0, 1] : [0, 0, 0, 0, 0],
   gate: { failOn: "error", failing },
   modelUsed: "fake/test",
@@ -607,9 +609,9 @@ async function patchCheck(id, conclusion, title, summary) {
     })
   });
 }
-await patchCheck(advisory, process.env.POSTIL_FAKE_ADVISORY_NEUTRAL === "1" ? "neutral" : "success", failing ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
+await patchCheck(advisory, operational ? "neutral" : "success", failing || operational ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
 await patchCheck(gate, failing ? "failure" : "success", failing ? "Merge gate failed" : "Merge gate passed", envelope.summary);
-if (hasFinding) {
+if (hasFinding && !operational) {
   await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}/reviews\`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
