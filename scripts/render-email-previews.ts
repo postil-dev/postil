@@ -149,7 +149,7 @@ const previews = [
         kind: "resolved",
         capability: "fleet",
         severity: "critical",
-        summary: "Review worker heartbeat is stale",
+        summary: "Review worker fleet recovered",
         detail: "The worker heartbeat is fresh.",
         firstObservedAt: new Date("2026-07-20T12:00:00.000Z"),
         lastObservedAt: new Date("2026-07-20T12:05:00.000Z"),

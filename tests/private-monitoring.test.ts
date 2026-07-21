@@ -351,6 +351,7 @@ describeDb("private monitoring durability", () => {
     );
     expect(resolution).toHaveLength(1);
     expect(resolution[0]?.kind).toBe("resolved");
+    expect(resolution[0]?.summary).toBe("Review worker fleet recovered");
     await deliverPrivateMonitoringNotification(pool, resolution[0]!, {
       recipient: "operator@example.test",
       publicOrigin: "https://postil.dev",

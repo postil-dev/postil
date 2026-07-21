@@ -719,7 +719,9 @@ export async function claimPrivateMonitoringNotifications(
     kind: row.notification_kind,
     capability: row.group,
     severity: row.severity,
-    summary: row.summary,
+    summary: row.notification_kind === "resolved"
+      ? `${capabilityLabel(row.group)} recovered`
+      : row.summary,
     detail: row.detail,
     firstObservedAt: row.first_detected_at,
     lastObservedAt: row.last_detected_at,
@@ -882,9 +884,7 @@ export function privateMonitoringIncidentEmailContent(
 ): TransactionalEmailContent {
   const resolved = notification.kind === "resolved";
   const stateLabel = resolved ? "Resolved" : "Open";
-  const title = notification.kind === "resolved"
-    ? `${capabilityLabel(notification.capability)} recovered`
-    : notification.summary;
+  const title = notification.summary;
   const lastObservedAt = notification.resolvedAt ?? notification.lastObservedAt;
   return {
     preheader: resolved
