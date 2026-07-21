@@ -740,15 +740,16 @@ export async function deliverPrivateMonitoringNotification(
 ): Promise<void> {
   const now = input.now ?? new Date();
   const dashboardUrl = new URL("/operator#monitoring", input.publicOrigin).toString();
+  const content = privateMonitoringIncidentEmailContent(
+    notification,
+    dashboardUrl,
+  );
   try {
     await sendOperatorNotification(
       {
         recipient: input.recipient,
-        subject: `[${notification.severity}] Postil monitor: ${notification.summary}`,
-        content: privateMonitoringIncidentEmailContent(
-          notification,
-          dashboardUrl,
-        ),
+        subject: `[${notification.severity}] Postil monitor: ${content.title}`,
+        content,
         idempotencyKey: notification.notificationKey,
       },
       input.transport,
@@ -879,13 +880,16 @@ export function privateMonitoringIncidentEmailContent(
   >,
   dashboardUrl: string,
 ): TransactionalEmailContent {
-  const stateLabel = notification.kind === "resolved" ? "Resolved" : "Open";
+  const resolved = notification.kind === "resolved";
+  const stateLabel = resolved ? "Resolved" : "Open";
   const title = notification.kind === "resolved"
-    ? `Resolved: ${notification.summary}`
+    ? `${capabilityLabel(notification.capability)} recovered`
     : notification.summary;
   const lastObservedAt = notification.resolvedAt ?? notification.lastObservedAt;
   return {
-    preheader: `${title}. ${capabilityLabel(notification.capability)} is affected.`,
+    preheader: resolved
+      ? `${title}. The incident is resolved.`
+      : `${title}. ${capabilityLabel(notification.capability)} is affected.`,
     category: "Production monitor",
     title,
     summary: notification.kind === "resolved"
@@ -899,7 +903,12 @@ export function privateMonitoringIncidentEmailContent(
       { label: "First observed", value: formatMonitoringTimestamp(notification.firstObservedAt) },
       { label: "Last observed", value: formatMonitoringTimestamp(lastObservedAt) },
       { label: "Evidence", value: boundedDetail(notification.detail) },
-      { label: "Recommended action", value: incidentRecommendedAction(notification.incidentKey) },
+      {
+        label: "Recommended action",
+        value: resolved
+          ? "No action is required. Open private monitoring for retained evidence."
+          : incidentRecommendedAction(notification.incidentKey),
+      },
     ],
     action: { label: "Open private monitoring", url: dashboardUrl },
     note: "Operational alerts are private and do not appear in organization member notifications.",

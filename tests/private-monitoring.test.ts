@@ -351,6 +351,23 @@ describeDb("private monitoring durability", () => {
     );
     expect(resolution).toHaveLength(1);
     expect(resolution[0]?.kind).toBe("resolved");
+    await deliverPrivateMonitoringNotification(pool, resolution[0]!, {
+      recipient: "operator@example.test",
+      publicOrigin: "https://postil.dev",
+      transport,
+      now: resolvedAt,
+    });
+    expect(sent[1]?.subject).toBe(
+      "[critical] Postil monitor: Review worker fleet recovered",
+    );
+    expect(sent[1]?.content.title).toBe("Review worker fleet recovered");
+    expect(sent[1]?.content.preheader).toBe(
+      "Review worker fleet recovered. The incident is resolved.",
+    );
+    expect(sent[1]?.content.details).toContainEqual({
+      label: "Recommended action",
+      value: "No action is required. Open private monitoring for retained evidence.",
+    });
 
     const dashboard = await getPrivateMonitoringDashboard(pool);
     expect(dashboard.incidents[0]).toMatchObject({
