@@ -313,6 +313,10 @@ ${doctorTranscript}`}</code>
           Download the App private key and set <code>GITHUB_APP_ID</code> and{" "}
           <code>GITHUB_APP_PRIVATE_KEY</code> (PEM, base64 accepted).
         </li>
+        <li>
+          Set <code>GITHUB_APP_SLUG</code> to the App page&apos;s URL slug. Postil
+          uses it to recognize its own inline review threads.
+        </li>
         <li>Install the App on a test repository and open a PR.</li>
       </ol>
       <h4>GitHub OAuth App</h4>

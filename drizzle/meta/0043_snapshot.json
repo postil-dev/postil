@@ -1,6 +1,6 @@
 {
-  "id": "3969d1d1-ee80-48b7-a619-32dce4518698",
-  "prevId": "9b26ec72-7860-4744-af82-cc46f10fb831",
+  "id": "17dee11d-b73d-49de-bc38-31af96ae0007",
+  "prevId": "3969d1d1-ee80-48b7-a619-32dce4518698",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2286,6 +2286,434 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.large_review_attempts": {
+      "name": "large_review_attempts",
+      "schema": "",
+      "columns": {
+        "attempt_key": {
+          "name": "attempt_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "run_key": {
+          "name": "run_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_sha256": {
+          "name": "request_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_identity": {
+          "name": "batch_identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt": {
+          "name": "attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lease_id": {
+          "name": "lease_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "response_status": {
+          "name": "response_status",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "response_headers": {
+          "name": "response_headers",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "response_body": {
+          "name": "response_body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "large_review_attempts_run_request_attempt_idx": {
+          "name": "large_review_attempts_run_request_attempt_idx",
+          "columns": [
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "request_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "large_review_attempts_pending_request_idx": {
+          "name": "large_review_attempts_pending_request_idx",
+          "columns": [
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "request_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"large_review_attempts\".\"state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "large_review_attempts_run_idx": {
+          "name": "large_review_attempts_run_idx",
+          "columns": [
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "large_review_attempts_run_key_large_review_runs_run_key_fk": {
+          "name": "large_review_attempts_run_key_large_review_runs_run_key_fk",
+          "tableFrom": "large_review_attempts",
+          "tableTo": "large_review_runs",
+          "columnsFrom": [
+            "run_key"
+          ],
+          "columnsTo": [
+            "run_key"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "large_review_attempts_key_check": {
+          "name": "large_review_attempts_key_check",
+          "value": "\"large_review_attempts\".\"attempt_key\" ~ '^[0-9a-f]{64}$'"
+        },
+        "large_review_attempts_request_check": {
+          "name": "large_review_attempts_request_check",
+          "value": "\"large_review_attempts\".\"request_sha256\" ~ '^[0-9a-f]{64}$' AND \"large_review_attempts\".\"batch_identity\" ~ '^[0-9a-f]{64}$'"
+        },
+        "large_review_attempts_attempt_check": {
+          "name": "large_review_attempts_attempt_check",
+          "value": "\"large_review_attempts\".\"attempt\" BETWEEN 1 AND 10"
+        },
+        "large_review_attempts_state_check": {
+          "name": "large_review_attempts_state_check",
+          "value": "\"large_review_attempts\".\"state\" IN ('pending', 'completed')"
+        },
+        "large_review_attempts_response_check": {
+          "name": "large_review_attempts_response_check",
+          "value": "(\"large_review_attempts\".\"state\" = 'pending' AND \"large_review_attempts\".\"response_status\" IS NULL AND \"large_review_attempts\".\"response_headers\" IS NULL AND \"large_review_attempts\".\"response_body\" IS NULL AND \"large_review_attempts\".\"completed_at\" IS NULL) OR (\"large_review_attempts\".\"state\" = 'completed' AND \"large_review_attempts\".\"response_status\" BETWEEN 200 AND 299 AND \"large_review_attempts\".\"response_headers\" IS NOT NULL AND \"large_review_attempts\".\"response_body\" IS NOT NULL AND \"large_review_attempts\".\"completed_at\" IS NOT NULL)"
+        },
+        "large_review_attempts_model_check": {
+          "name": "large_review_attempts_model_check",
+          "value": "length(btrim(\"large_review_attempts\".\"model\")) BETWEEN 1 AND 500"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.large_review_runs": {
+      "name": "large_review_runs",
+      "schema": "",
+      "columns": {
+        "run_key": {
+          "name": "run_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "current_review_id": {
+          "name": "current_review_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repository_id": {
+          "name": "repository_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pr_number": {
+          "name": "pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cli_version": {
+          "name": "cli_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "configuration_sha256": {
+          "name": "configuration_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_identity": {
+          "name": "provider_identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_sha": {
+          "name": "base_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "retry_lineage": {
+          "name": "retry_lineage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan_sha256": {
+          "name": "plan_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hosted_reservation_id": {
+          "name": "hosted_reservation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "billing_state": {
+          "name": "billing_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "conservatively_settled_at": {
+          "name": "conservatively_settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "large_review_runs_expiry_idx": {
+          "name": "large_review_runs_expiry_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "large_review_runs_resume_identity_idx": {
+          "name": "large_review_runs_resume_identity_idx",
+          "columns": [
+            {
+              "expression": "repository_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pr_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "head_sha",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "base_sha",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "cli_version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "configuration_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "retry_lineage",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "large_review_runs_current_review_id_reviews_id_fk": {
+          "name": "large_review_runs_current_review_id_reviews_id_fk",
+          "tableFrom": "large_review_runs",
+          "tableTo": "reviews",
+          "columnsFrom": [
+            "current_review_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "large_review_runs_repository_id_repositories_id_fk": {
+          "name": "large_review_runs_repository_id_repositories_id_fk",
+          "tableFrom": "large_review_runs",
+          "tableTo": "repositories",
+          "columnsFrom": [
+            "repository_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "large_review_runs_key_check": {
+          "name": "large_review_runs_key_check",
+          "value": "\"large_review_runs\".\"run_key\" ~ '^[0-9a-f]{64}$'"
+        },
+        "large_review_runs_configuration_check": {
+          "name": "large_review_runs_configuration_check",
+          "value": "\"large_review_runs\".\"configuration_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "large_review_runs_plan_check": {
+          "name": "large_review_runs_plan_check",
+          "value": "\"large_review_runs\".\"plan_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "large_review_runs_identity_lengths_check": {
+          "name": "large_review_runs_identity_lengths_check",
+          "value": "\"large_review_runs\".\"pr_number\" > 0 AND length(btrim(\"large_review_runs\".\"cli_version\")) BETWEEN 1 AND 100 AND length(btrim(\"large_review_runs\".\"provider_identity\")) BETWEEN 1 AND 2048 AND length(btrim(\"large_review_runs\".\"head_sha\")) BETWEEN 1 AND 200 AND length(btrim(\"large_review_runs\".\"base_sha\")) BETWEEN 1 AND 200 AND length(btrim(\"large_review_runs\".\"retry_lineage\")) BETWEEN 1 AND 200"
+        },
+        "large_review_runs_billing_state_check": {
+          "name": "large_review_runs_billing_state_check",
+          "value": "(\"large_review_runs\".\"billing_state\" = 'active' AND \"large_review_runs\".\"conservatively_settled_at\" IS NULL) OR (\"large_review_runs\".\"billing_state\" = 'conservative' AND \"large_review_runs\".\"conservatively_settled_at\" IS NOT NULL)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.operator_alert_deliveries": {

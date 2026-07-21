@@ -219,6 +219,24 @@ Historical rows remain unknown rather than receiving a guessed identity.
 Billing counts distinct GitHub author IDs on private pull requests within the
 entitlement period; bot and service identities count by the same ID rule.
 
+## GitHub Conversations
+
+The durable webhook inbox owns delivery deduplication and retries. During
+dispatch, response admission serializes the source-delivery check, indexed
+rolling-hour limit, and response-job insert. A separate idempotent reaction job
+acknowledges accepted collaborator comment requests before model work.
+Gratitude-only comments receive a thumbs-up without inference.
+
+An unmentioned reply in a review thread is eligible only when its root comment
+belongs to the configured GitHub App and its text is a bounded question or
+clarification. The response job carries bounded Postil-authored thread context
+and the root review-comment ID. Success and terminal-failure delivery remain in
+that thread. Each new delivery includes a random marker plus the legacy job
+marker for rolling compatibility. Ambiguous GitHub responses reconcile only
+against markers authored by the configured App. Other unmentioned text,
+bot-authored events, unauthorized actors, overlong input, and requests above
+the installation cap remain silent.
+
 Self-service BYOK billing uses Paddle as merchant of record and remains inert
 unless `POSTIL_PADDLE_BILLING_ENABLED=1` and the complete process-specific
 configuration passes startup validation. Organization admins create one

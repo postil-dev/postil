@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -8,9 +9,12 @@ import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import {
   deleteIssueComment,
+  deletePullRequestReviewComment,
   findIssueCommentByMarker,
+  findPullRequestReviewCommentByMarker,
   getPullRequestReviewContext,
   postIssueComment,
+  postPullRequestReviewCommentReply,
 } from "@/lib/github/checks";
 import { materializeRepoConfig } from "@/lib/github/contents";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
@@ -42,7 +46,8 @@ import {
   prepareUnmeteredRespondDelivery,
   RESPOND_DELIVERY_REQUEST_TIMEOUT_MS,
   respondPublicationLeaseActive,
-  respondDeliveryMarker,
+  respondDeliveryMarkerForDelivery,
+  respondDeliveryMarkers,
 } from "@/lib/respond-delivery";
 import { buildCliEnv, resolveLlmConfig, runCli } from "./review";
 
@@ -67,7 +72,14 @@ export async function runRespondJob(
     typeof payload.repoFullName !== "string" ||
     typeof payload.number !== "number" ||
     typeof payload.comment !== "string" ||
-    payload.comment.trim() === ""
+    payload.comment.trim() === "" ||
+    (payload.threadContext !== undefined &&
+      (typeof payload.threadContext !== "string" ||
+        payload.threadContext.length > 4_000)) ||
+    (payload.replyToReviewCommentId !== undefined &&
+      (!Number.isSafeInteger(payload.replyToReviewCommentId) ||
+        payload.replyToReviewCommentId <= 0 ||
+        !payload.isPr))
   ) {
     throw new Error(`respond job payload malformed: ${JSON.stringify(Object.keys(payload))}`);
   }
@@ -175,8 +187,14 @@ export async function runRespondJob(
   // The mention text travels via env, not argv: argv is visible in `ps` and
   // can collide with flag parsing. Review-comment mentions carry their
   // file:line anchor so the bot knows which code the question is about.
-  const comment = payload.commentAnchor
-    ? `(asked on \`${payload.commentAnchor}\`)\n\n${payload.comment}`
+  const context = [
+    payload.commentAnchor ? `(asked on \`${payload.commentAnchor}\`)` : null,
+    payload.threadContext
+      ? `Postil's review comment:\n${payload.threadContext}`
+      : null,
+  ].filter((part): part is string => part !== null);
+  const comment = context.length > 0
+    ? `${context.join("\n\n")}\n\nMaintainer's message:\n${payload.comment}`
     : payload.comment;
 
   // Same repo-config materialization as review jobs, so replies honor the
@@ -230,7 +248,8 @@ export async function runRespondJob(
       );
     }
     const reply = validateRespondPublication(result.stdout, payload.comment);
-    const body = `${reply}\n\n${respondDeliveryMarker(jobId)}`;
+    const markerNonce = randomUUID();
+    const body = `${reply}\n\n${respondDeliveryMarkers(jobId, markerNonce)}`;
     if (hostedUsageReservationId) {
       let usage: Awaited<ReturnType<typeof readRespondUsageReceipt>> | null = null;
       try {
@@ -257,6 +276,8 @@ export async function runRespondJob(
           issueNumber: payload.number,
           isPr: payload.isPr,
           sourceHeadSha: payload.sourceHeadSha,
+          markerNonce,
+          replyToReviewCommentId: payload.replyToReviewCommentId,
           body,
         },
       });
@@ -273,6 +294,8 @@ export async function runRespondJob(
         issueNumber: payload.number,
         isPr: payload.isPr,
         sourceHeadSha: payload.sourceHeadSha,
+        markerNonce,
+        replyToReviewCommentId: payload.replyToReviewCommentId,
         body,
       });
     }
@@ -383,6 +406,7 @@ export async function runWebhookCommentJob(
   const existing = await getRespondDelivery(db, jobId);
   if (existing?.state === "delivered") return;
   if (!existing) {
+    const markerNonce = randomUUID();
     await prepareUnmeteredRespondDelivery(db, {
       jobId,
       repositoryId: repository.id,
@@ -394,7 +418,8 @@ export async function runWebhookCommentJob(
       issueNumber: payload.number,
       isPr: payload.isPr,
       sourceHeadSha: payload.sourceHeadSha,
-      body: `${payload.body}\n\n${respondDeliveryMarker(jobId)}`,
+      markerNonce,
+      body: `${payload.body}\n\n${respondDeliveryMarkers(jobId, markerNonce)}`,
     });
   }
   await deliverPreparedRespond(
@@ -420,16 +445,26 @@ async function deliverPreparedRespond(
   }
   const publicationLeaseId = delivery.publicationLeaseId;
   if (!publicationLeaseId) throw new Error("respond publication lease was not created");
-  const marker = respondDeliveryMarker(jobId);
+  const marker = respondDeliveryMarkerForDelivery(delivery);
   const requestSignal = signal ?? AbortSignal.timeout(RESPOND_DELIVERY_REQUEST_TIMEOUT_MS);
-  const existingCommentId = await findIssueCommentByMarker(
-    token,
-    delivery.repoFullName,
-    delivery.issueNumber,
-    marker,
-    new Date(delivery.createdAt.getTime() - 5 * 60_000),
-    requestSignal,
-  );
+  const since = new Date(delivery.createdAt.getTime() - 5 * 60_000);
+  const existingCommentId = delivery.replyToReviewCommentId
+    ? await findPullRequestReviewCommentByMarker(
+        token,
+        delivery.repoFullName,
+        delivery.issueNumber,
+        marker,
+        since,
+        requestSignal,
+      )
+    : await findIssueCommentByMarker(
+        token,
+        delivery.repoFullName,
+        delivery.issueNumber,
+        marker,
+        since,
+        requestSignal,
+      );
   if (!(await authorizeRespondPublication(
     db,
     delivery,
@@ -439,18 +474,32 @@ async function deliverPreparedRespond(
     requestSignal,
   ))) {
     if (existingCommentId !== null) {
-      await deleteIssueComment(token, delivery.repoFullName, existingCommentId, requestSignal);
+      await deletePublishedComment(
+        token,
+        delivery,
+        existingCommentId,
+        requestSignal,
+      );
     }
     await markRespondCancelled(db, jobId, publicationLeaseId);
     return;
   }
-  const commentId = existingCommentId ?? await postIssueComment(
-    token,
-    delivery.repoFullName,
-    delivery.issueNumber,
-    delivery.body,
-    requestSignal,
-  );
+  const commentId = existingCommentId ?? (delivery.replyToReviewCommentId
+    ? await postPullRequestReviewCommentReply(
+        token,
+        delivery.repoFullName,
+        delivery.issueNumber,
+        delivery.replyToReviewCommentId,
+        delivery.body,
+        requestSignal,
+      )
+    : await postIssueComment(
+        token,
+        delivery.repoFullName,
+        delivery.issueNumber,
+        delivery.body,
+        requestSignal,
+      ));
   if (!(await authorizeRespondPublication(
     db,
     delivery,
@@ -459,7 +508,7 @@ async function deliverPreparedRespond(
     token,
     requestSignal,
   ))) {
-    await deleteIssueComment(token, delivery.repoFullName, commentId, requestSignal);
+    await deletePublishedComment(token, delivery, commentId, requestSignal);
     await markRespondCancelled(db, jobId, publicationLeaseId);
     return;
   }
@@ -470,8 +519,26 @@ async function deliverPreparedRespond(
     publicationLeaseId,
   );
   if (!committed) {
-    await deleteIssueComment(token, delivery.repoFullName, commentId, requestSignal);
+    await deletePublishedComment(token, delivery, commentId, requestSignal);
   }
+}
+
+async function deletePublishedComment(
+  token: string,
+  delivery: NonNullable<Awaited<ReturnType<typeof getRespondDelivery>>>,
+  commentId: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (delivery.replyToReviewCommentId) {
+    await deletePullRequestReviewComment(
+      token,
+      delivery.repoFullName,
+      commentId,
+      signal,
+    );
+    return;
+  }
+  await deleteIssueComment(token, delivery.repoFullName, commentId, signal);
 }
 
 /** Revalidate GitHub and durable authority immediately around the POST. */
@@ -586,6 +653,10 @@ export async function postRespondFailureComment(
       typeof payload.githubRepoId !== "number" ||
       typeof payload.repoFullName !== "string" ||
       typeof payload.number !== "number" ||
+      (payload.replyToReviewCommentId !== undefined &&
+        (!Number.isSafeInteger(payload.replyToReviewCommentId) ||
+          payload.replyToReviewCommentId <= 0 ||
+          !payload.isPr)) ||
       !Number.isSafeInteger(respondJobId) ||
       respondJobId <= 0
     ) {
@@ -649,6 +720,7 @@ export async function postRespondFailureComment(
     }
 
     if (!existingDelivery) {
+      const markerNonce = randomUUID();
       await prepareUnmeteredRespondDelivery(db, {
         jobId: respondJobId,
         repositoryId: repository.id,
@@ -660,7 +732,12 @@ export async function postRespondFailureComment(
         issueNumber: payload.number,
         isPr: payload.isPr,
         sourceHeadSha: payload.sourceHeadSha,
-        body: `${RESPOND_FAILURE_COMMENT}\n\n${respondDeliveryMarker(respondJobId)}`,
+        markerNonce,
+        replyToReviewCommentId: payload.replyToReviewCommentId,
+        body: `${RESPOND_FAILURE_COMMENT}\n\n${respondDeliveryMarkers(
+          respondJobId,
+          markerNonce,
+        )}`,
       });
     }
     const token = await getInstallationToken(payload.installationId, requestSignal);

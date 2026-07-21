@@ -61,6 +61,7 @@ let deliveryJobEnqueues = 0;
 let delivery:
   | {
       jobId: number;
+      markerNonce: string | null;
       repoFullName: string;
       issueNumber: number;
       body: string;
@@ -74,6 +75,7 @@ let delivery:
       sourceGithubRepoId: number;
       isPr: boolean;
       sourceHeadSha: string;
+      replyToReviewCommentId: number | null;
       publicationLeaseId: string;
     }
   | undefined;
@@ -111,6 +113,18 @@ mock.module("@/lib/github/checks", () => ({
     );
     return index < 0 ? null : index + 1;
   },
+  findPullRequestReviewCommentByMarker: async (
+    _token: string,
+    repo: string,
+    number: number,
+    marker: string,
+  ) => {
+    const index = postedComments.findIndex(
+      (comment) =>
+        comment.repo === repo && comment.number === number && comment.body.includes(marker),
+    );
+    return index < 0 ? null : index + 1;
+  },
   postIssueComment: async (
     _token: string,
     repo: string,
@@ -130,6 +144,23 @@ mock.module("@/lib/github/checks", () => ({
     return postedComments.length;
   },
   deleteIssueComment: async (_token: string, _repo: string, commentId: number) => {
+    postedComments.splice(commentId - 1, 1);
+  },
+  postPullRequestReviewCommentReply: async (
+    _token: string,
+    repo: string,
+    number: number,
+    _rootCommentId: number,
+    body: string,
+  ) => {
+    postedComments.push({ repo, number, body });
+    return postedComments.length;
+  },
+  deletePullRequestReviewComment: async (
+    _token: string,
+    _repo: string,
+    commentId: number,
+  ) => {
     postedComments.splice(commentId - 1, 1);
   },
   getPullRequestReviewContext: async () => ({
@@ -207,10 +238,21 @@ mock.module("@/lib/respond-delivery", () => ({
       isPr: true,
       sourceHeadSha: "head-sha",
       publicationLeaseId: "lease-id",
+      markerNonce: "markerNonce" in input ? String(input.markerNonce) : null,
+      replyToReviewCommentId:
+        "replyToReviewCommentId" in input &&
+        typeof input.replyToReviewCommentId === "number"
+          ? input.replyToReviewCommentId
+          : null,
     };
     deliveryJobEnqueues += 1;
   },
-  respondDeliveryMarker: (jobId: number) => `<!-- postil-respond-job:${jobId} -->`,
+  respondDeliveryMarkers: (jobId: number, markerNonce: string) =>
+    `<!-- postil-respond:${markerNonce} -->\n<!-- postil-respond-job:${jobId} -->`,
+  respondDeliveryMarkerForDelivery: (value: { jobId: number; markerNonce: string | null }) =>
+    value.markerNonce
+      ? `<!-- postil-respond:${value.markerNonce} -->`
+      : `<!-- postil-respond-job:${value.jobId} -->`,
 }));
 
 const realReview = await import("@/worker/review");
@@ -279,11 +321,13 @@ describe("postRespondFailureComment (final-attempt exhaustion)", () => {
   test("posts exactly one honest fallback comment to the originating PR/issue", async () => {
     await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(1);
-    expect(postedComments[0]).toEqual({
-      repo: "octo/repo",
-      number: 7,
-      body: `${RESPOND_FAILURE_COMMENT}\n\n<!-- postil-respond-job:123 -->`,
-    });
+    expect(postedComments[0]).toMatchObject({ repo: "octo/repo", number: 7 });
+    expect(postedComments[0]?.body).toMatch(
+      new RegExp(
+        `^${RESPOND_FAILURE_COMMENT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n\\n` +
+          "<!-- postil-respond:[0-9a-f-]{36} -->\\n<!-- postil-respond-job:123 -->$",
+      ),
+    );
     // Brief acknowledgment without provider detail or another active mention.
     expect(RESPOND_FAILURE_COMMENT).toContain("couldn't complete");
     expect(RESPOND_FAILURE_COMMENT).not.toContain("@postil");
@@ -296,6 +340,18 @@ describe("postRespondFailureComment (final-attempt exhaustion)", () => {
     await postRespondFailureComment(payload(), 123, lease);
     expect(postedComments).toHaveLength(1);
     expect(deliveryJobEnqueues).toBe(1);
+  });
+
+  test("keeps terminal failures inside the originating review thread", async () => {
+    await postRespondFailureComment(
+      payload({ replyToReviewCommentId: 88 }),
+      123,
+      lease,
+    );
+
+    expect(delivery?.replyToReviewCommentId).toBe(88);
+    expect(postedComments).toHaveLength(1);
+    expect(postedComments[0]?.body).toContain(RESPOND_FAILURE_COMMENT);
   });
 
   test("ambiguous accepted POST is found by marker instead of duplicated", async () => {

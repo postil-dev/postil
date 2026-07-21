@@ -416,6 +416,8 @@ export async function reconcileHostedRespondSpend(
       issueNumber: number;
       isPr?: boolean;
       sourceHeadSha?: string;
+      markerNonce?: string;
+      replyToReviewCommentId?: number;
       body: string;
     };
     now?: Date;
@@ -498,6 +500,8 @@ export async function reconcileHostedRespondSpend(
         issueNumber: input.delivery.issueNumber,
         isPr: input.delivery.isPr,
         sourceHeadSha: input.delivery.sourceHeadSha,
+        markerNonce: input.delivery.markerNonce,
+        replyToReviewCommentId: input.delivery.replyToReviewCommentId,
         body: input.delivery.body,
         createdAt: now,
         updatedAt: now,
