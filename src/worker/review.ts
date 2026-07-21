@@ -75,6 +75,14 @@ import {
   type ReviewJobPayload,
 } from "@/lib/queue";
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
+import {
+  claimReusableLargeReviewReservation,
+  hashEffectiveReviewConfiguration,
+  PostgresLargeReviewAttemptStore,
+  providerIdentity,
+  startLargeReviewProviderProxy,
+  type LargeReviewProviderProxy,
+} from "@/lib/large-review-resume";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
   finalizeStagedReviewCompletionWithGateMode,
@@ -1190,6 +1198,8 @@ export async function runReviewJob(
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
   let gateEnabled = false;
+  let cliVersion = "unavailable";
+  let largeReviewProxy: LargeReviewProviderProxy | undefined;
   const leaseAbortController = new AbortController();
   const reviewSignal = signal
     ? AbortSignal.any([signal, leaseAbortController.signal])
@@ -1316,78 +1326,9 @@ export async function runReviewJob(
     }
 
     throwIfWorkerStopping(reviewSignal);
-    reviewLog.line(await postilCliVersionLogLine());
-    const spendReservation = !llm.byok
-      ? await reserveHostedReviewSpend(db, {
-          orgId: installation.orgId,
-          reviewId,
-          usesByok: llm.byok,
-        })
-      : null;
-    if (spendReservation && !spendReservation.allowed) {
-      const message =
-        "Hosted inference allowance is unavailable or fully reserved.";
-      const settled = await db.transaction(async (tx) => {
-        const failedRows = await tx
-          .update(schema.reviews)
-          .set({
-            status: "failed",
-            errorMessage: message,
-            finishedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(schema.reviews.id, reviewId),
-              eq(schema.reviews.status, "running"),
-            ),
-          )
-          .returning({ id: schema.reviews.id });
-        if (failedRows.length === 0) return false;
-        await tx.insert(schema.jobs).values({
-          kind: "check-run-cleanup",
-          payload: {
-            installationId: payload.installationId,
-            repoFullName: payload.repoFullName,
-            advisoryCheckRunId,
-            gateCheckRunId,
-            headSha: payload.headSha,
-            advisoryCheckExternalId,
-            gateCheckExternalId,
-            advisoryCheckRunMayExist,
-            gateCheckRunMayExist,
-            message,
-            detailsUrl,
-            intent: "fail",
-          },
-          maxAttempts: 5,
-        });
-        return true;
-      });
-      if (settled) {
-        await failCheckRuns(
-          token,
-          payload.repoFullName,
-          advisoryCheckRunId,
-          gateCheckRunId,
-          message,
-          undefined,
-          false,
-          detailsUrl,
-          expectedFailureCheckRuns(),
-          gateEnabled,
-        );
-      }
-      reviewLog.line(
-        "hosted inference reservation denied before provider access",
-      );
-      console.warn(
-        `review job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
-      );
-      return;
-    }
-    hostedUsageReservationId = spendReservation?.reservationId ?? null;
-    if (hostedUsageReservationId)
-      reviewLog.line("hosted inference spend reserved");
+    const cliVersionLine = await postilCliVersionLogLine();
+    cliVersion = cliVersionLine.replace(/^postil CLI version /, "");
+    reviewLog.line(cliVersionLine);
 
     const args = [
       "review",
@@ -1512,6 +1453,105 @@ export async function runReviewJob(
       `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
     );
 
+    const configurationSha256 = await hashEffectiveReviewConfiguration(
+      workDir,
+      configFiles,
+    );
+    const durableRunIdentity = {
+      repositoryId: repository.id,
+      cliVersion,
+      configurationSha256,
+      providerIdentity: providerIdentity(llm),
+      headSha: payload.headSha,
+    };
+    if (!llm.byok) {
+      hostedUsageReservationId = await claimReusableLargeReviewReservation(
+        db,
+        durableRunIdentity,
+        reviewId,
+      );
+      if (hostedUsageReservationId) {
+        reviewLog.line("hosted inference spend reservation resumed");
+      } else {
+        const spendReservation = await reserveHostedReviewSpend(db, {
+          orgId: installation.orgId,
+          reviewId,
+          usesByok: llm.byok,
+        });
+        if (!spendReservation.allowed) {
+          const message =
+            "Hosted inference allowance is unavailable or fully reserved.";
+          const settled = await db.transaction(async (tx) => {
+            const failedRows = await tx
+              .update(schema.reviews)
+              .set({
+                status: "failed",
+                errorMessage: message,
+                finishedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(schema.reviews.id, reviewId),
+                  eq(schema.reviews.status, "running"),
+                ),
+              )
+              .returning({ id: schema.reviews.id });
+            if (failedRows.length === 0) return false;
+            await tx.insert(schema.jobs).values({
+              kind: "check-run-cleanup",
+              payload: {
+                installationId: payload.installationId,
+                repoFullName: payload.repoFullName,
+                advisoryCheckRunId,
+                gateCheckRunId,
+                headSha: payload.headSha,
+                advisoryCheckExternalId,
+                gateCheckExternalId,
+                advisoryCheckRunMayExist,
+                gateCheckRunMayExist,
+                message,
+                detailsUrl,
+                intent: "fail",
+              },
+              maxAttempts: 5,
+            });
+            return true;
+          });
+          if (settled) {
+            await failCheckRuns(
+              token,
+              payload.repoFullName,
+              advisoryCheckRunId,
+              gateCheckRunId,
+              message,
+              undefined,
+              false,
+              detailsUrl,
+              expectedFailureCheckRuns(),
+              gateEnabled,
+            );
+          }
+          reviewLog.line(
+            "hosted inference reservation denied before provider access",
+          );
+          console.warn(
+            `review job skipped: private repository ${payload.repoFullName} has no hosted inference capacity`,
+          );
+          return;
+        }
+        hostedUsageReservationId = spendReservation.reservationId;
+        reviewLog.line("hosted inference spend reserved");
+      }
+    }
+    largeReviewProxy = startLargeReviewProviderProxy({
+      upstreamApiBase: llm.apiBase,
+      apiFormat: llm.apiFormat,
+      additionalAuthHeader: llm.apiAuthHeader,
+      identity: durableRunIdentity,
+      runContext: { currentReviewId: reviewId, hostedReservationId: hostedUsageReservationId },
+      store: new PostgresLargeReviewAttemptStore(db),
+    });
+
     sensitiveValues = [
       token,
       llm.apiKey,
@@ -1520,20 +1560,23 @@ export async function runReviewJob(
     ].filter((value): value is string => Boolean(value));
     reviewLog.setSensitiveValues(sensitiveValues);
     throwIfWorkerStopping(reviewSignal);
-    const cliEnv = buildCliEnv(llm, {
-      GITHUB_TOKEN: token,
-      POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId),
-      ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
-      POSTIL_PREVENTION_HINT: preventionHint ? "1" : "0",
-      POSTIL_PREVENTION_COMMANDS_JSON: JSON.stringify(
-        preventionHint
-          ? await discoverPreventionCommands(token, payload.repoFullName)
-          : [],
-      ),
-      // The path is optional. A CLI without receipt support ignores it, and
-      // absence is persisted as legacy unknown.
-      POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
-    });
+    const cliEnv = buildCliEnv(
+      { ...llm, apiBase: largeReviewProxy.apiBase },
+      {
+        GITHUB_TOKEN: token,
+        POSTIL_EXPECTED_GITHUB_REPO_ID: String(repository.githubRepoId),
+        ...(detailsUrl ? { POSTIL_DETAILS_URL: detailsUrl } : {}),
+        POSTIL_PREVENTION_HINT: preventionHint ? "1" : "0",
+        POSTIL_PREVENTION_COMMANDS_JSON: JSON.stringify(
+          preventionHint
+            ? await discoverPreventionCommands(token, payload.repoFullName)
+            : [],
+        ),
+        // The path is optional. A CLI without receipt support ignores it, and
+        // absence is persisted as legacy unknown.
+        POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
+      },
+    );
 
     if (!(await publicationAuthorized())) {
       reviewLog.line("publication cancelled before CLI start");
@@ -1542,7 +1585,10 @@ export async function runReviewJob(
     reviewLog.line("postil CLI spawned");
     cliStarted = true;
     const result = await runCli(args, cliEnv, workDir, {
-      onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
+      onStderrLine: (line) => {
+        largeReviewProxy?.observeCliStderr(line);
+        reviewLog.line(`[stderr] ${line}`);
+      },
       signal: reviewSignal,
       preserveOutputOnInterrupt: true,
     });
@@ -1616,6 +1662,7 @@ export async function runReviewJob(
       );
     }
     completionStaged = true;
+    await largeReviewProxy.discardCompletedRun();
     reviewLog.line("review result and publication receipt staged durably");
     const workerInstanceId = timing.lease?.lockedBy.match(/^(.+)#\d+$/)?.[1];
     if (observabilityProcessGroup === "worker" && workerInstanceId && timing.lease) {
@@ -1881,14 +1928,17 @@ export async function runReviewJob(
       return rows;
     });
     if (hostedUsageReservationId && cliStarted) {
-      await reconcileConservativeHostedReviewSpend(db, {
-        reservationId: hostedUsageReservationId,
-        repositoryId: repository.id,
-        reviewId,
-        triggerSource: reviewValues.triggerSource,
-      }).catch((reconcileError) => {
+      const reconcile = largeReviewProxy?.billingCanResumeExactly()
+        ? releaseHostedReviewSpend(db, hostedUsageReservationId)
+        : reconcileConservativeHostedReviewSpend(db, {
+            reservationId: hostedUsageReservationId,
+            repositoryId: repository.id,
+            reviewId,
+            triggerSource: reviewValues.triggerSource,
+          });
+      await reconcile.catch((reconcileError) => {
         console.error(
-          `failed to conservatively reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
+          `failed to reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
         );
       });
     } else {
@@ -1930,6 +1980,7 @@ export async function runReviewJob(
     throw interruptedAfterPublication ? new OperationalError(message) : err;
   } finally {
     if (leasePoll) clearInterval(leasePoll);
+    largeReviewProxy?.close();
     if (baselinePath)
       await rm(baselinePath, { force: true }).catch(() => undefined);
     if (workDir)

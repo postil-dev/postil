@@ -62,6 +62,40 @@ describe("envelope ingestion", () => {
     ).toBe(true);
   });
 
+  test("preserves deterministic coverage and hosted admission records", () => {
+    const reviewCoverage = {
+      mode: "bounded" as const,
+      selectedBatches: 4,
+      totalBatches: 12,
+      plannerFallback: false,
+    };
+    const reviewAdmission = {
+      providerAttempts: 8,
+      serializedInputBytes: 240_000,
+      outputTokens: 32_000,
+      projectedCostMicros: 42_000,
+    };
+    const ingested = ingestEnvelope(
+      JSON.stringify(validEnvelope({ reviewCoverage, reviewAdmission })),
+    ).envelope;
+    expect(ingested.reviewCoverage).toEqual(reviewCoverage);
+    expect(ingested.reviewAdmission).toEqual(reviewAdmission);
+  });
+
+  test("rejects internally inconsistent deterministic coverage records", () => {
+    const envelope = validEnvelope({
+      reviewCoverage: {
+        mode: "bounded",
+        selectedBatches: 5,
+        totalBatches: 4,
+        plannerFallback: false,
+      },
+    });
+    expect(() => ingestEnvelope(JSON.stringify(envelope))).toThrow(
+      /selected review batches cannot exceed total batches/,
+    );
+  });
+
   test("preserves retained suppressed findings and their policy reasons", () => {
     const suppressedFinding = {
       finding: {

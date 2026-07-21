@@ -157,6 +157,18 @@ or conversational response.
 Committed precise usage plus every unexpired reservation must fit within the
 allowance and hard cap. Completion records one event per model attempt and
 reconciles their summed provider-priced usage with the hold in one transaction.
+A worker-owned loopback proxy journals deterministic large-review provider
+responses before returning them to the CLI. The durable run identity binds the
+repository, CLI release, effective configuration, provider, head commit, and
+coverage-plan hash. Each attempt also binds the model, serialized request,
+batch identity, and bounded attempt number. A restarted job replays a completed
+response byte-for-byte, while 429, 5xx, timeout, and empty-response failures
+remain subject to the CLI's bounded transient retry policy. The journal expires
+after 24 hours and is deleted when the review envelope and publication receipt
+are staged. The CLI applies the same schema, grounding, and publication
+validation to original and replayed response bytes. The active hosted-spend
+reservation is attached to the run and transferred to the replacement review
+before a new hold is requested, so final usage reconciliation owns one hold.
 A legacy envelope without per-model usage is priced only when its aggregate names
 one catalog model; ambiguous aggregates consume the full reservation. Failure
 before inference releases the hold, and abandoned holds expire after 15 minutes.
@@ -172,10 +184,14 @@ delivery job retries independently of model execution, and worker startup repair
 pending deliveries created without one. Delivery jobs retain capped-backoff retry
 capacity across extended GitHub outages. A hidden comment marker lets retries
 discover a comment after an ambiguous POST rather than duplicating it. Missing,
-malformed, or unpriceable usage after CLI start
-consumes the full reservation; only failures before CLI start release it. BYOK
+malformed, or unpriceable usage after CLI start consumes the full reservation.
+A failed attempt whose completed provider responses are all durable and
+replayable releases its hold so the resumed final receipt accounts for those
+calls once. Ambiguous provider contact keeps conservative accounting. BYOK
 spend remains provider-direct and never creates a Postil reservation or receipt.
-Both review envelopes and respond receipts carry `usageAccountingComplete`.
+Review envelopes preserve the CLI's coverage plan, admission bound, and
+`usageAccountingComplete`; respond receipts carry the same accounting-completeness
+signal.
 Missing or false completeness consumes at least the full reservation while known
 per-model token and price rows remain available as analytics; an unattributed
 adjustment event makes committed billing equal the conservative charge.
@@ -313,6 +329,9 @@ same review and head SHA, while severity blockers remain governed by the
 configured severity threshold. Per-review detail reads the stored envelope
 `jsonb` verbatim. The envelope is the CLI's frozen v1 output contract
 (`src/lib/envelope.ts`); the dashboard renders it and never reshapes it.
+`large_review_runs` and `large_review_attempts` contain the bounded, expiring
+resume journal. They store provider response envelopes for replay but never
+store credentials or request headers.
 The worker enables local-prevention guidance on the second revision after one
 earlier completed review on the same pull request introduced an actionable
 finding. Silent and operational-only reviews do not arm the hint, and repeated

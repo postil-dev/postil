@@ -111,7 +111,9 @@ console.log("fixture-key");
       legacyCredentialPresent: true,
       legacyCredential: "fixture-key",
       openRouterCredentialPresent: false,
-      apiBase: "https://openrouter.ai/api/v1",
+      apiBase: expect.stringMatching(
+        /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f-]{36}$/,
+      ),
       apiFormat: "openai-compatible",
       model: "z-ai/glm-5.2",
       cascade: "z-ai/glm-5.2",
@@ -182,9 +184,11 @@ console.log("fixture-key");
       legacyCredentialPresent: true,
       legacyCredential: "fixture-key",
       openRouterCredentialPresent: false,
-      apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
     });
+    expect(invocation.apiBase).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f-]{36}$/,
+    );
   }, 120_000);
 
   test("ignores a PATH-shadowed Postil binary before any credential is loaded", async () => {
