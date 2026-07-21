@@ -125,8 +125,9 @@ Customer notifications are immutable, organization-scoped events with a stable
 producer key, bounded copy, optional organization-local action, role visibility,
 and a 180-day expiry. Per-user receipts preserve the first read time. Members see
 shared trial and service state; administrators also see billing and account actions.
-The inbox excludes expired events from reads and counts, and the worker deletes them
-in bounded batches. Trial lifecycle and customer-actionable billing failures write
+The inbox separates unread events from retained past notifications, excludes expired
+events from reads and counts, and deletes them in bounded worker batches. Trial
+lifecycle and customer-actionable billing failures write
 the event in the same database transaction as the source state change. Operator
 incidents and model, provider, cost, or stack details remain outside the customer
 store. Transactional email delivery is independent of inbox read state.
@@ -341,7 +342,10 @@ sent outage bucket and timestamp in a bounded, atomically replaced file on a
 monitor-only persistent volume. The file is fsynced before replacement is
 acknowledged. Missing, expired, or invalid state enables delivery instead of
 suppressing an alert. Monitoring state and target details are visible only on
-the operator dashboard. The bearer-protected metrics endpoint exposes aggregate
+the operator dashboard. Active incidents and retained resolved alerts use separate
+operator-only views. Alert messages identify the affected capability, state, first
+and last observation, bounded evidence, and the recommended operator action. The
+bearer-protected metrics endpoint exposes aggregate
 monitor-heartbeat age and freshness gauges for an external dead-man alarm. The
 scheduled GitHub monitor is an independent check of public reachability,
 aggregate operational metrics, and operator email delivery without receiving

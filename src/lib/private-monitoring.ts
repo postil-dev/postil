@@ -33,9 +33,13 @@ export interface PrivateMonitoringNotification {
   incidentKey: string;
   notificationKey: string;
   kind: "opened" | "reminder" | "resolved";
+  capability: PrivateMonitoringGroup;
   severity: PrivateMonitoringSeverity;
   summary: string;
   detail: string;
+  firstObservedAt: Date;
+  lastObservedAt: Date;
+  resolvedAt: Date | null;
   attempt: number;
 }
 
@@ -519,6 +523,8 @@ export async function runDatabaseMonitoringChecks(
            )
          ELSE '0'
        END) AS webhook_scan_age,
+      (SELECT last_error_category
+         FROM github_webhook_redelivery_state WHERE id = 1) AS webhook_scan_error_category,
       (SELECT count(*)::text
          FROM reviews
          WHERE finished_at >= now() - interval '30 minutes'
@@ -636,7 +642,11 @@ export async function runDatabaseMonitoringChecks(
       summary: "Webhook recovery scan is fresh",
       detail: row.webhook_scan_age === null
         ? "No webhook recovery scan has been recorded for an active installation."
-        : `${age("webhook_scan_age").toLocaleString("en-US")} seconds since the recovery scan; threshold 1,800.`,
+        : `${age("webhook_scan_age").toLocaleString("en-US")} seconds since the recovery scan; threshold 1,800.${
+            row.webhook_scan_error_category
+              ? ` Last scanner result: ${recoveryErrorLabel(row.webhook_scan_error_category)}.`
+              : ""
+          }`,
     },
     thresholdCheck("review-operational-failures", "provider", "critical", "Reviews complete without operational sentinels", count("operational_failures"), 0),
     thresholdCheck("scorer-failures", "provider", "critical", "Scoring completes", count("scorer_failures"), 0),
@@ -661,9 +671,13 @@ export async function claimPrivateMonitoringNotifications(
     key: string;
     notification_key: string;
     notification_kind: PrivateMonitoringNotification["kind"];
+    group: PrivateMonitoringGroup;
     severity: PrivateMonitoringSeverity;
     summary: string;
     detail: string;
+    first_detected_at: Date;
+    last_detected_at: Date;
+    resolved_at: Date | null;
     attempt: number;
   }>(
     `WITH candidates AS (
@@ -689,9 +703,13 @@ export async function claimPrivateMonitoringNotifications(
       RETURNING incident.key,
                 incident.pending_notification_key AS notification_key,
                 incident.pending_notification_kind AS notification_kind,
+                incident."group",
                 incident.severity,
                 incident.summary,
                 incident.detail,
+                incident.first_detected_at,
+                incident.last_detected_at,
+                incident.resolved_at,
                 incident.notification_attempts AS attempt`,
     [MAX_NOTIFICATION_ATTEMPTS, now, limit, owner, leaseExpiresAt],
   );
@@ -699,9 +717,15 @@ export async function claimPrivateMonitoringNotifications(
     incidentKey: row.key,
     notificationKey: row.notification_key,
     kind: row.notification_kind,
+    capability: row.group,
     severity: row.severity,
-    summary: row.summary,
+    summary: row.notification_kind === "resolved"
+      ? `${capabilityLabel(row.group)} recovered`
+      : row.summary,
     detail: row.detail,
+    firstObservedAt: row.first_detected_at,
+    lastObservedAt: row.last_detected_at,
+    resolvedAt: row.resolved_at,
     attempt: row.attempt,
   }));
 }
@@ -718,15 +742,16 @@ export async function deliverPrivateMonitoringNotification(
 ): Promise<void> {
   const now = input.now ?? new Date();
   const dashboardUrl = new URL("/operator#monitoring", input.publicOrigin).toString();
+  const content = privateMonitoringIncidentEmailContent(
+    notification,
+    dashboardUrl,
+  );
   try {
     await sendOperatorNotification(
       {
         recipient: input.recipient,
-        subject: `[${notification.severity}] Postil monitor: ${notification.summary}`,
-        content: privateMonitoringIncidentEmailContent(
-          notification,
-          dashboardUrl,
-        ),
+        subject: `[${notification.severity}] Postil monitor: ${content.title}`,
+        content,
         idempotencyKey: notification.notificationKey,
       },
       input.transport,
@@ -818,6 +843,8 @@ export async function sendMonitorPassFailureNotification(input: {
   recipient: string;
   publicOrigin: string;
   bucket: Date;
+  failureCount: number;
+  observedAt: Date;
   transport?: OperatorNotificationTransport;
 }): Promise<void> {
   const bucket = monitorPassAlertBucket(input.bucket);
@@ -828,8 +855,12 @@ export async function sendMonitorPassFailureNotification(input: {
   await sendOperatorNotification(
     {
       recipient: input.recipient,
-      subject: "[critical] Postil monitor: health checks unavailable",
-      content: privateMonitoringPassFailureEmailContent(input.publicOrigin),
+      subject: "[critical] Postil monitor: monitoring pass failed",
+      content: privateMonitoringPassFailureEmailContent(
+        input.publicOrigin,
+        input.failureCount,
+        input.observedAt,
+      ),
       idempotencyKey: notificationKey,
     },
     input.transport,
@@ -839,27 +870,48 @@ export async function sendMonitorPassFailureNotification(input: {
 export function privateMonitoringIncidentEmailContent(
   notification: Pick<
     PrivateMonitoringNotification,
-    "kind" | "severity" | "summary" | "detail"
+    | "incidentKey"
+    | "kind"
+    | "capability"
+    | "severity"
+    | "summary"
+    | "detail"
+    | "firstObservedAt"
+    | "lastObservedAt"
+    | "resolvedAt"
   >,
   dashboardUrl: string,
 ): TransactionalEmailContent {
-  const stateLabel = notification.kind === "resolved"
-    ? "resolved"
-    : notification.kind === "reminder"
-      ? "continues"
-      : "opened";
+  const resolved = notification.kind === "resolved";
+  const stateLabel = resolved ? "Resolved" : "Open";
+  const title = notification.summary;
+  const lastObservedAt = notification.resolvedAt ?? notification.lastObservedAt;
   return {
-    preheader: `${notification.summary}: incident ${stateLabel}.`,
+    preheader: resolved
+      ? `${title}. The incident is resolved.`
+      : `${title}. ${capabilityLabel(notification.capability)} is affected.`,
     category: "Production monitor",
-    title: notification.summary,
-    summary: `A private production incident ${stateLabel}.`,
+    title,
+    summary: notification.kind === "resolved"
+      ? `${capabilityLabel(notification.capability)} has recovered.`
+      : `${capabilityLabel(notification.capability)} needs operator attention.`,
     reason: "This address is configured to receive Postil production alerts.",
     details: [
-      { label: "Severity", value: notification.severity },
+      { label: "Affected capability", value: capabilityLabel(notification.capability) },
       { label: "State", value: stateLabel },
+      { label: "Severity", value: notification.severity },
+      { label: "First observed", value: formatMonitoringTimestamp(notification.firstObservedAt) },
+      { label: "Last observed", value: formatMonitoringTimestamp(lastObservedAt) },
+      { label: "Evidence", value: boundedDetail(notification.detail) },
+      {
+        label: "Recommended action",
+        value: resolved
+          ? "No action is required. Open private monitoring for retained evidence."
+          : incidentRecommendedAction(notification.incidentKey),
+      },
     ],
-    action: { label: "Open monitoring", url: dashboardUrl },
-    note: notification.detail,
+    action: { label: "Open private monitoring", url: dashboardUrl },
+    note: "Operational alerts are private and do not appear in organization member notifications.",
     intent:
       notification.kind === "resolved"
         ? "success"
@@ -871,21 +923,34 @@ export function privateMonitoringIncidentEmailContent(
 
 export function privateMonitoringPassFailureEmailContent(
   publicOrigin: string,
+  failureCount = 2,
+  observedAt = new Date(),
 ): TransactionalEmailContent {
-  const origin = new URL(publicOrigin).origin;
   return {
-    preheader: "The private production monitor cannot complete its checks.",
+    preheader: "The private production monitor could not complete its health checks.",
     category: "Production monitor",
-    title: "Health checks unavailable",
-    summary:
-      "The private production monitor cannot complete its health checks.",
+    title: "Monitoring pass failed",
+    summary: "Production health could not be fully evaluated.",
     reason: "This address is configured to receive Postil production alerts.",
-    details: [{ label: "Public origin", value: origin }],
+    details: [
+      { label: "Affected capability", value: "Private production monitoring" },
+      { label: "State", value: "Open" },
+      { label: "First observed", value: formatMonitoringTimestamp(observedAt) },
+      { label: "Last observed", value: formatMonitoringTimestamp(observedAt) },
+      {
+        label: "Evidence",
+        value: `${failureCount.toLocaleString("en-US")} consecutive monitor passes did not complete.`,
+      },
+      {
+        label: "Recommended action",
+        value: "Open private monitoring and inspect the failed pass before changing production state.",
+      },
+    ],
     action: {
-      label: "Open monitoring",
+      label: "Open private monitoring",
       url: new URL("/operator#monitoring", publicOrigin).toString(),
     },
-    note: "This alert bypasses the Postgres incident outbox because the monitor cannot record a normal incident.",
+    note: "This alert bypasses the database incident outbox when the monitor cannot record a normal incident.",
     intent: "critical",
   };
 }
@@ -943,6 +1008,100 @@ export function recordMonitorPassSuccess(
   };
 }
 
+function incidentTitle(check: PrivateMonitoringCheck): string {
+  const titles: Record<string, string> = {
+    "public-site": "Public site is unavailable",
+    "public-liveness": "Web liveness check failed",
+    "public-sitemap": "Sitemap is unavailable",
+    "public-favicon": "Favicon is unavailable",
+    "public-dependencies": "Web dependencies are unavailable",
+    "public-robots": "Robots policy is invalid",
+    "redirect-about": "Legacy route redirect is broken",
+    "redirect-www": "Canonical host redirect is broken",
+    "noindex-login": "Login page indexing protection is missing",
+    "noindex-api-health": "Health endpoint indexing protection is missing",
+    "worker-heartbeat": "Review worker heartbeat is stale",
+    "running-review-age": "A review is stuck running",
+    "queued-job-age": "Queued work is not being claimed",
+    "running-job-age": "Claimed work is stuck",
+    "check-run-cleanup": "GitHub check cleanup is failing",
+    "operator-email-failures": "Operator email delivery is failing",
+    "operator-email-delay": "Operator email delivery is delayed",
+    "billing-settlement-failures": "Billing settlement is failing",
+    "billing-settlement-delay": "Billing reconciliation is delayed",
+    "billing-unmatched-events": "A billing event is unmatched",
+    "billing-checkout-delay": "Billing checkout is delayed",
+    "billing-checkout-failures": "Billing checkout is failing",
+    "trial-entitlement-gaps": "A trial is missing its entitlement",
+    "trial-alert-gaps": "A trial operator alert is missing",
+    "webhook-dispatch-delay": "Webhook dispatch is delayed",
+    "webhook-recovery-terminal": "Webhook recovery reached a terminal state",
+    "webhook-recovery-scan": "Webhook recovery scan is stale",
+    "review-operational-failures": "Review operations are failing",
+    "scorer-failures": "Finding scoring is failing",
+    "scorer-fallbacks": "Finding scoring is repeatedly falling back",
+    "model-fallbacks": "Review models are repeatedly falling back",
+    "invalid-model-output": "Model output is invalid",
+    "failed-jobs": "Queue jobs are failing",
+  };
+  return titles[check.key] ?? `${check.summary}: check failed`;
+}
+
+function capabilityLabel(capability: PrivateMonitoringGroup): string {
+  return {
+    availability: "Public web availability",
+    billing: "Billing operations",
+    email: "Operator email delivery",
+    fleet: "Review worker fleet",
+    provider: "Review inference",
+    queue: "Review job processing",
+    signup: "Customer signup",
+    webhook: "GitHub webhook processing",
+  }[capability];
+}
+
+function incidentRecommendedAction(key: string): string {
+  if (key.startsWith("public-") || key.startsWith("redirect-") || key.startsWith("noindex-")) {
+    return "Open private monitoring, verify the affected public endpoint, and inspect the web process if the check remains open.";
+  }
+  if (key === "webhook-recovery-scan") {
+    return "Inspect the recovery cursor and its latest bounded response error before retrying the scan.";
+  }
+  if (key.startsWith("webhook-")) {
+    return "Inspect webhook delivery and recovery state, then confirm GitHub delivery processing reaches a terminal state.";
+  }
+  if (key.startsWith("billing-") || key.startsWith("trial-")) {
+    return "Inspect the private billing or signup ledger and reconcile the affected record before changing customer access.";
+  }
+  if (key.startsWith("operator-email-")) {
+    return "Inspect the private delivery audit and Brevo API result, then retry the affected message through the normal outbox.";
+  }
+  if (key.includes("scorer") || key.includes("model") || key === "review-operational-failures") {
+    return "Inspect recent private review runs and provider incidents, then verify the configured route before changing model policy.";
+  }
+  if (key === "worker-heartbeat") {
+    return "Inspect the worker process and heartbeat before restarting or replacing a machine.";
+  }
+  return "Open private monitoring, inspect the affected run and queue state, and preserve evidence before retrying work.";
+}
+
+function formatMonitoringTimestamp(value: Date): string {
+  return value.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+}
+
+function recoveryErrorLabel(category: string): string {
+  return {
+    aborted: "scan cancelled",
+    api: "GitHub API rejected the request",
+    invalid_cursor: "saved cursor rejected",
+    invalid_pagination: "pagination rejected",
+    invalid_response: "GitHub response did not match the recovery contract",
+    oversized_response: "GitHub response exceeded the size limit",
+    rate_limited: "GitHub API rate limited",
+    transport: "GitHub API transport failed",
+  }[category] ?? "recovery scan failed";
+}
+
 async function reconcileCheck(
   client: PoolClient,
   check: PrivateMonitoringCheck,
@@ -976,7 +1135,7 @@ async function reconcileCheck(
         check.key,
         check.group,
         check.severity,
-        check.summary,
+        incidentTitle(check),
         boundedDetail(check.detail),
         now,
         notificationKey,
@@ -1022,7 +1181,7 @@ async function reconcileCheck(
         check.key,
         check.group,
         check.severity,
-        check.summary,
+        incidentTitle(check),
         boundedDetail(check.detail),
         reopened,
         now,
@@ -1066,7 +1225,7 @@ async function reconcileCheck(
       check.key,
       check.group,
       check.severity,
-      check.summary,
+      incidentTitle(check),
       boundedDetail(check.detail),
       now,
       notificationKey,
