@@ -11,9 +11,12 @@ describe("gate enforcement settings UI", () => {
       new URL("../src/app/orgs/[slug]/gate-enforcement-recheck-button.tsx", import.meta.url),
       "utf8",
     );
-    expect(page).toContain("GitHub enforcement");
-    expect(page).toContain("binds it to the Postil App");
-    expect(page).toContain("Ambiguous or unreadable rules stay unknown");
+    expect(page).toContain("Installation health");
+    expect(page).toContain("GitHub blocks a merge only when the");
+    expect(page).toContain("exact App and context required by an active ruleset");
+    expect(page).toContain("Classic branch protection and unreadable rules stay unverified");
+    expect(page).toContain("No changes are applied from this page");
+    expect(page).toContain("Rollback:");
     expect(page).toContain("any source");
     expect(page).toContain("other App");
     expect(button).toContain("animate-spin");
@@ -22,6 +25,24 @@ describe("gate enforcement settings UI", () => {
     expect(button).toContain("MAX_POLL_ATTEMPTS");
     expect(button).toContain("Checked");
     expect(button).not.toContain('state.status === "queued" ? "Queued"');
+  });
+
+  test("scopes private repository health to an authenticated organization admin", () => {
+    const page = readFileSync(
+      new URL("../src/app/orgs/[slug]/settings/page.tsx", import.meta.url),
+      "utf8",
+    );
+    const membershipCheck = page.indexOf("requireOrgMembership(slug)");
+    const adminCheck = page.indexOf('membership.role !== "admin"');
+    const repositoryQuery = page.indexOf("const repos = await db");
+    const organizationScope = page.indexOf(
+      "eq(schema.installations.orgId, org.id)",
+      repositoryQuery,
+    );
+    expect(membershipCheck).toBeGreaterThan(-1);
+    expect(adminCheck).toBeGreaterThan(membershipCheck);
+    expect(repositoryQuery).toBeGreaterThan(adminCheck);
+    expect(organizationScope).toBeGreaterThan(repositoryQuery);
   });
 
   test("describes the hosted check ownership boundary accurately", () => {

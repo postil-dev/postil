@@ -52,7 +52,6 @@ interface BranchPayload {
 
 interface RequiredStatusCheck {
   context?: unknown;
-  app_id?: unknown;
   integration_id?: unknown;
 }
 
@@ -66,9 +65,10 @@ interface ActiveRule {
 type FetchLike = typeof fetch;
 
 /**
- * Read GitHub's effective default-branch rules without requesting additional
- * App permissions. An unreadable source is preserved as unknown rather than
- * guessed from check-run history.
+ * Read GitHub's effective default-branch rules with the App's existing
+ * metadata permission. Active rulesets expose the required integration id.
+ * Classic branch summaries expose context names only, so a matching classic
+ * rule remains unknown rather than being guessed from check-run history.
  */
 export async function fetchGateEnforcementObservation(
   token: string,
@@ -112,7 +112,7 @@ export async function fetchGateEnforcementObservation(
   let branchProtectionMatch: GateEnforcementSignalMatch = "none";
   let protectionError: string | null = null;
   if (branchResponse.ok) {
-    const branchEvidence = parseBranchEvidence(await branchResponse.json(), expectedAppId);
+    const branchEvidence = parseBranchEvidence(await branchResponse.json());
     protectionAvailable = branchEvidence.available;
     branchProtection = branchEvidence.branchProtection;
     requiredStatusChecksPresent = branchEvidence.requiredStatusChecksPresent;
@@ -200,7 +200,7 @@ export async function fetchGateEnforcementObservation(
   };
 }
 
-function parseBranchEvidence(value: unknown, expectedAppId: number): {
+function parseBranchEvidence(value: unknown): {
   available: boolean;
   branchProtection: BranchProtectionStatus;
   requiredStatusChecksPresent: boolean;
@@ -239,23 +239,14 @@ function parseBranchEvidence(value: unknown, expectedAppId: number): {
       !required.contexts.every((context) => typeof context === "string")) {
     return invalidBranchEvidence("GitHub default branch returned invalid required status checks");
   }
-  const checks = required.checks;
-  if (checks !== undefined && (!Array.isArray(checks) || !checks.every(isRequiredStatusCheck))) {
-    return invalidBranchEvidence("GitHub default branch returned invalid App-bound status checks");
-  }
-  const exactChecks = Array.isArray(checks)
-    ? checks.filter((check) => check.context === GATE_ENFORCEMENT_CONTEXT)
-    : [];
-  const match = Array.isArray(checks) && exactChecks.length > 0
-    ? classifySignalMatch(exactChecks.map((check) => check.app_id), expectedAppId)
-    : required.contexts.includes(GATE_ENFORCEMENT_CONTEXT)
-      ? "unknown_identity"
-      : "none";
+  const match = required.contexts.includes(GATE_ENFORCEMENT_CONTEXT)
+    ? "unknown_identity"
+    : "none";
   return {
     available: true,
     branchProtection: "protected",
-    requiredStatusChecksPresent: required.contexts.length > 0 || (checks?.length ?? 0) > 0,
-    exactMatch: match === "exact_app",
+    requiredStatusChecksPresent: required.contexts.length > 0,
+    exactMatch: false,
     match,
     error: null,
   };
@@ -316,11 +307,6 @@ function mergeSignalMatch(
     exact_app: 4,
   };
   return rank[right] > rank[left] ? right : left;
-}
-
-function isRequiredStatusCheck(value: unknown): value is RequiredStatusCheck {
-  return isRecord(value) && typeof value.context === "string" &&
-    (value.app_id === undefined || value.app_id === null || Number.isInteger(value.app_id));
 }
 
 function isActiveRequiredStatusCheck(value: unknown): value is RequiredStatusCheck {

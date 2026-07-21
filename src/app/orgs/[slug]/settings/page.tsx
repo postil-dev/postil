@@ -5,6 +5,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 
 import { getPool, schema } from "@/lib/db";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
+import { StatusIcon } from "@/components/status-icon";
 import { hostedInferenceAvailable as managedHostedInferenceAvailable } from "@/lib/env";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import { requireOrgMembership } from "@/lib/org-access";
@@ -14,7 +15,10 @@ import {
 } from "@/lib/private-repository-entitlement";
 import { deriveRepoHealth, getRepoHealthRows, type RepoHealth } from "@/lib/repo-health";
 import { formatRelativeTime } from "@/lib/time";
-import { deriveGateEnforcementPresentation } from "@/lib/gate-enforcement-health";
+import {
+  buildGateEnforcementDryRunPlan,
+  deriveGateEnforcementPresentation,
+} from "@/lib/gate-enforcement-health";
 import {
   isVisibleConfigArtifact,
   ownerConfigRepositoryFullName,
@@ -390,21 +394,61 @@ function GateEnforcementCoverage({
   }>;
   now: Date;
 }) {
+  const enforcementCounts = repositories.reduce(
+    (counts, repository) => {
+      const storedStatus = repository.gateEnforcementStatus === "required" &&
+          !repository.gateEvidence?.activeRules.exactMatch
+        ? "unknown"
+        : repository.gateEnforcementStatus;
+      const status = deriveGateEnforcementPresentation(
+        {
+          status: storedStatus,
+          checkedAt: repository.gateCheckedAt,
+          lastError: repository.gateLastError,
+        },
+        now,
+      ).status;
+      counts[status] += 1;
+      return counts;
+    },
+    { required: 0, not_required: 0, unknown: 0 },
+  );
   return (
     <section className="mb-8">
       <div className="flex items-center justify-between gap-3">
-        <p className="eyebrow">GitHub enforcement</p>
+        <p className="eyebrow">Installation health</p>
         <GateEnforcementRecheckButton slug={slug} />
+      </div>
+      <div className="mt-3 rounded-card border border-stone/70 bg-paper p-4">
+        <p className="text-sm text-charcoal">
+          Postil publishes <code>postil/gate</code>. GitHub blocks a merge only when the
+          default branch requires that check from this App.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 font-mono text-[11px] text-charcoal/65">
+          <span>{enforcementCounts.required} enforced</span>
+          <span>{enforcementCounts.not_required} not enforced</span>
+          <span>{enforcementCounts.unknown} unverified</span>
+        </div>
       </div>
       <div className="card mt-3 divide-y divide-stone/60">
         {repositories.map((repository) => {
+          // Older observations could claim classic branch protection exposed an App
+          // identity. GitHub's read contract does not. Only active ruleset evidence is proof.
+          const storedStatus = repository.gateEnforcementStatus === "required" &&
+              !repository.gateEvidence?.activeRules.exactMatch
+            ? "unknown"
+            : repository.gateEnforcementStatus;
           const presentation = deriveGateEnforcementPresentation(
             {
-              status: repository.gateEnforcementStatus,
+              status: storedStatus,
               checkedAt: repository.gateCheckedAt,
               lastError: repository.gateLastError,
             },
             now,
+          );
+          const plan = buildGateEnforcementDryRunPlan(
+            presentation,
+            repository.gateDefaultBranch,
           );
           const anySource =
             repository.gateEvidence?.branchProtection.match === "any_source" ||
@@ -415,58 +459,80 @@ function GateEnforcementCoverage({
           const foreignSource =
             repository.gateEvidence?.branchProtection.match === "foreign_app" ||
             repository.gateEvidence?.activeRules.match === "foreign_app";
-          const statusLabel = presentation.status === "not_required"
-            ? anySource
-              ? "any source"
+          const detail = presentation.status === "required"
+            ? "exact App and context required by an active ruleset"
+            : anySource
+              ? "postil/gate accepts any source"
               : foreignSource
-                ? "other App"
-                : presentation.label
-            : presentation.label;
-          const detail = presentation.status === "required" &&
-              repository.gateEvidence?.branchProtection.exactMatch
-            ? "required by branch protection"
-            : presentation.status === "required" &&
-                repository.gateEvidence?.activeRules.exactMatch
-              ? "required by an active ruleset"
-              : anySource
-                ? "postil/gate accepts any source"
-                : foreignSource
-                  ? "postil/gate requires another App"
-                  : identityUnknown
-                    ? "check source is unavailable"
-                    : `branch protection: ${repository.gateBranchProtection ?? "unknown"}`;
+                ? "postil/gate requires another App"
+                : identityUnknown
+                  ? "classic protection names postil/gate, but its App binding is not readable"
+                  : `branch protection: ${repository.gateBranchProtection ?? "unknown"}`;
+          const settingsHref = `https://github.com/${repository.fullName}/settings/rules`;
           return (
-            <div key={repository.id} className="flex items-start justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
-                <p className="truncate font-mono text-sm">{repository.fullName}</p>
-                <p className="mt-0.5 text-xs text-charcoal/60">
-                  {repository.gateDefaultBranch
-                    ? `default: ${repository.gateDefaultBranch}`
-                    : "default branch unavailable"}
-                  {repository.gateCheckedAt
-                    ? ` · checked ${relative(repository.gateCheckedAt, now)}`
-                    : " · not checked"}
-                </p>
-                <p className="mt-0.5 text-xs text-charcoal/60">{detail}</p>
-                {repository.gateLastError && (
-                  <p className="mt-1 text-xs text-rust">
-                    {repository.gateLastError}
-                    {repository.gateLastSuccessfulAt
-                      ? ` Last confirmed ${relative(repository.gateLastSuccessfulAt, now)}.`
-                      : ""}
+            <div key={repository.id} className="px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate font-mono text-sm">{repository.fullName}</p>
+                  <p className="mt-0.5 text-xs text-charcoal/60">
+                    {repository.gateDefaultBranch
+                      ? `default: ${repository.gateDefaultBranch}`
+                      : "default branch unavailable"}
+                    {repository.gateCheckedAt
+                      ? ` · checked ${relative(repository.gateCheckedAt, now)}`
+                      : " · not checked"}
                   </p>
-                )}
+                </div>
+                <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/70">
+                  <StatusIcon
+                    kind={presentation.status === "required"
+                      ? "pass"
+                      : presentation.status === "not_required"
+                        ? "warn"
+                        : "info"}
+                    size={13}
+                  />
+                  {presentation.enforcementLabel}
+                </span>
               </div>
-              <span className="shrink-0 rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/70">
-                {statusLabel}
-              </span>
+              <p className="mt-2 text-xs text-charcoal/70">{presentation.consequence}</p>
+              <p className="mt-0.5 text-xs text-charcoal/55">{detail}</p>
+              {repository.gateLastError && (
+                <p className="mt-1 text-xs text-rust">
+                  {repository.gateLastError}
+                  {repository.gateLastSuccessfulAt
+                    ? ` Last confirmed ${relative(repository.gateLastSuccessfulAt, now)}.`
+                    : ""}
+                </p>
+              )}
+              <details className="mt-3 rounded-card border border-stone/60 px-3 py-2 text-xs text-charcoal/65">
+                <summary className="cursor-pointer font-medium text-charcoal">
+                  {plan.action === "none" ? "Verified rule" : "Setup plan"}
+                </summary>
+                <div className="mt-3 space-y-2">
+                  <p><strong>Target:</strong> {plan.target}</p>
+                  <p><strong>Rule:</strong> {plan.desiredRule}</p>
+                  <p><strong>Effect:</strong> {plan.impact}</p>
+                  <p><strong>Risk:</strong> {plan.risk}</p>
+                  <p><strong>Rollback:</strong> {plan.rollback}</p>
+                  <p>No changes are applied from this page.</p>
+                  <a
+                    href={settingsHref}
+                    className="inline-block text-rust underline"
+                    rel="noopener noreferrer"
+                  >
+                    Open repository rules
+                  </a>
+                </div>
+              </details>
             </div>
           );
         })}
       </div>
       <p className="mt-3 text-xs text-charcoal/60">
-        Required means GitHub names <code>postil/gate</code> and binds it to the Postil App.
-        Ambiguous or unreadable rules stay unknown. See the{" "}
+        Enforced means an active GitHub ruleset names <code>postil/gate</code> and binds it
+        to the Postil App. Classic branch protection and unreadable rules stay unverified.
+        See the{" "}
         <Link href="/docs/gate" className="text-rust hover:underline">gate guide</Link>.
       </p>
     </section>

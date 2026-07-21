@@ -102,6 +102,14 @@ export default function GatePage() {
         back and require it.
       </p>
       <p>
+        Bind the required check to the <strong>Postil GitHub App</strong>, not
+        any source. An active ruleset records that source as an integration id,
+        which Postil verifies under <strong>Settings → Installation health</strong>.
+        Classic branch protection exposes the context name but not its App
+        identity under Postil&apos;s current App permissions, so that setup is shown
+        as <strong>unverified</strong> rather than enforced.
+      </p>
+      <p>
         With this in place, a PR with an <code>error</code>-severity finding
         cannot merge until the finding is fixed (the next push re-reviews
         incrementally and resolves it) or the threshold is deliberately
