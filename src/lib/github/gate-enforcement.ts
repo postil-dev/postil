@@ -52,8 +52,12 @@ interface BranchPayload {
 
 interface RequiredStatusCheck {
   context?: unknown;
-  app_id?: unknown;
   integration_id?: unknown;
+}
+
+interface BranchStatusCheck {
+  context?: unknown;
+  app_id?: unknown;
 }
 
 interface ActiveRule {
@@ -66,9 +70,11 @@ interface ActiveRule {
 type FetchLike = typeof fetch;
 
 /**
- * Read GitHub's effective default-branch rules without requesting additional
- * App permissions. An unreadable source is preserved as unknown rather than
- * guessed from check-run history.
+ * Read GitHub's effective default-branch rules with the App's existing
+ * metadata permission. Active rulesets expose the required integration id;
+ * GitHub's REST OpenAPI schema exposes checks[].app_id for classic branch
+ * protection. Missing or malformed source identity remains unknown rather
+ * than being guessed from check-run history.
  */
 export async function fetchGateEnforcementObservation(
   token: string,
@@ -240,21 +246,24 @@ function parseBranchEvidence(value: unknown, expectedAppId: number): {
     return invalidBranchEvidence("GitHub default branch returned invalid required status checks");
   }
   const checks = required.checks;
-  if (checks !== undefined && (!Array.isArray(checks) || !checks.every(isRequiredStatusCheck))) {
-    return invalidBranchEvidence("GitHub default branch returned invalid App-bound status checks");
+  if (checks !== undefined && (!Array.isArray(checks) || !checks.every(isBranchStatusCheck))) {
+    return invalidBranchEvidence("GitHub default branch returned invalid status-check details");
   }
-  const exactChecks = Array.isArray(checks)
+  const checkContexts = Array.isArray(checks)
+    ? checks.map((check) => check.context)
+    : [];
+  const matchingChecks = Array.isArray(checks)
     ? checks.filter((check) => check.context === GATE_ENFORCEMENT_CONTEXT)
     : [];
-  const match = Array.isArray(checks) && exactChecks.length > 0
-    ? classifySignalMatch(exactChecks.map((check) => check.app_id), expectedAppId)
+  const match = matchingChecks.length > 0
+    ? classifySignalMatch(matchingChecks.map((check) => check.app_id), expectedAppId)
     : required.contexts.includes(GATE_ENFORCEMENT_CONTEXT)
       ? "unknown_identity"
       : "none";
   return {
     available: true,
     branchProtection: "protected",
-    requiredStatusChecksPresent: required.contexts.length > 0 || (checks?.length ?? 0) > 0,
+    requiredStatusChecksPresent: required.contexts.length > 0 || checkContexts.length > 0,
     exactMatch: match === "exact_app",
     match,
     error: null,
@@ -318,15 +327,15 @@ function mergeSignalMatch(
   return rank[right] > rank[left] ? right : left;
 }
 
-function isRequiredStatusCheck(value: unknown): value is RequiredStatusCheck {
-  return isRecord(value) && typeof value.context === "string" &&
-    (value.app_id === undefined || value.app_id === null || Number.isInteger(value.app_id));
-}
-
 function isActiveRequiredStatusCheck(value: unknown): value is RequiredStatusCheck {
   return isRecord(value) && typeof value.context === "string" &&
     (value.integration_id === undefined || value.integration_id === null ||
       Number.isInteger(value.integration_id));
+}
+
+function isBranchStatusCheck(value: unknown): value is BranchStatusCheck {
+  return isRecord(value) && typeof value.context === "string" &&
+    (value.app_id === undefined || value.app_id === null || Number.isInteger(value.app_id));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -8,7 +8,7 @@ import {
 const APP_ID = 12345;
 
 describe("GitHub gate enforcement evidence", () => {
-  test("requires an exact case-sensitive context and App identity", async () => {
+  test("requires an exact case-sensitive context and integration identity", async () => {
     const requests: string[] = [];
     const observation = await fetchGateEnforcementObservation(
       "token",
@@ -22,15 +22,19 @@ describe("GitHub gate enforcement evidence", () => {
             protection: {
               required_status_checks: {
                 contexts: ["postil/gate"],
-                checks: [
-                  { context: "Postil/gate", app_id: APP_ID },
-                  { context: "postil/gate", app_id: APP_ID + 1 },
-                  { context: "postil/gate", app_id: APP_ID },
-                ],
               },
             },
           }),
-          json([]),
+          json([{
+            type: "required_status_checks",
+            parameters: {
+              required_status_checks: [
+                { context: "Postil/gate", integration_id: APP_ID },
+                { context: "postil/gate", integration_id: APP_ID + 1 },
+                { context: "postil/gate", integration_id: APP_ID },
+              ],
+            },
+          }]),
         ], requests),
       },
     );
@@ -38,22 +42,76 @@ describe("GitHub gate enforcement evidence", () => {
     expect(observation.status).toBe("required");
     expect(observation.defaultBranch).toBe("main");
     expect(observation.branchProtection).toBe("protected");
-    expect(observation.evidence.branchProtection.exactMatch).toBe(true);
+    expect(observation.evidence.branchProtection.exactMatch).toBe(false);
+    expect(observation.evidence.activeRules.exactMatch).toBe(true);
     expect(requests[1]?.endsWith("/repos/acme/widget/branches/main")).toBe(true);
     expect(requests[1]?.endsWith("/protection")).toBe(false);
   });
 
-  test("requires the exact App identity for classic branch protection", async () => {
-    const cases = [
-      { name: "summary omitted", checks: undefined, match: "unknown_identity", status: "unknown" },
-      { name: "identity omitted", checks: [{ context: "postil/gate" }], match: "unknown_identity", status: "unknown" },
-      { name: "null", checks: [{ context: "postil/gate", app_id: null }], match: "any_source", status: "not_required" },
-      { name: "any App", checks: [{ context: "postil/gate", app_id: -1 }], match: "any_source", status: "not_required" },
-      { name: "foreign App", checks: [{ context: "postil/gate", app_id: APP_ID + 1 }], match: "foreign_app", status: "not_required" },
-      { name: "Postil App", checks: [{ context: "postil/gate", app_id: APP_ID }], match: "exact_app", status: "required" },
-    ] as const;
+  test("keeps classic branch protection unverified when its summary omits App identity", async () => {
+    const observation = await fetchGateEnforcementObservation(
+      "token",
+      "acme/widget",
+      APP_ID,
+      {
+        fetchImpl: sequenceFetch([
+          json({ default_branch: "main" }),
+          json({
+            protected: true,
+            protection: {
+              required_status_checks: { contexts: ["postil/gate"] },
+            },
+          }),
+          json([]),
+        ]),
+      },
+    );
 
-    for (const testCase of cases) {
+    expect(observation.status).toBe("unknown");
+    expect(observation.evidence.branchProtection).toMatchObject({
+      available: true,
+      requiredStatusChecksPresent: true,
+      exactMatch: false,
+      match: "unknown_identity",
+    });
+  });
+
+  test("accepts an exact App binding from a checks-only classic summary", async () => {
+    const observation = await fetchGateEnforcementObservation(
+      "token",
+      "acme/widget",
+      APP_ID,
+      {
+        fetchImpl: sequenceFetch([
+          json({ default_branch: "main" }),
+          json({
+            protected: true,
+            protection: {
+              required_status_checks: {
+                contexts: [],
+                checks: [{ context: "postil/gate", app_id: APP_ID }],
+              },
+            },
+          }),
+          json([]),
+        ]),
+      },
+    );
+
+    expect(observation.status).toBe("required");
+    expect(observation.evidence.branchProtection).toMatchObject({
+      requiredStatusChecksPresent: true,
+      exactMatch: true,
+      match: "exact_app",
+    });
+  });
+
+  test("rejects any-source and foreign-App classic bindings", async () => {
+    for (const testCase of [
+      { appId: null, match: "any_source" },
+      { appId: -1, match: "any_source" },
+      { appId: APP_ID + 1, match: "foreign_app" },
+    ] as const) {
       const observation = await fetchGateEnforcementObservation(
         "token",
         "acme/widget",
@@ -66,7 +124,7 @@ describe("GitHub gate enforcement evidence", () => {
               protection: {
                 required_status_checks: {
                   contexts: ["postil/gate"],
-                  ...(testCase.checks === undefined ? {} : { checks: testCase.checks }),
+                  checks: [{ context: "postil/gate", app_id: testCase.appId }],
                 },
               },
             }),
@@ -74,8 +132,8 @@ describe("GitHub gate enforcement evidence", () => {
           ]),
         },
       );
-      expect(observation.status, testCase.name).toBe(testCase.status);
-      expect(observation.evidence.branchProtection.match, testCase.name).toBe(testCase.match);
+      expect(observation.status).toBe("not_required");
+      expect(observation.evidence.branchProtection.match).toBe(testCase.match);
     }
   });
 

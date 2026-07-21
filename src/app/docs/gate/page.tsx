@@ -102,10 +102,18 @@ export default function GatePage() {
         back and require it.
       </p>
       <p>
-        With this in place, a PR with an <code>error</code>-severity finding
-        cannot merge until the finding is fixed (the next push re-reviews
-        incrementally and resolves it) or the threshold is deliberately
-        changed in config, a reviewable, auditable act.
+        Bind the required check to the <strong>Postil GitHub App</strong>, not
+        any source. Rulesets record that source as an integration id, and classic
+        branch protection records it as an App id. Postil verifies either exact
+        binding under <strong>Settings → Installation health</strong>. Missing or
+        unreadable source identity is shown as <strong>unverified</strong>.
+      </p>
+      <p>
+        For merges covered by this rule, a PR with an <code>error</code>-severity
+        finding cannot merge until the finding is fixed (the next push
+        re-reviews incrementally and resolves it) or the threshold is
+        deliberately changed in config, a reviewable, auditable act. Configured
+        bypass actors remain exempt.
       </p>
 
       <h2>Choosing a threshold</h2>
