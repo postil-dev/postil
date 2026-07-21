@@ -1,39 +1,12 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
 import { doctorTranscript } from "@/data/transcripts";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
-export const metadata: Metadata = {
-  title: "Self-hosted AI code review without the 500-seat enterprise gate",
-  description:
-    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama, with no seat fees or license cost.",
-  alternates: { canonical: "/blog/self-hosted-ai-code-review" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-07-08T00:00:00.000Z",
-    title: "Self-hosted AI code review without the 500-seat enterprise gate",
-    description:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama.",
-    url: "https://postil.dev/blog/self-hosted-ai-code-review",
-    images: ["/opengraph-image"],
-  },
-};
-
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline: "Self-hosted AI code review without the 500-seat enterprise gate",
-  description:
-    "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama, with no seat fees or license cost.",
-  url: "https://postil.dev/blog/self-hosted-ai-code-review",
-  datePublished: "2026-07-08",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("self-hosted-ai-code-review");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function SelfHostedAiCodeReviewArticle() {
   return (
@@ -42,13 +15,7 @@ export default function SelfHostedAiCodeReviewArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        Self-hosted AI code review without the 500-seat enterprise gate
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        July 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>

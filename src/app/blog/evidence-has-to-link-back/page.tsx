@@ -1,37 +1,11 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  title: "Evidence has to link back",
-  description:
-    "Postil's public evidence examples link back to the source repository and the pull request files at the reviewed commit, with check-run artifacts retained in the data.",
-  alternates: { canonical: "/blog/evidence-has-to-link-back" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-07-11T00:00:00.000Z",
-    title: "Evidence has to link back",
-    description:
-      "Public AI review examples should resolve to the real PR state behind the claim, not a fictional demo.",
-    url: "https://postil.dev/blog/evidence-has-to-link-back",
-    images: ["/opengraph-image"],
-  },
-};
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline: "Evidence has to link back",
-  description:
-    "Postil's public evidence examples link back to the source repository and the pull request files at the reviewed commit, with check-run artifacts retained in the data.",
-  url: "https://postil.dev/blog/evidence-has-to-link-back",
-  datePublished: "2026-07-11",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("evidence-has-to-link-back");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function EvidenceLinksArticle() {
   return (
@@ -40,13 +14,7 @@ export default function EvidenceLinksArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        Evidence has to link back
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        July 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>

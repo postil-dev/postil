@@ -1,40 +1,11 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  title:
-    "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
-  description:
-    "GitHub branch protection blocks on required status checks, not on review comments. Copilot code review posts a Comment, Claude Code review concludes neutral, and Macroscope defaults to neutral checks unless configured to fail.",
-  alternates: { canonical: "/blog/why-copilot-cant-block-your-merge" },
-  openGraph: {
-    type: "article",
-    publishedTime: "2026-07-08T00:00:00.000Z",
-    title:
-      "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
-    description:
-      "Branch protection blocks on required status checks, not review comments. A Comment-only or neutral-concluding reviewer cannot gate a merge. Here is the mechanic.",
-    url: "https://postil.dev/blog/why-copilot-cant-block-your-merge",
-    images: ["/opengraph-image"],
-  },
-};
+import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
-const articleJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline:
-    "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
-  description:
-    "GitHub branch protection blocks on required status checks, not review comments. Copilot code review posts a Comment, Claude Code review concludes neutral, and Macroscope defaults to neutral checks unless configured to fail.",
-  url: "https://postil.dev/blog/why-copilot-cant-block-your-merge",
-  datePublished: "2026-07-08",
-  image: "https://postil.dev/opengraph-image",
-  author: {
-    "@type": "Organization",
-    name: "Postil",
-    url: "https://postil.dev",
-  },
-};
+const post = getBlogPost("why-copilot-cant-block-your-merge");
+export const metadata = blogPostMetadata(post);
+const articleJsonLd = blogPostJsonLd(post);
 
 export default function CopilotMergeGateArticle() {
   return (
@@ -43,14 +14,7 @@ export default function CopilotMergeGateArticle() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
       />
-      <p className="eyebrow">Blog</p>
-      <h1 className="serif-display mt-4 text-4xl md:text-5xl">
-        Why GitHub Copilot can&apos;t block your merge (and how a real AI merge
-        gate works)
-      </h1>
-      <p className="mt-4 font-mono text-sm text-charcoal/70">
-        July 2026 · Postil team
-      </p>
+      <BlogArticleHeader post={post} />
 
       <div className="prose-postil blog-prose mt-10">
         <p>
