@@ -400,6 +400,22 @@ const ENV_SPECS: EnvVarSpec[] = [
     scope: ["monitor"],
   },
   {
+    name: "ILERT_INTEGRATION_KEY",
+    purpose:
+      "ilert alert-source integration key that receives monitoring alerts; without it monitoring alerts are logged only",
+    example: "il1agst...",
+    scope: ["monitor"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_MONITOR_HEARTBEAT_URL",
+    purpose:
+      "External dead-man's-switch ping URL called after each completed monitoring pass",
+    example: "https://beat.ilert.com/api/pings/example",
+    scope: ["monitor"],
+    optional: true,
+  },
+  {
     name: "OPENROUTER_MANAGEMENT_API_KEY",
     purpose:
       "Read-only polling of OpenRouter account credit and per-key cap metadata",

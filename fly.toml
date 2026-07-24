@@ -8,7 +8,13 @@
 #     GITHUB_WEBHOOK_SECRET=... GITHUB_OAUTH_CLIENT_ID=... \
 #     GITHUB_OAUTH_CLIENT_SECRET=... POSTIL_SEALING_KEY=... \
 #     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... MODEL_API_KEY=... \
-#     POSTIL_API_KEY=... METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=...
+#     POSTIL_API_KEY=... METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=... \
+#     ILERT_INTEGRATION_KEY=... POSTIL_MONITOR_HEARTBEAT_URL=...
+#
+# ILERT_INTEGRATION_KEY is the ilert alert-source integration key that
+# receives monitoring alerts; POSTIL_MONITOR_HEARTBEAT_URL is the ilert
+# heartbeat ping URL the private monitor calls after each completed pass.
+# Monitoring never pages by platform-sent email.
 #
 # Browser PostHog receives the public project token from a runtime route so
 # POSTHOG_CLIENT_CAPTURE can disable initialization without rebuilding.

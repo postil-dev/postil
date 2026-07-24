@@ -7,6 +7,7 @@ import {
   enqueueCustomerServiceTransitionForAllOrganizationsSql,
 } from "@/lib/customer-notifications";
 import {
+  configuredMonitoringAlertTransport,
   sendOperatorNotification,
   type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
@@ -757,8 +758,13 @@ export async function deliverPrivateMonitoringNotification(
         subject: `[${notification.severity}] Postil monitor: ${content.title}`,
         content,
         idempotencyKey: notification.notificationKey,
+        incident: {
+          key: notification.incidentKey,
+          state: notification.kind === "resolved" ? "resolved" : "open",
+          critical: notification.severity === "critical",
+        },
       },
-      input.transport,
+      input.transport ?? configuredMonitoringAlertTransport(),
     );
     await recordDeliveredNotification(pool, notification, now);
   } catch (error) {
@@ -866,8 +872,9 @@ export async function sendMonitorPassFailureNotification(input: {
         input.observedAt,
       ),
       idempotencyKey: notificationKey,
+      incident: { key: notificationKey, state: "open", critical: true },
     },
-    input.transport,
+    input.transport ?? configuredMonitoringAlertTransport(),
   );
 }
 
