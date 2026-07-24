@@ -103,10 +103,14 @@ grace_period = "20s"
 method = "GET"
 path = "/api/health"
 
+# 512mb produced recurring OOM kills of the Next.js server (exit 137,
+# oom_killed) with intermittent 5xx and fail-closed error pages while the
+# machine restarted; observed four kills across both web machines on a single
+# day. Web serves SSR plus the API surface and needs the headroom.
 [[vm]]
 processes = ["web"]
 size = "shared-cpu-1x"
-memory = "512mb"
+memory = "1gb"
 
 [[vm]]
 processes = ["worker"]
