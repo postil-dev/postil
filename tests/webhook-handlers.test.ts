@@ -1399,6 +1399,60 @@ describeDb("webhook handler behaviour", () => {
     expect(replies[0]).toContain("head-sha");
   });
 
+  test("approval command accepts the truncated finding id shown in gate summaries", async () => {
+    const fullId = "a1b2c3d4e5f6".padEnd(64, "0");
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const envelope = approvalEnvelope();
+    (envelope.findings as Array<{ id: string }>)[0]!.id = fullId;
+    const reviewId = await seedCompletedApprovalReview(repoId, envelope);
+
+    const res = await approvalComment(
+      "approval-prefix",
+      `@postil approve ${fullId.slice(0, 12)} -- reviewed`,
+    );
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ finding_id: string }>(
+      "SELECT finding_id FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows).toEqual([{ finding_id: fullId }]);
+    const replies = await queuedWebhookCommentBodies();
+    expect(replies[0]).toContain(`Approval recorded by @admin for finding ${fullId}`);
+  });
+
+  test("approval command rejects a finding id prefix matching several findings", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const envelope = approvalEnvelope();
+    const template = (envelope.findings as Array<Record<string, unknown>>)[0]!;
+    envelope.findings = [
+      { ...template, id: "a1b2c3d4e5f6".padEnd(64, "0") },
+      { ...template, id: "a1b2c3d4e5f6".padEnd(64, "1"), line: 20 },
+    ];
+    const reviewId = await seedCompletedApprovalReview(repoId, envelope);
+
+    const res = await approvalComment(
+      "approval-prefix-ambiguous",
+      "@postil approve a1b2c3d4e5f6 -- reviewed",
+    );
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows[0]!.c).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "matches 2 blocking findings",
+    );
+  });
+
   test("approval command verifies and records a live admin who has never signed in", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
