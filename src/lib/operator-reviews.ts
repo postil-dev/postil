@@ -50,6 +50,14 @@ const STATUSES: OperatorReviewStatus[] = [
   "unavailable",
 ];
 
+export interface OperatorUsageSummary {
+  usersTotal: number;
+  organizationCounts: Array<{ status: string; count: number }>;
+  activeInstallations: number;
+  enabledRepositories: number;
+  reviews24h: number;
+}
+
 export const OPERATOR_REVIEW_LIMIT = 100;
 
 export function parseOperatorReviewFilters(
@@ -136,6 +144,46 @@ export async function getOperatorReviewRows(
     ...row,
     status: reviewDisplayStatus(row.status, row.errorMessage),
   }));
+}
+
+export async function getOperatorUsageSummary(db: Database): Promise<OperatorUsageSummary> {
+  const [users, organizationRows, installationRows, repositoryRows, reviews24h] =
+    await Promise.all([
+      db.select({ count: sql<number>`count(*)::int` }).from(schema.users),
+      db
+        .select({
+          status: sql<string>`coalesce(${schema.organizationEntitlements.status}, 'none')`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(schema.organizations)
+        .leftJoin(
+          schema.organizationEntitlements,
+          eq(schema.organizationEntitlements.orgId, schema.organizations.id),
+        )
+        .groupBy(sql`coalesce(${schema.organizationEntitlements.status}, 'none')`),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.installations)
+        .where(eq(schema.installations.suspended, false)),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.repositories)
+        .where(eq(schema.repositories.enabled, true)),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.reviews)
+        .where(gte(schema.reviews.queuedAt, sql`now() - interval '24 hours'`)),
+    ]);
+  return {
+    usersTotal: users[0]?.count ?? 0,
+    organizationCounts: organizationRows.map((row) => ({
+      status: row.status,
+      count: row.count,
+    })),
+    activeInstallations: installationRows[0]?.count ?? 0,
+    enabledRepositories: repositoryRows[0]?.count ?? 0,
+    reviews24h: reviews24h[0]?.count ?? 0,
+  };
 }
 
 function first(value: string | string[] | undefined): string {

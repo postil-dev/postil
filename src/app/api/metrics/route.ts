@@ -27,6 +27,8 @@ interface DatabaseMetrics {
   activeSessions: number;
   privateMonitorHeartbeatAgeSeconds: number;
   queueDepth: number;
+  usersTotal: number;
+  organizationCounts: Array<{ status: string; count: number }>;
   reviewStatusCounts: Map<string, number>;
   review24hStatusCounts: Map<string, number>;
   reviewActivity24h: Map<string, number>;
@@ -118,6 +120,17 @@ export async function GET(request: Request): Promise<NextResponse> {
         (enabled) =>
           `postil_repositories_current{enabled="${enabled}"} ${
             dbMetrics.repositoryCounts.get(enabled) ?? 0
+          }`,
+      ),
+      "# HELP postil_users_total Registered users.",
+      "# TYPE postil_users_total gauge",
+      `postil_users_total ${dbMetrics.usersTotal}`,
+      "# HELP postil_organizations_total Organizations by entitlement status.",
+      "# TYPE postil_organizations_total gauge",
+      ...dbMetrics.organizationCounts.map(
+        (row) =>
+          `postil_organizations_total{status="${escapeLabelValue(row.status)}"} ${
+            row.count
           }`,
       ),
       "# HELP postil_reviews_total Reviews by status.",
@@ -289,6 +302,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     webhooks24hByEvent,
     jobsByKindStatus,
     operatorAlertsByEventStatus,
+    organizationsByStatus,
     oldestJobs,
     oldestRunningReview,
     usageByModel,
@@ -299,6 +313,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       active_sessions: string;
       private_monitor_heartbeat_age_seconds: string;
       queue_depth: string;
+      users_total: string;
       active_installations: string;
       suspended_installations: string;
       enabled_repositories: string;
@@ -336,6 +351,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
           2147483647
         )::text AS private_monitor_heartbeat_age_seconds,
         (SELECT count(*)::text FROM jobs WHERE status = 'queued') AS queue_depth,
+        (SELECT count(*)::text FROM users) AS users_total,
         (SELECT count(*)::text FROM installations WHERE suspended = false) AS active_installations,
         (SELECT count(*)::text FROM installations WHERE suspended = true) AS suspended_installations,
         (SELECT count(*)::text FROM repositories WHERE enabled = true) AS enabled_repositories,
@@ -401,6 +417,13 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       FROM operator_alert_deliveries
       GROUP BY event, status
       ORDER BY event, status
+    `),
+    pool.query<{ status: string; count: string }>(`
+      SELECT COALESCE(oe.status, 'none') AS status, count(*)::text AS count
+      FROM organizations o
+      LEFT JOIN organization_entitlements oe ON oe.org_id = o.id
+      GROUP BY COALESCE(oe.status, 'none')
+      ORDER BY status
     `),
     pool.query<{ status: string; age_seconds: string | null }>(`
       SELECT
@@ -531,6 +554,11 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
       row.private_monitor_heartbeat_age_seconds,
     ),
     queueDepth: toNumber(row.queue_depth),
+    usersTotal: toNumber(row.users_total),
+    organizationCounts: organizationsByStatus.rows.map((orgRow) => ({
+      status: orgRow.status,
+      count: toNumber(orgRow.count),
+    })),
     reviewStatusCounts,
     review24hStatusCounts,
     reviewActivity24h: new Map([

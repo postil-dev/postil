@@ -50,6 +50,7 @@ function queryResponse(text: string): {
           active_sessions: "2",
           private_monitor_heartbeat_age_seconds: privateMonitorHeartbeatAge,
           queue_depth: "7",
+          users_total: "42",
           active_installations: "3",
           suspended_installations: "1",
           enabled_repositories: "12",
@@ -122,6 +123,17 @@ function queryResponse(text: string): {
       rows: [
         { event: "trial_started", status: "delivered", count: "2" },
         { event: "trial_expired", status: "queued", count: "1" },
+      ],
+    };
+  }
+  if (
+    sql.includes("FROM organizations o") &&
+    sql.includes("LEFT JOIN organization_entitlements")
+  ) {
+    return {
+      rows: [
+        { status: "active", count: "9" },
+        { status: "none", count: "2" },
       ],
     };
   }
@@ -253,6 +265,9 @@ describe("/api/metrics", () => {
     expect(text).toContain('postil_installations_current{state="suspended"} 1');
     expect(text).toContain('postil_repositories_current{enabled="true"} 12');
     expect(text).toContain('postil_repositories_current{enabled="false"} 4');
+    expect(text).toContain("postil_users_total 42");
+    expect(text).toContain('postil_organizations_total{status="active"} 9');
+    expect(text).toContain('postil_organizations_total{status="none"} 2');
     expect(text).toContain('postil_reviews_total{status="queued"} 5');
     expect(text).toContain('postil_reviews_total{status="running"} 0');
     expect(text).toContain('postil_reviews_24h{status="completed"} 6');
@@ -331,7 +346,7 @@ describe("/api/metrics", () => {
       'postil_review_incidents_30m{category="failed_job"} 6',
     );
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(11);
+    expect(queryCalls).toBe(12);
   });
 
   test("emits an explicit unhealthy sentinel when the private monitor heartbeat is absent", async () => {
@@ -360,6 +375,6 @@ describe("/api/metrics", () => {
     expect(text).not.toContain("postil_database_size_bytes");
     expect(text).not.toContain("postil_queue_depth");
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(11);
+    expect(queryCalls).toBe(12);
   });
 });

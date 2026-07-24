@@ -18,11 +18,13 @@ import {
 } from "@/lib/private-monitoring";
 import {
   getOperatorReviewRows,
+  getOperatorUsageSummary,
   OPERATOR_REVIEW_LIMIT,
   parseOperatorReviewFilters,
   type OperatorReviewFilters,
   type OperatorReviewRow,
   type OperatorReviewStatus,
+  type OperatorUsageSummary,
 } from "@/lib/operator-reviews";
 
 export const metadata: Metadata = {
@@ -50,6 +52,56 @@ const SEVERITY_STYLES: Record<Finding["severity"], string> = {
 function formatTimestamp(value: Date | null): string {
   if (!value) return "Not recorded";
   return value.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+}
+
+function UsageSummary({ summary }: { summary: OperatorUsageSummary }) {
+  const totalOrganizations = summary.organizationCounts.reduce(
+    (sum, row) => sum + row.count,
+    0,
+  );
+  return (
+    <section className="card mt-6 grid gap-4 p-4 sm:grid-cols-3 lg:grid-cols-5">
+      <div>
+        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+          Users
+        </p>
+        <p className="mt-1 text-2xl font-semibold">{summary.usersTotal.toLocaleString()}</p>
+      </div>
+      <div>
+        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+          Organizations
+        </p>
+        <p className="mt-1 text-2xl font-semibold">{totalOrganizations.toLocaleString()}</p>
+        <p className="mt-1 font-mono text-[11px] text-charcoal/60">
+          {summary.organizationCounts
+            .map((row) => `${row.status} ${row.count.toLocaleString()}`)
+            .join(" · ")}
+        </p>
+      </div>
+      <div>
+        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+          Active installations
+        </p>
+        <p className="mt-1 text-2xl font-semibold">
+          {summary.activeInstallations.toLocaleString()}
+        </p>
+      </div>
+      <div>
+        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+          Enabled repositories
+        </p>
+        <p className="mt-1 text-2xl font-semibold">
+          {summary.enabledRepositories.toLocaleString()}
+        </p>
+      </div>
+      <div>
+        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+          Reviews (24h)
+        </p>
+        <p className="mt-1 text-2xl font-semibold">{summary.reviews24h.toLocaleString()}</p>
+      </div>
+    </section>
+  );
 }
 
 function MonitoringStatus({ monitoring }: { monitoring: PrivateMonitoringDashboard }) {
@@ -510,9 +562,10 @@ export default async function OperatorDashboardPage({
   const params = await searchParams;
   const filters = parseOperatorReviewFilters(params);
   const { db, user } = await requireOperatorAccess();
-  const [reviews, monitoring] = await Promise.all([
+  const [reviews, monitoring, usageSummary] = await Promise.all([
     getOperatorReviewRows(db, filters),
     getPrivateMonitoringDashboard(getPool()),
+    getOperatorUsageSummary(db),
   ]);
   const totalRows = reviews[0]?.totalRows ?? 0;
   const shownRows = reviews.length;
@@ -528,6 +581,8 @@ export default async function OperatorDashboardPage({
           {user.login} · {shownRows.toLocaleString()} of {totalRows.toLocaleString()} runs
         </p>
       </div>
+
+      <UsageSummary summary={usageSummary} />
 
       <MonitoringStatus monitoring={monitoring} />
 
