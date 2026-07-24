@@ -35,11 +35,15 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.8.1–0.8.2",
+    version: "0.8.1–0.8.3",
     date: "July 24, 2026",
     summary:
       "The builtin content policy judges prose by function instead of fixed vocabulary, and reviews can resolve their own uncertainty findings against repository files.",
     changes: [
+      {
+        label: "Changed",
+        text: "Finding bodies over six hundred bytes are rewritten to state the defect, evidence, and fix in at most three sentences; reviews.conciseFindings: false opts out.",
+      },
       {
         label: "Changed",
         text: "Builtin content-policy rules for stale text and house style state functional tests with illustrative examples, so the policy stays accurate as model vocabularies shift, and repo-appended rules can scope themselves to specific paths.",
