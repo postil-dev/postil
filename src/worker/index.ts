@@ -161,12 +161,14 @@ async function claimLoop(slot: number): Promise<void> {
     idleDelayMs = POLL_INTERVAL_MS;
     const controller = new AbortController();
     if (job.kind === "review") requeueableReviewIds.add(job.id);
+    // Interrupted reviews stay requeueable through publication: a fresh
+    // attempt supersedes the interrupted one's check-runs, so forced
+    // shutdown requeues every active review claim.
     const run = runClaimedJob(
       job,
       `worker ${slot}`,
       "worker",
       controller.signal,
-      () => requeueableReviewIds.delete(job.id),
     );
     activeRuns.add(run);
     activeControllers.set(job.id, controller);
