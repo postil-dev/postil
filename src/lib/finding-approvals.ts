@@ -454,12 +454,57 @@ export function findKindBlockingState(
   return state.findingStates.find((finding) => finding.findingId === findingId) ?? null;
 }
 
+/** Shortest finding-id prefix the approval command accepts. */
+export const FINDING_ID_PREFIX_MIN_LENGTH = 8;
+
+/** Length gate summaries truncate finding ids to; a valid approval prefix. */
+export const FINDING_ID_DISPLAY_LENGTH = 12;
+
+export type ApprovableFindingIdResolution =
+  | { ok: true; findingId: string }
+  | { ok: false; reason: "unknown" }
+  | { ok: false; reason: "ambiguous"; matches: string[] };
+
+/**
+ * Resolve a finding id or id prefix against the review's approvable findings.
+ * Gate summaries display truncated ids, so the approval command must accept
+ * the truncated form. An exact id always wins; otherwise a prefix of at least
+ * FINDING_ID_PREFIX_MIN_LENGTH characters resolves only when it names exactly
+ * one approvable finding.
+ */
+export function resolveApprovableFindingId(
+  state: ReviewApprovalState,
+  input: string,
+): ApprovableFindingIdResolution {
+  if (state.findingStates.some((finding) => finding.findingId === input)) {
+    return { ok: true, findingId: input };
+  }
+  if (input.length < FINDING_ID_PREFIX_MIN_LENGTH) return { ok: false, reason: "unknown" };
+  const matches = state.findingStates
+    .map((finding) => finding.findingId)
+    .filter((findingId) => findingId.startsWith(input));
+  if (matches.length === 1) return { ok: true, findingId: matches[0]! };
+  if (matches.length > 1) return { ok: false, reason: "ambiguous", matches };
+  return { ok: false, reason: "unknown" };
+}
+
 export function formatRemainingGateBlockers(state: EffectiveGateState): string {
   if (!state.failing) return "No blocking findings remain.";
+  const truncatedCounts = new Map<string, number>();
+  for (const blocker of state.blockers) {
+    if (!blocker.findingId) continue;
+    const prefix = blocker.findingId.slice(0, FINDING_ID_DISPLAY_LENGTH);
+    truncatedCounts.set(prefix, (truncatedCounts.get(prefix) ?? 0) + 1);
+  }
   return state.blockers
     .slice(0, 10)
     .map((blocker) => {
-      const id = blocker.findingId ? ` ${blocker.findingId.slice(0, 12)}` : "";
+      // A truncated id must stay a usable `@postil approve` prefix, so ids
+      // whose truncated forms collide are shown in full.
+      const prefix = blocker.findingId?.slice(0, FINDING_ID_DISPLAY_LENGTH);
+      const id = blocker.findingId && prefix
+        ? ` ${(truncatedCounts.get(prefix) ?? 0) > 1 ? blocker.findingId : prefix}`
+        : "";
       const reason = [
         blocker.severityBlocking ? `severity ${blocker.finding.severity}` : null,
         blocker.kindBlocking && !blocker.approved ? `kind ${blocker.finding.kind}` : null,

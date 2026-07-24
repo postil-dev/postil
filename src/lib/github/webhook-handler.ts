@@ -42,6 +42,7 @@ import {
   insertFindingApproval,
   lockReviewApprovalState,
   loadLatestCompletedReviewForPr,
+  resolveApprovableFindingId,
   updateStoredEffectiveGate,
 } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
@@ -1382,7 +1383,18 @@ async function handleApproveCommand(
   let effectiveFailing: boolean | null = null;
   try {
     const state = await getReviewApprovalState(db, review);
-    const finding = findKindBlockingState(state, command.findingId);
+    const resolution = resolveApprovableFindingId(state, command.findingId);
+    if (!resolution.ok && resolution.reason === "ambiguous") {
+      await queueWebhookComment(
+        payload,
+        `Approval rejected: finding id prefix ${command.findingId} matches ${resolution.matches.length} blocking findings. Use a longer prefix or the full id.`,
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    const findingId = resolution.ok ? resolution.findingId : command.findingId;
+    const finding = findKindBlockingState(state, findingId);
     if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
       await queueWebhookComment(
         payload,
@@ -1405,7 +1417,7 @@ async function handleApproveCommand(
     await db.transaction(async (tx) => {
       await lockReviewApprovalState(tx, review.id);
       const lockedState = await getReviewApprovalState(tx, review);
-      const lockedFinding = findKindBlockingState(lockedState, command.findingId);
+      const lockedFinding = findKindBlockingState(lockedState, findingId);
       if (
         !lockedFinding ||
         !lockedFinding.blocking ||
@@ -1417,7 +1429,7 @@ async function handleApproveCommand(
       }
       await insertFindingApproval(tx, {
         reviewId: review.id,
-        findingId: command.findingId,
+        findingId,
         actor,
         rationale: command.rationale,
         source: "github",
@@ -1452,7 +1464,7 @@ async function handleApproveCommand(
         isPr: true,
         sourceHeadSha: review.headSha,
         sourceDeliveryId,
-        body: `Approval recorded by @${actor.login} for finding ${command.findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
+        body: `Approval recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
       });
     });
   } catch (err) {
