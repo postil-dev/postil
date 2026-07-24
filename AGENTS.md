@@ -7,15 +7,14 @@ local hosted-review harness before handoff. Use the pull request's actual base:
 POSTIL_API_BASE=https://openrouter.ai/api/v1 \
 POSTIL_API_FORMAT=openai-compatible \
 REVIEW_MODEL=z-ai/glm-5.2 \
-REVIEW_MODEL_CASCADE= \
+REVIEW_MODEL_CASCADE=z-ai/glm-5.2,moonshotai/kimi-k2.7-code \
 POSTIL_DISABLE_SCORER=1 \
 bun run review:local -- --base origin/main --head HEAD --require-clean --repo-path .
 ```
 
-The empty cascade variable retains the CLI's embedded fallback chain, so one
-model's invalid output on a difficult diff falls back to the next model
-instead of failing every local review of that diff closed. The primary model
-stays pinned.
+The fallback model recovers a review whose primary output repeatedly fails
+validation on a difficult diff; a one-model chain fails every local review of
+such a diff closed. The primary model stays pinned.
 
 Replace `origin/main` when the pull request targets another branch. A missing
 binary or credential, provider failure, malformed response, or any surviving

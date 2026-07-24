@@ -17,10 +17,10 @@ TRUSTED_HOME='__TRUSTED_HOME__'
 
 zero_sha=0000000000000000000000000000000000000000
 local_primary_model=z-ai/glm-5.2
-# An empty cascade retains the CLI's embedded fallback chain, so one model's
-# invalid output on a difficult diff falls back instead of failing every
-# local review of that diff closed. The primary model stays pinned.
-local_cascade_override=
+# The fallback model recovers a review whose primary output repeatedly fails
+# validation on a difficult diff; a one-model chain fails every local review
+# of such a diff closed. The primary model stays pinned.
+local_cascade_override=z-ai/glm-5.2,moonshotai/kimi-k2.7-code
 remote_name=${1:-origin}
 cached_openrouter_api_key=${OPENROUTER_API_KEY:-}
 dispositions_source=${POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE:-}
