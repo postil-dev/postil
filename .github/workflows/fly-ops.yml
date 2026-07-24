@@ -51,8 +51,9 @@ jobs:
               timeout 75 flyctl logs -a postil-web > out/logs.txt 2>&1 || true
               ;;
             review-ledger)
-              flyctl ssh console -a postil-web --process-group worker -C "psql \$DATABASE_URL -X -c \"SELECT r.id, r.public_id, r.status, r.queued_at, r.started_at, r.finished_at, r.gate_check_run_id IS NOT NULL AS has_gate, r.error_message, jsonb_array_length(COALESCE(r.envelope->'findings','[]'::jsonb)) AS findings, repo.full_name, r.pr_number, left(r.head_sha, 12) AS head FROM reviews r JOIN repositories repo ON repo.id = r.repository_id WHERE r.queued_at > now() - interval '2 days' ORDER BY r.id\"" > out/reviews.txt 2>&1 || true
-              flyctl ssh console -a postil-web --process-group worker -C "psql \$DATABASE_URL -X -c \"SELECT id, review_id, finding_id, actor_login_snapshot, rationale, revoked_at, created_at FROM finding_approvals ORDER BY id DESC LIMIT 20\"" > out/approvals.txt 2>&1 || true
+              flyctl ssh console -a postil-web --process-group worker \
+                -C "bun scripts/inspect-review-ledger.ts" \
+                > out/review-ledger.json 2>&1 || true
               ;;
             scale-worker-2)
               flyctl scale count worker=2 -a postil-web --yes > out/scale-result.txt 2>&1 || true
