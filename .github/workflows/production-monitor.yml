@@ -340,6 +340,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Load alerting secret from Infisical
         uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
         with:
@@ -350,51 +351,16 @@ jobs:
           domain: https://eu.infisical.com
           secret-path: /postil
       - name: Send ilert event
-        shell: bash
-        env:
-          ALERT_KIND: ${{ needs.smoke.result == 'failure' && 'failure' || 'test' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${ILERT_INTEGRATION_KEY:-}" ]]; then
-            echo "ILERT_INTEGRATION_KEY is missing from Infisical /postil; external alerting is not configured"
-            exit 1
-          fi
-          if [[ "${ALERT_KIND}" == "failure" ]]; then
-            summary="Postil production monitor failed"
-            alert_key="postil-production-monitor"
-            details="Production checks failed. Run log: ${RUN_URL}"
-          else
-            summary="Postil production monitor test alert"
-            alert_key="postil-production-monitor-test"
-            details="Operator-requested test alert; production checks passed. Run log: ${RUN_URL}"
-          fi
-          jq -n \
-            --arg key "${ILERT_INTEGRATION_KEY}" \
-            --arg summary "${summary}" \
-            --arg alertKey "${alert_key}" \
-            --arg details "${details}" \
-            '{integrationKey: $key, eventType: "ALERT", summary: $summary, alertKey: $alertKey, details: $details, priority: "HIGH"}' \
-            > event.json
-          status="$(curl \
-            --silent \
-            --show-error \
-            --connect-timeout 5 \
-            --max-time 15 \
-            --retry 3 \
-            --retry-delay 5 \
-            --retry-all-errors \
-            --header 'Content-Type: application/json' \
-            --data @event.json \
-            --output /dev/null \
-            --write-out '%{http_code}' \
-            https://api.ilert.com/api/events)"
-          rm -f event.json
-          if [[ "${status}" != 2* ]]; then
-            echo "ilert event delivery failed with HTTP ${status}"
-            exit 1
-          fi
-          echo "ilert ${ALERT_KIND} alert accepted"
+        uses: ./.github/actions/ilert-event
+        with:
+          event-type: ALERT
+          summary: ${{ needs.smoke.result == 'failure' && 'Postil production monitor failed' || 'Postil production monitor test alert' }}
+          alert-key: ${{ needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test' }}
+          details: >-
+            ${{ needs.smoke.result == 'failure'
+                && 'Production checks failed. Run log:'
+                || 'Operator-requested test alert; production checks passed. Run log:' }}
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
 
   resolve:
     name: Resolve external alert
@@ -407,6 +373,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Check whether the previous run failed
         id: previous
         env:
@@ -430,33 +397,8 @@ jobs:
           secret-path: /postil
       - name: Resolve ilert alert
         if: ${{ steps.previous.outputs.conclusion == 'failure' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${ILERT_INTEGRATION_KEY:-}" ]]; then
-            echo "ILERT_INTEGRATION_KEY is missing from Infisical /postil; skipping resolve"
-            exit 0
-          fi
-          jq -n \
-            --arg key "${ILERT_INTEGRATION_KEY}" \
-            '{integrationKey: $key, eventType: "RESOLVE", summary: "Postil production monitor recovered", alertKey: "postil-production-monitor"}' \
-            > event.json
-          status="$(curl \
-            --silent \
-            --show-error \
-            --connect-timeout 5 \
-            --max-time 15 \
-            --retry 3 \
-            --retry-delay 5 \
-            --retry-all-errors \
-            --header 'Content-Type: application/json' \
-            --data @event.json \
-            --output /dev/null \
-            --write-out '%{http_code}' \
-            https://api.ilert.com/api/events)"
-          rm -f event.json
-          if [[ "${status}" != 2* ]]; then
-            echo "ilert resolve delivery failed with HTTP ${status}"
-            exit 1
-          fi
-          echo "ilert alert resolved"
+        uses: ./.github/actions/ilert-event
+        with:
+          event-type: RESOLVE
+          summary: Postil production monitor recovered
+          alert-key: postil-production-monitor
