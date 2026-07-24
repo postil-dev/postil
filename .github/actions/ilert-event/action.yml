@@ -1,0 +1,69 @@
+name: ilert event
+description: Post one event to the ilert Events API from ILERT_INTEGRATION_KEY in the environment.
+
+inputs:
+  event-type:
+    description: ALERT or RESOLVE
+    required: true
+  summary:
+    description: Event summary; becomes the alert summary for new alerts
+    required: true
+  alert-key:
+    description: Stable key that deduplicates repeats and targets resolves
+    required: true
+  details:
+    description: Free-text details attached to the event
+    required: false
+    default: ""
+  priority:
+    description: HIGH or LOW; ignored for RESOLVE
+    required: false
+    default: HIGH
+
+runs:
+  using: composite
+  steps:
+    - name: Send event
+      shell: bash
+      env:
+        EVENT_TYPE: ${{ inputs.event-type }}
+        SUMMARY: ${{ inputs.summary }}
+        ALERT_KEY: ${{ inputs.alert-key }}
+        DETAILS: ${{ inputs.details }}
+        PRIORITY: ${{ inputs.priority }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${ILERT_INTEGRATION_KEY:-}" ]]; then
+          echo "ILERT_INTEGRATION_KEY is missing from the environment; external alerting is not configured"
+          exit 1
+        fi
+        jq -n \
+          --arg key "${ILERT_INTEGRATION_KEY}" \
+          --arg eventType "${EVENT_TYPE}" \
+          --arg summary "${SUMMARY}" \
+          --arg alertKey "${ALERT_KEY}" \
+          --arg details "${DETAILS}" \
+          --arg priority "${PRIORITY}" \
+          '{integrationKey: $key, eventType: $eventType, summary: $summary, alertKey: $alertKey}
+           + (if $details != "" then {details: $details} else {} end)
+           + (if $eventType == "ALERT" then {priority: $priority} else {} end)' \
+          > "${RUNNER_TEMP}/ilert-event.json"
+        status="$(curl \
+          --silent \
+          --show-error \
+          --connect-timeout 5 \
+          --max-time 15 \
+          --retry 3 \
+          --retry-delay 5 \
+          --retry-all-errors \
+          --header 'Content-Type: application/json' \
+          --data @"${RUNNER_TEMP}/ilert-event.json" \
+          --output /dev/null \
+          --write-out '%{http_code}' \
+          https://api.ilert.com/api/events)"
+        rm -f "${RUNNER_TEMP}/ilert-event.json"
+        if [[ "${status}" != 2* ]]; then
+          echo "ilert ${EVENT_TYPE} delivery failed with HTTP ${status}"
+          exit 1
+        fi
+        echo "ilert ${EVENT_TYPE} accepted for ${ALERT_KEY}"

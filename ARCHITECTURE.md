@@ -410,21 +410,33 @@ each review key's daily-cap depletion are separate incidents. The configured
 outage threshold defaults to the maximum hosted review reservation. The
 emergency production key has its own daily cap; its enabled state and zero
 lifetime, period, and BYOK usage are checked without retrieving or storing its
-value. These incidents use the same PostgreSQL history and private operator
-email path and never publish to GitHub. Missing, malformed, or rejected
+value. These incidents use the same PostgreSQL history and external alerting path and
+never publish to GitHub. Missing, malformed, or rejected
 OpenRouter monitoring configuration opens one private configuration incident;
 all non-OpenRouter monitor checks continue and service deployment remains
 available. The bearer-protected metrics endpoint exposes aggregate
 monitor-heartbeat age and freshness gauges for an external dead-man alarm. The
-scheduled GitHub monitor is an independent check of public reachability,
-aggregate operational metrics, and operator email delivery without receiving
-private monitor targets.
+scheduled GitHub monitor is an independent check of public reachability and
+aggregate operational metrics without receiving private monitor targets.
+
+Alert delivery for monitoring is owned by ilert, an external alerting service:
+the platform and the GitHub monitor report events to an alert source
+(`ILERT_INTEGRATION_KEY`), and ilert owns paging, escalation, deduplication by
+incident key, and auto-close on resolve events. The platform never pages the
+operator by its own email path for monitoring; operator email remains for
+business lifecycle and billing notifications only. After each completed pass
+the monitor pings an ilert heartbeat (`POSTIL_MONITOR_HEARTBEAT_URL`), so a
+dead monitor process or persistently failing pass raises a missed-heartbeat
+alert outside the platform's failure domain. Without a configured integration
+key, monitoring alerts are logged only and paging relies on the heartbeat, the
+external uptime checks, and the GitHub monitor.
 
 The monitor and product processes share the deployment platform, network, and
-DNS path. The private database, configured mail transport, operator mailbox,
-and external metrics collector are separate dependencies. A platform-wide or
+DNS path. The private database, the external alerting service, and the
+external metrics collector are separate dependencies. A platform-wide or
 network-wide outage can prevent the in-platform monitor from sending, so the
-external collector alarms on a missing scrape or stale aggregate heartbeat.
+missed ilert heartbeat and the external collector alarm on a missing scrape or
+stale aggregate heartbeat.
 PostHog operational telemetry is a separate private signal for process failures
 when enabled; it is not the source of incident state or alert deduplication.
 

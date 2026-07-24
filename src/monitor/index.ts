@@ -78,6 +78,7 @@ async function main(): Promise<void> {
     Math.ceil((workerHeartbeatIntervalMs * 3) / 1_000),
   );
   const publicOrigin = required("POSTIL_PUBLIC_URL");
+  const heartbeatUrl = optionalEnv("POSTIL_MONITOR_HEARTBEAT_URL");
   const openRouterManagementKey = optionalEnv("OPENROUTER_MANAGEMENT_API_KEY");
   const openRouterReviewOutageThresholdUsd = optionalEnv(
     "POSTIL_OPENROUTER_REVIEW_OUTAGE_THRESHOLD_USD",
@@ -174,6 +175,7 @@ async function main(): Promise<void> {
       console.log(
         `[monitor] pass ${pass.runId} completed with ${publicChecks.length + databaseChecks.length + openRouterChecks.length} checks and ${notifications.length} notification claim(s)`,
       );
+      await pingMonitorHeartbeat(heartbeatUrl);
     } catch (error) {
       const failure = recordMonitorPassFailure(
         monitorFailureState,
@@ -251,6 +253,20 @@ function sleepUntilNextPass(ms: number): Promise<void> {
     const timer = setTimeout(finish, ms);
     wakeSleep = finish;
   });
+}
+
+// A missed ping raises a dead-man's-switch alert in the external alerting
+// service, so a dead monitor process or persistently failing pass is detected
+// outside the platform's own failure domain. Pings fire only after a fully
+// completed pass.
+async function pingMonitorHeartbeat(url: string | undefined): Promise<void> {
+  if (!url) return;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (error) {
+    console.error(`[monitor] heartbeat ping failed: ${redactSecrets(error)}`);
+  }
 }
 
 function monitoringBucket(now: Date, intervalMs: number): Date {

@@ -2,14 +2,16 @@ name: Production monitor
 
 on:
   schedule:
-    # Every 15 minutes: this external monitor is independent of the
-    # in-platform private monitor and detects a dead or stopped worker through
-    # postil_oldest_job_age_seconds staleness.
+    # Requested every 15 minutes; GitHub throttles scheduled workflows, so
+    # observed cadence is best-effort (often hourly or worse). This workflow
+    # is the deep-check safety net that runs outside the platform's failure
+    # domain; minute-level liveness paging comes from the external alerting
+    # service's uptime checks and the private monitor's heartbeat.
     - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
-      test_email:
-        description: Send a test operator email after the production checks pass
+      test_alert:
+        description: Send a test alert after the production checks pass
         required: false
         type: boolean
         default: false
@@ -25,7 +27,7 @@ jobs:
   smoke:
     name: Smoke check production
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 6
     steps:
       - name: Check public endpoints
         shell: bash
@@ -54,6 +56,9 @@ jobs:
               --show-error \
               --connect-timeout 5 \
               --max-time 15 \
+              --retry 3 \
+              --retry-delay 5 \
+              --retry-all-errors \
               --output /dev/null \
               "${url}"
           done
@@ -66,6 +71,9 @@ jobs:
             --header "Cache-Control: no-cache" \
             --connect-timeout 5 \
             --max-time 15 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-all-errors \
             --output .cache/robots.out \
             "https://postil.dev/robots.txt"
           if grep -E '^Disallow:' .cache/robots.out; then
@@ -83,6 +91,9 @@ jobs:
             --show-error \
             --connect-timeout 5 \
             --max-time 15 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-all-errors \
             --output /dev/null \
             --write-out '%{http_code} %{redirect_url}' \
             "https://postil.dev/about")"
@@ -96,6 +107,9 @@ jobs:
             --show-error \
             --connect-timeout 5 \
             --max-time 15 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-all-errors \
             --output /dev/null \
             --write-out '%{http_code} %{redirect_url}' \
             "https://www.postil.dev/docs?utm_source=monitor")"
@@ -116,6 +130,9 @@ jobs:
               --show-error \
               --connect-timeout 5 \
               --max-time 15 \
+              --retry 3 \
+              --retry-delay 5 \
+              --retry-all-errors \
               --dump-header .cache/headers.out \
               --output /dev/null \
               "${url}"
@@ -133,6 +150,9 @@ jobs:
             --show-error \
             --connect-timeout 5 \
             --max-time 15 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-all-errors \
             --output .cache/dependencies.out \
             --write-out '%{http_code}' \
             "https://postil.dev/api/health/dependencies")"
@@ -156,6 +176,9 @@ jobs:
               --show-error \
               --connect-timeout 5 \
               --max-time 15 \
+              --retry 3 \
+              --retry-delay 5 \
+              --retry-all-errors \
               --config .cache/curl-metrics.conf \
               --output .cache/metrics.out \
               --write-out '%{http_code}' \
@@ -263,14 +286,20 @@ jobs:
               echo "A self-service checkout failed or its metric is missing"
               stale_found=1
             fi
+            # Hard platform failures page at zero tolerance. Model-quality
+            # incidents (a review retried after bad model output, a scorer or
+            # model fallback) are self-healing and only page when they burst,
+            # otherwise a single flaky upstream completion pages the operator.
             incident_found=0
             for category in operational_failure scorer_failure scorer_fallback model_fallback invalid_output failed_job; do
               count=$(awk -v metric="postil_review_incidents_30m{category=\"${category}\"}" \
                 '$1 == metric { print $2 }' .cache/metrics.out)
               threshold=0
               case "${category}" in
+                scorer_failure) threshold=2 ;;
                 scorer_fallback) threshold=2 ;;
                 model_fallback) threshold=5 ;;
+                invalid_output) threshold=2 ;;
               esac
               echo "Recent ${category} incidents: ${count:-missing}"
               if [[ -z "${count:-}" ]]; then
@@ -297,10 +326,14 @@ jobs:
             fi
           fi
 
+  # Alert delivery is owned by the external alerting service (ilert). The
+  # platform and this workflow only report events; paging, escalation, and
+  # deduplication happen there. A stable alertKey groups consecutive failing
+  # runs into one alert, and the resolve job auto-closes it on recovery.
   notify:
-    name: Email operator
+    name: Raise external alert
     needs: smoke
-    if: ${{ always() && (needs.smoke.result == 'failure' || inputs.test_email == true) }}
+    if: ${{ always() && (needs.smoke.result == 'failure' || inputs.test_alert == true) }}
     permissions:
       contents: read
       id-token: write
@@ -308,10 +341,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.14
-      - name: Load notification secret from Infisical
+      - name: Load alerting secret from Infisical
         uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
         with:
           method: oidc
@@ -320,8 +350,55 @@ jobs:
           env-slug: prod
           domain: https://eu.infisical.com
           secret-path: /postil
-      - name: Send operator email
+      - name: Send ilert event
+        uses: ./.github/actions/ilert-event
+        with:
+          event-type: ALERT
+          summary: ${{ needs.smoke.result == 'failure' && 'Postil production monitor failed' || 'Postil production monitor test alert' }}
+          alert-key: ${{ needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test' }}
+          details: >-
+            ${{ needs.smoke.result == 'failure'
+                && 'Production checks failed. Run log:'
+                || 'Operator-requested test alert; production checks passed. Run log:' }}
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+
+  resolve:
+    name: Resolve external alert
+    needs: smoke
+    if: ${{ needs.smoke.result == 'success' && inputs.test_alert != true }}
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check whether the previous run failed
+        id: previous
         env:
-          POSTIL_MONITOR_ALERT_KIND: ${{ needs.smoke.result == 'failure' && 'failure' || 'test' }}
-          POSTIL_OPERATOR_ALERT_EMAIL: ${{ vars.POSTIL_OPERATOR_ALERT_EMAIL }}
-        run: bun run scripts/send-production-monitor-alert.ts
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          previous="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/production-monitor.yml/runs?status=completed&per_page=5" \
+            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0].conclusion // \"none\"")"
+          echo "conclusion=${previous}" >> "$GITHUB_OUTPUT"
+          echo "Previous completed run conclusion: ${previous}"
+      - name: Load alerting secret from Infisical
+        if: ${{ steps.previous.outputs.conclusion == 'failure' }}
+        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /postil
+      - name: Resolve ilert alert
+        if: ${{ steps.previous.outputs.conclusion == 'failure' }}
+        uses: ./.github/actions/ilert-event
+        with:
+          event-type: RESOLVE
+          summary: Postil production monitor recovered
+          alert-key: postil-production-monitor

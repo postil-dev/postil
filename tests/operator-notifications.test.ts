@@ -1,0 +1,144 @@
+import { describe, expect, test } from "bun:test";
+
+import {
+  configuredMonitoringAlertTransport,
+  ilertEventTransport,
+  type OperatorNotification,
+} from "@/lib/operator-notifications";
+
+function notification(
+  overrides: Partial<OperatorNotification> = {},
+): OperatorNotification {
+  return {
+    recipient: "operator@example.test",
+    subject: "[critical] Postil monitor: Review worker heartbeat is stale",
+    content: {
+      preheader: "preheader",
+      category: "Production monitor",
+      title: "Review worker heartbeat is stale",
+      summary: "Review worker fleet needs operator attention.",
+      reason: "reason",
+      details: [
+        { label: "Affected capability", value: "Review worker fleet" },
+        { label: "Severity", value: "critical" },
+      ],
+      action: {
+        label: "Open private monitoring",
+        url: "https://postil.dev/operator#monitoring",
+      },
+    },
+    idempotencyKey: "notification-key-1",
+    incident: { key: "worker-heartbeat", state: "open", critical: true },
+    ...overrides,
+  };
+}
+
+describe("ilert event transport", () => {
+  test("maps an open incident to a HIGH priority ALERT with the incident alertKey", async () => {
+    let captured: { url: string; body: Record<string, unknown> } | null = null;
+    const transport = ilertEventTransport("il-key", (async (
+      url: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      captured = { url: String(url), body: JSON.parse(String(init?.body)) };
+      return new Response("", { status: 202 });
+    }) as typeof fetch);
+
+    await transport.send(notification());
+
+    expect(captured!.url).toBe("https://api.ilert.com/api/events");
+    expect(captured!.body).toEqual({
+      integrationKey: "il-key",
+      eventType: "ALERT",
+      summary: "[critical] Postil monitor: Review worker heartbeat is stale",
+      details: [
+        "Review worker fleet needs operator attention.",
+        "Affected capability: Review worker fleet",
+        "Severity: critical",
+        "Open private monitoring: https://postil.dev/operator#monitoring",
+      ].join("\n"),
+      alertKey: "worker-heartbeat",
+      priority: "HIGH",
+    });
+  });
+
+  test("maps a resolved incident to a RESOLVE event without priority", async () => {
+    let body: Record<string, unknown> = {};
+    const transport = ilertEventTransport("il-key", (async (
+      _url: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      body = JSON.parse(String(init?.body));
+      return new Response("", { status: 202 });
+    }) as typeof fetch);
+
+    await transport.send(
+      notification({
+        incident: { key: "worker-heartbeat", state: "resolved", critical: true },
+      }),
+    );
+
+    expect(body.eventType).toBe("RESOLVE");
+    expect(body.alertKey).toBe("worker-heartbeat");
+    expect(body).not.toHaveProperty("priority");
+  });
+
+  test("maps a warning incident to LOW priority", async () => {
+    let body: Record<string, unknown> = {};
+    const transport = ilertEventTransport("il-key", (async (
+      _url: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      body = JSON.parse(String(init?.body));
+      return new Response("", { status: 202 });
+    }) as typeof fetch);
+
+    await transport.send(
+      notification({
+        incident: { key: "billing-delay", state: "open", critical: false },
+      }),
+    );
+
+    expect(body.priority).toBe("LOW");
+  });
+
+  test("falls back to the idempotency key when no incident is attached", async () => {
+    let body: Record<string, unknown> = {};
+    const transport = ilertEventTransport("il-key", (async (
+      _url: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      body = JSON.parse(String(init?.body));
+      return new Response("", { status: 202 });
+    }) as typeof fetch);
+
+    await transport.send(notification({ incident: undefined }));
+
+    expect(body.eventType).toBe("ALERT");
+    expect(body.alertKey).toBe("notification-key-1");
+  });
+
+  test("throws on a non-2xx response so delivery is retried", async () => {
+    const transport = ilertEventTransport("il-key", (async () =>
+      new Response("bad request", { status: 400 })) as unknown as typeof fetch);
+
+    await expect(transport.send(notification())).rejects.toThrow(
+      "ilert event delivery failed with HTTP 400",
+    );
+  });
+});
+
+describe("configured monitoring alert transport", () => {
+  test("logs and reports delivered when no integration key is configured", async () => {
+    const previous = process.env.ILERT_INTEGRATION_KEY;
+    delete process.env.ILERT_INTEGRATION_KEY;
+    try {
+      const result = await configuredMonitoringAlertTransport().send(
+        notification(),
+      );
+      expect(result).toEqual({ messageId: null });
+    } finally {
+      if (previous !== undefined) process.env.ILERT_INTEGRATION_KEY = previous;
+    }
+  });
+});
