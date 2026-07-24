@@ -35,7 +35,7 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.8.1",
+    version: "0.8.1–0.8.2",
     date: "July 24, 2026",
     summary:
       "The builtin content policy judges prose by function instead of fixed vocabulary, and reviews can resolve their own uncertainty findings against repository files.",
@@ -46,7 +46,7 @@ const RELEASES: Release[] = [
       },
       {
         label: "Added",
-        text: "With reviews.uncertaintyResolution enabled, a bounded post-scoring pass fetches the repository files an uncertainty finding names and resolves it with byte-verbatim evidence instead of asking the developer to inspect them.",
+        text: "A bounded post-scoring pass fetches the repository files an uncertainty finding names and resolves it with byte-verbatim evidence instead of asking the developer to inspect them; reviews.uncertaintyResolution: false opts out.",
       },
     ],
   },
