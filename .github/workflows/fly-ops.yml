@@ -1,8 +1,10 @@
 name: fly-ops
 
-# Temporary operational inspection workflow. Lives on an ops branch only and
-# is dispatched with --ref; output is age-encrypted to the operator's key
-# because this repository is public and run logs/artifacts are world-readable.
+# Temporary operational workflow for Fly inspection and operator-directed
+# scaling. Lives on an ops branch only and is dispatched with --ref; dispatch
+# requires repository write access. Output is age-encrypted to the operator's
+# key because this repository is public and run logs/artifacts are
+# world-readable.
 
 on:
   workflow_dispatch:
