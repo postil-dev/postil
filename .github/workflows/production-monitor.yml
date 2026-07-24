@@ -363,15 +363,17 @@ jobs:
           if [[ "${ALERT_KIND}" == "failure" ]]; then
             summary="Postil production monitor failed"
             alert_key="postil-production-monitor"
+            details="Production checks failed. Run log: ${RUN_URL}"
           else
             summary="Postil production monitor test alert"
             alert_key="postil-production-monitor-test"
+            details="Operator-requested test alert; production checks passed. Run log: ${RUN_URL}"
           fi
           jq -n \
             --arg key "${ILERT_INTEGRATION_KEY}" \
             --arg summary "${summary}" \
             --arg alertKey "${alert_key}" \
-            --arg details "Production checks failed. Run log: ${RUN_URL}" \
+            --arg details "${details}" \
             '{integrationKey: $key, eventType: "ALERT", summary: $summary, alertKey: $alertKey, details: $details, priority: "HIGH"}' \
             > event.json
           status="$(curl \
