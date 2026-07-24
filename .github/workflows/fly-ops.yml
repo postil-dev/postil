@@ -1,0 +1,68 @@
+name: fly-ops
+
+# Temporary operational inspection workflow. Lives on an ops branch only and
+# is dispatched with --ref; output is age-encrypted to the operator's key
+# because this repository is public and run logs/artifacts are world-readable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: Inspection to run
+        required: true
+        type: choice
+        options:
+          - status
+          - logs
+          - scale-worker-2
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age
+          curl -fsSL https://fly.io/install.sh | sh
+          echo "$HOME/.fly/bin" >> "$GITHUB_PATH"
+      - name: Run inspection
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          case "${{ inputs.command }}" in
+            status)
+              flyctl status -a postil-web > out/status.txt 2>&1 || true
+              flyctl machine list -a postil-web --json > out/machines.json 2>&1 || true
+              flyctl scale show -a postil-web > out/scale.txt 2>&1 || true
+              flyctl releases -a postil-web > out/releases.txt 2>&1 || true
+              ;;
+            logs)
+              timeout 75 flyctl logs -a postil-web > out/logs.txt 2>&1 || true
+              ;;
+            scale-worker-2)
+              flyctl scale count worker=2 -a postil-web --yes > out/scale-result.txt 2>&1 || true
+              flyctl machine list -a postil-web --json > out/machines.json 2>&1 || true
+              ;;
+          esac
+          ls -la out
+      - name: Encrypt output
+        run: |
+          set -euo pipefail
+          tar -C out -czf payload.tgz .
+          age -r age1j0ag0s3m4ut25mk2d5yv264fvptrcms37jkzd7gxennceymm43aq02rj36 \
+            -o payload.tgz.age payload.tgz
+          rm -rf out payload.tgz
+      - name: Upload encrypted output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fly-ops-${{ inputs.command }}
+          path: payload.tgz.age
+          retention-days: 1
