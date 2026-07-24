@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  buildGateEnforcementAgentPrompt,
   buildGateEnforcementDryRunPlan,
   deriveGateEnforcementPresentation,
   GATE_ENFORCEMENT_FRESHNESS_MS,
@@ -77,5 +78,34 @@ describe("gate enforcement health presentation", () => {
       risk: "A Postil outage, configuration error, or failed review blocks merges covered by the rule. Apply per repository and confirm the first protected pull request before wider rollout.",
       rollback: "Remove only the Postil App-bound postil/gate requirement from the same rule. Preserve every other rule.",
     });
+  });
+
+  test("builds a self-contained, preservation-first agent prompt", () => {
+    const prompt = buildGateEnforcementAgentPrompt({
+      repoFullName: "morgaesis/guard",
+      defaultBranch: "main",
+      appId: 12345,
+    });
+    expect(prompt).toContain("morgaesis/guard");
+    expect(prompt).toContain("postil/gate");
+    expect(prompt).toContain("app id 12345");
+    expect(prompt).toContain('"integration_id": 12345');
+    expect(prompt).toContain("gh api repos/morgaesis/guard/rulesets");
+    expect(prompt).toContain('gh api "repos/morgaesis/guard/rules/branches/main"');
+    expect(prompt).toContain("Preserve every existing rule");
+    expect(prompt).toContain("Verify:");
+    expect(prompt).toContain("Rollback");
+  });
+
+  test("keeps the agent prompt actionable without a known app id or branch", () => {
+    const prompt = buildGateEnforcementAgentPrompt({
+      repoFullName: "morgaesis/guard",
+      defaultBranch: null,
+      appId: null,
+    });
+    expect(prompt).toContain("<postil-app-id>");
+    expect(prompt).toContain("<default-branch>");
+    expect(prompt).toContain("--jq .app_id");
+    expect(prompt).not.toContain("null");
   });
 });

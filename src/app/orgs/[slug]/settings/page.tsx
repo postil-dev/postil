@@ -16,9 +16,14 @@ import {
 import { deriveRepoHealth, getRepoHealthRows, type RepoHealth } from "@/lib/repo-health";
 import { formatRelativeTime } from "@/lib/time";
 import {
+  buildGateEnforcementAgentPrompt,
   buildGateEnforcementDryRunPlan,
   deriveGateEnforcementPresentation,
 } from "@/lib/gate-enforcement-health";
+import {
+  gateEnforcementSweepIntervalMs,
+  getGateEnforcementSweepSchedule,
+} from "@/lib/queue";
 import {
   isVisibleConfigArtifact,
   ownerConfigRepositoryFullName,
@@ -27,6 +32,7 @@ import {
   type VisibleConfigArtifact,
 } from "../config-resolution";
 import { ConfigRecheckButton } from "../config-recheck-button";
+import { CopyAgentPromptButton } from "../copy-agent-prompt-button";
 import { GateEnforcementRecheckButton } from "../gate-enforcement-recheck-button";
 import { RepoHealthBanner } from "../repo-health-banner";
 import { SettingsForm } from "../settings-form";
@@ -140,9 +146,10 @@ export default async function OrgSettingsPage({
       githubInstallationId: repo.githubInstallationId,
       fullName: repo.fullName,
     }));
-  const [probes, repoHealthRows] = await Promise.all([
+  const [probes, repoHealthRows, sweepSchedule] = await Promise.all([
     getRepoConfigProbes(db, enabledRepos, { now }),
     getRepoHealthRows(db, org.id),
+    getGateEnforcementSweepSchedule(getPool(), gateEnforcementSweepIntervalMs()),
   ]);
   const probeByRepositoryId = new Map(
     probes.map((probe) => [probe.repositoryId, probe]),
@@ -289,12 +296,19 @@ export default async function OrgSettingsPage({
                 slug={org.slug}
                 repositories={repos.filter((repo) => repo.enabled)}
                 now={now}
+                nextSweepDueAt={sweepSchedule.nextDueAt}
               />
             )}
             <div className="flex items-center justify-between gap-3">
               <p className="eyebrow">Config files</p>
               {enabledRepos.length > 0 && (
-                <ConfigRecheckButton slug={org.slug} />
+                <ConfigRecheckButton
+                  slug={org.slug}
+                  lastCheckedLabel={lastCheckedLabelFrom(
+                    probes.map((probe) => probe.probedAt),
+                    now,
+                  )}
+                />
               )}
             </div>
             {(repoConfigSummaries.length > 0 || repos.length === 0) && (
@@ -370,7 +384,9 @@ function GateEnforcementCoverage({
   slug,
   repositories,
   now,
+  nextSweepDueAt,
 }: {
+  nextSweepDueAt: Date | null;
   slug: string;
   repositories: Array<{
     id: number;
@@ -409,11 +425,24 @@ function GateEnforcementCoverage({
     },
     { required: 0, not_required: 0, unknown: 0 },
   );
+  const expectedAppId = Number(process.env.GITHUB_APP_ID) || null;
+  const nextCheckLabel = nextSweepDueAt === null
+    ? null
+    : nextSweepDueAt.getTime() > now.getTime()
+      ? `next automatic check ${relative(nextSweepDueAt, now)}`
+      : "next automatic check is due";
   return (
     <section className="mb-8">
       <div className="flex items-center justify-between gap-3">
         <p className="eyebrow">Installation health</p>
-        <GateEnforcementRecheckButton slug={slug} />
+        <GateEnforcementRecheckButton
+          slug={slug}
+          lastCheckedLabel={lastCheckedLabelFrom(
+            repositories.map((repository) => repository.gateCheckedAt),
+            now,
+          )}
+          nextCheckLabel={nextCheckLabel}
+        />
       </div>
       <div className="mt-3 rounded-card border border-stone/70 bg-paper p-4">
         <p className="text-sm text-charcoal">
@@ -510,13 +539,24 @@ function GateEnforcementCoverage({
                   <p><strong>Risk:</strong> {plan.risk}</p>
                   <p><strong>Rollback:</strong> {plan.rollback}</p>
                   <p>No changes are applied from this page.</p>
-                  <a
-                    href={settingsHref}
-                    className="inline-block text-rust underline"
-                    rel="noopener noreferrer"
-                  >
-                    Open repository rules
-                  </a>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <a
+                      href={settingsHref}
+                      className="inline-block text-rust underline"
+                      rel="noopener noreferrer"
+                    >
+                      Open repository rules
+                    </a>
+                    {plan.action !== "none" && (
+                      <CopyAgentPromptButton
+                        prompt={buildGateEnforcementAgentPrompt({
+                          repoFullName: repository.fullName,
+                          defaultBranch: repository.gateDefaultBranch,
+                          appId: expectedAppId,
+                        })}
+                      />
+                    )}
+                  </div>
                 </div>
               </details>
             </div>
@@ -602,6 +642,20 @@ function relative(value: Date, now: Date): string {
   return formatRelativeTime(value.toISOString(), now.getTime());
 }
 
+function lastCheckedLabelFrom(
+  checkedTimes: ReadonlyArray<Date | null>,
+  now: Date,
+): string | null {
+  const newest = checkedTimes.reduce<Date | null>(
+    (latest, value) =>
+      value !== null && (latest === null || value.getTime() > latest.getTime())
+        ? value
+        : latest,
+    null,
+  );
+  return newest === null ? null : `checked ${relative(newest, now)}`;
+}
+
 function configArtifactLabel(artifact: VisibleConfigArtifact): string {
   if (artifact.state === "active") {
     if (artifact.recordedSource === "shared") return "shared";
@@ -616,8 +670,10 @@ function configArtifactClass(artifact: VisibleConfigArtifact): string {
       ? "border-gate text-gate"
       : "border-rust text-rust";
   }
-  if (artifact.state === "unverified") return "border-stone text-charcoal/55";
-  return "border-rust text-rust";
+  // A configured-but-unexercised file and an unreadable probe are neither a
+  // pass nor a failure; only a removed file needs attention styling.
+  if (artifact.state === "removed") return "border-rust text-rust";
+  return "border-stone text-charcoal/55";
 }
 
 function configArtifactDescription(artifact: VisibleConfigArtifact): string {

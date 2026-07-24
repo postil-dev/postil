@@ -10,7 +10,10 @@ import {
   type GateEnforcementRefreshState,
 } from "./actions";
 
-const INITIAL_STATE: GateEnforcementRefreshState = { status: "idle", pollGeneration: 0 };
+const INITIAL_STATE: GateEnforcementRefreshState = {
+  status: "idle",
+  pollGeneration: 0,
+};
 const POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_ATTEMPTS = 120;
 
@@ -38,7 +41,8 @@ export async function pollGateEnforcementUntilSettled({
       const result = await check();
       if (cancelled()) return "cancelled";
       if (result.status === "completed") return "completed";
-      if (result.status === "failed" || result.status === "missing") return "failed";
+      if (result.status === "failed" || result.status === "missing")
+        return "failed";
     } catch {
       if (cancelled()) return "cancelled";
     }
@@ -48,11 +52,23 @@ export async function pollGateEnforcementUntilSettled({
   return "timeout";
 }
 
-export function GateEnforcementRecheckButton({ slug }: { slug: string }) {
-  const [state, action, pending] = useActionState(refreshGateEnforcement, INITIAL_STATE);
+export function GateEnforcementRecheckButton({
+  slug,
+  lastCheckedLabel,
+  nextCheckLabel,
+}: {
+  slug: string;
+  lastCheckedLabel?: string | null;
+  nextCheckLabel?: string | null;
+}) {
+  const [state, action, pending] = useActionState(
+    refreshGateEnforcement,
+    INITIAL_STATE,
+  );
   const [progress, setProgress] = useState<Progress>("idle");
   const router = useRouter();
-  const jobId = state.status === "queued" || state.status === "active" ? state.jobId : null;
+  const jobId =
+    state.status === "queued" || state.status === "active" ? state.jobId : null;
 
   useEffect(() => {
     if (jobId === null) return;
@@ -83,7 +99,8 @@ export function GateEnforcementRecheckButton({ slug }: { slug: string }) {
   }, [jobId, router, slug, state.pollGeneration]);
 
   const checking = pending || progress === "checking";
-  const hasError = progress === "failed" || progress === "timeout" || state.status === "error";
+  const hasError =
+    progress === "failed" || progress === "timeout" || state.status === "error";
   const label = pending
     ? "Queuing…"
     : progress === "checking"
@@ -93,55 +110,99 @@ export function GateEnforcementRecheckButton({ slug }: { slug: string }) {
         : hasError
           ? "Try again"
           : "Re-check";
-  const message = progress === "completed"
-    ? "Repository rules checked."
-    : progress === "failed"
-      ? "The check failed. Try again."
-      : progress === "timeout"
-        ? "The check is taking longer than expected. Try again later."
-        : state.status === "error"
-          ? state.message
-          : checking
-            ? "Checking repository rules."
-            : null;
+  const hoverTitle = [
+    label === "Re-check" ? "Re-check now" : label,
+    nextCheckLabel,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const message =
+    progress === "completed"
+      ? "Repository rules checked."
+      : progress === "failed"
+        ? "The check failed. Try again."
+        : progress === "timeout"
+          ? "The check is taking longer than expected. Try again later."
+          : state.status === "error"
+            ? state.message
+            : checking
+              ? "Checking repository rules."
+              : null;
 
   return (
     <div className="flex flex-col items-end gap-1.5">
-      <form action={action} onSubmit={() => setProgress("idle")}>
-        <input type="hidden" name="slug" value={slug} />
-        <button
-          type="submit"
-          disabled={checking}
-          aria-describedby={message === null ? undefined : "gate-enforcement-status"}
-          className="btn-secondary inline-flex min-w-24 items-center justify-center gap-2 text-xs disabled:cursor-wait disabled:opacity-70"
-        >
-          {checking ? (
-            <svg
-              className="h-3.5 w-3.5 animate-spin"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-              <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-          ) : progress === "completed" ? (
-            <svg
-              className="h-3.5 w-3.5 text-gate"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="m5 12 4 4L19 6" />
-            </svg>
-          ) : null}
-          {label}
-        </button>
-      </form>
+      <div className="flex items-center gap-2" title={hoverTitle}>
+        {lastCheckedLabel && (
+          <span className="font-mono text-[11px] text-charcoal/60">
+            {lastCheckedLabel}
+          </span>
+        )}
+        <form action={action} onSubmit={() => setProgress("idle")}>
+          <input type="hidden" name="slug" value={slug} />
+          <button
+            type="submit"
+            disabled={checking}
+            aria-label={label}
+            aria-describedby={
+              message === null ? undefined : "gate-enforcement-status"
+            }
+            className="btn-secondary inline-flex h-7 w-7 items-center justify-center p-0 disabled:cursor-wait disabled:opacity-70"
+          >
+            {checking ? (
+              <svg
+                className="h-3.5 w-3.5 animate-spin"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden="true"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="9"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  opacity="0.25"
+                />
+                <path
+                  d="M21 12a9 9 0 0 0-9-9"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+            ) : progress === "completed" ? (
+              <svg
+                className="h-3.5 w-3.5 text-gate"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m5 12 4 4L19 6" />
+              </svg>
+            ) : (
+              <svg
+                className="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12a9 9 0 0 1 15.36-6.36L21 8" />
+                <path d="M21 3v5h-5" />
+                <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16" />
+                <path d="M3 21v-5h5" />
+              </svg>
+            )}
+          </button>
+        </form>
+      </div>
       {message !== null && (
         <p
           id="gate-enforcement-status"

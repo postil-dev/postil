@@ -293,14 +293,25 @@ export function SettingsForm({
       </div>
 
       <div className="border-t border-stone/60 pt-5">
-        <label className="flex items-start justify-between gap-4 rounded-card border border-stone/80 p-4">
-          <span>
+        <label
+          className={`flex items-start justify-between gap-4 rounded-card border p-4 ${
+            sharedSourceInstalled ? "border-stone/80" : "border-stone/60"
+          }`}
+        >
+          <span className={sharedSourceInstalled ? undefined : "opacity-70"}>
             <span className="font-medium">Shared owner configuration</span>
             <span className="mt-1 block text-xs leading-relaxed text-charcoal/60">
               Read <code>.postil.yaml</code>, <code>.postil/guardrails.md</code>, and{" "}
               <code>.postil/content-policy.md</code> from the default branch of the installed{" "}
               <code>{sharedSourceFullName}</code> repository.
             </span>
+            {!sharedSourceInstalled && (
+              <span className="mt-2 block text-xs leading-relaxed text-rust">
+                Requires the <code>{sharedSourceFullName}</code> repository, which the App
+                installation does not include. Create it, add it to the App installation,
+                and this setting takes effect on the next review.
+              </span>
+            )}
           </span>
           <input
             type="hidden"
@@ -343,11 +354,9 @@ export function SettingsForm({
             </p>
           </div>
         )}
-        {!sharedSnapshot && sharedConfigEnabled && (
+        {!sharedSnapshot && sharedConfigEnabled && sharedSourceInstalled && (
           <p className="mt-3 rounded-card border border-stone/70 bg-ivory px-3 py-2 text-xs text-charcoal/60">
-            {sharedSourceInstalled
-              ? "No verified shared snapshot is available. Postil checks the source during reviews."
-              : `The App installation does not include ${sharedSourceFullName}.`}
+            No verified shared snapshot is available. Postil checks the source during reviews.
           </p>
         )}
       </div>

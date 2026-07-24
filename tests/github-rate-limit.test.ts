@@ -49,7 +49,27 @@ describe("GitHub REST rate-limit classification", () => {
       NOW,
     );
     expect(forbidden).not.toBeInstanceOf(GithubRateLimitError);
-    expect(forbidden.message).toBe("GitHub request failed with HTTP 403");
+    expect(forbidden.message).toBe(
+      "GitHub request failed with HTTP 403 (the App installation cannot access this resource)",
+    );
+  });
+
+  test("names the accepted permissions on a permission-denied 403", async () => {
+    const denied = await githubResponseError(
+      "active branch rules lookup",
+      response(403, JSON.stringify({ message: "Resource not accessible by integration" }), {
+        "x-accepted-github-permissions": "administration=read",
+      }),
+      NOW,
+    );
+    expect(denied).not.toBeInstanceOf(GithubRateLimitError);
+    expect(denied.message).toBe(
+      "GitHub active branch rules lookup failed with HTTP 403 " +
+        "(GitHub App permissions accepted for this request: administration=read)",
+    );
+
+    const plain = await githubResponseError("request", response(500, "boom"), NOW);
+    expect(plain.message).toBe("GitHub request failed with HTTP 500");
   });
 
   test("treats every 429 as rate limited", async () => {

@@ -75,3 +75,36 @@ export function buildGateEnforcementDryRunPlan(
     rollback: "Remove only the Postil App-bound postil/gate requirement from the same rule. Preserve every other rule.",
   };
 }
+
+/**
+ * A self-contained work order a repository admin can paste into a coding
+ * agent. It only describes the change this page's dry-run plan proposes; the
+ * agent acting on it needs the admin's own GitHub credentials.
+ */
+export function buildGateEnforcementAgentPrompt(input: {
+  repoFullName: string;
+  defaultBranch: string | null;
+  appId: number | null;
+}): string {
+  const branch = input.defaultBranch ?? "the default branch";
+  const identity = input.appId === null
+    ? 'the Postil GitHub App (find its id with `gh api "repos/{owner}/{repo}/installation" --jq .app_id` using the repository owner credentials)'
+    : `the Postil GitHub App (app id ${input.appId})`;
+  return [
+    `Configure GitHub merge enforcement for the repository ${input.repoFullName}.`,
+    "",
+    `Goal: GitHub must require the \`postil/gate\` status check from ${identity} on ${branch}. Preserve every existing rule, required check, and bypass actor exactly as it is.`,
+    "",
+    "Steps:",
+    `1. Read the current state with the GitHub CLI as a repository admin:`,
+    `   - gh api repos/${input.repoFullName}/rulesets`,
+    `   - gh api "repos/${input.repoFullName}/rules/branches/${input.defaultBranch ?? "<default-branch>"}"`,
+    `   - gh api repos/${input.repoFullName}/branches/${input.defaultBranch ?? "<default-branch>"}/protection (a 404 means no classic protection; that is fine)`,
+    `2. Prefer a ruleset. If an active ruleset already targets ${branch} with a required_status_checks rule, add {"context": "postil/gate", "integration_id": ${input.appId ?? "<postil-app-id>"}} to its required checks. Otherwise create a new active ruleset targeting the default branch with only that required status check. Do not modify classic branch protection unless it already requires postil/gate without the App binding, in which case bind the existing entry to the App instead.`,
+    "3. Change nothing else: no other rules, checks, bypass actors, or protection settings.",
+    `4. Verify: re-run gh api "repos/${input.repoFullName}/rules/branches/${input.defaultBranch ?? "<default-branch>"}" and confirm a required_status_checks entry with context postil/gate and integration_id ${input.appId ?? "<postil-app-id>"} is present.`,
+    "5. Report the exact API calls made and the verification output.",
+    "",
+    "Rollback, if ever needed: remove only the postil/gate requirement added here and nothing else.",
+  ].join("\n");
+}

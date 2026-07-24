@@ -20,12 +20,27 @@ describe("gate enforcement settings UI", () => {
     expect(page).toContain("Rollback:");
     expect(page).toContain("any source");
     expect(page).toContain("other App");
+    expect(page).toContain("CopyAgentPromptButton");
+    expect(page).toContain("buildGateEnforcementAgentPrompt");
+    expect(page).toContain("lastCheckedLabel");
+    expect(page).toContain("nextCheckLabel");
     expect(button).toContain("animate-spin");
     expect(button).toContain('progress === "completed"');
     expect(button).toContain("router.refresh()");
     expect(button).toContain("MAX_POLL_ATTEMPTS");
     expect(button).toContain("Checked");
+    expect(button).toContain("aria-label={label}");
     expect(button).not.toContain('state.status === "queued" ? "Queued"');
+  });
+
+  test("keeps unexercised config badges neutral", () => {
+    const page = readFileSync(
+      new URL("../src/app/orgs/[slug]/settings/page.tsx", import.meta.url),
+      "utf8",
+    );
+    const badgeClasses = page.slice(page.indexOf("function configArtifactClass"));
+    expect(badgeClasses).toContain('if (artifact.state === "removed") return "border-rust text-rust"');
+    expect(badgeClasses.slice(0, badgeClasses.indexOf("}"))).not.toContain('"pending"');
   });
 
   test("scopes private repository health to an authenticated organization admin", () => {

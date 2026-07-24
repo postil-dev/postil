@@ -247,6 +247,42 @@ export interface GateEnforcementSweepJobPayload extends Record<string, unknown> 
 
 export type GateEnforcementSweepStatus = "queued" | "running" | "done" | "failed";
 
+export const GATE_ENFORCEMENT_SWEEP_DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+export function gateEnforcementSweepIntervalMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = Number(env.POSTIL_GATE_ENFORCEMENT_SWEEP_INTERVAL_MS);
+  return Number.isInteger(raw) && raw > 0
+    ? raw
+    : GATE_ENFORCEMENT_SWEEP_DEFAULT_INTERVAL_MS;
+}
+
+/**
+ * When the recurring global sweep last started and when the worker watchdog
+ * will start the next one. Manual org-scoped re-checks do not move the global
+ * cadence, so they are excluded here.
+ */
+export async function getGateEnforcementSweepSchedule(
+  pool: Pick<Pool, "query">,
+  intervalMs: number,
+): Promise<{ lastStartedAt: Date | null; nextDueAt: Date | null }> {
+  const result = await pool.query<{ created_at: Date }>(
+    `SELECT created_at FROM jobs
+      WHERE kind = 'gate-enforcement-sweep'
+        AND payload->>'scopeKey' = 'global'
+      ORDER BY id DESC
+      LIMIT 1`,
+  );
+  const lastStartedAt = result.rows[0]?.created_at ?? null;
+  return {
+    lastStartedAt,
+    nextDueAt: lastStartedAt === null
+      ? null
+      : new Date(lastStartedAt.getTime() + intervalMs),
+  };
+}
+
 export async function enqueueGateEnforcementSweepOnce(
   pool: Pool,
   input: { orgId?: number; minIntervalMs?: number } = {},

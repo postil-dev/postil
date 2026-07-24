@@ -13,6 +13,7 @@ import { runWebhookRedeliveryPass } from "@/lib/github/webhook-redelivery";
 import {
   claimJob,
   enqueueGateEnforcementSweepOnce,
+  GATE_ENFORCEMENT_SWEEP_DEFAULT_INTERVAL_MS,
   pruneCompletedWebhookDeliveries,
   requeueJobsOwnedBy,
   WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE,
@@ -55,7 +56,7 @@ const WATCHDOG_INTERVAL_MS = readPositiveIntEnv("WORKER_WATCHDOG_INTERVAL_MS", 6
 const HEARTBEAT_INTERVAL_MS = configuredWorkerHeartbeatIntervalMs();
 const GATE_ENFORCEMENT_SWEEP_INTERVAL_MS = readPositiveIntEnv(
   "POSTIL_GATE_ENFORCEMENT_SWEEP_INTERVAL_MS",
-  6 * 60 * 60 * 1000,
+  GATE_ENFORCEMENT_SWEEP_DEFAULT_INTERVAL_MS,
 );
 const WEBHOOK_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 const WEBHOOK_RETENTION_MAX_BATCHES = 10;

@@ -44,7 +44,27 @@ export async function githubResponseError(
   ) {
     return rateLimitError(operation, new Date(now + 60_000));
   }
-  return new Error(`GitHub ${operation} failed with HTTP ${response.status}`);
+  return new Error(
+    `GitHub ${operation} failed with HTTP ${response.status}${authorizationDetail(response, body)}`,
+  );
+}
+
+/**
+ * A permission-denied 403 names the permissions GitHub would accept in the
+ * X-Accepted-GitHub-Permissions header. Surfacing it turns an opaque 403 into
+ * an actionable message (which App permission is missing, or that the
+ * installation does not cover the repository).
+ */
+function authorizationDetail(response: Response, body: string): string {
+  if (response.status !== 403 && response.status !== 404) return "";
+  const accepted = response.headers.get("x-accepted-github-permissions");
+  if (accepted) {
+    return ` (GitHub App permissions accepted for this request: ${accepted.slice(0, 200)})`;
+  }
+  if (/resource not accessible by integration/i.test(body)) {
+    return " (the App installation cannot access this resource)";
+  }
+  return "";
 }
 
 function rateLimitError(operation: string, retryAt: Date): GithubRateLimitError {
