@@ -25,8 +25,6 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
     steps:
       - name: Install tools
         run: |
@@ -36,6 +34,8 @@ jobs:
           curl -fsSL https://fly.io/install.sh | sh
           echo "$HOME/.fly/bin" >> "$GITHUB_PATH"
       - name: Run inspection
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p out
