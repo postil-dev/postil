@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 
 import type { Database } from "@/lib/db";
 import {
+  formatRemainingGateBlockers,
   getReviewApprovalState,
+  resolveApprovableFindingId,
   type ApprovalRow,
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
@@ -109,5 +111,85 @@ describe("finding approval scope", () => {
     expect(state.effectiveGate.blockers.some((entry) => entry.finding.id === "risk-finding")).toBe(
       true,
     );
+  });
+});
+
+const hexIdA = "a1b2c3d4e5f6".padEnd(64, "0");
+const hexIdB = "a1b2c3d4e5f6".padEnd(64, "1");
+const hexIdDistinct = "ffee00112233".padEnd(64, "2");
+
+function hexFinding(id: string, title: string): Envelope["findings"][number] {
+  return {
+    id,
+    path: "src/policy.ts",
+    line: 10,
+    severity: "warn",
+    kind: "humanEscalation",
+    confidence: 0.9,
+    title,
+    body: "Confirm the accountable owner accepts this change.",
+  };
+}
+
+const hexEnvelope: Envelope = {
+  ...envelope,
+  findings: [
+    hexFinding(hexIdA, "Shared prefix A"),
+    hexFinding(hexIdB, "Shared prefix B"),
+    hexFinding(hexIdDistinct, "Distinct finding"),
+  ],
+  counts: { info: 0, warn: 3, error: 0, suppressed: 0, ungrounded: 0 },
+  confidenceBuckets: [0, 0, 0, 0, 3],
+};
+
+describe("finding id prefix resolution", () => {
+  async function hexState() {
+    return getReviewApprovalState(approvalDb([]), { ...review, envelope: hexEnvelope });
+  }
+
+  test("resolves a full id and an unambiguous prefix", async () => {
+    const state = await hexState();
+
+    expect(resolveApprovableFindingId(state, hexIdDistinct)).toEqual({
+      ok: true,
+      findingId: hexIdDistinct,
+    });
+    // The 12-character truncated form shown in gate summaries.
+    expect(resolveApprovableFindingId(state, "ffee00112233")).toEqual({
+      ok: true,
+      findingId: hexIdDistinct,
+    });
+    expect(resolveApprovableFindingId(state, hexIdA.slice(0, 20))).toEqual({
+      ok: true,
+      findingId: hexIdA,
+    });
+  });
+
+  test("rejects ambiguous, too-short, and unknown prefixes", async () => {
+    const state = await hexState();
+
+    expect(resolveApprovableFindingId(state, "a1b2c3d4e5f6")).toEqual({
+      ok: false,
+      reason: "ambiguous",
+      matches: [hexIdA, hexIdB],
+    });
+    expect(resolveApprovableFindingId(state, "ffee001")).toEqual({
+      ok: false,
+      reason: "unknown",
+    });
+    expect(resolveApprovableFindingId(state, "0000000000000000")).toEqual({
+      ok: false,
+      reason: "unknown",
+    });
+  });
+
+  test("gate summaries keep colliding truncated ids usable as full ids", async () => {
+    const state = await hexState();
+    const summary = formatRemainingGateBlockers(state.effectiveGate);
+
+    expect(summary).toContain(` ${hexIdA} `);
+    expect(summary).toContain(` ${hexIdB} `);
+    expect(summary).toContain(" ffee00112233 ");
+    expect(summary).not.toContain(hexIdDistinct);
   });
 });
