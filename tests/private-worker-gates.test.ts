@@ -388,11 +388,16 @@ describe("private repository worker defense in depth", () => {
     );
     const stagedBranch = failureBody.slice(
       failureBody.indexOf("if (completionStaged)"),
-      failureBody.indexOf("if (err instanceof WorkerShutdownError && !publicationStarted)"),
+      failureBody.indexOf("if (err instanceof WorkerShutdownError) {"),
     );
     expect(stagedBranch).not.toContain('kind: "check-run-cleanup"');
     expect(stagedBranch).toContain("ReviewPublicationReconciliationError");
-    expect(failureBody).toContain('.set({ status: "stale", finishedAt: new Date() })');
+    const shutdownBranch = failureBody.slice(
+      failureBody.indexOf("if (err instanceof WorkerShutdownError) {"),
+      failureBody.indexOf("const publicationIncomplete"),
+    );
+    expect(shutdownBranch).not.toContain('kind: "check-run-cleanup"');
+    expect(shutdownBranch).toContain('status: "stale"');
     expect(failureBody).toContain("db.transaction");
     expect(failureBody).toContain('kind: "check-run-cleanup"');
     expect(failureBody).toContain('intent: "fail"');

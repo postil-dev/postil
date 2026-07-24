@@ -1210,7 +1210,6 @@ export async function runReviewJob(
   let sensitiveValues: string[] = [];
   let hostedUsageReservationId: string | null = null;
   let cliStarted = false;
-  let publicationStarted = false;
   let completionStaged = false;
   let receiptUsageForRace: ReviewCompletionInput["usage"] | undefined;
   let usageAccountingCompleteForRace = false;
@@ -1296,7 +1295,6 @@ export async function runReviewJob(
       reviewLog.line("publication cancelled before forge writes");
       throw new TerminalReviewError("pull request is no longer eligible for publication");
     }
-    publicationStarted = true;
     onPublicationStarted?.();
     const superseded = await supersedeActiveReviews({
       repositoryId: repository.id,
@@ -1917,31 +1915,82 @@ export async function runReviewJob(
       if (err instanceof ReviewPublicationReconciliationError) throw err;
       throw new ReviewPublicationReconciliationError(message);
     }
-    if (err instanceof WorkerShutdownError && !publicationStarted) {
-      reviewLog.line(err.message);
-      await db
-        .update(schema.reviews)
-        .set({ status: "stale", finishedAt: new Date() })
-        .where(
-          and(
-            eq(schema.reviews.id, reviewId),
-            eq(schema.reviews.status, "running"),
-          ),
-        );
-      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
-        (releaseError) => {
+    const reconcileInterruptedSpend = async (): Promise<void> => {
+      if (hostedUsageReservationId && cliStarted) {
+        const reservationId = hostedUsageReservationId;
+        const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
+        const reconcile = billingOutcome === "resumable"
+          ? Promise.resolve()
+          : billingOutcome === "ambiguous"
+            ? largeReviewProxy!.boundRunKey().then((largeReviewRunKey) => {
+                if (!largeReviewRunKey) {
+                  throw new Error("ambiguous provider contact lacks a durable run");
+                }
+                return reconcileConservativeHostedReviewSpend(db, {
+                  reservationId,
+                  repositoryId: repository.id,
+                  reviewId,
+                  triggerSource: reviewValues.triggerSource,
+                  largeReviewRunKey,
+                });
+              })
+            : releaseHostedReviewSpend(db, reservationId);
+        await reconcile.catch((reconcileError) => {
           console.error(
-            `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
+            `failed to reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
           );
-        },
+          if (billingOutcome === "ambiguous") {
+            throw new PermanentJobError(
+              "ambiguous provider usage could not be settled safely",
+            );
+          }
+        });
+      } else {
+        await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
+          (releaseError) => {
+            console.error(
+              `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
+            );
+          },
+        );
+      }
+    };
+    if (err instanceof WorkerShutdownError) {
+      // Publication has begun (check-runs exist on the forge), but an
+      // instance replacement is not a review failure: the requeued job runs
+      // a fresh attempt whose check-runs supersede these, so the gate stays
+      // pending instead of failing closed. The runner requeues this claim
+      // without consuming a retry attempt. Spend settles first: ambiguous
+      // provider usage that cannot be settled safely must fail closed below
+      // instead of silently requeueing unaccounted spend.
+      const spendError = await reconcileInterruptedSpend()
+        .then(() => null)
+        .catch((reconcileError: unknown) => reconcileError);
+      if (!spendError) {
+        reviewLog.line(
+          "review interrupted by worker shutdown after publication began; a fresh attempt will supersede it",
+        );
+        await db
+          .update(schema.reviews)
+          .set({
+            status: "stale",
+            errorMessage: "interrupted by an instance replacement; requeued",
+            finishedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.reviews.id, reviewId),
+              eq(schema.reviews.status, "running"),
+            ),
+          );
+        throw err;
+      }
+      reviewLog.line(
+        "interrupted review spend could not be settled; failing closed",
       );
-      throw err;
     }
-    const interruptedAfterPublication = err instanceof WorkerShutdownError;
     const publicationIncomplete = err instanceof CheckRunPublicationError;
-    const message = interruptedAfterPublication
-      ? "review interrupted after GitHub publication began"
-      : redactSecrets(err, sensitiveValues);
+    const message = redactSecrets(err, sensitiveValues);
     reviewLog.line(`review failed: ${message}`);
     const failedRows = await db.transaction(async (tx) => {
       const rows = await tx
@@ -1980,44 +2029,7 @@ export async function runReviewJob(
       });
       return rows;
     });
-    if (hostedUsageReservationId && cliStarted) {
-      const reservationId = hostedUsageReservationId;
-      const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
-      const reconcile = billingOutcome === "resumable"
-        ? Promise.resolve()
-        : billingOutcome === "ambiguous"
-          ? largeReviewProxy!.boundRunKey().then((largeReviewRunKey) => {
-              if (!largeReviewRunKey) {
-                throw new Error("ambiguous provider contact lacks a durable run");
-              }
-              return reconcileConservativeHostedReviewSpend(db, {
-                reservationId,
-                repositoryId: repository.id,
-                reviewId,
-                triggerSource: reviewValues.triggerSource,
-                largeReviewRunKey,
-              });
-            })
-          : releaseHostedReviewSpend(db, reservationId);
-      await reconcile.catch((reconcileError) => {
-        console.error(
-          `failed to reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
-        );
-        if (billingOutcome === "ambiguous") {
-          throw new PermanentJobError(
-            "ambiguous provider usage could not be settled safely",
-          );
-        }
-      });
-    } else {
-      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
-        (releaseError) => {
-          console.error(
-            `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
-          );
-        },
-      );
-    }
+    await reconcileInterruptedSpend();
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).
@@ -2045,7 +2057,7 @@ export async function runReviewJob(
     ) {
       return;
     }
-    throw interruptedAfterPublication ? new OperationalError(message) : err;
+    throw err;
   } finally {
     if (leasePoll) clearInterval(leasePoll);
     largeReviewProxy?.close();

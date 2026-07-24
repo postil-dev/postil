@@ -438,7 +438,7 @@ describe("drainQueueOnce", () => {
       "if (!shuttingDown) {\n      await sleepUntilWebhookRedelivery",
     );
     expect(fly).toContain('kill_signal = "SIGTERM"');
-    expect(fly).toContain('kill_timeout = "30s"');
+    expect(fly).toContain('kill_timeout = "120s"');
   });
 
   test("hosted process launcher drops privileges and forwards termination", () => {

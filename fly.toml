@@ -8,13 +8,7 @@
 #     GITHUB_WEBHOOK_SECRET=... GITHUB_OAUTH_CLIENT_ID=... \
 #     GITHUB_OAUTH_CLIENT_SECRET=... POSTIL_SEALING_KEY=... \
 #     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... MODEL_API_KEY=... \
-#     POSTIL_API_KEY=... METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=... \
-#     ILERT_INTEGRATION_KEY=... POSTIL_MONITOR_HEARTBEAT_URL=...
-#
-# ILERT_INTEGRATION_KEY is the ilert alert-source integration key that
-# receives monitoring alerts; POSTIL_MONITOR_HEARTBEAT_URL is the ilert
-# heartbeat ping URL the private monitor calls after each completed pass.
-# Monitoring never pages by platform-sent email.
+#     POSTIL_API_KEY=... METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=...
 #
 # Browser PostHog receives the public project token from a runtime route so
 # POSTHOG_CLIENT_CAPTURE can disable initialization without rebuilding.
@@ -32,7 +26,10 @@
 app = "postil-web"
 primary_region = "lhr"
 kill_signal = "SIGTERM"
-kill_timeout = "30s"
+# The worker drains in-flight reviews on SIGTERM (finish-naturally window,
+# then abort and requeue); the timeout must cover the drain and settle
+# windows below plus the requeue writes.
+kill_timeout = "120s"
 
 [build]
 
@@ -70,6 +67,8 @@ WORKER_CONCURRENCY = "1"
 WORKER_POLL_INTERVAL_MS = "1000"
 WORKER_IDLE_POLL_MAX_MS = "900000"
 WORKER_WATCHDOG_INTERVAL_MS = "60000"
+WORKER_SHUTDOWN_DRAIN_MS = "60000"
+WORKER_SHUTDOWN_SETTLE_MS = "30000"
 WORKER_HEARTBEAT_INTERVAL_MS = "30000"
 POSTIL_MONITOR_INTERVAL_MS = "300000"
 POSTIL_MONITOR_ALERT_STATE_PATH = "/var/lib/postil-monitor/alert-state.json"
