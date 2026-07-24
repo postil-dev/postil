@@ -98,7 +98,7 @@ describe("trusted local Postil pre-push hook", () => {
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
       modelCredential: "present",
-      invocation: `review --base ${remoteBase} --no-post --bounded --output json --fail-on info --model z-ai/glm-5.2`,
+      invocation: `review --base ${remoteBase} --no-post --output json --fail-on info --model z-ai/glm-5.2`,
     });
     expect(await refExists(fixture.remote, "refs/heads/topic")).toBe(true);
   });
