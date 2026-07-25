@@ -34,6 +34,13 @@ runs:
       run: |
         set -euo pipefail
         if [[ -z "${ILERT_INTEGRATION_KEY:-}" ]]; then
+          if [[ "${EVENT_TYPE}" == "RESOLVE" ]]; then
+            # No alert can exist without a configured key, so there is
+            # nothing to resolve; exiting nonzero here would mark the run
+            # failed and re-trigger the resolve job on every following run.
+            echo "ILERT_INTEGRATION_KEY is not configured; nothing to resolve"
+            exit 0
+          fi
           echo "ILERT_INTEGRATION_KEY is missing from the environment; external alerting is not configured"
           exit 1
         fi
