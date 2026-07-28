@@ -1259,10 +1259,10 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(res.status).toBe(200);
 
-    // The gate (failure) and advisory (neutral) check-runs were both completed
-    // before the repo row (and its cascaded review) was deleted.
+    // Both the gate and review check-runs failed before the repo row and its
+    // cascaded review were deleted.
     expect(completedCheckRuns).toHaveLength(2);
-    expect(completedCheckRuns.map((c) => c.conclusion).sort()).toEqual(["failure", "neutral"]);
+    expect(completedCheckRuns.map((c) => c.conclusion).sort()).toEqual(["failure", "failure"]);
     expect(completedCheckRuns.every((c) => c.repoFullName === "octo/gone")).toBe(true);
     expect(
       completedCheckRuns.every((c) =>
