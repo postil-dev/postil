@@ -1589,7 +1589,7 @@ describeDb("webhook handler behaviour", () => {
 
     const res = await approvalComment(
       "mention-review-current-head",
-      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
+      "@postil-dev rerun the review for the current head. The previous hosted run ended without a review verdict.",
     );
 
     expect(res.status).toBe(200);
@@ -1637,7 +1637,7 @@ describeDb("webhook handler behaviour", () => {
 
     const duplicate = await approvalComment(
       "mention-review-current-head",
-      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
+      "@postil-dev rerun the review for the current head. The previous hosted run ended without a review verdict.",
     );
     expect(duplicate.status).toBe(200);
     const reactionCount = await pool.query<{ count: number }>(

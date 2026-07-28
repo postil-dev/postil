@@ -3,15 +3,17 @@
  * rename does not require a code change; the default is the app the hosted
  * control plane runs as (client id Iv23lisiHwVB3E4A27UF).
  */
+export function githubAppSlug(): string {
+  return process.env.GITHUB_APP_SLUG?.trim() || "postil-dev";
+}
+
 export function githubAppInstallUrl(): string {
-  const slug = process.env.GITHUB_APP_SLUG?.trim() || "postil-dev";
-  return `https://github.com/apps/${slug}/installations/new`;
+  return `https://github.com/apps/${githubAppSlug()}/installations/new`;
 }
 
 /** Login GitHub assigns to comments created by this App installation. */
 export function githubAppBotLogin(): string {
-  const slug = process.env.GITHUB_APP_SLUG?.trim() || "postil-dev";
-  return `${slug}[bot]`;
+  return `${githubAppSlug()}[bot]`;
 }
 
 interface GithubInstallationRef {
