@@ -35,6 +35,8 @@ const DEFAULT_REPOSITORY_ID = 990_002;
 const DEFAULT_PR_NUMBER = 1;
 const HOSTED_CLI_ARCHIVE = "postil-x86_64-unknown-linux-gnu.tar.gz";
 const MAX_HOSTED_CLI_ARCHIVE_BYTES = 32 * 1024 * 1024;
+const APPROVED_LOCAL_REVIEW_CASCADE =
+  "z-ai/glm-5.2,moonshotai/kimi-k2.7-code";
 
 type DiffTarget =
   | { kind: "staged" }
@@ -1007,6 +1009,7 @@ Options:
 
 async function ensureLocalModelCredential(): Promise<void> {
   let openRouterApiKey = process.env.OPENROUTER_API_KEY?.trim() ?? "";
+  const requestedCascade = process.env.REVIEW_MODEL_CASCADE?.trim();
 
   if (!openRouterApiKey) {
     const trustedHome = await resolveTrustedHome();
@@ -1070,9 +1073,12 @@ async function ensureLocalModelCredential(): Promise<void> {
   process.env.POSTIL_HOSTED_MODE = "0";
   process.env.REVIEW_MODEL =
     process.env.POSTIL_LOCAL_REVIEW_MODEL?.trim() || "z-ai/glm-5.2";
-  // The CLI deduplicates the model chain. Repeating the primary model yields
-  // one attempt, while an empty cascade variable would retain built-in defaults.
-  process.env.REVIEW_MODEL_CASCADE = process.env.REVIEW_MODEL;
+  // Ignore inherited provider choices except for the repository-approved
+  // fallback chain used by the required local quality gate.
+  process.env.REVIEW_MODEL_CASCADE =
+    requestedCascade === APPROVED_LOCAL_REVIEW_CASCADE
+      ? APPROVED_LOCAL_REVIEW_CASCADE
+      : process.env.REVIEW_MODEL;
   process.env.POSTIL_DISABLE_SCORER = "1";
   delete process.env.REVIEW_SCORER_MODEL;
 }
