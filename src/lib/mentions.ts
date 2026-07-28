@@ -1,16 +1,38 @@
+import { githubAppSlug } from "@/lib/github-app";
+
+/** Match the portable Postil handle and the configured GitHub App slug. */
+function handlePattern(): string {
+  const handles = new Set(["postil", githubAppSlug().toLowerCase()]);
+  return `(?:${[...handles].map(escapeRegExp).join("|")})`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * A mention of the bot. Matches @postil as a whole handle, case-insensitive.
+ * Match a Postil mention as a whole handle, case-insensitively.
  *
- * GitHub handles may contain hyphens, so `-` must count as part of a handle,
- * not a boundary: @postil-dev (the org), @postil-cli, @postil-action are
- * different accounts and must not summon the bot. Mentions quoted inside
- * fenced code blocks or inline code spans are documentation, not requests,
- * and are stripped before matching.
+ * The canonical `@postil` handle remains portable across forges. GitHub also
+ * displays the configured App slug, so that exact handle is accepted as an
+ * alias. A following slash identifies an organization team mention and does
+ * not summon Postil. Mentions inside code are documentation, not requests.
  */
 export function mentionsPostil(text: string | undefined | null): boolean {
   if (!text) return false;
   const prose = stripCode(text);
-  return /(^|[^a-z0-9_-])@postil($|[^a-z0-9_-])/i.test(prose);
+  return new RegExp(
+    `(^|[^a-z0-9_-])@${handlePattern()}($|[^a-z0-9_\\/-])`,
+    "i",
+  ).test(prose);
+}
+
+/** Remove canonical and configured App handles before classifying a request. */
+export function removePostilMentions(text: string): string {
+  return text.replace(
+    new RegExp(`(^|[^\\w])@${handlePattern()}(?=$|[^\\w/-])`, "giu"),
+    "$1",
+  );
 }
 
 /**
@@ -33,7 +55,10 @@ export function isPostilReviewCommand(text: string | undefined | null): boolean 
   );
   const explanation = boundary === -1 ? "" : prose.slice(boundary + 1).trim();
   if (explanation && !isReviewFailureExplanation(explanation)) return false;
-  return /^@postil\s+(?:(?:please|can you(?: please)?)\s+)?(?:re-?review(?:\s+(?:this|this pr|the pull request|the current head|current head))?|re-?run(?:\s+the)?\s+review(?:\s+for\s+(?:the\s+)?current\s+head)?|review(?:\s+(?:this|this pr|the pull request|the current head|current head))?)$/i.test(firstSentence);
+  return new RegExp(
+    `^@${handlePattern()}\\s+(?:(?:please|can you(?: please)?)\\s+)?(?:re-?review(?:\\s+(?:this|this pr|the pull request|the current head|current head))?|re-?run(?:\\s+the)?\\s+review(?:\\s+for\\s+(?:the\\s+)?current\\s+head)?|review(?:\\s+(?:this|this pr|the pull request|the current head|current head))?)$`,
+    "i",
+  ).test(firstSentence);
 }
 
 function isReviewFailureExplanation(text: string): boolean {
@@ -51,10 +76,13 @@ export function parsePostilApproveCommand(
 ): PostilApproveCommand | null {
   if (!text) return null;
   const prose = stripCode(text).trim();
-  if (!/^@postil(?:\s|$)/i.test(prose)) return null;
-  if (!/^@postil\s+approve(?:\s|$)/i.test(prose)) return null;
+  const handle = handlePattern();
+  if (!new RegExp(`^@${handle}(?:\\s|$)`, "i").test(prose)) return null;
+  if (!new RegExp(`^@${handle}\\s+approve(?:\\s|$)`, "i").test(prose)) return null;
 
-  const match = prose.match(/^@postil\s+approve\s+(\S+)\s+--\s*([\s\S]*)$/i);
+  const match = prose.match(
+    new RegExp(`^@${handle}\\s+approve\\s+(\\S+)\\s+--\\s*([\\s\\S]*)$`, "i"),
+  );
   if (!match) {
     return { ok: false, error: "Use `@postil approve <finding-id> -- <reason>`." };
   }
