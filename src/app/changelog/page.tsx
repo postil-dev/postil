@@ -35,11 +35,19 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.8.1–0.8.3",
-    date: "July 24, 2026",
+    version: "0.8.1–0.8.4",
+    date: "July 24–28, 2026",
     summary:
-      "The builtin content policy judges prose by function instead of fixed vocabulary, and reviews can resolve their own uncertainty findings against repository files.",
+      "Reviews can resolve uncertainty against repository files and publish each GitHub finding on one configured surface.",
     changes: [
+      {
+        label: "Added",
+        text: "review.findingPresentation selects batched review comments by default or advisory check annotations on GitHub, so the same finding is not rendered twice.",
+      },
+      {
+        label: "Fixed",
+        text: "A review that cannot produce a verdict fails postil/review instead of appearing skipped; postil/gate still follows the configured outage policy.",
+      },
       {
         label: "Changed",
         text: "Finding bodies over six hundred bytes are rewritten to state the defect, evidence, and fix in at most three sentences; reviews.conciseFindings: false opts out.",
