@@ -236,9 +236,7 @@ console.log("fixture-key");
 
     const invocation = JSON.parse(await readFile(invocationMarker, "utf8"));
     expect(invocation.model).toBe("z-ai/glm-5.2");
-    expect(invocation.cascade).toBe(
-      "z-ai/glm-5.2,moonshotai/kimi-k2.7-code",
-    );
+    expect(invocation.cascade).toBe("moonshotai/kimi-k2.7-code");
   }, 120_000);
 
   test("rejects an installed CLI older than the hosted release", async () => {
