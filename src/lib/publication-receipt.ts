@@ -17,6 +17,7 @@ const CARRIED_MARKER = "[carried from previous review]";
 
 export const PUBLICATION_STATES = [
   "inline",
+  "checkAnnotation",
   "summaryOnly",
   "carried",
   "resolved",
@@ -35,6 +36,7 @@ const receiptFindingSchema = z
     stableIdentity: z.boolean().default(true),
     initialOutcome: z.enum([
       "inline",
+      "checkAnnotation",
       "summaryOnly",
       "carried",
       "resolved",
@@ -48,13 +50,35 @@ const receiptFindingSchema = z
 
 const publicationReceiptSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
+    channel: z.enum(["reviewComments", "checkAnnotations"]).optional(),
     receiptId: z.string().trim().min(1).max(200),
     reviewId: z.string().regex(/^[1-9][0-9]{0,19}$/).optional(),
     findings: z.array(receiptFindingSchema).max(MAX_RECEIPT_FINDINGS),
   })
   .strict()
   .superRefine((receipt, context) => {
+    if (receipt.version === 1 && receipt.channel !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["channel"],
+        message: "version 1 receipts do not carry a publication channel",
+      });
+    }
+    if (receipt.version === 2 && receipt.channel === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["channel"],
+        message: "version 2 receipts require a publication channel",
+      });
+    }
+    if (receipt.channel === "checkAnnotations" && receipt.reviewId) {
+      context.addIssue({
+        code: "custom",
+        path: ["reviewId"],
+        message: "check annotation receipts cannot carry a review identity",
+      });
+    }
     const ids = new Set<string>();
     for (const [index, finding] of receipt.findings.entries()) {
       if (ids.has(finding.findingId)) {
@@ -65,6 +89,33 @@ const publicationReceiptSchema = z
         });
       }
       ids.add(finding.findingId);
+      if (receipt.version === 1 && finding.initialOutcome === "checkAnnotation") {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "initialOutcome"],
+          message: "version 1 receipts cannot report check annotations",
+        });
+      }
+      if (
+        receipt.channel === "reviewComments" &&
+        finding.initialOutcome === "checkAnnotation"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "initialOutcome"],
+          message: "review comment receipts cannot report check annotations",
+        });
+      }
+      if (
+        receipt.channel === "checkAnnotations" &&
+        finding.initialOutcome === "inline"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "initialOutcome"],
+          message: "check annotation receipts cannot report inline comments",
+        });
+      }
       if (finding.inlineRejected && finding.initialOutcome !== "summaryOnly") {
         context.addIssue({
           code: "custom",
@@ -229,6 +280,10 @@ export async function persistPublicationReceipt(
     reviewId: input.reviewId,
     receiptVersion: input.receipt?.version ?? null,
     receiptId: input.receipt?.receiptId ?? null,
+    publicationChannel:
+      input.receipt?.version === 1
+        ? "reviewComments"
+        : (input.receipt?.channel ?? null),
     githubReviewId: input.receipt?.reviewId ?? null,
   });
 
@@ -332,6 +387,7 @@ export async function getPullRequestPublicationCommentIds(
 
 export interface PublicationCounts {
   inline: number;
+  checkAnnotation: number;
   summaryOnly: number;
   carried: number;
   resolved: number;

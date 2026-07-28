@@ -368,8 +368,8 @@ console.log("fixture-key");
     expect(result.stdout).toContain("Local fixture finding");
   }, 120_000);
 
-  test("preserves an operational finding when the local advisory publication is neutral", async () => {
-    const repo = await createFixtureRepo("neutral-advisory");
+  test("preserves an operational finding when the local review check fails", async () => {
+    const repo = await createFixtureRepo("failed-review-check");
 
     const result = await runLocalReview(repo, "0", 1, {
       args: ["--require-clean"],
@@ -377,7 +377,7 @@ console.log("fixture-key");
     });
 
     expect(result.stdout).toContain(
-      "would complete check-run #1000 as neutral",
+      "would complete check-run #1000 as failure",
     );
     expect(result.stdout).toContain("Review findings:");
     expect(result.stdout).toContain(".postil/provider:1");
@@ -397,7 +397,7 @@ console.log("fixture-key");
       },
     });
 
-    expect(result.stdout).toContain("would complete check-run #1000 as neutral");
+    expect(result.stdout).toContain("would complete check-run #1000 as failure");
     expect(result.stdout).toContain(".postil/model-output:1");
     expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
     expect(result.stdout).toContain("Gate: failed");
@@ -730,7 +730,7 @@ async function patchCheck(id, conclusion, title, summary) {
     })
   });
 }
-await patchCheck(advisory, operational ? "neutral" : "success", failing || operational ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
+await patchCheck(advisory, operational ? "failure" : "success", failing || operational ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
 await patchCheck(gate, failing ? "failure" : "success", failing ? "Merge gate failed" : "Merge gate passed", envelope.summary);
 if (hasFinding && !operational) {
   await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}/reviews\`, {

@@ -80,6 +80,7 @@ export async function getOrgReviewRows(
       const counts = publicationCounts.get(row.id) ?? null;
       const activePublished = counts
         ? counts.inline +
+          counts.checkAnnotation +
           counts.summaryOnly +
           counts.carried +
           counts.inlineRejected

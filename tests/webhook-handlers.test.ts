@@ -1430,7 +1430,7 @@ describeDb("webhook handler behaviour", () => {
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedUser(501, "admin", orgId, "admin");
     const envelope = approvalEnvelope();
-    const template = (envelope.findings as Array<Record<string, unknown>>)[0]!;
+    const template = envelope.findings[0]!;
     envelope.findings = [
       { ...template, id: "a1b2c3d4e5f6".padEnd(64, "0") },
       { ...template, id: "a1b2c3d4e5f6".padEnd(64, "1"), line: 20 },

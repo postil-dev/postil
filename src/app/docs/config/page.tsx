@@ -111,7 +111,7 @@ export default function ConfigPage() {
         deployments.
       </p>
       <pre tabIndex={0} aria-label="Code sample">
-        <code>{`# .postil.yaml — every key, with defaults
+        <code>{`# .postil.yaml: every key, with defaults
 enabled: true            # disable reviews for this repo entirely
 
 ignore:                  # globs excluded from review
@@ -131,6 +131,7 @@ reviewer:
 
 review:
   onClean: skip          # skip = stay silent on clean PRs (default) | comment
+  findingPresentation: reviewComments # reviewComments (default) | checkAnnotations (GitHub only)
 
 contentPolicy:
   enabled: true          # built-in prose/content baseline; false opts out

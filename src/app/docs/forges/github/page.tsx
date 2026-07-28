@@ -41,11 +41,14 @@ export default function GitHubForgePage() {
 export MODEL_API_KEY=...
 export POSTIL_API_KEY="$MODEL_API_KEY"
 
-postil review --repo owner/name --pr 123   # posts inline comments + both check-runs`}</code>
+postil review --repo owner/name --pr 123 --publish`}</code>
       </pre>
       <p>
-        A gate-failing review exits <code>1</code>; a clean review exits{" "}
-        <code>0</code> and posts nothing. See{" "}
+        Findings appear in one batched review by default. Set{" "}
+        <code>review.findingPresentation: checkAnnotations</code> to publish them
+        only on <code>postil/review</code>. A gate-failing review exits{" "}
+        <code>1</code>; a clean review exits <code>0</code> with successful checks
+        and no finding feedback. See{" "}
         <Link href="/docs/exit-codes">exit codes</Link> for what CI should do
         with each. Mark <code>postil/gate</code> required in branch protection;
         see <Link href="/docs/gate">the gate</Link>.
@@ -58,7 +61,7 @@ postil review --repo owner/name --pr 123   # posts inline comments + both check-
       <pre tabIndex={0} aria-label="Code sample">
         <code>{`export GITHUB_TOKEN=...
 export GITHUB_API_URL=https://ghes.example.com/api/v3
-postil review --repo owner/name --pr 123`}</code>
+postil review --repo owner/name --pr 123 --publish`}</code>
       </pre>
       <p>
         Token, scopes, and gate semantics are identical to github.com. The
@@ -72,7 +75,7 @@ postil review --repo owner/name --pr 123`}</code>
         hosted bot replies automatically. On a pull request, an exact command
         such as <code>@postil review the current head</code> or{" "}
         <code>@postil re-review</code> runs the structured reviewer, with
-        inline findings and the compact review summary. Other mentions are
+        findings in the configured presentation and a compact summary. Other mentions are
         treated as questions and receive a bounded reply. Postil reacts with
         eyes when it accepts a comment request. In an inline Postil review
         thread, a collaborator can ask a clear follow-up question without
@@ -82,10 +85,10 @@ postil review --repo owner/name --pr 123`}</code>
         is:
       </p>
       <pre tabIndex={0} aria-label="Code sample">
-        <code>{`postil respond --repo owner/name --pr 123 --comment "@postil is this safe?"
-postil respond --repo owner/name --issue 45 --comment "@postil what's the likely cause?"
+        <code>{`postil respond --repo owner/name --pr 123 --comment "@postil is this safe?" --publish
+postil respond --repo owner/name --issue 45 --comment "@postil what's the likely cause?" --publish
 # Automation should pass the text via env instead (argv is visible in \`ps\`):
-POSTIL_COMMENT="@postil is this safe?" postil respond --repo owner/name --pr 123`}</code>
+POSTIL_COMMENT="@postil is this safe?" postil respond --repo owner/name --pr 123 --publish`}</code>
       </pre>
       <p>
         GitHub covers both issues and pull requests for <code>respond</code>:

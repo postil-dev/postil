@@ -185,6 +185,7 @@ const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
 
 const PUBLICATION_STATE_LABELS: Record<PublicationState, string> = {
   inline: "inline",
+  checkAnnotation: "check annotation",
   summaryOnly: "summary",
   carried: "carried",
   resolved: "resolved",
@@ -546,6 +547,7 @@ export default async function RunDetailPage({
     },
     {
       inline: 0,
+      checkAnnotation: 0,
       summaryOnly: 0,
       carried: 0,
       resolved: 0,
@@ -558,10 +560,13 @@ export default async function RunDetailPage({
   );
   const publishedFindingCount =
     publicationCounts.inline +
+    publicationCounts.checkAnnotation +
     publicationCounts.summaryOnly +
     publicationCounts.carried +
     publicationCounts.inlineRejected;
-  const publicationObserved = publicationReceiptRows[0]?.receiptVersion === 1;
+  const publicationObserved = [1, 2].includes(
+    publicationReceiptRows[0]?.receiptVersion ?? 0,
+  );
 
   return (
     <LiveRunProvider

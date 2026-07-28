@@ -19,7 +19,7 @@ export const WATCHDOG_ERROR_PREFIX = "watchdog:";
  * Watchdog pass.
  *
  * 1. Reviews `running` past the deadline are marked failed and their
- *    check-run completion durably queued (gate: failure, advisory: neutral).
+ *    check-run completion durably queued (gate: policy outcome, review: failure).
  *    A review left in_progress forever is indistinguishable from a passing
  *    one in branch protection UIs; never leave one behind.
  * 2. Jobs stuck `running` past the deadline (worker died mid-job) are

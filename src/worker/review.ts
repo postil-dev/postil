@@ -805,7 +805,7 @@ async function resumeStagedReviewCompletion(input: {
         name: ADVISORY_CHECK_NAME,
         externalId: checkRunExternalId(stagedReview.publicId, "review"),
         headSha: payload.headSha,
-        conclusion: operationallyUnavailable ? "neutral" : "success",
+        conclusion: operationallyUnavailable ? "failure" : "success",
         requireOutput: true,
         detailsUrl,
       },
@@ -1738,7 +1738,7 @@ export async function runReviewJob(
           name: ADVISORY_CHECK_NAME,
           externalId: advisoryCheckExternalId,
           headSha: payload.headSha,
-          conclusion: operationallyUnavailable ? "neutral" : "success",
+          conclusion: operationallyUnavailable ? "failure" : "success",
           requireOutput: true,
           detailsUrl,
         },
@@ -2227,7 +2227,7 @@ export async function completeHostedInferenceDisabledCheckRuns(
 
 /**
  * Complete both check-runs after an operational failure. Enforced gates fail
- * closed; advisory gates and the review check remain neutral.
+ * closed; advisory gates stand aside while the review check fails truthfully.
  */
 export async function failCheckRuns(
   token: string,
@@ -2252,11 +2252,9 @@ export async function failCheckRuns(
       "publication cleanup requires the exact GitHub check-run identities",
     );
   }
-  const title = gateEnabled
-    ? publicationIncomplete
-      ? "Review publication incomplete"
-      : "Review did not complete"
-    : "Postil gate is advisory";
+  const reviewTitle = publicationIncomplete
+    ? "Review publication incomplete"
+    : "Review did not complete";
   const summary = publicationIncomplete
     ? `Postil completed the review, but GitHub did not receive the complete result. This run is not a published review verdict.${details}`
     : `Postil could not complete this review, so no review verdict exists.${details}`;
@@ -2265,6 +2263,7 @@ export async function failCheckRuns(
     checkRunId: number,
     expected: ExpectedCheckRunIdentity | undefined,
     conclusion: "failure" | "neutral",
+    title: string,
     checkSummary: string,
   ): Promise<void> => {
     if (!expected) {
@@ -2304,6 +2303,7 @@ export async function failCheckRuns(
       gateCheckRunId,
       expectedChecks?.gate,
       gateEnabled ? "failure" : "neutral",
+      gateEnabled ? reviewTitle : "Postil gate is advisory",
       gateSummary,
     ).catch((error) => {
       errors.push(error);
@@ -2316,7 +2316,8 @@ export async function failCheckRuns(
     await complete(
       advisoryCheckRunId,
       expectedChecks?.advisory,
-      "neutral",
+      "failure",
+      reviewTitle,
       summary,
     ).catch((error) => {
       errors.push(error);

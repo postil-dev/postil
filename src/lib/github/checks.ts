@@ -6,9 +6,8 @@ import { isPostilBotLogin } from "./conversation";
  *
  * The worker (not the CLI) creates both check-runs so it owns their ids
  * even if the CLI crashes; the CLI completes them on the happy path. On
- * crash/timeout the worker completes them itself: gate -> `failure`
- * (fail closed; a grey square that reads as "didn't fail" is the mistake
- * to avoid), advisory -> `neutral` with the operational error summary.
+ * crash/timeout the worker completes them itself: the review check fails with
+ * the operational error summary, while the gate follows organization policy.
  */
 
 export const ADVISORY_CHECK_NAME = "postil/review";

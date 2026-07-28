@@ -94,6 +94,55 @@ describe("publication receipt contract", () => {
     ]);
   });
 
+  test("accepts a version 2 check-annotation receipt without review comment identities", async () => {
+    const receipt = await readPublicationReceipt(
+      await receiptFile({
+        version: 2,
+        channel: "checkAnnotations",
+        receiptId: "github-review-v2:123456",
+        findings: [
+          {
+            findingId: "annotation-id",
+            stableIdentity: true,
+            initialOutcome: "checkAnnotation",
+          },
+          {
+            findingId: "summary-id",
+            stableIdentity: true,
+            initialOutcome: "summaryOnly",
+          },
+        ],
+      }),
+    );
+    validateReceiptAgainstEnvelope(receipt, envelope(["annotation-id", "summary-id"]));
+    expect(receipt.channel).toBe("checkAnnotations");
+    expect(receipt.reviewId).toBeUndefined();
+    expect(receipt.findings.map((entry) => entry.initialOutcome)).toEqual([
+      "checkAnnotation",
+      "summaryOnly",
+    ]);
+  });
+
+  test("rejects publication outcomes that contradict the version 2 channel", async () => {
+    await expect(
+      readPublicationReceipt(
+        await receiptFile({
+          version: 2,
+          channel: "checkAnnotations",
+          receiptId: "github-review-v2:invalid",
+          reviewId: "9004",
+          findings: [
+            {
+              findingId: "inline-id",
+              initialOutcome: "inline",
+              commentId: "8004",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow("publication receipt is invalid");
+  });
+
   test.each([".postil/provider", ".postil/model-output"])(
     "accepts exact publishable populations when a forge receipt reports %s",
     (operationalPath) => {
