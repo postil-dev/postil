@@ -332,6 +332,7 @@ export const reviewPublicationReceipts = pgTable(
       .references(() => reviews.id, { onDelete: "cascade" }),
     receiptVersion: integer("receipt_version"),
     receiptId: text("receipt_id"),
+    publicationChannel: text("publication_channel"),
     githubReviewId: text("github_review_id"),
     observedAt: timestamp("observed_at", { withTimezone: true })
       .notNull()
@@ -340,7 +341,7 @@ export const reviewPublicationReceipts = pgTable(
   (t) => [
     check(
       "review_publication_receipts_identity_check",
-      sql`(${t.receiptVersion} IS NULL AND ${t.receiptId} IS NULL) OR (${t.receiptVersion} = 1 AND length(btrim(${t.receiptId})) BETWEEN 1 AND 200)`,
+      sql`(${t.receiptVersion} IS NULL AND ${t.receiptId} IS NULL AND ${t.publicationChannel} IS NULL) OR (${t.receiptVersion} = 1 AND length(btrim(${t.receiptId})) BETWEEN 1 AND 200 AND (${t.publicationChannel} IS NULL OR ${t.publicationChannel} = 'reviewComments')) OR (${t.receiptVersion} = 2 AND length(btrim(${t.receiptId})) BETWEEN 1 AND 200 AND ${t.publicationChannel} IS NOT NULL AND ${t.publicationChannel} IN ('reviewComments', 'checkAnnotations'))`,
     ),
     check(
       "review_publication_receipts_github_review_id_check",
@@ -500,11 +501,11 @@ export const findingPublications = pgTable(
     ),
     check(
       "finding_publications_initial_state_check",
-      sql`${t.initialState} IN ('inline', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown')`,
+      sql`${t.initialState} IN ('inline', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown')`,
     ),
     check(
       "finding_publications_current_state_check",
-      sql`${t.currentState} IN ('inline', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown')`,
+      sql`${t.currentState} IN ('inline', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown')`,
     ),
     check(
       "finding_publications_github_comment_id_check",

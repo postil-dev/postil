@@ -234,7 +234,7 @@ describe("review terminal check-runs", () => {
     ]);
   });
 
-  test("operational failure fails the gate and neutralizes the advisory check", async () => {
+  test("operational failure fails both the gate and review checks", async () => {
     await failCheckRuns(
       "test-token",
       "postil-dev/postil",
@@ -247,7 +247,7 @@ describe("review terminal check-runs", () => {
       completions.map(({ id, conclusion }) => ({ id, conclusion })),
     ).toEqual([
       { id: 22, conclusion: "failure" },
-      { id: 11, conclusion: "neutral" },
+      { id: 11, conclusion: "failure" },
     ]);
     expect(
       completions.every(({ summary }) => !summary.includes("worker stopped")),
@@ -375,9 +375,9 @@ describe("review terminal check-runs", () => {
       completions.map(({ id, conclusion }) => ({ id, conclusion })),
     ).toEqual([
       { id: 22, conclusion: "failure" },
-      { id: 11, conclusion: "neutral" },
+      { id: 11, conclusion: "failure" },
       { id: 22, conclusion: "failure" },
-      { id: 11, conclusion: "neutral" },
+      { id: 11, conclusion: "failure" },
     ]);
   });
 
@@ -398,7 +398,7 @@ describe("review terminal check-runs", () => {
     expect(completions.map(({ id, conclusion, title }) => ({ id, conclusion, title })))
       .toEqual([
         { id: 22, conclusion: "neutral", title: "Postil gate is advisory" },
-        { id: 11, conclusion: "neutral", title: "Postil gate is advisory" },
+        { id: 11, conclusion: "failure", title: "Review did not complete" },
       ]);
     expect(completions.map(({ detailsUrl }) => detailsUrl)).toEqual([
       "https://postil.dev/orgs/postil-dev/runs/run-id",
@@ -419,7 +419,7 @@ describe("review terminal check-runs", () => {
     expect(completions.map(({ id, conclusion, title }) => ({ id, conclusion, title })))
       .toEqual([
         { id: 22, conclusion: "neutral", title: "Postil gate is advisory" },
-        { id: 11, conclusion: "neutral", title: "Postil gate is advisory" },
+        { id: 11, conclusion: "failure", title: "Review did not complete" },
       ]);
   });
 
@@ -466,6 +466,6 @@ describe("review terminal check-runs", () => {
 
     expect(
       completions.map(({ id, conclusion }) => ({ id, conclusion })),
-    ).toEqual([{ id: 11, conclusion: "neutral" }]);
+    ).toEqual([{ id: 11, conclusion: "failure" }]);
   });
 });

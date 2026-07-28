@@ -127,7 +127,7 @@ export default function HowItWorksPage() {
                 <StatusIcon kind="info" />
                 <span>
                   <code className="font-mono">postil/review</code> on
-                  operational error: neutral, with the error summary
+                  operational error: <strong>failure</strong>, with the error summary
                 </span>
               </li>
               <li className="flex items-center gap-3">

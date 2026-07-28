@@ -452,4 +452,68 @@ describeDb("publication receipt migration and lifecycle", () => {
       findingsCount: 1,
     });
   });
+
+  test("persists version 2 check-annotation identity and dashboard counts", async () => {
+    const annotationId = await createRunningReview("e".repeat(40), "d".repeat(40));
+    await complete(
+      annotationId,
+      envelope({
+        head: "e".repeat(40),
+        findings: [finding("annotation-id")],
+      }),
+      {
+        version: 2,
+        channel: "checkAnnotations",
+        receiptId: "github-review-v2:annotation",
+        findings: [
+          {
+            findingId: "annotation-id",
+            stableIdentity: true,
+            initialOutcome: "checkAnnotation",
+            inlineRejected: false,
+          },
+        ],
+      },
+    );
+
+    const receipt = await pool.query<{
+      receipt_version: number;
+      publication_channel: string;
+      github_review_id: string | null;
+    }>(
+      `SELECT receipt_version, publication_channel, github_review_id
+       FROM review_publication_receipts WHERE review_id = $1`,
+      [annotationId],
+    );
+    expect(receipt.rows).toEqual([
+      {
+        receipt_version: 2,
+        publication_channel: "checkAnnotations",
+        github_review_id: null,
+      },
+    ]);
+    const counts = await getReviewPublicationCounts(db, [annotationId]);
+    expect(counts.get(annotationId)?.checkAnnotation).toBe(1);
+    expect(
+      (await getOrgReviewRows(db, orgId, 20)).find((row) => row.id === annotationId),
+    ).toMatchObject({ findingsCount: 1 });
+    await expect(
+      pool.query(
+        "UPDATE review_publication_receipts SET publication_channel = 'reviewComments' WHERE review_id = $1",
+        [annotationId],
+      ),
+    ).rejects.toThrow("immutable");
+  });
+
+  test("rejects a version 2 receipt without a publication channel", async () => {
+    const reviewId = await createRunningReview("f".repeat(40), "e".repeat(40));
+    await expect(
+      pool.query(
+        `INSERT INTO review_publication_receipts
+          (review_id, receipt_version, receipt_id, publication_channel)
+         VALUES ($1, 2, 'github-review-v2:missing-channel', NULL)`,
+        [reviewId],
+      ),
+    ).rejects.toThrow("review_publication_receipts_identity_check");
+  });
 });

@@ -120,7 +120,7 @@ export default async function OrgDashboardPage({
           SELECT 1 FROM finding_publications publication
           WHERE publication.review_id = ${schema.reviews.id}
             AND publication.finding_id = finding ->> 'id'
-            AND publication.initial_state IN ('inline', 'summaryOnly', 'carried', 'inlineRejected')
+            AND publication.initial_state IN ('inline', 'checkAnnotation', 'summaryOnly', 'carried', 'inlineRejected')
         )
       )`,
       durationMs: sql<number | null>`(${schema.reviews.envelope} ->> 'durationMs')::int`,
@@ -193,7 +193,7 @@ export default async function OrgDashboardPage({
             INNER JOIN installations published_installation ON published_installation.id = published_repository.installation_id
             WHERE published_installation.org_id = ${org.id}
               AND published_review.status = 'completed'
-              AND publication.initial_state IN ('inline', 'summaryOnly', 'carried', 'inlineRejected')
+              AND publication.initial_state IN ('inline', 'checkAnnotation', 'summaryOnly', 'carried', 'inlineRejected')
           ), 0)::int
         `,
       })
