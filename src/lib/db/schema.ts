@@ -976,7 +976,11 @@ export const customerNotificationEmailDeliveryEvents = pgTable(
   ],
 );
 
-/** One immutable trial grant per GitHub owner, with the initiating identity for abuse controls. */
+/**
+ * One immutable trial grant per organization, keyed so a second attempt for the
+ * same organization inserts nothing. The initiating identity is recorded for
+ * attribution and future abuse controls, not as a limit.
+ */
 export const selfServiceTrialGrants = pgTable(
   "self_service_trial_grants",
   {

@@ -79,6 +79,9 @@ export async function grantSelfServiceTrial(
     const hostedAvailable =
       input.hostedInferenceEnabled &&
       (capability === null || capability.rows[0]?.active === true);
+    // Mode only. The one-trial-per-organization limit is the entitlement's
+    // org_id primary key, enforced by the conflict clause below: a second
+    // attempt for an organization inserts nothing and reports granted: false.
     const hostedEligible = input.subscriptionMode === "hosted" && hostedAvailable;
     const grantedMode =
       input.subscriptionMode === "hosted" && !hostedEligible
