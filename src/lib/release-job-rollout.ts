@@ -16,7 +16,6 @@ const HOSTED_INFERENCE_CAPABILITY_PREFIX = "hosted-inference-release:";
 const HOSTED_INFERENCE_DARK_PREFIX = "hosted-inference-dark:";
 const HOSTED_INFERENCE_FLEET_ACTIVE = "hosted-inference-fleet-active";
 export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
-export const HOSTED_TRIALS_PER_GITHUB_ACTOR = 3;
 
 function normalizedReleaseSha(releaseSha: string): string {
   const normalized = releaseSha.trim().toLowerCase();
@@ -84,25 +83,13 @@ export async function activateHostedInferenceRelease(
     );
     await client.query(
       `
-      WITH hosted_counts AS (
-        SELECT initiated_by_github_id, count(*)::int AS count
-        FROM self_service_trial_grants
-        WHERE granted_mode = 'hosted'
-        GROUP BY initiated_by_github_id
-      ), candidates AS (
-        SELECT grant_row.org_id,
-               row_number() OVER (
-                 PARTITION BY grant_row.initiated_by_github_id
-                 ORDER BY grant_row.created_at, grant_row.org_id
-               ) AS candidate_rank,
-               COALESCE(hosted_counts.count, 0) AS hosted_count
+      WITH candidates AS (
+        SELECT grant_row.org_id
         FROM self_service_trial_grants grant_row
         JOIN organization_entitlements entitlement
           ON entitlement.org_id = grant_row.org_id
         LEFT JOIN org_settings settings
           ON settings.org_id = grant_row.org_id
-        LEFT JOIN hosted_counts
-          ON hosted_counts.initiated_by_github_id = grant_row.initiated_by_github_id
         WHERE grant_row.requested_mode = 'hosted'
           AND grant_row.granted_mode = 'byok'
           AND entitlement.subscription_mode = 'byok'
@@ -117,7 +104,6 @@ export async function activateHostedInferenceRelease(
             updated_at = now()
         FROM candidates
         WHERE entitlement.org_id = candidates.org_id
-          AND candidates.candidate_rank <= GREATEST($1 - candidates.hosted_count, 0)
           AND entitlement.subscription_mode = 'byok'
           AND entitlement.status = 'trialing'
           AND entitlement.updated_by = 'self-service-trial'
@@ -130,9 +116,7 @@ export async function activateHostedInferenceRelease(
       WHERE grant_row.org_id = promoted.org_id
         AND grant_row.requested_mode = 'hosted'
         AND grant_row.granted_mode = 'byok'
-    `,
-      [HOSTED_TRIALS_PER_GITHUB_ACTOR],
-    );
+    `);
     const dark = await client.query<{ activated_at: Date }>(
       `SELECT min(activated_at) AS activated_at
          FROM deployment_capabilities

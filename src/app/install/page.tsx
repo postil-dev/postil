@@ -9,7 +9,7 @@ import { githubAppInstallUrl } from "@/lib/github-app";
 export const metadata: Metadata = {
   title: "Install",
   description:
-    "Install Postil for GitHub with a hosted trial for up to three organizations per GitHub identity, or use BYOK.",
+    "Install Postil for GitHub with a 30-day hosted trial for your organization, or use BYOK.",
   alternates: { canonical: "/install" },
   openGraph: {
     title: "Install Postil",

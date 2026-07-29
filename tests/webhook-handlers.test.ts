@@ -597,7 +597,7 @@ describeDb("webhook handler behaviour", () => {
     expect(afterReinstall.rows[0]!.removal_alert_count).toBe(1);
   });
 
-  test("one GitHub actor receives bounded hosted trials across owners without blocking setup", async () => {
+  test("every account an actor installs receives its own hosted trial", async () => {
     const responses = await Promise.all(
       Array.from({ length: 4 }, async (_, index) => {
         const account = {
@@ -629,9 +629,9 @@ describeDb("webhook handler behaviour", () => {
     expect(grants.rows.map((row) => row.requested_mode)).toEqual([
       "hosted", "hosted", "hosted", "hosted",
     ]);
-    expect(grants.rows.map((row) => row.granted_mode).sort()).toEqual([
-      "byok", "hosted", "hosted", "hosted",
-    ].sort());
+    expect(grants.rows.map((row) => row.granted_mode)).toEqual([
+      "hosted", "hosted", "hosted", "hosted",
+    ]);
   });
 
   test("installation without a verified sender defers its trial until authenticated setup", async () => {

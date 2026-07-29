@@ -26,7 +26,7 @@ describe("pricing policy", () => {
 
     expect(pricing).toContain("bot or service identity");
     expect(pricing).toMatch(/Repositories are\s+not billed/);
-    expect(pricing).toContain("Review volume is not a billing unit");
+    expect(pricing).toContain("Unlimited reviews");
     expect(terms).toContain("Repository count and review count are not billing units");
     expect(terms).toContain("provider-side budgets and");
     expect(terms).toContain("hard limits where the provider supports them");
@@ -35,10 +35,10 @@ describe("pricing policy", () => {
     expect(pricing).toContain('href="/contact"');
     expect(pricing).toContain("Install with BYOK");
     expect(pricing).toContain("Start 30-day trial");
-    expect(pricing).toContain("Up to 3 organization trials per GitHub identity");
-    expect(pricing).toContain("BYOK remains available after that");
-    expect(terms).toContain("up to three organizations");
-    expect(terms).toContain("Additional organizations can start with BYOK");
+    expect(pricing).toContain("Switch to BYOK at any time");
+    expect(pricing).not.toContain("organization trials per GitHub identity");
+    expect(terms).toContain("one 30-day hosted trial without a card");
+    expect(terms).not.toContain("up to three organizations");
     expect(terms).toContain("Public-repository App reviews are free");
     expect(terms).toContain("materially beyond ordinary interactive");
     expect(terms).not.toContain("Where practicable");

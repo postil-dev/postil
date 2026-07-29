@@ -465,7 +465,7 @@ export default function HomePage() {
               Hosted ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} / author / mo
             </p>
             <p className="mt-2 text-sm text-ink-soft">
-              Start with 30 days free and no card. Review volume is not a billing unit.
+              Start with 30 days free and no card. Unlimited reviews.
             </p>
           </div>
           <div className="card p-6">
