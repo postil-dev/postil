@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool } from "pg";
+import type { Pool } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
+import { closeDb } from "@/lib/db";
 import { signWebhookBody } from "@/lib/crypto/webhook";
 import {
   claimJob,
@@ -48,30 +48,18 @@ const WEBHOOK_SECRET = "test-webhook-secret-for-dedupe";
 const DELIVERY_ID = "00000000-dead-beef-0000-000000000001";
 
 describeDb("webhook delivery dedupe durability", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = TEST_URL;
+    db = await createEphemeralDatabase("webhook_dedupe");
+    pool = db.pool;
+    // The webhook route and worker runner reach the database through the
+    // getDb()/getPool() singleton, keyed off DATABASE_URL.
+    process.env.DATABASE_URL = db.url;
     process.env.GITHUB_WEBHOOK_SECRET = WEBHOOK_SECRET;
     process.env.POSTIL_WEBHOOK_DRAIN_ENABLED = "0";
-
-    pool = new Pool({ connectionString: TEST_URL, max: 4 });
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          if (code !== "42P07" && code !== "42710") throw err;
-        }
-      }
-    }
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     // Restore the jobs table first if a prior test left it renamed.
@@ -104,8 +92,12 @@ describeDb("webhook delivery dedupe durability", () => {
 
   afterAll(async () => {
     await pool.query("ALTER TABLE jobs_quarantine RENAME TO jobs").catch(() => undefined);
-    await pool?.end();
-  });
+    // Release the getDb() singleton's connection before dropping the
+    // database it points at, or the drop fails with "database is being
+    // accessed by other users".
+    await closeDb();
+    await db?.drop();
+  }, 30_000);
 
   function prRequest(): Request {
     return signedRequest("pull_request", {

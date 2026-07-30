@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Pool } from "pg";
+import type { Pool } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
+import { closeDb } from "@/lib/db";
 import {
   REVIEW_LOG_MAX_LINES,
   ReviewLogWriter,
@@ -155,28 +157,17 @@ describe("postil CLI version logging", () => {
 });
 
 describeDb("review log persistence", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
   let reviewId: number;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = TEST_URL;
-    pool = new Pool({ connectionString: TEST_URL, max: 4 });
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((file) => file.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          if (code !== "42P07" && code !== "42710" && code !== "42701") throw err;
-        }
-      }
-    }
-  });
+    db = await createEphemeralDatabase("review_logs");
+    pool = db.pool;
+    // ReviewLogWriter reaches the database through the getDb() singleton,
+    // which is keyed off DATABASE_URL rather than this suite's own pool.
+    process.env.DATABASE_URL = db.url;
+  }, 30_000);
 
   beforeEach(async () => {
     await pool.query(
@@ -206,8 +197,12 @@ describeDb("review log persistence", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-  });
+    // Release the getDb() singleton's connection before dropping the
+    // database it points at, or the drop fails with "database is being
+    // accessed by other users".
+    await closeDb();
+    await db?.drop();
+  }, 30_000);
 
   test("redacts before batching lines into storage", async () => {
     const secret = "ghs_abcdefghijklmnopqrstuvwxyz123456";

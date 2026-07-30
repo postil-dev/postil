@@ -1,10 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import {
   backoffMs,
   claimJob as claimJobWithCapabilities,
@@ -44,30 +43,13 @@ function claimJob(pool: Pool, workerId: string) {
 }
 
 describeDb("postgres job queue", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_URL, max: 8 });
-    // Apply the generated drizzle migration(s), tolerating reruns.
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          // 42P07 duplicate table, 42710 duplicate object (enum/index/trigger),
-          // 42723 duplicate function. The CI database is shared by focused
-          // migration suites, so this runner tolerates their prior objects.
-          if (code !== "42P07" && code !== "42710" && code !== "42723") throw err;
-        }
-      }
-    }
-  });
+    db = await createEphemeralDatabase("queue");
+    pool = db.pool;
+  }, 30_000);
 
   beforeEach(async () => {
     await pool.query(
@@ -76,8 +58,8 @@ describeDb("postgres job queue", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-  });
+    await db?.drop();
+  }, 30_000);
 
   test("claim returns the oldest runnable job and marks it running", async () => {
     const id = await enqueueJob(pool, "review", { prNumber: 1 });

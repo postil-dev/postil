@@ -1,9 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool } from "pg";
+import type { Pool } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import type {
   OperatorNotification,
   OperatorNotificationTransport,
@@ -170,21 +169,13 @@ describe("private monitoring public probes", () => {
 });
 
 describeDb("private monitoring durability", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(
     async () => {
-      pool = new Pool({ connectionString: TEST_URL, max: 8 });
-      const directory = join(import.meta.dir, "..", "drizzle");
-      const migrations = (await readdir(directory))
-        .filter((file) => file.endsWith(".sql"))
-        .sort();
-      for (const migration of migrations) {
-        const source = await readFile(join(directory, migration), "utf8");
-        for (const statement of source.split("--> statement-breakpoint")) {
-          if (statement.trim()) await pool.query(statement);
-        }
-      }
+      db = await createEphemeralDatabase("private_monitoring");
+      pool = db.pool;
     },
     30_000,
   );
@@ -199,8 +190,8 @@ describeDb("private monitoring durability", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-  });
+    await db?.drop();
+  }, 30_000);
 
   test("allows one monitor owner and one pass per schedule bucket", async () => {
     const acquired = await Promise.all([

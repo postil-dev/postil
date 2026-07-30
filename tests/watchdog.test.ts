@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool } from "pg";
+import type { Pool } from "pg";
+
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 
 /**
  * Watchdog kill semantics against a real Postgres. The row's `startedAt`
@@ -43,33 +43,22 @@ mock.module("@/worker/review", () => ({
   },
 }));
 
-process.env.DATABASE_URL = TEST_URL;
-
 const schemaModule = await import("@/lib/db/schema");
 const schema = schemaModule;
 const { watchdogPass } = await import("@/worker/watchdog");
+const { closeDb } = await import("@/lib/db");
 
 describeDb("watchdog stuck-review kill", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_URL, max: 8 });
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          if (code !== "42P07" && code !== "42710") throw err;
-        }
-      }
-    }
-  });
+    db = await createEphemeralDatabase("watchdog");
+    pool = db.pool;
+    // watchdogPass() reaches the database through the getDb() singleton,
+    // which is keyed off DATABASE_URL rather than this suite's own pool.
+    process.env.DATABASE_URL = db.url;
+  }, 30_000);
 
   beforeEach(async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
@@ -84,10 +73,14 @@ describeDb("watchdog stuck-review kill", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
+    // Release the getDb() singleton's connection before dropping the
+    // database it points at, or the drop fails with "database is being
+    // accessed by other users".
+    await closeDb();
+    await db?.drop();
     if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
     else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
-  });
+  }, 30_000);
 
   async function seedRepo(): Promise<number> {
     const org = await pool.query<{ id: string }>(
