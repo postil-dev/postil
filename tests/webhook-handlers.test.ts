@@ -1,9 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool } from "pg";
+import type { Pool } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
@@ -122,7 +121,7 @@ mock.module("@/lib/github/checks", () => ({
 
 // Imported after the mocks are registered so the route picks up the stubs.
 const { POST } = await import("@/app/api/webhooks/github/route");
-const { getDb, getPool } = await import("@/lib/db");
+const { getDb, getPool, closeDb } = await import("@/lib/db");
 const { hasNewerCompletedReviewForHead } = await import("@/lib/finding-approvals");
 const {
   reconcileOperatorAlertDeliveries,
@@ -168,37 +167,19 @@ test("rejects an oversized declared webhook before reading or authenticating it"
 });
 
 describeDb("webhook handler behaviour", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = TEST_URL;
+    db = await createEphemeralDatabase("webhook_handlers");
+    pool = db.pool;
+    // The webhook route and worker runner reach the database through the
+    // getDb()/getPool() singleton, keyed off DATABASE_URL.
+    process.env.DATABASE_URL = db.url;
     process.env.GITHUB_WEBHOOK_SECRET = WEBHOOK_SECRET;
     process.env.POSTIL_WEBHOOK_DRAIN_ENABLED = "0";
     process.env.POSTIL_SEALING_KEY = "cd".repeat(32);
-    pool = new Pool({ connectionString: TEST_URL, max: 4 });
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          if (
-            code !== "42P07" &&
-            code !== "42710" &&
-            code !== "42701" &&
-            code !== "42723"
-          ) {
-            throw err;
-          }
-        }
-      }
-    }
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
@@ -289,8 +270,12 @@ describeDb("webhook handler behaviour", () => {
     globalThis.fetch = ORIGINAL_FETCH;
     if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
     else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
-    await pool?.end();
-  });
+    // Release the getDb()/getPool() singleton's connection before dropping
+    // the database it points at, or the drop fails with "database is being
+    // accessed by other users".
+    await closeDb();
+    await db?.drop();
+  }, 30_000);
 
   async function seedOrg(): Promise<number> {
     const org = await pool.query<{ id: string }>(

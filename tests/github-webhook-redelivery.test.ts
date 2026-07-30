@@ -1,9 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool } from "pg";
+import type { Pool } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import { runWebhookRedeliveryPass } from "@/lib/github/webhook-redelivery";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
@@ -64,26 +63,13 @@ function fetchQueue(
 }
 
 describeDb("GitHub App webhook redelivery", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_URL, max: 8 });
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((file) => file.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (error) {
-          const code = (error as { code?: string }).code;
-          if (code !== "42P07" && code !== "42710") throw error;
-        }
-      }
-    }
-  });
+    db = await createEphemeralDatabase("webhook_redelivery");
+    pool = db.pool;
+  }, 30_000);
 
   beforeEach(async () => {
     await pool.query(
@@ -92,8 +78,8 @@ describeDb("GitHub App webhook redelivery", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-  });
+    await db?.drop();
+  }, 30_000);
 
   test("redelivers a server-down delivery once and records its successful outcome", async () => {
     const calls: Array<{ url: string; method: string }> = [];

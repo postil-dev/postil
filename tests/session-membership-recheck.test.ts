@@ -2,12 +2,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, tes
 
 import { and, eq } from "drizzle-orm";
 
-import { getDb, schema } from "@/lib/db";
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
+import { closeDb, getDb, schema } from "@/lib/db";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 const ORIGINAL_FETCH = globalThis.fetch;
-const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 const ORIGINAL_SESSION_SECRET = process.env.POSTIL_SESSION_SECRET;
 const ORIGINAL_SEALING_KEY = process.env.POSTIL_SEALING_KEY;
 
@@ -27,14 +27,18 @@ const {
 } = await import("@/lib/session");
 
 describeDb("session organization membership revalidation", () => {
+  let ephemeralDb: EphemeralDatabase;
   let db: ReturnType<typeof getDb>;
 
-  beforeAll(() => {
-    process.env.DATABASE_URL = TEST_URL;
+  beforeAll(async () => {
+    ephemeralDb = await createEphemeralDatabase("session_membership_recheck");
+    // getVerifiedSessionUser/createSession reach the database through the
+    // getDb() singleton, keyed off DATABASE_URL.
+    process.env.DATABASE_URL = ephemeralDb.url;
     process.env.POSTIL_SESSION_SECRET = "test-session-secret-with-at-least-32-bytes";
     process.env.POSTIL_SEALING_KEY = "ab".repeat(32);
     db = getDb();
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     cookieToken = undefined;
@@ -48,11 +52,15 @@ describeDb("session organization membership revalidation", () => {
     globalThis.fetch = ORIGINAL_FETCH;
   });
 
-  afterAll(() => {
-    restoreEnv("DATABASE_URL", ORIGINAL_DATABASE_URL);
+  afterAll(async () => {
     restoreEnv("POSTIL_SESSION_SECRET", ORIGINAL_SESSION_SECRET);
     restoreEnv("POSTIL_SEALING_KEY", ORIGINAL_SEALING_KEY);
-  });
+    // Release the getDb() singleton's connection before dropping the
+    // database it points at, or the drop fails with "database is being
+    // accessed by other users".
+    await closeDb();
+    await ephemeralDb?.drop();
+  }, 30_000);
 
   test("seals the OAuth token and refreshes roles and revocations", async () => {
     const userId = await makeUser(1001, "octocat");
