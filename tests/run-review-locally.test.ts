@@ -121,7 +121,9 @@ test("downloads, verifies, and cleans up the authoritative local-review CLI", as
 });
 
 const canRunHarness =
-  Boolean(process.env.POSTIL_TEST_DATABASE_URL) || (await commandSucceeds(["podman", "--version"]));
+  Boolean(process.env.POSTIL_TEST_DATABASE_URL) ||
+  (await commandSucceeds(["docker", "--version"])) ||
+  (await commandSucceeds(["podman", "--version"]));
 const describeHarness = canRunHarness ? describe : describe.skip;
 
 describeHarness("scripts/run-review-locally.ts", () => {
