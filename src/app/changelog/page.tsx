@@ -35,6 +35,38 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.8.5–0.8.6",
+    date: "July 30, 2026",
+    summary:
+      "A finding's citation is checked against the code its prose names, and the CLI can review without your own model credential.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "A finding whose prose names a construct the diff places on a different line is no longer published. Citing the wrong line makes a claim the reader cannot check against the code in front of them.",
+      },
+      {
+        label: "Fixed",
+        text: "A content-policy claim can no longer state more confidence than the finding it argues from, and is withdrawn when that finding was itself withdrawn as mis-anchored.",
+      },
+      {
+        label: "Changed",
+        text: "One observation about several files is published once, naming every location it affects, instead of once per file.",
+      },
+      {
+        label: "Changed",
+        text: "An uncertainty finding whose body only asks you to confirm something no longer carries a blocking severity. Findings that report what the review checked are unaffected.",
+      },
+      {
+        label: "Fixed",
+        text: "A second review of an unchanged commit no longer repeats inline comments the previous review already left on the pull request.",
+      },
+      {
+        label: "Added",
+        text: "postil login authorizes the CLI against Postil through a browser, so reviews run without your own model provider credential.",
+      },
+    ],
+  },
+  {
     version: "0.8.1–0.8.4",
     date: "July 24–28, 2026",
     summary:

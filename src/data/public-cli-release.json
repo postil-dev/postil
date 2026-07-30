@@ -1,8 +1,8 @@
 {
   "cliRelease": "v0.7.2",
   "cliCommit": "dcf4e34c4804d4bf64705ab6367c883cea23b33a",
-  "hostedCliRelease": "v0.8.4",
-  "hostedCliCommit": "cdefb4811bd135a36e8d0d353f6f790a90984b6a",
-  "hostedCliLinuxX86_64Sha256": "6898f5ae7c0a26726506f953d2d393c2464b9a6214850d0c6a319f53b1634117",
+  "hostedCliRelease": "v0.8.6",
+  "hostedCliCommit": "829816f004257cb2117bec1029f08bd805dd64e7",
+  "hostedCliLinuxX86_64Sha256": "fd1b7da218295b8b5d8ca346ee78199d5c4861ec6d2a86931de289e5d969e8b2",
   "actionCommit": "00442e2340edaa4a681955dbb25e20650ca1514c"
 }
