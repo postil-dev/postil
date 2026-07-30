@@ -175,7 +175,7 @@ export default function BestToolsArticle() {
               <td>Postil</td>
               <td className="hidden sm:table-cell">Active private-PR author</td>
               <td>See current pricing</td>
-              <td>Review volume is not a billing unit</td>
+              <td>Unlimited reviews</td>
             </tr>
           </tbody>
         </table>

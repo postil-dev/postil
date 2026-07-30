@@ -178,6 +178,9 @@ try {
     "Recent reviews",
     "Managed reviews are paused.",
     "acme/unreached",
+    "Choose which acme repositories Postil reviews",
+    "Removed from the installation.",
+    "acme/dropped",
   ]);
   await verifyPage(`${origin}/orgs/acme/settings`, headers, [
     "Organization settings",
@@ -439,6 +442,32 @@ async function seedRepositoryHealthFixture(client: Client): Promise<void> {
       probed_at = EXCLUDED.probed_at,
       ok = EXCLUDED.ok,
       files = EXCLUDED.files
+  `);
+  // A repository GitHub's picker dropped from the installation: enabled, then
+  // removed minutes later, with no surviving repositories row.
+  await client.query(`
+    WITH installation AS (
+      SELECT installations.org_id
+      FROM installations
+      INNER JOIN organizations ON organizations.id = installations.org_id
+      WHERE organizations.slug = 'acme'
+      LIMIT 1
+    )
+    INSERT INTO repository_enablement_events (
+      org_id,
+      repository_id,
+      github_repo_id,
+      repository_full_name,
+      repository_private,
+      action,
+      source,
+      occurred_at
+    )
+    SELECT installation.org_id, NULL, 777098, 'acme/dropped', true, action, 'github_installation', occurred_at
+    FROM installation, (VALUES
+      ('enable', now() - interval '3 hours'),
+      ('disable', now() - interval '3 hours' + interval '11 seconds')
+    ) AS event(action, occurred_at)
   `);
 }
 

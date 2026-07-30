@@ -675,16 +675,51 @@ function repositoryPathFromMarker(marker: string | undefined): string | undefine
   return marker.startsWith("a/") || marker.startsWith("b/") ? marker.slice(2) : marker;
 }
 
+const DISPOSABLE_POSTGRES_IMAGE = "postgres:17.2-alpine";
+const CONTAINER_RUNTIMES = ["docker", "podman"] as const;
+
+/**
+ * Start the disposable Postgres container under whichever runtime can create
+ * it, and name that runtime so the caller can stop what it started. Reporting a
+ * version proves only that a client is installed: an image whose OCI runtime
+ * rejects its own configuration passes that check and fails at creation, so the
+ * probe has to be the creation itself. Docker comes first because CI provides
+ * it. A failed attempt leaves nothing running.
+ */
+async function startDisposablePostgres(
+  containerName: string,
+  port: number,
+): Promise<string> {
+  const failures: string[] = [];
+  for (const runtime of CONTAINER_RUNTIMES) {
+    try {
+      await run([
+        runtime, "run", "-d", "--rm", "--name", containerName,
+        "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
+        "-p", `127.0.0.1:${port}:5432`,
+        DISPOSABLE_POSTGRES_IMAGE,
+      ]);
+      return runtime;
+    } catch (error) {
+      failures.push(`${runtime}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(
+    `no container runtime could start ${DISPOSABLE_POSTGRES_IMAGE}; set POSTIL_TEST_DATABASE_URL to a local Postgres instead\n${failures.join("\n")}`,
+  );
+}
+
 async function createDisposableDatabase(
   repoFullName: string,
   keepDatabase: boolean,
 ): Promise<DatabaseHandle> {
   let containerName: string | undefined;
+  let containerRuntime: string | undefined;
   let adminUrl = process.env.POSTIL_TEST_DATABASE_URL;
   if (!adminUrl) {
     const port = await freePort();
     containerName = `postil-local-review-${process.pid}-${randomBytes(3).toString("hex")}`;
-    await run(["podman", "run", "-d", "--rm", "--name", containerName, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", `127.0.0.1:${port}:5432`, "postgres:17.2-alpine"]);
+    containerRuntime = await startDisposablePostgres(containerName, port);
     adminUrl = `postgresql://postgres@127.0.0.1:${port}/postgres`;
   }
   assertLocalDatabase(adminUrl);
@@ -714,7 +749,9 @@ async function createDisposableDatabase(
       } else {
         console.log(`local review database retained: ${databaseName}`);
       }
-      if (containerName) await run(["podman", "stop", containerName]).catch(() => undefined);
+      if (containerName && containerRuntime) {
+        await run([containerRuntime, "stop", containerName]).catch(() => undefined);
+      }
     },
   };
 }

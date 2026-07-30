@@ -63,9 +63,8 @@ export default function TermsPage() {
         <p>
           The organization is the customer. Private plans are billed monthly by
           active private-PR author at the rates on the{" "}
-          <Link href="/pricing">pricing page</Link>. One installing GitHub
-          identity can start 30-day hosted trials for up to three organizations
-          without a card. Additional organizations can start with BYOK. An
+          <Link href="/pricing">pricing page</Link>. Each organization can start
+          one 30-day hosted trial without a card, whoever installs it. An
           organization can use BYOK during the trial; that provider bills its
           model usage separately.
         </p>
