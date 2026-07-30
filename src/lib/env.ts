@@ -341,6 +341,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_CLI_GATEWAY_HOURLY_CAP",
+    purpose:
+      "Maximum CLI gateway chat completions admitted per organization per rolling hour",
+    example: "60",
+    scope: ["web"],
+    optional: true,
+  },
+  {
     name: "WORKER_POLL_INTERVAL_MS",
     purpose: "Initial worker queue poll interval",
     example: "1000",

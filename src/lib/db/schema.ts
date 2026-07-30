@@ -1308,11 +1308,11 @@ export const hostedUsageReservations = pgTable(
     ),
     check(
       "hosted_usage_reservations_operation_check",
-      sql`${t.operation} IN ('review', 'respond')`,
+      sql`${t.operation} IN ('review', 'respond', 'cli_gateway')`,
     ),
     check(
       "hosted_usage_reservations_operation_reference_check",
-      sql`(${t.operation} = 'review' AND ${t.reviewId} IS NOT NULL) OR (${t.operation} = 'respond' AND ${t.reviewId} IS NULL)`,
+      sql`(${t.operation} = 'review' AND ${t.reviewId} IS NOT NULL) OR (${t.operation} IN ('respond', 'cli_gateway') AND ${t.reviewId} IS NULL)`,
     ),
     check(
       "hosted_usage_reservations_reserved_positive",
@@ -1792,6 +1792,84 @@ export const sessions = pgTable("sessions", {
     .notNull()
     .defaultNow(),
 });
+
+/**
+ * Bearer credential `postil login` mints for the CLI gateway. Unlike
+ * `sessions`, the secret is hashed at rest: this credential lives in a file on
+ * developer machines and travels in Authorization headers, so the row must
+ * stay useless to an attacker who only reads the database.
+ */
+export const cliTokens = pgTable(
+  "cli_tokens",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    tokenSha256: bytea("token_sha256").notNull(),
+    userId: bigint("user_id", { mode: "number" })
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("cli_tokens_token_sha256_idx").on(t.tokenSha256),
+    // Supports listing and bulk-revoking an organization's tokens newest
+    // first. The gateway's hourly cap counts admitted requests in
+    // `hosted_usage_reservations`, not logins, so it does not read this index.
+    index("cli_tokens_org_created_idx").on(t.orgId, t.createdAt),
+    check("cli_tokens_scope_check", sql`${t.scope} IN ('inference')`),
+  ],
+);
+
+/**
+ * RFC 8628-inspired device authorization used by `postil login`. The CLI
+ * polls this row by device code while the operator approves or denies it in
+ * the browser at `/cli/authorize`, so the flow works over SSH and in
+ * containers where no localhost redirect is reachable.
+ */
+export const cliDeviceAuthorizations = pgTable(
+  "cli_device_authorizations",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    deviceCodeSha256: bytea("device_code_sha256").notNull(),
+    userCode: text("user_code").notNull(),
+    status: text("status").notNull().default("pending"),
+    userId: bigint("user_id", { mode: "number" }).references(() => users.id, {
+      onDelete: "set null",
+    }),
+    orgId: bigint("org_id", { mode: "number" }).references(
+      () => organizations.id,
+      { onDelete: "set null" },
+    ),
+    tokenId: bigint("token_id", { mode: "number" }).references(
+      () => cliTokens.id,
+      { onDelete: "set null" },
+    ),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    pollCount: integer("poll_count").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("cli_device_authorizations_device_code_sha256_idx").on(
+      t.deviceCodeSha256,
+    ),
+    uniqueIndex("cli_device_authorizations_user_code_idx").on(t.userCode),
+    check(
+      "cli_device_authorizations_status_check",
+      sql`${t.status} IN ('pending', 'approved', 'denied', 'claimed')`,
+    ),
+  ],
+);
 
 /** Per-org review configuration and write-only BYOK provider settings. */
 export const orgSettings = pgTable("org_settings", {

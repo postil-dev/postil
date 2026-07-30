@@ -15,6 +15,8 @@ import { enqueueRespondDeliveryJob } from "@/lib/respond-delivery";
  */
 export const HOSTED_REVIEW_RESERVATION_MICROS = 1_000_000;
 export const HOSTED_RESPOND_RESERVATION_MICROS = 1_000_000;
+/** Conservative upper bound for one CLI gateway chat completion; same bound as a respond call. */
+export const HOSTED_CLI_GATEWAY_RESERVATION_MICROS = 1_000_000;
 export const HOSTED_REVIEW_RESERVATION_TTL_MS = 15 * 60 * 1_000;
 
 export interface HostedUsageReservationDecision {
@@ -66,12 +68,27 @@ export async function reserveHostedRespondSpend(
   });
 }
 
+export async function reserveHostedCliGatewaySpend(
+  db: Database,
+  input: { orgId: number | null; now?: Date },
+): Promise<HostedUsageReservationDecision> {
+  return reserveHostedSpend(db, {
+    ...input,
+    reviewId: null,
+    operation: "cli_gateway",
+    requestedMicros: HOSTED_CLI_GATEWAY_RESERVATION_MICROS,
+    // The gateway only ever spends Postil's own hosted credential; an org on
+    // a BYOK plan has no hosted entitlement to reserve against.
+    usesByok: false,
+  });
+}
+
 async function reserveHostedSpend(
   db: Database,
   input: {
     orgId: number | null;
     reviewId: number | null;
-    operation: "review" | "respond";
+    operation: "review" | "respond" | "cli_gateway";
     requestedMicros: number;
     usesByok: boolean;
     now?: Date;
@@ -237,6 +254,36 @@ export async function releaseHostedSpend(
 
 export const releaseHostedReviewSpend = releaseHostedSpend;
 export const releaseHostedRespondSpend = releaseHostedSpend;
+export const releaseHostedCliGatewaySpend = releaseHostedSpend;
+
+/**
+ * Rolling-hour count backing the gateway's per-org request cap. Each admitted
+ * gateway call reserves spend before proxying upstream (`reserveHostedCliGatewaySpend`),
+ * so a `cli_gateway` reservation row exists once per call that passed the
+ * entitlement check, independent of whether it later reconciled or released.
+ * A request that never gets that far (invalid token, denied entitlement)
+ * never reserves and so never counts here.
+ */
+export async function countCliGatewayReservationsLastHour(
+  db: Database,
+  orgId: number,
+  now = new Date(),
+): Promise<number> {
+  const windowStart = new Date(now.getTime() - 60 * 60 * 1_000);
+  const row = (
+    await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.hostedUsageReservations)
+      .where(
+        and(
+          eq(schema.hostedUsageReservations.orgId, orgId),
+          eq(schema.hostedUsageReservations.operation, "cli_gateway"),
+          gt(schema.hostedUsageReservations.createdAt, windowStart),
+        ),
+      )
+  )[0];
+  return row?.count ?? 0;
+}
 
 type HostedReviewTriggerSource =
   | "unknown"
@@ -507,6 +554,92 @@ export async function reconcileHostedRespondSpend(
         updatedAt: now,
       });
       await enqueueRespondDeliveryJob(tx, input.delivery.jobId);
+    }
+    return chargedMicros;
+  });
+}
+
+/**
+ * Reconcile one CLI gateway completion. A gateway call has no repository or
+ * review, so `usage_events.repository_id` is always null and `trigger_source`
+ * is always `unknown`, matching how the contract defines gateway usage
+ * accounting.
+ */
+export async function reconcileHostedCliGatewaySpend(
+  db: Database,
+  input: {
+    reservationId: string;
+    promptTokens: number;
+    completionTokens: number;
+    modelUsed: string;
+    actualMicros: number | null;
+    usageAccountingComplete: boolean;
+    now?: Date;
+  },
+): Promise<number> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const reservation = (
+      await tx
+        .select({
+          orgId: schema.hostedUsageReservations.orgId,
+          operation: schema.hostedUsageReservations.operation,
+          status: schema.hostedUsageReservations.status,
+          reservedMicros: schema.hostedUsageReservations.reservedMicros,
+        })
+        .from(schema.hostedUsageReservations)
+        .where(eq(schema.hostedUsageReservations.id, input.reservationId))
+        .limit(1)
+    )[0];
+    if (!reservation || reservation.operation !== "cli_gateway" || reservation.status !== "active") {
+      throw new Error("hosted cli gateway usage reservation is not active");
+    }
+    const chargedMicros = input.usageAccountingComplete && input.actualMicros !== null
+      ? input.actualMicros
+      : Math.max(reservation.reservedMicros, input.actualMicros ?? 0);
+    if (!Number.isSafeInteger(chargedMicros) || chargedMicros < 0) {
+      throw new Error("hosted cli gateway usage cost is invalid");
+    }
+    const reconciled = await tx
+      .update(schema.hostedUsageReservations)
+      .set({ status: "reconciled", actualMicros: chargedMicros, updatedAt: now })
+      .where(
+        and(
+          eq(schema.hostedUsageReservations.id, input.reservationId),
+          eq(schema.hostedUsageReservations.status, "active"),
+          eq(schema.hostedUsageReservations.operation, "cli_gateway"),
+        ),
+      )
+      .returning({ id: schema.hostedUsageReservations.id });
+    if (reconciled.length !== 1) {
+      throw new Error("hosted cli gateway usage reservation changed during reconciliation");
+    }
+    await tx.insert(schema.usageEvents).values({
+      orgId: reservation.orgId,
+      repositoryId: null,
+      reviewId: null,
+      promptTokens: input.promptTokens,
+      completionTokens: input.completionTokens,
+      modelUsed: input.modelUsed,
+      costMicros: input.actualMicros ?? 0,
+      billingScope: "private_hosted",
+      triggerSource: "unknown",
+      createdAt: now,
+    });
+    const unattributedMicros = chargedMicros - (input.actualMicros ?? 0);
+    if (unattributedMicros > 0) {
+      await tx.insert(schema.usageEvents).values({
+        orgId: reservation.orgId,
+        repositoryId: null,
+        reviewId: null,
+        promptTokens: 0,
+        completionTokens: 0,
+        modelUsed: "unattributed provider usage",
+        costMicros: unattributedMicros,
+        billingScope: "private_hosted",
+        triggerSource: "unknown",
+        createdAt: now,
+      });
     }
     return chargedMicros;
   });
