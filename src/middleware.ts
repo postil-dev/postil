@@ -126,7 +126,8 @@ function isProtectedRoute(pathname: string): boolean {
     pathname.startsWith("/operator/") ||
     pathname === "/reports" ||
     pathname.startsWith("/reports/") ||
-    pathname.startsWith("/orgs/")
+    pathname.startsWith("/orgs/") ||
+    pathname === "/cli/authorize"
   );
 }
 
