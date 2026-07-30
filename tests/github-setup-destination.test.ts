@@ -1,19 +1,23 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
-import { getDb, schema } from "@/lib/db";
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
+import { closeDb, getDb, schema } from "@/lib/db";
 import { findAccessibleInstallationOrgSlug } from "@/lib/github/installation-sync";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
-const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 
 describeDb("GitHub setup destination", () => {
+  let ephemeralDb: EphemeralDatabase;
   let db: ReturnType<typeof getDb>;
 
-  beforeAll(() => {
-    process.env.DATABASE_URL = TEST_URL;
+  beforeAll(async () => {
+    ephemeralDb = await createEphemeralDatabase("github_setup_destination");
+    // findAccessibleInstallationOrgSlug reaches the database through the
+    // getDb() singleton, keyed off DATABASE_URL.
+    process.env.DATABASE_URL = ephemeralDb.url;
     db = getDb();
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     await db.execute(
@@ -21,10 +25,13 @@ describeDb("GitHub setup destination", () => {
     );
   });
 
-  afterAll(() => {
-    if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
-    else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
-  });
+  afterAll(async () => {
+    // Release the getDb() singleton's connection before dropping the
+    // database it points at, or the drop fails with "database is being
+    // accessed by other users".
+    await closeDb();
+    await ephemeralDb?.drop();
+  }, 30_000);
 
   test("resolves only installations accessible to the authenticated user", async () => {
     const [user, otherUser] = await db
