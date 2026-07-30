@@ -181,6 +181,9 @@ const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
   belowConfidence: "Below the configured confidence threshold",
   maxFindings: "Beyond the configured finding limit",
   nonActionable: "No concrete action identified",
+  anchorMismatch: "Cited a line its named construct does not sit on",
+  duplicateRootCause: "Restates a published finding about another location",
+  derivedFromSuppressed: "Built on a finding suppressed as mis-anchored",
 };
 
 const PUBLICATION_STATE_LABELS: Record<PublicationState, string> = {

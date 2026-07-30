@@ -134,6 +134,32 @@ describe("envelope ingestion", () => {
     expect(ingested.envelope.suppressedFindings).toEqual([suppressedFinding]);
   });
 
+  test("accepts the CLI review-precision suppression reasons", () => {
+    // Ingestion validates the envelope strictly, so a reason the CLI emits and
+    // this schema does not list fails the whole review rather than one finding.
+    const reasons = [
+      "anchorMismatch",
+      "duplicateRootCause",
+      "derivedFromSuppressed",
+    ] as const;
+    const suppressedFindings = reasons.map((reason, index) => ({
+      finding: {
+        path: "ansible/playbooks/backup.yml",
+        line: 981 + index,
+        severity: "error" as const,
+        kind: "risk" as const,
+        confidence: 0.6,
+        title: "Password task drops no_log",
+        body: "The cited line holds an unrelated task.",
+      },
+      reason,
+    }));
+    const ingested = ingestEnvelope(
+      JSON.stringify(validEnvelope({ suppressedFindings })),
+    );
+    expect(ingested.envelope.suppressedFindings).toEqual(suppressedFindings);
+  });
+
   test("preserves exact model incidents and enforces recovery consistency", () => {
     const modelIncidents = [
       {
