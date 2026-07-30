@@ -1820,8 +1820,9 @@ export const cliTokens = pgTable(
   },
   (t) => [
     uniqueIndex("cli_tokens_token_sha256_idx").on(t.tokenSha256),
-    // Supports the org-scoped rolling-window queries the gateway runs on
-    // every request (hourly cap accounting and reservation bookkeeping).
+    // Supports listing and bulk-revoking an organization's tokens newest
+    // first. The gateway's hourly cap counts admitted requests in
+    // `hosted_usage_reservations`, not logins, so it does not read this index.
     index("cli_tokens_org_created_idx").on(t.orgId, t.createdAt),
     check("cli_tokens_scope_check", sql`${t.scope} IN ('inference')`),
   ],
