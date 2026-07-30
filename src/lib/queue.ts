@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 
+import { readPositiveIntEnv } from "@/lib/env";
 import { redactAndTruncate } from "@/lib/redact";
 import type { ReviewTriggerContext } from "@/lib/review-trigger";
 
@@ -1116,13 +1117,46 @@ export async function failJob(
     ?.outcome ?? "lost";
 }
 
-/** Requeue reconciliation work until its target state is superseded or published. */
+/**
+ * Wall-clock ceiling on indefinite reconciliation (a job that ignores
+ * `max_attempts` because it is waiting out a forge outage rather than
+ * retrying its own work). Indefinite retry exists to survive that outage,
+ * not to retry forever, so it is bounded by elapsed time since the job was
+ * first created rather than by attempt count.
+ */
+export const PUBLICATION_RECONCILIATION_BUDGET_MS = readPositiveIntEnv(
+  "POSTIL_PUBLICATION_RECONCILIATION_BUDGET_MS",
+  60 * 60 * 1000,
+);
+
+/**
+ * Requeue reconciliation work until its target state is superseded or
+ * published, or until `budgetMs` has elapsed since the job was created. Past
+ * the budget the job fails permanently instead of requeuing: a forge outage
+ * long enough to exceed it needs operator attention, not another retry.
+ */
 export async function retryJobIndefinitely(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "attempts" | "lockedBy">,
+  job: Pick<ClaimedJob, "id" | "attempts" | "lockedBy" | "createdAt">,
   error: string,
-): Promise<"retried" | "lost"> {
+  budgetMs: number = PUBLICATION_RECONCILIATION_BUDGET_MS,
+): Promise<"retried" | "lost" | "exhausted"> {
   const redactedError = redactAndTruncate(error, 2000);
+  const elapsedMs = Date.now() - job.createdAt.getTime();
+  if (elapsedMs > budgetMs) {
+    const budgetMessage = redactAndTruncate(
+      `${error} (reconciliation budget of ${Math.round(budgetMs / 60_000)} minute(s) exhausted after ${Math.round(elapsedMs / 60_000)} minute(s); failing permanently)`,
+      2000,
+    );
+    const res = await pool.query(
+      `UPDATE jobs
+       SET status = 'failed', locked_at = NULL, locked_by = NULL,
+           last_error = $2, run_after = now()
+       WHERE id = $1 AND status = 'running' AND locked_by = $3`,
+      [job.id, budgetMessage, job.lockedBy],
+    );
+    return (res.rowCount ?? 0) > 0 ? "exhausted" : "lost";
+  }
   const delay = backoffMs(job.attempts);
   const res = await pool.query(
     `UPDATE jobs

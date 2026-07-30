@@ -325,6 +325,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_PUBLICATION_RECONCILIATION_BUDGET_MS",
+    purpose:
+      "Wall-clock budget for indefinite reconciliation (e.g. a staged review awaiting forge check-run confirmation) before the job fails permanently",
+    example: "3600000",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
     name: "POSTIL_RESPOND_HOURLY_CAP",
     purpose:
       "Maximum @postil respond jobs enqueued per installation per rolling hour before further mentions are skipped",
@@ -845,6 +853,18 @@ export function optionalEnv(
   const value = process.env[name];
   if (value && value.trim() !== "") return value;
   return fallback;
+}
+
+/** Read a positive integer env var, falling back (with a warning) on an unset or invalid value. */
+export function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = optionalEnv(name);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.warn(`${name} must be a positive integer; using ${fallback}`);
+    return fallback;
+  }
+  return parsed;
 }
 
 /**

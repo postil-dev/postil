@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { ingestCompletedHostedReview } from "@/worker/review";
+import {
+  ingestCompletedHostedReview,
+  publicationSkippedForChangedSnapshot,
+} from "@/worker/review";
 
 const envelope = JSON.stringify({
   version: 1,
@@ -64,5 +67,39 @@ describe("hosted CLI publication result", () => {
         stderr: "postil: error: required hosted publication failed",
       }),
     ).toThrow("publication failed without a valid envelope");
+  });
+});
+
+describe("publication skipped for a changed pull request snapshot", () => {
+  test("recognizes a check-completion skip from a moved head", () => {
+    expect(
+      publicationSkippedForChangedSnapshot(
+        "postil: error: required hosted check publication failed: check completion skipped because the pull request snapshot changed after review",
+      ),
+    ).toBe(true);
+  });
+
+  test("recognizes a combined check-and-delivery skip from a moved head", () => {
+    expect(
+      publicationSkippedForChangedSnapshot(
+        "postil: error: required hosted publication failed: check completion: check completion skipped because the pull request snapshot changed after review; review delivery: required review publication skipped because the pull request snapshot changed after review",
+      ),
+    ).toBe(true);
+  });
+
+  test("does not treat an ordinary transient publication failure as a moved head", () => {
+    expect(
+      publicationSkippedForChangedSnapshot(
+        "postil: error: required hosted check publication failed: 503 Service Unavailable",
+      ),
+    ).toBe(false);
+  });
+
+  test("does not match on an unrelated error", () => {
+    expect(
+      publicationSkippedForChangedSnapshot(
+        "postil: error: invalid local configuration",
+      ),
+    ).toBe(false);
   });
 });

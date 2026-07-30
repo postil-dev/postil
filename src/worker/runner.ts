@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 
 import { getDb, getPool } from "@/lib/db";
-import { optionalEnv, requireEnv } from "@/lib/env";
+import { optionalEnv, readPositiveIntEnv, requireEnv } from "@/lib/env";
 import {
   recordCustomerNotificationEmailFailure,
   runCustomerNotificationEmailJob,
@@ -363,7 +363,7 @@ export async function runClaimedJob(
     console.error(
       `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
     );
-    if (outcome === "failed") {
+    if (outcome === "failed" || outcome === "exhausted") {
       reportOperationalFailure(processGroup, "job_permanently_failed", err);
     } else if (outcome === "retried") {
       reportOperationalWarning(processGroup, "job_retrying");
@@ -444,13 +444,7 @@ async function runCoalescedQueueDrains(label: string): Promise<void> {
   }
 }
 
-export function readPositiveIntEnv(name: string, fallback: number): number {
-  const raw = optionalEnv(name);
-  if (!raw) return fallback;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    console.warn(`${name} must be a positive integer; using ${fallback}`);
-    return fallback;
-  }
-  return parsed;
-}
+// Re-exported so existing importers (`@/worker/runner`, `./runner`) keep
+// working; `@/lib/queue` also needs this helper for its own env-overridable
+// budget and cannot import it from here without a static import cycle.
+export { readPositiveIntEnv };
