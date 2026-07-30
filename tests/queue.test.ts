@@ -870,6 +870,50 @@ describeDb("postgres job queue", () => {
     });
   });
 
+  test("durable reconciliation keeps requeuing within its budget despite exhausted attempts", async () => {
+    // Production showed attempts=10 and attempts=28 against max_attempts=3:
+    // indefinite reconciliation must never consult attempts. Wall clock is
+    // the only thing that can end it.
+    const id = await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    const job = await claimJob(pool, "reconciler");
+    expect(job?.attempts).toBe(1);
+
+    expect(
+      await retryJobIndefinitely(
+        pool,
+        { ...job!, attempts: 10 },
+        "GitHub unavailable",
+        60 * 60 * 1000,
+      ),
+    ).toBe("retried");
+    const row = await pool.query(
+      "SELECT status, max_attempts FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(row.rows[0]).toMatchObject({ status: "queued", max_attempts: 1 });
+  });
+
+  test("durable reconciliation fails permanently once its wall-clock budget is exceeded", async () => {
+    const id = await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    await pool.query(
+      "UPDATE jobs SET created_at = now() - interval '2 hours' WHERE id = $1",
+      [id],
+    );
+    const job = await claimJob(pool, "reconciler");
+
+    expect(
+      await retryJobIndefinitely(pool, job!, "GitHub unavailable", 60 * 60 * 1000),
+    ).toBe("exhausted");
+    const row = await pool.query(
+      "SELECT status, last_error FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(row.rows[0].status).toBe("failed");
+    expect(row.rows[0].last_error).toContain("reconciliation budget");
+    // A permanently exhausted job never comes back for another attempt.
+    expect(await claimJob(pool, "reconciler")).toBeNull();
+  });
+
   test("failJob {permanent} on an already-failed job returns 'lost' (single-post guard holds)", async () => {
     // The conditional running -> failed UPDATE is shared with the exhausted
     // path, so the permanent path also yields exactly one "failed" winner.

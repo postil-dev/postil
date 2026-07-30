@@ -197,6 +197,72 @@ describeDb("watchdog stuck-review kill", () => {
     expect(cleanup.rows).toHaveLength(0);
   });
 
+  test("does not fail a staged publication that is within the reconciliation budget", async () => {
+    const repositoryId = await seedRepo();
+    const startedAt = new Date(Date.now() - 59 * 60 * 1000);
+    const reviewId = await seedStuckReview(repositoryId, startedAt);
+    await pool.query(
+      `UPDATE reviews
+          SET envelope = '{"version":1,"findings":[],"gate":{"failing":false}}'::jsonb
+        WHERE id = $1`,
+      [reviewId],
+    );
+
+    const result = await watchdogPass();
+
+    expect(result.killed).toBe(0);
+    expect(await reviewStatus(reviewId)).toBe("running");
+    const cleanup = await pool.query(
+      "SELECT id FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(cleanup.rows).toHaveLength(0);
+  });
+
+  test("fails a staged publication past the reconciliation budget and completes its check-runs", async () => {
+    const repositoryId = await seedRepo();
+    const startedAt = new Date(Date.now() - 61 * 60 * 1000);
+    const reviewId = await seedStuckReview(repositoryId, startedAt);
+    await pool.query(
+      `UPDATE reviews
+          SET envelope = '{"version":1,"findings":[],"gate":{"failing":false}}'::jsonb,
+              advisory_check_run_id = 501, gate_check_run_id = 502
+        WHERE id = $1`,
+      [reviewId],
+    );
+
+    const result = await watchdogPass();
+
+    expect(result.killed).toBe(1);
+    expect(await reviewStatus(reviewId)).toBe("failed");
+    const errorMessage = await pool.query<{ error_message: string }>(
+      "SELECT error_message FROM reviews WHERE id = $1",
+      [reviewId],
+    );
+    // The message reports why publication could not be verified, not that
+    // the review timed out: it did complete, GitHub just never confirmed it.
+    expect(errorMessage.rows[0]!.error_message).toContain(
+      "could not be verified",
+    );
+    expect(errorMessage.rows[0]!.error_message).not.toContain(
+      "review exceeded",
+    );
+    const cleanup = await pool.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+    }>("SELECT kind, payload FROM jobs WHERE kind = 'check-run-cleanup'");
+    expect(cleanup.rows).toHaveLength(1);
+    expect(cleanup.rows[0]!.payload).toMatchObject({
+      installationId: 42,
+      repoFullName: "octo/repo",
+      advisoryCheckRunId: 501,
+      gateCheckRunId: 502,
+      advisoryCheckRunMayExist: false,
+      gateCheckRunMayExist: false,
+      publicationIncomplete: true,
+      message: expect.stringContaining("could not be verified"),
+    });
+  });
+
   test("two concurrent passes over the same stuck review only kill it once", async () => {
     const repositoryId = await seedRepo();
     await seedStuckReview(repositoryId);

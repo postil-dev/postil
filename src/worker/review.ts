@@ -362,6 +362,19 @@ interface CliResult {
 const REQUIRED_HOSTED_PUBLICATION_FAILURE =
   /required hosted (?:check )?publication failed/i;
 
+// The publication receipt carries no structured field for why the CLI left a
+// check-run incomplete; its stderr text is the only signal available. A moved
+// pull request head is the one reason worth distinguishing from a transient
+// forge failure: a check-run for a snapshot that no longer exists can never
+// report completed, so it must never be handed to indefinite reconciliation.
+const PULL_REQUEST_SNAPSHOT_CHANGED =
+  /pull request snapshot changed after review/i;
+
+/** True when the CLI declined to publish because the reviewed head moved. */
+export function publicationSkippedForChangedSnapshot(stderr: string): boolean {
+  return PULL_REQUEST_SNAPSHOT_CHANGED.test(stderr);
+}
+
 /**
  * A strict hosted CLI can compute and emit a complete envelope before one of
  * GitHub's publication calls fails. Preserve that result so the worker can
@@ -1658,6 +1671,7 @@ export async function runReviewJob(
       stderr: result.stderr,
       interrupted: result.interrupted,
     }, sensitiveValues);
+    const snapshotChanged = publicationSkippedForChangedSnapshot(result.stderr);
     for (const incident of classifyOperationalModelIncidents(
       ingested.envelope,
     )) {
@@ -1711,6 +1725,40 @@ export async function runReviewJob(
     completionStaged = true;
     await activeLargeReviewProxy.discardCompletedRun();
     reviewLog.line("review result and publication receipt staged durably");
+    if (snapshotChanged) {
+      // The CLI refused to complete a check-run for a pull request snapshot
+      // that has already moved on. A newer push means a fresher review
+      // already covers the new head, so this run is stale in exactly the
+      // sense supersession assigns, not a publication failure to reconcile.
+      if (hostedUsageReservationId) {
+        await reconcileHostedReviewSpendFromReceipt(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+          usage: receiptUsage,
+          usageAccountingComplete: ingested.usageAccountingComplete,
+        });
+      }
+      await db
+        .update(schema.reviews)
+        .set({ status: "stale", finishedAt: new Date() })
+        .where(
+          and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")),
+        );
+      await neutralizeSupersededCheckRuns(
+        token,
+        payload.repoFullName,
+        advisoryCheckRunId ?? null,
+        gateCheckRunId ?? null,
+        "the pull request snapshot changed before this review could publish",
+        detailsUrl,
+      );
+      reviewLog.line(
+        "review marked stale: CLI declined to publish for a superseded pull request snapshot",
+      );
+      return;
+    }
     const workerInstanceId = timing.lease?.lockedBy.match(/^(.+)#\d+$/)?.[1];
     if (observabilityProcessGroup === "worker" && workerInstanceId && timing.lease) {
       const rehearsalNonce = await consumePrivateWorkerRehearsalAfterStaging(
