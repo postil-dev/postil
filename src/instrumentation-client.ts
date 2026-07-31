@@ -9,6 +9,7 @@ const ALLOWED_EVENTS = new Set(["$pageview", "$pageleave", "$web_vitals"]);
 clearLegacyPostHogPersistence();
 
 let bootPromise: Promise<boolean> | undefined;
+let ephemeralSessionId: string | undefined;
 
 interface PostHogConfig {
   key: string;
@@ -66,6 +67,7 @@ async function bootPostHog(): Promise<boolean> {
           event.properties,
           window.location.origin,
           config.key,
+          browserSessionId(),
         )
       ) {
         return null;
@@ -74,6 +76,12 @@ async function bootPostHog(): Promise<boolean> {
     },
   });
   return true;
+}
+
+function browserSessionId(): string {
+  // Keep the Web Analytics session key in memory so cookieless events remain countable.
+  ephemeralSessionId ??= crypto.randomUUID();
+  return ephemeralSessionId;
 }
 
 async function runtimeConfig(): Promise<PostHogConfig | undefined> {
