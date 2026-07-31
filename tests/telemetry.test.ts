@@ -8,6 +8,8 @@ import {
   sanitizedReferrer,
 } from "@/lib/telemetry";
 
+const SESSION_ID = "5d57d1aa-dd90-4d77-a21d-a8d3a25e6417";
+
 describe("public telemetry sanitization", () => {
   test("allows exact public marketing, docs, and comparison paths", () => {
     expect(isPublicTelemetryPath("/")).toBe(true);
@@ -87,6 +89,7 @@ describe("public telemetry sanitization", () => {
         properties,
         "https://postil.dev",
         "phc_test",
+        SESSION_ID,
       ),
     ).toBe(true);
     expect(properties).toEqual({
@@ -94,6 +97,7 @@ describe("public telemetry sanitization", () => {
       distinct_id: "$posthog_cookieless",
       $cookieless_mode: true,
       $process_person_profile: false,
+      $session_id: SESSION_ID,
       $current_url: "https://postil.dev/docs",
       $host: "postil.dev",
       $pathname: "/docs",
@@ -119,9 +123,11 @@ describe("public telemetry sanitization", () => {
         properties,
         "https://postil.dev",
         "phc_test",
+        SESSION_ID,
       ),
     ).toBe(true);
     expect(properties).toEqual({
+      $session_id: SESSION_ID,
       $current_url: "https://postil.dev/pricing",
       $host: "postil.dev",
       $pathname: "/pricing",
@@ -146,9 +152,11 @@ describe("public telemetry sanitization", () => {
         properties,
         "https://postil.dev",
         "phc_test",
+        SESSION_ID,
       ),
     ).toBe(true);
     expect(properties).toEqual({
+      $session_id: SESSION_ID,
       $current_url: "https://postil.dev/pricing",
       $host: "postil.dev",
       $pathname: "/pricing",
@@ -171,6 +179,7 @@ describe("public telemetry sanitization", () => {
         },
         "https://postil.dev",
         "phc_test",
+        SESSION_ID,
       ),
     ).toBe(false);
   });

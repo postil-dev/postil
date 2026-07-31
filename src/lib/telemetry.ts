@@ -129,8 +129,9 @@ export function sanitizePostHogEventProperties(
   properties: Record<string, unknown>,
   currentOrigin: string,
   projectToken: string,
+  sessionId: string,
 ): boolean {
-  const technical = cookielessTransportProperties(properties, projectToken);
+  const technical = cookielessTransportProperties(properties, projectToken, sessionId);
   if (eventName === "$web_vitals") {
     const vitals = sanitizeWebVitals(properties, currentOrigin);
     if (!vitals) return false;
@@ -275,6 +276,7 @@ function pageEngagementProperties(
 function cookielessTransportProperties(
   properties: Record<string, unknown>,
   projectToken: string,
+  sessionId: string,
 ): Record<string, string | number | boolean> {
   return removeEmpty({
     token: properties.token === projectToken ? projectToken : undefined,
@@ -285,6 +287,7 @@ function cookielessTransportProperties(
     $cookieless_mode: properties.$cookieless_mode === true ? true : undefined,
     $process_person_profile:
       properties.$process_person_profile === false ? false : undefined,
+    $session_id: sessionId,
   });
 }
 
