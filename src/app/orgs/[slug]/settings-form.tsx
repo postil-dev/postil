@@ -98,8 +98,12 @@ function AutoSaveToggle({
   const [checked, setChecked] = useState(defaultChecked);
   const [status, setStatus] = useState<SaveStatus>({ state: "idle" });
   const [, startTransition] = useTransition();
+  // Rapid toggling overlaps saves; only the latest save may report its outcome
+  // or revert the optimistic state, so an early response cannot clobber it.
+  const saveSequence = useRef(0);
 
   const save = (next: boolean) => {
+    const sequence = ++saveSequence.current;
     setChecked(next);
     setStatus({ state: "saving" });
     startTransition(async () => {
@@ -108,6 +112,7 @@ function AutoSaveToggle({
       form.set(name, next ? "on" : "off");
       try {
         const result = await action(null, form);
+        if (sequence !== saveSequence.current) return;
         if (result.status === "error") {
           setChecked(!next);
           setStatus({ state: "error", message: result.message });
@@ -117,6 +122,7 @@ function AutoSaveToggle({
         onSaved?.(next);
         router.refresh();
       } catch {
+        if (sequence !== saveSequence.current) return;
         setChecked(!next);
         setStatus({ state: "error", message: "Could not save. Try again." });
       }

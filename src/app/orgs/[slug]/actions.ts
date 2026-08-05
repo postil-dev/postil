@@ -640,6 +640,7 @@ export async function setOrgSharedConfigEnabled(
       });
     }
   });
+  revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);
   return {
     status: "success",
