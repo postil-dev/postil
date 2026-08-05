@@ -29,6 +29,7 @@ interface ConfigControlValues {
 function readControlValues(text: string): ConfigControlValues | null {
   const doc = parseDocument(text);
   if (doc.errors.length > 0) return null;
+  if (doc.contents !== null && !isMap(doc.contents)) return null;
   const scalar = (path: string[]): string | null => {
     const value = doc.getIn(path);
     return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
@@ -50,7 +51,12 @@ function readControlValues(text: string): ConfigControlValues | null {
 }
 
 function withValue(text: string, path: string[], value: unknown): string {
-  const doc = parseDocument(text.trim().length > 0 ? text : "{}\n");
+  const doc = parseDocument(text);
+  // Controls only render for parseable mapping (or empty) documents; anything
+  // else passes through untouched rather than risking a wipe or a throw.
+  if (doc.errors.length > 0 || (doc.contents !== null && !isMap(doc.contents))) {
+    return text;
+  }
   if (value === undefined) {
     doc.deleteIn(path);
     // Drop a now-empty parent map so clearing gate.failOn leaves no `gate: {}`.
@@ -61,7 +67,9 @@ function withValue(text: string, path: string[], value: unknown): string {
   } else {
     doc.setIn(path, value);
   }
-  if (!isMap(doc.contents) || doc.contents.items.length === 0) return "";
+  if (doc.contents === null || (isMap(doc.contents) && doc.contents.items.length === 0)) {
+    return "";
+  }
   return String(doc);
 }
 
