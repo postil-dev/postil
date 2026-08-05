@@ -609,6 +609,12 @@ export async function setOrgSharedConfigEnabled(
   const db = getDb();
   const now = new Date();
   await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT "org_id"
+      FROM "org_settings"
+      WHERE "org_id" = ${orgId}
+      FOR UPDATE
+    `);
     const current = (
       await tx
         .select({ sharedConfigEnabled: schema.orgSettings.sharedConfigEnabled })
