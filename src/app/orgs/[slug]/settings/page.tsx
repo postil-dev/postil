@@ -305,7 +305,13 @@ export default async function OrgSettingsPage({
                       <div key={repo.id} className="space-y-3 px-4 py-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
-                            <p className="font-mono text-sm">{repo.fullName}</p>
+                            <a
+                              href={`https://github.com/${repo.fullName}`}
+                              className="font-mono text-sm hover:underline"
+                              rel="noopener noreferrer"
+                            >
+                              {repo.fullName}
+                            </a>
                             <RepoHealthLine
                               enabled={repo.enabled}
                               health={health}
@@ -318,26 +324,43 @@ export default async function OrgSettingsPage({
                           </div>
                         </div>
                         <div className="grid gap-2">
-                          {artifacts.map((artifact) => (
-                            <div
-                              key={artifact.key}
-                              className="grid gap-2 rounded-card border border-stone/70 px-3 py-2 sm:grid-cols-[1fr_auto]"
-                            >
-                              <div>
-                                <p className="font-mono text-[11px] text-charcoal">
-                                  {artifact.label}
-                                </p>
-                                <p className="mt-0.5 text-xs text-charcoal/60">
-                                  {configArtifactDescription(artifact)}
-                                </p>
-                              </div>
-                              <span
-                                className={`h-fit rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${configArtifactClass(artifact)}`}
+                          {artifacts.map((artifact) => {
+                            const artifactHref = configArtifactHref(
+                              artifact,
+                              repo.fullName,
+                              sharedSnapshot?.sourceFullName ?? sharedSourceFullName,
+                            );
+                            return (
+                              <div
+                                key={artifact.key}
+                                className="grid gap-2 rounded-card border border-stone/70 px-3 py-2 sm:grid-cols-[1fr_auto]"
                               >
-                                {configArtifactLabel(artifact)}
-                              </span>
-                            </div>
-                          ))}
+                                <div>
+                                  {artifactHref ? (
+                                    <a
+                                      href={artifactHref}
+                                      className="font-mono text-[11px] text-charcoal underline decoration-stone hover:decoration-charcoal"
+                                      rel="noopener noreferrer"
+                                    >
+                                      {artifact.label}
+                                    </a>
+                                  ) : (
+                                    <p className="font-mono text-[11px] text-charcoal">
+                                      {artifact.label}
+                                    </p>
+                                  )}
+                                  <p className="mt-0.5 text-xs text-charcoal/60">
+                                    {configArtifactDescription(artifact)}
+                                  </p>
+                                </div>
+                                <span
+                                  className={`h-fit rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${configArtifactClass(artifact)}`}
+                                >
+                                  {configArtifactLabel(artifact)}
+                                </span>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     );
@@ -362,6 +385,15 @@ export default async function OrgSettingsPage({
           </div>
         )}
       </div>
+
+      <p className="mt-12 border-t border-stone/60 pt-4 text-xs text-charcoal/60">
+        The <Link href="/docs" className="text-rust hover:underline">documentation</Link>{" "}
+        covers setup, configuration, and the merge gate. For anything unclear, email{" "}
+        <a href="mailto:hello@postil.dev" className="text-rust hover:underline">
+          hello@postil.dev
+        </a>
+        .
+      </p>
     </div>
   );
 }
@@ -467,7 +499,13 @@ function GateEnforcementCoverage({
             <div key={repository.id} className="px-4 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="truncate font-mono text-sm">{repository.fullName}</p>
+                  <a
+                    href={`https://github.com/${repository.fullName}`}
+                    className="block truncate font-mono text-sm hover:underline"
+                    rel="noopener noreferrer"
+                  >
+                    {repository.fullName}
+                  </a>
                   <p className="mt-0.5 text-xs text-charcoal/60">
                     {repository.gateDefaultBranch
                       ? `default: ${repository.gateDefaultBranch}`
@@ -526,7 +564,12 @@ function GateEnforcementCoverage({
       <p className="mt-3 text-xs text-charcoal/60">
         Enforced means GitHub names <code>postil/gate</code> and binds it to the Postil
         App. Missing identities and unreadable rules stay unverified. See the{" "}
-        <Link href="/docs/gate" className="text-rust hover:underline">gate guide</Link>.
+        <Link href="/docs/gate" className="text-rust hover:underline">gate guide</Link>,
+        or email{" "}
+        <a href="mailto:hello@postil.dev" className="text-rust hover:underline">
+          hello@postil.dev
+        </a>{" "}
+        for help with rollout.
       </p>
     </section>
   );
@@ -600,6 +643,28 @@ function RepoHealthLine({
 
 function relative(value: Date, now: Date): string {
   return formatRelativeTime(value.toISOString(), now.getTime());
+}
+
+/**
+ * Link a config artifact to its file on GitHub. Only live repository and
+ * shared files link; organization fallbacks are edited in the form on this
+ * page, and removed or unverified paths may no longer exist on HEAD.
+ */
+function configArtifactHref(
+  artifact: VisibleConfigArtifact,
+  repoFullName: string,
+  sharedSourceFullName: string,
+): string | null {
+  if (!artifact.file || (artifact.state !== "active" && artifact.state !== "pending")) {
+    return null;
+  }
+  if (artifact.liveSource === "repository") {
+    return `https://github.com/${repoFullName}/blob/HEAD/${artifact.file}`;
+  }
+  if (artifact.liveSource === "shared") {
+    return `https://github.com/${sharedSourceFullName}/blob/HEAD/${artifact.file}`;
+  }
+  return null;
 }
 
 function configArtifactLabel(artifact: VisibleConfigArtifact): string {

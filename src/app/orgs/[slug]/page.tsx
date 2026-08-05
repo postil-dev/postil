@@ -533,7 +533,13 @@ export default async function OrgDashboardPage({
             {repos.map((repo) => (
               <div key={repo.id} className="flex items-center justify-between px-4 py-3">
                 <div>
-                  <p className="font-mono text-sm">{repo.fullName}</p>
+                  <a
+                    href={`https://github.com/${repo.fullName}`}
+                    className="font-mono text-sm hover:underline"
+                    rel="noopener noreferrer"
+                  >
+                    {repo.fullName}
+                  </a>
                   <p className="font-mono text-[11px] text-charcoal/70">
                     {repo.private ? "private" : "public"}
                   </p>
