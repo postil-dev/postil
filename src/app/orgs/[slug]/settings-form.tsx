@@ -184,31 +184,42 @@ export function SettingsForm({
   const [contentPolicyMd, setContentPolicyMd] = useState(settings?.contentPolicyMd ?? "");
   const [fallbacksStatus, setFallbacksStatus] = useState<SaveStatus>({ state: "idle" });
   const fallbacksDirty = useRef(false);
+  const fallbacksSequence = useRef(0);
+  const fallbacksChain = useRef<Promise<void>>(Promise.resolve());
   const [, startFallbacksTransition] = useTransition();
 
   // Debounced save for the fallback texts. Only edits mark the state dirty, so
   // the initial render never saves; the server rejects invalid YAML and the
-  // error stays on screen until the next edit resolves it.
+  // error stays on screen until the next edit resolves it. Saves chain so an
+  // older payload can never land after a newer one, and only the latest save
+  // sends or reports.
   useEffect(() => {
     if (!fallbacksDirty.current) return;
     const timer = setTimeout(() => {
+      const sequence = ++fallbacksSequence.current;
       setFallbacksStatus({ state: "saving" });
       startFallbacksTransition(async () => {
-        const form = new FormData();
-        form.set("slug", slug);
-        form.set("configYaml", configYaml);
-        form.set("guardrailsMd", guardrailsMd);
-        form.set("contentPolicyMd", contentPolicyMd);
-        try {
-          const result = await saveOrgConfigFallbacks(null, form);
-          setFallbacksStatus(
-            result.status === "error"
-              ? { state: "error", message: result.message }
-              : { state: "saved", message: "Saved." },
-          );
-        } catch {
-          setFallbacksStatus({ state: "error", message: "Could not save. Try again." });
-        }
+        fallbacksChain.current = fallbacksChain.current.then(async () => {
+          if (sequence !== fallbacksSequence.current) return;
+          const form = new FormData();
+          form.set("slug", slug);
+          form.set("configYaml", configYaml);
+          form.set("guardrailsMd", guardrailsMd);
+          form.set("contentPolicyMd", contentPolicyMd);
+          try {
+            const result = await saveOrgConfigFallbacks(null, form);
+            if (sequence !== fallbacksSequence.current) return;
+            setFallbacksStatus(
+              result.status === "error"
+                ? { state: "error", message: result.message }
+                : { state: "saved", message: "Saved." },
+            );
+          } catch {
+            if (sequence !== fallbacksSequence.current) return;
+            setFallbacksStatus({ state: "error", message: "Could not save. Try again." });
+          }
+        });
+        await fallbacksChain.current;
       });
     }, CONFIG_FALLBACKS_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
