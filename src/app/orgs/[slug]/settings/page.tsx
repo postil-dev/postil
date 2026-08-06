@@ -601,7 +601,7 @@ function GateEnforcementCoverage({
                   {presentation.stale
                     ? "Re-check to refresh this status."
                     : identityUnknown && protectionForbidden
-                      ? "A ruleset naming the Postil App verifies without extra access. Granting the App's optional branch-protection read access verifies classic protection too."
+                      ? "A ruleset naming the Postil App verifies without extra access. Granting the App's optional repository Administration (read-only) permission verifies classic protection too."
                       : "Re-check, or open the panel below for what Postil could not read."}
                 </p>
               )}
@@ -627,7 +627,7 @@ function GateEnforcementCoverage({
                     <p>
                       Classic branch protection does not tell Postil which app a
                       required check is bound to unless the App&apos;s optional
-                      repository-administration read access is granted. A branch
+                      repository Administration (read-only) permission is granted. A branch
                       ruleset that requires <code>postil/gate</code> from the Postil
                       App is verifiable without extra access: recreate the
                       requirement there and remove it from classic protection.

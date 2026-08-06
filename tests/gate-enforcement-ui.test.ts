@@ -15,7 +15,7 @@ describe("gate enforcement settings UI", () => {
     expect(page).toContain("statusRank");
     expect(page).toContain(".filter((entry) => entry.count > 0)");
     expect(page).toContain("<strong>Evidence:</strong>");
-    expect(page).toContain("repository-administration read access");
+    expect(page).toContain("repository Administration (read-only) permission");
     expect(page).not.toContain("rounded-full border px-2.5");
     expect(page).toContain("an active ruleset requires the check from the Postil App");
     expect(page).toContain("branch protection requires the check from the Postil App");
