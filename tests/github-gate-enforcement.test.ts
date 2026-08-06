@@ -25,6 +25,7 @@ describe("GitHub gate enforcement evidence", () => {
               },
             },
           }),
+          forbidden(),
           json([{
             type: "required_status_checks",
             parameters: {
@@ -46,6 +47,7 @@ describe("GitHub gate enforcement evidence", () => {
     expect(observation.evidence.activeRules.exactMatch).toBe(true);
     expect(requests[1]?.endsWith("/repos/acme/widget/branches/main")).toBe(true);
     expect(requests[1]?.endsWith("/protection")).toBe(false);
+    expect(requests[2]?.endsWith("/repos/acme/widget/branches/main/protection")).toBe(true);
   });
 
   test("keeps classic branch protection unverified when its summary omits App identity", async () => {
@@ -62,6 +64,7 @@ describe("GitHub gate enforcement evidence", () => {
               required_status_checks: { contexts: ["postil/gate"] },
             },
           }),
+          forbidden(),
           json([]),
         ]),
       },
@@ -74,6 +77,84 @@ describe("GitHub gate enforcement evidence", () => {
       exactMatch: false,
       match: "unknown_identity",
     });
+    expect(observation.evidence.protectionApi.status).toBe("forbidden");
+  });
+
+  test("resolves classic identity through the protection endpoint when readable", async () => {
+    for (const testCase of [
+      { appId: APP_ID, status: "required", match: "exact_app" },
+      { appId: null, status: "not_required", match: "any_source" },
+      { appId: APP_ID + 1, status: "not_required", match: "foreign_app" },
+    ] as const) {
+      const observation = await fetchGateEnforcementObservation(
+        "token",
+        "acme/widget",
+        APP_ID,
+        {
+          fetchImpl: sequenceFetch([
+            json({ default_branch: "main" }),
+            json({
+              protected: true,
+              protection: {
+                required_status_checks: { contexts: ["postil/gate"] },
+              },
+            }),
+            json({
+              required_status_checks: {
+                contexts: ["postil/gate"],
+                checks: [{ context: "postil/gate", app_id: testCase.appId }],
+              },
+            }),
+            json([]),
+          ]),
+        },
+      );
+      expect(observation.status).toBe(testCase.status);
+      expect(observation.evidence.protectionApi).toEqual({
+        status: "ok",
+        exactMatch: testCase.appId === APP_ID,
+        match: testCase.match,
+      });
+    }
+  });
+
+  test("treats a 404 protection lookup as no classic protection", async () => {
+    const observation = await fetchGateEnforcementObservation(
+      "token",
+      "acme/widget",
+      APP_ID,
+      {
+        fetchImpl: sequenceFetch([
+          json({ default_branch: "main" }),
+          json({ protected: false, protection: { enabled: false } }),
+          new Response("", { status: 404 }),
+          json([]),
+        ]),
+      },
+    );
+    expect(observation.status).toBe("not_required");
+    expect(observation.evidence.protectionApi).toEqual({
+      status: "not_protected",
+      exactMatch: false,
+      match: "none",
+    });
+  });
+
+  test("propagates a rate-limited protection lookup for durable rescheduling", async () => {
+    const retry = fetchGateEnforcementObservation("token", "acme/widget", APP_ID, {
+      fetchImpl: sequenceFetch([
+        json({ default_branch: "main" }),
+        json({ protected: false, protection: { enabled: false } }),
+        new Response("", {
+          status: 403,
+          headers: {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "1784116800",
+          },
+        }),
+      ]),
+    });
+    await expect(retry).rejects.toBeInstanceOf(GithubRateLimitError);
   });
 
   test("accepts an exact App binding from a checks-only classic summary", async () => {
@@ -93,6 +174,7 @@ describe("GitHub gate enforcement evidence", () => {
               },
             },
           }),
+          forbidden(),
           json([]),
         ]),
       },
@@ -128,6 +210,7 @@ describe("GitHub gate enforcement evidence", () => {
                 },
               },
             }),
+          forbidden(),
             json([]),
           ]),
         },
@@ -147,6 +230,7 @@ describe("GitHub gate enforcement evidence", () => {
         fetchImpl: sequenceFetch([
           json({ default_branch: "trunk" }),
           json({ protected: false, protection: { enabled: false } }),
+          forbidden(),
           json(firstPage, {
             link: '<https://api.github.com/resource?page=2>; rel="next"',
           }),
@@ -190,6 +274,7 @@ describe("GitHub gate enforcement evidence", () => {
         fetchImpl: sequenceFetch([
           json({ default_branch: "main" }),
           json({ protected: false, protection: { enabled: false } }),
+          forbidden(),
           json([{ type: "required_status_checks", parameters: { required_status_checks: [check] } }]),
         ]),
       });
@@ -207,6 +292,7 @@ describe("GitHub gate enforcement evidence", () => {
         fetchImpl: sequenceFetch([
           json({ default_branch: "main" }),
           new Response("", { status: 403 }),
+          forbidden(),
           json([]),
         ]),
       },
@@ -223,6 +309,7 @@ describe("GitHub gate enforcement evidence", () => {
         fetchImpl: sequenceFetch([
           json({ default_branch: "main" }),
           json({ protected: true, protection: {} }),
+          forbidden(),
           json([]),
         ]),
       },
@@ -240,6 +327,7 @@ describe("GitHub gate enforcement evidence", () => {
         fetchImpl: sequenceFetch([
           json({ default_branch: "main" }),
           json({ protected: false, protection: { enabled: false } }),
+          forbidden(),
           json([{
             type: "required_status_checks",
             parameters: { required_status_checks: "postil/gate" },
@@ -271,6 +359,10 @@ describe("GitHub gate enforcement evidence", () => {
     });
   });
 });
+
+function forbidden(): Response {
+  return new Response("", { status: 403 });
+}
 
 function json(value: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(value), {

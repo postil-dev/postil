@@ -16,6 +16,8 @@ export type GateEnforcementSignalMatch =
   | "unknown_identity"
   | "none";
 
+export type ProtectionApiStatus = "ok" | "forbidden" | "not_protected" | "error";
+
 export interface GateEnforcementObservation {
   status: GateEnforcementStatus;
   defaultBranch: string;
@@ -26,6 +28,18 @@ export interface GateEnforcementObservation {
     branchProtection: {
       available: boolean;
       requiredStatusChecksPresent: boolean;
+      exactMatch: boolean;
+      match: GateEnforcementSignalMatch;
+    };
+    /**
+     * The dedicated branch-protection endpoint, which always carries each
+     * required check's app binding but needs the App's optional
+     * repository-administration read permission. "forbidden" means the
+     * installation has not granted it; classic evidence then falls back to
+     * the branch summary above.
+     */
+    protectionApi: {
+      status: ProtectionApiStatus;
       exactMatch: boolean;
       match: GateEnforcementSignalMatch;
     };
@@ -131,6 +145,39 @@ export async function fetchGateEnforcementObservation(
     protectionError = error.message;
   }
 
+  let protectionApiStatus: ProtectionApiStatus;
+  let protectionApiMatch: GateEnforcementSignalMatch = "none";
+  let protectionApiExactMatch = false;
+  let protectionApiError: string | null = null;
+  const protectionResponse = await request(
+    fetchImpl,
+    `${base}/repos/${repositoryPath}/branches/${branchPath}/protection`,
+    token,
+    signal,
+  );
+  if (protectionResponse.ok) {
+    const parsedProtection = parseProtectionApi(await protectionResponse.json(), expectedAppId);
+    if (parsedProtection.valid) {
+      protectionApiStatus = "ok";
+      protectionApiMatch = parsedProtection.match;
+      protectionApiExactMatch = parsedProtection.exactMatch;
+    } else {
+      protectionApiStatus = "error";
+      protectionApiError = parsedProtection.error;
+    }
+  } else if (protectionResponse.status === 404) {
+    protectionApiStatus = "not_protected";
+  } else {
+    const error = await githubResponseError("branch protection lookup", protectionResponse);
+    if (error instanceof GithubRateLimitError) throw error;
+    if (protectionResponse.status === 403) {
+      protectionApiStatus = "forbidden";
+    } else {
+      protectionApiStatus = "error";
+      protectionApiError = error.message;
+    }
+  }
+
   let activeRulesAvailable = true;
   let activeRulesPagesRead = 0;
   let activeRulesExactMatch = false;
@@ -173,11 +220,32 @@ export async function fetchGateEnforcementObservation(
     if (!hasNextPage(response.headers.get("link"))) break;
   }
 
-  const exactMatch = branchProtectionExactMatch || activeRulesExactMatch;
+  // The dedicated protection endpoint is authoritative for classic protection
+  // when readable: it names each required check's app binding, and a 404 means
+  // no classic protection exists. Only without it does the branch summary's
+  // possibly identity-less view stand.
+  const classicReadable =
+    protectionApiStatus === "ok" || protectionApiStatus === "not_protected";
+  const exactMatch =
+    protectionApiExactMatch ||
+    activeRulesExactMatch ||
+    (!classicReadable && branchProtectionExactMatch);
   const identityUnknown =
-    branchProtectionMatch === "unknown_identity" || activeRulesMatch === "unknown_identity";
-  const allEvidenceAvailable = protectionAvailable && activeRulesAvailable;
-  const error = [protectionError, rulesError].filter(Boolean).join("; ") || null;
+    (classicReadable
+      ? protectionApiMatch === "unknown_identity"
+      : branchProtectionMatch === "unknown_identity") ||
+    activeRulesMatch === "unknown_identity";
+  const allEvidenceAvailable =
+    (classicReadable || protectionAvailable) && activeRulesAvailable;
+  const error =
+    [classicReadable ? null : protectionError, protectionApiError, rulesError]
+      .filter(Boolean)
+      .join("; ") || null;
+  if (branchProtection === "unknown" && protectionApiStatus === "ok") {
+    branchProtection = "protected";
+  } else if (branchProtection === "unknown" && protectionApiStatus === "not_protected") {
+    branchProtection = "unprotected";
+  }
   return {
     status: exactMatch
       ? "required"
@@ -194,6 +262,11 @@ export async function fetchGateEnforcementObservation(
         requiredStatusChecksPresent,
         exactMatch: branchProtectionExactMatch,
         match: branchProtectionMatch,
+      },
+      protectionApi: {
+        status: protectionApiStatus,
+        exactMatch: protectionApiExactMatch,
+        match: protectionApiMatch,
       },
       activeRules: {
         available: activeRulesAvailable,
@@ -267,6 +340,49 @@ function parseBranchEvidence(value: unknown, expectedAppId: number): {
     exactMatch: match === "exact_app",
     match,
     error: null,
+  };
+}
+
+function parseProtectionApi(value: unknown, expectedAppId: number):
+  | { valid: true; exactMatch: boolean; match: GateEnforcementSignalMatch }
+  | { valid: false; error: string } {
+  if (!isRecord(value)) {
+    return { valid: false, error: "GitHub branch protection returned an invalid response" };
+  }
+  const required = value.required_status_checks;
+  if (required === undefined || required === null) {
+    return { valid: true, exactMatch: false, match: "none" };
+  }
+  if (!isRecord(required)) {
+    return {
+      valid: false,
+      error: "GitHub branch protection returned invalid required status checks",
+    };
+  }
+  const checks = required.checks;
+  if (checks !== undefined && (!Array.isArray(checks) || !checks.every(isBranchStatusCheck))) {
+    return {
+      valid: false,
+      error: "GitHub branch protection returned invalid status-check details",
+    };
+  }
+  const matchingChecks = Array.isArray(checks)
+    ? checks.filter((check) => check.context === GATE_ENFORCEMENT_CONTEXT)
+    : [];
+  if (matchingChecks.length > 0) {
+    const match = classifySignalMatch(
+      matchingChecks.map((check) => check.app_id),
+      expectedAppId,
+    );
+    return { valid: true, match, exactMatch: match === "exact_app" };
+  }
+  const contexts = required.contexts;
+  const namedByContext =
+    Array.isArray(contexts) && contexts.includes(GATE_ENFORCEMENT_CONTEXT);
+  return {
+    valid: true,
+    match: namedByContext ? "unknown_identity" : "none",
+    exactMatch: false,
   };
 }
 
