@@ -1,6 +1,6 @@
 import Image from "next/image";
 
-export type StatusKind = "pass" | "warn" | "error" | "info";
+export type StatusKind = "pass" | "warn" | "error" | "info" | "unknown";
 
 /**
  * Status iconography from public/status/*.svg (brand set).
