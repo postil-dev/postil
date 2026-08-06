@@ -191,7 +191,10 @@ const {
   revokeFinding,
   saveBillingContact,
   saveNotificationPreferences,
-  saveOrgSettings,
+  saveOrgConfigFallbacks,
+  saveOrgInferenceSettings,
+  setOrgGateEnabled,
+  setOrgSharedConfigEnabled,
 } = orgSettingsActions;
 
 function fakeDb() {
@@ -207,7 +210,10 @@ function fakeDb() {
           : "activeEmail" in selection ||
               selection.pendingEmail === schema.organizationEntitlements.billingContactPending
             ? billingRows
-          : "apiKeyCiphertext" in selection || "pendingEmail" in selection
+          : "apiKeyCiphertext" in selection ||
+              "pendingEmail" in selection ||
+              "gateEnabled" in selection ||
+              "sharedConfigEnabled" in selection
             ? settingsRows
             : orgRows;
       const chain = {
@@ -301,6 +307,13 @@ function byokForm(overrides: Record<string, string> = {}): FormData {
     model: "provider-model",
     ...overrides,
   });
+}
+
+function toggleForm(name: string, value: string): FormData {
+  const form = new FormData();
+  form.set("slug", "acme");
+  form.set(name, value);
+  return form;
 }
 
 function approvalForm(): FormData {
@@ -475,20 +488,13 @@ describe("organization notification preferences", () => {
   });
 });
 
-describe("saveOrgSettings", () => {
+describe("organization settings actions", () => {
   test("audits a merge-gate change and queues organization-wide reconciliation", async () => {
     settingsRows = [{ gateEnabled: false }];
 
-    const result = await saveOrgSettings(
-      null,
-      byokForm({
-        apiKeyAction: "replace",
-        apiKey: "sk-test-secret",
-        gateEnabled: "on",
-      }),
-    );
+    const result = await setOrgGateEnabled(null, toggleForm("gateEnabled", "on"));
 
-    expect(result).toEqual({ status: "success", message: "Organization settings saved." });
+    expect(result.status).toBe("success");
     expect(conflictSet?.gateEnabled).toBe(true);
     expect(settingEvents).toEqual([{
       orgId: 20,
@@ -500,10 +506,61 @@ describe("saveOrgSettings", () => {
     expect(organizationGateSyncJobs).toBe(1);
   });
 
+  test("does not audit or reconcile an unchanged gate mode", async () => {
+    settingsRows = [{ gateEnabled: true }];
+
+    const result = await setOrgGateEnabled(null, toggleForm("gateEnabled", "on"));
+
+    expect(result.status).toBe("success");
+    expect(conflictSet?.gateEnabled).toBe(true);
+    expect(settingEvents).toEqual([]);
+    expect(organizationGateSyncJobs).toBe(0);
+  });
+
+  test("rejects a non-admin merge-gate toggle", async () => {
+    memberRows = [{ role: "member" }];
+
+    await expect(setOrgGateEnabled(null, toggleForm("gateEnabled", "on"))).rejects.toThrow(
+      "this action requires an organization admin",
+    );
+    expect(insertCount).toBe(0);
+  });
+
+  test("rejects invalid config YAML in the fallbacks save", async () => {
+    const form = new FormData();
+    form.set("slug", "acme");
+    form.set("configYaml", "model:\n  name: local-model");
+
+    const result = await saveOrgConfigFallbacks(null, form);
+
+    expect(result.status).toBe("error");
+    expect(result.message).toContain("cannot set model options");
+    expect(insertCount).toBe(0);
+  });
+
+  test("saves config fallback texts without touching provider settings", async () => {
+    const form = new FormData();
+    form.set("slug", "acme");
+    form.set("configYaml", "minConfidence: 0.8\n");
+    form.set("guardrailsMd", "");
+    form.set("contentPolicyMd", "No hype.");
+
+    const result = await saveOrgConfigFallbacks(null, form);
+
+    expect(result).toEqual({ status: "success", message: "Config fallbacks saved." });
+    expect(conflictSet).toMatchObject({
+      configYaml: "minConfidence: 0.8\n",
+      guardrailsMd: null,
+      contentPolicyMd: "No hype.",
+    });
+    expect(conflictSet).not.toHaveProperty("apiBase");
+    expect(conflictSet).not.toHaveProperty("gateEnabled");
+  });
+
   test("rejects non-admin writes before storing settings", async () => {
     memberRows = [{ role: "member" }];
 
-    await expect(saveOrgSettings(null, settingsForm())).rejects.toThrow(
+    await expect(saveOrgInferenceSettings(null, settingsForm())).rejects.toThrow(
       "this action requires an organization admin",
     );
     expect(insertCount).toBe(0);
@@ -551,12 +608,12 @@ describe("saveOrgSettings", () => {
   });
 
   test("seals a replacement API key before storage", async () => {
-    const result = await saveOrgSettings(
+    const result = await saveOrgInferenceSettings(
       null,
       byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
     );
 
-    expect(result).toEqual({ status: "success", message: "Organization settings saved." });
+    expect(result).toEqual({ status: "success", message: "Inference settings saved." });
     const ciphertext = insertedValues?.apiKeyCiphertext;
     expect(Buffer.isBuffer(ciphertext)).toBe(true);
     const sealed = ciphertext as Buffer;
@@ -565,21 +622,32 @@ describe("saveOrgSettings", () => {
       "sk-test-secret",
     );
     expect(conflictSet?.apiKeyCiphertext).toBe(sealed);
-    expect(conflictSet?.sharedConfigEnabled).toBe(true);
+    expect(conflictSet).not.toHaveProperty("sharedConfigEnabled");
+    expect(conflictSet).not.toHaveProperty("configYaml");
   });
 
   test("lets an admin disable shared owner configuration", async () => {
-    const form = byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" });
-    form.set("sharedConfigEnabled", "off");
+    settingsRows = [{ sharedConfigEnabled: true }];
 
-    await saveOrgSettings(null, form);
+    const result = await setOrgSharedConfigEnabled(
+      null,
+      toggleForm("sharedConfigEnabled", "off"),
+    );
 
+    expect(result.status).toBe("success");
     expect(conflictSet?.sharedConfigEnabled).toBe(false);
+    expect(settingEvents).toEqual([{
+      orgId: 20,
+      setting: "shared_config_enabled",
+      value: "disabled",
+      actorUserId: 10,
+      source: "dashboard",
+    }]);
   });
 
   test("preserves an existing write-only key when no key action is requested", async () => {
     settingsRows = [{ apiKeyCiphertext: Buffer.from("existing") }];
-    await saveOrgSettings(null, byokForm({ model: "org-model" }));
+    await saveOrgInferenceSettings(null, byokForm({ model: "org-model" }));
 
     expect(insertedValues?.apiKeyCiphertext).toBeNull();
     expect(conflictSet).not.toHaveProperty("apiKeyCiphertext");
@@ -588,7 +656,7 @@ describe("saveOrgSettings", () => {
 
   test("does not convert keep plus a typed key into an implicit replacement", async () => {
     settingsRows = [{ apiKeyCiphertext: Buffer.from("existing") }];
-    await saveOrgSettings(
+    await saveOrgInferenceSettings(
       null,
       byokForm({ apiKeyAction: "keep", apiKey: "sk-ignored-secret" }),
     );
@@ -598,7 +666,7 @@ describe("saveOrgSettings", () => {
   });
 
   test("clears every provider field atomically when BYOK is removed", async () => {
-    await saveOrgSettings(null, settingsForm({ apiKeyAction: "remove" }));
+    await saveOrgInferenceSettings(null, settingsForm({ apiKeyAction: "remove" }));
 
     expect(conflictSet?.apiKeyCiphertext).toBeNull();
     expect(conflictSet).toMatchObject({
@@ -612,7 +680,7 @@ describe("saveOrgSettings", () => {
   });
 
   test("rejects replace without a new key", async () => {
-    const result = await saveOrgSettings(null, byokForm({ apiKeyAction: "replace" }));
+    const result = await saveOrgInferenceSettings(null, byokForm({ apiKeyAction: "replace" }));
 
     expect(result).toEqual({
       status: "error",
@@ -623,14 +691,14 @@ describe("saveOrgSettings", () => {
 
   test("does not accept or store provider overrides in hosted mode", async () => {
     await expect(
-      saveOrgSettings(null, settingsForm({ apiBase: "http://127.0.0.1/v1" })),
+      saveOrgInferenceSettings(null, settingsForm({ apiBase: "http://127.0.0.1/v1" })),
     ).resolves.toMatchObject({ status: "success" });
     expect(conflictSet?.apiBase).toBeNull();
   });
 
   test("rejects invalid provider API bases in BYOK mode before storage", async () => {
     await expect(
-      saveOrgSettings(
+      saveOrgInferenceSettings(
         null,
         byokForm({ apiKeyAction: "replace", apiKey: "key", apiBase: "http://127.0.0.1/v1" }),
       ),
@@ -639,7 +707,7 @@ describe("saveOrgSettings", () => {
   });
 
   test("seals optional additional authentication name and value", async () => {
-    await saveOrgSettings(
+    await saveOrgInferenceSettings(
       null,
       byokForm({
         apiKeyAction: "replace",
@@ -660,7 +728,7 @@ describe("saveOrgSettings", () => {
   for (const header of ["x-api-key", "Content-Type", "X-Forwarded-For"]) {
     test(`rejects reserved additional auth header ${header}`, async () => {
       await expect(
-        saveOrgSettings(
+        saveOrgInferenceSettings(
           null,
           byokForm({
             apiKeyAction: "replace",
@@ -677,7 +745,7 @@ describe("saveOrgSettings", () => {
 
   test("rejects Authorization as additional auth for OpenAI-compatible APIs", async () => {
     await expect(
-      saveOrgSettings(
+      saveOrgInferenceSettings(
         null,
         byokForm({
           apiKeyAction: "replace",
@@ -691,7 +759,7 @@ describe("saveOrgSettings", () => {
   });
 
   test("allows sealed Authorization auth for Anthropic APIs", async () => {
-    await saveOrgSettings(
+    await saveOrgInferenceSettings(
       null,
       byokForm({
         apiFormat: "anthropic",
@@ -717,7 +785,7 @@ describe("saveOrgSettings", () => {
     ];
 
     await expect(
-      saveOrgSettings(
+      saveOrgInferenceSettings(
         null,
         byokForm({ apiFormat: "openai-compatible", apiAuthAction: "keep" }),
       ),
@@ -727,7 +795,7 @@ describe("saveOrgSettings", () => {
 
   test("rejects multiline additional authentication values", async () => {
     await expect(
-      saveOrgSettings(
+      saveOrgInferenceSettings(
         null,
         byokForm({
           apiKeyAction: "replace",
@@ -742,14 +810,14 @@ describe("saveOrgSettings", () => {
   });
 
   test("rejects BYOK keep when no stored key exists", async () => {
-    const result = await saveOrgSettings(null, byokForm());
+    const result = await saveOrgInferenceSettings(null, byokForm());
     expect(result).toEqual({ status: "error", message: "Enter a provider key to enable BYOK." });
     expect(insertCount).toBe(0);
   });
 
   test("rejects an inference mode that conflicts with the billed plan", async () => {
     billingRows = [{ subscriptionMode: "hosted" }];
-    const result = await saveOrgSettings(
+    const result = await saveOrgInferenceSettings(
       null,
       byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
     );
@@ -768,12 +836,12 @@ describe("saveOrgSettings", () => {
     }];
     updateResultRows = [{ orgId: 20 }];
 
-    const result = await saveOrgSettings(
+    const result = await saveOrgInferenceSettings(
       null,
       byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
     );
 
-    expect(result).toEqual({ status: "success", message: "Organization settings saved." });
+    expect(result).toEqual({ status: "success", message: "Inference settings saved." });
     expect(updatedValues).toMatchObject({
       subscriptionMode: "byok",
       updatedBy: "trial-provider-mode",
@@ -789,12 +857,12 @@ describe("saveOrgSettings", () => {
     }];
     updateResultRows = [{ orgId: 20 }];
 
-    const result = await saveOrgSettings(
+    const result = await saveOrgInferenceSettings(
       null,
       byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
     );
 
-    expect(result).toEqual({ status: "success", message: "Organization settings saved." });
+    expect(result).toEqual({ status: "success", message: "Inference settings saved." });
     expect(updatedValues).toMatchObject({
       subscriptionMode: "byok",
       updatedBy: "trial-provider-mode",
@@ -808,7 +876,7 @@ describe("saveOrgSettings", () => {
       trialEndsAt: new Date(Date.now() - 60_000),
     }];
 
-    const result = await saveOrgSettings(
+    const result = await saveOrgInferenceSettings(
       null,
       byokForm({ apiKeyAction: "replace", apiKey: "sk-test-secret" }),
     );
@@ -828,7 +896,7 @@ describe("saveOrgSettings", () => {
       trialEndsAt: new Date(Date.now() + 60_000),
     }];
 
-    const result = await saveOrgSettings(null, settingsForm());
+    const result = await saveOrgInferenceSettings(null, settingsForm());
 
     expect(result).toEqual({
       status: "error",

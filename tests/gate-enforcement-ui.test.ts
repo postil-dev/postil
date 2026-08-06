@@ -13,13 +13,13 @@ describe("gate enforcement settings UI", () => {
     );
     expect(page).toContain("Installation health");
     expect(page).toContain("GitHub blocks a merge only when the");
-    expect(page).toContain("exact App and context required by an active ruleset");
-    expect(page).toContain("exact App and context required by classic branch protection");
+    expect(page).toContain("an active ruleset requires the check from the Postil App");
+    expect(page).toContain("branch protection requires the check from the Postil App");
     expect(page).toContain("Missing identities and unreadable rules stay unverified");
     expect(page).toContain("No changes are applied from this page");
     expect(page).toContain("Rollback:");
-    expect(page).toContain("any source");
-    expect(page).toContain("other App");
+    expect(page).toContain("any app may satisfy it");
+    expect(page).toContain("required from a different app");
     expect(button).toContain("animate-spin");
     expect(button).toContain('progress === "completed"');
     expect(button).toContain("router.refresh()");

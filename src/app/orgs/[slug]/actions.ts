@@ -525,12 +525,176 @@ export async function getGateEnforcementRefreshProgress(
   return { status: status === "failed" ? "failed" : "missing" };
 }
 
-export async function saveOrgSettings(
+/**
+ * Turn the merge gate on or off for the organization. A dedicated action so the
+ * dashboard toggle saves on change; the gate-mode advisory lock, audit event,
+ * and organization-wide gate-state reconciliation match the previous combined
+ * settings save.
+ */
+export async function setOrgGateEnabled(
   _previousState: OrgSettingsActionState | null,
   formData: FormData,
 ): Promise<OrgSettingsActionState> {
   const slug = String(formData.get("slug") ?? "");
   const { orgId, userId } = await requireAdmin(slug);
+  const gateEnabled = String(formData.get("gateEnabled") ?? "") === "on";
+  const db = getDb();
+  const now = new Date();
+  let gateModeChanged = false;
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:gate-mode:${orgId}`}, 0))`,
+    );
+    await tx.execute(sql`
+      SELECT "org_id"
+      FROM "org_settings"
+      WHERE "org_id" = ${orgId}
+      FOR UPDATE
+    `);
+    const current = (
+      await tx
+        .select({ gateEnabled: schema.orgSettings.gateEnabled })
+        .from(schema.orgSettings)
+        .where(eq(schema.orgSettings.orgId, orgId))
+        .limit(1)
+    )[0];
+    gateModeChanged = (current?.gateEnabled ?? false) !== gateEnabled;
+    await tx
+      .insert(schema.orgSettings)
+      .values({ orgId, gateEnabled, updatedAt: now })
+      .onConflictDoUpdate({
+        target: schema.orgSettings.orgId,
+        set: { gateEnabled, updatedAt: now },
+      });
+    if (gateModeChanged) {
+      const event = (
+        await tx
+          .insert(schema.organizationSettingEvents)
+          .values({
+            orgId,
+            setting: "gate_enabled",
+            value: gateEnabled ? "enabled" : "advisory",
+            actorUserId: userId,
+            source: "dashboard",
+          })
+          .returning({ id: schema.organizationSettingEvents.id })
+      )[0];
+      if (!event) throw new Error("gate setting audit event was not recorded");
+      await enqueueLatestGateStateSyncsForOrganization(tx, orgId, event.id);
+    }
+  });
+  if (gateModeChanged) {
+    void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+      triggerQueueDrain("gate-state-sync"),
+    );
+  }
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/settings`);
+  return {
+    status: "success",
+    message: gateEnabled
+      ? "Merge gate on. Blocking findings fail postil/gate."
+      : "Merge gate off. Reviews are advisory.",
+  };
+}
+
+/** Turn shared owner configuration on or off, saving on change. */
+export async function setOrgSharedConfigEnabled(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId, userId } = await requireAdmin(slug);
+  const sharedConfigEnabled = String(formData.get("sharedConfigEnabled") ?? "") === "on";
+  const db = getDb();
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT "org_id"
+      FROM "org_settings"
+      WHERE "org_id" = ${orgId}
+      FOR UPDATE
+    `);
+    const current = (
+      await tx
+        .select({ sharedConfigEnabled: schema.orgSettings.sharedConfigEnabled })
+        .from(schema.orgSettings)
+        .where(eq(schema.orgSettings.orgId, orgId))
+        .limit(1)
+    )[0];
+    const changed = (current?.sharedConfigEnabled ?? true) !== sharedConfigEnabled;
+    await tx
+      .insert(schema.orgSettings)
+      .values({ orgId, sharedConfigEnabled, updatedAt: now })
+      .onConflictDoUpdate({
+        target: schema.orgSettings.orgId,
+        set: { sharedConfigEnabled, updatedAt: now },
+      });
+    if (changed) {
+      await tx.insert(schema.organizationSettingEvents).values({
+        orgId,
+        setting: "shared_config_enabled",
+        value: sharedConfigEnabled ? "enabled" : "disabled",
+        actorUserId: userId,
+        source: "dashboard",
+      });
+    }
+  });
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/settings`);
+  return {
+    status: "success",
+    message: sharedConfigEnabled
+      ? "Shared owner configuration on."
+      : "Shared owner configuration off.",
+  };
+}
+
+/**
+ * Save the organization fallback config texts. Split from the inference save so
+ * the dashboard can save them on change without touching provider settings.
+ */
+export async function saveOrgConfigFallbacks(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId } = await requireAdmin(slug);
+  const configYamlBody = String(formData.get("configYaml") ?? "");
+  const configYaml = configYamlBody.trim().length > 0 ? configYamlBody : null;
+  const guardrailsBody = String(formData.get("guardrailsMd") ?? "");
+  const guardrailsMd = guardrailsBody.trim().length > 0 ? guardrailsBody : null;
+  const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
+  const contentPolicyMd =
+    contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
+  if (configYaml) {
+    try {
+      validateOrgConfigYaml(configYaml);
+    } catch (error) {
+      return {
+        status: "error",
+        message: error instanceof Error ? error.message : "Config YAML is invalid.",
+      };
+    }
+  }
+  const db = getDb();
+  const now = new Date();
+  const values = { configYaml, guardrailsMd, contentPolicyMd, updatedAt: now };
+  await db
+    .insert(schema.orgSettings)
+    .values({ orgId, ...values })
+    .onConflictDoUpdate({ target: schema.orgSettings.orgId, set: values });
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/settings`);
+  return { status: "success", message: "Config fallbacks saved." };
+}
+
+export async function saveOrgInferenceSettings(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId } = await requireAdmin(slug);
 
   const providerMode = String(formData.get("providerMode") ?? "hosted").trim();
   if (providerMode !== "hosted" && providerMode !== "byok") {
@@ -546,27 +710,6 @@ export async function saveOrgSettings(
   const apiAuthHeader = String(formData.get("apiAuthHeader") ?? "").trim();
   const apiAuthValue = String(formData.get("apiAuthValue") ?? "").trim();
   const apiAuthAction = String(formData.get("apiAuthAction") ?? "keep").trim();
-  const configYamlBody = String(formData.get("configYaml") ?? "");
-  const configYaml = configYamlBody.trim().length > 0 ? configYamlBody : null;
-  const guardrailsBody = String(formData.get("guardrailsMd") ?? "");
-  const guardrailsMd = guardrailsBody.trim().length > 0 ? guardrailsBody : null;
-  const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
-  const contentPolicyMd =
-    contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
-  const sharedConfigValues = formData.getAll("sharedConfigEnabled").map(String);
-  const sharedConfigEnabled =
-    sharedConfigValues.length === 0 || sharedConfigValues.includes("on");
-  const gateEnabled = formData.getAll("gateEnabled").map(String).includes("on");
-  if (configYaml) {
-    try {
-      validateOrgConfigYaml(configYaml);
-    } catch (error) {
-      return {
-        status: "error",
-        message: error instanceof Error ? error.message : "Config YAML is invalid.",
-      };
-    }
-  }
 
   const db = getDb();
   const removingByok = providerMode === "hosted" || apiKeyAction === "remove";
@@ -592,14 +735,8 @@ export async function saveOrgSettings(
     apiFormat: removingByok ? "openai-compatible" : apiFormat!,
     model: removingByok ? null : model,
     modelCascade: removingByok ? null : modelCascade,
-    configYaml,
-    guardrailsMd,
-    contentPolicyMd,
-    sharedConfigEnabled,
-    gateEnabled,
     updatedAt: now,
   };
-  let gateModeChanged = false;
 
   // The key is write-only: set when provided, cleared when requested,
   // otherwise left untouched. It is never read back to the form.
@@ -677,13 +814,11 @@ export async function saveOrgSettings(
         .select({
           apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
           apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
-          gateEnabled: schema.orgSettings.gateEnabled,
         })
         .from(schema.orgSettings)
         .where(eq(schema.orgSettings.orgId, orgId))
         .limit(1)
     )[0];
-    gateModeChanged = (currentSettings?.gateEnabled ?? false) !== gateEnabled;
     const activeTrial = Boolean(
       entitlement?.status === "trialing" &&
         entitlement.trialEndsAt &&
@@ -760,33 +895,12 @@ export async function saveOrgSettings(
         throw new Error("The free trial ended before the provider change was saved.");
       }
     }
-    if (gateModeChanged) {
-      const event = (
-        await tx
-          .insert(schema.organizationSettingEvents)
-          .values({
-            orgId,
-            setting: "gate_enabled",
-            value: gateEnabled ? "enabled" : "advisory",
-            actorUserId: userId,
-            source: "dashboard",
-          })
-          .returning({ id: schema.organizationSettingEvents.id })
-      )[0];
-      if (!event) throw new Error("gate setting audit event was not recorded");
-      await enqueueLatestGateStateSyncsForOrganization(tx, orgId, event.id);
-    }
     return null;
   });
   if (modeError) return modeError;
-  if (gateModeChanged) {
-    void import("@/worker/runner").then(({ triggerQueueDrain }) =>
-      triggerQueueDrain("gate-state-sync"),
-    );
-  }
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);
-  return { status: "success", message: "Organization settings saved." };
+  return { status: "success", message: "Inference settings saved." };
 }
 
 async function assertDashboardReviewApprovable(review: ReviewForApproval): Promise<void> {
