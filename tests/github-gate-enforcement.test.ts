@@ -140,6 +140,34 @@ describe("GitHub gate enforcement evidence", () => {
     });
   });
 
+  test("degrades to summary evidence when the protection lookup throws", async () => {
+    const responses = [
+      json({ default_branch: "main" }),
+      json({
+        protected: true,
+        protection: {
+          required_status_checks: {
+            contexts: [],
+            checks: [{ context: "postil/gate", app_id: APP_ID }],
+          },
+        },
+      }),
+      new Error("network unreachable"),
+      json([]),
+    ];
+    let index = 0;
+    const observation = await fetchGateEnforcementObservation("token", "acme/widget", APP_ID, {
+      fetchImpl: (async () => {
+        const next = responses[index++];
+        if (next instanceof Error) throw next;
+        return next;
+      }) as unknown as typeof fetch,
+    });
+    expect(observation.status).toBe("required");
+    expect(observation.evidence.protectionApi.status).toBe("error");
+    expect(observation.error).toContain("network unreachable");
+  });
+
   test("propagates a rate-limited protection lookup for durable rescheduling", async () => {
     const retry = fetchGateEnforcementObservation("token", "acme/widget", APP_ID, {
       fetchImpl: sequenceFetch([

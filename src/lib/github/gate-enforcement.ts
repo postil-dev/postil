@@ -149,33 +149,42 @@ export async function fetchGateEnforcementObservation(
   let protectionApiMatch: GateEnforcementSignalMatch = "none";
   let protectionApiExactMatch = false;
   let protectionApiError: string | null = null;
-  const protectionResponse = await request(
-    fetchImpl,
-    `${base}/repos/${repositoryPath}/branches/${branchPath}/protection`,
-    token,
-    signal,
-  );
-  if (protectionResponse.ok) {
-    const parsedProtection = parseProtectionApi(await protectionResponse.json(), expectedAppId);
-    if (parsedProtection.valid) {
-      protectionApiStatus = "ok";
-      protectionApiMatch = parsedProtection.match;
-      protectionApiExactMatch = parsedProtection.exactMatch;
+  // The protection endpoint is an optional evidence source; a thrown network
+  // failure here degrades to "error" so summary and ruleset evidence still
+  // decide. Rate limits and aborts keep their throwing semantics.
+  try {
+    const protectionResponse = await request(
+      fetchImpl,
+      `${base}/repos/${repositoryPath}/branches/${branchPath}/protection`,
+      token,
+      signal,
+    );
+    if (protectionResponse.ok) {
+      const parsedProtection = parseProtectionApi(await protectionResponse.json(), expectedAppId);
+      if (parsedProtection.valid) {
+        protectionApiStatus = "ok";
+        protectionApiMatch = parsedProtection.match;
+        protectionApiExactMatch = parsedProtection.exactMatch;
+      } else {
+        protectionApiStatus = "error";
+        protectionApiError = parsedProtection.error;
+      }
+    } else if (protectionResponse.status === 404) {
+      protectionApiStatus = "not_protected";
     } else {
-      protectionApiStatus = "error";
-      protectionApiError = parsedProtection.error;
+      const error = await githubResponseError("branch protection lookup", protectionResponse);
+      if (error instanceof GithubRateLimitError) throw error;
+      if (protectionResponse.status === 403) {
+        protectionApiStatus = "forbidden";
+      } else {
+        protectionApiStatus = "error";
+        protectionApiError = error.message;
+      }
     }
-  } else if (protectionResponse.status === 404) {
-    protectionApiStatus = "not_protected";
-  } else {
-    const error = await githubResponseError("branch protection lookup", protectionResponse);
-    if (error instanceof GithubRateLimitError) throw error;
-    if (protectionResponse.status === 403) {
-      protectionApiStatus = "forbidden";
-    } else {
-      protectionApiStatus = "error";
-      protectionApiError = error.message;
-    }
+  } catch (error) {
+    if (error instanceof GithubRateLimitError || signal.aborted) throw error;
+    protectionApiStatus = "error";
+    protectionApiError = error instanceof Error ? error.message : String(error);
   }
 
   let activeRulesAvailable = true;
