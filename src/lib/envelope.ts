@@ -435,7 +435,6 @@ export function findingStableId(finding: Finding): string | null {
 export function computeEffectiveGate(
   envelope: Envelope | null | undefined,
   activeApprovalIds: ReadonlySet<string>,
-  activeDismissalIds: ReadonlySet<string> = new Set(),
 ): EffectiveGateState {
   if (!envelope) {
     return {
@@ -451,7 +450,6 @@ export function computeEffectiveGate(
   const states = envelope.findings.map((finding): FindingBlockState => {
     const findingId = findingStableId(finding);
     const approved = Boolean(findingId && activeApprovalIds.has(findingId));
-    const dismissed = Boolean(findingId && activeDismissalIds.has(findingId));
     if (isOperationalFinding(finding)) {
       return {
         finding,
@@ -476,7 +474,7 @@ export function computeEffectiveGate(
       kindBlocking,
       severityBlocking,
       approved,
-      blocking: !dismissed && (severityBlocking || (kindBlocking && !approved)),
+      blocking: severityBlocking || (kindBlocking && !approved),
     };
   });
 
@@ -494,10 +492,9 @@ export function gateCheckConclusionForEnvelope(
   envelope: Envelope,
   activeApprovalIds: ReadonlySet<string>,
   gateEnabled: boolean,
-  activeDismissalIds: ReadonlySet<string> = new Set(),
 ): GateCheckConclusion {
   if (!gateEnabled) return "neutral";
-  const gate = computeEffectiveGate(envelope, activeApprovalIds, activeDismissalIds);
+  const gate = computeEffectiveGate(envelope, activeApprovalIds);
   if (gate.unavailable && !gate.failing) return "neutral";
   return gate.failing ? "failure" : "success";
 }

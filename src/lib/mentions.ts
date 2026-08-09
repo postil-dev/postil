@@ -93,49 +93,6 @@ export function parsePostilApproveCommand(
   return { ok: true, findingId, rationale };
 }
 
-export const DISMISSAL_REASON_TAGS = [
-  "false-positive",
-  "accepted-risk",
-  "out-of-scope",
-] as const;
-
-export type DismissalReasonTag = (typeof DISMISSAL_REASON_TAGS)[number];
-
-export type PostilDismissCommand =
-  | { ok: true; findingId: string | null; reasonTag: DismissalReasonTag; rationale: string }
-  | { ok: false; error: string };
-
-/** Parse a finding dismissal. A reply to the finding's root comment may omit its id. */
-export function parsePostilDismissCommand(
-  text: string | undefined | null,
-): PostilDismissCommand | null {
-  if (!text) return null;
-  const prose = stripCode(text).trim();
-  const handle = handlePattern();
-  if (!new RegExp(`^@${handle}(?:\\s|$)`, "i").test(prose)) return null;
-  if (!new RegExp(`^@${handle}\\s+dismiss(?:\\s|$)`, "i").test(prose)) return null;
-  const match = prose.match(
-    new RegExp(
-      `^@${handle}\\s+dismiss(?:\\s+(\\S+))?\\s+--\\s*(false-positive|accepted-risk|out-of-scope)\\s*:\\s*([\\s\\S]*)$`,
-      "i",
-    ),
-  );
-  if (!match) {
-    return {
-      ok: false,
-      error: "Use `@postil dismiss [finding-id] -- false-positive|accepted-risk|out-of-scope: <rationale>`.",
-    };
-  }
-  const rationale = match[3]?.trim();
-  if (!rationale) return { ok: false, error: "Dismissal requires a non-empty rationale." };
-  return {
-    ok: true,
-    findingId: match[1]?.trim() || null,
-    reasonTag: match[2]!.toLowerCase() as DismissalReasonTag,
-    rationale,
-  };
-}
-
 /** Remove fenced code blocks (```...``` / ~~~...~~~) and inline `code` spans. */
 function stripCode(text: string): string {
   return text

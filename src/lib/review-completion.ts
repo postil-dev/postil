@@ -8,7 +8,7 @@ import {
   type Envelope,
 } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
-import { lockReviewDecisionScopeById } from "@/lib/finding-approvals";
+import { lockReviewApprovalState } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import {
   persistPublicationReceipt,
@@ -163,7 +163,7 @@ export async function stageReviewCompletionCandidate(
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult & { staged: boolean }> {
   return db.transaction(async (tx) => {
-    await lockReviewDecisionScopeById(tx, input.reviewId);
+    await lockReviewApprovalState(tx, input.reviewId);
     const gateTruth = requireEnvelopeGateTruth(
       input.envelope,
       input.gateFailing,
@@ -232,7 +232,7 @@ export async function finalizeStagedReviewCompletionWithGateMode(
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult> {
   return db.transaction(async (tx) => {
-    await lockReviewDecisionScopeById(tx, input.reviewId);
+    await lockReviewApprovalState(tx, input.reviewId);
     const gateEnabled =
       orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
     const staged = (
@@ -295,7 +295,7 @@ export async function persistReviewCompletionWithGateMode(
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult> {
   return db.transaction(async (tx) => {
-    await lockReviewDecisionScopeById(tx, input.reviewId);
+    await lockReviewApprovalState(tx, input.reviewId);
     const gateTruth = requireEnvelopeGateTruth(
       input.envelope,
       input.gateFailing,

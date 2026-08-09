@@ -166,7 +166,7 @@ console.log("fixture-key");
       /postil\/gate head=[^\s]+ details=http:\/\/127\.0\.0\.1:\d+\/orgs\/local\/runs\/[0-9a-f-]+/,
     );
     expect(result.stdout).toMatch(
-      /#1001 success: Merge gate passed\n\s+details=http:\/\/127\.0\.0\.1:\d+\/orgs\/local\/runs\/[0-9a-f-]+/,
+      /#1001 success: Postil gate passed\n\s+details=http:\/\/127\.0\.0\.1:\d+\/orgs\/local\/runs\/[0-9a-f-]+/,
     );
     expect(result.stdout).toContain("Review findings:\n  none");
     expect(result.stdout).not.toContain("https://api.github.com");

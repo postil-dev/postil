@@ -226,12 +226,8 @@ async function loadDesiredGateState(
       : failing
         ? `One or more blocking findings remain.\n\n${formatRemainingGateBlockers(
             effectiveGate!,
-            approvalState!.dismissalFindingStates ?? [],
           )}`
-        : formatRemainingGateBlockers(
-            effectiveGate!,
-            approvalState!.dismissalFindingStates ?? [],
-          );
+        : "No blocking findings remain for this commit.";
   const detailsUrl = reviewDetailsUrl(row.publicId, row.orgSlug);
   const generation = JSON.stringify({
     status: row.status,

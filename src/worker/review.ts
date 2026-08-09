@@ -25,11 +25,13 @@ import {
 } from "@/lib/env";
 import {
   classifyOperationalModelIncidents,
+  gateCheckConclusionForEnvelope,
   ingestEnvelope,
   isEnvelopeOperationallyUnavailable,
   type Envelope,
+  type GateCheckConclusion,
 } from "@/lib/envelope";
-import { enqueueGateStateSync } from "@/lib/finding-approvals";
+import { getActiveApprovalIds } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
@@ -822,6 +824,7 @@ async function resumeStagedReviewCompletion(input: {
       },
       signal,
     );
+    let gateEnabled: boolean;
     if (stagedReview.status === "running") {
       const reservation = (
         await db
@@ -850,10 +853,41 @@ async function resumeStagedReviewCompletion(input: {
           "review publication recovery lost its terminal-state race",
         );
       }
+      gateEnabled = completion.gateEnabled;
+      void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+        triggerQueueDrain("gate-state-sync"),
+      );
+    } else {
+      // The database transition can commit before the exact GitHub PATCH.
+      // Retry that final publication for completed rows without repeating
+      // accounting or model work.
+      gateEnabled = await getOrganizationGateEnabled(db, installation.orgId);
     }
-    await enqueueGateStateSync(db, stagedReview);
-    void import("@/worker/runner").then(({ triggerQueueDrain }) =>
-      triggerQueueDrain("gate-state-sync"),
+    const activeApprovalIds = await getActiveApprovalIds(db, stagedReview.id);
+    const gateConclusion = gateCheckConclusionForEnvelope(
+      stagedReview.envelope,
+      activeApprovalIds,
+      gateEnabled,
+    );
+    const gateOutput = gateCheckOutput(
+      gateConclusion,
+      gateEnabled,
+      operationallyUnavailable,
+    );
+    await completeExpectedCheckRun(
+      token,
+      payload.repoFullName,
+      {
+        id: stagedReview.gateCheckRunId,
+        name: GATE_CHECK_NAME,
+        externalId: checkRunExternalId(stagedReview.publicId, "gate"),
+        headSha: payload.headSha,
+        conclusion: gateConclusion,
+        detailsUrl,
+      },
+      gateOutput.title,
+      gateOutput.summary,
+      signal,
     );
     console.log(`review publication recovery ${stagedReview.id} completed`);
     return true;
@@ -861,6 +895,40 @@ async function resumeStagedReviewCompletion(input: {
     if (signal?.aborted) throw new WorkerShutdownError();
     throw new ReviewPublicationReconciliationError(redactSecrets(error));
   }
+}
+
+function gateCheckOutput(
+  conclusion: GateCheckConclusion,
+  gateEnabled: boolean,
+  unavailable: boolean,
+): { title: string; summary: string } {
+  if (!gateEnabled) {
+    return {
+      title: "Postil gate is advisory",
+      summary: "Merge blocking is disabled. Review findings remain advisory.",
+    };
+  }
+  if (unavailable) {
+    return conclusion === "failure"
+      ? {
+          title: "Review unavailable",
+          summary:
+            "Postil could not complete this review. The merge check remains blocked.",
+        }
+      : {
+          title: "Review unavailable",
+          summary: "Postil could not produce a merge verdict for this commit.",
+        };
+  }
+  return conclusion === "failure"
+    ? {
+        title: "Postil gate blocked",
+        summary: "One or more review findings block this commit.",
+      }
+    : {
+        title: "Postil gate passed",
+        summary: "No review findings block this commit.",
+      };
 }
 
 /**
@@ -1754,7 +1822,33 @@ export async function runReviewJob(
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );
-      reviewLog.line("durable gate synchronization queued from stored review truth");
+      const activeApprovalIds = await getActiveApprovalIds(db, reviewId);
+      const gateConclusion = gateCheckConclusionForEnvelope(
+        ingested.envelope,
+        activeApprovalIds,
+        completion.gateEnabled,
+      );
+      const gateOutput = gateCheckOutput(
+        gateConclusion,
+        completion.gateEnabled,
+        operationallyUnavailable,
+      );
+      await completeExpectedCheckRun(
+        token,
+        payload.repoFullName,
+        {
+          id: gateCheckRunId,
+          name: GATE_CHECK_NAME,
+          externalId: gateCheckExternalId,
+          headSha: payload.headSha,
+          conclusion: gateConclusion,
+          detailsUrl,
+        },
+        gateOutput.title,
+        gateOutput.summary,
+        result.interrupted ? undefined : signal,
+      );
+      reviewLog.line("forge gate check-run completed from stored review truth");
     }
 
     if (!completed) {
