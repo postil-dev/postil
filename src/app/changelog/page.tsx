@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.8.7–0.8.8",
+    date: "August 9, 2026",
+    summary:
+      "Ignored paths do not consume bounded-review coverage, and uncertainty resolution can continue from exact diff evidence when repository lookup is unavailable.",
+    changes: [
+      {
+        label: "Changed",
+        text: "Files matched by ignore rules are excluded before grounding, batching, and coverage planning. Generated-looking source remains reviewable unless a repository explicitly ignores it.",
+      },
+      {
+        label: "Fixed",
+        text: "When repository file lookup fails, uncertainty resolution uses exact evidence already present in the reviewed diff. Any uncertainty that remains unresolved is reported as a warning rather than an operational failure.",
+      },
+    ],
+  },
+  {
     version: "0.8.5–0.8.6",
     date: "July 30, 2026",
     summary:
