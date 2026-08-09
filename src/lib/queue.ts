@@ -37,7 +37,7 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   installationId: number; // GitHub installation id
   sourceInstallationId?: number;
   sourceOrgId?: number;
-  githubRepoId?: number;
+  githubRepoId: number;
   repoFullName: string;
   repositoryPrivate?: boolean;
   prNumber: number;
@@ -641,6 +641,9 @@ export async function enqueueReviewJobOnce(
     await client.query("BEGIN");
     const identity = reviewJobIdentity(payload);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `postil:review-pr:${[String(payload.githubRepoId), String(payload.prNumber)].join("\u001f")}`,
+    ]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:active-review:${identity}`,
     ]);
     const active = await selectActiveReviewJob(client, payload);
@@ -719,13 +722,21 @@ async function selectActiveReviewJob(
        FROM jobs
       WHERE kind = 'review'
         AND status IN ('queued', 'running')
-        AND payload->>'repoFullName' = $1
-        AND payload->>'prNumber' = $2
-        AND payload->>'headSha' = $3
+        AND (
+          payload->>'githubRepoId' = $1
+          OR (NOT payload ? 'githubRepoId' AND payload->>'repoFullName' = $2)
+        )
+        AND payload->>'prNumber' = $3
+        AND payload->>'headSha' = $4
       ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, id
       FOR UPDATE
       LIMIT 1`,
-    [payload.repoFullName, String(payload.prNumber), payload.headSha],
+    [
+      String(payload.githubRepoId),
+      payload.repoFullName,
+      String(payload.prNumber),
+      payload.headSha,
+    ],
   );
   const row = result.rows[0];
   return row
@@ -734,7 +745,7 @@ async function selectActiveReviewJob(
 }
 
 function reviewJobIdentity(payload: ReviewJobPayload): string {
-  return [payload.repoFullName, String(payload.prNumber), payload.headSha].join("\u001f");
+  return [String(payload.githubRepoId), String(payload.prNumber), payload.headSha].join("\u001f");
 }
 
 function sameReviewPublicationIdentity(

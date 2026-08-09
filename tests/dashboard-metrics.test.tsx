@@ -60,6 +60,25 @@ describe("dashboard metric details", () => {
     expect(source).toContain("Record a commit-scoped override");
   });
 
+  test("exposes dismissal and revocation actions with their visible state", () => {
+    const source = readFileSync("src/app/orgs/[slug]/runs/[publicId]/page.tsx", "utf8");
+    const form = readFileSync(
+      "src/app/orgs/[slug]/runs/[publicId]/dismiss-finding-form.tsx",
+      "utf8",
+    );
+    const revokeForm = readFileSync(
+      "src/app/orgs/[slug]/runs/[publicId]/revoke-dismissal-form.tsx",
+      "utf8",
+    );
+    expect(source).toContain("<DismissFindingForm");
+    expect(form).toContain("dismissFindingWithState");
+    expect(source).toContain("<RevokeDismissalForm");
+    expect(revokeForm).toContain("revokeFindingDismissalWithState");
+    expect(source).toContain('"Dismissed"');
+    expect(source).toContain("Pull request author dismissed this finding");
+    expect(source).toContain("@postil dismiss {state.findingId} -- false-positive: rationale");
+  });
+
   test("keeps dashboard and run metadata above the AA contrast floor", () => {
     const sources = [
       "src/app/orgs/[slug]/page.tsx",

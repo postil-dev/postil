@@ -269,7 +269,7 @@ describe("private repository worker defense in depth", () => {
       verification,
     );
     const gatePublication = source.indexOf(
-      "await completeExpectedCheckRun",
+      'reviewLog.line("durable gate synchronization queued from stored review truth")',
       finalization,
     );
 
@@ -290,19 +290,7 @@ describe("private repository worker defense in depth", () => {
       "{ cause: error }",
     );
     expect(source.slice(finalization, gatePublication)).toContain(
-      "getActiveApprovalIds(db, reviewId)",
-    );
-    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
-      "id: gateCheckRunId",
-    );
-    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
-      "externalId: gateCheckExternalId",
-    );
-    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
-      "headSha: payload.headSha",
-    );
-    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
-      "detailsUrl",
+      'triggerQueueDrain("gate-state-sync")',
     );
   });
 
@@ -311,32 +299,17 @@ describe("private repository worker defense in depth", () => {
     const recoveryStart = source.indexOf(
       "async function resumeStagedReviewCompletion",
     );
-    const recoveryEnd = source.indexOf(
-      "function gateCheckOutput",
-      recoveryStart,
-    );
+    const recoveryEnd = source.indexOf("export async function runReviewJob", recoveryStart);
     const recovery = source.slice(recoveryStart, recoveryEnd);
 
     expect(recovery).toContain('stagedReview.status !== "running"');
     expect(recovery).toContain('stagedReview.status !== "completed"');
     expect(recovery).toContain('if (stagedReview.status === "running")');
-    expect(recovery).toContain(
-      "gateEnabled = await getOrganizationGateEnabled(db, installation.orgId)",
-    );
-    expect(recovery.indexOf("completeExpectedCheckRun")).toBeGreaterThan(
-      recovery.indexOf("getOrganizationGateEnabled"),
-    );
-    expect(recovery).toContain(
-      "getActiveApprovalIds(db, stagedReview.id)",
-    );
+    expect(recovery).toContain("await enqueueGateStateSync(db, stagedReview)");
+    expect(recovery).toContain('triggerQueueDrain("gate-state-sync")');
     expect(recovery).toContain("const detailsUrl = reviewDetailsUrl(");
     expect(recovery).toContain("stagedReview.publicId");
-    const recoveryGatePublication = recovery.lastIndexOf(
-      "await completeExpectedCheckRun",
-    );
-    expect(
-      recovery.slice(recoveryGatePublication, recoveryGatePublication + 500),
-    ).toContain("detailsUrl");
+    expect(recovery).not.toContain("await completeExpectedCheckRun");
   });
 
   test("advisory organizations derive a neutral exact gate verdict", () => {
@@ -350,24 +323,16 @@ describe("private repository worker defense in depth", () => {
       "const completion = await finalizeStagedReviewCompletionWithGateMode",
       staging,
     );
-    const conclusion = source.indexOf(
-      "const gateConclusion = gateCheckConclusionForEnvelope",
-      finalization,
-    );
     const gatePublication = source.indexOf(
-      "await completeExpectedCheckRun",
-      conclusion,
+      'triggerQueueDrain("gate-state-sync")',
+      finalization,
     );
 
     expect(staging).toBeGreaterThan(reviewStart);
     expect(finalization).toBeGreaterThan(staging);
-    expect(conclusion).toBeGreaterThan(finalization);
-    expect(gatePublication).toBeGreaterThan(conclusion);
-    expect(source.slice(conclusion, gatePublication)).toContain(
-      "completion.gateEnabled",
-    );
-    expect(source.slice(gatePublication, gatePublication + 500)).toContain(
-      "conclusion: gateConclusion",
+    expect(gatePublication).toBeGreaterThan(finalization);
+    expect(source.slice(finalization, gatePublication)).not.toContain(
+      "completeExpectedCheckRun",
     );
   });
 
