@@ -690,6 +690,14 @@ describe("effective gate recomputation", () => {
     const state = computeEffectiveGate(env, new Set(), new Set(["dismissed"]));
     expect(state.failing).toBe(true);
     expect(state.blockers.map((blocker) => blocker.findingId)).toEqual(["remaining"]);
+    expect(
+      gateCheckConclusionForEnvelope(
+        env,
+        new Set(),
+        true,
+        new Set(["dismissed", "remaining"]),
+      ),
+    ).toBe("success");
   });
 
   test("operational sentinels remain blocking even when their id is dismissed", () => {

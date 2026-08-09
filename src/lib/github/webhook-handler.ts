@@ -1428,12 +1428,14 @@ async function handleFindingDecisionCommand(
     );
     return true;
   }
-  const authorGithubId = review.authorGithubId ?? (
-    await getPullRequestReviewContext(token, repo.full_name, prNumber)
-  ).authorGithubId ?? null;
-
+  let authorGithubId = review.authorGithubId ?? null;
   let effectiveFailing: boolean | null = null;
   try {
+    if (verb === "dismiss" && authorGithubId === null) {
+      authorGithubId = (
+        await getPullRequestReviewContext(token, repo.full_name, prNumber)
+      ).authorGithubId ?? null;
+    }
     const state = await getReviewApprovalState(db, review);
     const resolution = verb === "dismiss"
       ? resolveDismissibleFindingId(state, requestedFindingId!)

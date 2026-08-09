@@ -18,6 +18,9 @@ describe("migration lint", () => {
       "utf8",
     );
     expect(migration).toContain('NEW."reason_tag" IS NULL OR');
+    expect(migration).toContain(
+      'ADD COLUMN "verb" "finding_approval_verb" DEFAULT \'approve\' NOT NULL',
+    );
     expect(migration).toContain('"reason_tag" IS NOT NULL');
     expect(migration).toContain('"finding_confidence" IS NOT NULL');
     expect(migration).toContain('"finding_kind" IS NULL');

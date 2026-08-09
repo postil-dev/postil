@@ -59,6 +59,7 @@ let liveMembershipUserLogin = "admin";
 let liveMembershipOrgId = 999;
 let liveMembershipOrgLogin = "octo";
 let membershipFetchCount = 0;
+let pullRequestReviewContextFetchCount = 0;
 let pullRequestReviewContext = {
   open: true,
   merged: false,
@@ -110,7 +111,10 @@ mock.module("@/lib/github/checks", () => ({
     });
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
-  getPullRequestReviewContext: async () => pullRequestReviewContext,
+  getPullRequestReviewContext: async () => {
+    pullRequestReviewContextFetchCount += 1;
+    return pullRequestReviewContext;
+  },
   getPullRequestReviewComment: async () => reviewCommentRoot,
   findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
@@ -195,6 +199,7 @@ describeDb("webhook handler behaviour", () => {
     liveMembershipOrgId = 999;
     liveMembershipOrgLogin = "octo";
     membershipFetchCount = 0;
+    pullRequestReviewContextFetchCount = 0;
     globalThis.fetch = Object.assign(
       async (input: string | URL | Request) => {
         const url =
@@ -1389,6 +1394,7 @@ describeDb("webhook handler behaviour", () => {
     expect(replies[0]).toContain("Approval recorded by @admin");
     expect(replies[0]).toContain("gate update is queued");
     expect(replies[0]).toContain("head-sha");
+    expect(pullRequestReviewContextFetchCount).toBe(0);
   });
 
   test("dismissal records its audit tag, flags author self-dismissal, and clears severity blocking", async () => {
