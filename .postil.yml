@@ -1,0 +1,2 @@
+ignore:
+  - "drizzle/meta/*_snapshot.json"

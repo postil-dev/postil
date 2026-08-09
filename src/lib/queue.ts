@@ -636,12 +636,25 @@ export async function enqueueReviewJobOnce(
   pool: Pool,
   payload: ReviewJobPayload,
 ): Promise<number | null> {
+  if (!Number.isSafeInteger(payload.githubRepoId) || payload.githubRepoId <= 0) {
+    throw new TypeError("review job requires a positive GitHub repository ID");
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const identity = reviewJobIdentity(payload);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:review-pr:${[String(payload.githubRepoId), String(payload.prNumber)].join("\u001f")}`,
+    ]);
+    // Serialize with writers from releases that still key the active-review
+    // lock by repository name. The database trigger independently enforces the
+    // stable repository-ID identity for every writer during the rollout.
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `postil:active-review:${[
+        payload.repoFullName,
+        String(payload.prNumber),
+        payload.headSha,
+      ].join("\u001f")}`,
     ]);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:active-review:${identity}`,

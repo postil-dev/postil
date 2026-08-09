@@ -29,6 +29,9 @@ describe("migration lint", () => {
     expect(migration).toContain(
       "to_jsonb(\"repositories\".\"github_repo_id\")",
     );
+    expect(migration).toContain(
+      '"repositories"."github_repo_id" IS NOT NULL',
+    );
     expect(migration).not.toContain(
       "to_jsonb(\"repositories\".\"github_repo_id\"::text)",
     );

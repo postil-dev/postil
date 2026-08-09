@@ -485,6 +485,19 @@ describeDb("postgres job queue", () => {
     expect(await enqueueReviewJobOnce(pool, payload)).not.toBeNull();
   });
 
+  test("rejects an invalid review repository identity before enqueue", async () => {
+    await expect(
+      enqueueReviewJobOnce(pool, {
+        installationId: 1,
+        githubRepoId: undefined as unknown as number,
+        repoFullName: "octo/repo",
+        prNumber: 42,
+        headSha: "a".repeat(40),
+        baseSha: "b".repeat(40),
+      }),
+    ).rejects.toThrow("review job requires a positive GitHub repository ID");
+  });
+
   test("same-head queued reviews retain newest metadata and sticky full-review intent", async () => {
     const initial = {
       installationId: 1,
