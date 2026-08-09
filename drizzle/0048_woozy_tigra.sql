@@ -117,6 +117,7 @@ SET "payload" = jsonb_set("jobs"."payload", '{githubRepoId}', to_jsonb("reposito
 FROM "repositories"
 WHERE "jobs"."kind" = 'review'
   AND "jobs"."status" IN ('queued', 'running')
+  AND "repositories"."github_repo_id" IS NOT NULL
   AND (
     jsonb_typeof("jobs"."payload"->'githubRepoId') = 'number'
     AND "jobs"."payload"->>'githubRepoId' ~ '^[1-9][0-9]*$'
