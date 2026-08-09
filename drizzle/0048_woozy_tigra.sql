@@ -33,6 +33,8 @@ CREATE TRIGGER "finding_approvals_guard_dismissal_audit"
 BEFORE INSERT OR UPDATE ON "finding_approvals"
 FOR EACH ROW EXECUTE FUNCTION "postil_guard_finding_dismissal_audit"();
 --> statement-breakpoint
+LOCK TABLE "jobs" IN SHARE ROW EXCLUSIVE MODE;
+--> statement-breakpoint
 CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
@@ -67,7 +69,10 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF jsonb_typeof(NEW.payload->'githubRepoId') IS DISTINCT FROM 'number' THEN
+  IF (
+    jsonb_typeof(NEW.payload->'githubRepoId') = 'number'
+    AND NEW.payload->>'githubRepoId' ~ '^[1-9][0-9]*$'
+  ) IS NOT TRUE THEN
     NEW.payload := jsonb_set(
       NEW.payload,
       '{githubRepoId}',
@@ -111,7 +116,10 @@ SET "payload" = jsonb_set("jobs"."payload", '{githubRepoId}', to_jsonb("reposito
 FROM "repositories"
 WHERE "jobs"."kind" = 'review'
   AND "jobs"."status" IN ('queued', 'running')
-  AND jsonb_typeof("jobs"."payload"->'githubRepoId') IS DISTINCT FROM 'number'
+  AND (
+    jsonb_typeof("jobs"."payload"->'githubRepoId') = 'number'
+    AND "jobs"."payload"->>'githubRepoId' ~ '^[1-9][0-9]*$'
+  ) IS NOT TRUE
   AND "jobs"."payload"->>'repoFullName' = "repositories"."full_name";
 --> statement-breakpoint
 UPDATE "jobs"
@@ -122,4 +130,7 @@ SET "status" = 'failed',
     "run_after" = now()
 WHERE "kind" = 'review'
   AND "status" IN ('queued', 'running')
-  AND jsonb_typeof("payload"->'githubRepoId') IS DISTINCT FROM 'number';
+  AND (
+    jsonb_typeof("payload"->'githubRepoId') = 'number'
+    AND "payload"->>'githubRepoId' ~ '^[1-9][0-9]*$'
+  ) IS NOT TRUE;

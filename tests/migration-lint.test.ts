@@ -25,6 +25,7 @@ describe("migration lint", () => {
       'VALIDATE CONSTRAINT "finding_approvals_dismissal_check"',
     );
     expect(migration).toContain("jsonb_set");
+    expect(migration).toContain('LOCK TABLE "jobs" IN SHARE ROW EXCLUSIVE MODE');
     expect(migration).toContain(
       "to_jsonb(\"repositories\".\"github_repo_id\")",
     );
@@ -32,7 +33,7 @@ describe("migration lint", () => {
       "to_jsonb(\"repositories\".\"github_repo_id\"::text)",
     );
     expect(migration).toContain(
-      "jsonb_typeof(\"jobs\".\"payload\"->'githubRepoId') IS DISTINCT FROM 'number'",
+      "jsonb_typeof(\"jobs\".\"payload\"->'githubRepoId') = 'number'",
     );
     expect(migration).toContain(
       "CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()",
@@ -52,6 +53,11 @@ describe("migration lint", () => {
     );
     expect(migration).toContain(
       "jsonb_typeof(existing.payload->'githubRepoId') = 'number'",
+    );
+    expect(migration).toContain(
+      "NEW.payload->>'githubRepoId' ~ '^[1-9][0-9]*$'",
+    );
+    expect(migration).toContain(") IS NOT TRUE",
     );
   });
 
