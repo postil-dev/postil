@@ -88,17 +88,18 @@ become claimable between the fleet check and capability activation.
 
 `humanEscalation` is a GitHub-native, kind-blocking maintainer decision. The PR review
 contains the grounded finding and directs the author to encode the intended behavior
-in code, tests, configuration, or the pull request before pushing again. The
+in code, tests, configuration, or the pull request before pushing again.
 New organizations use `postil/gate` as an advisory check. An organization admin
 can enable blocking in settings. The raw CLI verdict lives in `engine_gate_failing`, while
-`gate_failing` records the verdict after applying organization mode and eligible
-approvals. Mode changes and approvals atomically enqueue gate-state synchronization.
+`gate_failing` records the verdict after applying organization mode and active
+finding decisions. Mode changes, approvals, and dismissals atomically enqueue
+gate-state synchronization.
 Publishers take a per-review database lease, lock approval and organization mode
 in one order, verify the pull request head, and republish until the observed
 generation is stable. A disabled gate is neutral on normal completion,
-operational failure, watchdog cleanup, and approval changes. Severity-blocking
-findings require a code or configuration change and cannot be cleared by an
-override.
+operational failure, watchdog cleanup, and finding-decision changes. Approvals
+clear eligible kind blockers. Admin dismissals clear severity and kind blockers
+for one non-operational finding on the reviewed commit.
 
 A bounded worker sweep reads the effective default-branch protection and active
 ruleset APIs for each enabled repository. Coverage is `required` only when
@@ -306,8 +307,9 @@ noindexed:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file
   links), resolved findings, retained policy-suppressed findings in collapsed
   detail, suppressed/ungrounded counts, gate verdict,
-  model, token usage, timing, immutable trigger provenance, and kind-blocking
-  override state. The recent-review table exposes the same trigger class and
+  model, token usage, timing, immutable trigger provenance, and commit-scoped
+  approval or dismissal state. Dismissals show their structured reason,
+  rationale, actor, and author-self-dismissal audit flag. The recent-review table exposes the same trigger class and
   includes it in text filtering.
 
 Authorization is uniform: every page and server action re-derives access from
@@ -320,14 +322,17 @@ writes. Rows and aggregates are scoped through `installations.org_id`, so an id
 belonging to another organization returns 404. Sign-in also synchronizes known
 GitHub App installations (`src/lib/github/installation-sync.ts`).
 
-GitHub approval commands authorize independently from dashboard sessions. The
+GitHub finding-decision commands authorize independently from dashboard sessions. The
 signed webhook identifies the actor, and the installation token reads that
-actor's live organization membership before an approval is stored. The response
+actor's live organization membership before an approval or dismissal is stored.
+Dashboard dismissal and revocation actions perform the same live check. The response
 must bind the expected user and organization identities and report an active
 `role=admin`. Missing, ambiguous, stale, or unavailable membership data fails
 closed. Personal-account installations bind the actor to the installed account
-id. The approval record snapshots the actor and rationale against the reviewed
-commit and finding, while the durable webhook delivery id prevents replay.
+id. The decision record snapshots the actor and rationale against the reviewed
+commit and finding. Dismissals also retain their structured reason and whether
+the pull request author performed the action. The durable webhook delivery id
+prevents replay.
 
 Repository config status crosses the latest completed review's recorded
 `config_files` with a cached default-branch GitHub contents probe. The settings
@@ -363,9 +368,10 @@ review to constrain policy changes.
 
 Aggregates (silence rate, effective gate failures) read the denormalized `silent`
 and `gate_failing` columns; `engine_gate_failing` stores the immutable CLI gate
-result independently of organization mode. Active rows in `finding_approvals` clear kind-based blockers for the
-same review and head SHA, while severity blockers remain governed by the
-configured severity threshold. Per-review detail reads the stored envelope
+result independently of organization mode. Active approval rows in
+`finding_approvals` clear eligible kind blockers for the same review and head
+SHA. Active dismissal rows clear both blocker classes for one non-operational
+finding. Per-review detail reads the stored envelope
 `jsonb` verbatim. The envelope is the CLI's frozen v1 output contract
 (`src/lib/envelope.ts`); the dashboard renders it and never reshapes it.
 `large_review_runs` and `large_review_attempts` contain the bounded, expiring

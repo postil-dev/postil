@@ -21,11 +21,14 @@ function fakeDb(reviewUpdated = true): {
         from() {
           return chain;
         },
+        innerJoin() {
+          return chain;
+        },
         where() {
           return chain;
         },
         limit() {
-          return Promise.resolve([{ repositoryId: 2, prNumber: 1 }]);
+          return Promise.resolve([{ githubRepoId: 21, repositoryId: 2, prNumber: 1 }]);
         },
       };
       return chain;

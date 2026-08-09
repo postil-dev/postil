@@ -28,10 +28,14 @@ import { getSessionUser } from "@/lib/session";
 import {
   enqueueGateStateSync,
   enqueueLatestGateStateSyncsForOrganization,
+  findDismissibleFindingState,
   findKindBlockingState,
   getReviewApprovalState,
+  hasInFlightReviewForPr,
   hasNewerCompletedReviewForHead,
+  hasNewerReviewForPr,
   insertFindingApproval,
+  lockActiveReviewState,
   lockReviewApprovalState,
   loadReviewForApprovalByPublicId,
   revokeFindingApproval,
@@ -39,7 +43,8 @@ import {
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { getPullRequestHeadSha } from "@/lib/github/checks";
+import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
+import { getPullRequestHeadSha, getPullRequestReviewContext } from "@/lib/github/checks";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import {
   enqueueGateEnforcementSweepOnce,
@@ -941,10 +946,17 @@ export async function approveFinding(formData: FormData): Promise<void> {
   const user = await getSessionUser();
   if (!user?.githubId) throw new Error("user has no github id");
   await db.transaction(async (tx) => {
+    await lockActiveReviewState(tx, review);
     await lockReviewApprovalState(tx, review.id);
+    if (await hasInFlightReviewForPr(tx, review)) {
+      throw new Error("a review is in progress; re-issue after it completes");
+    }
+    if (await hasNewerReviewForPr(tx, review)) {
+      throw new Error("a newer review exists for this pull request");
+    }
     const state = await getReviewApprovalState(tx, review);
     const finding = findKindBlockingState(state, findingId);
-    if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
+    if (!finding || !finding.blocking || finding.activeApproval || finding.activeDismissal || finding.latestApproval?.revokedAt) {
       throw new Error("that finding is absent, already approved, revoked, or no longer kind-blocking");
     }
     if (finding.severityBlocking) {
@@ -998,7 +1010,14 @@ export async function revokeFinding(formData: FormData): Promise<void> {
   await assertDashboardReviewApprovable(review);
   await requireCurrentReviewHead(review);
   await db.transaction(async (tx) => {
+    await lockActiveReviewState(tx, review);
     await lockReviewApprovalState(tx, review.id);
+    if (await hasInFlightReviewForPr(tx, review)) {
+      throw new Error("a review is in progress; re-issue after it completes");
+    }
+    if (await hasNewerReviewForPr(tx, review)) {
+      throw new Error("a newer review exists for this pull request");
+    }
     const state = await getReviewApprovalState(tx, review);
     const finding = findKindBlockingState(state, findingId);
     if (!finding?.activeApproval) throw new Error("that finding has no active approval");
@@ -1019,4 +1038,191 @@ export async function revokeFinding(formData: FormData): Promise<void> {
   );
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/runs/${publicId}`);
+}
+
+export async function dismissFinding(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "");
+  const publicId = String(formData.get("publicId") ?? "");
+  const findingId = String(formData.get("findingId") ?? "").trim();
+  const reasonTag = String(formData.get("reasonTag") ?? "");
+  const rationale = String(formData.get("rationale") ?? "");
+  if (!(["false-positive", "accepted-risk", "out-of-scope"] as const).includes(reasonTag as never)) {
+    throw new Error("dismissal requires a valid reason tag");
+  }
+  const { orgId } = await requireAdmin(slug);
+  const db = getDb();
+  const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
+  if (!review) throw new Error("review not found in this organization");
+  await assertDashboardReviewApprovable(review);
+  const token = await requireCurrentReviewHead(review);
+  if (await hasInFlightReviewForPr(db, review)) {
+    throw new Error("a review is in progress; re-issue after it completes");
+  }
+  const user = await getSessionUser();
+  if (!user?.githubId) throw new Error("user has no github id");
+  const actor = await loadLiveApprovalActor(
+    review,
+    { id: Number(user.githubId), login: user.login },
+    review.repoFullName,
+    token,
+  );
+  if (!actor || actor.role !== "admin") {
+    throw new Error("GitHub could not verify this account as an active organization admin");
+  }
+  const authorGithubId = review.authorGithubId ?? (
+    await getPullRequestReviewContext(token, review.repoFullName, review.prNumber)
+  ).authorGithubId ?? null;
+  await db.transaction(async (tx) => {
+    await lockActiveReviewState(tx, review);
+    await lockReviewApprovalState(tx, review.id);
+    if (await hasNewerReviewForPr(tx, review)) {
+      throw new Error("a newer review exists for this pull request");
+    }
+    if (await hasInFlightReviewForPr(tx, review)) {
+      throw new Error("a review is in progress; re-issue after it completes");
+    }
+    const state = await getReviewApprovalState(tx, review);
+    const finding = findDismissibleFindingState(state, findingId);
+    if (!finding || finding.activeDismissal || finding.activeApproval) {
+      throw new Error("that finding is absent, operational, already dismissed, or has an active approval");
+    }
+    await insertFindingApproval(tx, {
+      reviewId: review.id,
+      findingId,
+      actor,
+      rationale,
+      verb: "dismiss",
+      reasonTag: reasonTag as "false-positive" | "accepted-risk" | "out-of-scope",
+      authorSelfDismissal: authorGithubId === Number(actor.githubId),
+      finding: finding.finding,
+      findingModel: review.envelope!.modelUsed,
+      source: "dashboard",
+      binding: {
+        orgId: review.orgId,
+        repositoryId: review.repositoryId,
+        githubInstallationId: review.githubInstallationId,
+        githubRepoId: review.githubRepoId,
+        prNumber: review.prNumber,
+        headSha: review.headSha,
+      },
+    });
+    const nextState = await getReviewApprovalState(tx, review);
+    const gateEnabled = await lockOrganizationGateMode(tx, orgId);
+    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing, gateEnabled);
+    await enqueueGateStateSync(tx, review);
+  });
+  void import("@/worker/runner").then(({ triggerQueueDrain }) => triggerQueueDrain("gate-state-sync"));
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
+}
+
+export interface DismissFindingActionState {
+  status: "idle" | "error" | "success";
+  message: string;
+}
+
+const DISMISSAL_ACTION_ERRORS = new Set([
+  "dismissal requires a valid reason tag",
+  "review not found in this organization",
+  "review must be completed",
+  "review must have an envelope",
+  "review has no gate check-run",
+  "the pull request changed after this review; use the latest review",
+  "a newer completed review exists for this commit",
+  "a newer review exists for this pull request",
+  "a review is in progress; re-issue after it completes",
+  "approval rationale is required",
+  "user has no github id",
+  "GitHub could not verify this account as an active organization admin",
+  "that finding is absent, operational, already dismissed, or has an active approval",
+]);
+
+export async function dismissFindingWithState(
+  _previousState: DismissFindingActionState,
+  formData: FormData,
+): Promise<DismissFindingActionState> {
+  try {
+    await dismissFinding(formData);
+    return { status: "success", message: "Dismissal recorded. The gate update is queued." };
+  } catch (error) {
+    const message = error instanceof Error && DISMISSAL_ACTION_ERRORS.has(error.message)
+      ? error.message
+      : "Dismissal could not be recorded. Refresh the run and try again.";
+    return { status: "error", message };
+  }
+}
+
+export async function revokeFindingDismissal(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "");
+  const publicId = String(formData.get("publicId") ?? "");
+  const findingId = String(formData.get("findingId") ?? "").trim();
+  const { orgId } = await requireAdmin(slug);
+  const db = getDb();
+  const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
+  if (!review) throw new Error("review not found in this organization");
+  await assertDashboardReviewApprovable(review);
+  const token = await requireCurrentReviewHead(review);
+  const user = await getSessionUser();
+  if (!user?.githubId) throw new Error("user has no github id");
+  const actor = await loadLiveApprovalActor(
+    review,
+    { id: Number(user.githubId), login: user.login },
+    review.repoFullName,
+    token,
+  );
+  if (!actor || actor.role !== "admin") {
+    throw new Error("GitHub could not verify this account as an active organization admin");
+  }
+  await db.transaction(async (tx) => {
+    await lockActiveReviewState(tx, review);
+    await lockReviewApprovalState(tx, review.id);
+    if (await hasInFlightReviewForPr(tx, review)) {
+      throw new Error("a review is in progress; re-issue after it completes");
+    }
+    if (await hasNewerReviewForPr(tx, review)) {
+      throw new Error("a newer review exists for this pull request");
+    }
+    const state = await getReviewApprovalState(tx, review);
+    if (!findDismissibleFindingState(state, findingId)?.activeDismissal) {
+      throw new Error("that finding has no active dismissal");
+    }
+    if (!await revokeFindingApproval(tx, review.id, findingId, actor.userId, "dismiss")) {
+      throw new Error("that finding has no active dismissal");
+    }
+    const nextState = await getReviewApprovalState(tx, review);
+    const gateEnabled = await lockOrganizationGateMode(tx, orgId);
+    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing, gateEnabled);
+    await enqueueGateStateSync(tx, review);
+  });
+  void import("@/worker/runner").then(({ triggerQueueDrain }) => triggerQueueDrain("gate-state-sync"));
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
+}
+
+export async function revokeFindingDismissalWithState(
+  _previousState: DismissFindingActionState,
+  formData: FormData,
+): Promise<DismissFindingActionState> {
+  try {
+    await revokeFindingDismissal(formData);
+    return { status: "success", message: "Dismissal revoked. The gate update is queued." };
+  } catch (error) {
+    const known = new Set([
+      "review not found in this organization",
+      "user has no github id",
+      "GitHub could not verify this account as an active organization admin",
+      "a newer review exists for this pull request",
+      "a review is in progress; re-issue after it completes",
+      "the pull request changed after this review; use the latest review",
+      "a newer completed review exists for this commit",
+      "review must be completed",
+      "review must have an envelope",
+      "review has no gate check-run",
+      "that finding has no active dismissal",
+    ]);
+    const message = error instanceof Error && known.has(error.message)
+      ? error.message
+      : "Dismissal could not be revoked. Refresh the run and try again.";
+    return { status: "error", message };
+  }
 }

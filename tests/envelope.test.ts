@@ -679,6 +679,34 @@ describe("effective gate recomputation", () => {
     expect(state.blockers[0]?.severityBlocking).toBe(true);
   });
 
+  test("dismissal clears both severity and kind blocking for only its finding", () => {
+    const env = validEnvelope({
+      findings: [
+        { id: "dismissed", ...validEnvelope().findings[0]!, kind: "humanEscalation" },
+        { id: "remaining", ...validEnvelope().findings[0]! },
+      ],
+      gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },
+    });
+    const state = computeEffectiveGate(env, new Set(), new Set(["dismissed"]));
+    expect(state.failing).toBe(true);
+    expect(state.blockers.map((blocker) => blocker.findingId)).toEqual(["remaining"]);
+    expect(
+      gateCheckConclusionForEnvelope(
+        env,
+        new Set(),
+        true,
+        new Set(["dismissed", "remaining"]),
+      ),
+    ).toBe("success");
+  });
+
+  test("operational sentinels remain blocking even when their id is dismissed", () => {
+    const env = validEnvelope({
+      findings: [{ id: "sentinel", ...validEnvelope().findings[0]!, path: ".postil/operational" }],
+    });
+    expect(computeEffectiveGate(env, new Set(), new Set(["sentinel"])).failing).toBe(true);
+  });
+
   test("all blockers must clear before the effective gate passes", () => {
     const env = validEnvelope({
       gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },

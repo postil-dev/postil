@@ -4,6 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 
 import { getDb, schema, type Database } from "@/lib/db";
 import {
+  formatDismissedGateFindings,
   formatRemainingGateBlockers,
   getReviewApprovalState,
   lockReviewApprovalState,
@@ -226,8 +227,16 @@ async function loadDesiredGateState(
       : failing
         ? `One or more blocking findings remain.\n\n${formatRemainingGateBlockers(
             effectiveGate!,
+            approvalState!.dismissalFindingStates ?? [],
           )}`
-        : "No blocking findings remain for this commit.";
+        : [
+            "No blocking findings remain for this commit.",
+            formatDismissedGateFindings(
+              approvalState!.dismissalFindingStates ?? [],
+            ) || null,
+          ]
+            .filter(Boolean)
+            .join("\n\n");
   const detailsUrl = reviewDetailsUrl(row.publicId, row.orgSlug);
   const generation = JSON.stringify({
     status: row.status,

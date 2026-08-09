@@ -22,6 +22,9 @@ let settingEvents: Array<Record<string, unknown>> = [];
 let storedGateStates: boolean[] = [];
 let checkConclusions: string[] = [];
 let checkError: Error | null = null;
+let liveApprovalActor: { userId: number; githubId: string; login: string; role: "admin" } | null = null;
+let dismissalActive = false;
+let inFlightReview = false;
 
 const approvalReview = {
   id: 7,
@@ -137,18 +140,36 @@ mock.module("@/lib/finding-approvals", () => ({
     latestApproval: null,
     severityBlocking: false,
   }),
+  findDismissibleFindingState: () => ({
+    finding: { id: "finding", severity: "error", kind: "risk", confidence: 0.9 },
+    findingId: "finding",
+    activeApproval: null,
+    activeDismissal: dismissalActive ? { id: "dismissal-1" } : null,
+  }),
   formatRemainingGateBlockers: () => approvalInserted ? "No blocking findings remain." : "- finding",
   getReviewApprovalState: async () => ({
-    effectiveGate: { failing: !approvalInserted, blockers: approvalInserted ? [] : [{}] },
+    effectiveGate: {
+      failing: !approvalInserted && !dismissalActive,
+      blockers: approvalInserted || dismissalActive ? [] : [{}],
+    },
   }),
   hasNewerCompletedReviewForHead: async () => false,
-  insertFindingApproval: async () => {
+  hasNewerReviewForPr: async () => false,
+  hasInFlightReviewForPr: async () => inFlightReview,
+  insertFindingApproval: async (_db: unknown, input: { verb?: string }) => {
     approvalInserted = true;
+    if (input.verb === "dismiss") dismissalActive = true;
     return "approval-1";
   },
   loadReviewForApprovalByPublicId: async () => approvalReview,
+  lockActiveReviewState: async () => undefined,
   lockReviewApprovalState: async () => undefined,
-  revokeFindingApproval: async () => {
+  revokeFindingApproval: async (_db: unknown, _reviewId: number, _findingId: string, _userId: number, verb = "approve") => {
+    if (verb === "dismiss") {
+      if (!dismissalActive) return null;
+      dismissalActive = false;
+      return "dismissal-1";
+    }
     if (!approvalInserted) return null;
     approvalInserted = false;
     return "approval-1";
@@ -167,6 +188,10 @@ mock.module("@/lib/github/app-auth", () => ({
   getInstallationToken: async () => "installation-token",
 }));
 
+mock.module("@/lib/github/approval-actor", () => ({
+  loadLiveApprovalActor: async () => liveApprovalActor,
+}));
+
 mock.module("@/lib/github/checks", () => ({
   completeCheckRun: async (
     _token: string,
@@ -178,6 +203,7 @@ mock.module("@/lib/github/checks", () => ({
     if (checkError) throw checkError;
   },
   getPullRequestHeadSha: async () => approvalReview.headSha,
+  getPullRequestReviewContext: async () => ({ authorGithubId: null }),
 }));
 
 mock.module("@/worker/runner", () => ({
@@ -187,8 +213,10 @@ mock.module("@/worker/runner", () => ({
 const orgSettingsActions = await import("@/app/orgs/[slug]/actions");
 const {
   approveFinding,
+  dismissFindingWithState,
   resendBillingContactVerification,
   revokeFinding,
+  revokeFindingDismissalWithState,
   saveBillingContact,
   saveNotificationPreferences,
   saveOrgConfigFallbacks,
@@ -348,7 +376,17 @@ beforeEach(() => {
   storedGateStates = [];
   checkConclusions = [];
   checkError = null;
+  liveApprovalActor = null;
+  dismissalActive = false;
+  inFlightReview = false;
 });
+
+function dismissalForm(): FormData {
+  const form = approvalForm();
+  form.set("reasonTag", "false-positive");
+  form.set("rationale", "The cited behavior is already handled by the changed code.");
+  return form;
+}
 
 function billingContactForm(email: string): FormData {
   const form = new FormData();
@@ -584,6 +622,70 @@ describe("organization settings actions", () => {
     expect(gateSyncJobs).toBe(1);
   });
 
+  test("requires live GitHub admin verification for a dashboard dismissal", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+
+    const result = await dismissFindingWithState(
+      { status: "idle", message: "" },
+      dismissalForm(),
+    );
+
+    expect(result).toEqual({
+      status: "error",
+      message: "GitHub could not verify this account as an active organization admin",
+    });
+    expect(dismissalActive).toBe(false);
+  });
+
+  test("queues gate synchronization after a live-admin dashboard dismissal", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+    liveApprovalActor = { userId: 10, githubId: "100", login: "owner", role: "admin" };
+
+    const result = await dismissFindingWithState(
+      { status: "idle", message: "" },
+      dismissalForm(),
+    );
+
+    expect(result.status).toBe("success");
+    expect(dismissalActive).toBe(true);
+    expect(gateSyncJobs).toBe(1);
+  });
+
+  test("live-verifies dismissal revocation and restores the gate", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+    liveApprovalActor = { userId: 10, githubId: "100", login: "owner", role: "admin" };
+    dismissalActive = true;
+
+    const result = await revokeFindingDismissalWithState(
+      { status: "idle", message: "" },
+      dismissalForm(),
+    );
+
+    expect(result.status).toBe("success");
+    expect(dismissalActive).toBe(false);
+    expect(storedGateStates).toEqual([true]);
+    expect(gateSyncJobs).toBe(1);
+  });
+
+  test("rejects dismissal revocation while a review is in progress", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+    liveApprovalActor = { userId: 10, githubId: "100", login: "owner", role: "admin" };
+    dismissalActive = true;
+    inFlightReview = true;
+
+    const result = await revokeFindingDismissalWithState(
+      { status: "idle", message: "" },
+      dismissalForm(),
+    );
+
+    expect(result).toEqual({
+      status: "error",
+      message: "a review is in progress; re-issue after it completes",
+    });
+    expect(dismissalActive).toBe(true);
+    expect(gateSyncJobs).toBe(0);
+  });
+
   test("queues durable GitHub gate synchronization with a dashboard revocation", async () => {
     sessionUser = { id: 10, githubId: "100", login: "owner" };
     approvalInserted = true;
@@ -593,6 +695,18 @@ describe("organization settings actions", () => {
     expect(storedGateStates).toEqual([true]);
     expect(gateSyncJobs).toBe(1);
     expect(checkConclusions).toEqual([]);
+  });
+
+  test("rejects approval revocation while a review is in progress", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+    approvalInserted = true;
+    inFlightReview = true;
+
+    await expect(revokeFinding(approvalForm())).rejects.toThrow(
+      "a review is in progress; re-issue after it completes",
+    );
+    expect(approvalInserted).toBe(true);
+    expect(gateSyncJobs).toBe(0);
   });
 
   test("commits revocation before durable GitHub synchronization", async () => {

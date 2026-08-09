@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import type { Database } from "@/lib/db";
 import {
+  findDismissibleFindingState,
+  findKindBlockingState,
   formatRemainingGateBlockers,
   getReviewApprovalState,
   resolveApprovableFindingId,
+  resolveDismissibleFindingId,
   type ApprovalRow,
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
@@ -93,6 +96,9 @@ describe("finding approval scope", () => {
       "human-finding",
     ]);
     expect(state.effectiveGate.failing).toBe(true);
+    expect(findKindBlockingState(state, "human-finding")?.findingId).toBe("human-finding");
+    expect(findKindBlockingState(state, "risk-finding")).toBeNull();
+    expect(findDismissibleFindingState(state, "risk-finding")?.findingId).toBe("risk-finding");
   });
 
   test("ignores legacy approvals for non-human kind blockers", async () => {
@@ -111,6 +117,70 @@ describe("finding approval scope", () => {
     expect(state.effectiveGate.blockers.some((entry) => entry.finding.id === "risk-finding")).toBe(
       true,
     );
+  });
+
+  test("partitions dismissals from approvals while preserving dismissed finding status", async () => {
+    const dismissal = {
+      findingId: "risk-finding",
+      verb: "dismiss",
+      revokedAt: null,
+      createdAt: new Date(),
+      id: "dismissal",
+      reasonTag: "false-positive",
+      authorSelfDismissal: true,
+      actorLoginSnapshot: "author",
+    } as ApprovalRow;
+    const state = await getReviewApprovalState(approvalDb([dismissal]), review);
+
+    expect(state.findingStates.map((entry) => entry.findingId)).toEqual(["human-finding"]);
+    expect(state.dismissalFindingStates.find((entry) => entry.findingId === "risk-finding"))
+      .toMatchObject({ activeApproval: null, activeDismissal: dismissal, blocking: false });
+    expect(state.effectiveGate.failing).toBe(true);
+    expect(formatRemainingGateBlockers(state.effectiveGate, state.dismissalFindingStates))
+      .toContain("Dismissed by @author: false-positive; pull request author");
+  });
+
+  test("a passing gate summary retains the dismissal audit", async () => {
+    const dismissal = {
+      findingId: "risk-finding",
+      verb: "dismiss",
+      revokedAt: null,
+      createdAt: new Date(),
+      id: "dismissal",
+      reasonTag: "accepted-risk",
+      authorSelfDismissal: false,
+      actorLoginSnapshot: "maintainer",
+    } as ApprovalRow;
+    const riskOnlyReview: ReviewForApproval = {
+      ...review,
+      envelope: {
+        ...envelope,
+        findings: [envelope.findings[1]!],
+        counts: { ...envelope.counts, warn: 1 },
+        confidenceBuckets: [0, 0, 0, 0, 1],
+      },
+    };
+    const state = await getReviewApprovalState(approvalDb([dismissal]), riskOnlyReview);
+
+    expect(state.effectiveGate.failing).toBe(false);
+    expect(formatRemainingGateBlockers(state.effectiveGate, state.dismissalFindingStates))
+      .toBe(
+        "No blocking findings remain.\n\nDismissed findings:\n" +
+          "- Fix the risk risk-finding (Dismissed by @maintainer: accepted-risk)",
+      );
+  });
+
+  test("a revoked dismissal leaves the finding eligible for re-issue", async () => {
+    const revoked = {
+      findingId: "risk-finding",
+      verb: "dismiss",
+      revokedAt: new Date(),
+      createdAt: new Date(),
+      id: "revoked-dismissal",
+    } as ApprovalRow;
+    const state = await getReviewApprovalState(approvalDb([revoked]), review);
+    expect(state.dismissalFindingStates.find((entry) => entry.findingId === "risk-finding"))
+      .toMatchObject({ activeDismissal: null, latestDismissal: revoked, dismissible: true });
   });
 });
 
@@ -169,6 +239,11 @@ describe("finding id prefix resolution", () => {
     const state = await hexState();
 
     expect(resolveApprovableFindingId(state, "a1b2c3d4e5f6")).toEqual({
+      ok: false,
+      reason: "ambiguous",
+      matches: [hexIdA, hexIdB],
+    });
+    expect(resolveDismissibleFindingId(state, "a1b2c3d4e5f6")).toEqual({
       ok: false,
       reason: "ambiguous",
       matches: [hexIdA, hexIdB],

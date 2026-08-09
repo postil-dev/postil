@@ -61,6 +61,8 @@ beforeEach(() => {
       id: 18,
       status: "running",
       finishedAt: null,
+      gateFailing: null,
+      gateSyncStatus: "running",
     },
   ];
   logRows = [
@@ -116,6 +118,8 @@ describe("GET run logs", () => {
       ],
       status: "running",
       finishedAt: null,
+      gateFailing: null,
+      gateSyncStatus: "running",
     });
   });
 

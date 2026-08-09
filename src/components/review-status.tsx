@@ -40,10 +40,20 @@ export function ReviewStatusBadge({
 export function GateBadge({
   gateFailing,
   status,
+  syncing = false,
+  syncFailed = false,
 }: {
   gateFailing: boolean | null;
   status: ReviewDisplayStatus;
+  syncing?: boolean;
+  syncFailed?: boolean;
 }) {
+  if (syncFailed) {
+    return <span className="font-mono text-xs text-rust">gate sync failed</span>;
+  }
+  if (syncing) {
+    return <span className="font-mono text-xs text-charcoal/70">syncing gate</span>;
+  }
   if (status !== "completed" || gateFailing === null) {
     return <span className="font-mono text-xs text-charcoal/70">—</span>;
   }

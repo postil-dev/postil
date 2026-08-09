@@ -36,13 +36,18 @@ import {
 } from "@/lib/github/installation-sync";
 import {
   enqueueGateStateSync,
+  findDismissibleFindingState,
   findKindBlockingState,
   getReviewApprovalState,
+  hasInFlightReviewForPr,
   hasNewerCompletedReviewForHead,
+  hasNewerReviewForPr,
   insertFindingApproval,
+  lockActiveReviewState,
   lockReviewApprovalState,
   loadLatestCompletedReviewForPr,
   resolveApprovableFindingId,
+  resolveDismissibleFindingId,
   updateStoredEffectiveGate,
 } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
@@ -51,6 +56,7 @@ import {
   isPostilReviewCommand,
   mentionsPostil,
   parsePostilApproveCommand,
+  parsePostilDismissCommand,
 } from "@/lib/mentions";
 import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
 import { applyPublicationThreadObservations } from "@/lib/publication-receipt";
@@ -980,7 +986,7 @@ async function handleIssueComment(
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
   if (
-    await handleApproveCommand(
+    await handleFindingDecisionCommand(
       payload,
       sourceDeliveryId,
       "issue_comment",
@@ -1077,7 +1083,7 @@ async function handleReviewComment(
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
   if (
-    await handleApproveCommand(
+    await handleFindingDecisionCommand(
       payload,
       sourceDeliveryId,
       "pull_request_review_comment",
@@ -1276,14 +1282,18 @@ async function enqueueMentionReview(
   }
 }
 
-async function handleApproveCommand(
+async function handleFindingDecisionCommand(
   payload: CommentEventPayload,
   sourceDeliveryId: string,
   commentKind: "issue_comment" | "pull_request_review_comment",
   triggerFollowupDrain: boolean,
 ): Promise<boolean> {
-  const command = parsePostilApproveCommand(payload.comment?.body);
+  const approvalCommand = parsePostilApproveCommand(payload.comment?.body);
+  const dismissalCommand = parsePostilDismissCommand(payload.comment?.body);
+  const command = dismissalCommand ?? approvalCommand;
   if (!command) return false;
+  const verb = dismissalCommand ? "dismiss" : "approve";
+  const decisionLabel = verb === "dismiss" ? "Dismissal" : "Approval";
 
   const repo = payload.repository;
   const installationId = payload.installation?.id;
@@ -1303,7 +1313,7 @@ async function handleApproveCommand(
   ) {
     await queueWebhookComment(
       payload,
-      "Approval rejected: the GitHub event lacks a complete pull request or comment identity.",
+      `${decisionLabel} rejected: the GitHub event lacks a complete pull request or comment identity.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1320,6 +1330,7 @@ async function handleApproveCommand(
     await queueWebhookComment(payload, command.error, sourceDeliveryId, triggerFollowupDrain);
     return true;
   }
+  const dismissal = dismissalCommand?.ok ? dismissalCommand : null;
 
   const token = await getInstallationToken(installationId);
   const db = getDb();
@@ -1334,11 +1345,49 @@ async function handleApproveCommand(
     return true;
   }
 
+  if (await hasInFlightReviewForPr(db, review)) {
+    await queueWebhookComment(
+      payload,
+      `${decisionLabel} rejected: a review is in progress; re-issue after it completes.`,
+      sourceDeliveryId,
+      triggerFollowupDrain,
+    );
+    return true;
+  }
+
+  let requestedFindingId = command.ok ? command.findingId : null;
+  if (verb === "dismiss" && command.ok && !requestedFindingId) {
+    const replyTo = payload.comment?.in_reply_to_id;
+    if (commentKind !== "pull_request_review_comment" || !Number.isSafeInteger(replyTo) || !replyTo || replyTo <= 0) {
+      await queueWebhookComment(
+        payload,
+        "Dismissal rejected: include a finding id, or reply directly to the finding comment.",
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    const publication = (await db.select({ findingId: schema.findingPublications.findingId })
+      .from(schema.findingPublications)
+      .where(and(eq(schema.findingPublications.reviewId, review.id), eq(schema.findingPublications.githubCommentId, String(replyTo))))
+      .limit(1))[0];
+    if (!publication) {
+      await queueWebhookComment(
+        payload,
+        "Dismissal rejected: the replied-to comment is not a finding from this review.",
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    requestedFindingId = publication.findingId;
+  }
+
   const currentHeadSha = await getPullRequestHeadSha(token, repo.full_name, prNumber);
   if (currentHeadSha !== review.headSha) {
     await queueWebhookComment(
       payload,
-      `Approval rejected: the pull request head is ${currentHeadSha.slice(0, 12)}, but the latest completed review is for ${review.headSha.slice(0, 12)}.`,
+      `${decisionLabel} rejected: the pull request head is ${currentHeadSha.slice(0, 12)}, but the latest completed review is for ${review.headSha.slice(0, 12)}.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1348,7 +1397,7 @@ async function handleApproveCommand(
   if (await hasNewerCompletedReviewForHead(db, review)) {
     await queueWebhookComment(
       payload,
-      "Approval rejected: a newer completed review exists for this commit.",
+      `${decisionLabel} rejected: a newer completed review exists for this commit.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1364,7 +1413,7 @@ async function handleApproveCommand(
   if (!actor) {
     await queueWebhookComment(
       payload,
-      "Approval rejected: GitHub could not verify this account as an active organization member.",
+      `${decisionLabel} rejected: GitHub could not verify this account as an active organization member.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1373,38 +1422,49 @@ async function handleApproveCommand(
   if (actor.role !== "admin") {
     await queueWebhookComment(
       payload,
-      "Approval rejected: approving this finding requires an organization admin.",
+      `${decisionLabel} rejected: this decision requires an organization admin.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
     return true;
   }
-
+  let authorGithubId = review.authorGithubId ?? null;
   let effectiveFailing: boolean | null = null;
   try {
+    if (verb === "dismiss" && authorGithubId === null) {
+      authorGithubId = (
+        await getPullRequestReviewContext(token, repo.full_name, prNumber)
+      ).authorGithubId ?? null;
+    }
     const state = await getReviewApprovalState(db, review);
-    const resolution = resolveApprovableFindingId(state, command.findingId);
+    const resolution = verb === "dismiss"
+      ? resolveDismissibleFindingId(state, requestedFindingId!)
+      : resolveApprovableFindingId(state, requestedFindingId!);
     if (!resolution.ok && resolution.reason === "ambiguous") {
       await queueWebhookComment(
         payload,
-        `Approval rejected: finding id prefix ${command.findingId} matches ${resolution.matches.length} blocking findings. Use a longer prefix or the full id.`,
+        `${verb === "dismiss" ? "Dismissal" : "Approval"} rejected: finding id prefix ${requestedFindingId} matches ${resolution.matches.length} blocking findings. Use a longer prefix or the full id.`,
         sourceDeliveryId,
         triggerFollowupDrain,
       );
       return true;
     }
-    const findingId = resolution.ok ? resolution.findingId : command.findingId;
-    const finding = findKindBlockingState(state, findingId);
-    if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
+    const findingId = resolution.ok ? resolution.findingId : requestedFindingId!;
+    const finding = verb === "dismiss"
+      ? findDismissibleFindingState(state, findingId)
+      : findKindBlockingState(state, findingId);
+    if (!finding || (verb === "dismiss" ? finding.activeDismissal || finding.activeApproval : !finding.blocking || finding.activeApproval || finding.activeDismissal || finding.latestApproval?.revokedAt)) {
       await queueWebhookComment(
         payload,
-        "Approval rejected: that finding is absent, already approved, revoked, or no longer kind-blocking.",
+        verb === "dismiss"
+          ? "Dismissal rejected: that finding is absent, operational, already dismissed, or has an active approval."
+          : "Approval rejected: that finding is absent, already approved, revoked, or no longer kind-blocking.",
         sourceDeliveryId,
         triggerFollowupDrain,
       );
       return true;
     }
-    if (finding.severityBlocking) {
+    if (verb === "approve" && finding.severityBlocking) {
       await queueWebhookComment(
         payload,
         "Approval rejected: this finding is also severity-blocking, and approvals only clear kind-based blocks.",
@@ -1415,15 +1475,23 @@ async function handleApproveCommand(
     }
 
     await db.transaction(async (tx) => {
+      await lockActiveReviewState(tx, review);
       await lockReviewApprovalState(tx, review.id);
+      if (await hasNewerReviewForPr(tx, review)) {
+        throw new Error("a newer review exists");
+      }
+      if (await hasInFlightReviewForPr(tx, review)) {
+        throw new Error("a review is in progress");
+      }
       const lockedState = await getReviewApprovalState(tx, review);
-      const lockedFinding = findKindBlockingState(lockedState, findingId);
+      const lockedFinding = verb === "dismiss"
+        ? findDismissibleFindingState(lockedState, findingId)
+        : findKindBlockingState(lockedState, findingId);
       if (
         !lockedFinding ||
-        !lockedFinding.blocking ||
-        lockedFinding.activeApproval ||
-        lockedFinding.latestApproval?.revokedAt ||
-        lockedFinding.severityBlocking
+        (verb === "dismiss"
+          ? Boolean(lockedFinding.activeDismissal || lockedFinding.activeApproval)
+          : !lockedFinding.blocking || lockedFinding.activeApproval || lockedFinding.activeDismissal || lockedFinding.latestApproval?.revokedAt || lockedFinding.severityBlocking)
       ) {
         throw new Error("the finding changed while the approval was being recorded");
       }
@@ -1432,6 +1500,13 @@ async function handleApproveCommand(
         findingId,
         actor,
         rationale: command.rationale,
+        verb,
+        ...(verb === "dismiss" ? {
+          reasonTag: dismissal!.reasonTag,
+          authorSelfDismissal: authorGithubId === Number(actor.githubId),
+          finding: lockedFinding.finding,
+          findingModel: review.envelope!.modelUsed,
+        } : {}),
         source: "github",
         sourceCommentId: null,
         sourceUrl: payload.comment?.html_url ?? null,
@@ -1464,23 +1539,45 @@ async function handleApproveCommand(
         isPr: true,
         sourceHeadSha: review.headSha,
         sourceDeliveryId,
-        body: `Approval recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
+        body: verb === "dismiss"
+          ? `Dismissal recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}: ${dismissal!.reasonTag}. ${authorGithubId === Number(actor.githubId) ? "The pull request author dismissed this finding. " : ""}The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}. You may now resolve this thread.`
+          : `Approval recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
       });
     });
   } catch (err) {
-    if (isUniqueConstraintError(err)) {
+    if (err instanceof Error && err.message === "a review is in progress") {
       await queueWebhookComment(
         payload,
-        "Approval rejected: this finding already has an active approval.",
+        `${decisionLabel} rejected: a review is in progress; re-issue after it completes.`,
         sourceDeliveryId,
         triggerFollowupDrain,
       );
       return true;
     }
-    console.error(`approval command failed: ${redactSecrets(err)}`);
+    if (err instanceof Error && err.message === "a newer review exists") {
+      await queueWebhookComment(
+        payload,
+        `${decisionLabel} rejected: a newer review exists for this pull request.`,
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    if (isUniqueConstraintError(err)) {
+      await queueWebhookComment(
+        payload,
+        verb === "dismiss"
+          ? "Dismissal rejected: this finding already has an active dismissal."
+          : "Approval rejected: this finding already has an active approval.",
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    console.error(`${verb} command failed: ${redactSecrets(err)}`);
     await queueWebhookComment(
       payload,
-      "Approval could not be recorded. Try again or open the Postil run for details.",
+      `${verb === "dismiss" ? "Dismissal" : "Approval"} could not be recorded. Try again or open the Postil run for details.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );

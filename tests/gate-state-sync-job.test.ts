@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 let lockCalls = 0;
 let checkCalls: Array<Record<string, unknown>> = [];
 let checkTitles: string[] = [];
+let checkSummaries: string[] = [];
 let checkError: Error | null = null;
 let effectiveFailing = false;
 let effectiveUnavailable = false;
@@ -144,6 +145,7 @@ mock.module("@/lib/gate-mode", () => ({
 }));
 
 mock.module("@/lib/finding-approvals", () => ({
+  formatDismissedGateFindings: () => "Dismissed findings:\n- retained audit",
   formatRemainingGateBlockers: () => "- remaining finding",
   getReviewApprovalState: async () => ({
     effectiveGate: {
@@ -191,6 +193,7 @@ mock.module("@/lib/github/checks", () => ({
     repoFullName: string,
     expected: { id: number; conclusion: string; detailsUrl?: string },
     title: string,
+    summary: string,
   ) => {
     checkCalls.push({
       repoFullName,
@@ -199,6 +202,7 @@ mock.module("@/lib/github/checks", () => ({
       detailsUrl: expected.detailsUrl,
     });
     checkTitles.push(title);
+    checkSummaries.push(summary);
     if (loseLeaseAfterCheck) leaseHeld = false;
     if (checkError) throw checkError;
   },
@@ -211,6 +215,7 @@ beforeEach(() => {
   lockCalls = 0;
   checkCalls = [];
   checkTitles = [];
+  checkSummaries = [];
   checkError = null;
   effectiveFailing = false;
   effectiveUnavailable = false;
@@ -244,6 +249,10 @@ describe("durable gate state synchronization", () => {
         detailsUrl:
           "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
       },
+    ]);
+    expect(checkSummaries).toEqual([
+      "No blocking findings remain for this commit.\n\n" +
+        "Dismissed findings:\n- retained audit",
     ]);
   });
 
