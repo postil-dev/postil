@@ -3,13 +3,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 
 import {
   FindingConfidenceDetails,
   FindingConfidenceLabel,
 } from "@/components/finding-confidence";
-import { GateBadge } from "@/components/review-status";
 import { MODELS } from "@/data/models";
 import { schema } from "@/lib/db";
 import {
@@ -39,10 +38,16 @@ import {
 } from "@/lib/review-trigger";
 import type { PublicationState } from "@/lib/publication-receipt";
 
-import { approveFinding, revokeFinding } from "../../actions";
+import {
+  approveFinding,
+  revokeFinding,
+} from "../../actions";
+import { DismissFindingForm } from "./dismiss-finding-form";
+import { RevokeDismissalForm } from "./revoke-dismissal-form";
 import {
   LiveDuration,
   LiveFinishedAt,
+  LiveGateStatus,
   LiveReviewStatus,
   LiveRunProvider,
   RunLogPane,
@@ -265,14 +270,16 @@ function FindingCard({
 }
 
 function ApprovalStatusBadge({ state }: { state: FindingApprovalState }) {
-  const label = state.activeApproval
+  const label = state.activeDismissal
+    ? "Dismissed"
+    : state.activeApproval
     ? "Decision recorded"
-    : state.latestApproval?.revokedAt
-      ? "Override withdrawn"
+    : state.latestDismissal?.revokedAt || state.latestApproval?.revokedAt
+      ? "Decision revoked"
       : "Needs maintainer decision";
-  const classes = state.activeApproval
+  const classes = state.activeDismissal || state.activeApproval
     ? "border-brand-secondary/40 bg-brand-secondary/10 text-[#166657]"
-    : state.latestApproval?.revokedAt
+    : state.latestDismissal?.revokedAt || state.latestApproval?.revokedAt
       ? "border-charcoal/20 bg-stone/40 text-charcoal/70"
       : "border-rust/35 bg-rust/5 text-rust";
   return (
@@ -287,33 +294,40 @@ function ApprovalPanel({
   publicId,
   headSha,
   states,
+  approvableFindingIds,
   isAdmin,
 }: {
   slug: string;
   publicId: string;
   headSha: string;
   states: FindingApprovalState[];
+  approvableFindingIds: ReadonlySet<string>;
   isAdmin: boolean;
 }) {
   if (states.length === 0) return null;
+  const hasPendingDecision = states.some((state) => state.blocking);
   return (
     <section className="mt-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="eyebrow">Maintainer decision needed</p>
+          <p className="eyebrow">
+            {hasPendingDecision ? "Maintainer decision needed" : "Maintainer decisions"}
+          </p>
           <p className="mt-1 text-sm text-ink-soft">
-            Encode the intended behavior in code, tests, configuration, or the pull request,
-            then push again. That is the normal path to clearing the required check. For an
-            irreducible kind-only product decision, an organization admin can instead record a
-            commit-scoped override with a rationale.
-            {" "}Overrides apply only to commit{" "}
+            {hasPendingDecision
+              ? "Encode the intended behavior in code, tests, configuration, or the pull request, then push again. For an irreducible finding, an organization admin can record a commit-scoped dismissal with a required classification and rationale."
+              : "These findings have recorded maintainer decisions."}{" "}
+            Decisions apply only to commit{" "}
             <span className="font-mono text-charcoal">{headSha.slice(0, 12)}</span>.
           </p>
         </div>
       </div>
       <div className="card mt-3 divide-y divide-stone/60">
         {states.map((state) => {
-          const approval = state.activeApproval ?? state.latestApproval;
+          const latestDecision = [state.latestDismissal, state.latestApproval]
+            .filter((decision): decision is NonNullable<typeof decision> => decision !== null)
+            .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ?? null;
+          const approval = state.activeDismissal ?? state.activeApproval ?? latestDecision;
           return (
             <article key={state.findingId} className="px-5 py-5 sm:px-6">
               <div className="flex flex-wrap items-center gap-3">
@@ -337,13 +351,11 @@ function ApprovalPanel({
               <div className="mt-2 text-sm leading-relaxed text-ink-soft">
                 <FindingMarkdown>{state.finding.body}</FindingMarkdown>
               </div>
-              {!state.activeApproval && !state.latestApproval?.revokedAt && (
+              {!state.activeDismissal && !state.latestDismissal?.revokedAt && !state.activeApproval && !state.latestApproval?.revokedAt && (
                 <p className="mt-3 rounded-card border border-stone/70 bg-stone/20 px-3 py-2 text-xs text-charcoal/75">
-                  {state.severityBlocking
-                    ? "Fix or document the intended behavior and push again. This finding also blocks by severity, so an override cannot clear it."
-                    : isAdmin
-                      ? "Fix or encode the intended behavior and push again. Use the override only when no code or configuration change can express the decision."
-                      : "Fix or encode the intended behavior and push again. An organization admin can record an override only for a genuine product decision."}
+                  {isAdmin
+                    ? "Fix or encode the intended behavior and push again. Use dismissal to document a false positive, an accepted risk, or work owned outside this commit."
+                    : "Fix or encode the intended behavior and push again. An organization admin can record a dismissal only for a genuine exception to this commit's gate."}
                 </p>
               )}
               {approval && (
@@ -356,6 +368,18 @@ function ApprovalPanel({
                     <dt className="font-mono uppercase tracking-wide text-charcoal/70">Source</dt>
                     <dd>{approval.source}</dd>
                   </div>
+                  {approval.verb === "dismiss" && (
+                    <div>
+                      <dt className="font-mono uppercase tracking-wide text-charcoal/70">Reason</dt>
+                      <dd>{approval.reasonTag}</dd>
+                    </div>
+                  )}
+                  {approval.authorSelfDismissal && (
+                    <div>
+                      <dt className="font-mono uppercase tracking-wide text-charcoal/70">Author action</dt>
+                      <dd>Pull request author dismissed this finding</dd>
+                    </div>
+                  )}
                   <div>
                     <dt className="font-mono uppercase tracking-wide text-charcoal/70">Recorded</dt>
                     <dd>{formatTimestamp(approval.createdAt)}</dd>
@@ -370,8 +394,21 @@ function ApprovalPanel({
                   </div>
                 </dl>
               )}
-              {isAdmin && !state.activeApproval && !state.latestApproval?.revokedAt && !state.severityBlocking && (
-                <details className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm">
+              {isAdmin && !state.activeDismissal && !state.activeApproval && (
+                <details name={`finding-decision-${state.findingId}`} className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm">
+                  <summary className="cursor-pointer font-medium text-charcoal/75">Dismiss this finding</summary>
+                  <p className="mt-2 font-mono text-xs text-charcoal/70">
+                    @postil dismiss {state.findingId} -- false-positive: rationale
+                  </p>
+                  <DismissFindingForm
+                    slug={slug}
+                    publicId={publicId}
+                    findingId={state.findingId}
+                  />
+                </details>
+              )}
+              {isAdmin && approvableFindingIds.has(state.findingId) && !state.activeApproval && !state.activeDismissal && !state.latestApproval?.revokedAt && !state.severityBlocking && (
+                <details name={`finding-decision-${state.findingId}`} className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm">
                   <summary className="cursor-pointer font-medium text-charcoal/75">
                     Record a commit-scoped override
                   </summary>
@@ -379,14 +416,17 @@ function ApprovalPanel({
                     <input type="hidden" name="slug" value={slug} />
                     <input type="hidden" name="publicId" value={publicId} />
                     <input type="hidden" name="findingId" value={state.findingId} />
+                    <label className="grid gap-1 text-xs font-medium text-charcoal/75">
+                      Rationale
                     <textarea
                       name="rationale"
                       required
                       minLength={1}
                       rows={2}
-                      className="min-h-16 rounded-md border border-stone bg-ivory px-3 py-2 text-sm text-charcoal outline-none focus:border-rust"
+                      className="min-h-16 rounded-md border border-stone bg-ivory px-3 py-2 text-sm text-charcoal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rust"
                       placeholder="Why no code or configuration change can resolve this decision"
                     />
+                    </label>
                     <button className="rounded-md bg-charcoal px-4 py-2 text-sm font-semibold text-ivory hover:bg-rust">
                       Record override
                     </button>
@@ -402,6 +442,13 @@ function ApprovalPanel({
                     Withdraw override
                   </button>
                 </form>
+              )}
+              {isAdmin && state.activeDismissal && (
+                <RevokeDismissalForm
+                  slug={slug}
+                  publicId={publicId}
+                  findingId={state.findingId}
+                />
               )}
             </article>
           );
@@ -461,7 +508,7 @@ export default async function RunDetailPage({
   )[0];
   if (!review || review.orgId === null) notFound();
 
-  const [usageEvents, byokSettings, publicationRows, publicationReceiptRows] = await Promise.all([
+  const [usageEvents, byokSettings, gateSyncJobs, publicationRows, publicationReceiptRows] = await Promise.all([
     db
       .select({
         id: schema.usageEvents.id,
@@ -482,6 +529,15 @@ export default async function RunDetailPage({
           isNotNull(schema.orgSettings.apiKeyCiphertext),
         ),
       )
+      .limit(1),
+    db
+      .select({ id: schema.jobs.id, status: schema.jobs.status })
+      .from(schema.jobs)
+      .where(and(
+        eq(schema.jobs.kind, "gate-state-sync"),
+        sql`${schema.jobs.payload}->>'reviewId' = ${String(review.id)}`,
+      ))
+      .orderBy(desc(schema.jobs.id))
       .limit(1),
     db
       .select({
@@ -580,6 +636,8 @@ export default async function RunDetailPage({
       startedAt={review.startedAt?.toISOString() ?? null}
       initialFinishedAt={review.finishedAt?.toISOString() ?? null}
       recordedDurationMs={envelope?.durationMs ?? null}
+      initialGateFailing={review.gateFailing}
+      initialGateSyncStatus={gateSyncJobs[0]?.status ?? null}
     >
       <main className="mx-auto max-w-5xl px-6 py-12">
         <p className="eyebrow">
@@ -599,8 +657,8 @@ export default async function RunDetailPage({
               #{review.prNumber}
             </a>
           </h1>
-          <LiveReviewStatus gateFailing={review.gateFailing} />
-          <GateBadge gateFailing={review.gateFailing} status={displayStatus} />
+          <LiveReviewStatus />
+          <LiveGateStatus />
         </div>
 
         <dl className="card mt-5 grid grid-cols-2 gap-x-3 gap-y-4 p-4 sm:grid-cols-3 lg:grid-cols-4">
@@ -650,7 +708,7 @@ export default async function RunDetailPage({
             </RunFact>
           )}
           <RunFact label="Status">
-            <LiveReviewStatus gateFailing={review.gateFailing} />
+            <LiveReviewStatus />
           </RunFact>
           <RunFact label="Duration">
             <LiveDuration />
@@ -745,7 +803,10 @@ export default async function RunDetailPage({
             slug={org.slug}
             publicId={review.publicId}
             headSha={review.headSha}
-            states={approvalState.findingStates}
+            states={approvalState.dismissalFindingStates}
+            approvableFindingIds={new Set(
+              approvalState.findingStates.map((state) => state.findingId),
+            )}
             isAdmin={membership.role === "admin"}
           />
         )}

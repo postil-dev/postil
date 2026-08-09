@@ -449,6 +449,13 @@ describeDb("webhook handler behaviour", () => {
     );
   }
 
+  function dismissalComment(
+    deliveryId: string,
+    body = "@postil dismiss kind-blocker -- false-positive: the guard is unreachable",
+  ): Promise<Response> {
+    return approvalComment(deliveryId, body);
+  }
+
   test("pull_request upsert re-pins a repo transferred between installations", async () => {
     const orgId = await seedOrg();
     const oldInst = await seedInstallation(orgId, 100);
@@ -1382,6 +1389,76 @@ describeDb("webhook handler behaviour", () => {
     expect(replies[0]).toContain("Approval recorded by @admin");
     expect(replies[0]).toContain("gate update is queued");
     expect(replies[0]).toContain("head-sha");
+  });
+
+  test("dismissal records its audit tag, flags author self-dismissal, and clears severity blocking", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const reviewId = await seedCompletedApprovalReview(repoId, approvalEnvelope({
+      findings: [{
+        id: "kind-blocker", path: "src/app.ts", line: 10, severity: "error", kind: "risk",
+        confidence: 0.9, title: "Incorrect finding", body: "The branch is unreachable.",
+      }],
+      counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+    }));
+    await pool.query("UPDATE reviews SET author_github_id = 501 WHERE id = $1", [reviewId]);
+
+    expect((await dismissalComment("dismissal-success")).status).toBe(200);
+    const dismissal = await pool.query<{
+      verb: string; reason_tag: string; author_self_dismissal: boolean; finding_model: string;
+    }>("SELECT verb, reason_tag, author_self_dismissal, finding_model FROM finding_approvals WHERE review_id = $1", [reviewId]);
+    expect(dismissal.rows).toEqual([{
+      verb: "dismiss", reason_tag: "false-positive", author_self_dismissal: true,
+      finding_model: "deepseek/deepseek-v4-pro",
+    }]);
+    expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(false);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("Pull request author dismissed");
+  });
+
+  test("dismissal infers a finding id only from its finding-comment reply", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+    await pool.query(
+      `INSERT INTO finding_publications (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+       VALUES ($1, 'kind-blocker', false, 'inline', 'inline', '8800')`,
+      [reviewId],
+    );
+
+    expect((await post("pull_request_review_comment", {
+      action: "created",
+      installation: { id: 700 },
+      repository: { id: 7000, full_name: "octo/approvals", private: false },
+      sender: { id: 501, login: "admin", type: "User" },
+      comment: {
+        id: 8801, in_reply_to_id: 8800, body: "@postil dismiss -- out-of-scope: this policy does not apply",
+        user: { id: 501, login: "admin", type: "User" }, author_association: "MEMBER",
+      },
+      pull_request: { number: 9 },
+    }, "dismissal-reply-inference")).status).toBe(200);
+    expect((await pool.query<{ finding_id: string; reason_tag: string }>(
+      "SELECT finding_id, reason_tag FROM finding_approvals WHERE review_id = $1", [reviewId],
+    )).rows).toEqual([{ finding_id: "kind-blocker", reason_tag: "out-of-scope" }]);
+  });
+
+  test("dismissal rejects a same-pull-request review that is queued or running", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    await pool.query(
+      "INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status) VALUES ($1, 9, 'next-head', 'base-sha', 'queued')",
+      [repoId],
+    );
+
+    expect((await dismissalComment("dismissal-race")).status).toBe(200);
+    expect((await pool.query<{ c: number }>("SELECT count(*)::int AS c FROM finding_approvals")).rows[0]!.c).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("review is in progress");
   });
 
   test("approval command accepts the truncated finding id shown in gate summaries", async () => {
