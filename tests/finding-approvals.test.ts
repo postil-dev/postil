@@ -7,6 +7,7 @@ import {
   formatRemainingGateBlockers,
   getReviewApprovalState,
   resolveApprovableFindingId,
+  resolveDismissibleFindingId,
   type ApprovalRow,
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
@@ -238,6 +239,11 @@ describe("finding id prefix resolution", () => {
     const state = await hexState();
 
     expect(resolveApprovableFindingId(state, "a1b2c3d4e5f6")).toEqual({
+      ok: false,
+      reason: "ambiguous",
+      matches: [hexIdA, hexIdB],
+    });
+    expect(resolveDismissibleFindingId(state, "a1b2c3d4e5f6")).toEqual({
       ok: false,
       reason: "ambiguous",
       matches: [hexIdA, hexIdB],

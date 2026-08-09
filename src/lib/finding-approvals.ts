@@ -616,26 +616,31 @@ export function resolveApprovableFindingId(
   state: ReviewApprovalState,
   input: string,
 ): ApprovableFindingIdResolution {
-  if (state.findingStates.some((finding) => finding.findingId === input)) {
-    return { ok: true, findingId: input };
-  }
-  if (input.length < FINDING_ID_PREFIX_MIN_LENGTH) return { ok: false, reason: "unknown" };
-  const matches = state.findingStates
-    .map((finding) => finding.findingId)
-    .filter((findingId) => findingId.startsWith(input));
-  if (matches.length === 1) return { ok: true, findingId: matches[0]! };
-  if (matches.length > 1) return { ok: false, reason: "ambiguous", matches };
-  return { ok: false, reason: "unknown" };
+  return resolveFindingIdCandidates(
+    state.findingStates.map((finding) => finding.findingId),
+    input,
+  );
 }
 
 export function resolveDismissibleFindingId(
   state: ReviewApprovalState,
   input: string,
 ): ApprovableFindingIdResolution {
-  const candidates = state.dismissalFindingStates.filter((finding) => finding.dismissible);
-  if (candidates.some((finding) => finding.findingId === input)) return { ok: true, findingId: input };
+  return resolveFindingIdCandidates(
+    state.dismissalFindingStates
+      .filter((finding) => finding.dismissible)
+      .map((finding) => finding.findingId),
+    input,
+  );
+}
+
+function resolveFindingIdCandidates(
+  candidates: readonly string[],
+  input: string,
+): ApprovableFindingIdResolution {
+  if (candidates.includes(input)) return { ok: true, findingId: input };
   if (input.length < FINDING_ID_PREFIX_MIN_LENGTH) return { ok: false, reason: "unknown" };
-  const matches = candidates.map((finding) => finding.findingId).filter((findingId) => findingId.startsWith(input));
+  const matches = candidates.filter((findingId) => findingId.startsWith(input));
   if (matches.length === 1) return { ok: true, findingId: matches[0]! };
   return matches.length > 1 ? { ok: false, reason: "ambiguous", matches } : { ok: false, reason: "unknown" };
 }
