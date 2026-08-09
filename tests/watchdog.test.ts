@@ -279,7 +279,11 @@ describeDb("watchdog stuck-review kill", () => {
     const secondReviewId = await seedStuckReview(repositoryId);
     const stuckJob = await pool.query<{ id: string }>(`
       INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
-      VALUES ('review', '{}', 'running', 1, 3, now() - interval '20 minutes', 'dead-worker')
+      VALUES (
+        'review',
+        '{"githubRepoId":7777,"repoFullName":"octo/repo","prNumber":7,"headSha":"stuck-head"}',
+        'running', 1, 3, now() - interval '20 minutes', 'dead-worker'
+      )
       RETURNING id
     `);
     const result = await watchdogPass(new Date());
@@ -406,6 +410,7 @@ describeDb("watchdog stuck-review kill", () => {
   test("promotes retained metadata after a review worker lease expires", async () => {
     const pending = {
       installationId: 42,
+      githubRepoId: 7777,
       repoFullName: "octo/repo",
       prNumber: 7,
       headSha: "same-head",
