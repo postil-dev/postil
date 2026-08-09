@@ -45,6 +45,14 @@ describe("migration lint", () => {
     );
     expect(migration).toContain("NEW.payload := jsonb_set");
     expect(migration).toContain("to_jsonb(repository_identity::bigint)");
+    expect(migration.indexOf("CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()"))
+      .toBeLessThan(migration.indexOf('UPDATE "jobs"\nSET "payload" = jsonb_set'));
+    expect(migration).toContain(
+      "jsonb_typeof(NEW.payload->'githubRepoId') = 'number'",
+    );
+    expect(migration).toContain(
+      "jsonb_typeof(existing.payload->'githubRepoId') = 'number'",
+    );
   });
 
   test("rejects non-concurrent indexes on existing tables", () => {

@@ -33,24 +33,6 @@ CREATE TRIGGER "finding_approvals_guard_dismissal_audit"
 BEFORE INSERT OR UPDATE ON "finding_approvals"
 FOR EACH ROW EXECUTE FUNCTION "postil_guard_finding_dismissal_audit"();
 --> statement-breakpoint
-UPDATE "jobs"
-SET "payload" = jsonb_set("jobs"."payload", '{githubRepoId}', to_jsonb("repositories"."github_repo_id"), true)
-FROM "repositories"
-WHERE "jobs"."kind" = 'review'
-  AND "jobs"."status" IN ('queued', 'running')
-  AND jsonb_typeof("jobs"."payload"->'githubRepoId') IS DISTINCT FROM 'number'
-  AND "jobs"."payload"->>'repoFullName' = "repositories"."full_name";
---> statement-breakpoint
-UPDATE "jobs"
-SET "status" = 'failed',
-    "locked_at" = NULL,
-    "locked_by" = NULL,
-    "last_error" = 'legacy active review repository identity could not be resolved',
-    "run_after" = now()
-WHERE "kind" = 'review'
-  AND "status" IN ('queued', 'running')
-  AND jsonb_typeof("payload"->'githubRepoId') IS DISTINCT FROM 'number';
---> statement-breakpoint
 CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
@@ -63,7 +45,8 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF NEW.payload->>'githubRepoId' ~ '^[1-9][0-9]*$' THEN
+  IF jsonb_typeof(NEW.payload->'githubRepoId') = 'number'
+    AND NEW.payload->>'githubRepoId' ~ '^[1-9][0-9]*$' THEN
     repository_identity := NEW.payload->>'githubRepoId';
   ELSE
     SELECT repository.github_repo_id::text
@@ -104,7 +87,8 @@ BEGIN
       AND existing.id IS DISTINCT FROM NEW.id
       AND COALESCE(
         CASE
-          WHEN existing.payload->>'githubRepoId' ~ '^[1-9][0-9]*$'
+          WHEN jsonb_typeof(existing.payload->'githubRepoId') = 'number'
+            AND existing.payload->>'githubRepoId' ~ '^[1-9][0-9]*$'
             THEN existing.payload->>'githubRepoId'
         END,
         (
@@ -121,3 +105,21 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
+--> statement-breakpoint
+UPDATE "jobs"
+SET "payload" = jsonb_set("jobs"."payload", '{githubRepoId}', to_jsonb("repositories"."github_repo_id"), true)
+FROM "repositories"
+WHERE "jobs"."kind" = 'review'
+  AND "jobs"."status" IN ('queued', 'running')
+  AND jsonb_typeof("jobs"."payload"->'githubRepoId') IS DISTINCT FROM 'number'
+  AND "jobs"."payload"->>'repoFullName' = "repositories"."full_name";
+--> statement-breakpoint
+UPDATE "jobs"
+SET "status" = 'failed',
+    "locked_at" = NULL,
+    "locked_by" = NULL,
+    "last_error" = 'legacy active review repository identity could not be resolved',
+    "run_after" = now()
+WHERE "kind" = 'review'
+  AND "status" IN ('queued', 'running')
+  AND jsonb_typeof("payload"->'githubRepoId') IS DISTINCT FROM 'number';
