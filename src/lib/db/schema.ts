@@ -9,6 +9,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -49,6 +50,7 @@ export const findingApprovalSource = pgEnum("finding_approval_source", [
   "github",
   "dashboard",
 ]);
+export const findingApprovalVerb = pgEnum("finding_approval_verb", ["approve", "dismiss"]);
 
 export const users = pgTable("users", {
   id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
@@ -528,6 +530,13 @@ export const findingApprovals = pgTable(
     actorGithubId: text("actor_github_id").notNull(),
     actorLoginSnapshot: text("actor_login_snapshot").notNull(),
     actorRoleSnapshot: findingApprovalRole("actor_role_snapshot").notNull(),
+    verb: findingApprovalVerb("verb").notNull().default("approve"),
+    reasonTag: text("reason_tag"),
+    authorSelfDismissal: boolean("author_self_dismissal").notNull().default(false),
+    findingKind: text("finding_kind"),
+    findingSeverity: text("finding_severity"),
+    findingConfidence: real("finding_confidence"),
+    findingModel: text("finding_model"),
     rationale: text("rationale").notNull(),
     source: findingApprovalSource("source").notNull(),
     sourceCommentId: uuid("source_comment_id"),
@@ -573,6 +582,10 @@ export const findingApprovals = pgTable(
     check(
       "finding_approvals_rationale_nonempty",
       sql`length(btrim(${t.rationale})) > 0`,
+    ),
+    check(
+      "finding_approvals_dismissal_check",
+      sql`(${t.verb} = 'approve' AND ${t.reasonTag} IS NULL AND ${t.authorSelfDismissal} = false AND ${t.findingKind} IS NULL AND ${t.findingSeverity} IS NULL AND ${t.findingConfidence} IS NULL AND ${t.findingModel} IS NULL) OR (${t.verb} = 'dismiss' AND ${t.reasonTag} IS NOT NULL AND ${t.reasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope') AND ${t.findingKind} IS NOT NULL AND ${t.findingSeverity} IS NOT NULL AND ${t.findingConfidence} IS NOT NULL AND ${t.findingConfidence} BETWEEN 0 AND 1 AND ${t.findingModel} IS NOT NULL)`,
     ),
     check(
       "finding_approvals_binding_check",

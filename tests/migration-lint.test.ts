@@ -12,6 +12,58 @@ const LEGACY_UNSAFE_INDEXES = [
 ];
 
 describe("migration lint", () => {
+  test("validates complete finding dismissal audit rows", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0048_woozy_tigra.sql"),
+      "utf8",
+    );
+    expect(migration).toContain('NEW."reason_tag" IS NULL OR');
+    expect(migration).toContain('"reason_tag" IS NOT NULL');
+    expect(migration).toContain('"finding_confidence" IS NOT NULL');
+    expect(migration).toContain('"finding_kind" IS NULL');
+    expect(migration).toContain(
+      'VALIDATE CONSTRAINT "finding_approvals_dismissal_check"',
+    );
+    expect(migration).toContain("jsonb_set");
+    expect(migration).toContain('LOCK TABLE "jobs" IN SHARE ROW EXCLUSIVE MODE');
+    expect(migration).toContain(
+      "to_jsonb(\"repositories\".\"github_repo_id\")",
+    );
+    expect(migration).toContain(
+      '"repositories"."github_repo_id" IS NOT NULL',
+    );
+    expect(migration).not.toContain(
+      "to_jsonb(\"repositories\".\"github_repo_id\"::text)",
+    );
+    expect(migration).toContain(
+      "jsonb_typeof(\"jobs\".\"payload\"->'githubRepoId') = 'number'",
+    );
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()",
+    );
+    expect(migration).toContain(
+      "PERFORM pg_advisory_xact_lock",
+    );
+    expect(migration).toContain(
+      "legacy active review repository identity could not be resolved",
+    );
+    expect(migration).toContain("NEW.payload := jsonb_set");
+    expect(migration).toContain("to_jsonb(repository_identity::bigint)");
+    expect(migration.indexOf("CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()"))
+      .toBeLessThan(migration.indexOf('UPDATE "jobs"\nSET "payload" = jsonb_set'));
+    expect(migration).toContain(
+      "jsonb_typeof(NEW.payload->'githubRepoId') = 'number'",
+    );
+    expect(migration).toContain(
+      "jsonb_typeof(existing.payload->'githubRepoId') = 'number'",
+    );
+    expect(migration).toContain(
+      "NEW.payload->>'githubRepoId' ~ '^[1-9][0-9]*$'",
+    );
+    expect(migration).toContain(") IS NOT TRUE",
+    );
+  });
+
   test("rejects non-concurrent indexes on existing tables", () => {
     const findings = lintMigrationSources([
       {

@@ -459,6 +459,7 @@ describeDb("postgres job queue", () => {
   test("concurrent review enqueue creates one active job per repository PR head", async () => {
     const payload = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/repo",
       prNumber: 42,
       headSha: "a".repeat(40),
@@ -484,9 +485,23 @@ describeDb("postgres job queue", () => {
     expect(await enqueueReviewJobOnce(pool, payload)).not.toBeNull();
   });
 
+  test("rejects an invalid review repository identity before enqueue", async () => {
+    await expect(
+      enqueueReviewJobOnce(pool, {
+        installationId: 1,
+        githubRepoId: undefined as unknown as number,
+        repoFullName: "octo/repo",
+        prNumber: 42,
+        headSha: "a".repeat(40),
+        baseSha: "b".repeat(40),
+      }),
+    ).rejects.toThrow("review job requires a positive GitHub repository ID");
+  });
+
   test("same-head queued reviews retain newest metadata and sticky full-review intent", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/queued-upgrade",
       prNumber: 42,
       headSha: "a".repeat(40),
@@ -547,6 +562,7 @@ describeDb("postgres job queue", () => {
   test("same-head requests during a running review produce one retained rerun", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/running-upgrade",
       prNumber: 43,
       headSha: "c".repeat(40),
@@ -593,6 +609,7 @@ describeDb("postgres job queue", () => {
   test("a terminal failure promotes its retained review", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/failed-upgrade",
       prNumber: 44,
       headSha: "d".repeat(40),
@@ -652,6 +669,7 @@ describeDb("postgres job queue", () => {
   test("a transient failure records the old attempt before promoting retained intent", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/transient-upgrade",
       prNumber: 45,
       headSha: "e".repeat(40),
@@ -701,6 +719,7 @@ describeDb("postgres job queue", () => {
   test("a queued base retarget creates a fresh immutable publication identity", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/base-retarget",
       prNumber: 46,
       headSha: "f".repeat(40),

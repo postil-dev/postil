@@ -330,6 +330,13 @@
       "when": 1785373682375,
       "tag": "0046_wise_anthem",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1786239138686,
+      "tag": "0048_woozy_tigra",
+      "breakpoints": true
     }
   ]
 }
