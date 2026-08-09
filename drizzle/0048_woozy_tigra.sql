@@ -46,6 +46,12 @@ BEGIN
     RETURN NEW;
   END IF;
 
+  pull_request_number := NEW.payload->>'prNumber';
+  head_sha := NEW.payload->>'headSha';
+  IF NEW.payload->>'repoFullName' IS NULL OR pull_request_number IS NULL OR head_sha IS NULL THEN
+    RETURN NEW;
+  END IF;
+
   IF jsonb_typeof(NEW.payload->'githubRepoId') = 'number'
     AND NEW.payload->>'githubRepoId' ~ '^[1-9][0-9]*$' THEN
     repository_identity := NEW.payload->>'githubRepoId';
@@ -56,10 +62,7 @@ BEGIN
      WHERE repository.full_name = NEW.payload->>'repoFullName'
      LIMIT 1;
   END IF;
-  pull_request_number := NEW.payload->>'prNumber';
-  head_sha := NEW.payload->>'headSha';
-
-  IF repository_identity IS NULL OR pull_request_number IS NULL OR head_sha IS NULL THEN
+  IF repository_identity IS NULL THEN
     NEW.status := 'failed';
     NEW.locked_at := NULL;
     NEW.locked_by := NULL;
