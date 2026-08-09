@@ -139,6 +139,36 @@ describe("finding approval scope", () => {
       .toContain("Dismissed by @author: false-positive; pull request author");
   });
 
+  test("a passing gate summary retains the dismissal audit", async () => {
+    const dismissal = {
+      findingId: "risk-finding",
+      verb: "dismiss",
+      revokedAt: null,
+      createdAt: new Date(),
+      id: "dismissal",
+      reasonTag: "accepted-risk",
+      authorSelfDismissal: false,
+      actorLoginSnapshot: "maintainer",
+    } as ApprovalRow;
+    const riskOnlyReview: ReviewForApproval = {
+      ...review,
+      envelope: {
+        ...envelope,
+        findings: [envelope.findings[1]!],
+        counts: { ...envelope.counts, warn: 1 },
+        confidenceBuckets: [0, 0, 0, 0, 1],
+      },
+    };
+    const state = await getReviewApprovalState(approvalDb([dismissal]), riskOnlyReview);
+
+    expect(state.effectiveGate.failing).toBe(false);
+    expect(formatRemainingGateBlockers(state.effectiveGate, state.dismissalFindingStates))
+      .toBe(
+        "No blocking findings remain.\n\nDismissed findings:\n" +
+          "- Fix the risk risk-finding (Dismissed by @maintainer: accepted-risk)",
+      );
+  });
+
   test("a revoked dismissal leaves the finding eligible for re-issue", async () => {
     const revoked = {
       findingId: "risk-finding",
