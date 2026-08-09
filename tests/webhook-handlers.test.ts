@@ -1420,7 +1420,9 @@ describeDb("webhook handler behaviour", () => {
       finding_model: "deepseek/deepseek-v4-pro",
     }]);
     expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(false);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("Pull request author dismissed");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "The pull request author dismissed this finding.",
+    );
   });
 
   test("dismissal infers a finding id only from its finding-comment reply", async () => {
