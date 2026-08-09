@@ -34,7 +34,6 @@ BEFORE INSERT OR UPDATE ON "finding_approvals"
 FOR EACH ROW EXECUTE FUNCTION "postil_guard_finding_dismissal_audit"();
 --> statement-breakpoint
 LOCK TABLE "jobs" IN SHARE ROW EXCLUSIVE MODE;
---> statement-breakpoint
 CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
@@ -110,7 +109,6 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
---> statement-breakpoint
 UPDATE "jobs"
 SET "payload" = jsonb_set("jobs"."payload", '{githubRepoId}', to_jsonb("repositories"."github_repo_id"), true)
 FROM "repositories"
@@ -121,7 +119,6 @@ WHERE "jobs"."kind" = 'review'
     AND "jobs"."payload"->>'githubRepoId' ~ '^[1-9][0-9]*$'
   ) IS NOT TRUE
   AND "jobs"."payload"->>'repoFullName' = "repositories"."full_name";
---> statement-breakpoint
 UPDATE "jobs"
 SET "status" = 'failed',
     "locked_at" = NULL,
