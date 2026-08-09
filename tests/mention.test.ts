@@ -4,6 +4,7 @@ import {
   isPostilReviewCommand,
   mentionsPostil,
   parsePostilApproveCommand,
+  parsePostilDismissCommand,
 } from "@/lib/mentions";
 
 describe("mentionsPostil", () => {
@@ -147,5 +148,36 @@ describe("parsePostilApproveCommand", () => {
 
   test("ignores approval text inside code", () => {
     expect(parsePostilApproveCommand("`@postil approve abc -- no`")).toBeNull();
+  });
+});
+
+describe("parsePostilDismissCommand", () => {
+  test("parses an explicit finding id, reason tag, and rationale", () => {
+    expect(parsePostilDismissCommand("@postil dismiss abc123 -- false-positive: the condition is impossible")).toEqual({
+      ok: true,
+      findingId: "abc123",
+      reasonTag: "false-positive",
+      rationale: "the condition is impossible",
+    });
+  });
+
+  test("permits reply inference only by omitting the finding id", () => {
+    expect(parsePostilDismissCommand("@postil dismiss -- accepted-risk: covered by the release rollback")).toEqual({
+      ok: true,
+      findingId: null,
+      reasonTag: "accepted-risk",
+      rationale: "covered by the release rollback",
+    });
+  });
+
+  test("requires a supported reason tag and rationale", () => {
+    expect(parsePostilDismissCommand("@postil dismiss abc -- because no")).toEqual({
+      ok: false,
+      error: "Use `@postil dismiss [finding-id] -- false-positive|accepted-risk|out-of-scope: <rationale>`.",
+    });
+    expect(parsePostilDismissCommand("@postil dismiss abc -- out-of-scope:   ")).toEqual({
+      ok: false,
+      error: "Dismissal requires a non-empty rationale.",
+    });
   });
 });
