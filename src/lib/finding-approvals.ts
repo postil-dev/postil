@@ -644,14 +644,9 @@ export function formatRemainingGateBlockers(
   state: EffectiveGateState,
   findingStates: FindingApprovalState[] = [],
 ): string {
-  const dismissed = findingStates
-    .filter((finding) => finding.activeDismissal)
-    .map((finding) => {
-      const dismissal = finding.activeDismissal!;
-      return `- ${finding.finding.title} ${finding.findingId.slice(0, FINDING_ID_DISPLAY_LENGTH)} (Dismissed by @${dismissal.actorLoginSnapshot}: ${dismissal.reasonTag}${dismissal.authorSelfDismissal ? "; pull request author" : ""})`;
-    });
+  const dismissed = formatDismissedGateFindings(findingStates);
   if (!state.failing) {
-    return ["No blocking findings remain.", dismissed.length > 0 ? `Dismissed findings:\n${dismissed.join("\n")}` : null]
+    return ["No blocking findings remain.", dismissed || null]
       .filter(Boolean)
       .join("\n\n");
   }
@@ -679,7 +674,19 @@ export function formatRemainingGateBlockers(
       return `- ${blocker.finding.title}${id} (${reason})`;
     })
     .join("\n");
-  return [blockers, dismissed.length > 0 ? `Dismissed findings:\n${dismissed.join("\n")}` : null]
+  return [blockers, dismissed || null]
     .filter(Boolean)
     .join("\n\n");
+}
+
+export function formatDismissedGateFindings(
+  findingStates: FindingApprovalState[] = [],
+): string {
+  const dismissed = findingStates
+    .filter((finding) => finding.activeDismissal)
+    .map((finding) => {
+      const dismissal = finding.activeDismissal!;
+      return `- ${finding.finding.title} ${finding.findingId.slice(0, FINDING_ID_DISPLAY_LENGTH)} (Dismissed by @${dismissal.actorLoginSnapshot}: ${dismissal.reasonTag}${dismissal.authorSelfDismissal ? "; pull request author" : ""})`;
+    });
+  return dismissed.length > 0 ? `Dismissed findings:\n${dismissed.join("\n")}` : "";
 }
