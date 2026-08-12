@@ -35,6 +35,26 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.8.9–0.8.12",
+    date: "August 12, 2026",
+    summary:
+      "Large pull-request descriptions no longer consume review context that is never sent to the model, and bounded retries retain their complete evidence.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Long pull-request descriptions are budgeted from the bounded text rendered into the review request, so dependency updates with extensive release notes reach review instead of failing before model contact.",
+      },
+      {
+        label: "Fixed",
+        text: "Retry and correction requests preserve their route, phase, evidence coordinates, and bounded prior response, including quoted Git paths and Unicode source text.",
+      },
+      {
+        label: "Fixed",
+        text: "Provider-contract and timeout-fallback tests use isolated process state and structured attempt records, keeping release checks deterministic under parallel and slower runners.",
+      },
+    ],
+  },
+  {
     version: "0.8.7–0.8.8",
     date: "August 9, 2026",
     summary:
