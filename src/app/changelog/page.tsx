@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.8.13",
+    date: "August 13, 2026",
+    summary:
+      "Large reviews bind every credited hunk to exact model-visible evidence and stop before inference when the bounded request budget cannot cover the complete change.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Repetitive source is encoded losslessly within the review budget, reconstructed only for exact citations, and cannot impersonate the evidence transport format.",
+      },
+      {
+        label: "Changed",
+        text: "A review that cannot inspect every required hunk returns an explicit incomplete result instead of silently clearing findings from unseen evidence.",
+      },
+    ],
+  },
+  {
     version: "0.8.9–0.8.12",
     date: "August 12, 2026",
     summary:
