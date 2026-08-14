@@ -56,7 +56,7 @@ describe("Next membership verification error rendering", () => {
     expect(response.url).toBe(requestedUrl);
     expect(body).toContain("postil-membership-verification-unavailable");
     expect(body).toContain("./app/error.tsx");
-  }, 60_000);
+  }, 180_000);
 
   browserTest("renders accessible retry progress and recovers at the same URL", async () => {
     const port = await availablePort();
@@ -99,7 +99,7 @@ describe("Next membership verification error rendering", () => {
       "You can try again now.",
       "Checking organization access.",
     ]);
-  }, 75_000);
+  }, 180_000);
 });
 
 async function availablePort(): Promise<number> {

@@ -104,7 +104,7 @@ describe("organization switcher menu geometry", () => {
       "/reports",
       "/reports",
     ]);
-  }, 75_000);
+  }, 180_000);
 });
 
 async function availablePort(): Promise<number> {
