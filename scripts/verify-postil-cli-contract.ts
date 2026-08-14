@@ -13,11 +13,10 @@ const REQUIRED_REVIEW_FLAGS = [
   "--sha <SHA>",
   "--base-sha <BASE_SHA>",
 ] as const;
-const PUBLICATION_CONTROLLER_PLAN_PROBE = [
-  "review",
-  "--publication-plan-output",
-  "/dev/null",
-  "--help",
+const PUBLICATION_CONTROLLER_CAPABILITY_PROBE = [
+  "capabilities",
+  "--publication-plan-contract",
+  "github-publication-v1",
 ] as const;
 const HEAD_SHA = "1".repeat(40);
 const BASE_SHA = "2".repeat(40);
@@ -82,20 +81,26 @@ export function assertReviewHelp(help: string): void {
   }
 }
 
-export function assertPublicationControllerPlanProbe(
+export function assertPublicationControllerCapabilityProbe(
   result: CommandResult,
 ): void {
-  if (result.exitCode !== 0) {
-    throw new Error("postil review does not support publication-plan output");
+  if (
+    result.exitCode !== 0 ||
+    result.stderr !== "" ||
+    result.stdout.trim() !== "github-publication-v1"
+  ) {
+    throw new Error(
+      "postil does not provide the exact github-publication-v1 capability",
+    );
   }
 }
 
-/** Verify the no-mutation plan option on the exact CLI in a managed image. */
+/** Verify the exact pure publication-plan capability in a managed image. */
 export async function verifyPublicationControllerCliCapability(
   binary: string,
 ): Promise<void> {
-  assertPublicationControllerPlanProbe(
-    await run(binary, [...PUBLICATION_CONTROLLER_PLAN_PROBE]),
+  assertPublicationControllerCapabilityProbe(
+    await run(binary, [...PUBLICATION_CONTROLLER_CAPABILITY_PROBE]),
   );
 }
 

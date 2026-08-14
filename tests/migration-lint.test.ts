@@ -454,6 +454,39 @@ describe("migration lint", () => {
     expect(guard).toContain("USING ERRCODE = 'check_violation'");
   });
 
+  test("fences legacy review claims at the database boundary", async () => {
+    const migration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0056_publication_controller_queue_fence.sql",
+      ),
+      "utf8",
+    );
+    const claimStart = migration.indexOf(
+      'AND OLD."status" = \'queued\'\n    AND NEW."status" = \'running\'',
+    );
+    const claim = migration.slice(claimStart);
+
+    expect(migration.startsWith("SET LOCAL lock_timeout = '5s';")).toBe(true);
+    expect(migration).toContain(
+      'CREATE OR REPLACE FUNCTION "stage_unactivated_release_job"()',
+    );
+    expect(migration).toContain("publication-controller-dark:%");
+    expect(migration).toContain("publication-controller-release:%");
+    expect(migration).toContain("_postilPublicationControllerFence");
+    expect(migration).toContain("_postilPublicationControllerRunAfter");
+    expect(migration).toContain(
+      "hashtextextended('postil:publication-controller-release', 0)",
+    );
+    expect(claimStart).toBeGreaterThanOrEqual(0);
+    expect(claim).toContain('IF NEW."kind" = \'review\' THEN');
+    expect(claim).toContain('NEW."status" := \'queued\';');
+    expect(claim).toContain("NEW.\"attempts\" := OLD.\"attempts\"");
+    expect(claim).toContain("NEW.\"run_after\" := 'infinity'::timestamptz");
+  });
+
   test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
     const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"), "utf8");
 
@@ -827,6 +860,7 @@ describe("migration lint", () => {
       "0051_finding_reconciliation_trigger.sql",
       "0052_finding_lifecycle_observations.sql",
       "0053_own_finding_lifecycle_observations.sql",
+      "0056_publication_controller_queue_fence.sql",
     ]) {
       const migration = await readFile(
         join(import.meta.dir, "..", "drizzle", file),

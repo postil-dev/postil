@@ -24,6 +24,10 @@ const PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX =
   "publication-controller-cli-verified:";
 const PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER =
   "_postilPublicationControllerReleaseSha";
+const PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER =
+  "_postilPublicationControllerFence";
+const PUBLICATION_CONTROLLER_QUEUE_FENCE_RUN_AFTER =
+  "_postilPublicationControllerRunAfter";
 export const PUBLICATION_CONTROLLER_LOCK =
   "postil:publication-controller-release";
 export const QUEUE_LOCK_GENERATION_CAPABILITY = "queue-lock-generation-v1";
@@ -459,6 +463,28 @@ export async function publicationControllerReleaseActivated(
   return result.rows[0]?.active === true;
 }
 
+/** Return the exact active capability that a durable controller owns. */
+export async function activePublicationControllerRelease(
+  pool: Pick<Pool, "query">,
+): Promise<string | null> {
+  const result = await pool.query<{ name: string }>(
+    `SELECT name
+       FROM deployment_capabilities
+      WHERE name LIKE $1
+      ORDER BY name
+      LIMIT 2`,
+    [`${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`],
+  );
+  if (result.rows.length > 1) {
+    throw new Error("multiple publication-controller releases are active");
+  }
+  const name = result.rows[0]?.name;
+  if (!name) return null;
+  return normalizedReleaseSha(
+    name.slice(PUBLICATION_CONTROLLER_CAPABILITY_PREFIX.length),
+  );
+}
+
 /**
  * A release-scoped dark or active controller capability prevents the legacy
  * review runner from becoming an independent publication authority.
@@ -492,11 +518,7 @@ export async function recordPublicationControllerCliPreflight(
   const verifiedCapability = publicationControllerCliVerifiedCapability(normalized);
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    await client.query(
-      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-      [PUBLICATION_CONTROLLER_LOCK],
-    );
+    await beginPublicationControllerAuthorityTransition(client);
     const dark = await client.query<{ dark: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM deployment_capabilities WHERE name = $1
@@ -538,11 +560,7 @@ export async function activatePublicationControllerRelease(
   const verifiedCapability = publicationControllerCliVerifiedCapability(normalized);
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    await client.query(
-      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-      [PUBLICATION_CONTROLLER_LOCK],
-    );
+    await beginPublicationControllerAuthorityTransition(client);
     const alreadyActive = await client.query<{ active: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM deployment_capabilities WHERE name = $1
@@ -599,11 +617,18 @@ export async function activatePublicationControllerRelease(
     );
     const adopted = await client.query(
       `UPDATE jobs
-          SET payload = payload - $1 || jsonb_build_object($1::text, $2::text)
+          SET payload = payload - $1 || jsonb_build_object($1::text, $3::text)
         WHERE kind = 'review'
           AND status = 'queued'
-          AND payload ? $1`,
-      [PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER, normalized],
+          AND (
+            payload ? $1
+            OR payload->>$2 = 'true'
+          )`,
+      [
+        PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER,
+        PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER,
+        normalized,
+      ],
     );
     await client.query(
       "DELETE FROM deployment_capabilities WHERE name LIKE $1",
@@ -628,11 +653,7 @@ export async function deactivatePublicationControllerRelease(
   const darkCapability = publicationControllerDarkCapability(normalized);
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    await client.query(
-      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-      [PUBLICATION_CONTROLLER_LOCK],
-    );
+    await beginPublicationControllerAuthorityTransition(client);
     const removed = await client.query(
       "DELETE FROM deployment_capabilities WHERE name LIKE $1",
       [`${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`],
@@ -646,6 +667,21 @@ export async function deactivatePublicationControllerRelease(
        VALUES ($1)
        ON CONFLICT (name) DO NOTHING`,
       [darkCapability],
+    );
+    await client.query(
+      `UPDATE jobs
+          SET payload = payload
+        WHERE kind = 'review'
+          AND status = 'queued'
+          AND (
+            payload->>$1 IS DISTINCT FROM 'true'
+            OR jsonb_typeof(payload->$2) IS DISTINCT FROM 'string'
+            OR run_after IS DISTINCT FROM 'infinity'::timestamptz
+          )`,
+      [
+        PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER,
+        PUBLICATION_CONTROLLER_QUEUE_FENCE_RUN_AFTER,
+      ],
     );
     await client.query("COMMIT");
     return (removed.rowCount ?? 0) > 0;
@@ -667,6 +703,10 @@ export async function deferLegacyReviewForPublicationController(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [QUEUE_LOCK_GENERATION_LOCK],
+    );
     await client.query(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       [PUBLICATION_CONTROLLER_LOCK],
@@ -711,6 +751,48 @@ export async function deferLegacyReviewForPublicationController(
     throw error;
   } finally {
     client.release();
+  }
+}
+
+async function beginPublicationControllerAuthorityTransition(
+  client: PoolClient,
+): Promise<void> {
+  await client.query("BEGIN");
+  await client.query(
+    "SELECT set_config('lock_timeout', $1, true)",
+    [`${QUEUE_ROLLOUT_LOCK_TIMEOUT_MS}ms`],
+  );
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    [QUEUE_LOCK_GENERATION_LOCK],
+  );
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    [PUBLICATION_CONTROLLER_LOCK],
+  );
+  const quiesce = await client.query<{ queue_locked: boolean; running: string }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM deployment_capabilities
+        WHERE name = $1
+     ) AS queue_locked,
+     (
+       SELECT count(*)::text
+         FROM jobs
+        WHERE kind = 'review' AND status = 'running'
+     ) AS running`,
+    [QUEUE_LOCK_GENERATION_CAPABILITY],
+  );
+  if (quiesce.rows[0]?.queue_locked) {
+    throw new Error(
+      "publication-controller authority transition requires queue-lock-generation quiescence",
+    );
+  }
+  const running = Number(quiesce.rows[0]?.running ?? 0);
+  if (running > 0) {
+    throw new Error(
+      `${running} legacy review claim(s) are running before publication-controller authority transition`,
+    );
   }
 }
 

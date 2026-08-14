@@ -11,9 +11,9 @@ import {
 
 import {
   activatePublicationControllerRelease,
-  activateQueueLockGeneration,
   deactivatePublicationControllerRelease,
   deferLegacyReviewForPublicationController,
+  activePublicationControllerRelease,
   publicationControllerLegacyReviewFenced,
   publicationControllerReleaseActivated,
   recordPublicationControllerCliPreflight,
@@ -42,12 +42,10 @@ describeDb("publication-controller release rollout", () => {
     }
     await migration.end();
     pool = database.pool;
-    await activateQueueLockGeneration(pool);
   }, 30_000);
 
   afterEach(async () => {
     await pool.query("TRUNCATE jobs, deployment_capabilities RESTART IDENTITY");
-    await activateQueueLockGeneration(pool);
   });
 
   afterAll(async () => {
@@ -73,6 +71,7 @@ describeDb("publication-controller release rollout", () => {
       adopted: 0,
     });
     expect(await publicationControllerReleaseActivated(pool, releaseA)).toBe(true);
+    expect(await activePublicationControllerRelease(pool)).toBe(releaseA);
     expect(await publicationControllerLegacyReviewFenced(pool, releaseA)).toBe(true);
     expect(await activatePublicationControllerRelease(pool, releaseA)).toEqual({
       activated: false,
@@ -87,6 +86,7 @@ describeDb("publication-controller release rollout", () => {
     expect(await deactivatePublicationControllerRelease(pool, releaseB)).toBe(true);
     expect(await publicationControllerReleaseActivated(pool, releaseA)).toBe(false);
     expect(await publicationControllerReleaseActivated(pool, releaseB)).toBe(false);
+    expect(await activePublicationControllerRelease(pool)).toBe(null);
     expect(await publicationControllerLegacyReviewFenced(pool, releaseB)).toBe(true);
   });
 
@@ -147,6 +147,109 @@ describeDb("publication-controller release rollout", () => {
       held: true,
       locked_by: null,
       marker: releaseA,
+    });
+  });
+
+  test("authority transitions require queue quiescence and no legacy review claims", async () => {
+    await pool.query(
+      "INSERT INTO deployment_capabilities (name) VALUES ('queue-lock-generation-v1')",
+    );
+    await expect(
+      deactivatePublicationControllerRelease(pool, releaseA),
+    ).rejects.toThrow("queue-lock-generation quiescence");
+
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = 'queue-lock-generation-v1'",
+    );
+    await deactivatePublicationControllerRelease(pool, releaseA);
+    await pool.query(
+      "INSERT INTO deployment_capabilities (name) VALUES ('queue-lock-generation-v1')",
+    );
+    await expect(
+      recordPublicationControllerCliPreflight(pool, releaseA),
+    ).rejects.toThrow("queue-lock-generation quiescence");
+    await expect(
+      activatePublicationControllerRelease(pool, releaseA),
+    ).rejects.toThrow("queue-lock-generation quiescence");
+
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = 'queue-lock-generation-v1'",
+    );
+    await insertRunningReview(pool, "legacy-review-worker");
+    await expect(
+      deactivatePublicationControllerRelease(pool, releaseA),
+    ).rejects.toThrow("legacy review claim");
+    await expect(
+      recordPublicationControllerCliPreflight(pool, releaseA),
+    ).rejects.toThrow("legacy review claim");
+    await expect(
+      activatePublicationControllerRelease(pool, releaseA),
+    ).rejects.toThrow("legacy review claim");
+  });
+
+  test("a pre-controller consumer cannot claim or release a review while dark", async () => {
+    const originalRunAfter = "2040-01-02T03:04:05.000Z";
+    const inserted = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, run_after)
+       VALUES (
+         'review',
+         '{"githubRepoId":1,"prNumber":1,"headSha":"head"}'::jsonb,
+         'queued',
+         $1::timestamptz
+       )
+       RETURNING id`,
+      [originalRunAfter],
+    );
+    const id = Number(inserted.rows[0]!.id);
+
+    await deactivatePublicationControllerRelease(pool, releaseA);
+
+    const claimed = await pool.query<{
+      status: string;
+      attempts: number;
+      held: boolean;
+    }>(
+      `UPDATE jobs
+          SET status = 'running', attempts = attempts + 1,
+              locked_at = clock_timestamp(), locked_by = 'pre-controller',
+              lock_generation = lock_generation + 1
+        WHERE id = $1
+       RETURNING status, attempts,
+                 run_after = 'infinity'::timestamptz AS held`,
+      [id],
+    );
+    expect(claimed.rows[0]).toEqual({
+      status: "queued",
+      attempts: 0,
+      held: true,
+    });
+
+    await pool.query(
+      `UPDATE jobs
+          SET run_after = clock_timestamp()
+        WHERE id = $1`,
+      [id],
+    );
+    const held = await pool.query<{
+      status: string;
+      held: boolean;
+      preserved_original_run_after: boolean;
+      future_controller_visible: boolean;
+    }>(
+      `SELECT status,
+              run_after = 'infinity'::timestamptz AS held,
+              (payload->>'_postilPublicationControllerRunAfter')::timestamptz
+                = $2::timestamptz AS preserved_original_run_after,
+              payload->>'_postilPublicationControllerFence' = 'true'
+                AS future_controller_visible
+         FROM jobs WHERE id = $1`,
+      [id, originalRunAfter],
+    );
+    expect(held.rows[0]).toEqual({
+      status: "queued",
+      held: true,
+      preserved_original_run_after: true,
+      future_controller_visible: true,
     });
   });
 });
