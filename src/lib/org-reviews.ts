@@ -2,8 +2,10 @@ import { desc, eq, sql, type SQL } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
-import { computeEffectiveGate } from "@/lib/envelope";
-import { getActiveApprovalIds, getActiveDismissalIds, parseEnvelopeForApprovals } from "@/lib/finding-approvals";
+import {
+  getReviewApprovalState,
+  parseEnvelopeForApprovals,
+} from "@/lib/finding-approvals";
 import {
   reviewDisplayStatus,
   type ReviewDisplayStatus,
@@ -51,15 +53,23 @@ export async function getOrgReviewRows(
     .select({
       id: schema.reviews.id,
       publicId: schema.reviews.publicId,
+      repositoryId: schema.reviews.repositoryId,
       prNumber: schema.reviews.prNumber,
+      headSha: schema.reviews.headSha,
       status: schema.reviews.status,
       errorMessage: schema.reviews.errorMessage,
       silent: schema.reviews.silent,
+      engineGateFailing: schema.reviews.engineGateFailing,
       gateFailing: schema.reviews.gateFailing,
+      gateCheckRunId: schema.reviews.gateCheckRunId,
       envelope: schema.reviews.envelope,
       startedAt: schema.reviews.startedAt,
       finishedAt: schema.reviews.finishedAt,
       repoFullName: schema.repositories.fullName,
+      githubRepoId: schema.repositories.githubRepoId,
+      orgId: schema.installations.orgId,
+      githubInstallationId: schema.installations.githubInstallationId,
+      installationAccountType: schema.installations.accountType,
       triggerSource: schema.reviews.triggerSource,
     })
     .from(schema.reviews)
@@ -81,10 +91,39 @@ export async function getOrgReviewRows(
   // envelope (finding bodies, summaries) out of the RSC payload and the
   // polling responses.
   return Promise.all(
-    rows.map(async ({ envelope: rawEnvelope, errorMessage, ...row }) => {
+    rows.map(async ({
+      envelope: rawEnvelope,
+      errorMessage,
+      repositoryId,
+      headSha,
+      engineGateFailing,
+      gateCheckRunId,
+      githubRepoId,
+      orgId: sourceOrgId,
+      githubInstallationId,
+      installationAccountType,
+      ...row
+    }) => {
       const envelope = parseEnvelopeForApprovals(rawEnvelope);
-      const approvalIds = await getActiveApprovalIds(db, row.id);
-      const dismissalIds = await getActiveDismissalIds(db, row.id);
+      const approvalState = envelope
+        ? await getReviewApprovalState(db, {
+            id: row.id,
+            publicId: row.publicId,
+            repositoryId,
+            prNumber: row.prNumber,
+            headSha,
+            status: row.status,
+            envelope,
+            engineGateFailing,
+            gateFailing: row.gateFailing,
+            gateCheckRunId,
+            repoFullName: row.repoFullName,
+            orgId: sourceOrgId!,
+            githubInstallationId,
+            githubRepoId,
+            installationAccountType,
+          })
+        : null;
       const counts = publicationCounts.get(row.id) ?? null;
       const activePublished = counts
         ? counts.inline +
@@ -101,9 +140,7 @@ export async function getOrgReviewRows(
         gateFailing:
           row.status === "failed"
             ? row.gateFailing
-            : envelope
-              ? computeEffectiveGate(envelope, approvalIds, dismissalIds).failing
-              : row.gateFailing,
+            : approvalState?.effectiveGate.failing ?? row.gateFailing,
         findingsCount: counts && counts.unknown === 0 ? activePublished : null,
         modelUsed: envelope?.modelUsed ?? null,
         startedAt: row.startedAt?.toISOString() ?? null,

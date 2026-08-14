@@ -253,7 +253,7 @@ describeDb("webhook handler behaviour", () => {
             user: { id: 501, login: "admin" },
           });
         }
-        if (!url.includes("/orgs/octo/memberships/admin")) {
+        if (!url.includes(`/orgs/octo/memberships/${liveMembershipUserLogin}`)) {
           throw new Error(`unexpected GitHub request: ${url}`);
         }
         membershipFetchCount += 1;
@@ -506,6 +506,8 @@ describeDb("webhook handler behaviour", () => {
     body = "@postil approve kind-blocker -- reviewed",
     privateRepository = false,
     repoFullName = "octo/approvals",
+    actor = { id: 501, login: "admin" },
+    commentId = 123456,
   ): Promise<Response> {
     return post(
       "issue_comment",
@@ -513,12 +515,12 @@ describeDb("webhook handler behaviour", () => {
         action: "created",
         installation: { id: 700 },
         repository: { id: 7000, full_name: repoFullName, private: privateRepository },
-        sender: { id: 501, login: "admin", type: "User" },
+        sender: { ...actor, type: "User" },
         comment: {
-          id: 123456,
-          html_url: `https://github.com/${repoFullName}/pull/9#issuecomment-123456`,
+          id: commentId,
+          html_url: `https://github.com/${repoFullName}/pull/9#issuecomment-${commentId}`,
           body,
-          user: { id: 501, login: "admin", type: "User" },
+          user: { ...actor, type: "User" },
           author_association: "MEMBER",
         },
         issue: { number: 9, pull_request: {} },
@@ -2000,11 +2002,16 @@ describeDb("webhook handler behaviour", () => {
     expect(pullRequestReviewContextFetchCount).toBe(0);
   });
 
-  test("dismissal records its audit tag, flags author self-dismissal, and clears severity blocking", async () => {
+  test("author dismissal of a risk finding awaits independent admin acknowledgement", async () => {
     const orgId = await seedOrg();
+    await pool.query(
+      "INSERT INTO org_settings (org_id, gate_enabled) VALUES ($1, true)",
+      [orgId],
+    );
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedUser(501, "admin", orgId, "admin");
+    await seedUser(502, "reviewer", orgId, "admin");
     const reviewId = await seedCompletedApprovalReview(repoId, approvalEnvelope({
       findings: [{
         id: "kind-blocker", path: "src/app.ts", line: 10, severity: "error", kind: "risk",
@@ -2022,9 +2029,52 @@ describeDb("webhook handler behaviour", () => {
       verb: "dismiss", reason_tag: "false-positive", author_self_dismissal: true,
       finding_model: "deepseek/deepseek-v4-pro",
     }]);
+    expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(true);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "awaiting independent admin acknowledgement",
+    );
+
+    expect((await approvalComment(
+      "dismissal-author-approval",
+      "@postil approve kind-blocker -- reviewed",
+      false,
+      "octo/approvals",
+      { id: 501, login: "admin" },
+      123457,
+    )).status).toBe(200);
+    expect((await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1 AND verb = 'approve'",
+      [reviewId],
+    )).rows[0]!.c).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "different organization admin",
+    );
+    expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(true);
+
+    liveMembershipUserId = 502;
+    liveMembershipUserLogin = "reviewer";
+    expect((await approvalComment(
+      "dismissal-independent-approval",
+      "@postil approve kind-blocker -- reviewed",
+      false,
+      "octo/approvals",
+      { id: 502, login: "reviewer" },
+      123458,
+    )).status).toBe(200);
+    const decisions = await pool.query<{
+      verb: string; actor_github_id: string; active: boolean;
+    }>(
+      `SELECT verb, actor_github_id, revoked_at IS NULL AS active
+       FROM finding_approvals WHERE review_id = $1 ORDER BY verb`,
+      [reviewId],
+    );
+    expect(decisions.rows).toEqual([
+      { verb: "approve", actor_github_id: "502", active: true },
+      { verb: "dismiss", actor_github_id: "501", active: false },
+    ]);
     expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(false);
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
-      "The pull request author dismissed this finding.",
+      "Independent acknowledgement recorded by @reviewer",
     );
   });
 

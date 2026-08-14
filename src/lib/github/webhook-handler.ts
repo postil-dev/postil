@@ -47,6 +47,7 @@ import {
   lockActiveReviewState,
   lockReviewApprovalState,
   loadLatestCompletedReviewForPr,
+  revokeFindingApproval,
   resolveApprovableFindingId,
   resolveDismissibleFindingId,
   updateStoredEffectiveGate,
@@ -2009,7 +2010,18 @@ async function handleFindingDecisionCommand(
     const finding = verb === "dismiss"
       ? findDismissibleFindingState(state, findingId)
       : findKindBlockingState(state, findingId);
-    if (!finding || (verb === "dismiss" ? finding.activeDismissal || finding.activeApproval : !finding.blocking || finding.activeApproval || finding.activeDismissal || finding.latestApproval?.revokedAt)) {
+    const acknowledgingAuthorDismissal = Boolean(
+      verb === "approve" && finding?.awaitingIndependentAck,
+    );
+    if (
+      !finding ||
+      (verb === "dismiss"
+        ? finding.activeDismissal || finding.activeApproval
+        : !finding.blocking ||
+          finding.activeApproval ||
+          (!acknowledgingAuthorDismissal &&
+            (finding.activeDismissal || finding.latestApproval?.revokedAt)))
+    ) {
       await queueWebhookComment(
         payload,
         verb === "dismiss"
@@ -2020,7 +2032,19 @@ async function handleFindingDecisionCommand(
       );
       return true;
     }
-    if (verb === "approve" && finding.severityBlocking) {
+    if (
+      acknowledgingAuthorDismissal &&
+      finding.activeDismissal?.actorGithubId === actor.githubId
+    ) {
+      await queueWebhookComment(
+        payload,
+        "Approval rejected: the pull request author's dismissal requires acknowledgement from a different organization admin.",
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    if (verb === "approve" && finding.severityBlocking && !acknowledgingAuthorDismissal) {
       await queueWebhookComment(
         payload,
         "Approval rejected: this finding is also severity-blocking, and approvals only clear kind-based blocks.",
@@ -2043,13 +2067,39 @@ async function handleFindingDecisionCommand(
       const lockedFinding = verb === "dismiss"
         ? findDismissibleFindingState(lockedState, findingId)
         : findKindBlockingState(lockedState, findingId);
+      const lockedAcknowledgement = Boolean(
+        verb === "approve" && lockedFinding?.awaitingIndependentAck,
+      );
       if (
         !lockedFinding ||
         (verb === "dismiss"
           ? Boolean(lockedFinding.activeDismissal || lockedFinding.activeApproval)
-          : !lockedFinding.blocking || lockedFinding.activeApproval || lockedFinding.activeDismissal || lockedFinding.latestApproval?.revokedAt || lockedFinding.severityBlocking)
+          : !lockedFinding.blocking ||
+            lockedFinding.activeApproval ||
+            (!lockedAcknowledgement &&
+              (lockedFinding.activeDismissal ||
+                lockedFinding.latestApproval?.revokedAt ||
+                lockedFinding.severityBlocking)))
       ) {
         throw new Error("the finding changed while the approval was being recorded");
+      }
+      if (
+        lockedAcknowledgement &&
+        lockedFinding.activeDismissal?.actorGithubId === actor.githubId
+      ) {
+        throw new Error("the author's dismissal requires an independent admin");
+      }
+      if (lockedAcknowledgement) {
+        const revokedDismissalId = await revokeFindingApproval(
+          tx,
+          review.id,
+          findingId,
+          actor.userId,
+          "dismiss",
+        );
+        if (!revokedDismissalId) {
+          throw new Error("the finding changed while the approval was being recorded");
+        }
       }
       await insertFindingApproval(tx, {
         reviewId: review.id,
@@ -2096,8 +2146,14 @@ async function handleFindingDecisionCommand(
         sourceHeadSha: review.headSha,
         sourceDeliveryId,
         body: verb === "dismiss"
-          ? `Dismissal recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}: ${dismissal!.reasonTag}. ${authorGithubId === Number(actor.githubId) ? "The pull request author dismissed this finding. " : ""}The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}. You may now resolve this thread.`
-          : `Approval recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
+          ? authorGithubId === Number(actor.githubId) &&
+            (lockedFinding.finding.kind === "risk" ||
+              lockedFinding.finding.kind === "humanEscalation")
+            ? `Dismissal recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}: ${dismissal!.reasonTag}. This finding is awaiting independent admin acknowledgement, so it remains blocking. A different organization admin must acknowledge the pull request author's dismissal; leave this thread open.`
+            : `Dismissal recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}: ${dismissal!.reasonTag}. ${authorGithubId === Number(actor.githubId) ? "The pull request author dismissed this finding. " : ""}The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}. You may now resolve this thread.`
+          : lockedAcknowledgement
+            ? `Independent acknowledgement recorded by @${actor.login} for the pull request author's dismissal of finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`
+            : `Approval recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
       });
     });
   } catch (err) {
@@ -2114,6 +2170,18 @@ async function handleFindingDecisionCommand(
       await queueWebhookComment(
         payload,
         `${decisionLabel} rejected: a newer review exists for this pull request.`,
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    if (
+      err instanceof Error &&
+      err.message === "the author's dismissal requires an independent admin"
+    ) {
+      await queueWebhookComment(
+        payload,
+        "Approval rejected: the pull request author's dismissal requires acknowledgement from a different organization admin.",
         sourceDeliveryId,
         triggerFollowupDrain,
       );

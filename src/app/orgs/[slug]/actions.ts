@@ -1020,14 +1020,23 @@ export async function approveFinding(formData: FormData): Promise<void> {
   const publicId = String(formData.get("publicId") ?? "");
   const findingId = String(formData.get("findingId") ?? "").trim();
   const rationale = String(formData.get("rationale") ?? "");
-  const { orgId, userId } = await requireAdmin(slug);
+  const { orgId } = await requireAdmin(slug);
   const db = getDb();
   const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
   if (!review) throw new Error("review not found in this organization");
   await assertDashboardReviewApprovable(review);
-  await requireCurrentReviewHead(review);
+  const token = await requireCurrentReviewHead(review);
   const user = await getSessionUser();
   if (!user?.githubId) throw new Error("user has no github id");
+  const actor = await loadLiveApprovalActor(
+    review,
+    { id: Number(user.githubId), login: user.login },
+    review.repoFullName,
+    token,
+  );
+  if (!actor || actor.role !== "admin") {
+    throw new Error("GitHub could not verify this account as an active organization admin");
+  }
   await db.transaction(async (tx) => {
     await lockActiveReviewState(tx, review);
     await lockReviewApprovalState(tx, review.id);
@@ -1039,20 +1048,47 @@ export async function approveFinding(formData: FormData): Promise<void> {
     }
     const state = await getReviewApprovalState(tx, review);
     const finding = findKindBlockingState(state, findingId);
-    if (!finding || !finding.blocking || finding.activeApproval || finding.activeDismissal || finding.latestApproval?.revokedAt) {
+    const acknowledgingAuthorDismissal = Boolean(finding?.awaitingIndependentAck);
+    if (
+      !finding ||
+      !finding.blocking ||
+      finding.activeApproval ||
+      (!acknowledgingAuthorDismissal &&
+        (finding.activeDismissal || finding.latestApproval?.revokedAt))
+    ) {
       throw new Error("that finding is absent, already approved, revoked, or no longer kind-blocking");
     }
-    if (finding.severityBlocking) {
+    if (
+      acknowledgingAuthorDismissal &&
+      finding.activeDismissal?.actorGithubId === actor.githubId
+    ) {
+      throw new Error(
+        "the pull request author's dismissal requires acknowledgement from a different organization admin",
+      );
+    }
+    if (finding.severityBlocking && !acknowledgingAuthorDismissal) {
       throw new Error("this finding is also severity-blocking, and approvals only clear kind-based blocks");
+    }
+    if (acknowledgingAuthorDismissal) {
+      const revokedDismissalId = await revokeFindingApproval(
+        tx,
+        review.id,
+        findingId,
+        actor.userId,
+        "dismiss",
+      );
+      if (!revokedDismissalId) {
+        throw new Error("the finding changed while the acknowledgement was being recorded");
+      }
     }
     await insertFindingApproval(tx, {
       reviewId: review.id,
       findingId,
       actor: {
-        userId,
-        githubId: String(user.githubId),
-        login: user.login,
-        role: "admin",
+        userId: actor.userId,
+        githubId: actor.githubId,
+        login: actor.login,
+        role: actor.role,
       },
       rationale,
       source: "dashboard",

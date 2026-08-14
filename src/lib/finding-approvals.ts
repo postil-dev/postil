@@ -78,6 +78,9 @@ export interface FindingApprovalState {
   severityBlocking: boolean;
   blocking: boolean;
   dismissible: boolean;
+  authorDismissalRequiresAck: boolean;
+  awaitingIndependentAck: boolean;
+  independentlyAcknowledged: boolean;
 }
 
 export interface ReviewApprovalState {
@@ -197,20 +200,44 @@ export async function getReviewApprovalState(
       activeByFinding.set(approval.findingId, active);
     }
   }
-  const approvableIds = new Set(
+  const findingById = new Map(
     (envelope?.findings ?? []).flatMap((finding) => {
       const findingId = findingStableId(finding);
-      return findingId && qualifiesHumanEscalation(finding) ? [findingId] : [];
+      return findingId ? [[findingId, finding] as const] : [];
     }),
   );
   const activeIds = new Set(
-    Array.from(activeByFinding.entries()).flatMap(([findingId, rows]) =>
-      rows.has("approve") && approvableIds.has(findingId) ? [findingId] : [],
-    ),
+    Array.from(activeByFinding.entries()).flatMap(([findingId, rows]) => {
+      const finding = findingById.get(findingId);
+      const approval = rows.get("approve") ?? null;
+      const latestDismissal = latestByFinding.get(findingId)?.get("dismiss") ?? null;
+      if (!finding || !approval) return [];
+      const followsAuthorDismissal = authorSelfDismissalRequiresAck(
+        finding,
+        latestDismissal,
+      );
+      if (followsAuthorDismissal) {
+        return independentAuthorDismissalAcknowledgement(
+          finding,
+          approval,
+          latestDismissal,
+        )
+          ? [findingId]
+          : [];
+      }
+      return qualifiesHumanEscalation(finding) ? [findingId] : [];
+    }),
   );
   const dismissedIds = new Set(
     Array.from(activeByFinding.entries()).flatMap(([findingId, rows]) =>
-      rows.has("dismiss") ? [findingId] : [],
+      effectiveDismissal(
+        findingById.get(findingId),
+        rows.get("approve") ?? null,
+        rows.get("dismiss") ?? null,
+        latestByFinding.get(findingId)?.get("dismiss") ?? null,
+      )
+        ? [findingId]
+        : [],
     ),
   );
   const effectiveGate = computeEffectiveGate(envelope, activeIds, dismissedIds);
@@ -229,25 +256,86 @@ export async function getReviewApprovalState(
       if (isOperationalFinding(finding)) return null;
       const active = activeByFinding.get(findingId);
       const latest = latestByFinding.get(findingId);
+      const activeApproval = active?.get("approve") ?? null;
+      const activeDismissal = active?.get("dismiss") ?? null;
+      const latestDismissal = latest?.get("dismiss") ?? null;
+      const independentlyAcknowledged = independentAuthorDismissalAcknowledgement(
+        finding,
+        activeApproval,
+        latestDismissal,
+      );
+      const authorDismissalRequiresAck =
+        authorSelfDismissalRequiresAck(finding, activeDismissal) ||
+        Boolean(
+          activeApproval && authorSelfDismissalRequiresAck(finding, latestDismissal),
+        );
       const state: FindingApprovalState = {
         finding,
         findingId,
-        activeApproval: active?.get("approve") ?? null,
+        activeApproval,
         latestApproval: latest?.get("approve") ?? null,
-        activeDismissal: active?.get("dismiss") ?? null,
-        latestDismissal: latest?.get("dismiss") ?? null,
+        activeDismissal,
+        latestDismissal,
         kindBlocking: blockState.kindBlocking,
         severityBlocking: blockState.severityBlocking,
         blocking: effectiveGate.blockers.some((blocker) => blocker.findingId === findingId),
         dismissible: true,
+        authorDismissalRequiresAck,
+        awaitingIndependentAck:
+          authorDismissalRequiresAck && !independentlyAcknowledged,
+        independentlyAcknowledged,
       };
       return state;
     })
     .filter((state): state is FindingApprovalState => state !== null);
-  const findingStates = dismissalFindingStates.filter((state) =>
-    state.kindBlocking && qualifiesHumanEscalation(state.finding),
+  const findingStates = dismissalFindingStates.filter(
+    (state) =>
+      (state.kindBlocking && qualifiesHumanEscalation(state.finding)) ||
+      state.authorDismissalRequiresAck,
   );
   return { review, effectiveGate, findingStates, dismissalFindingStates };
+}
+
+function authorSelfDismissalRequiresAck(
+  finding: Finding,
+  dismissal: ApprovalRow | null | undefined,
+): boolean {
+  return Boolean(
+    dismissal?.verb === "dismiss" &&
+      dismissal.authorSelfDismissal &&
+      (finding.kind === "risk" || finding.kind === "humanEscalation"),
+  );
+}
+
+function effectiveDismissal(
+  finding: Finding | undefined,
+  approval: ApprovalRow | null,
+  activeDismissal: ApprovalRow | null,
+  latestDismissal: ApprovalRow | null,
+): boolean {
+  if (!finding) return false;
+  if (activeDismissal) {
+    return !authorSelfDismissalRequiresAck(finding, activeDismissal);
+  }
+  return independentAuthorDismissalAcknowledgement(
+    finding,
+    approval,
+    latestDismissal,
+  );
+}
+
+function independentAuthorDismissalAcknowledgement(
+  finding: Finding,
+  approval: ApprovalRow | null,
+  dismissal: ApprovalRow | null,
+): boolean {
+  return Boolean(
+    approval &&
+      dismissal &&
+      authorSelfDismissalRequiresAck(finding, dismissal) &&
+      approval.actorGithubId !== dismissal.actorGithubId &&
+      approval.createdAt >= dismissal.createdAt,
+  );
 }
 
 export async function enqueueGateStateSync(
@@ -687,10 +775,15 @@ export function formatDismissedGateFindings(
   findingStates: FindingApprovalState[] = [],
 ): string {
   const dismissed = findingStates
-    .filter((finding) => finding.activeDismissal)
+    .filter((finding) => finding.activeDismissal || finding.independentlyAcknowledged)
     .map((finding) => {
+      if (finding.independentlyAcknowledged) {
+        const dismissal = finding.latestDismissal!;
+        const acknowledgement = finding.activeApproval!;
+        return `- ${finding.finding.title} ${finding.findingId.slice(0, FINDING_ID_DISPLAY_LENGTH)} (Pull request author dismissal by @${dismissal.actorLoginSnapshot}: ${dismissal.reasonTag}; independently acknowledged by @${acknowledgement.actorLoginSnapshot})`;
+      }
       const dismissal = finding.activeDismissal!;
-      return `- ${finding.finding.title} ${finding.findingId.slice(0, FINDING_ID_DISPLAY_LENGTH)} (Dismissed by @${dismissal.actorLoginSnapshot}: ${dismissal.reasonTag}${dismissal.authorSelfDismissal ? "; pull request author" : ""})`;
+      return `- ${finding.finding.title} ${finding.findingId.slice(0, FINDING_ID_DISPLAY_LENGTH)} (Dismissed by @${dismissal.actorLoginSnapshot}: ${dismissal.reasonTag}${dismissal.authorSelfDismissal ? "; pull request author" : ""}${finding.awaitingIndependentAck ? "; awaiting independent admin acknowledgement" : ""})`;
     });
   return dismissed.length > 0 ? `Dismissed findings:\n${dismissed.join("\n")}` : "";
 }

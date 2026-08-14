@@ -6,6 +6,8 @@ import {
   buildDurationBins,
   ReviewTimeDistribution,
 } from "@/components/review-time-distribution";
+import { FindingApprovalDecisionForm } from "@/app/orgs/[slug]/runs/[publicId]/finding-approval-decision-form";
+import type { FindingApprovalState } from "@/lib/finding-approvals";
 
 describe("dashboard metric details", () => {
   test("builds an inclusive five-bin duration distribution", () => {
@@ -55,9 +57,13 @@ describe("dashboard metric details", () => {
 
   test("keeps suppressed details and admin overrides behind native disclosure controls", () => {
     const source = readFileSync("src/app/orgs/[slug]/runs/[publicId]/page.tsx", "utf8");
+    const approvalSource = readFileSync(
+      "src/app/orgs/[slug]/runs/[publicId]/finding-approval-decision-form.tsx",
+      "utf8",
+    );
     expect(source).toContain("Suppressed findings ({envelope.counts.suppressed})");
     expect(source).toContain("This review predates retained suppression details");
-    expect(source).toContain("Record a commit-scoped override");
+    expect(approvalSource).toContain("Record a commit-scoped override");
     expect(source).toContain('fileComment: "file comment"');
   });
 
@@ -78,6 +84,74 @@ describe("dashboard metric details", () => {
     expect(source).toContain('"Dismissed"');
     expect(source).toContain("Pull request author dismissed this finding");
     expect(source).toContain("@postil dismiss {state.findingId} -- false-positive: rationale");
+  });
+
+  test("shows author dismissals as blocked until a different admin acknowledges them", () => {
+    const source = [
+      "src/app/orgs/[slug]/runs/[publicId]/page.tsx",
+      "src/app/orgs/[slug]/runs/[publicId]/finding-approval-decision-form.tsx",
+    ].map((path) => readFileSync(path, "utf8")).join("\n");
+
+    expect(source).toContain('"Awaiting admin acknowledgement"');
+    expect(source).toContain("A different");
+    expect(source).toContain("organization admin must acknowledge the dismissal");
+    expect(source).toContain("Acknowledge the author's dismissal");
+    expect(source).toContain('state.awaitingIndependentAck ||');
+    expect(source).toContain('"Author dismissal acknowledged"');
+    expect(source).toContain("independently acknowledged the pull");
+    expect(source).toContain("state.activeDismissal?.actorGithubId !== viewerGithubId");
+  });
+
+  test("renders acknowledgement only for an admin other than the dismissal actor", () => {
+    const dismissal = {
+      id: "dismissal",
+      verb: "dismiss",
+      actorGithubId: "100",
+      actorLoginSnapshot: "author-admin",
+      source: "github",
+      reasonTag: "accepted-risk",
+      authorSelfDismissal: true,
+      createdAt: new Date("2026-08-14T00:00:00.000Z"),
+      rationale: "Accepted by the pull request author.",
+    };
+    const state = {
+      finding: {
+        id: "risk-finding",
+        path: "src/app.ts",
+        line: 10,
+        severity: "error",
+        kind: "risk",
+        confidence: 0.9,
+        title: "Policy-sensitive risk",
+        body: "The risk requires an independent decision.",
+      },
+      findingId: "risk-finding",
+      activeApproval: null,
+      latestApproval: null,
+      activeDismissal: dismissal,
+      latestDismissal: dismissal,
+      kindBlocking: false,
+      severityBlocking: true,
+      blocking: true,
+      dismissible: true,
+      authorDismissalRequiresAck: true,
+      awaitingIndependentAck: true,
+      independentlyAcknowledged: false,
+    } as FindingApprovalState;
+    const renderFor = (viewerGithubId: string) =>
+      renderToStaticMarkup(
+        <FindingApprovalDecisionForm
+          slug="acme"
+          publicId="00000000-0000-4000-8000-000000000000"
+          state={state}
+          approvable
+          isAdmin
+          viewerGithubId={viewerGithubId}
+        />,
+      );
+
+    expect(renderFor("100")).not.toContain("Acknowledge dismissal");
+    expect(renderFor("200")).toContain("Acknowledge dismissal");
   });
 
   test("keeps dashboard and run metadata above the AA contrast floor", () => {

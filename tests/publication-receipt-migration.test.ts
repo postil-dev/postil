@@ -11,6 +11,10 @@ import * as schema from "@/lib/db/schema";
 import { GateBadge, ReviewStatusBadge } from "@/components/review-status";
 import type { Envelope, Finding } from "@/lib/envelope";
 import {
+  insertFindingApproval,
+  revokeFindingApproval,
+} from "@/lib/finding-approvals";
+import {
   getOrgReviewRows,
   shippedPublicationStateSql,
 } from "@/lib/org-reviews";
@@ -921,6 +925,97 @@ describeDb("publication receipt migration and lifecycle", () => {
     expect(dashboardRows.find((row) => row.id === secondPublicationReviewId)).toMatchObject({
       findingsCount: 1,
     });
+  });
+
+  test("dashboard rows use the author-dismissal acknowledgement ledger", async () => {
+    const headSha = "8".repeat(40);
+    const policyFinding = {
+      ...finding("author-dismissal"),
+      severity: "error" as const,
+    };
+    const reviewEnvelope: Envelope = {
+      ...envelope({ head: headSha, findings: [policyFinding] }),
+      counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      gate: { failOn: "error", failing: true },
+    };
+    const review = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+        (repository_id, source_org_id, source_installation_id,
+         source_github_installation_id, source_github_repo_id, source_repo_full_name,
+         pr_number, head_sha, base_sha, status, trigger_source, queued_at, started_at)
+       SELECT repository.id, installation.org_id, installation.id,
+              installation.github_installation_id, repository.github_repo_id, repository.full_name,
+              7, $1, $2, 'running', 'unknown', now(), now()
+         FROM repositories repository
+         JOIN installations installation ON installation.id = repository.installation_id
+        WHERE repository.id = $3
+       RETURNING id`,
+      [headSha, "a".repeat(40), repositoryId],
+    );
+    const reviewId = Number(review.rows[0]!.id);
+    reviewIds.push(reviewId);
+    await complete(reviewId, reviewEnvelope);
+    const author = await pool.query<{ id: string }>(
+      "INSERT INTO users (github_id, login) VALUES (2001, 'author-admin') RETURNING id",
+    );
+    const reviewer = await pool.query<{ id: string }>(
+      "INSERT INTO users (github_id, login) VALUES (2002, 'reviewer-admin') RETURNING id",
+    );
+    const binding = {
+      orgId,
+      repositoryId,
+      githubInstallationId: 1002,
+      githubRepoId: 1003,
+      prNumber: 7,
+      headSha,
+    };
+    await insertFindingApproval(db, {
+      reviewId,
+      findingId: policyFinding.id!,
+      actor: {
+        userId: Number(author.rows[0]!.id),
+        githubId: "2001",
+        login: "author-admin",
+        role: "admin",
+      },
+      rationale: "Accepted by the pull request author.",
+      verb: "dismiss",
+      reasonTag: "accepted-risk",
+      authorSelfDismissal: true,
+      finding: policyFinding,
+      findingModel: reviewEnvelope.modelUsed,
+      source: "dashboard",
+      binding,
+    });
+
+    expect(
+      (await getOrgReviewRows(db, orgId, 20)).find((row) => row.id === reviewId),
+    ).toMatchObject({ gateFailing: true });
+
+    await revokeFindingApproval(
+      db,
+      reviewId,
+      policyFinding.id!,
+      Number(reviewer.rows[0]!.id),
+      "dismiss",
+    );
+    await insertFindingApproval(db, {
+      reviewId,
+      findingId: policyFinding.id!,
+      actor: {
+        userId: Number(reviewer.rows[0]!.id),
+        githubId: "2002",
+        login: "reviewer-admin",
+        role: "admin",
+      },
+      rationale: "Independently acknowledged.",
+      source: "dashboard",
+      binding,
+    });
+
+    expect(
+      (await getOrgReviewRows(db, orgId, 20)).find((row) => row.id === reviewId),
+    ).toMatchObject({ gateFailing: false });
   });
 
   test("persists version 2 check-annotation identity and dashboard counts", async () => {

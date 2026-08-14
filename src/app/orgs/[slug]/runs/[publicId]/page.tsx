@@ -38,12 +38,10 @@ import {
 } from "@/lib/review-trigger";
 import type { PublicationState } from "@/lib/publication-receipt";
 
-import {
-  approveFinding,
-  revokeFinding,
-} from "../../actions";
+import { revokeFinding } from "../../actions";
 import { DismissFindingForm } from "./dismiss-finding-form";
 import { RevokeDismissalForm } from "./revoke-dismissal-form";
+import { FindingApprovalDecisionForm } from "./finding-approval-decision-form";
 import { partitionRunFindingsForPresentation } from "./run-presentation";
 import {
   LiveDuration,
@@ -273,14 +271,20 @@ function FindingCard({
 }
 
 function ApprovalStatusBadge({ state }: { state: FindingApprovalState }) {
-  const label = state.activeDismissal
+  const label = state.awaitingIndependentAck
+    ? "Awaiting admin acknowledgement"
+    : state.independentlyAcknowledged
+      ? "Author dismissal acknowledged"
+    : state.activeDismissal
     ? "Dismissed"
     : state.activeApproval
     ? "Decision recorded"
     : state.latestDismissal?.revokedAt || state.latestApproval?.revokedAt
       ? "Decision revoked"
       : "Needs maintainer decision";
-  const classes = state.activeDismissal || state.activeApproval
+  const classes = state.awaitingIndependentAck
+    ? "border-rust/35 bg-rust/5 text-rust"
+    : state.activeDismissal || state.activeApproval
     ? "border-brand-secondary/40 bg-brand-secondary/10 text-[#166657]"
     : state.latestDismissal?.revokedAt || state.latestApproval?.revokedAt
       ? "border-charcoal/20 bg-stone/40 text-charcoal/70"
@@ -299,6 +303,7 @@ function ApprovalPanel({
   states,
   approvableFindingIds,
   isAdmin,
+  viewerGithubId,
 }: {
   slug: string;
   publicId: string;
@@ -306,6 +311,7 @@ function ApprovalPanel({
   states: FindingApprovalState[];
   approvableFindingIds: ReadonlySet<string>;
   isAdmin: boolean;
+  viewerGithubId: string;
 }) {
   if (states.length === 0) return null;
   const hasPendingDecision = states.some((state) => state.blocking);
@@ -397,6 +403,18 @@ function ApprovalPanel({
                   </div>
                 </dl>
               )}
+              {state.awaitingIndependentAck && (
+                <p className="mt-3 rounded-card border border-rust/30 bg-rust/5 px-3 py-2 text-xs text-charcoal/75">
+                  The pull request author dismissed this policy-sensitive finding. A different
+                  organization admin must acknowledge the dismissal before the gate can clear.
+                </p>
+              )}
+              {state.independentlyAcknowledged && state.latestDismissal && state.activeApproval && (
+                <p className="mt-3 rounded-card border border-brand-secondary/35 bg-brand-secondary/10 px-3 py-2 text-xs text-charcoal/75">
+                  @{state.activeApproval.actorLoginSnapshot} independently acknowledged the pull
+                  request author's dismissal by @{state.latestDismissal.actorLoginSnapshot}.
+                </p>
+              )}
               {isAdmin && !state.activeDismissal && !state.activeApproval && (
                 <details name={`finding-decision-${state.findingId}`} className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm">
                   <summary className="cursor-pointer font-medium text-charcoal/75">Dismiss this finding</summary>
@@ -410,32 +428,14 @@ function ApprovalPanel({
                   />
                 </details>
               )}
-              {isAdmin && approvableFindingIds.has(state.findingId) && !state.activeApproval && !state.activeDismissal && !state.latestApproval?.revokedAt && !state.severityBlocking && (
-                <details name={`finding-decision-${state.findingId}`} className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm">
-                  <summary className="cursor-pointer font-medium text-charcoal/75">
-                    Record a commit-scoped override
-                  </summary>
-                  <form action={approveFinding} className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
-                    <input type="hidden" name="slug" value={slug} />
-                    <input type="hidden" name="publicId" value={publicId} />
-                    <input type="hidden" name="findingId" value={state.findingId} />
-                    <label className="grid gap-1 text-xs font-medium text-charcoal/75">
-                      Rationale
-                    <textarea
-                      name="rationale"
-                      required
-                      minLength={1}
-                      rows={2}
-                      className="min-h-16 rounded-md border border-stone bg-ivory px-3 py-2 text-sm text-charcoal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rust"
-                      placeholder="Why no code or configuration change can resolve this decision"
-                    />
-                    </label>
-                    <button className="rounded-md bg-charcoal px-4 py-2 text-sm font-semibold text-ivory hover:bg-rust">
-                      Record override
-                    </button>
-                  </form>
-                </details>
-              )}
+              <FindingApprovalDecisionForm
+                slug={slug}
+                publicId={publicId}
+                state={state}
+                approvable={approvableFindingIds.has(state.findingId)}
+                isAdmin={isAdmin}
+                viewerGithubId={viewerGithubId}
+              />
               {isAdmin && state.activeApproval && (
                 <form action={revokeFinding} className="mt-4">
                   <input type="hidden" name="slug" value={slug} />
@@ -469,7 +469,7 @@ export default async function RunDetailPage({
   const { slug, publicId } = await params;
   if (!UUID_PATTERN.test(publicId)) notFound();
 
-  const { db, org, membership } = await requireOrgMembership(slug);
+  const { db, user, org, membership } = await requireOrgMembership(slug);
 
   // The org filter is part of the lookup: a public id from another org's
   // repository must 404, not leak.
@@ -817,6 +817,7 @@ export default async function RunDetailPage({
               approvalState.findingStates.map((state) => state.findingId),
             )}
             isAdmin={membership.role === "admin"}
+            viewerGithubId={String(user.githubId)}
           />
         )}
 

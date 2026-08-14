@@ -88,6 +88,43 @@ const review: ReviewForApproval = {
   installationAccountType: "Organization",
 };
 
+function findingApproval(
+  overrides: Partial<ApprovalRow> & Pick<ApprovalRow, "findingId" | "verb">,
+): ApprovalRow {
+  return {
+    id: `${overrides.verb}-${overrides.findingId}`,
+    reviewId: review.id,
+    actorUserId: 1,
+    actorGithubId: "author-github-id",
+    actorLoginSnapshot: "author",
+    actorRoleSnapshot: "admin",
+    reasonTag: overrides.verb === "dismiss" ? "accepted-risk" : null,
+    authorSelfDismissal: false,
+    findingKind: overrides.verb === "dismiss" ? "risk" : null,
+    findingSeverity: overrides.verb === "dismiss" ? "warn" : null,
+    findingConfidence: overrides.verb === "dismiss" ? 0.9 : null,
+    findingModel: overrides.verb === "dismiss" ? "example/model" : null,
+    rationale: "test rationale",
+    source: "dashboard",
+    sourceCommentId: null,
+    sourceUrl: null,
+    sourceOrgId: null,
+    sourceRepositoryId: null,
+    sourceGithubInstallationId: null,
+    sourceGithubRepoId: null,
+    sourcePrNumber: null,
+    sourceHeadSha: null,
+    sourceWebhookDeliveryId: null,
+    sourceGithubCommentId: null,
+    sourceCommentKind: null,
+    sourceBindingState: "exact",
+    createdAt: new Date("2026-08-14T00:00:00.000Z"),
+    revokedAt: null,
+    revokedByUserId: null,
+    ...overrides,
+  };
+}
+
 describe("finding approval scope", () => {
   test("offers approval only for calibrated human escalation findings", async () => {
     const state = await getReviewApprovalState(approvalDb([]), review);
@@ -120,24 +157,175 @@ describe("finding approval scope", () => {
   });
 
   test("partitions dismissals from approvals while preserving dismissed finding status", async () => {
-    const dismissal = {
+    const dismissal = findingApproval({
       findingId: "risk-finding",
       verb: "dismiss",
-      revokedAt: null,
-      createdAt: new Date(),
       id: "dismissal",
       reasonTag: "false-positive",
       authorSelfDismissal: true,
       actorLoginSnapshot: "author",
-    } as ApprovalRow;
+    });
     const state = await getReviewApprovalState(approvalDb([dismissal]), review);
 
-    expect(state.findingStates.map((entry) => entry.findingId)).toEqual(["human-finding"]);
+    expect(state.findingStates.map((entry) => entry.findingId)).toEqual([
+      "human-finding",
+      "risk-finding",
+    ]);
     expect(state.dismissalFindingStates.find((entry) => entry.findingId === "risk-finding"))
-      .toMatchObject({ activeApproval: null, activeDismissal: dismissal, blocking: false });
+      .toMatchObject({
+        activeApproval: null,
+        activeDismissal: dismissal,
+        blocking: true,
+        authorDismissalRequiresAck: true,
+        awaitingIndependentAck: true,
+      });
     expect(state.effectiveGate.failing).toBe(true);
     expect(formatRemainingGateBlockers(state.effectiveGate, state.dismissalFindingStates))
-      .toContain("Dismissed by @author: false-positive; pull request author");
+      .toContain(
+        "Dismissed by @author: false-positive; pull request author; awaiting independent admin acknowledgement",
+      );
+  });
+
+  test("keeps author self-dismissals of risk and human escalation blocked", async () => {
+    const dismissals = [
+      findingApproval({
+        findingId: "human-finding",
+        verb: "dismiss",
+        id: "human-dismissal",
+        authorSelfDismissal: true,
+        findingKind: "humanEscalation",
+      }),
+      findingApproval({
+        findingId: "risk-finding",
+        verb: "dismiss",
+        id: "risk-dismissal",
+        authorSelfDismissal: true,
+      }),
+    ];
+    const state = await getReviewApprovalState(approvalDb(dismissals), review);
+
+    expect(state.effectiveGate.failing).toBe(true);
+    expect(state.effectiveGate.blockers.map((entry) => entry.finding.id)).toEqual([
+      "human-finding",
+      "risk-finding",
+    ]);
+    expect(state.findingStates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          findingId: "human-finding",
+          blocking: true,
+          awaitingIndependentAck: true,
+        }),
+        expect.objectContaining({
+          findingId: "risk-finding",
+          blocking: true,
+          awaitingIndependentAck: true,
+        }),
+      ]),
+    );
+  });
+
+  test("requires a different GitHub identity to acknowledge an author dismissal", async () => {
+    const selfDismissal = findingApproval({
+      findingId: "risk-finding",
+      verb: "dismiss",
+      id: "self-dismissal",
+      authorSelfDismissal: true,
+      createdAt: new Date("2026-08-14T00:00:00.000Z"),
+      revokedAt: new Date("2026-08-14T00:01:00.000Z"),
+    });
+    const independentApproval = findingApproval({
+      findingId: "risk-finding",
+      verb: "approve",
+      id: "independent-approval",
+      actorUserId: 2,
+      actorGithubId: "independent-admin-github-id",
+      actorLoginSnapshot: "independent-admin",
+      createdAt: new Date("2026-08-14T00:02:00.000Z"),
+    });
+    const sameIdentityApproval = findingApproval({
+      findingId: "risk-finding",
+      verb: "approve",
+      id: "same-identity-approval",
+      actorGithubId: "author-github-id",
+      createdAt: new Date("2026-08-14T00:02:00.000Z"),
+    });
+    const riskOnlyReview: ReviewForApproval = {
+      ...review,
+      envelope: {
+        ...envelope,
+        findings: [{ ...envelope.findings[1]!, severity: "error" }],
+        counts: { ...envelope.counts, warn: 0, error: 1 },
+        confidenceBuckets: [0, 0, 0, 0, 1],
+      },
+    };
+
+    const independentlyAcknowledged = await getReviewApprovalState(
+      approvalDb([independentApproval, selfDismissal]),
+      riskOnlyReview,
+    );
+    expect(independentlyAcknowledged.effectiveGate.failing).toBe(false);
+    expect(
+      independentlyAcknowledged.dismissalFindingStates.find(
+        (entry) => entry.findingId === "risk-finding",
+      ),
+    ).toMatchObject({
+      activeApproval: independentApproval,
+      activeDismissal: null,
+      blocking: false,
+      awaitingIndependentAck: false,
+      independentlyAcknowledged: true,
+    });
+    expect(formatRemainingGateBlockers(
+      independentlyAcknowledged.effectiveGate,
+      independentlyAcknowledged.dismissalFindingStates,
+    )).toContain(
+      "Pull request author dismissal by @author: accepted-risk; independently acknowledged by @independent-admin",
+    );
+
+    const sameIdentity = await getReviewApprovalState(
+      approvalDb([sameIdentityApproval, selfDismissal]),
+      riskOnlyReview,
+    );
+    expect(sameIdentity.effectiveGate.failing).toBe(true);
+    expect(
+      sameIdentity.dismissalFindingStates.find((entry) => entry.findingId === "risk-finding"),
+    ).toMatchObject({
+      activeApproval: sameIdentityApproval,
+      activeDismissal: null,
+      blocking: true,
+      awaitingIndependentAck: true,
+      independentlyAcknowledged: false,
+    });
+
+    const sameIdentityHumanDismissal = {
+      ...selfDismissal,
+      id: "human-self-dismissal",
+      findingId: "human-finding",
+      findingKind: "humanEscalation",
+    };
+    const sameIdentityHumanApproval = {
+      ...sameIdentityApproval,
+      id: "human-same-identity-approval",
+      findingId: "human-finding",
+    };
+    const sameIdentityHuman = await getReviewApprovalState(
+      approvalDb([sameIdentityHumanApproval, sameIdentityHumanDismissal]),
+      review,
+    );
+    expect(sameIdentityHuman.effectiveGate.blockers.some(
+      (entry) => entry.finding.id === "human-finding",
+    )).toBe(true);
+
+    const revokedApproval = { ...independentApproval, revokedAt: new Date("2026-08-14T00:03:00.000Z") };
+    const afterRevocation = await getReviewApprovalState(
+      approvalDb([revokedApproval, selfDismissal]),
+      riskOnlyReview,
+    );
+    expect(afterRevocation.effectiveGate.failing).toBe(true);
+    expect(
+      afterRevocation.dismissalFindingStates.find((entry) => entry.findingId === "risk-finding"),
+    ).toMatchObject({ activeApproval: null, activeDismissal: null, blocking: true });
   });
 
   test("a passing gate summary retains the dismissal audit", async () => {

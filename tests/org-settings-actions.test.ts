@@ -24,6 +24,7 @@ let checkConclusions: string[] = [];
 let checkError: Error | null = null;
 let liveApprovalActor: { userId: number; githubId: string; login: string; role: "admin" } | null = null;
 let dismissalActive = false;
+let authorDismissalAwaitingAcknowledgement = false;
 let inFlightReview = false;
 
 const approvalReview = {
@@ -133,12 +134,26 @@ mock.module("@/lib/finding-approvals", () => ({
     gateSyncJobs += 1;
   },
   findKindBlockingState: () => ({
-    finding: { id: "finding", severity: "warn", kind: "humanEscalation" },
+    finding: {
+      id: "finding",
+      severity: authorDismissalAwaitingAcknowledgement ? "error" : "warn",
+      kind: authorDismissalAwaitingAcknowledgement ? "risk" : "humanEscalation",
+    },
     findingId: "finding",
-    blocking: true,
+    blocking:
+      !approvalInserted &&
+      (!dismissalActive || authorDismissalAwaitingAcknowledgement),
     activeApproval: approvalInserted ? { id: "approval-1" } : null,
     latestApproval: null,
-    severityBlocking: false,
+    activeDismissal: dismissalActive
+      ? {
+          id: "dismissal-1",
+          actorGithubId: authorDismissalAwaitingAcknowledgement ? "100" : "200",
+        }
+      : null,
+    severityBlocking: authorDismissalAwaitingAcknowledgement,
+    awaitingIndependentAck:
+      authorDismissalAwaitingAcknowledgement && dismissalActive,
   }),
   findDismissibleFindingState: () => ({
     finding: { id: "finding", severity: "error", kind: "risk", confidence: 0.9 },
@@ -149,8 +164,14 @@ mock.module("@/lib/finding-approvals", () => ({
   formatRemainingGateBlockers: () => approvalInserted ? "No blocking findings remain." : "- finding",
   getReviewApprovalState: async () => ({
     effectiveGate: {
-      failing: !approvalInserted && !dismissalActive,
-      blockers: approvalInserted || dismissalActive ? [] : [{}],
+      failing:
+        !approvalInserted &&
+        (!dismissalActive || authorDismissalAwaitingAcknowledgement),
+      blockers:
+        approvalInserted ||
+        (dismissalActive && !authorDismissalAwaitingAcknowledgement)
+          ? []
+          : [{}],
     },
   }),
   hasNewerCompletedReviewForHead: async () => false,
@@ -381,6 +402,7 @@ beforeEach(() => {
   checkError = null;
   liveApprovalActor = null;
   dismissalActive = false;
+  authorDismissalAwaitingAcknowledgement = false;
   inFlightReview = false;
 });
 
@@ -746,11 +768,86 @@ contentPolicy:
 
   test("queues durable GitHub gate synchronization with a dashboard approval", async () => {
     sessionUser = { id: 10, githubId: "100", login: "owner" };
+    liveApprovalActor = {
+      userId: 10,
+      githubId: "100",
+      login: "owner",
+      role: "admin",
+    };
 
     await approveFinding(approvalForm());
 
     expect(storedGateStates).toEqual([false]);
     expect(gateSyncJobs).toBe(1);
+  });
+
+  test("allows a different admin to acknowledge an author self-dismissal", async () => {
+    sessionUser = { id: 11, githubId: "200", login: "admin" };
+    liveApprovalActor = {
+      userId: 11,
+      githubId: "200",
+      login: "admin",
+      role: "admin",
+    };
+    dismissalActive = true;
+    authorDismissalAwaitingAcknowledgement = true;
+
+    await approveFinding(approvalForm());
+
+    expect(dismissalActive).toBe(false);
+    expect(approvalInserted).toBe(true);
+    expect(storedGateStates).toEqual([false]);
+    expect(gateSyncJobs).toBe(1);
+  });
+
+  test("rejects an author acknowledging their own dismissal", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+    liveApprovalActor = {
+      userId: 10,
+      githubId: "100",
+      login: "owner",
+      role: "admin",
+    };
+    dismissalActive = true;
+    authorDismissalAwaitingAcknowledgement = true;
+
+    await expect(approveFinding(approvalForm())).rejects.toThrow(
+      "the pull request author's dismissal requires acknowledgement from a different organization admin",
+    );
+
+    expect(dismissalActive).toBe(true);
+    expect(approvalInserted).toBe(false);
+    expect(storedGateStates).toEqual([]);
+    expect(gateSyncJobs).toBe(0);
+  });
+
+  test("requires live GitHub admin verification for a dashboard approval", async () => {
+    sessionUser = { id: 10, githubId: "100", login: "owner" };
+
+    await expect(approveFinding(approvalForm())).rejects.toThrow(
+      "GitHub could not verify this account as an active organization admin",
+    );
+    expect(approvalInserted).toBe(false);
+    expect(gateSyncJobs).toBe(0);
+  });
+
+  test("restores blocking when an acknowledged author dismissal is revoked", async () => {
+    sessionUser = { id: 11, githubId: "200", login: "admin" };
+    liveApprovalActor = {
+      userId: 11,
+      githubId: "200",
+      login: "admin",
+      role: "admin",
+    };
+    dismissalActive = true;
+    authorDismissalAwaitingAcknowledgement = true;
+
+    await approveFinding(approvalForm());
+    await revokeFinding(approvalForm());
+
+    expect(approvalInserted).toBe(false);
+    expect(storedGateStates).toEqual([false, true]);
+    expect(gateSyncJobs).toBe(2);
   });
 
   test("requires live GitHub admin verification for a dashboard dismissal", async () => {
