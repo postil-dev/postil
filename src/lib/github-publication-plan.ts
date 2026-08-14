@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-const MAX_OPERATIONS = 128;
+const MAX_OPERATIONS = 126;
 const MAX_DEPENDENCY_EDGES = 1_024;
-const MAX_FINDINGS = 1_000;
+const MAX_FINDINGS = 64;
 const MAX_TEXT_BYTES = 128 * 1024;
 const MAX_AGGREGATE_TEXT_BYTES = 4 * 1024 * 1024;
+const MAX_PLAN_BYTES = 8 * 1024 * 1024;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const DECIMAL_IDENTIFIER = /^[1-9][0-9]{0,18}$/;
@@ -27,6 +28,10 @@ const gitSha = z.string().regex(GIT_SHA);
 const marker = z.string().regex(MARKER);
 const operationKey = z.string().regex(OPERATION_KEY);
 const positiveLine = z.number().int().min(1).max(2_147_483_647);
+const httpUrl = z.string().url().max(2_048).refine((value) => {
+  const protocol = new URL(value).protocol;
+  return protocol === "https:" || protocol === "http:";
+}, "URL must use HTTP or HTTPS");
 
 const repositorySchema = z.object({
   id: decimalIdentifier,
@@ -89,6 +94,7 @@ const findingSchema = z.object({
 
 const lifecycleReceiptSchema = z.object({
   version: z.literal(1),
+  inputIdentity: sha256,
   channel: z.enum(["reviewComments", "checkAnnotations"]),
   receiptId: nonEmptyString(500),
   compatibleReceiptIds: z.array(nonEmptyString(500)).max(16).optional(),
@@ -199,6 +205,11 @@ const annotationSchema = z.object({
   message: nonEmptyString(65_535),
 }).strict();
 
+const operationResultReferenceSchema = z.object({
+  dependencyOperationKey: operationKey,
+  resultField: z.literal("remoteId"),
+}).strict();
+
 const operationBase = {
   ordinal: z.number().int().min(1).max(MAX_OPERATIONS),
   operationKey,
@@ -240,14 +251,24 @@ const operationSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({
     ...operationBase,
-    kind: z.literal("advisoryCheck"),
+    kind: z.literal("advisoryCheckCreate"),
     name: z.literal("postil/review"),
     headSha: gitSha,
+    status: z.literal("in_progress"),
+    externalId: nonEmptyString(500),
+    detailsUrl: httpUrl.optional(),
+  }).strict(),
+  z.object({
+    ...operationBase,
+    kind: z.literal("advisoryCheckComplete"),
+    name: z.literal("postil/review"),
+    headSha: gitSha,
+    createdCheck: operationResultReferenceSchema,
     conclusion: z.enum(["success", "failure", "neutral"]),
     title: nonEmptyString(255),
     summary: boundedString(),
     annotations: z.array(annotationSchema).max(MAX_FINDINGS).optional(),
-    detailsUrl: z.string().url().max(2_048).optional(),
+    detailsUrl: httpUrl.optional(),
   }).strict(),
 ]);
 
@@ -260,7 +281,7 @@ const gateAnalysisSchema = z.object({
   analyzedConclusion: z.enum(["success", "failure", "neutral"]),
   title: nonEmptyString(255),
   summary: boundedString(),
-  detailsUrl: z.string().url().max(2_048).optional(),
+  detailsUrl: httpUrl.optional(),
 }).strict();
 
 const publicationPlanSchema = z.object({
@@ -297,6 +318,12 @@ export interface ExpectedGitHubPublicationPlan {
   pullRequestBody: string;
 }
 
+export interface AcceptedGitHubPublicationPlan {
+  bytes: Uint8Array;
+  value: GitHubPublicationPlan;
+  digest: string;
+}
+
 export class GitHubPublicationPlanRejectedError extends Error {
   override name = "GitHubPublicationPlanRejectedError";
 
@@ -321,6 +348,41 @@ export function parseGitHubPublicationPlan(
   validateOperationSemantics(plan);
   validateDigests(plan);
   return plan;
+}
+
+/** Accept the exact bounded CLI stdout artifact and retain its byte identity. */
+export function parseGitHubPublicationPlanBytes(
+  source: Uint8Array,
+  expected: ExpectedGitHubPublicationPlan,
+): AcceptedGitHubPublicationPlan {
+  if (source.byteLength < 3 || source.byteLength > MAX_PLAN_BYTES) {
+    reject(`plan artifact must contain 3..${MAX_PLAN_BYTES} bytes`);
+  }
+  const bytes = Uint8Array.from(source);
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    reject("plan artifact is not valid UTF-8");
+  }
+  if (!text.endsWith("\n") || text.endsWith("\n\n") || text.includes("\0")) {
+    reject("plan artifact must be one JSON value followed by one newline");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text.slice(0, -1));
+  } catch {
+    reject("plan artifact is not valid JSON");
+  }
+  const plan = parseGitHubPublicationPlan(value, expected);
+  if (text !== `${JSON.stringify(plan)}\n`) {
+    reject("plan artifact is not canonical compact JSON");
+  }
+  return {
+    bytes,
+    value: plan,
+    digest: createHash("sha256").update(bytes).digest("hex"),
+  };
 }
 
 function validateExpectedIdentity(
@@ -350,6 +412,9 @@ function validateExpectedIdentity(
 
 function validateLifecycleReceipt(plan: GitHubPublicationPlan): void {
   const receipt = plan.lifecycleReceipt;
+  if (receipt.inputIdentity !== plan.inputIdentity) {
+    reject("lifecycle receipt input identity differs from the plan");
+  }
   const findingIds = new Set<string>();
   const commentIds = new Set<string>();
   const compatibleReceiptIds = receipt.compatibleReceiptIds ?? [];
@@ -432,7 +497,12 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
   const expectedReviewIdentity = reviewIdentity(plan);
   const findingIds = new Set(plan.lifecycleReceipt.findings.map((finding) => finding.findingId));
   const operationByKey = new Map(plan.operations.map((operation) => [operation.operationKey, operation]));
-  let advisoryCount = 0;
+  let advisoryCreate:
+    | Extract<GitHubPublicationOperation, { kind: "advisoryCheckCreate" }>
+    | undefined;
+  let advisoryComplete:
+    | Extract<GitHubPublicationOperation, { kind: "advisoryCheckComplete" }>
+    | undefined;
   const reviewAttempts = new Set<string>();
   let aggregateTextBytes = 0;
   for (const operation of plan.operations) {
@@ -445,7 +515,10 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
       if (operation.reconciliation.logicalIdentity !== expectedReviewIdentity) {
         reject("review reconciliation has the wrong logical identity");
       }
-    } else if (operation.reconciliation.logicalIdentity !== operation.operationKey) {
+    } else if (
+      operation.kind !== "advisoryCheckCreate" &&
+      operation.reconciliation.logicalIdentity !== operation.operationKey
+    ) {
       reject("non-review reconciliation has the wrong logical identity");
     }
     if (operation.kind === "reviewCreate") {
@@ -539,18 +612,51 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
         reject("review summary has an invalid activation contract");
       }
     }
-    if (operation.kind === "advisoryCheck") {
-      aggregateTextBytes += Buffer.byteLength(operation.title, "utf8") +
-        Buffer.byteLength(operation.summary, "utf8");
-      advisoryCount += 1;
+    if (operation.kind === "advisoryCheckCreate") {
+      if (advisoryCreate !== undefined) reject("advisory check creation is duplicated");
+      advisoryCreate = operation;
       if (operation.headSha !== plan.reviewedSnapshot.headSha) {
-        reject("advisory check targets a different head");
+        reject("advisory check creation targets a different head");
       }
       if ((operation.reconciliation.markers ?? []).length !== 0) {
-        reject("advisory check unexpectedly carries comment markers");
+        reject("advisory check creation unexpectedly carries comment markers");
+      }
+      if (operation.reconciliation.observedRemoteId !== undefined) {
+        reject("advisory check creation already carries a remote identity");
+      }
+      if (operation.reconciliation.logicalIdentity !== operation.externalId) {
+        reject("advisory check creation has the wrong logical identity");
+      }
+      if (operation.externalId !== expectedAdvisoryExternalId(operation)) {
+        reject("advisory check creation has the wrong external identity");
+      }
+      if (
+        operation.dependencies.length !== 0 ||
+        operation.activation.anyOf.length !== 1 ||
+        operation.activation.anyOf[0]?.condition !== "always"
+      ) {
+        reject("advisory check creation has an invalid activation contract");
+      }
+    }
+    if (operation.kind === "advisoryCheckComplete") {
+      if (advisoryComplete !== undefined) reject("advisory check completion is duplicated");
+      advisoryComplete = operation;
+      aggregateTextBytes += Buffer.byteLength(operation.title, "utf8") +
+        Buffer.byteLength(operation.summary, "utf8");
+      if (operation.headSha !== plan.reviewedSnapshot.headSha) {
+        reject("advisory check completion targets a different head");
+      }
+      if ((operation.reconciliation.markers ?? []).length !== 0) {
+        reject("advisory check completion unexpectedly carries comment markers");
       }
       if (operation.reconciliation.observedRemoteId !== undefined) {
         reject("advisory completion already carries a remote identity");
+      }
+      if (operation.createdCheck.resultField !== "remoteId") {
+        reject("advisory completion requests an unsupported creation result");
+      }
+      if (!operation.dependencies.includes(operation.createdCheck.dependencyOperationKey)) {
+        reject("advisory completion does not depend on its check creation");
       }
       if (
         operation.activation.anyOf.length !== 1 ||
@@ -569,18 +675,28 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
       reject("publication plan text is too large");
     }
   }
-  if (advisoryCount !== 1) reject("plan must contain exactly one terminal advisory check operation");
-  const advisory = plan.operations.find((operation) => operation.kind === "advisoryCheck");
-  if (advisory?.ordinal !== plan.operations.length) {
-    reject("terminal advisory check is not the final operation");
+  if (advisoryCreate === undefined || advisoryComplete === undefined) {
+    reject("plan must contain one advisory check creation and completion");
   }
-  if (advisory !== undefined) {
+  if (advisoryCreate.ordinal !== 1) {
+    reject("advisory check creation is not the first operation");
+  }
+  if (advisoryComplete.ordinal !== plan.operations.length) {
+    reject("advisory check completion is not the final operation");
+  }
+  if (advisoryComplete.createdCheck.dependencyOperationKey !== advisoryCreate.operationKey) {
+    reject("advisory completion references a different creation operation");
+  }
+  if (advisoryCreate.detailsUrl !== advisoryComplete.detailsUrl) {
+    reject("advisory check details URL changes between creation and completion");
+  }
+  {
     const summary = plan.operations.find((operation) => operation.kind === "reviewSummaryUpdate");
     const expectedDependencies = summary === undefined
       ? plan.operations.slice(0, -1).map((operation) => operation.operationKey)
-      : [summary.operationKey];
-    if (!sameStrings(advisory.dependencies, expectedDependencies)) {
-      reject("terminal advisory check does not seal every preceding mutation");
+      : [advisoryCreate.operationKey, summary.operationKey];
+    if (!sameStrings(advisoryComplete.dependencies, expectedDependencies)) {
+      reject("advisory completion does not seal every preceding mutation");
     }
   }
   validateReviewAttemptChain(plan);
@@ -643,6 +759,7 @@ function validateDigests(plan: GitHubPublicationPlan): void {
   const lifecycle = plan.lifecycleReceipt;
   const lifecycleCanonical = {
     version: lifecycle.version,
+    inputIdentity: lifecycle.inputIdentity,
     channel: lifecycle.channel,
     receiptId: lifecycle.receiptId,
     compatibleReceiptIds: lifecycle.compatibleReceiptIds ?? [],
@@ -703,7 +820,8 @@ function computedOperationKey(
     fileCommentFallback: "file-comment-fallback",
     findingCommentUpdate: "finding-comment-update",
     reviewSummaryUpdate: "review-summary-update",
-    advisoryCheck: "advisory-check",
+    advisoryCheckCreate: "advisory-check-create",
+    advisoryCheckComplete: "advisory-check-complete",
   } as const;
   const kind = operation.kind === "reviewCreate"
     ? keyKind.reviewCreate[operation.attempt]
@@ -736,6 +854,22 @@ function reviewIdentity(plan: GitHubPublicationPlan): string {
     plan.reviewOutputDigest,
   ]) hash.update(value).update("\0");
   return `github-publication-v1:review:sha256:${hash.digest("hex")}`;
+}
+
+function expectedAdvisoryExternalId(
+  operation: Extract<GitHubPublicationOperation, { kind: "advisoryCheckCreate" }>,
+): string {
+  let runIdentity: string | undefined;
+  if (operation.detailsUrl !== undefined) {
+    const segments = new URL(operation.detailsUrl).pathname.split("/").filter(Boolean);
+    const candidate = segments.at(-1);
+    if (candidate !== undefined && /^[0-9A-Za-z_-]{1,80}$/.test(candidate)) {
+      runIdentity = candidate;
+    }
+  }
+  return runIdentity === undefined
+    ? `postil:${operation.name}:${operation.headSha}`
+    : `postil:${runIdentity}:${operation.name}:${operation.headSha}`;
 }
 
 function textDigest(value: string): string {

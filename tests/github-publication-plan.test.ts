@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   GitHubPublicationPlanRejectedError,
   parseGitHubPublicationPlan,
+  parseGitHubPublicationPlanBytes,
   type ExpectedGitHubPublicationPlan,
 } from "@/lib/github-publication-plan";
 
@@ -33,6 +34,25 @@ describe("GitHub publication plan", () => {
     const plan = validPlan();
 
     expect(parseGitHubPublicationPlan(plan, expected)).toEqual(plan);
+  });
+
+  test("retains the exact bounded stdout artifact identity", () => {
+    const plan = validPlan();
+    const bytes = Buffer.from(`${JSON.stringify(plan)}\n`, "utf8");
+
+    const accepted = parseGitHubPublicationPlanBytes(bytes, expected);
+    expect(accepted.value).toEqual(plan);
+    expect(Buffer.from(accepted.bytes)).toEqual(bytes);
+    expect(accepted.digest).toBe(createHash("sha256").update(bytes).digest("hex"));
+
+    expect(() => parseGitHubPublicationPlanBytes(Buffer.from(JSON.stringify(plan)), expected))
+      .toThrow("one JSON value followed by one newline");
+    expect(() => parseGitHubPublicationPlanBytes(Buffer.from([0xff, 0x20, 0x0a]), expected))
+      .toThrow("valid UTF-8");
+    expect(() => parseGitHubPublicationPlanBytes(Buffer.from(` ${JSON.stringify(plan)}\n`), expected))
+      .toThrow("canonical compact JSON");
+    expect(() => parseGitHubPublicationPlanBytes(new Uint8Array(8 * 1024 * 1024 + 1), expected))
+      .toThrow("3..8388608 bytes");
   });
 
   test("rejects unknown fields at every trusted boundary", () => {
@@ -64,9 +84,36 @@ describe("GitHub publication plan", () => {
     expectRejected(plan, "lifecycle receipt digest");
   });
 
+  test("binds lifecycle state to the service-supplied input identity", () => {
+    const plan = validPlan();
+    plan.lifecycleReceipt.inputIdentity = digest("different input");
+    plan.lifecycleReceipt.digest = lifecycleDigest(plan.lifecycleReceipt);
+    resignIntent(plan);
+
+    expectRejected(plan, "lifecycle receipt input identity");
+  });
+
+  test("binds advisory creation to its exact run and head identity", () => {
+    const plan = validPlan();
+    plan.operations[0]!.externalId = `postil:other-run:postil/review:${HEAD}`;
+    plan.operations[0]!.reconciliation.logicalIdentity = plan.operations[0]!.externalId;
+    resignDesired(plan, 0);
+    resignManifestAndIntent(plan);
+
+    expectRejected(plan, "external identity");
+
+    const unsafeUrl = validPlan();
+    unsafeUrl.operations[0]!.detailsUrl = "javascript:alert(1)";
+    unsafeUrl.operations[1]!.detailsUrl = "javascript:alert(1)";
+    resignDesired(unsafeUrl, 0);
+    resignDesired(unsafeUrl, 1);
+    resignManifestAndIntent(unsafeUrl);
+    expectRejected(unsafeUrl, "HTTP or HTTPS");
+  });
+
   test("rejects desired-payload substitution", () => {
     const plan = validPlan();
-    plan.operations[0]!.title = "A different result";
+    plan.operations.at(-1)!.title = "A different result";
     resignManifestAndIntent(plan);
 
     expectRejected(plan, "operation desired digest");
@@ -74,8 +121,8 @@ describe("GitHub publication plan", () => {
 
   test("rejects manifest substitution even when the outer intent is resigned", () => {
     const plan = validPlan();
-    plan.operations[0]!.summary = "A different summary";
-    plan.operations[0]!.desiredDigest = jsonDigest(operationDesired(plan.operations[0]!));
+    plan.operations.at(-1)!.summary = "A different summary";
+    plan.operations.at(-1)!.desiredDigest = jsonDigest(operationDesired(plan.operations.at(-1)!));
     resignIntent(plan);
 
     expectRejected(plan, "operation manifest digest");
@@ -84,6 +131,8 @@ describe("GitHub publication plan", () => {
   test("rejects operation-key substitution even when every digest is resigned", () => {
     const plan = validPlan();
     plan.operations[0]!.operationKey = plan.operations[0]!.operationKey.replace(/.$/, "0");
+    plan.operations[1]!.dependencies = [plan.operations[0]!.operationKey];
+    plan.operations[1]!.createdCheck.dependencyOperationKey = plan.operations[0]!.operationKey;
     resign(plan);
 
     expectRejected(plan, "operation key");
@@ -91,7 +140,7 @@ describe("GitHub publication plan", () => {
 
   test("rejects duplicate and forward operation dependencies", () => {
     const duplicate = validTwoOperationPlan();
-    duplicate.operations[1]!.dependencies = [
+    duplicate.operations.at(-1)!.dependencies = [
       duplicate.operations[0]!.operationKey,
       duplicate.operations[0]!.operationKey,
     ];
@@ -127,12 +176,12 @@ describe("GitHub publication plan", () => {
 
   test("rejects marker guards substituted under valid resigned digests", () => {
     const wrongHead = validTwoOperationPlan();
-    wrongHead.operations[0]!.activation.anyOf[0].guard.headSha = "d".repeat(40);
+    wrongHead.operations[1]!.activation.anyOf[0].guard.headSha = "d".repeat(40);
     resign(wrongHead);
     expectRejected(wrongHead, "different head");
 
     const wrongMarker = validTwoOperationPlan();
-    wrongMarker.operations[0]!.activation.anyOf[0].guard.markers = [
+    wrongMarker.operations[1]!.activation.anyOf[0].guard.markers = [
       reviewMarker("unrelated"),
     ];
     resign(wrongMarker);
@@ -141,9 +190,8 @@ describe("GitHub publication plan", () => {
 
   test("rejects advisory publication that is not unique and terminal", () => {
     const plan = validPlan();
-    plan.operations.push(structuredClone(plan.operations[0]!));
-    plan.operations[1]!.ordinal = 2;
-    plan.operations[1]!.operationKey = computedOperationKey("advisory-check", "second");
+    plan.operations.push(structuredClone(plan.operations.at(-1)!));
+    plan.operations.at(-1)!.operationKey = computedOperationKey("advisory-check-complete", "second");
     resign(plan);
 
     expectRejected(plan, "operation key");
@@ -151,14 +199,14 @@ describe("GitHub publication plan", () => {
 
   test("rejects a gate mutation hidden under an unrecognized operation kind", () => {
     const plan = validPlan();
-    plan.operations[0]!.kind = "gateCheck";
+    plan.operations.at(-1)!.kind = "gateCheck";
 
     expectRejected(plan);
   });
 
   test("rejects reversed annotation and comment ranges", () => {
     const annotations = validPlan();
-    annotations.operations[0]!.annotations = [{
+    annotations.operations.at(-1)!.annotations = [{
       path: "src/controller.ts",
       startLine: 10,
       endLine: 9,
@@ -166,12 +214,12 @@ describe("GitHub publication plan", () => {
       title: "Invalid range",
       message: "The final line precedes the first line.",
     }];
-    resignDesired(annotations, 0);
+    resignDesired(annotations, annotations.operations.length - 1);
     resignManifestAndIntent(annotations);
     expectRejected(annotations, "annotation range");
 
     const comments = validTwoOperationPlan();
-    comments.operations[0]!.payload.comments = [{
+    comments.operations[1]!.payload.comments = [{
       path: "src/controller.ts",
       line: 10,
       side: "RIGHT",
@@ -179,16 +227,18 @@ describe("GitHub publication plan", () => {
       startSide: "RIGHT",
       body: `Finding body\n\n${findingMarker("one")}`,
     }];
-    resignDesired(comments, 0);
+    resignDesired(comments, 1);
     resignManifestAndIntent(comments);
     expectRejected(comments, "starts after");
   });
 });
 
 function validPlan(): any {
-  const operation = advisoryOperation(1, []);
+  const create = advisoryCreateOperation();
+  const complete = advisoryCompleteOperation(2, [create.operationKey]);
   const lifecycleReceipt: any = {
     version: 1,
+    inputIdentity: INPUT_IDENTITY,
     channel: "reviewComments",
     receiptId: "receipt-1",
     duplicateOfBaseline: false,
@@ -212,9 +262,9 @@ function validPlan(): any {
       pullRequestBodySha256: digest(expected.pullRequestBody),
     },
     lifecycleReceipt,
-    operationCount: 1,
-    operationManifestDigest: jsonDigest([operation]),
-    operations: [operation],
+    operationCount: 2,
+    operationManifestDigest: jsonDigest([create, complete]),
+    operations: [create, complete],
     gateAnalysis: {
       ownership: "service",
       authoritative: false,
@@ -261,26 +311,52 @@ function validTwoOperationPlan(): any {
     },
   };
   review.desiredDigest = jsonDigest(operationDesired(review));
-  const advisory = advisoryOperation(2, [review.operationKey]);
-  plan.operations = [review, advisory];
+  const create = advisoryCreateOperation();
+  const advisory = advisoryCompleteOperation(3, [create.operationKey, review.operationKey]);
+  plan.operations = [create, review, advisory];
   resign(plan);
   return plan;
 }
 
-function advisoryOperation(ordinal: number, dependencies: string[]): any {
+function advisoryCreateOperation(): any {
   const operation: any = {
-    ordinal,
-    operationKey: computedOperationKey("advisory-check"),
-    dependencies,
+    ordinal: 1,
+    operationKey: computedOperationKey("advisory-check-create"),
+    dependencies: [],
     activation: { anyOf: [{ condition: "always" }] },
     reconciliation: {
-      logicalIdentity: computedOperationKey("advisory-check"),
+      logicalIdentity: `postil:postil/review:${HEAD}`,
       exclusive: true,
     },
     desiredDigest: "",
-    kind: "advisoryCheck",
+    kind: "advisoryCheckCreate",
     name: "postil/review",
     headSha: HEAD,
+    status: "in_progress",
+    externalId: `postil:postil/review:${HEAD}`,
+  };
+  operation.desiredDigest = jsonDigest(operationDesired(operation));
+  return operation;
+}
+
+function advisoryCompleteOperation(ordinal: number, dependencies: string[]): any {
+  const operation: any = {
+    ordinal,
+    operationKey: computedOperationKey("advisory-check-complete"),
+    dependencies,
+    activation: { anyOf: [{ condition: "always" }] },
+    reconciliation: {
+      logicalIdentity: computedOperationKey("advisory-check-complete"),
+      exclusive: true,
+    },
+    desiredDigest: "",
+    kind: "advisoryCheckComplete",
+    name: "postil/review",
+    headSha: HEAD,
+    createdCheck: {
+      dependencyOperationKey: computedOperationKey("advisory-check-create"),
+      resultField: "remoteId",
+    },
     conclusion: "success",
     title: "Review completed",
     summary: "No advisory findings remain open.",
@@ -312,6 +388,7 @@ function resignIntent(plan: any): void {
 function lifecycleDigest(receipt: any): string {
   return jsonDigest({
     version: receipt.version,
+    inputIdentity: receipt.inputIdentity,
     channel: receipt.channel,
     receiptId: receipt.receiptId,
     compatibleReceiptIds: receipt.compatibleReceiptIds ?? [],
