@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { Pool } from "pg";
+import { createHash, randomUUID } from "node:crypto";
+import { Pool, type PoolClient, type QueryResult } from "pg";
 
 import {
   createEphemeralDatabase,
@@ -13,337 +13,626 @@ const describeDb = TEST_URL ? describe : describe.skip;
 const INPUT_ONE = "1".repeat(64);
 const INPUT_TWO = "2".repeat(64);
 const ENVELOPE_DIGEST = "3".repeat(64);
-const SIGNED_PLAN_OPERATION_KEYS = [
+const PLAN_SEMANTIC_DIGEST = "4".repeat(64);
+const BASE_SHA = "a".repeat(40);
+const TARGET_SHA = "b".repeat(40);
+const KEY_DIGESTS = ["a", "b", "c", "d", "e", "f"] as const;
+const REAL_OPERATION_KEYS = [
   `github-publication-v1:composite-review:sha256:${"a".repeat(64)}`,
   `github-publication-v1:file-comment-fallback:sha256:${"b".repeat(64)}`,
   `github-publication-v1:advisory-check:sha256:${"c".repeat(64)}`,
   `github-publication-v1:gate-check:sha256:${"d".repeat(64)}`,
 ] as const;
 
+type Queryable = {
+  query<T extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    values?: unknown[],
+  ): Promise<QueryResult<T>>;
+};
+
+interface OperationFixture {
+  ordinal: number;
+  operationKey: string;
+  operationSource: "cli" | "service";
+  dependencies: string[];
+  activation: Record<string, unknown>;
+  activationBytes: Buffer;
+  kind: string;
+  desiredPayload: Record<string, unknown>;
+  desiredPayloadBytes: Buffer;
+  desiredPayloadDigest: string;
+  controllerRecord: Record<string, unknown>;
+  controllerRecordBytes: Buffer;
+  operationRecord: Record<string, unknown>;
+  operationRecordBytes: Buffer;
+}
+
+interface PublicationFixture {
+  repositoryId: number;
+  prNumber: number;
+  generation: string;
+  reviewId: number;
+  inputDigest: string;
+  headSha: string;
+  operations: OperationFixture[];
+  cliOperations?: OperationFixture[];
+}
+
 function sha256(value: string | Buffer) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function payloadDigest(value: Record<string, unknown>) {
-  return sha256(JSON.stringify(value));
+function operationKey(kind: string, seed: number) {
+  const nibble = KEY_DIGESTS[seed % KEY_DIGESTS.length]!;
+  return `github-publication-v1:${kind}:sha256:${nibble.repeat(64)}`;
 }
 
-function operationKey(value: number) {
-  return `github-publication-v1:composite-review:sha256:${value
-    .toString(16)
-    .padStart(64, "0")}`;
+function makeOperation(input: {
+  ordinal: number;
+  operationKey?: string;
+  dependencies?: string[];
+  activation?: Record<string, unknown>;
+  kind?: string;
+  body?: string;
+  operationSource?: "cli" | "service";
+}): OperationFixture {
+  const operationKeyValue = input.operationKey
+    ?? operationKey("composite-review", input.ordinal);
+  const dependencies = input.dependencies ?? [];
+  const operationSource = input.operationSource ?? "cli";
+  const activation = input.activation ?? { anyOf: [{ condition: "always" }] };
+  const kind = input.kind ?? "reviewCreate";
+  const desiredPayload = kind === "reviewCreate"
+    ? {
+        kind,
+        attempt: "initial",
+        logicalReviewIdentity: `review-${input.ordinal}`,
+        payload: {
+          commitId: "c".repeat(40),
+          event: "COMMENT",
+          body: input.body ?? `review ${input.ordinal}`,
+          comments: [],
+        },
+      }
+    : kind === "gateCheckCreate"
+      ? {
+          kind,
+          name: "postil/gate",
+          headSha: "c".repeat(40),
+          status: "inProgress",
+          title: "Review in progress",
+          summary: "The durable publication controller is applying the accepted plan.",
+        }
+      : kind === "gateCheckComplete"
+        ? {
+            kind,
+            name: "postil/gate",
+            headSha: "c".repeat(40),
+            status: "completed",
+            conclusion: "success",
+            title: "Review complete",
+            summary: "The accepted publication plan is complete.",
+          }
+        : {
+        kind,
+        findingId: `finding-${input.ordinal}`,
+        payload: {
+          body: input.body ?? `finding ${input.ordinal}`,
+          commitId: "c".repeat(40),
+          path: "src/example.ts",
+          subjectType: "file",
+        },
+        };
+  const desiredPayloadBytes = Buffer.from(JSON.stringify(desiredPayload));
+  const desiredPayloadDigest = `sha256:${sha256(desiredPayloadBytes)}`;
+  const reconciliation = {
+    logicalIdentity: `logical-${input.ordinal}`,
+    markers: [`marker-${input.ordinal}`],
+    exclusive: true,
+  };
+  const operationRecord = {
+    ordinal: input.ordinal,
+    operationKey: operationKeyValue,
+    dependencies,
+    activation,
+    reconciliation,
+    desiredDigest: desiredPayloadDigest,
+    ...desiredPayload,
+  };
+  const controllerRecord = { source: operationSource, operation: operationRecord };
+  return {
+    ordinal: input.ordinal,
+    operationKey: operationKeyValue,
+    operationSource,
+    dependencies,
+    activation,
+    activationBytes: Buffer.from(JSON.stringify(activation)),
+    kind,
+    desiredPayload,
+    desiredPayloadBytes,
+    desiredPayloadDigest,
+    controllerRecord,
+    controllerRecordBytes: Buffer.from(JSON.stringify(controllerRecord)),
+    operationRecord,
+    operationRecordBytes: Buffer.from(JSON.stringify(operationRecord)),
+  };
+}
+
+function withServiceGateOperations(cliOperations: OperationFixture[]) {
+  const gateCreatePrototype = makeOperation({
+    ordinal: cliOperations.length + 1,
+    operationKey: `github-publication-controller-v1:gate-create:sha256:${"0".repeat(64)}`,
+    dependencies: cliOperations.map((operation) => operation.operationKey),
+    kind: "gateCheckCreate",
+    operationSource: "service",
+  });
+  const gateCreate = makeOperation({
+    ordinal: cliOperations.length + 1,
+    operationKey: `github-publication-controller-v1:gate-create:${gateCreatePrototype.desiredPayloadDigest}`,
+    dependencies: cliOperations.map((operation) => operation.operationKey),
+    kind: "gateCheckCreate",
+    operationSource: "service",
+  });
+  const gateCompletePrototype = makeOperation({
+    ordinal: cliOperations.length + 2,
+    operationKey: `github-publication-controller-v1:gate-complete:sha256:${"0".repeat(64)}`,
+    dependencies: [...cliOperations, gateCreate].map((operation) => operation.operationKey),
+    kind: "gateCheckComplete",
+    operationSource: "service",
+  });
+  const gateComplete = makeOperation({
+    ordinal: cliOperations.length + 2,
+    operationKey: `github-publication-controller-v1:gate-complete:${gateCompletePrototype.desiredPayloadDigest}`,
+    dependencies: [...cliOperations, gateCreate].map((operation) => operation.operationKey),
+    kind: "gateCheckComplete",
+    operationSource: "service",
+  });
+  return [...cliOperations, gateCreate, gateComplete];
+}
+
+function publicationFixture(input: Omit<PublicationFixture, "operations"> & {
+  cliOperations: OperationFixture[];
+}): PublicationFixture {
+  return {
+    ...input,
+    operations: withServiceGateOperations(input.cliOperations),
+  };
+}
+
+function manifestDigest(operations: OperationFixture[]) {
+  const bytes = Buffer.from(
+    `[${operations.map((operation) => operation.operationRecordBytes.toString()).join(",")}]`,
+  );
+  return `sha256:${sha256(bytes)}`;
+}
+
+function controllerManifestDigest(operations: OperationFixture[]) {
+  const bytes = Buffer.from(
+    `[${operations.map((operation) => operation.controllerRecordBytes.toString()).join(",")}]`,
+  );
+  return `sha256:${sha256(bytes)}`;
 }
 
 describeDb("durable publication foundation migration", () => {
   let database: EphemeralDatabase;
   let pool: Pool;
   let repositoryId = 0;
+  let installationId = 0;
 
-  async function createReview(prNumber: number, headSha: string) {
-    const result = await pool.query<{ id: string }>(
-      `INSERT INTO reviews
-        (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at)
+  async function createHierarchy(seed: number, queryable: Queryable = pool) {
+    const organization = await queryable.query<{ id: string }>(
+      `INSERT INTO organizations (slug, name, github_org_id)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [`publication-${seed}`, `Publication ${seed}`, 100000 + seed],
+    );
+    const installation = await queryable.query<{ id: string }>(
+      `INSERT INTO installations
+         (github_installation_id, account_login, account_type, org_id)
+       VALUES ($1, $2, 'Organization', $3) RETURNING id`,
+      [200000 + seed, `publication-${seed}`, organization.rows[0]!.id],
+    );
+    const repository = await queryable.query<{ id: string }>(
+      `INSERT INTO repositories
+         (github_repo_id, installation_id, full_name, private, enabled)
+       VALUES ($1, $2, $3, false, true) RETURNING id`,
+      [300000 + seed, installation.rows[0]!.id, `publication-${seed}/repository`],
+    );
+    return {
+      installationId: Number(installation.rows[0]!.id),
+      repositoryId: Number(repository.rows[0]!.id),
+      repositoryFullName: `publication-${seed}/repository`,
+    };
+  }
+
+  async function createReview(input: {
+    repositoryId?: number;
+    prNumber: number;
+    headSha: string;
+    baseSha?: string;
+    queryable?: Queryable;
+  }) {
+    const result = await (input.queryable ?? pool).query<{ id: string }>(
+      `INSERT INTO public.reviews
+         (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at)
        VALUES ($1, $2, $3, $4, 'queued', 'unknown', now())
        RETURNING id`,
-      [repositoryId, prNumber, headSha, "a".repeat(40)],
+      [input.repositoryId ?? repositoryId, input.prNumber, input.headSha, input.baseSha ?? BASE_SHA],
     );
     return Number(result.rows[0]!.id);
   }
 
-  async function insertGeneration(input: {
-    prNumber: number;
-    generation: number;
-    reviewId: number;
-    inputDigest: string;
-    headSha: string;
-    baseSha?: string;
-    planVersion?: string;
-    acceptedPlanText?: string;
-    acceptedPlanBytes?: Buffer;
-    acceptedPlanDigest?: string;
-    planSemanticDigest?: string;
-    reviewInputSequence?: number;
-    expectedPullRequestUpdatedAt?: string;
-    envelopeDigest?: string;
+  async function insertGeneration(input: PublicationFixture & {
+    queryable?: Queryable;
     repositoryFullName?: string;
+    baseSha?: string;
     targetSha?: string;
-    targetBranch?: string;
-    pullRequestTitle?: string;
-    pullRequestBody?: string;
+    planMutator?: (plan: Record<string, unknown>) => void;
+    operationCount?: number;
+    operationManifestDigest?: string;
+    controllerOperationCount?: number;
+    controllerOperationManifestDigest?: string;
+    controllerManifestMutator?: (manifest: Record<string, unknown>) => void;
+    controllerManifestBytes?: Buffer;
     createdAt?: string;
   }) {
-    const baseSha = input.baseSha ?? "a".repeat(40);
-    const acceptedPlanText = input.acceptedPlanText ?? JSON.stringify({
-      version: input.planVersion ?? "github-publication-v1",
-      reviewId: input.reviewId,
-      reviewInputSequence: String(input.reviewInputSequence ?? input.generation),
-      expectedPullRequestUpdatedAt:
-        input.expectedPullRequestUpdatedAt ?? "2026-08-14T00:00:00.000Z",
-      inputDigest: input.inputDigest,
-      envelopeDigest: input.envelopeDigest ?? ENVELOPE_DIGEST,
-      planSemanticDigest: input.planSemanticDigest ?? "4".repeat(64),
-      repository: input.repositoryFullName ?? "publication-foundation/repository",
-      pullRequest: {
-        number: input.prNumber,
-        headSha: input.headSha,
-        baseSha,
-        targetSha: input.targetSha ?? baseSha,
-        targetBranch: input.targetBranch ?? "main",
-        title: input.pullRequestTitle ?? "Publication foundation",
-        body: input.pullRequestBody ?? "",
+    const queryable = input.queryable ?? pool;
+    const baseSha = input.baseSha ?? BASE_SHA;
+    const targetSha = input.targetSha ?? TARGET_SHA;
+    const cliOperations = input.cliOperations
+      ?? input.operations.filter((operation) => operation.operationSource === "cli");
+    const operationCount = input.operationCount ?? cliOperations.length;
+    const operationManifestDigest = input.operationManifestDigest
+      ?? manifestDigest(cliOperations);
+    const plan: Record<string, unknown> = {
+      version: 1,
+      forge: "github",
+      controllerGeneration: input.generation,
+      inputIdentity: `sha256:${input.inputDigest}`,
+      repository: {
+        id: String(input.repositoryId),
+        fullName: input.repositoryFullName ?? "publication-foundation/repository",
       },
-    });
-    const acceptedPlanBytes = input.acceptedPlanBytes ?? Buffer.from(acceptedPlanText);
-    await pool.query(
+      pullRequestNumber: String(input.prNumber),
+      reviewedSnapshot: {
+        headSha: input.headSha,
+        mergeBaseSha: baseSha,
+        targetSha,
+        pullRequestTitleSha256: "5".repeat(64),
+        pullRequestBodySha256: "6".repeat(64),
+      },
+      lifecycleReceipt: { inputIdentity: `sha256:${input.inputDigest}` },
+      operationCount,
+      operationManifestDigest,
+      operations: cliOperations.map((operation) => operation.operationRecord),
+      gateAnalysis: {
+        ownership: "service",
+        authoritative: true,
+        organizationGateModeRequired: true,
+        name: "postil/gate",
+        headSha: input.headSha,
+        analyzedConclusion: "success",
+        title: "Review gate",
+        summary: "Review complete",
+      },
+      intentDigest: `sha256:${PLAN_SEMANTIC_DIGEST}`,
+    };
+    input.planMutator?.(plan);
+    const acceptedPlanBytes = Buffer.from(JSON.stringify(plan));
+    const controllerOperationCount = input.controllerOperationCount ?? input.operations.length;
+    const controllerOperationManifestDigest = input.controllerOperationManifestDigest
+      ?? controllerManifestDigest(input.operations);
+    const controllerManifest: Record<string, unknown> = {
+      version: "github-publication-controller-v1",
+      operationCount: controllerOperationCount,
+      operationManifestDigest: controllerOperationManifestDigest,
+      operations: input.operations.map((operation) => operation.controllerRecord),
+    };
+    input.controllerManifestMutator?.(controllerManifest);
+    const controllerManifestBytes = input.controllerManifestBytes
+      ?? Buffer.from(JSON.stringify(controllerManifest));
+    await queryable.query(
       `INSERT INTO review_publication_generations
-        (repository_id, pr_number, publication_generation, review_id, plan_version,
-         accepted_plan, accepted_plan_bytes, accepted_plan_digest, plan_semantic_digest,
-         review_input_sequence,
-         expected_pull_request_updated_at, accepted_input_digest, envelope_digest,
-         repository_full_name, head_sha, base_sha, target_sha, target_branch, pull_request_title,
-         pull_request_body, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-               $14, $15, $16, $17, $18, $19, $20, $21)`,
+         (repository_id, pr_number, publication_generation, review_id, plan_version,
+          accepted_plan, accepted_plan_bytes, accepted_plan_digest, plan_semantic_digest,
+          review_input_sequence, expected_pull_request_updated_at, accepted_input_digest,
+          envelope_digest, repository_full_name, head_sha, base_sha, target_sha,
+          target_branch, pull_request_title, pull_request_body, operation_count,
+          operation_manifest_digest, controller_operation_count,
+          controller_operation_manifest_digest, controller_manifest,
+          controller_manifest_bytes, controller_manifest_digest, created_at)
+       VALUES ($1, $2, $3, $4, 'github-publication-v1', $5::jsonb, $6, $7, $8,
+               $9, '2026-08-14T00:00:00Z', $10, $11, $12, $13, $14, $15,
+               'main', 'Publication foundation', '', $16, $17, $18, $19,
+               $20::jsonb, $21, $22, $23)`,
       [
-        repositoryId,
+        input.repositoryId,
         input.prNumber,
         input.generation,
         input.reviewId,
-        input.planVersion ?? "github-publication-v1",
-        acceptedPlanText,
+        JSON.stringify(plan),
         acceptedPlanBytes,
-        input.acceptedPlanDigest ?? sha256(acceptedPlanBytes),
-        input.planSemanticDigest ?? "4".repeat(64),
-        input.reviewInputSequence ?? input.generation,
-        input.expectedPullRequestUpdatedAt ?? "2026-08-14T00:00:00.000Z",
+        sha256(acceptedPlanBytes),
+        PLAN_SEMANTIC_DIGEST,
+        input.generation,
         input.inputDigest,
-        input.envelopeDigest ?? ENVELOPE_DIGEST,
+        ENVELOPE_DIGEST,
         input.repositoryFullName ?? "publication-foundation/repository",
         input.headSha,
         baseSha,
-        input.targetSha ?? baseSha,
-        input.targetBranch ?? "main",
-        input.pullRequestTitle ?? "Publication foundation",
-        input.pullRequestBody ?? "",
-        input.createdAt ?? "2026-08-14T00:00:00.000Z",
+        targetSha,
+        operationCount,
+        operationManifestDigest,
+        controllerOperationCount,
+        controllerOperationManifestDigest,
+        JSON.stringify(controllerManifest),
+        controllerManifestBytes,
+        `sha256:${sha256(controllerManifestBytes)}`,
+        input.createdAt ?? "2026-08-14T00:00:00Z",
       ],
     );
   }
 
-  async function insertHighWater(input: {
-    prNumber: number;
-    generation: number;
-    reviewId: number;
-    inputDigest: string;
-    headSha: string;
-  }) {
-    await pool.query(
-      `INSERT INTO pull_request_publication_high_waters
-        (repository_id, pr_number, publication_generation, accepted_review_id, accepted_input_digest, accepted_head_sha)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        repositoryId,
-        input.prNumber,
-        input.generation,
-        input.reviewId,
-        input.inputDigest,
-        input.headSha,
-      ],
-    );
-  }
-
-  async function createPopulatedPublication(seed: number) {
-    const organization = await pool.query<{ id: string }>(
-      `INSERT INTO organizations (slug, name, github_org_id)
-       VALUES ($1, $2, $3) RETURNING id`,
-      [`publication-teardown-${seed}`, `Publication teardown ${seed}`, 7000 + seed],
-    );
-    const installation = await pool.query<{ id: string }>(
-      `INSERT INTO installations
-        (github_installation_id, account_login, account_type, org_id)
-       VALUES ($1, $2, 'Organization', $3) RETURNING id`,
-      [8000 + seed, `publication-teardown-${seed}`, organization.rows[0]!.id],
-    );
-    const repository = await pool.query<{ id: string }>(
-      `INSERT INTO repositories
-        (github_repo_id, installation_id, full_name, private, enabled)
-       VALUES ($1, $2, $3, false, true) RETURNING id`,
-      [9000 + seed, installation.rows[0]!.id, `publication-teardown-${seed}/repository`],
-    );
-    const fixtureRepositoryId = Number(repository.rows[0]!.id);
-    const prNumber = 800 + seed;
-    const headSha = seed.toString(16).padStart(40, "a").slice(-40);
-    const review = await pool.query<{ id: string }>(
-      `INSERT INTO reviews
-        (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at)
-       VALUES ($1, $2, $3, $4, 'queued', 'unknown', now()) RETURNING id`,
-      [fixtureRepositoryId, prNumber, headSha, "b".repeat(40)],
-    );
-    const reviewId = Number(review.rows[0]!.id);
-    const planText = JSON.stringify({ version: "github-publication-v1", seed });
-    await pool.query(
-      `INSERT INTO review_publication_generations
-        (repository_id, pr_number, publication_generation, review_id, plan_version,
-         accepted_plan, accepted_plan_bytes, accepted_plan_digest, plan_semantic_digest,
-         review_input_sequence,
-         expected_pull_request_updated_at, accepted_input_digest, envelope_digest,
-         repository_full_name, head_sha, base_sha, target_sha, target_branch, pull_request_title,
-         pull_request_body)
-       VALUES ($1, $2, 1, $3, 'github-publication-v1', $4::jsonb, $5, $6,
-               $7, 1, '2026-08-14T00:00:00Z', $8, $9, $10, $11, $12, $12, 'main', $13, '')`,
-      [
-        fixtureRepositoryId,
-        prNumber,
-        reviewId,
-        planText,
-        Buffer.from(planText),
-        sha256(planText),
-        "4".repeat(64),
-        INPUT_ONE,
-        ENVELOPE_DIGEST,
-        `publication-teardown-${seed}/repository`,
-        headSha,
-        "b".repeat(40),
-        `Publication teardown ${seed}`,
-      ],
-    );
-    await pool.query(
-      `INSERT INTO pull_request_publication_high_waters
-        (repository_id, pr_number, publication_generation, accepted_review_id, accepted_input_digest, accepted_head_sha)
-       VALUES ($1, $2, 1, $3, $4, $5)`,
-      [fixtureRepositoryId, prNumber, reviewId, INPUT_ONE, headSha],
-    );
-    const primaryOperationKey = operationKey(100 + seed);
-    await pool.query(
-      `INSERT INTO review_publication_operations
-        (repository_id, pr_number, publication_generation, review_id, operation_key,
-         operation_ordinal, activation_condition, kind, desired_payload,
-         desired_payload_bytes, desired_payload_digest)
-       VALUES ($1, $2, 1, $3, $4, 0, 'immediate', 'review', '{}', '{}'::text::bytea, $5)`,
-      [fixtureRepositoryId, prNumber, reviewId, primaryOperationKey, payloadDigest({})],
-    );
-    await pool.query(
-      `INSERT INTO review_publication_operations
-        (repository_id, pr_number, publication_generation, review_id, operation_key,
-         operation_ordinal, dependency_operation_key, activation_condition, kind,
-         desired_payload, desired_payload_bytes, desired_payload_digest)
-       VALUES ($1, $2, 1, $3, $4, 1, $5, 'after_dependency_terminal', 'check',
-               '{}', '{}'::text::bytea, $6)`,
-      [
-        fixtureRepositoryId,
-        prNumber,
-        reviewId,
-        operationKey(200 + seed),
-        primaryOperationKey,
-        payloadDigest({}),
-      ],
-    );
-    return {
-      installationId: Number(installation.rows[0]!.id),
-      repositoryId: fixtureRepositoryId,
-      reviewId,
-    };
-  }
-
-  async function expectPublicationRows(
-    repositoryIdentity: number,
-    expected: number,
-    expectedOperations = expected,
+  async function insertOperation(
+    fixture: PublicationFixture,
+    operation: OperationFixture,
+    queryable: Queryable = pool,
+    overrides: {
+      reviewId?: number;
+      desiredPayload?: unknown;
+      desiredPayloadBytes?: Buffer;
+      desiredPayloadDigest?: string;
+      operationRecordBytes?: Buffer;
+      deadlineAt?: string | null;
+    } = {},
   ) {
-    for (const table of [
-      "review_publication_generations",
-      "pull_request_publication_high_waters",
-      "review_publication_operations",
-    ]) {
-      const result = await pool.query<{ count: number }>(
-        `SELECT count(*)::int AS count FROM ${table} WHERE repository_id = $1`,
-        [repositoryIdentity],
-      );
-      expect(result.rows[0]!.count).toBe(
-        table === "review_publication_operations" ? expectedOperations : expected,
+    await queryable.query(
+      `INSERT INTO review_publication_operations
+         (repository_id, pr_number, publication_generation, review_id,
+          operation_key, operation_ordinal, operation_record, operation_record_bytes,
+          operation_source, controller_record, controller_record_bytes, activation,
+          activation_bytes, kind, desired_payload, desired_payload_bytes,
+          desired_payload_digest, deadline_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, $11,
+               $12::jsonb, $13, $14, $15::jsonb, $16, $17, $18)`,
+      [
+        fixture.repositoryId,
+        fixture.prNumber,
+        fixture.generation,
+        overrides.reviewId ?? fixture.reviewId,
+        operation.operationKey,
+        operation.ordinal,
+        JSON.stringify(operation.operationRecord),
+        overrides.operationRecordBytes ?? operation.operationRecordBytes,
+        operation.operationSource,
+        JSON.stringify(operation.controllerRecord),
+        operation.controllerRecordBytes,
+        JSON.stringify(operation.activation),
+        operation.activationBytes,
+        operation.kind,
+        JSON.stringify(overrides.desiredPayload ?? operation.desiredPayload),
+        overrides.desiredPayloadBytes ?? operation.desiredPayloadBytes,
+        overrides.desiredPayloadDigest ?? operation.desiredPayloadDigest,
+        overrides.deadlineAt ?? null,
+      ],
+    );
+  }
+
+  async function insertDependencyEdges(
+    fixture: PublicationFixture,
+    operation: OperationFixture,
+    queryable: Queryable = pool,
+  ) {
+    for (const [position, dependency] of operation.dependencies.entries()) {
+      await queryable.query(
+        `INSERT INTO review_publication_operation_dependencies
+           (repository_id, pr_number, publication_generation, operation_key,
+            dependency_position, dependency_operation_key)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          fixture.repositoryId,
+          fixture.prNumber,
+          fixture.generation,
+          operation.operationKey,
+          position,
+          dependency,
+        ],
       );
     }
   }
 
-  async function insertRawOperation(input: {
+  async function preparePublication(input: {
+    repositoryId?: number;
+    repositoryFullName?: string;
     prNumber: number;
-    reviewId: number;
-    key: string;
-    generation?: number;
-    ordinal?: number;
-    dependencyKey?: string | null;
-    activationCondition?: string;
-    kind?: string;
-    payload?: string;
-    payloadBytes?: Buffer;
-    digest?: string;
-    state?: string;
-    attempts?: number;
-    claimOwner?: string | null;
-    leaseId?: string | null;
-    leaseExpiresAt?: string | null;
-    leaseGeneration?: number;
-    retryAfter?: string | null;
-    deadlineAt?: string | null;
-    lastError?: string | null;
-    remoteIdentity?: string | null;
-    remoteOperationId?: string | null;
-    remoteObservedAt?: string | null;
-    appliedAt?: string | null;
-    resultPayload?: string | null;
-    selectedVariant?: string | null;
-    reconciliationPayload?: string | null;
-    compensatedAt?: string | null;
-    compensationPayload?: string | null;
-    createdAt?: string;
-    updatedAt?: string;
-  }) {
-    const payload = input.payload ?? "{}";
-    await pool.query(
-      `INSERT INTO review_publication_operations
-        (repository_id, pr_number, publication_generation, review_id, operation_key,
-         operation_ordinal, dependency_operation_key, activation_condition, kind,
-         desired_payload, desired_payload_bytes, desired_payload_digest, state, attempt_count,
-         claim_owner, lease_id, lease_expires_at, lease_generation, retry_after, deadline_at,
-         last_error, remote_identity, remote_operation_id, remote_observed_at, applied_at,
-         result_payload, selected_variant, reconciliation_payload, compensated_at,
-         compensation_payload, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-               $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-               $27, $28, $29, $30, $31, $32)`,
+    generation?: string;
+    inputDigest?: string;
+    headSha?: string;
+    operations?: OperationFixture[];
+    seal?: boolean;
+    queryable?: Queryable;
+  }): Promise<PublicationFixture> {
+    const queryable = input.queryable ?? pool;
+    const fixtureRepositoryId = input.repositoryId ?? repositoryId;
+    const generation = input.generation ?? "1";
+    const headSha = input.headSha ?? input.prNumber.toString(16).padStart(40, "7").slice(-40);
+    const cliOperations = input.operations ?? [makeOperation({ ordinal: 1 })];
+    const reviewId = await createReview({
+      repositoryId: fixtureRepositoryId,
+      prNumber: input.prNumber,
+      headSha,
+      queryable,
+    });
+    const fixture = publicationFixture({
+      repositoryId: fixtureRepositoryId,
+      prNumber: input.prNumber,
+      generation,
+      reviewId,
+      inputDigest: input.inputDigest ?? INPUT_ONE,
+      headSha,
+      cliOperations,
+    });
+    await insertGeneration({
+      ...fixture,
+      queryable,
+      repositoryFullName: input.repositoryFullName,
+    });
+    for (const operation of fixture.operations) await insertOperation(fixture, operation, queryable);
+    for (const operation of fixture.operations) {
+      await insertDependencyEdges(fixture, operation, queryable);
+    }
+    if (input.seal ?? true) await insertHighWater(fixture, queryable);
+    return fixture;
+  }
+
+  async function insertHighWater(fixture: PublicationFixture, queryable: Queryable = pool) {
+    await queryable.query(
+      `INSERT INTO pull_request_publication_high_waters
+         (repository_id, pr_number, publication_generation, accepted_review_id,
+          accepted_input_digest, accepted_head_sha)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
       [
-        repositoryId,
-        input.prNumber,
-        input.generation ?? 1,
-        input.reviewId,
-        input.key,
-        input.ordinal ?? 0,
-        input.dependencyKey ?? null,
-        input.activationCondition ?? "immediate",
-        input.kind ?? "review",
-        payload,
-        input.payloadBytes ?? Buffer.from(payload),
-        input.digest ?? sha256(input.payloadBytes ?? Buffer.from(payload)),
-        input.state ?? "pending",
-        input.attempts ?? 0,
-        input.claimOwner ?? null,
-        input.leaseId ?? null,
-        input.leaseExpiresAt ?? null,
-        input.leaseGeneration ?? 0,
-        input.retryAfter ?? null,
-        input.deadlineAt ?? null,
-        input.lastError ?? null,
+        fixture.repositoryId,
+        fixture.prNumber,
+        fixture.generation,
+        fixture.reviewId,
+        fixture.inputDigest,
+        fixture.headSha,
+      ],
+    );
+  }
+
+  async function claimOperation(input: {
+    fixture: PublicationFixture;
+    operation: OperationFixture;
+    owner?: string;
+    leaseId?: string;
+    variant?: string;
+    updatedOffset?: string;
+    expiresOffset?: string;
+    queryable?: Queryable;
+  }) {
+    const queryable = input.queryable ?? pool;
+    const result = await queryable.query<{
+      attempt_count: number;
+      lease_generation: string;
+      lease_id: string;
+    }>(
+      `UPDATE review_publication_operations
+       SET state = 'applying',
+           attempt_count = attempt_count + 1,
+           lease_generation = lease_generation + 1,
+           claim_owner = $5,
+           lease_id = $6,
+           lease_expires_at = clock_timestamp() + $7::interval,
+           selected_variant = $8,
+           updated_at = clock_timestamp() + $9::interval
+       WHERE repository_id = $1 AND pr_number = $2
+         AND publication_generation = $3 AND operation_key = $4
+       RETURNING attempt_count, lease_generation, lease_id`,
+      [
+        input.fixture.repositoryId,
+        input.fixture.prNumber,
+        input.fixture.generation,
+        input.operation.operationKey,
+        input.owner ?? "worker-one",
+        input.leaseId ?? randomUUID(),
+        input.expiresOffset ?? "10 minutes",
+        input.variant ?? "primary",
+        input.updatedOffset ?? "0 seconds",
+      ],
+    );
+    return result.rows[0]!;
+  }
+
+  async function insertAttempt(input: {
+    fixture: PublicationFixture;
+    operation: OperationFixture;
+    phase: "dispatched" | "not_dispatched" | "ambiguous" | "applied";
+    attemptNumber: number;
+    leaseGeneration: string;
+    variant: string;
+    evidence?: Record<string, unknown>;
+    error?: string;
+    remoteIdentity?: string;
+    remoteOperationId?: string;
+  }) {
+    await pool.query(
+      `INSERT INTO review_publication_operation_attempts
+         (repository_id, pr_number, publication_generation, operation_key,
+          attempt_number, lease_generation, phase, selected_variant,
+          evidence_payload, error_reason, remote_identity, remote_operation_id,
+          observed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12,
+               clock_timestamp())`,
+      [
+        input.fixture.repositoryId,
+        input.fixture.prNumber,
+        input.fixture.generation,
+        input.operation.operationKey,
+        input.attemptNumber,
+        input.leaseGeneration,
+        input.phase,
+        input.variant,
+        JSON.stringify(input.evidence ?? { phase: input.phase }),
+        input.error ?? null,
         input.remoteIdentity ?? null,
         input.remoteOperationId ?? null,
-        input.remoteObservedAt ?? null,
-        input.appliedAt ?? null,
-        input.resultPayload ?? null,
-        input.selectedVariant ?? null,
-        input.reconciliationPayload ?? null,
-        input.compensatedAt ?? null,
-        input.compensationPayload ?? null,
-        input.createdAt ?? "2026-08-14T00:00:00.000Z",
-        input.updatedAt ?? "2026-08-14T00:00:00.000Z",
+      ],
+    );
+  }
+
+  async function moveToUnknown(input: {
+    fixture: PublicationFixture;
+    operation: OperationFixture;
+    error: string;
+  }) {
+    await pool.query(
+      `UPDATE review_publication_operations
+       SET state = 'unknown', claim_owner = NULL, lease_id = NULL,
+           lease_expires_at = NULL, last_error = $5, updated_at = clock_timestamp()
+       WHERE repository_id = $1 AND pr_number = $2
+         AND publication_generation = $3 AND operation_key = $4`,
+      [
+        input.fixture.repositoryId,
+        input.fixture.prNumber,
+        input.fixture.generation,
+        input.operation.operationKey,
+        input.error,
+      ],
+    );
+  }
+
+  async function insertReconciliation(input: {
+    fixture: PublicationFixture;
+    operation: OperationFixture;
+    attemptNumber: number;
+    leaseGeneration: string;
+    variant: string;
+    phase: "retry" | "terminal";
+    outcome: "exact_absence" | "applied";
+    evidence?: Record<string, unknown>;
+  }) {
+    await pool.query(
+      `INSERT INTO review_publication_operation_reconciliations
+         (repository_id, pr_number, publication_generation, operation_key,
+          attempt_number, lease_generation, phase, selected_variant, outcome,
+          evidence_payload, remote_identity, remote_operation_id, observed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12,
+               clock_timestamp())`,
+      [
+        input.fixture.repositoryId,
+        input.fixture.prNumber,
+        input.fixture.generation,
+        input.operation.operationKey,
+        input.attemptNumber,
+        input.leaseGeneration,
+        input.phase,
+        input.variant,
+        input.outcome,
+        JSON.stringify(input.evidence ?? { outcome: input.outcome }),
+        input.outcome === "applied" ? "github-review" : null,
+        input.outcome === "applied" ? "987654" : null,
       ],
     );
   }
@@ -351,1459 +640,1169 @@ describeDb("durable publication foundation migration", () => {
   beforeAll(async () => {
     database = await createEphemeralDatabase("durable_publication_foundation");
     pool = database.pool;
-    const organization = await pool.query<{ id: string }>(
-      "INSERT INTO organizations (slug, name, github_org_id) VALUES ('publication-foundation', 'Publication foundation', 6101) RETURNING id",
-    );
-    const installation = await pool.query<{ id: string }>(
-      `INSERT INTO installations
-        (github_installation_id, account_login, account_type, org_id)
-       VALUES (6102, 'publication-foundation', 'Organization', $1)
-       RETURNING id`,
-      [organization.rows[0]!.id],
-    );
-    const repository = await pool.query<{ id: string }>(
-      `INSERT INTO repositories
-        (github_repo_id, installation_id, full_name, private, enabled)
-       VALUES (6103, $1, 'publication-foundation/repository', false, true)
-       RETURNING id`,
-      [installation.rows[0]!.id],
-    );
-    repositoryId = Number(repository.rows[0]!.id);
+    const hierarchy = await createHierarchy(1);
+    repositoryId = hierarchy.repositoryId;
+    installationId = hierarchy.installationId;
   }, 30_000);
 
   afterAll(async () => {
-    await database?.drop();
-  }, 30_000);
+    await database.drop();
+  });
 
-  test("preserves generations and supports multiple operation kinds and recovery states", async () => {
-    const prNumber = 700;
-    const firstHead = "b".repeat(40);
-    const secondHead = "c".repeat(40);
-    const firstReviewId = await createReview(prNumber, firstHead);
-    const secondReviewId = await createReview(prNumber, secondHead);
-
-    await insertGeneration({
-      prNumber,
-      generation: 1,
-      reviewId: firstReviewId,
-      inputDigest: INPUT_ONE,
-      headSha: firstHead,
-    });
-    await insertHighWater({
-      prNumber,
-      generation: 1,
-      reviewId: firstReviewId,
-      inputDigest: INPUT_ONE,
-      headSha: firstHead,
-    });
-
-    const states = [
-      "pending",
-      "applying",
-      "unknown",
-      "applied",
-      "skipped",
-      "superseded",
-      "compensating",
-      "failed",
-    ];
-    for (const [index, state] of states.entries()) {
-      const active = state === "applying" || state === "compensating";
-      const ambiguous = state === "unknown";
-      const applied = state === "applied";
-      await insertRawOperation({
-        prNumber,
-        reviewId: firstReviewId,
-        key: operationKey(index + 1),
-        ordinal: index,
-        kind: "check",
-        payload: JSON.stringify({ operation: index + 1 }),
-        state,
-        attempts: index,
-        claimOwner: active ? "worker-one" : null,
-        leaseId: active ? "00000000-0000-4000-8000-000000000001" : null,
-        leaseExpiresAt: active ? "2026-08-14T00:05:00.000Z" : null,
-        leaseGeneration: active || ambiguous ? 1 : 0,
-        retryAfter: "2026-08-14T00:01:00.000Z",
-        deadlineAt: "2026-08-14T01:00:00.000Z",
-        lastError:
-          state === "failed"
-            ? "bounded failure"
-            : ambiguous
-              ? "remote outcome is ambiguous"
-              : null,
-        remoteIdentity: applied ? `remote:${index + 1}` : null,
-        remoteOperationId: applied ? `operation:${index + 1}` : null,
-        remoteObservedAt: applied ? "2026-08-14T00:00:01.000Z" : null,
-        appliedAt: applied ? "2026-08-14T00:00:01.000Z" : null,
-        resultPayload:
-          applied || state === "skipped"
-            ? JSON.stringify({ outcome: state })
-            : null,
-        selectedVariant: active || ambiguous || applied ? "primary" : null,
-      });
-    }
-
-    await insertGeneration({
-      prNumber,
-      generation: 2,
-      reviewId: secondReviewId,
-      inputDigest: INPUT_TWO,
-      headSha: secondHead,
-    });
-    await pool.query(
-      `UPDATE pull_request_publication_high_waters
-          SET publication_generation = 2,
-              accepted_review_id = $3,
-              accepted_input_digest = $4,
-              accepted_head_sha = $5,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2`,
-      [repositoryId, prNumber, secondReviewId, INPUT_TWO, secondHead],
-    );
-    await pool.query(
-      `INSERT INTO review_publication_operations
-        (repository_id, pr_number, publication_generation, review_id, operation_key,
-         operation_ordinal, activation_condition, kind, desired_payload,
-         desired_payload_bytes, desired_payload_digest)
-       VALUES ($1, $2, 2, $3, $4, 0, 'immediate', 'check', $5::jsonb, $6, $7)`,
-      [
-        repositoryId,
-        prNumber,
-        secondReviewId,
-        operationKey(20),
-        JSON.stringify({ operation: 20 }),
-        Buffer.from(JSON.stringify({ operation: 20 })),
-        payloadDigest({ operation: 20 }),
-      ],
-    );
-
-    const highWater = await pool.query<{
-      publication_generation: string;
-      accepted_review_id: string;
-      accepted_input_digest: string;
-      accepted_head_sha: string;
-    }>(
-      `SELECT publication_generation, accepted_review_id, accepted_input_digest, accepted_head_sha
-         FROM pull_request_publication_high_waters
-        WHERE repository_id = $1 AND pr_number = $2`,
-      [repositoryId, prNumber],
-    );
-    expect(highWater.rows).toEqual([
-      {
-        publication_generation: "2",
-        accepted_review_id: String(secondReviewId),
-        accepted_input_digest: INPUT_TWO,
-        accepted_head_sha: secondHead,
+  test("seals exact CLI operation bytes, ordered edges, and all real key kinds", async () => {
+    const first = makeOperation({ ordinal: 1, operationKey: REAL_OPERATION_KEYS[0] });
+    const second = makeOperation({
+      ordinal: 2,
+      operationKey: REAL_OPERATION_KEYS[1],
+      dependencies: [first.operationKey],
+      activation: {
+        anyOf: [{
+          condition: "semanticPlacementRejected",
+          dependencyOperationKey: first.operationKey,
+          httpStatus: 422,
+          classification: "inlinePlacement",
+          markerAbsence: { markers: ["marker-1"] },
+        }],
       },
-    ]);
-
-    const operations = await pool.query<{
-      publication_generation: string;
-      state: string;
-    }>(
-      `SELECT publication_generation, state
-         FROM review_publication_operations
-        WHERE repository_id = $1 AND pr_number = $2
-        ORDER BY publication_generation, operation_key`,
-      [repositoryId, prNumber],
-    );
-    expect(operations.rows).toHaveLength(9);
-    expect(operations.rows.filter((entry) => entry.publication_generation === "1")).toHaveLength(8);
-    expect(new Set(operations.rows.map((entry) => entry.state))).toEqual(new Set(states));
-  });
-
-  test("accepts the signed plan operation key contract and rejects raw digests", async () => {
-    const prNumber = 709;
-    const headSha = "1".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-    await insertGeneration({
-      prNumber,
-      generation: 1,
-      reviewId,
-      inputDigest: INPUT_ONE,
-      headSha,
+      kind: "fileCommentFallback",
     });
-    for (const [ordinal, key] of SIGNED_PLAN_OPERATION_KEYS.entries()) {
-      await insertRawOperation({ prNumber, reviewId, key, ordinal });
-    }
-    expect(
-      new Set(
-        (
-          await pool.query<{ operation_key: string }>(
-            `SELECT operation_key FROM review_publication_operations
-              WHERE repository_id = $1 AND pr_number = $2`,
-            [repositoryId, prNumber],
-          )
-        ).rows.map((row) => row.operation_key),
+    const third = makeOperation({
+      ordinal: 3,
+      operationKey: REAL_OPERATION_KEYS[2],
+      dependencies: [first.operationKey, second.operationKey],
+    });
+    const fourth = makeOperation({
+      ordinal: 4,
+      operationKey: REAL_OPERATION_KEYS[3],
+      dependencies: [first.operationKey, second.operationKey, third.operationKey],
+    });
+    const fixture = await preparePublication({
+      prNumber: 101,
+      operations: [first, second, third, fourth],
+    });
+    const generation = await pool.query<{
+      operation_count: number;
+      operation_manifest_digest: string;
+      controller_operation_count: number;
+      controller_operation_manifest_digest: string;
+      sealed_at: Date | null;
+    }>(
+      `SELECT operation_count, operation_manifest_digest,
+              controller_operation_count, controller_operation_manifest_digest, sealed_at
+       FROM review_publication_generations
+       WHERE repository_id = $1 AND pr_number = $2`,
+      [repositoryId, fixture.prNumber],
+    );
+    expect(generation.rows[0]).toMatchObject({
+      operation_count: 4,
+      operation_manifest_digest: manifestDigest(fixture.cliOperations!),
+      controller_operation_count: 6,
+      controller_operation_manifest_digest: controllerManifestDigest(fixture.operations),
+    });
+    expect(generation.rows[0]!.sealed_at).toBeInstanceOf(Date);
+    const edges = await pool.query<{ dependency_operation_key: string }>(
+      `SELECT dependency_operation_key
+       FROM review_publication_operation_dependencies
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3
+       ORDER BY dependency_position`,
+      [repositoryId, fixture.prNumber, fourth.operationKey],
+    );
+    expect(edges.rows.map((row) => row.dependency_operation_key)).toEqual(fourth.dependencies);
+    await expect(insertOperation(fixture, makeOperation({ ordinal: 5 }))).rejects.toThrow(
+      "sealed publication generations cannot accept operations",
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO review_publication_operation_dependencies
+           (repository_id, pr_number, publication_generation, operation_key,
+            dependency_position, dependency_operation_key)
+         VALUES ($1, $2, $3, $4, 0, $5)`,
+        [repositoryId, fixture.prNumber, fixture.generation, first.operationKey, second.operationKey],
       ),
-    ).toEqual(new Set(SIGNED_PLAN_OPERATION_KEYS));
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: "b".repeat(64),
-      }),
-    ).rejects.toThrow("review_publication_operations_key_check");
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: `github-publication-v1:postil/review:sha256:${"e".repeat(64)}`,
-      }),
-    ).rejects.toThrow("review_publication_operations_key_check");
+    ).rejects.toThrow("sealed publication generations cannot accept dependency edges");
   });
 
-  test("binds exact accepted plan bytes separately from CLI semantic identity", async () => {
-    const prNumber = 710;
-    const headSha = "0".repeat(40);
-    const targetSha = "f".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-    const planText = '{"version":"github-publication-v1", "operations":[]}';
-    const semanticDigest = "5".repeat(64);
-    await insertGeneration({
-      prNumber,
-      generation: 1,
+  test("rejects plan-envelope, manifest, forward-edge, and exact-byte mismatches", async () => {
+    const headSha = "8".repeat(40);
+    const reviewId = await createReview({ prNumber: 102, headSha });
+    const operation = makeOperation({ ordinal: 1 });
+    const fixture = publicationFixture({
+      repositoryId,
+      prNumber: 102,
+      generation: "1",
       reviewId,
       inputDigest: INPUT_ONE,
       headSha,
-      targetSha,
-      acceptedPlanText: planText,
-      planSemanticDigest: semanticDigest,
+      cliOperations: [operation],
+    });
+    await expect(insertGeneration({
+      ...fixture,
+      planMutator: (plan) => {
+        plan.controllerGeneration = "2";
+      },
+    })).rejects.toThrow("accepted publication plan does not match");
+
+    await insertGeneration(fixture);
+    const wrongBytes = Buffer.from(`${operation.operationRecordBytes.toString()} `);
+    await insertOperation(fixture, operation, pool, { operationRecordBytes: wrongBytes });
+    for (const serviceOperation of fixture.operations.slice(1)) {
+      await insertOperation(fixture, serviceOperation);
+      await insertDependencyEdges(fixture, serviceOperation);
+    }
+    await expect(insertHighWater(fixture)).rejects.toThrow(
+      "stored CLI operations do not match the accepted CLI plan",
+    );
+    await pool.query(
+      `UPDATE review_publication_generations SET operation_manifest_digest = $3
+       WHERE repository_id = $1 AND pr_number = $2`,
+      [repositoryId, fixture.prNumber, `sha256:${"f".repeat(64)}`],
+    ).then(
+      () => { throw new Error("generation mutation unexpectedly succeeded"); },
+      (error) => expect(String(error)).toContain("review publication generation is immutable"),
+    );
+
+    const forwardFirst = makeOperation({ ordinal: 1 });
+    const forwardSecond = makeOperation({
+      ordinal: 2,
+      dependencies: [forwardFirst.operationKey],
+    });
+    const forwardHead = "9".repeat(40);
+    const forwardReview = await createReview({ prNumber: 103, headSha: forwardHead });
+    const forwardFixture = publicationFixture({
+      repositoryId,
+      prNumber: 103,
+      generation: "1",
+      reviewId: forwardReview,
+      inputDigest: INPUT_ONE,
+      headSha: forwardHead,
+      cliOperations: [forwardFirst, forwardSecond],
+    });
+    await insertGeneration(forwardFixture);
+    for (const publicationOperation of forwardFixture.operations) {
+      await insertOperation(forwardFixture, publicationOperation);
+      if (publicationOperation.operationSource === "service") {
+        await insertDependencyEdges(forwardFixture, publicationOperation);
+      }
+    }
+    await expect(
+      pool.query(
+        `INSERT INTO review_publication_operation_dependencies
+           (repository_id, pr_number, publication_generation, operation_key,
+            dependency_position, dependency_operation_key)
+         VALUES ($1, $2, 1, $3, 0, $4)`,
+        [repositoryId, forwardFixture.prNumber, forwardFirst.operationKey, forwardSecond.operationKey],
+      ),
+    ).rejects.toThrow("must reference an earlier ordinal");
+    await expect(insertHighWater(forwardFixture)).rejects.toThrow(
+      "dependency edges do not match the accepted operations",
+    );
+  });
+
+  test("authenticates the combined controller manifest without mutating accepted CLI intent", async () => {
+    const exactBytesHead = "2".repeat(40);
+    const exactBytesReview = await createReview({ prNumber: 110, headSha: exactBytesHead });
+    const exactBytesFixture = publicationFixture({
+      repositoryId,
+      prNumber: 110,
+      generation: "1",
+      reviewId: exactBytesReview,
+      inputDigest: INPUT_ONE,
+      headSha: exactBytesHead,
+      cliOperations: [makeOperation({ ordinal: 1 })],
+    });
+    await expect(insertGeneration({
+      ...exactBytesFixture,
+      controllerManifestBytes: Buffer.from("{}"),
+    })).rejects.toThrow("review_publication_generations_controller_manifest_check");
+
+    const omittedHead = "3".repeat(40);
+    const omittedReview = await createReview({ prNumber: 111, headSha: omittedHead });
+    const omittedFixture = publicationFixture({
+      repositoryId,
+      prNumber: 111,
+      generation: "1",
+      reviewId: omittedReview,
+      inputDigest: INPUT_ONE,
+      headSha: omittedHead,
+      cliOperations: [makeOperation({ ordinal: 1 })],
+    });
+    await insertGeneration({
+      ...omittedFixture,
+      controllerManifestMutator: (manifest) => {
+        manifest.operations = (manifest.operations as unknown[]).slice(1);
+      },
+    });
+    for (const publicationOperation of omittedFixture.operations) {
+      await insertOperation(omittedFixture, publicationOperation);
+      await insertDependencyEdges(omittedFixture, publicationOperation);
+    }
+    await expect(insertHighWater(omittedFixture)).rejects.toThrow(
+      "stored publication operations do not match the controller manifest",
+    );
+
+    const alteredHead = "4".repeat(40);
+    const alteredReview = await createReview({ prNumber: 112, headSha: alteredHead });
+    const alteredFixture = publicationFixture({
+      repositoryId,
+      prNumber: 112,
+      generation: "1",
+      reviewId: alteredReview,
+      inputDigest: INPUT_ONE,
+      headSha: alteredHead,
+      cliOperations: [makeOperation({ ordinal: 1 })],
+    });
+    await insertGeneration({
+      ...alteredFixture,
+      controllerManifestMutator: (manifest) => {
+        const records = structuredClone(manifest.operations as Record<string, unknown>[]);
+        const firstOperation = records[0]!.operation as Record<string, unknown>;
+        firstOperation.operationKey = REAL_OPERATION_KEYS[3];
+        manifest.operations = records;
+      },
+    });
+    for (const publicationOperation of alteredFixture.operations) {
+      await insertOperation(alteredFixture, publicationOperation);
+      await insertDependencyEdges(alteredFixture, publicationOperation);
+    }
+    await expect(insertHighWater(alteredFixture)).rejects.toThrow(
+      "stored publication operations do not match the controller manifest",
+    );
+
+    const digestHead = "5".repeat(40);
+    const digestReview = await createReview({ prNumber: 113, headSha: digestHead });
+    const digestFixture = publicationFixture({
+      repositoryId,
+      prNumber: 113,
+      generation: "1",
+      reviewId: digestReview,
+      inputDigest: INPUT_ONE,
+      headSha: digestHead,
+      cliOperations: [makeOperation({ ordinal: 1 })],
+    });
+    await insertGeneration({
+      ...digestFixture,
+      controllerOperationManifestDigest: `sha256:${"0".repeat(64)}`,
+    });
+    for (const publicationOperation of digestFixture.operations) {
+      await insertOperation(digestFixture, publicationOperation);
+      await insertDependencyEdges(digestFixture, publicationOperation);
+    }
+    await expect(insertHighWater(digestFixture)).rejects.toThrow(
+      "stored publication operations do not match the controller manifest",
+    );
+  });
+
+  test("bounds combined operation, dependency, and controller-manifest amplification", async () => {
+    const oversizedCliOperations = Array.from({ length: 127 }, (_, index) => makeOperation({
+      ordinal: index + 1,
+      operationKey: `github-publication-v1:composite-review:sha256:${sha256(`operation-${index + 1}`)}`,
+    }));
+    const operationHead = "6".repeat(40);
+    const operationReview = await createReview({ prNumber: 114, headSha: operationHead });
+    const operationFixture = publicationFixture({
+      repositoryId,
+      prNumber: 114,
+      generation: "1",
+      reviewId: operationReview,
+      inputDigest: INPUT_ONE,
+      headSha: operationHead,
+      cliOperations: oversizedCliOperations,
+    });
+    await expect(insertGeneration(operationFixture)).rejects.toThrow(
+      "review_publication_generations_cli_operation_manifest_check",
+    );
+
+    const dependencyHead = "7".repeat(40);
+    const dependencyReview = await createReview({ prNumber: 115, headSha: dependencyHead });
+    const dependencies = Array.from(
+      { length: 128 },
+      (_, index) => `github-publication-v1:composite-review:sha256:${sha256(`dependency-${index}`)}`,
+    );
+    const dependencyOperation = makeOperation({ ordinal: 1, dependencies });
+    const dependencyFixture = publicationFixture({
+      repositoryId,
+      prNumber: 115,
+      generation: "1",
+      reviewId: dependencyReview,
+      inputDigest: INPUT_ONE,
+      headSha: dependencyHead,
+      cliOperations: [dependencyOperation],
+    });
+    await insertGeneration(dependencyFixture);
+    await expect(insertOperation(dependencyFixture, dependencyOperation)).rejects.toThrow(
+      "review_publication_operations_record_check",
+    );
+
+    const bytesHead = "8".repeat(40);
+    const bytesReview = await createReview({ prNumber: 116, headSha: bytesHead });
+    const bytesFixture = publicationFixture({
+      repositoryId,
+      prNumber: 116,
+      generation: "1",
+      reviewId: bytesReview,
+      inputDigest: INPUT_ONE,
+      headSha: bytesHead,
+      cliOperations: [makeOperation({ ordinal: 1 })],
+    });
+    await expect(insertGeneration({
+      ...bytesFixture,
+      controllerManifestMutator: (manifest) => {
+        manifest.padding = "x".repeat(8 * 1024 * 1024);
+      },
+    })).rejects.toThrow("review_publication_generations_controller_manifest_check");
+  });
+
+  test("serializes concurrent first-generation sealing and rejects post-seal insertion", async () => {
+    const fixture = await preparePublication({ prNumber: 104, seal: false });
+    const first = await pool.connect();
+    const second = await pool.connect();
+    try {
+      const results = await Promise.allSettled([
+        insertHighWater(fixture, first),
+        insertHighWater(fixture, second),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+      const highWater = await pool.query<{ count: string }>(
+        `SELECT count(*) FROM pull_request_publication_high_waters
+         WHERE repository_id = $1 AND pr_number = $2`,
+        [repositoryId, fixture.prNumber],
+      );
+      expect(highWater.rows[0]!.count).toBe("1");
+      await expect(
+        insertOperation(fixture, makeOperation({ ordinal: 2 })),
+      ).rejects.toThrow("sealed publication generations cannot accept operations");
+    } finally {
+      first.release();
+      second.release();
+    }
+  });
+
+  test("allows one active operation and atomically rejects an independent concurrent claim", async () => {
+    const first = makeOperation({ ordinal: 1 });
+    const second = makeOperation({ ordinal: 2 });
+    const fixture = await preparePublication({ prNumber: 105, operations: [first, second] });
+    await claimOperation({ fixture, operation: first });
+    await expect(claimOperation({
+      fixture,
+      operation: second,
+      owner: "worker-two",
+    })).rejects.toThrow("review_publication_operations_single_active_idx");
+    const rejectedClaims = await pool.query<{ count: string }>(
+      `SELECT count(*) FROM review_publication_operation_attempts
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+      [repositoryId, fixture.prNumber, second.operationKey],
+    );
+    expect(rejectedClaims.rows[0]!.count).toBe("0");
+    await insertAttempt({
+      fixture,
+      operation: first,
+      phase: "not_dispatched",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+    });
+    await pool.query(
+      `UPDATE review_publication_operations
+       SET state = 'pending', claim_owner = NULL, lease_id = NULL,
+           lease_expires_at = NULL, selected_variant = NULL,
+           updated_at = clock_timestamp()
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+      [repositoryId, fixture.prNumber, first.operationKey],
+    );
+    await claimOperation({ fixture, operation: second, owner: "worker-two" });
+    const active = await pool.query<{ operation_key: string; state: string }>(
+      `SELECT operation_key, state FROM review_publication_operations
+       WHERE repository_id = $1 AND pr_number = $2 AND state IN ('applying', 'unknown')`,
+      [repositoryId, fixture.prNumber],
+    );
+    expect(active.rows).toEqual([{ operation_key: second.operationKey, state: "applying" }]);
+  });
+
+  test("rejects live lease theft, permits renewal, and requires expiry for reclaim", async () => {
+    const fixture = await preparePublication({ prNumber: 106 });
+    const operation = fixture.operations[0]!;
+    const initialLease = randomUUID();
+    await claimOperation({
+      fixture,
+      operation,
+      leaseId: initialLease,
+      updatedOffset: "1 second",
+      expiresOffset: "2 seconds",
+    });
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operations
+         SET attempt_count = 2, lease_generation = 2, claim_owner = 'thief',
+             lease_id = $4, selected_variant = 'fallback',
+             lease_expires_at = clock_timestamp() + interval '10 minutes',
+             updated_at = clock_timestamp() + interval '1500 milliseconds'
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey, randomUUID()],
+      ),
+    ).rejects.toThrow("requires an expired undispatched attempt");
+    await pool.query(
+      `UPDATE review_publication_operations
+       SET lease_expires_at = lease_expires_at + interval '1 second',
+           updated_at = updated_at + interval '100 milliseconds'
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+      [repositoryId, fixture.prNumber, operation.operationKey],
+    );
+    await pool.query(
+      `UPDATE review_publication_operations
+       SET attempt_count = 2, lease_generation = 2, claim_owner = 'worker-two',
+           lease_id = $4, selected_variant = 'fallback',
+           lease_expires_at = clock_timestamp() + interval '10 minutes',
+           updated_at = clock_timestamp() + interval '4 seconds'
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+      [repositoryId, fixture.prNumber, operation.operationKey, randomUUID()],
+    );
+    const attempts = await pool.query<{
+      attempt_number: number;
+      lease_generation: string;
+      selected_variant: string;
+    }>(
+      `SELECT attempt_number, lease_generation, selected_variant
+       FROM review_publication_operation_attempts
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3
+       ORDER BY attempt_number`,
+      [repositoryId, fixture.prNumber, operation.operationKey],
+    );
+    expect(attempts.rows).toEqual([
+      { attempt_number: 1, lease_generation: "1", selected_variant: "primary" },
+      { attempt_number: 2, lease_generation: "2", selected_variant: "fallback" },
+    ]);
+  });
+
+  test("requires attempt-bound ambiguity and fresh exact-absence reconciliation for each retry", async () => {
+    const fixture = await preparePublication({ prNumber: 107 });
+    const operation = fixture.operations[0]!;
+    const firstClaim = await claimOperation({ fixture, operation, variant: "primary" });
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "dispatched",
+      attemptNumber: firstClaim.attempt_count,
+      leaseGeneration: firstClaim.lease_generation,
+      variant: "primary",
+    });
+    await expect(insertAttempt({
+      fixture,
+      operation,
+      phase: "not_dispatched",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+    })).rejects.toThrow("dispatched attempts require remote outcome evidence");
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "ambiguous",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      error: "response lost after dispatch",
+    });
+    await moveToUnknown({
+      fixture,
+      operation,
+      error: "response lost after dispatch",
+    });
+    await expect(claimOperation({ fixture, operation, variant: "fallback" })).rejects.toThrow(
+      "invalid publication operation state transition",
+    );
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operations
+         SET state = 'pending', selected_variant = NULL, updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      ),
+    ).rejects.toThrow("requires fresh exact-absence reconciliation");
+    await insertReconciliation({
+      fixture,
+      operation,
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      phase: "retry",
+      outcome: "exact_absence",
+    });
+    await pool.query(
+      `UPDATE review_publication_operations
+       SET state = 'pending', selected_variant = NULL, updated_at = clock_timestamp()
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+      [repositoryId, fixture.prNumber, operation.operationKey],
+    );
+
+    const secondClaim = await claimOperation({ fixture, operation, variant: "fallback" });
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "dispatched",
+      attemptNumber: secondClaim.attempt_count,
+      leaseGeneration: secondClaim.lease_generation,
+      variant: "fallback",
+    });
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "ambiguous",
+      attemptNumber: 2,
+      leaseGeneration: "2",
+      variant: "fallback",
+      error: "timeout after fallback dispatch",
+    });
+    await moveToUnknown({
+      fixture,
+      operation,
+      error: "timeout after fallback dispatch",
+    });
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operations
+         SET state = 'pending', selected_variant = NULL, updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      ),
+    ).rejects.toThrow("requires fresh exact-absence reconciliation");
+    await insertReconciliation({
+      fixture,
+      operation,
+      attemptNumber: 2,
+      leaseGeneration: "2",
+      variant: "fallback",
+      phase: "terminal",
+      outcome: "applied",
+    });
+    await pool.query(
+      `UPDATE review_publication_operations
+       SET state = 'applied', last_error = NULL, updated_at = clock_timestamp()
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+      [repositoryId, fixture.prNumber, operation.operationKey],
+    );
+    const evidence = await pool.query<{ attempts: string; reconciliations: string }>(
+      `SELECT
+         (SELECT count(*) FROM review_publication_operation_attempts
+          WHERE repository_id = $1 AND pr_number = $2)::text AS attempts,
+         (SELECT count(*) FROM review_publication_operation_reconciliations
+          WHERE repository_id = $1 AND pr_number = $2)::text AS reconciliations`,
+      [repositoryId, fixture.prNumber],
+    );
+    expect(evidence.rows[0]).toEqual({ attempts: "6", reconciliations: "2" });
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operation_reconciliations
+         SET evidence_payload = '{"rewritten":true}'::jsonb
+         WHERE repository_id = $1 AND pr_number = $2`,
+        [repositoryId, fixture.prNumber],
+      ),
+    ).rejects.toThrow("append-only");
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operation_attempts
+         SET evidence_payload = '{"rewritten":true}'::jsonb
+         WHERE repository_id = $1 AND pr_number = $2 AND phase = 'ambiguous'`,
+        [repositoryId, fixture.prNumber],
+      ),
+    ).rejects.toThrow("append-only");
+    await expect(
+      pool.query(
+        `DELETE FROM review_publication_operation_attempts
+         WHERE repository_id = $1 AND pr_number = $2`,
+        [repositoryId, fixture.prNumber],
+      ),
+    ).rejects.toThrow("append-only");
+  });
+
+  test("rejects empty evidence and escaped-mutation terminal claims", async () => {
+    const fixture = await preparePublication({ prNumber: 108 });
+    const operation = fixture.operations[0]!;
+    await claimOperation({ fixture, operation });
+    await expect(insertAttempt({
+      fixture,
+      operation,
+      phase: "dispatched",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      evidence: {},
+    })).rejects.toThrow("review_publication_operation_attempts_payload_check");
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "dispatched",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+    });
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operations
+         SET state = 'failed', claim_owner = NULL, lease_id = NULL,
+             lease_expires_at = NULL, last_error = 'failed after dispatch',
+             terminal_evidence = '{"reason":"failed"}'::jsonb,
+             updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      ),
+    ).rejects.toThrow("requires proof no mutation was dispatched");
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "ambiguous",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      error: "unknown remote result",
+    });
+    await moveToUnknown({ fixture, operation, error: "unknown remote result" });
+    await expect(insertReconciliation({
+      fixture,
+      operation,
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      phase: "retry",
+      outcome: "exact_absence",
+      evidence: {},
+    })).rejects.toThrow("review_publication_operation_reconciliations_payload_check");
+    const pendingFixture = await preparePublication({ prNumber: 208 });
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operations
+         SET state = 'skipped', terminal_evidence = '{}'::jsonb,
+             updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, pendingFixture.prNumber, pendingFixture.operations[0]!.operationKey],
+      ),
+    ).rejects.toThrow("review_publication_operations_terminal_evidence_check");
+  });
+
+  test("models compensation as a separate immutable dependent operation", async () => {
+    const primary = makeOperation({ ordinal: 1 });
+    const compensation = makeOperation({
+      ordinal: 2,
+      operationKey: operationKey("file-comment-fallback", 4),
+      dependencies: [primary.operationKey],
+      activation: {
+        anyOf: [{
+          condition: "reviewSelectionTerminal",
+          selectedReviewOperationKeys: [primary.operationKey],
+        }],
+      },
+      kind: "fileCommentFallback",
+      body: "compensating publication intent",
+    });
+    const fixture = await preparePublication({
+      prNumber: 109,
+      operations: [primary, compensation],
     });
     const stored = await pool.query<{
-      accepted_plan_digest: string;
-      plan_semantic_digest: string;
-      plan_text: string;
-      target_sha: string;
+      operation_key: string;
+      dependencies: unknown;
+      state: string;
     }>(
-      `SELECT accepted_plan_digest, plan_semantic_digest,
-              convert_from(accepted_plan_bytes, 'UTF8') AS plan_text, target_sha
-         FROM review_publication_generations
-        WHERE repository_id = $1 AND pr_number = $2`,
-      [repositoryId, prNumber],
+      `SELECT operation_key, operation_record->'dependencies' AS dependencies, state
+       FROM review_publication_operations
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_source = 'cli'
+       ORDER BY operation_ordinal`,
+      [repositoryId, fixture.prNumber],
     );
-    expect(stored.rows[0]).toEqual({
-      accepted_plan_digest: sha256(planText),
-      plan_semantic_digest: semanticDigest,
-      plan_text: planText,
-      target_sha: targetSha,
-    });
-    expect(stored.rows[0]!.accepted_plan_digest).not.toBe(semanticDigest);
-
-    for (const [column, value] of [
-      ["accepted_plan_bytes", Buffer.from('{"version":"github-publication-v2"}')],
-      ["plan_semantic_digest", "6".repeat(64)],
-      ["target_sha", "e".repeat(40)],
-    ] as const) {
-      await expect(
-        pool.query(
-          `UPDATE review_publication_generations SET ${column} = $3
-            WHERE repository_id = $1 AND pr_number = $2`,
-          [repositoryId, prNumber, value],
-        ),
-      ).rejects.toThrow("review publication generation is immutable");
-    }
+    expect(stored.rows).toEqual([
+      { operation_key: primary.operationKey, dependencies: [], state: "pending" },
+      {
+        operation_key: compensation.operationKey,
+        dependencies: [primary.operationKey],
+        state: "pending",
+      },
+    ]);
     await expect(
-      insertGeneration({
-        prNumber,
-        generation: 2,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-        acceptedPlanText: planText,
-        acceptedPlanDigest: "0".repeat(64),
-      }),
-    ).rejects.toThrow("review_publication_generations_plan_check");
-    await expect(
-      insertGeneration({
-        prNumber,
-        generation: 2,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-        acceptedPlanText: planText,
-        acceptedPlanBytes: Buffer.from('{"version":"different"}'),
-      }),
-    ).rejects.toThrow("review_publication_generations_plan_check");
-    await expect(
-      insertGeneration({
-        prNumber,
-        generation: 2,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-        planSemanticDigest: "invalid",
-      }),
-    ).rejects.toThrow("review_publication_generations_plan_semantic_digest_check");
-    await expect(
-      insertGeneration({
-        prNumber,
-        generation: 2,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-        targetSha: "invalid",
-      }),
-    ).rejects.toThrow("review_publication_generations_target_sha_check");
-    await expect(
-      insertGeneration({
-        prNumber,
-        generation: 2,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-        reviewInputSequence: 0,
-      }),
-    ).rejects.toThrow("review_publication_generations_review_input_sequence_check");
+      pool.query(
+        `UPDATE review_publication_operations
+         SET state = 'compensating', updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, primary.operationKey],
+      ),
+    ).rejects.toThrow("invalid publication operation state transition");
+    const columns = await pool.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'review_publication_operations'
+         AND column_name LIKE 'compensation%'`,
+    );
+    expect(columns.rows).toEqual([]);
   });
 
-  test("rejects malformed identities and generations that do not match their reviews", async () => {
-    const prNumber = 701;
-    const headSha = "d".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-
-    await expect(
-      insertGeneration({
-        prNumber,
-        generation: 1,
-        reviewId,
-        inputDigest: "not-a-digest",
-        headSha,
-      }),
-    ).rejects.toThrow("review_publication_generations_input_digest_check");
-    await expect(
-      insertGeneration({
-        prNumber: prNumber + 1,
-        generation: 1,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-      }),
-    ).rejects.toThrow("does not match its review identity");
-    await expect(
-      insertGeneration({
-        prNumber,
-        generation: 0,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-      }),
-    ).rejects.toThrow("review_publication_generations_generation_check");
-  });
-
-  test("rejects every malformed publication identity and recovery bound", async () => {
-    const prNumber = 704;
-    const headSha = "8".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-    await insertGeneration({
-      prNumber,
-      generation: 1,
-      reviewId,
-      inputDigest: INPUT_ONE,
-      headSha,
+  test("retains two generations across review deletion and rejects rollback or direct child deletion", async () => {
+    const hierarchy = await createHierarchy(20);
+    const first = await preparePublication({
+      repositoryId: hierarchy.repositoryId,
+      repositoryFullName: hierarchy.repositoryFullName,
+      prNumber: 201,
+      generation: "1",
     });
-
-    const zeroPrReviewId = await createReview(0, headSha);
-    await expect(
-      insertGeneration({
-        prNumber: 0,
-        generation: 1,
-        reviewId: zeroPrReviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-      }),
-    ).rejects.toThrow("review_publication_generations_pr_number_check");
-    const malformedHeadReviewId = await createReview(prNumber + 1, "invalid");
-    await expect(
-      insertGeneration({
-        prNumber: prNumber + 1,
-        generation: 1,
-        reviewId: malformedHeadReviewId,
-        inputDigest: INPUT_ONE,
-        headSha: "invalid",
-      }),
-    ).rejects.toThrow("review_publication_generations_head_sha_check");
-
-    const invalidHighWaters: Array<[number, number, string, string, string]> = [
-      [0, 1, INPUT_ONE, headSha, "pull_request_publication_high_waters_pr_number_check"],
-      [prNumber, 0, INPUT_ONE, headSha, "pull_request_publication_high_waters_generation_check"],
-      [prNumber, 1, "invalid", headSha, "pull_request_publication_high_waters_input_digest_check"],
-    ];
-    for (const [invalidPr, generation, digest, head, constraint] of invalidHighWaters) {
-      await expect(
-        pool.query(
-          `INSERT INTO pull_request_publication_high_waters
-            (repository_id, pr_number, publication_generation, accepted_review_id,
-             accepted_input_digest, accepted_head_sha)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [repositoryId, invalidPr, generation, reviewId, digest, head],
-        ),
-      ).rejects.toThrow(constraint);
-    }
-
-    const validOperation = {
-      prNumber,
-      generation: 1,
-      key: operationKey(40),
-      kind: "review",
-      payload: JSON.stringify({ review: true }),
-      digest: payloadDigest({ review: true }),
-      state: "pending",
-      attempts: 0,
-      deadline: null as string | null,
-      error: null as string | null,
-      remoteIdentity: null as string | null,
-      remoteOperationId: null as string | null,
-    };
-    const invalidOperations: Array<[
-      Partial<typeof validOperation>,
-      string,
-    ]> = [
-      [{ prNumber: 0 }, "review_publication_operations_pr_number_check"],
-      [{ generation: 0 }, "review_publication_operations_generation_check"],
-      [{ kind: "Invalid kind" }, "review_publication_operations_kind_check"],
-      [{ payload: "[]" }, "review_publication_operations_payload_check"],
-      [{ digest: "invalid" }, "review_publication_operations_payload_digest_check"],
-      [{ deadline: "2000-01-01T00:00:00.000Z" }, "review_publication_operations_deadline_check"],
-      [{ error: "" }, "review_publication_operations_error_check"],
-      [{ error: "x".repeat(4001) }, "review_publication_operations_error_check"],
-      [{ remoteIdentity: "" }, "review_publication_operations_remote_identity_check"],
-      [{ remoteIdentity: "x".repeat(501) }, "review_publication_operations_remote_identity_check"],
-      [{ remoteOperationId: "" }, "review_publication_operations_remote_operation_id_check"],
-      [{ remoteOperationId: "x".repeat(501) }, "review_publication_operations_remote_operation_id_check"],
-    ];
-    for (const [caseIndex, [override, constraint]] of invalidOperations.entries()) {
-      const operation = {
-        ...validOperation,
-        ...override,
-        key: operationKey(41 + caseIndex),
-      };
-      await expect(
-        insertRawOperation({
-          prNumber: operation.prNumber,
-          generation: operation.generation,
-          reviewId,
-          key: operation.key,
-          kind: operation.kind,
-          payload: operation.payload,
-          digest: operation.digest,
-          state: operation.state,
-          attempts: operation.attempts,
-          deadlineAt: operation.deadline,
-          lastError: operation.error,
-          remoteIdentity: operation.remoteIdentity,
-          remoteOperationId: operation.remoteOperationId,
-        }),
-      ).rejects.toThrow(constraint);
-    }
-  });
-
-  test("rejects high-water regression and identity changes without an advance", async () => {
-    const prNumber = 702;
-    const firstHead = "e".repeat(40);
-    const secondHead = "f".repeat(40);
-    const firstReviewId = await createReview(prNumber, firstHead);
-    const secondReviewId = await createReview(prNumber, secondHead);
-    await insertGeneration({
-      prNumber,
-      generation: 1,
-      reviewId: firstReviewId,
-      inputDigest: INPUT_ONE,
-      headSha: firstHead,
+    const secondHead = "d".repeat(40);
+    const secondOperation = makeOperation({ ordinal: 1, body: "generation two" });
+    const secondReviewId = await createReview({
+      repositoryId: hierarchy.repositoryId,
+      prNumber: 201,
+      headSha: secondHead,
     });
-    await insertHighWater({
-      prNumber,
-      generation: 1,
-      reviewId: firstReviewId,
-      inputDigest: INPUT_ONE,
-      headSha: firstHead,
-    });
-    await insertGeneration({
-      prNumber,
-      generation: 2,
+    const second = publicationFixture({
+      repositoryId: hierarchy.repositoryId,
+      prNumber: 201,
+      generation: "2",
       reviewId: secondReviewId,
       inputDigest: INPUT_TWO,
       headSha: secondHead,
+      cliOperations: [secondOperation],
     });
-
+    await insertGeneration({ ...second, repositoryFullName: hierarchy.repositoryFullName });
+    for (const publicationOperation of second.operations) {
+      await insertOperation(second, publicationOperation);
+      await insertDependencyEdges(second, publicationOperation);
+    }
+    await pool.query(
+      `UPDATE pull_request_publication_high_waters
+       SET publication_generation = 2, accepted_review_id = $3,
+           accepted_input_digest = $4, accepted_head_sha = $5,
+           updated_at = clock_timestamp()
+       WHERE repository_id = $1 AND pr_number = $2`,
+      [hierarchy.repositoryId, second.prNumber, second.reviewId, INPUT_TWO, secondHead],
+    );
+    await pool.query(`DELETE FROM public.reviews WHERE id = ANY($1::bigint[])`, [
+      [first.reviewId, second.reviewId],
+    ]);
+    const retained = await pool.query<{ generations: string; operations: string; high_waters: string }>(
+      `SELECT
+         (SELECT count(*) FROM review_publication_generations WHERE repository_id = $1)::text AS generations,
+         (SELECT count(*) FROM review_publication_operations WHERE repository_id = $1)::text AS operations,
+         (SELECT count(*) FROM pull_request_publication_high_waters WHERE repository_id = $1)::text AS high_waters`,
+      [hierarchy.repositoryId],
+    );
+    expect(retained.rows[0]).toEqual({ generations: "2", operations: "6", high_waters: "1" });
     await expect(
       pool.query(
         `UPDATE pull_request_publication_high_waters
-            SET pr_number = $3
-          WHERE repository_id = $1 AND pr_number = $2`,
-        [repositoryId, prNumber, prNumber + 100],
-      ),
-    ).rejects.toThrow("high-water identity is immutable");
-    await expect(
-      pool.query(
-        `UPDATE pull_request_publication_high_waters
-            SET repository_id = $3
-          WHERE repository_id = $1 AND pr_number = $2`,
-        [repositoryId, prNumber, repositoryId + 1],
-      ),
-    ).rejects.toThrow("high-water identity is immutable");
-    await expect(
-      pool.query(
-        `UPDATE pull_request_publication_high_waters
-            SET created_at = created_at + interval '1 second'
-          WHERE repository_id = $1 AND pr_number = $2`,
-        [repositoryId, prNumber],
-      ),
-    ).rejects.toThrow("high-water creation time is immutable");
-    await expect(
-      pool.query(
-        `UPDATE pull_request_publication_high_waters
-            SET accepted_input_digest = $3
-          WHERE repository_id = $1 AND pr_number = $2`,
-        [repositoryId, prNumber, INPUT_TWO],
-      ),
-    ).rejects.toThrow("identity requires a higher generation");
-    await expect(
-      pool.query(
-        `UPDATE pull_request_publication_high_waters
-            SET publication_generation = 0
-          WHERE repository_id = $1 AND pr_number = $2`,
-        [repositoryId, prNumber],
+         SET publication_generation = 1, accepted_review_id = $3,
+             accepted_input_digest = $4, accepted_head_sha = $5,
+             updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2`,
+        [hierarchy.repositoryId, first.prNumber, first.reviewId, INPUT_ONE, first.headSha],
       ),
     ).rejects.toThrow("generation cannot decrease");
     await expect(
       pool.query(
-        `UPDATE pull_request_publication_high_waters
-            SET publication_generation = 2,
-                accepted_review_id = $3,
-                accepted_input_digest = $4,
-                accepted_head_sha = $5
-          WHERE repository_id = $1 AND pr_number = $2`,
-        [repositoryId, prNumber, secondReviewId, INPUT_TWO, secondHead],
+        `DELETE FROM review_publication_generations
+         WHERE repository_id = $1 AND pr_number = $2`,
+        [hierarchy.repositoryId, first.prNumber],
       ),
-    ).rejects.toThrow("updates must advance updated_at");
-    await pool.query(
-      `UPDATE pull_request_publication_high_waters
-          SET publication_generation = 2,
-              accepted_review_id = $3,
-              accepted_input_digest = $4,
-              accepted_head_sha = $5,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2`,
-      [repositoryId, prNumber, secondReviewId, INPUT_TWO, secondHead],
+    ).rejects.toThrow("only be deleted by repository teardown");
+    await expect(
+      pool.query(
+        `DELETE FROM review_publication_operations
+         WHERE repository_id = $1 AND pr_number = $2`,
+        [hierarchy.repositoryId, first.prNumber],
+      ),
+    ).rejects.toThrow("only be deleted by repository teardown");
+    await pool.query(`DELETE FROM repositories WHERE id = $1`, [hierarchy.repositoryId]);
+    const removed = await pool.query<{ generations: string; operations: string; high_waters: string }>(
+      `SELECT
+         (SELECT count(*) FROM review_publication_generations WHERE repository_id = $1)::text AS generations,
+         (SELECT count(*) FROM review_publication_operations WHERE repository_id = $1)::text AS operations,
+         (SELECT count(*) FROM pull_request_publication_high_waters WHERE repository_id = $1)::text AS high_waters`,
+      [hierarchy.repositoryId],
     );
-    await expect(
-      pool.query(
-        `INSERT INTO pull_request_publication_high_waters
-          (repository_id, pr_number, publication_generation, accepted_review_id, accepted_input_digest, accepted_head_sha)
-         VALUES ($1, $2, 2, $3, $4, $5)`,
-        [repositoryId, prNumber, secondReviewId, INPUT_TWO, "not-a-sha"],
-      ),
-    ).rejects.toThrow("pull_request_publication_high_waters_head_sha_check");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_generations
-            SET created_at = created_at + interval '1 second'
-          WHERE repository_id = $1 AND pr_number = $2 AND publication_generation = 1`,
-        [repositoryId, prNumber],
-      ),
-    ).rejects.toThrow("review publication generation is immutable");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_generations
-            SET accepted_input_digest = $3
-          WHERE repository_id = $1 AND pr_number = $2 AND publication_generation = 1`,
-        [repositoryId, prNumber, INPUT_TWO],
-      ),
-    ).rejects.toThrow("review publication generation is immutable");
+    expect(removed.rows[0]).toEqual({ generations: "0", operations: "0", high_waters: "0" });
   });
 
-  test("enforces ordered operation dependencies and exact payload-byte digests", async () => {
-    const prNumber = 711;
-    const headSha = "7".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-    await insertGeneration({
-      prNumber,
-      generation: 1,
-      reviewId,
-      inputDigest: INPUT_ONE,
-      headSha,
+  test("cascades the complete publication audit only from installation teardown", async () => {
+    const hierarchy = await createHierarchy(21);
+    const fixture = await preparePublication({
+      repositoryId: hierarchy.repositoryId,
+      repositoryFullName: hierarchy.repositoryFullName,
+      prNumber: 202,
     });
-    const exactPayload = '{\n  "check":"postil/review"\n}';
-    await insertRawOperation({
-      prNumber,
-      reviewId,
-      key: operationKey(200),
-      ordinal: 0,
-      payload: exactPayload,
+    await claimOperation({ fixture, operation: fixture.operations[0]! });
+    await insertAttempt({
+      fixture,
+      operation: fixture.operations[0]!,
+      phase: "dispatched",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
     });
-    await insertRawOperation({
-      prNumber,
-      reviewId,
-      key: operationKey(201),
-      ordinal: 1,
-      dependencyKey: operationKey(200),
-      activationCondition: "after_dependency_applied",
+    await insertAttempt({
+      fixture,
+      operation: fixture.operations[0]!,
+      phase: "ambiguous",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      error: "ambiguous installation teardown fixture",
     });
-    const payloadIdentity = await pool.query<{
-      desired_payload_digest: string;
-      exact_payload: string;
-      jsonb_payload: string;
-    }>(
-      `SELECT desired_payload_digest,
-              convert_from(desired_payload_bytes, 'UTF8') AS exact_payload,
-              desired_payload::text AS jsonb_payload
-         FROM review_publication_operations
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_ordinal = 0`,
-      [repositoryId, prNumber],
-    );
-    expect(payloadIdentity.rows[0]).toEqual({
-      desired_payload_digest: sha256(exactPayload),
-      exact_payload: exactPayload,
-      jsonb_payload: '{"check": "postil/review"}',
+    await moveToUnknown({
+      fixture,
+      operation: fixture.operations[0]!,
+      error: "ambiguous installation teardown fixture",
     });
-    expect(payloadIdentity.rows[0]!.exact_payload).not.toBe(
-      payloadIdentity.rows[0]!.jsonb_payload,
-    );
-
-    await insertRawOperation({
-      prNumber,
-      reviewId,
-      key: operationKey(204),
-      ordinal: 4,
+    await insertReconciliation({
+      fixture,
+      operation: fixture.operations[0]!,
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      phase: "terminal",
+      outcome: "applied",
     });
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(203),
-        ordinal: 3,
-        dependencyKey: operationKey(204),
-        activationCondition: "after_dependency_applied",
-      }),
-    ).rejects.toThrow("dependency must be an earlier operation in the same generation");
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(205),
-        ordinal: 2,
-        dependencyKey: operationKey(200),
-        activationCondition: "immediate",
-      }),
-    ).rejects.toThrow("review_publication_operations_activation_check");
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(206),
-        ordinal: 2,
-        activationCondition: "after_dependency_terminal",
-      }),
-    ).rejects.toThrow("review_publication_operations_activation_check");
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(207),
-        ordinal: 1,
-      }),
-    ).rejects.toThrow("review_publication_operations_ordinal_idx");
-    for (const [column, value] of [
-      ["operation_ordinal", 9],
-      ["dependency_operation_key", operationKey(204)],
-      ["activation_condition", "after_dependency_terminal"],
-      ["desired_payload_bytes", Buffer.from('{"check":"postil/gate"}')],
-    ] as const) {
-      await expect(
-        pool.query(
-          `UPDATE review_publication_operations SET ${column} = $4
-            WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-          [repositoryId, prNumber, operationKey(201), value],
-        ),
-      ).rejects.toThrow("operation intent is immutable");
-    }
-  });
-
-  test("requires non-empty immutable terminal and reconciliation evidence", async () => {
-    const prNumber = 712;
-    const headSha = "6".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-    await insertGeneration({
-      prNumber,
-      generation: 1,
-      reviewId,
-      inputDigest: INPUT_ONE,
-      headSha,
-    });
-    await insertRawOperation({
-      prNumber,
-      reviewId,
-      key: operationKey(210),
-      ordinal: 0,
-    });
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'skipped', result_payload = '{}'::jsonb,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(210)],
-      ),
-    ).rejects.toThrow("review_publication_operations_evidence_payloads_check");
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'skipped', result_payload = '{"reason":"dependency-not-selected"}'::jsonb,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(210)],
-    );
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET result_payload = NULL,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(210)],
-      ),
-    ).rejects.toThrow("result evidence is immutable");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'pending',
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(210)],
-      ),
-    ).rejects.toThrow("invalid review publication operation state transition");
-
-    await insertRawOperation({
-      prNumber,
-      reviewId,
-      key: operationKey(211),
-      ordinal: 1,
-    });
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'applying', attempt_count = 1, selected_variant = 'primary',
-              claim_owner = 'worker-one',
-              lease_id = '00000000-0000-4000-8000-000000000011',
-              lease_expires_at = clock_timestamp() + interval '5 minutes',
-              lease_generation = 1,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(211)],
-    );
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'unknown', selected_variant = NULL,
-                claim_owner = NULL, lease_id = NULL, lease_expires_at = NULL,
-                last_error = 'remote outcome unavailable',
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(211)],
-      ),
-    ).rejects.toThrow("result evidence is immutable");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'unknown', claim_owner = NULL, lease_id = NULL,
-                lease_expires_at = NULL,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(211)],
-      ),
-    ).rejects.toThrow("review_publication_operations_state_evidence_check");
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'unknown', claim_owner = NULL, lease_id = NULL,
-              lease_expires_at = NULL, last_error = 'remote outcome unavailable',
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(211)],
-    );
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'failed', last_error = 'remote outcome unavailable',
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(211)],
-      ),
-    ).rejects.toThrow("reconciliation requires an observation payload");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'failed', last_error = 'remote outcome unavailable',
-                reconciliation_payload = '{}'::jsonb,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(211)],
-      ),
-    ).rejects.toThrow("review_publication_operations_evidence_payloads_check");
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'failed', last_error = 'remote outcome unavailable',
-              reconciliation_payload = '{"remoteState":"unknown"}'::jsonb,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(211)],
-    );
-    for (const payload of [null, '{"remoteState":"absent"}']) {
-      await expect(
-        pool.query(
-          `UPDATE review_publication_operations SET reconciliation_payload = $4,
-                  updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-            WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-          [repositoryId, prNumber, operationKey(211), payload],
-        ),
-      ).rejects.toThrow("reconciliation evidence is immutable");
-    }
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(212),
-        ordinal: 2,
-        state: "applied",
-        remoteIdentity: "review-summary",
-        remoteOperationId: "9012",
-        remoteObservedAt: "2026-08-14T00:00:01.000Z",
-        appliedAt: "2026-08-14T00:00:01.000Z",
-        resultPayload: "{}",
-        selectedVariant: "primary",
-      }),
-    ).rejects.toThrow("review_publication_operations_evidence_payloads_check");
-  });
-
-  test("rejects mutable operation intent and invalid operation recovery values", async () => {
-    const prNumber = 703;
-    const headSha = "9".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-    await insertGeneration({
-      prNumber,
-      generation: 1,
-      reviewId,
-      inputDigest: INPUT_ONE,
-      headSha,
-    });
-    await insertHighWater({
-      prNumber,
-      generation: 1,
-      reviewId,
-      inputDigest: INPUT_ONE,
-      headSha,
-    });
-    await insertRawOperation({
-      prNumber,
-      reviewId,
-      key: operationKey(30),
-      payload: JSON.stringify({ review: true }),
-    });
-
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'applying', claim_owner = 'worker-one',
-                lease_id = '00000000-0000-4000-8000-000000000001',
-                lease_expires_at = clock_timestamp() + interval '5 minutes',
-                lease_generation = 1, selected_variant = 'primary',
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("claims must advance attempt count");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'applying', claim_owner = 'worker-one',
-                lease_id = '00000000-0000-4000-8000-000000000001',
-                lease_expires_at = clock_timestamp() + interval '5 minutes',
-                lease_generation = 1, attempt_count = 1, selected_variant = 'primary'
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("operation updates must advance updated_at");
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'applying',
-              claim_owner = 'worker-one',
-              lease_id = '00000000-0000-4000-8000-000000000001',
-              lease_expires_at = clock_timestamp() + interval '5 minutes',
-              lease_generation = 1, attempt_count = 1, selected_variant = 'primary',
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(30)],
-    );
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET selected_variant = 'fallback',
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("result evidence is immutable");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET desired_payload = '{"review":false}'::jsonb
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("operation intent is immutable");
-    for (const [column, value] of [
-      ["operation_key", operationKey(99)],
-      ["kind", "check"],
-      ["desired_payload_digest", payloadDigest({ review: false })],
+    await pool.query(`DELETE FROM installations WHERE id = $1`, [hierarchy.installationId]);
+    for (const table of [
+      "pull_request_publication_high_waters",
+      "review_publication_generations",
+      "review_publication_operations",
+      "review_publication_operation_attempts",
+      "review_publication_operation_reconciliations",
     ]) {
-      await expect(
-        pool.query(
-          `UPDATE review_publication_operations SET ${column} = $4
-            WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-          [repositoryId, prNumber, operationKey(30), value],
-        ),
-      ).rejects.toThrow("operation intent is immutable");
-    }
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET created_at = created_at + interval '1 second'
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("operation intent is immutable");
-    await expect(
-      insertRawOperation({ prNumber, reviewId, key: "invalid" }),
-    ).rejects.toThrow("review_publication_operations_key_check");
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(31),
-        state: "invalid-state",
-      }),
-    ).rejects.toThrow("review_publication_operations_state_check");
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(32),
-        attempts: -1,
-      }),
-    ).rejects.toThrow("review_publication_operations_attempt_count_check");
-
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET attempt_count = 2,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(30)],
-    );
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET attempt_count = 1,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("attempts cannot decrease");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET lease_generation = 0,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("lease generation cannot decrease");
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'applied', claim_owner = NULL, lease_id = NULL, lease_expires_at = NULL,
-              remote_identity = 'review-summary', remote_operation_id = '9001',
-              remote_observed_at = clock_timestamp(), applied_at = clock_timestamp(),
-              result_payload = '{"remoteIds":["9001"]}'::jsonb,
-              selected_variant = 'primary',
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(30)],
-    );
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET selected_variant = 'fallback',
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("result evidence is immutable");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'compensating', claim_owner = 'worker-two',
-                lease_id = '00000000-0000-4000-8000-000000000002',
-                lease_expires_at = clock_timestamp() + interval '5 minutes',
-                lease_generation = 2,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("claims must advance attempt count");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'pending', remote_identity = NULL, remote_operation_id = NULL,
-                remote_observed_at = NULL, applied_at = NULL,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("invalid review publication operation state transition");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'compensating', claim_owner = 'worker-two',
-                lease_id = '00000000-0000-4000-8000-000000000002',
-                lease_expires_at = clock_timestamp() + interval '5 minutes',
-                lease_generation = 2, attempt_count = 3,
-                remote_identity = NULL, remote_operation_id = NULL,
-                remote_observed_at = NULL, applied_at = NULL,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("result evidence is immutable");
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'compensating', claim_owner = 'worker-two',
-              lease_id = '00000000-0000-4000-8000-000000000002',
-              lease_expires_at = clock_timestamp() + interval '5 minutes',
-              lease_generation = 2, attempt_count = 3,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(30)],
-    );
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET claim_owner = 'stale-worker',
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("lease identity requires a higher generation");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET remote_identity = 'replacement-summary',
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("result evidence is immutable");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET result_payload = NULL,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("result evidence is immutable");
-    const staleUpdate = await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'unknown', claim_owner = NULL, lease_id = NULL, lease_expires_at = NULL,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3
-          AND lease_generation = 1
-          AND lease_id = '00000000-0000-4000-8000-000000000001'`,
-      [repositoryId, prNumber, operationKey(30)],
-    );
-    expect(staleUpdate.rowCount).toBe(0);
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET lease_generation = 1,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("lease generation cannot decrease");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'superseded', claim_owner = NULL, lease_id = NULL,
-                lease_expires_at = NULL,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("compensation requires observation evidence");
-    await expect(
-      pool.query(
-        `UPDATE review_publication_operations
-            SET state = 'superseded', claim_owner = NULL, lease_id = NULL,
-                lease_expires_at = NULL, compensated_at = clock_timestamp(),
-                compensation_payload = '{}'::jsonb,
-                updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-        [repositoryId, prNumber, operationKey(30)],
-      ),
-    ).rejects.toThrow("review_publication_operations_evidence_payloads_check");
-    await pool.query(
-      `UPDATE review_publication_operations
-          SET state = 'superseded', claim_owner = NULL, lease_id = NULL, lease_expires_at = NULL,
-              compensated_at = clock_timestamp(),
-              compensation_payload = '{"remoteAbsent":true}'::jsonb,
-              updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(30)],
-    );
-    const completion = await pool.query<{
-      applied_at: Date | null;
-      remote_identity: string | null;
-      remote_operation_id: string | null;
-      compensated_at: Date | null;
-      compensation_payload: { remoteAbsent: boolean } | null;
-      state: string;
-    }>(
-      `SELECT state, applied_at, remote_identity, remote_operation_id,
-              compensated_at, compensation_payload
-         FROM review_publication_operations
-        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-      [repositoryId, prNumber, operationKey(30)],
-    );
-    expect(completion.rows[0]).toMatchObject({
-      state: "superseded",
-      applied_at: expect.any(Date),
-      remote_identity: "review-summary",
-      remote_operation_id: "9001",
-      compensated_at: expect.any(Date),
-      compensation_payload: { remoteAbsent: true },
-    });
-    for (const assignment of [
-      "compensated_at = compensated_at + interval '1 second'",
-      "compensation_payload = '{\"remoteAbsent\":false}'::jsonb",
-      "compensation_payload = NULL",
-    ]) {
-      await expect(
-        pool.query(
-          `UPDATE review_publication_operations SET ${assignment},
-                  updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-            WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
-          [repositoryId, prNumber, operationKey(30)],
-        ),
-      ).rejects.toThrow("compensation evidence is immutable");
+      const count = await pool.query<{ count: string }>(
+        `SELECT count(*) FROM ${table} WHERE repository_id = $1`,
+        [hierarchy.repositoryId],
+      );
+      expect(count.rows[0]!.count).toBe("0");
     }
   });
 
-  test("rejects shadowed review identity lookup through pg_temp", async () => {
+  test("rejects direct and unrelated trigger-induced child deletion while allowing repository teardown", async () => {
+    const hierarchy = await createHierarchy(22);
+    const primary = makeOperation({ ordinal: 1 });
+    const dependent = makeOperation({
+      ordinal: 2,
+      operationKey: operationKey("file-comment-fallback", 5),
+      dependencies: [primary.operationKey],
+      kind: "fileCommentFallback",
+    });
+    const fixture = await preparePublication({
+      repositoryId: hierarchy.repositoryId,
+      repositoryFullName: hierarchy.repositoryFullName,
+      prNumber: 206,
+      operations: [primary, dependent],
+    });
+    await claimOperation({ fixture, operation: primary });
+    await insertAttempt({
+      fixture,
+      operation: primary,
+      phase: "dispatched",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+    });
+    await insertAttempt({
+      fixture,
+      operation: primary,
+      phase: "ambiguous",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      error: "delete-guard ambiguity fixture",
+    });
+    await moveToUnknown({ fixture, operation: primary, error: "delete-guard ambiguity fixture" });
+    await insertReconciliation({
+      fixture,
+      operation: primary,
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      phase: "terminal",
+      outcome: "applied",
+    });
+
+    const protectedTables = [
+      "pull_request_publication_high_waters",
+      "review_publication_generations",
+      "review_publication_operations",
+      "review_publication_operation_dependencies",
+      "review_publication_operation_attempts",
+      "review_publication_operation_reconciliations",
+    ] as const;
+    for (const table of protectedTables) {
+      await expect(
+        pool.query(
+          `DELETE FROM ${table} WHERE repository_id = $1 AND pr_number = $2`,
+          [hierarchy.repositoryId, fixture.prNumber],
+        ),
+      ).rejects.toThrow();
+    }
+
     const client = await pool.connect();
     try {
-      const prNumber = 705;
-      const publicHead = "7".repeat(40);
-      const reviewId = await createReview(prNumber, publicHead);
-      await client.query("BEGIN");
       await client.query(
-        "CREATE TEMP TABLE reviews (id bigint, repository_id bigint, pr_number integer, head_sha text, base_sha text)",
+        `CREATE TEMP TABLE publication_delete_probe
+           (target_table text NOT NULL, repository_id bigint NOT NULL, pr_number integer NOT NULL)`,
       );
       await client.query(
-        "INSERT INTO reviews VALUES ($1, $2, $3, $4, $5)",
-        [reviewId, repositoryId, prNumber + 1, "6".repeat(40), "a".repeat(40)],
+        `CREATE FUNCTION pg_temp.delete_publication_child_from_unrelated_trigger()
+         RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+         BEGIN
+           EXECUTE format(
+             'DELETE FROM public.%I WHERE repository_id = $1 AND pr_number = $2',
+             NEW.target_table
+           ) USING NEW.repository_id, NEW.pr_number;
+           RETURN NEW;
+         END;
+         $$`,
       );
-      await client.query("SET LOCAL search_path = pg_temp, public");
+      await client.query(
+        `CREATE TRIGGER publication_delete_probe_trigger
+         BEFORE INSERT ON publication_delete_probe
+         FOR EACH ROW EXECUTE FUNCTION pg_temp.delete_publication_child_from_unrelated_trigger()`,
+      );
+      for (const table of protectedTables) {
+        await expect(
+          client.query(
+            `INSERT INTO publication_delete_probe VALUES ($1, $2, $3)`,
+            [table, hierarchy.repositoryId, fixture.prNumber],
+          ),
+        ).rejects.toThrow();
+      }
+      await client.query(
+        `CREATE FUNCTION pg_temp.delete_publication_from_review_trigger()
+         RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+         BEGIN
+           DELETE FROM public.review_publication_generations
+           WHERE repository_id = OLD.repository_id AND pr_number = OLD.pr_number;
+           RETURN OLD;
+         END;
+         $$`,
+      );
+      await client.query(
+        `CREATE TRIGGER publication_review_delete_probe
+         AFTER DELETE ON public.reviews
+         FOR EACH ROW EXECUTE FUNCTION pg_temp.delete_publication_from_review_trigger()`,
+      );
       await expect(
-        client.query(
-          `INSERT INTO public.review_publication_generations
-            (repository_id, pr_number, publication_generation, review_id, plan_version,
-             accepted_plan, accepted_plan_bytes, accepted_plan_digest, plan_semantic_digest,
-             review_input_sequence, expected_pull_request_updated_at, accepted_input_digest,
-             envelope_digest, repository_full_name, head_sha, base_sha, target_sha,
-             target_branch, pull_request_title, pull_request_body)
-           VALUES ($1, $2, 1, $3, 'github-publication-v1', $4::jsonb, $5,
-                   $6, $7, 1, '2026-08-14T00:00:00Z', $8, $9,
-                   'publication-foundation/repository', $10, $11, $11, 'main', 'Title', '')`,
-          [
-            repositoryId,
-            prNumber + 1,
-            reviewId,
-            '{"version":"github-publication-v1"}',
-            Buffer.from('{"version":"github-publication-v1"}'),
-            sha256('{"version":"github-publication-v1"}'),
-            "4".repeat(64),
-            INPUT_ONE,
-            ENVELOPE_DIGEST,
-            "6".repeat(40),
-            "a".repeat(40),
-          ],
-        ),
-      ).rejects.toThrow("does not match its review identity");
-      await client.query("ROLLBACK");
+        client.query(`DELETE FROM public.reviews WHERE id = $1`, [fixture.reviewId]),
+      ).rejects.toThrow("only be deleted by repository teardown");
+      await client.query(`DROP TRIGGER publication_review_delete_probe ON public.reviews`);
     } finally {
-      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+
+    await pool.query(`DELETE FROM repositories WHERE id = $1`, [hierarchy.repositoryId]);
+    for (const table of protectedTables) {
+      const count = await pool.query<{ count: string }>(
+        `SELECT count(*) FROM ${table} WHERE repository_id = $1`,
+        [hierarchy.repositoryId],
+      );
+      expect(count.rows[0]!.count).toBe("0");
+    }
+  });
+
+  test("schema-qualifies review identity validation against a pg_temp shadow", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query(
+        `CREATE TEMP TABLE reviews
+           (id bigint, repository_id bigint, pr_number integer, head_sha text, base_sha text)`,
+      );
+      const fakeReviewId = 9223372036854775000n;
+      const headSha = "e".repeat(40);
+      await client.query(
+        `INSERT INTO pg_temp.reviews VALUES ($1, $2, 203, $3, $4)`,
+        [fakeReviewId.toString(), repositoryId, headSha, BASE_SHA],
+      );
+      const fixture = publicationFixture({
+        repositoryId,
+        prNumber: 203,
+        generation: "1",
+        reviewId: Number(fakeReviewId),
+        inputDigest: INPUT_ONE,
+        headSha,
+        cliOperations: [makeOperation({ ordinal: 1 })],
+      });
+      await expect(insertGeneration({ ...fixture, queryable: client })).rejects.toThrow(
+        "does not match its review identity",
+      );
+      const validReviewId = await createReview({
+        prNumber: 203,
+        headSha,
+        queryable: client,
+      });
+      await insertGeneration({ ...fixture, reviewId: validReviewId, queryable: client });
+      const stored = await client.query<{ review_id: string }>(
+        `SELECT review_id FROM review_publication_generations
+         WHERE repository_id = $1 AND pr_number = 203`,
+        [repositoryId],
+      );
+      expect(stored.rows[0]!.review_id).toBe(String(validReviewId));
+    } finally {
       client.release();
     }
   });
 
-  test("rejects generation reset and direct publication child deletion", async () => {
-    const fixture = await createPopulatedPublication(4);
+  test("rejects malformed payloads, deadlines, recovery bounds, and composite identities", async () => {
+    const prNumber = 207;
+    const headSha = "1".repeat(40);
+    const reviewId = await createReview({ prNumber, headSha });
+    const operation = makeOperation({ ordinal: 1 });
+    const fixture = publicationFixture({
+      repositoryId,
+      prNumber,
+      generation: "1",
+      reviewId,
+      inputDigest: INPUT_ONE,
+      headSha,
+      cliOperations: [operation],
+    });
+    await insertGeneration(fixture);
     await expect(
-      pool.query("DELETE FROM review_publication_operations WHERE repository_id = $1", [fixture.repositoryId]),
-    ).rejects.toThrow("operations can only be deleted by parent teardown");
+      insertOperation(fixture, operation, pool, { reviewId: reviewId + 1 }),
+    ).rejects.toThrow("review_publication_operations_generation_fk");
+    const arrayBytes = Buffer.from("[]");
     await expect(
-      pool.query("DELETE FROM pull_request_publication_high_waters WHERE repository_id = $1", [fixture.repositoryId]),
-    ).rejects.toThrow("high-water rows can only be deleted by parent teardown");
+      insertOperation(fixture, operation, pool, {
+        desiredPayload: [],
+        desiredPayloadBytes: arrayBytes,
+        desiredPayloadDigest: `sha256:${sha256(arrayBytes)}`,
+      }),
+    ).rejects.toThrow();
     await expect(
-      pool.query("DELETE FROM review_publication_generations WHERE repository_id = $1", [fixture.repositoryId]),
-    ).rejects.toThrow("generations can only be deleted by parent teardown");
-    await expectPublicationRows(fixture.repositoryId, 1, 2);
-
-    const prNumber = 706;
-    const firstHead = "5".repeat(40);
-    const secondHead = "4".repeat(40);
-    const firstReviewId = await createReview(prNumber, firstHead);
-    const secondReviewId = await createReview(prNumber, secondHead);
-    await insertGeneration({ prNumber, generation: 1, reviewId: firstReviewId, inputDigest: INPUT_ONE, headSha: firstHead });
-    await insertGeneration({ prNumber, generation: 2, reviewId: secondReviewId, inputDigest: INPUT_TWO, headSha: secondHead });
-    await expect(
-      insertHighWater({ prNumber, generation: 1, reviewId: firstReviewId, inputDigest: INPUT_ONE, headSha: firstHead }),
-    ).rejects.toThrow("must use the latest retained generation");
-    await insertHighWater({ prNumber, generation: 2, reviewId: secondReviewId, inputDigest: INPUT_TWO, headSha: secondHead });
-    await expect(
-      insertGeneration({ prNumber, generation: 2, reviewId: secondReviewId, inputDigest: INPUT_TWO, headSha: secondHead }),
-    ).rejects.toThrow("review_publication_generations_pr_generation_idx");
-
-    await pool.query("DELETE FROM repositories WHERE id = $1", [fixture.repositoryId]);
-    await expectPublicationRows(fixture.repositoryId, 0);
-  });
-
-  test("rejects composite identity mismatches", async () => {
-    const prNumber = 707;
-    const headSha = "3".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-    await insertGeneration({ prNumber, generation: 1, reviewId, inputDigest: INPUT_ONE, headSha });
-
+      insertOperation(fixture, operation, pool, {
+        deadlineAt: "2020-01-01T00:00:00Z",
+      }),
+    ).rejects.toThrow("review_publication_operations_deadline_check");
+    for (const publicationOperation of fixture.operations) {
+      await insertOperation(fixture, publicationOperation);
+      await insertDependencyEdges(fixture, publicationOperation);
+    }
     await expect(
       pool.query(
-        `INSERT INTO pull_request_publication_high_waters
-          (repository_id, pr_number, publication_generation, accepted_review_id,
-           accepted_input_digest, accepted_head_sha)
-         VALUES ($1, $2, 1, $3, $4, $5)`,
-        [repositoryId, prNumber, reviewId, INPUT_TWO, headSha],
+        `INSERT INTO review_publication_operation_dependencies
+           (repository_id, pr_number, publication_generation, operation_key,
+            dependency_position, dependency_operation_key)
+         VALUES ($1, $2, 1, $3, 0, $4)`,
+        [repositoryId, prNumber, operation.operationKey, operationKey("missing", 4)],
       ),
-    ).rejects.toThrow("pull_request_publication_high_waters_generation_fk");
+    ).rejects.toThrow("review_publication_operation_dependencies_dependency_fk");
+    await insertHighWater(fixture);
     await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        generation: 2,
-        key: operationKey(80),
-      }),
-    ).rejects.toThrow("review_publication_operations_generation_fk");
+      pool.query(
+        `UPDATE review_publication_operations
+         SET last_error = $4, updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, prNumber, operation.operationKey, "x".repeat(4001)],
+      ),
+    ).rejects.toThrow("review_publication_operations_error_check");
+    await claimOperation({ fixture, operation });
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "dispatched",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+    });
+    await expect(insertAttempt({
+      fixture,
+      operation,
+      phase: "ambiguous",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      error: "x".repeat(4001),
+    })).rejects.toThrow("review_publication_operation_attempts_error_check");
+    await expect(insertAttempt({
+      fixture,
+      operation,
+      phase: "applied",
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      remoteIdentity: "x".repeat(501),
+      remoteOperationId: "123",
+    })).rejects.toThrow("review_publication_operation_attempts_remote_identity_check");
+    await expect(
+      pool.query(
+        `INSERT INTO review_publication_operation_attempts
+           (repository_id, pr_number, publication_generation, operation_key,
+            attempt_number, lease_generation, phase, selected_variant,
+            evidence_payload, observed_at)
+         VALUES ($1, $2, 1, $3, 1, 1, 'dispatched', 'primary',
+                 '{"dispatch":true}'::jsonb, clock_timestamp())`,
+        [repositoryId, prNumber, operationKey("missing", 5)],
+      ),
+    ).rejects.toThrow("review_publication_operation_attempts_operation_fk");
+    await expect(
+      pool.query(
+        `UPDATE pull_request_publication_high_waters
+         SET accepted_head_sha = $3, updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2`,
+        [repositoryId, prNumber, "2".repeat(40)],
+      ),
+    ).rejects.toThrow("identity requires a higher generation");
   });
 
-  test("rejects non-finite timestamps and incomplete recovery evidence", async () => {
-    const prNumber = 708;
-    const headSha = "2".repeat(40);
-    const reviewId = await createReview(prNumber, headSha);
-    await insertGeneration({ prNumber, generation: 1, reviewId, inputDigest: INPUT_ONE, headSha });
-
-    await expect(
-      insertGeneration({
-        prNumber,
-        generation: 2,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-        createdAt: "infinity",
-      }),
-    ).rejects.toThrow("review_publication_generations_created_at_check");
-    await expect(
-      insertGeneration({
-        prNumber,
-        generation: 2,
-        reviewId,
-        inputDigest: INPUT_ONE,
-        headSha,
-        expectedPullRequestUpdatedAt: "infinity",
-      }),
-    ).rejects.toThrow("review_publication_generations_created_at_check");
-    for (const timestampColumn of ["created_at", "updated_at"]) {
+  test("enforces signed-bigint generations and immutable bounded operation intent", async () => {
+    const maximumGeneration = "9223372036854775807";
+    const fixture = await preparePublication({
+      prNumber: 204,
+      generation: maximumGeneration,
+      seal: false,
+    });
+    const stored = await pool.query<{ publication_generation: string }>(
+      `SELECT publication_generation FROM review_publication_generations
+       WHERE repository_id = $1 AND pr_number = $2`,
+      [repositoryId, fixture.prNumber],
+    );
+    expect(stored.rows[0]!.publication_generation).toBe(maximumGeneration);
+    const invalidReview = await createReview({ prNumber: 205, headSha: "f".repeat(40) });
+    await expect(insertGeneration({
+      repositoryId,
+      prNumber: 205,
+      generation: "0",
+      reviewId: invalidReview,
+      inputDigest: INPUT_ONE,
+      headSha: "f".repeat(40),
+      operations: [makeOperation({ ordinal: 1 })],
+    })).rejects.toThrow();
+    await insertHighWater(fixture);
+    const operation = fixture.operations[0]!;
+    for (const [column, value] of [
+      ["operation_key", "0".repeat(64)],
+      ["kind", "changedKind"],
+      ["desired_payload", `'${JSON.stringify({ kind: "changed" })}'::jsonb`],
+      ["desired_payload_digest", `'sha256:${"0".repeat(64)}'`],
+      ["operation_record", `'${JSON.stringify({ changed: true })}'::jsonb`],
+      ["activation", `'{"anyOf":[{"condition":"changed"}]}'::jsonb`],
+    ] as const) {
+      const expression = column === "operation_key" || column === "kind"
+        ? `$4`
+        : value;
+      const values = column === "operation_key" || column === "kind"
+        ? [repositoryId, fixture.prNumber, operation.operationKey, value]
+        : [repositoryId, fixture.prNumber, operation.operationKey];
       await expect(
         pool.query(
-          `INSERT INTO pull_request_publication_high_waters
-            (repository_id, pr_number, publication_generation, accepted_review_id,
-             accepted_input_digest, accepted_head_sha, ${timestampColumn})
-           VALUES ($1, $2, 1, $3, $4, $5, 'infinity')`,
-          [repositoryId, prNumber, reviewId, INPUT_ONE, headSha],
+          `UPDATE review_publication_operations SET ${column} = ${expression},
+                  updated_at = clock_timestamp()
+           WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+          values,
         ),
-      ).rejects.toThrow("pull_request_publication_high_waters_timestamps_check");
-    }
-
-    const timestampCases: Array<Partial<Parameters<typeof insertRawOperation>[0]>> = [
-      { createdAt: "infinity" },
-      { updatedAt: "infinity" },
-      { retryAfter: "infinity" },
-      { deadlineAt: "infinity" },
-      {
-        state: "applying",
-        attempts: 1,
-        claimOwner: "worker-one",
-        leaseId: "00000000-0000-4000-8000-000000000002",
-        leaseExpiresAt: "infinity",
-        leaseGeneration: 1,
-        selectedVariant: "primary",
-      },
-      {
-        state: "applied",
-        remoteIdentity: "review-summary",
-        remoteOperationId: "9002",
-        remoteObservedAt: "2026-08-14T00:00:00.000Z",
-        appliedAt: "infinity",
-        resultPayload: '{"remoteId":"9002"}',
-        selectedVariant: "primary",
-      },
-      {
-        state: "applied",
-        remoteIdentity: "review-summary",
-        remoteOperationId: "9003",
-        remoteObservedAt: "infinity",
-        appliedAt: "2026-08-14T00:00:00.000Z",
-        resultPayload: '{"remoteId":"9003"}',
-        selectedVariant: "primary",
-      },
-      {
-        state: "superseded",
-        compensatedAt: "infinity",
-        compensationPayload: '{"remoteAbsent":true}',
-      },
-    ];
-    for (const [caseIndex, invalid] of timestampCases.entries()) {
-      await expect(
-        insertRawOperation({
-          prNumber,
-          reviewId,
-          key: operationKey(81 + caseIndex),
-          ...invalid,
-        }),
-      ).rejects.toThrow("review_publication_operations_timestamps_check");
-    }
-
-    await expect(
-      insertRawOperation({ prNumber, reviewId, key: operationKey(90), attempts: 1_000_001 }),
-    ).rejects.toThrow("review_publication_operations_attempt_count_check");
-    await expect(
-      insertRawOperation({ prNumber, reviewId, key: operationKey(91), state: "applying" }),
-    ).rejects.toThrow("review_publication_operations_lease_check");
-    await expect(
-      insertRawOperation({ prNumber, reviewId, key: operationKey(92), state: "applied" }),
-    ).rejects.toThrow("review_publication_operations_state_evidence_check");
-    await expect(
-      insertRawOperation({ prNumber, reviewId, key: operationKey(93), state: "failed" }),
-    ).rejects.toThrow("review_publication_operations_state_evidence_check");
-    await expect(
-      insertRawOperation({ prNumber, reviewId, key: operationKey(94), claimOwner: "" }),
-    ).rejects.toThrow("review_publication_operations_claim_owner_check");
-    await expect(
-      insertRawOperation({ prNumber, reviewId, key: operationKey(95), claimOwner: "x".repeat(201) }),
-    ).rejects.toThrow("review_publication_operations_claim_owner_check");
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(96),
-        digest: "0".repeat(64),
-      }),
-    ).rejects.toThrow("review_publication_operations_payload_digest_check");
-    await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(97),
-        state: "applying",
-        claimOwner: "worker-one",
-        leaseId: "00000000-0000-4000-8000-000000000003",
-        leaseExpiresAt: "2026-08-13T00:00:00.000Z",
-        leaseGeneration: 1,
-      }),
-    ).rejects.toThrow("review_publication_operations_lease_check");
-    for (const [caseIndex, state] of ["applying", "compensating"].entries()) {
-      await expect(
-        insertRawOperation({
-          prNumber,
-          reviewId,
-          key: operationKey(98 + caseIndex),
-          state,
-          attempts: 1,
-          claimOwner: "worker-one",
-          leaseId: `00000000-0000-4000-8000-${String(10 + caseIndex).padStart(12, "0")}`,
-          leaseExpiresAt: "2026-08-14T00:05:00.000Z",
-          leaseGeneration: 1,
-        }),
-      ).rejects.toThrow("review_publication_operations_state_evidence_check");
+      ).rejects.toThrow();
     }
     await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(100),
-        state: "unknown",
-        attempts: 1,
-        leaseGeneration: 1,
-        lastError: "remote outcome unavailable",
-      }),
-    ).rejects.toThrow("review_publication_operations_state_evidence_check");
+      pool.query(
+        `UPDATE review_publication_operations
+         SET deadline_at = created_at - interval '1 second', updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      ),
+    ).rejects.toThrow();
     await expect(
-      insertRawOperation({
-        prNumber,
-        reviewId,
-        key: operationKey(101),
-        state: "unknown",
-        attempts: 1,
-        leaseGeneration: 1,
-        selectedVariant: "primary",
-      }),
-    ).rejects.toThrow("review_publication_operations_state_evidence_check");
-  });
-
-  test("cascades publication audit rows when a review is explicitly deleted", async () => {
-    const fixture = await createPopulatedPublication(1);
-    await expectPublicationRows(fixture.repositoryId, 1, 2);
-
-    await pool.query("DELETE FROM reviews WHERE id = $1", [fixture.reviewId]);
-
-    await expectPublicationRows(fixture.repositoryId, 0);
-    expect(
-      (
-        await pool.query<{ count: number }>(
-          "SELECT count(*)::int AS count FROM repositories WHERE id = $1",
-          [fixture.repositoryId],
-        )
-      ).rows[0]!.count,
-    ).toBe(1);
-  });
-
-  test("cascades publication audit rows when a repository is explicitly deleted", async () => {
-    const fixture = await createPopulatedPublication(2);
-    await expectPublicationRows(fixture.repositoryId, 1, 2);
-
-    await pool.query("DELETE FROM repositories WHERE id = $1", [fixture.repositoryId]);
-
-    await expectPublicationRows(fixture.repositoryId, 0);
-  });
-
-  test("cascades publication audit rows when an installation is explicitly deleted", async () => {
-    const fixture = await createPopulatedPublication(3);
-    await expectPublicationRows(fixture.repositoryId, 1, 2);
-
-    await pool.query("DELETE FROM installations WHERE id = $1", [fixture.installationId]);
-
-    await expectPublicationRows(fixture.repositoryId, 0);
-    expect(
-      (
-        await pool.query<{ count: number }>(
-          "SELECT count(*)::int AS count FROM repositories WHERE id = $1",
-          [fixture.repositoryId],
-        )
-      ).rows[0]!.count,
-    ).toBe(0);
+      pool.query(
+        `UPDATE review_publication_operations
+         SET retry_after = 'infinity'::timestamptz, updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      ),
+    ).rejects.toThrow("review_publication_operations_timestamps_check");
   });
 });

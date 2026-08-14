@@ -51,6 +51,7 @@ describe("migration lint", () => {
             columns?: Record<string, unknown>;
             checkConstraints?: Record<string, { value?: string }>;
             foreignKeys?: Record<string, { onDelete?: string }>;
+            indexes?: Record<string, { isUnique?: boolean; where?: string }>;
           }>;
         }
       ),
@@ -118,6 +119,14 @@ describe("migration lint", () => {
       target_branch: expect.any(Object),
       pull_request_title: expect.any(Object),
       pull_request_body: expect.any(Object),
+      operation_count: expect.any(Object),
+      operation_manifest_digest: expect.any(Object),
+      controller_operation_count: expect.any(Object),
+      controller_operation_manifest_digest: expect.any(Object),
+      controller_manifest: expect.any(Object),
+      controller_manifest_bytes: expect.any(Object),
+      controller_manifest_digest: expect.any(Object),
+      sealed_at: expect.any(Object),
     });
     expect(latest.tables["public.pull_request_publication_high_waters"]?.columns)
       .toMatchObject({
@@ -135,20 +144,50 @@ describe("migration lint", () => {
       review_id: expect.any(Object),
       operation_key: expect.any(Object),
       operation_ordinal: expect.any(Object),
-      dependency_operation_key: expect.any(Object),
-      activation_condition: expect.any(Object),
+      operation_source: expect.any(Object),
+      controller_record: expect.any(Object),
+      controller_record_bytes: expect.any(Object),
+      operation_record: expect.any(Object),
+      operation_record_bytes: expect.any(Object),
+      activation: expect.any(Object),
+      activation_bytes: expect.any(Object),
       desired_payload: expect.any(Object),
       desired_payload_bytes: expect.any(Object),
       desired_payload_digest: expect.any(Object),
-      result_payload: expect.any(Object),
-      reconciliation_payload: expect.any(Object),
-      compensation_payload: expect.any(Object),
+      selected_variant: expect.any(Object),
+      terminal_evidence: expect.any(Object),
       state: expect.any(Object),
+    });
+    expect(
+      latest.tables["public.review_publication_operation_dependencies"]?.columns,
+    ).toMatchObject({
+      operation_key: expect.any(Object),
+      dependency_position: expect.any(Object),
+      dependency_operation_key: expect.any(Object),
+    });
+    expect(
+      latest.tables["public.review_publication_operation_attempts"]?.columns,
+    ).toMatchObject({
+      attempt_number: expect.any(Object),
+      lease_generation: expect.any(Object),
+      phase: expect.any(Object),
+      selected_variant: expect.any(Object),
+      evidence_payload: expect.any(Object),
+    });
+    expect(
+      latest.tables["public.review_publication_operation_reconciliations"]?.columns,
+    ).toMatchObject({
+      attempt_number: expect.any(Object),
+      lease_generation: expect.any(Object),
+      phase: expect.any(Object),
+      selected_variant: expect.any(Object),
+      outcome: expect.any(Object),
+      evidence_payload: expect.any(Object),
     });
     expect(
       latest.tables["public.review_publication_generations"]?.foreignKeys
         ?.review_publication_generations_review_id_reviews_id_fk?.onDelete,
-    ).toBe("cascade");
+    ).toBeUndefined();
     expect(
       latest.tables["public.pull_request_publication_high_waters"]?.foreignKeys
         ?.pull_request_publication_high_waters_generation_fk?.onDelete,
@@ -158,9 +197,36 @@ describe("migration lint", () => {
         ?.review_publication_operations_generation_fk?.onDelete,
     ).toBe("cascade");
     expect(
-      latest.tables["public.review_publication_operations"]?.foreignKeys
-        ?.review_publication_operations_dependency_fk?.onDelete,
+      latest.tables["public.review_publication_operation_dependencies"]?.foreignKeys
+        ?.review_publication_operation_dependencies_operation_fk?.onDelete,
     ).toBe("cascade");
+    expect(
+      latest.tables["public.review_publication_operation_attempts"]?.foreignKeys
+        ?.review_publication_operation_attempts_operation_fk?.onDelete,
+    ).toBe("cascade");
+    expect(
+      latest.tables["public.review_publication_operation_reconciliations"]?.foreignKeys
+        ?.review_publication_operation_reconciliations_operation_fk?.onDelete,
+    ).toBe("cascade");
+    expect(
+      latest.tables["public.review_publication_operations"]?.indexes
+        ?.review_publication_operations_single_active_idx,
+    ).toMatchObject({
+      isUnique: true,
+      where: expect.stringContaining("'applying', 'unknown'"),
+    });
+    expect(
+      latest.tables["public.review_publication_generations"]?.checkConstraints
+        ?.review_publication_generations_controller_manifest_check?.value,
+    ).toContain("8388608");
+    expect(
+      latest.tables["public.review_publication_generations"]?.checkConstraints
+        ?.review_publication_generations_controller_manifest_check?.value,
+    ).toContain("BETWEEN 2 AND 128");
+    expect(
+      latest.tables["public.review_publication_operations"]?.checkConstraints
+        ?.review_publication_operations_ordinal_check?.value,
+    ).toContain("BETWEEN 1 AND 128");
     const creationMigration = await readFile(
       join(
         import.meta.dir,
