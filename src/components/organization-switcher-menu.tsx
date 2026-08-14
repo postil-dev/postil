@@ -136,7 +136,7 @@ export function OrganizationSwitcherMenu({
         aria-label="GitHub accounts"
         hidden={!open}
         onKeyDown={handleMenuKeyDown}
-        className="absolute right-0 z-50 mt-2 w-[min(18rem,calc(100vw-3rem))] overflow-hidden rounded-card border border-stone bg-paper p-2 text-charcoal shadow-lg"
+        className="absolute left-0 right-auto z-50 mt-2 w-[min(18rem,calc(100vw-3rem))] overflow-hidden rounded-card border border-stone bg-paper p-2 text-charcoal shadow-lg lg:left-auto lg:right-0"
       >
         <div className="max-h-72 overflow-y-auto overscroll-contain">
           {organizations.map((organization, index) => (
