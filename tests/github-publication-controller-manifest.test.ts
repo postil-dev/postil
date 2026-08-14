@@ -52,6 +52,9 @@ describe("GitHub publication controller manifest", () => {
     expect(first.digest).toBe(digestBytes(first.bytes));
     expect(first.value.operationManifestDigest).toBe(digestCanonical(first.value.operations));
     expect(first.value.acceptedPlanBytesDigest).toBe(digestJson(plan));
+    expect(first.operationBytes).toEqual(
+      first.value.operations.map((operation) => Buffer.from(canonicalJson(operation), "utf8")),
+    );
   });
 
   test("accepts a plan returned by the strict CLI plan parser", () => {
@@ -73,17 +76,19 @@ describe("GitHub publication controller manifest", () => {
   test("adds exactly two service-authored gate mutations after accepted CLI operations", () => {
     const plan = validPlan();
     const result = build(plan);
-    const operations = result.value.operations as any[];
-    const serviceOperations = operations.filter((operation) => operation.source === "service");
+    const records = result.value.operations as any[];
+    const serviceOperations = records
+      .filter((record) => record.source === "service")
+      .map((record) => record.operation);
     const create = serviceOperations.find((operation) => operation.kind === "gateCheckCreate");
     const complete = serviceOperations.find((operation) => operation.kind === "gateCheckComplete");
 
     expect(serviceOperations).toHaveLength(2);
     expect(result.value.acceptedCliOperationCount).toBe(plan.operations.length);
     expect(result.value.operationCount).toBe(plan.operations.length + 2);
-    expect(operations.slice(0, plan.operations.length).map((operation) => operation.operationKey))
+    expect(records.slice(0, plan.operations.length).map((record) => record.operation.operationKey))
       .toEqual(plan.operations.map((operation: any) => operation.operationKey));
-    expect(operations.map((operation) => operation.ordinal)).toEqual([1, 2, 3, 4]);
+    expect(records.map((record) => record.operation.ordinal)).toEqual([1, 2, 3, 4]);
     expect(create.payload).toEqual({
       name: "postil/gate",
       headSha: HEAD,
@@ -203,6 +208,12 @@ describe("GitHub publication controller manifest", () => {
 
   test("rejects policy dependencies outside the accepted graph and malformed service output", () => {
     const plan = validPlan();
+    expect(() => buildGitHubPublicationControllerManifest({
+      acceptedPlan: plan,
+      acceptedPlanBytesDigest: digestJson(plan),
+      requiredTerminalOperationKeys: [],
+      gateOutput,
+    })).toThrow("do not transitively seal every accepted CLI operation");
     expect(() => buildGitHubPublicationControllerManifest({
       acceptedPlan: plan,
       acceptedPlanBytesDigest: digestJson(plan),
@@ -399,24 +410,28 @@ function resignIntent(plan: any): void {
 }
 
 function expectRejected(plan: unknown, message: string): void {
+  const requiredTerminalOperationKeys = typeof plan === "object" && plan !== null &&
+      Array.isArray((plan as any).operations) && (plan as any).operations.length > 0
+    ? [(plan as any).operations.at(-1).operationKey]
+    : [];
   expect(() => buildGitHubPublicationControllerManifest({
     acceptedPlan: plan,
     acceptedPlanBytesDigest: typeof plan === "object" && plan !== null ? digestJson(plan) : digest("unknown"),
-    requiredTerminalOperationKeys: [],
+    requiredTerminalOperationKeys,
     gateOutput,
   })).toThrow(GitHubPublicationControllerManifestRejectedError);
   expect(() => buildGitHubPublicationControllerManifest({
     acceptedPlan: plan,
     acceptedPlanBytesDigest: typeof plan === "object" && plan !== null ? digestJson(plan) : digest("unknown"),
-    requiredTerminalOperationKeys: [],
+    requiredTerminalOperationKeys,
     gateOutput,
   })).toThrow(message);
 }
 
 function gateKeys(result: ReturnType<typeof build>): string[] {
   return (result.value.operations as any[])
-    .filter((operation) => operation.source === "service")
-    .map((operation) => operation.operationKey);
+    .filter((record) => record.source === "service")
+    .map((record) => record.operation.operationKey);
 }
 
 function digest(value: string): string {

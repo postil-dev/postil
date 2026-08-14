@@ -43,7 +43,6 @@ export interface GateCheckCreateOperation extends JsonObject {
     exclusive: true;
   };
   desiredDigest: string;
-  source: "service";
   kind: "gateCheckCreate";
   payload: {
     name: "postil/gate";
@@ -68,7 +67,6 @@ export interface GateCheckCompleteOperation extends JsonObject {
     };
   };
   desiredDigest: string;
-  source: "service";
   kind: "gateCheckComplete";
   remoteId: {
     source: "operation";
@@ -83,6 +81,11 @@ export interface GateCheckCompleteOperation extends JsonObject {
     summary: string;
     detailsUrl: string;
   };
+}
+
+export interface GitHubPublicationControllerOperationRecord extends JsonObject {
+  source: "cli" | "service";
+  operation: JsonObject | GateCheckCreateOperation | GateCheckCompleteOperation;
 }
 
 export interface GitHubPublicationControllerManifest extends JsonObject {
@@ -103,12 +106,14 @@ export interface GitHubPublicationControllerManifest extends JsonObject {
   acceptedCliOperationCount: number;
   operationCount: number;
   operationManifestDigest: string;
-  operations: Array<JsonObject | GateCheckCreateOperation | GateCheckCompleteOperation>;
+  operations: GitHubPublicationControllerOperationRecord[];
 }
 
 export interface BuiltGitHubPublicationControllerManifest {
   bytes: Uint8Array;
   value: GitHubPublicationControllerManifest;
+  /** Exact canonical bytes for each `value.operations` record. */
+  operationBytes: Uint8Array[];
   /** SHA-256 of the exact returned UTF-8 manifest bytes. */
   digest: string;
 }
@@ -148,8 +153,8 @@ export function buildGitHubPublicationControllerManifest(
     summary: gateOutput.summary,
     detailsUrl: gateOutput.detailsUrl,
   });
-  const gateCreateKey = serviceGateOperationKey(plan, "gate-check-create", gateOutputDigest);
-  const gateCompleteKey = serviceGateOperationKey(plan, "gate-check-complete", gateOutputDigest);
+  const gateCreateKey = serviceGateOperationKey(plan, "gate-create", gateOutputDigest);
+  const gateCompleteKey = serviceGateOperationKey(plan, "gate-complete", gateOutputDigest);
   const gateExternalId = serviceGateExternalId(plan, gateOutputDigest);
 
   if (new Set(plan.operations.map((operation) => operation.operationKey)).has(gateCreateKey)) {
@@ -159,19 +164,19 @@ export function buildGitHubPublicationControllerManifest(
     reject("service gate completion key collides with an accepted CLI operation");
   }
 
-  const operations = plan.operations.map((operation, index) => ({
+  const cliOperations = plan.operations.map((operation, index) => ({
     ...cloneJsonObject(operation),
     ordinal: index + 1,
   }));
   const gateCreate = buildGateCreateOperation({
-    ordinal: operations.length + 1,
+    ordinal: cliOperations.length + 1,
     operationKey: gateCreateKey,
     externalId: gateExternalId,
     headSha: plan.headSha,
     detailsUrl: gateOutput.detailsUrl,
   });
   const gateComplete = buildGateCompleteOperation({
-    ordinal: operations.length + 2,
+    ordinal: cliOperations.length + 2,
     operationKey: gateCompleteKey,
     createOperationKey: gateCreateKey,
     externalId: gateExternalId,
@@ -179,7 +184,11 @@ export function buildGitHubPublicationControllerManifest(
     requiredTerminalOperationKeys,
     gateOutput,
   });
-  operations.push(gateCreate, gateComplete);
+  const operations: GitHubPublicationControllerOperationRecord[] = [
+    ...cliOperations.map((operation) => ({ source: "cli" as const, operation })),
+    { source: "service", operation: gateCreate },
+    { source: "service", operation: gateComplete },
+  ];
 
   if (operations.length > MAX_OPERATIONS) reject("controller manifest exceeds the operation limit");
   validateControllerOperationGraph(operations);
@@ -206,7 +215,10 @@ export function buildGitHubPublicationControllerManifest(
   };
   const bytes = Buffer.from(canonicalJson(value), "utf8");
   if (bytes.byteLength > MAX_MANIFEST_BYTES) reject("controller manifest exceeds the byte limit");
-  return { bytes, value, digest: digestBytes(bytes) };
+  const operationBytes = operations.map((operation) =>
+    Buffer.from(canonicalJson(operation), "utf8")
+  );
+  return { bytes, value, operationBytes, digest: digestBytes(bytes) };
 }
 
 interface ValidatedAcceptedPlan {
@@ -362,6 +374,23 @@ function validateRequiredTerminalOperationKeys(
   for (const key of keys) {
     if (!acceptedKeys.has(key)) reject("required terminal operation key is absent from the accepted plan");
   }
+  const dependenciesByKey = new Map(
+    operations.map((operation) => [
+      String(operation.operationKey),
+      requireStringArray(operation.dependencies, "accepted CLI operation dependencies"),
+    ]),
+  );
+  const covered = new Set<string>();
+  const pending = [...keys];
+  while (pending.length > 0) {
+    const key = pending.pop()!;
+    if (covered.has(key)) continue;
+    covered.add(key);
+    pending.push(...(dependenciesByKey.get(key) ?? []));
+  }
+  if (covered.size !== operations.length) {
+    reject("required terminal operation keys do not transitively seal every accepted CLI operation");
+  }
   return keys;
 }
 
@@ -393,7 +422,6 @@ function buildGateCreateOperation(input: {
     activation: { anyOf: [{ condition: "always" as const }] as [{ condition: "always" }] },
     reconciliation: { logicalIdentity: input.externalId, exclusive: true as const },
     desiredDigest: "",
-    source: "service" as const,
     kind: "gateCheckCreate" as const,
     payload: {
       name: "postil/gate" as const,
@@ -403,7 +431,7 @@ function buildGateCreateOperation(input: {
       detailsUrl: input.detailsUrl,
     },
   };
-  operation.desiredDigest = digestCanonical(operationDesired(operation));
+  operation.desiredDigest = digestJson(operationDesired(operation));
   return operation;
 }
 
@@ -430,7 +458,6 @@ function buildGateCompleteOperation(input: {
       remoteId,
     },
     desiredDigest: "",
-    source: "service" as const,
     kind: "gateCheckComplete" as const,
     remoteId,
     payload: {
@@ -443,20 +470,29 @@ function buildGateCompleteOperation(input: {
       detailsUrl: input.gateOutput.detailsUrl,
     },
   };
-  operation.desiredDigest = digestCanonical(operationDesired(operation));
+  operation.desiredDigest = digestJson(operationDesired(operation));
   return operation;
 }
 
-function validateControllerOperationGraph(operations: readonly JsonObject[]): void {
+function validateControllerOperationGraph(
+  records: readonly GitHubPublicationControllerOperationRecord[],
+): void {
   let dependencyEdges = 0;
   const ordinalByKey = new Map<string, number>();
-  for (const [index, operation] of operations.entries()) {
+  for (const [index, record] of records.entries()) {
+    if (
+      (index < records.length - 2 && record.source !== "cli") ||
+      (index >= records.length - 2 && record.source !== "service")
+    ) {
+      reject("controller operation sources are not ordered");
+    }
+    const operation = record.operation;
     const key = requireString(operation.operationKey, "controller operation key");
     if (ordinalByKey.has(key)) reject("controller operation key is duplicated");
     if (operation.ordinal !== index + 1) reject("controller operation ordinals are not contiguous");
     ordinalByKey.set(key, index + 1);
   }
-  for (const operation of operations) {
+  for (const { operation } of records) {
     const dependencies = requireStringArray(operation.dependencies, "controller operation dependencies");
     dependencyEdges += dependencies.length;
     if (dependencyEdges > MAX_DEPENDENCY_EDGES) reject("controller manifest dependency graph is too large");
@@ -472,7 +508,7 @@ function validateControllerOperationGraph(operations: readonly JsonObject[]): vo
 
 function serviceGateOperationKey(
   plan: ValidatedAcceptedPlan,
-  actionKind: "gate-check-create" | "gate-check-complete",
+  actionKind: "gate-create" | "gate-complete",
   gateOutputDigest: string,
 ): string {
   const hash = createHash("sha256").update("github-publication-controller-gate-operation-v1\0");
