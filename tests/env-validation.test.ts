@@ -126,6 +126,18 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow.indexOf("bun run hosted:verify-provider")).toBeLessThan(
       deployWorkflow.indexOf("bun run jobs:activate-release"),
     );
+    const releaseActivation = await readFile(
+      join(root, "scripts", "activate-release-jobs.ts"),
+      "utf8",
+    );
+    expect(releaseActivation.indexOf("verifyPublicationControllerCliCapability"))
+      .toBeLessThan(
+        releaseActivation.lastIndexOf("activatePublicationControllerRelease"),
+      );
+    expect(releaseActivation.indexOf("activatePublicationControllerAfterCliPreflight"))
+      .toBeLessThan(
+        releaseActivation.indexOf("await activateQueueLockGeneration"),
+      );
     expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
     expect(deployWorkflow).toMatch(
       /- name: Deploy managed fleet\n\s+id: deploy\n\s+timeout-minutes: 10/,

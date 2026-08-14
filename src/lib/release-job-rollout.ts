@@ -17,6 +17,15 @@ const HOSTED_INFERENCE_CAPABILITY_PREFIX = "hosted-inference-release:";
 const HOSTED_INFERENCE_DARK_PREFIX = "hosted-inference-dark:";
 const HOSTED_INFERENCE_FLEET_ACTIVE = "hosted-inference-fleet-active";
 export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
+const PUBLICATION_CONTROLLER_CAPABILITY_PREFIX =
+  "publication-controller-release:";
+const PUBLICATION_CONTROLLER_DARK_PREFIX = "publication-controller-dark:";
+const PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX =
+  "publication-controller-cli-verified:";
+const PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER =
+  "_postilPublicationControllerReleaseSha";
+export const PUBLICATION_CONTROLLER_LOCK =
+  "postil:publication-controller-release";
 export const QUEUE_LOCK_GENERATION_CAPABILITY = "queue-lock-generation-v1";
 const QUEUE_LOCK_GENERATION_LOCK = "postil:queue-lock-generation-v1";
 const QUEUE_LOCK_GENERATION_MARKER = "_postilLockGenerationFence";
@@ -412,6 +421,297 @@ export function hostedInferenceCapability(releaseSha: string): string {
 
 function hostedInferenceDarkCapability(releaseSha: string): string {
   return `${HOSTED_INFERENCE_DARK_PREFIX}${normalizedReleaseSha(releaseSha)}`;
+}
+
+/** An exact managed release owns durable publication-controller activation. */
+export function publicationControllerCapability(releaseSha: string): string {
+  return `${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}${normalizedReleaseSha(releaseSha)}`;
+}
+
+function publicationControllerDarkCapability(releaseSha: string): string {
+  return `${PUBLICATION_CONTROLLER_DARK_PREFIX}${normalizedReleaseSha(releaseSha)}`;
+}
+
+function publicationControllerCliVerifiedCapability(releaseSha: string): string {
+  return `${PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX}${normalizedReleaseSha(releaseSha)}`;
+}
+
+/** A legacy review claimed while publication ownership is fenced. */
+export class PublicationControllerReleaseFenceError extends Error {
+  override name = "PublicationControllerReleaseFenceError";
+
+  constructor(readonly releaseSha: string) {
+    super("managed publication-controller release fences legacy review publication");
+  }
+}
+
+/** True when this release may hand publication authority to the controller. */
+export async function publicationControllerReleaseActivated(
+  pool: Pool,
+  releaseSha: string,
+): Promise<boolean> {
+  const result = await pool.query<{ active: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM deployment_capabilities WHERE name = $1
+     ) AS active`,
+    [publicationControllerCapability(releaseSha)],
+  );
+  return result.rows[0]?.active === true;
+}
+
+/**
+ * A release-scoped dark or active controller capability prevents the legacy
+ * review runner from becoming an independent publication authority.
+ */
+export async function publicationControllerLegacyReviewFenced(
+  pool: Pool,
+  releaseSha: string,
+): Promise<boolean> {
+  normalizedReleaseSha(releaseSha);
+  const result = await pool.query<{ fenced: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM deployment_capabilities
+        WHERE name LIKE $1 OR name LIKE $2
+     ) AS fenced`,
+    [
+      `${PUBLICATION_CONTROLLER_DARK_PREFIX}%`,
+      `${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`,
+    ],
+  );
+  return result.rows[0]?.fenced === true;
+}
+
+/** Record the exact image's local CLI-plan preflight before activation. */
+export async function recordPublicationControllerCliPreflight(
+  pool: Pool,
+  releaseSha: string,
+): Promise<boolean> {
+  const normalized = normalizedReleaseSha(releaseSha);
+  const darkCapability = publicationControllerDarkCapability(normalized);
+  const verifiedCapability = publicationControllerCliVerifiedCapability(normalized);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [PUBLICATION_CONTROLLER_LOCK],
+    );
+    const dark = await client.query<{ dark: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $1
+       ) AS dark`,
+      [darkCapability],
+    );
+    if (!dark.rows[0]?.dark) {
+      throw new Error(
+        "publication-controller CLI preflight requires a dark exact release",
+      );
+    }
+    const recorded = await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [verifiedCapability],
+    );
+    await client.query("COMMIT");
+    return (recorded.rowCount ?? 0) > 0;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Activate one exact controller release after the managed-fleet and CLI
+ * preflights. Existing review jobs remain durably held for the controller.
+ */
+export async function activatePublicationControllerRelease(
+  pool: Pool,
+  releaseSha: string,
+): Promise<{ activated: boolean; adopted: number }> {
+  const normalized = normalizedReleaseSha(releaseSha);
+  const capability = publicationControllerCapability(normalized);
+  const darkCapability = publicationControllerDarkCapability(normalized);
+  const verifiedCapability = publicationControllerCliVerifiedCapability(normalized);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [PUBLICATION_CONTROLLER_LOCK],
+    );
+    const alreadyActive = await client.query<{ active: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $1
+       ) AS active`,
+      [capability],
+    );
+    if (alreadyActive.rows[0]?.active) {
+      await client.query("COMMIT");
+      return { activated: false, adopted: 0 };
+    }
+    const prerequisites = await client.query<{
+      dark: boolean;
+      verified: boolean;
+      otherActive: boolean;
+    }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $1
+       ) AS dark,
+       EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $2
+       ) AS verified,
+       EXISTS (
+         SELECT 1
+           FROM deployment_capabilities
+          WHERE name LIKE $3 AND name <> $4
+       ) AS "otherActive"`,
+      [
+        darkCapability,
+        verifiedCapability,
+        `${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`,
+        capability,
+      ],
+    );
+    if (!prerequisites.rows[0]?.dark) {
+      throw new Error(
+        "publication-controller activation requires a dark exact release",
+      );
+    }
+    if (!prerequisites.rows[0]?.verified) {
+      throw new Error(
+        "publication-controller activation requires a successful CLI-plan preflight",
+      );
+    }
+    if (prerequisites.rows[0]?.otherActive) {
+      throw new Error(
+        "publication-controller activation requires prior release deactivation",
+      );
+    }
+    await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [capability],
+    );
+    const adopted = await client.query(
+      `UPDATE jobs
+          SET payload = payload - $1 || jsonb_build_object($1::text, $2::text)
+        WHERE kind = 'review'
+          AND status = 'queued'
+          AND payload ? $1`,
+      [PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER, normalized],
+    );
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name LIKE $1",
+      [`${PUBLICATION_CONTROLLER_DARK_PREFIX}%`],
+    );
+    await client.query("COMMIT");
+    return { activated: true, adopted: adopted.rowCount ?? 0 };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Prepare deploy and rollback by removing every controller activation first. */
+export async function deactivatePublicationControllerRelease(
+  pool: Pool,
+  releaseSha: string,
+): Promise<boolean> {
+  const normalized = normalizedReleaseSha(releaseSha);
+  const darkCapability = publicationControllerDarkCapability(normalized);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [PUBLICATION_CONTROLLER_LOCK],
+    );
+    const removed = await client.query(
+      "DELETE FROM deployment_capabilities WHERE name LIKE $1",
+      [`${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`],
+    );
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name LIKE $1",
+      [`${PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX}%`],
+    );
+    await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [darkCapability],
+    );
+    await client.query("COMMIT");
+    return (removed.rowCount ?? 0) > 0;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Keep a claimed legacy review durable but unavailable to the legacy runner. */
+export async function deferLegacyReviewForPublicationController(
+  pool: Pool,
+  job: { id: number; lockedBy: string; lockGeneration: bigint },
+  releaseSha: string,
+): Promise<void> {
+  const normalized = normalizedReleaseSha(releaseSha);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [PUBLICATION_CONTROLLER_LOCK],
+    );
+    const fenced = await client.query<{ fenced: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM deployment_capabilities
+          WHERE name LIKE $1 OR name LIKE $2
+       ) AS fenced`,
+      [
+        `${PUBLICATION_CONTROLLER_DARK_PREFIX}%`,
+        `${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`,
+      ],
+    );
+    if (!fenced.rows[0]?.fenced) {
+      throw new Error("publication-controller legacy review fence is no longer active");
+    }
+    const deferred = await client.query(
+      `UPDATE jobs
+          SET status = 'queued', attempts = GREATEST(attempts - 1, 0),
+              run_after = 'infinity'::timestamptz,
+              locked_at = NULL, locked_by = NULL, last_error = NULL,
+              payload = payload - $4 || jsonb_build_object($4::text, $5::text)
+        WHERE id = $1 AND kind = 'review'
+          AND status = 'running' AND locked_by = $2
+          AND lock_generation = $3`,
+      [
+        job.id,
+        job.lockedBy,
+        job.lockGeneration,
+        PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER,
+        normalized,
+      ],
+    );
+    if ((deferred.rowCount ?? 0) !== 1) {
+      throw new Error("publication-controller deferral lost its queue claim");
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /** A managed worker claimed hosted work before its exact release was activated. */

@@ -13,6 +13,12 @@ const REQUIRED_REVIEW_FLAGS = [
   "--sha <SHA>",
   "--base-sha <BASE_SHA>",
 ] as const;
+const PUBLICATION_CONTROLLER_PLAN_PROBE = [
+  "review",
+  "--publication-plan-output",
+  "/dev/null",
+  "--help",
+] as const;
 const HEAD_SHA = "1".repeat(40);
 const BASE_SHA = "2".repeat(40);
 const ADVANCED_BASE_SHA = "3".repeat(40);
@@ -74,6 +80,23 @@ export function assertReviewHelp(help: string): void {
       throw new Error(`postil review is missing required option ${flag}`);
     }
   }
+}
+
+export function assertPublicationControllerPlanProbe(
+  result: CommandResult,
+): void {
+  if (result.exitCode !== 0) {
+    throw new Error("postil review does not support publication-plan output");
+  }
+}
+
+/** Verify the no-mutation plan option on the exact CLI in a managed image. */
+export async function verifyPublicationControllerCliCapability(
+  binary: string,
+): Promise<void> {
+  assertPublicationControllerPlanProbe(
+    await run(binary, [...PUBLICATION_CONTROLLER_PLAN_PROBE]),
+  );
 }
 
 export function assertEnvelopeContract(
@@ -154,6 +177,7 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
     throw new Error(`postil review --help failed: ${help.stderr.trim()}`);
   }
   assertReviewHelp(help.stdout);
+  await verifyPublicationControllerCliCapability(binary);
 
   let rejectCheckCompletion = false;
   let rejectFileFetch = false;

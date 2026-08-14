@@ -2,11 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 import {
+  assertPublicationControllerPlanProbe,
   assertEnvelopeContract,
   assertReviewHelp,
 } from "../scripts/verify-postil-cli-contract";
 
 describe("postil CLI release contract", () => {
+  test("requires the no-mutation publication-plan parser capability", () => {
+    expect(() => assertPublicationControllerPlanProbe({
+      exitCode: 0,
+      stderr: "",
+      stdout: "usage",
+    })).not.toThrow();
+    expect(() => assertPublicationControllerPlanProbe({
+      exitCode: 2,
+      stderr: "unknown argument",
+      stdout: "",
+    })).toThrow("publication-plan output");
+  });
+
   test("requires every hosted review option", () => {
     const help = [
       "--publish",

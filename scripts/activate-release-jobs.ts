@@ -1,17 +1,25 @@
 import { closeDb, getDb, getPool } from "@/lib/db";
 import { finalizeEscalationEmailRetirement } from "@/lib/escalation-email-retirement";
 import {
+  activatePublicationControllerRelease,
   activateHostedInferenceRelease,
   activatePrivateReviewAuthorIdentity,
   activateQueueLockGeneration,
+  publicationControllerReleaseActivated,
   activateReleaseJobs,
+  recordPublicationControllerCliPreflight,
 } from "@/lib/release-job-rollout";
 import { hostedInferenceEnabled, optionalEnv } from "@/lib/env";
 import { backfillSelfServiceTrials } from "@/lib/self-service-trial";
 import { backfillBillingContactVerification } from "./backfill-billing-contact-verification";
+import { verifyPublicationControllerCliCapability } from "./verify-postil-cli-contract";
 
 async function main(): Promise<void> {
   try {
+    const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+    const publicationController = releaseSha
+      ? await activatePublicationControllerAfterCliPreflight(releaseSha)
+      : null;
     // Retire escalation email state before unrelated release activation work.
     // Migration 0020 holds all release-v1 job kinds at infinity until the
     // homogeneous fleet check completes. Every operation is idempotent.
@@ -23,7 +31,6 @@ async function main(): Promise<void> {
     const privateReviewAuthorActivated =
       await activatePrivateReviewAuthorIdentity(getPool());
     const released = await activateReleaseJobs(getPool());
-    const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
     const selfServiceTrials = releaseSha
       ? await backfillSelfServiceTrials(getDb(), {
           hostedInferenceEnabled: hostedInferenceEnabled(),
@@ -34,7 +41,9 @@ async function main(): Promise<void> {
       ? await activateHostedInferenceRelease(getPool(), releaseSha)
       : null;
     console.log(
-      `release job kinds activated: released=${released} ` +
+        `release job kinds activated: released=${released} ` +
+        `publication_controller=${publicationController === null ? "unmanaged" : publicationController.activated ? "activated" : "already_active"} ` +
+        `publication_controller_adopted=${publicationController?.adopted ?? 0} ` +
         `lock_generation_released=${lockGenerationReleased} ` +
         `private_review_author=${privateReviewAuthorActivated ? "activated" : "already_active"} ` +
         `hosted_inference=${hostedInferenceActivated === null ? "unmanaged" : hostedInferenceActivated ? "activated" : "already_active"} ` +
@@ -48,6 +57,18 @@ async function main(): Promise<void> {
   } finally {
     await closeDb();
   }
+}
+
+async function activatePublicationControllerAfterCliPreflight(
+  releaseSha: string,
+): Promise<{ activated: boolean; adopted: number }> {
+  if (await publicationControllerReleaseActivated(getPool(), releaseSha)) {
+    return { activated: false, adopted: 0 };
+  }
+  const binary = optionalEnv("POSTIL_BIN", "/usr/local/bin/postil") as string;
+  await verifyPublicationControllerCliCapability(binary);
+  await recordPublicationControllerCliPreflight(getPool(), releaseSha);
+  return activatePublicationControllerRelease(getPool(), releaseSha);
 }
 
 if (import.meta.main) await main();
