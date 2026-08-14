@@ -64,12 +64,12 @@ describe("GitHub publication controller manifest", () => {
     const result = buildGitHubPublicationControllerManifest({
       acceptedPlan,
       acceptedPlanBytesDigest: digestJson(rawPlan),
-      requiredTerminalOperationKeys: [acceptedPlan.operations[0]!.operationKey],
+      requiredTerminalOperationKeys: [acceptedPlan.operations.at(-1)!.operationKey],
       gateOutput,
     });
 
-    expect(result.value.acceptedCliOperationCount).toBe(1);
-    expect(result.value.operationCount).toBe(3);
+    expect(result.value.acceptedCliOperationCount).toBe(2);
+    expect(result.value.operationCount).toBe(4);
     expect(result.value.acceptedPlanBytesDigest).toBe(digestJson(rawPlan));
   });
 
@@ -273,26 +273,48 @@ function validPlan(): any {
 }
 
 function strictParserPlan(): any {
-  const operation: any = {
+  const create: any = {
     ordinal: 1,
-    operationKey: strictParserOperationKey("advisory-check"),
+    operationKey: strictParserOperationKey("advisory-check-create"),
     dependencies: [],
     activation: { anyOf: [{ condition: "always" }] },
     reconciliation: {
-      logicalIdentity: strictParserOperationKey("advisory-check"),
+      logicalIdentity: `postil:postil/review:${HEAD}`,
       exclusive: true,
     },
     desiredDigest: "",
-    kind: "advisoryCheck",
+    kind: "advisoryCheckCreate",
     name: "postil/review",
     headSha: HEAD,
+    status: "in_progress",
+    externalId: `postil:postil/review:${HEAD}`,
+  };
+  create.desiredDigest = digestJson(strictParserOperationDesired(create));
+  const complete: any = {
+    ordinal: 2,
+    operationKey: strictParserOperationKey("advisory-check-complete"),
+    dependencies: [create.operationKey],
+    activation: { anyOf: [{ condition: "always" }] },
+    reconciliation: {
+      logicalIdentity: strictParserOperationKey("advisory-check-complete"),
+      exclusive: true,
+    },
+    desiredDigest: "",
+    kind: "advisoryCheckComplete",
+    name: "postil/review",
+    headSha: HEAD,
+    createdCheck: {
+      dependencyOperationKey: create.operationKey,
+      resultField: "remoteId",
+    },
     conclusion: "success",
     title: "Review completed",
     summary: "No advisory findings remain open.",
   };
-  operation.desiredDigest = digestJson(strictParserOperationDesired(operation));
+  complete.desiredDigest = digestJson(strictParserOperationDesired(complete));
   const lifecycleReceipt: any = {
     version: 1,
+    inputIdentity: INPUT_IDENTITY,
     channel: "reviewComments",
     receiptId: "receipt-1",
     duplicateOfBaseline: false,
@@ -301,6 +323,7 @@ function strictParserPlan(): any {
   };
   lifecycleReceipt.digest = digestJson({
     version: lifecycleReceipt.version,
+    inputIdentity: lifecycleReceipt.inputIdentity,
     channel: lifecycleReceipt.channel,
     receiptId: lifecycleReceipt.receiptId,
     compatibleReceiptIds: [],
@@ -324,9 +347,9 @@ function strictParserPlan(): any {
       pullRequestBodySha256: digest(strictParserExpected.pullRequestBody),
     },
     lifecycleReceipt,
-    operationCount: 1,
-    operationManifestDigest: digestJson([operation]),
-    operations: [operation],
+    operationCount: 2,
+    operationManifestDigest: digestJson([create, complete]),
+    operations: [create, complete],
     gateAnalysis: {
       ownership: "service",
       authoritative: false,
@@ -375,7 +398,9 @@ function operationKey(name: string): string {
   return `github-publication-v1:${name.replace(/[0-9]/g, "x")}:sha256:${hex(name)}`;
 }
 
-function strictParserOperationKey(kind: "advisory-check"): string {
+function strictParserOperationKey(
+  kind: "advisory-check-create" | "advisory-check-complete",
+): string {
   const hash = createHash("sha256").update("github-publication-operation-v1\0");
   for (const value of [
     "42",
