@@ -643,7 +643,7 @@ export const reviewPublicationOperations = pgTable(
     ),
     check(
       "review_publication_operations_source_key_check",
-      sql`(${t.operationSource} = 'cli' AND ${t.operationKey} ~ '^github-publication-v1:[a-z][a-z0-9-]{0,99}:sha256:[0-9a-f]{64}$') OR (${t.operationSource} = 'service' AND ((${t.kind} = 'gateCheckCreate' AND ${t.operationKey} = 'github-publication-controller-v1:gate-create:' || ${t.desiredPayloadDigest}) OR (${t.kind} = 'gateCheckComplete' AND ${t.operationKey} = 'github-publication-controller-v1:gate-complete:' || ${t.desiredPayloadDigest})))`,
+      sql`(${t.operationSource} = 'cli' AND ${t.operationKey} ~ '^github-publication-v1:[a-z][a-z0-9-]{0,99}:sha256:[0-9a-f]{64}$') OR (${t.operationSource} = 'service' AND ((${t.kind} = 'gateCheckCreate' AND ${t.operationKey} ~ '^github-publication-controller-v1:gate-create:sha256:[0-9a-f]{64}$') OR (${t.kind} = 'gateCheckComplete' AND ${t.operationKey} ~ '^github-publication-controller-v1:gate-complete:sha256:[0-9a-f]{64}$')))`,
     ),
     check(
       "review_publication_operations_ordinal_check",

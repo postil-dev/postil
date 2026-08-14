@@ -227,6 +227,28 @@ describe("migration lint", () => {
       latest.tables["public.review_publication_operations"]?.checkConstraints
         ?.review_publication_operations_ordinal_check?.value,
     ).toContain("BETWEEN 1 AND 128");
+    const publicationMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0055_durable_publication_foundation.sql",
+      ),
+      "utf8",
+    );
+    const cliManifestDigestFunction = publicationMigration.slice(
+      publicationMigration.indexOf(
+        'CREATE FUNCTION "postil_review_publication_cli_manifest_digest"',
+      ),
+      publicationMigration.indexOf(
+        'CREATE FUNCTION "postil_guard_review_publication_generation"',
+      ),
+    );
+    expect(
+      cliManifestDigestFunction.match(
+        /AND publication_generation = generation_number/g,
+      ),
+    ).toHaveLength(1);
     const creationMigration = await readFile(
       join(
         import.meta.dir,

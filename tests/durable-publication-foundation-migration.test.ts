@@ -160,30 +160,22 @@ function makeOperation(input: {
 }
 
 function withServiceGateOperations(cliOperations: OperationFixture[]) {
-  const gateCreatePrototype = makeOperation({
-    ordinal: cliOperations.length + 1,
-    operationKey: `github-publication-controller-v1:gate-create:sha256:${"0".repeat(64)}`,
-    dependencies: cliOperations.map((operation) => operation.operationKey),
-    kind: "gateCheckCreate",
-    operationSource: "service",
-  });
   const gateCreate = makeOperation({
     ordinal: cliOperations.length + 1,
-    operationKey: `github-publication-controller-v1:gate-create:${gateCreatePrototype.desiredPayloadDigest}`,
+    operationKey: `github-publication-controller-v1:gate-create:sha256:${sha256(
+      `controller-gate-create:${cliOperations.map((operation) => operation.operationKey).join(",")}`,
+    )}`,
     dependencies: cliOperations.map((operation) => operation.operationKey),
     kind: "gateCheckCreate",
-    operationSource: "service",
-  });
-  const gateCompletePrototype = makeOperation({
-    ordinal: cliOperations.length + 2,
-    operationKey: `github-publication-controller-v1:gate-complete:sha256:${"0".repeat(64)}`,
-    dependencies: [...cliOperations, gateCreate].map((operation) => operation.operationKey),
-    kind: "gateCheckComplete",
     operationSource: "service",
   });
   const gateComplete = makeOperation({
     ordinal: cliOperations.length + 2,
-    operationKey: `github-publication-controller-v1:gate-complete:${gateCompletePrototype.desiredPayloadDigest}`,
+    operationKey: `github-publication-controller-v1:gate-complete:sha256:${sha256(
+      `controller-gate-complete:${[...cliOperations, gateCreate]
+        .map((operation) => operation.operationKey)
+        .join(",")}`,
+    )}`,
     dependencies: [...cliOperations, gateCreate].map((operation) => operation.operationKey),
     kind: "gateCheckComplete",
     operationSource: "service",
@@ -890,6 +882,61 @@ describeDb("durable publication foundation migration", () => {
     await expect(insertHighWater(digestFixture)).rejects.toThrow(
       "stored publication operations do not match the controller manifest",
     );
+  });
+
+  test("validates service gate key wire shape and action pairing independently of payload digest", async () => {
+    const validFixture = await preparePublication({ prNumber: 117 });
+    for (const serviceOperation of validFixture.operations.filter(
+      (operation) => operation.operationSource === "service",
+    )) {
+      expect(serviceOperation.operationKey.endsWith(serviceOperation.desiredPayloadDigest)).toBe(
+        false,
+      );
+    }
+
+    const headSha = "9".repeat(40);
+    const reviewId = await createReview({ prNumber: 118, headSha });
+    const fixture = publicationFixture({
+      repositoryId,
+      prNumber: 118,
+      generation: "1",
+      reviewId,
+      inputDigest: INPUT_ONE,
+      headSha,
+      cliOperations: [makeOperation({ ordinal: 1 })],
+    });
+    await insertGeneration(fixture);
+
+    for (const invalidOperation of [
+      makeOperation({
+        ordinal: 2,
+        operationKey: `github-publication-controller-v1:gate-create:sha256:${"a".repeat(63)}`,
+        kind: "gateCheckCreate",
+        operationSource: "service",
+      }),
+      makeOperation({
+        ordinal: 2,
+        operationKey: `github-publication-controller-v1:gate-create:${"a".repeat(64)}`,
+        kind: "gateCheckCreate",
+        operationSource: "service",
+      }),
+      makeOperation({
+        ordinal: 2,
+        operationKey: `github-publication-controller-v1:gate-complete:sha256:${"b".repeat(64)}`,
+        kind: "gateCheckCreate",
+        operationSource: "service",
+      }),
+      makeOperation({
+        ordinal: 2,
+        operationKey: `github-publication-controller-v1:gate-create:sha256:${"c".repeat(64)}`,
+        kind: "gateCheckComplete",
+        operationSource: "service",
+      }),
+    ]) {
+      await expect(insertOperation(fixture, invalidOperation)).rejects.toThrow(
+        "review_publication_operations_source_key_check",
+      );
+    }
   });
 
   test("bounds combined operation, dependency, and controller-manifest amplification", async () => {

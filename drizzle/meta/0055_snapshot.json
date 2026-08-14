@@ -1,5 +1,5 @@
 {
-  "id": "af1a4bd3-ec59-43ab-9ccf-c6626e459633",
+  "id": "384db06a-2094-417a-806e-9e3dbda15999",
   "prevId": "0b66c412-3a8c-4928-b4ca-c35494c93825",
   "version": "7",
   "dialect": "postgresql",
@@ -7751,7 +7751,7 @@
         },
         "review_publication_operations_source_key_check": {
           "name": "review_publication_operations_source_key_check",
-          "value": "(\"review_publication_operations\".\"operation_source\" = 'cli' AND \"review_publication_operations\".\"operation_key\" ~ '^github-publication-v1:[a-z][a-z0-9-]{0,99}:sha256:[0-9a-f]{64}$') OR (\"review_publication_operations\".\"operation_source\" = 'service' AND ((\"review_publication_operations\".\"kind\" = 'gateCheckCreate' AND \"review_publication_operations\".\"operation_key\" = 'github-publication-controller-v1:gate-create:' || \"review_publication_operations\".\"desired_payload_digest\") OR (\"review_publication_operations\".\"kind\" = 'gateCheckComplete' AND \"review_publication_operations\".\"operation_key\" = 'github-publication-controller-v1:gate-complete:' || \"review_publication_operations\".\"desired_payload_digest\")))"
+          "value": "(\"review_publication_operations\".\"operation_source\" = 'cli' AND \"review_publication_operations\".\"operation_key\" ~ '^github-publication-v1:[a-z][a-z0-9-]{0,99}:sha256:[0-9a-f]{64}$') OR (\"review_publication_operations\".\"operation_source\" = 'service' AND ((\"review_publication_operations\".\"kind\" = 'gateCheckCreate' AND \"review_publication_operations\".\"operation_key\" ~ '^github-publication-controller-v1:gate-create:sha256:[0-9a-f]{64}$') OR (\"review_publication_operations\".\"kind\" = 'gateCheckComplete' AND \"review_publication_operations\".\"operation_key\" ~ '^github-publication-controller-v1:gate-complete:sha256:[0-9a-f]{64}$')))"
         },
         "review_publication_operations_ordinal_check": {
           "name": "review_publication_operations_ordinal_check",
