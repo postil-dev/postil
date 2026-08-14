@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import {
   completeGitHubCheckRun,
@@ -20,9 +20,21 @@ const FINDING_MARKER = `<!-- postil-finding:v2:${"c".repeat(32)} -->`;
 const SECOND_FINDING_MARKER = `<!-- postil-finding:v2:${"d".repeat(32)} -->`;
 const CHECK_EXTERNAL_ID = "postil:review-run:review";
 const CHECK_DETAILS_URL = "https://postil.dev/orgs/octo/runs/review-run";
+const TEST_GITHUB_APP_ID = 123;
+const ORIGINAL_GITHUB_APP_ID = process.env.GITHUB_APP_ID;
+
+beforeEach(() => {
+  process.env.GITHUB_APP_ID = String(TEST_GITHUB_APP_ID);
+});
 
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
+  process.env.GITHUB_APP_ID = String(TEST_GITHUB_APP_ID);
+});
+
+afterAll(() => {
+  if (ORIGINAL_GITHUB_APP_ID === undefined) delete process.env.GITHUB_APP_ID;
+  else process.env.GITHUB_APP_ID = ORIGINAL_GITHUB_APP_ID;
 });
 
 function review(overrides: Record<string, unknown> = {}) {
@@ -105,7 +117,7 @@ function checkRun(overrides: Record<string, unknown> = {}) {
     status: "in_progress",
     conclusion: null,
     details_url: CHECK_DETAILS_URL,
-    app: { slug: "postil-dev" },
+    app: { id: TEST_GITHUB_APP_ID, slug: "postil-dev" },
     output: null,
     ...overrides,
   };
@@ -770,6 +782,11 @@ describe("GitHub owned check-run creation", () => {
     const invalidCandidates = [
       [checkRun(), checkRun({ id: 62 })],
       [checkRun({ app: { slug: "other-app" } })],
+      [
+        checkRun({
+          app: { id: TEST_GITHUB_APP_ID + 1, slug: "postil-dev" },
+        }),
+      ],
       [checkRun({ head_sha: "b".repeat(40) })],
       [checkRun({ name: "postil/gate" })],
       [checkRun({ id: 0 })],
@@ -881,6 +898,25 @@ describe("GitHub owned check-run creation", () => {
       }),
     ).rejects.toThrow("intent is invalid");
   });
+
+  test("rejects noncanonical or unsafe configured App IDs before POST", async () => {
+    let requests = 0;
+    globalThis.fetch = Object.assign(
+      async () => {
+        requests += 1;
+        return Response.json(checkRun());
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    for (const appId of ["0123", "+123", "9007199254740992"]) {
+      process.env.GITHUB_APP_ID = appId;
+      await expect(
+        createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
+      ).rejects.toThrow("GitHub App configuration is invalid");
+    }
+    expect(requests).toBe(0);
+  });
 });
 
 describe("GitHub owned check-run completion", () => {
@@ -967,6 +1003,43 @@ describe("GitHub owned check-run completion", () => {
       completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
     ).resolves.toBeUndefined();
     expect(methods).toEqual(["GET", "GET"]);
+  });
+
+  test("never patches an already terminal check with stale content", async () => {
+    for (const staleTerminalState of [
+      { conclusion: "failure" },
+      {
+        output: {
+          title: "Stale review title",
+          summary: checkRunCompletionIntent.summary,
+        },
+      },
+      { details_url: "https://postil.dev/orgs/octo/runs/other-run" },
+    ]) {
+      const methods: string[] = [];
+      globalThis.fetch = (async (input, init) => {
+        methods.push(init?.method ?? "GET");
+        if (isCheckRunAnnotationsRequest(input)) {
+          return Response.json([checkRunAnnotation()]);
+        }
+        return Response.json(
+          checkRun({
+            status: "completed",
+            conclusion: "success",
+            output: {
+              title: checkRunCompletionIntent.title,
+              summary: checkRunCompletionIntent.summary,
+            },
+            ...staleTerminalState,
+          }),
+        );
+      }) as typeof fetch;
+
+      await expect(
+        completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+      ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+      expect(methods).toEqual(["GET", "GET"]);
+    }
   });
 
   test("rejects stale, partial, extra, reordered, or changed terminal annotations without patching", async () => {
@@ -1141,6 +1214,7 @@ describe("GitHub owned check-run completion", () => {
     for (const mismatch of [
       { id: 62 },
       { app: { slug: "other-app" } },
+      { app: { id: TEST_GITHUB_APP_ID + 1, slug: "postil-dev" } },
       { head_sha: "b".repeat(40) },
       { name: "postil/gate" },
     ]) {
