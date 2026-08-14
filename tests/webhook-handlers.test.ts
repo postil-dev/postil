@@ -150,7 +150,10 @@ mock.module("@/lib/github/checks", () => ({
 // Imported after the mocks are registered so the route picks up the stubs.
 const { POST } = await import("@/app/api/webhooks/github/route");
 const { getDb, getPool, closeDb } = await import("@/lib/db");
-const { dispatchWebhookDelivery } = await import("@/lib/github/webhook-handler");
+const {
+  dispatchWebhookDelivery,
+  pullRequestStateConvergence,
+} = await import("@/lib/github/webhook-handler");
 const { hasNewerCompletedReviewForHead } = await import("@/lib/finding-approvals");
 const {
   reconcileOperatorAlertDeliveries,
@@ -198,6 +201,55 @@ test("rejects an oversized declared webhook before reading or authenticating it"
 describeDb("webhook handler behaviour", () => {
   let db: EphemeralDatabase;
   let pool: Pool;
+
+  test("pull request state convergence distinguishes older, equal, newer, and invalid timestamps", () => {
+    const eventUpdatedAt = "2026-08-12T03:04:05.000Z";
+    const mismatchedLiveState = { open: true, merged: false };
+    const cases: Array<{
+      name: string;
+      updatedAt: string;
+      expected: "retry" | "ignore";
+    }> = [
+      {
+        name: "strictly older live snapshot",
+        updatedAt: "2026-08-12T03:04:04.999Z",
+        expected: "retry",
+      },
+      {
+        name: "equal live snapshot",
+        updatedAt: eventUpdatedAt,
+        expected: "retry",
+      },
+      {
+        name: "newer live snapshot",
+        updatedAt: "2026-08-12T03:04:05.001Z",
+        expected: "ignore",
+      },
+    ];
+
+    for (const { name, updatedAt, expected } of cases) {
+      expect(
+        pullRequestStateConvergence("closed", eventUpdatedAt, {
+          ...mismatchedLiveState,
+          updatedAt,
+        }),
+        name,
+      ).toBe(expected);
+    }
+
+    expect(() =>
+      pullRequestStateConvergence("closed", "not-a-timestamp", {
+        ...mismatchedLiveState,
+        updatedAt: eventUpdatedAt,
+      }),
+    ).toThrow("pull request state timestamps must be valid");
+    expect(() =>
+      pullRequestStateConvergence("closed", eventUpdatedAt, {
+        ...mismatchedLiveState,
+        updatedAt: "not-a-timestamp",
+      }),
+    ).toThrow("pull request state timestamps must be valid");
+  });
 
   beforeAll(async () => {
     db = await createEphemeralDatabase("webhook_handlers");
@@ -1613,6 +1665,95 @@ describeDb("webhook handler behaviour", () => {
         WHERE kind = 'review'
           AND payload->>'sourceDeliveryId' = $1`,
       [deliveryId],
+    )).rows[0]?.count).toBe(1);
+  });
+
+  test("lagged state, refs, and draft retry once while a newer contradictory snapshot is ignored", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 286);
+    await seedRepo(inst, 8286, "octo/convergence");
+    const deliveryId = "delivery-lagged-convergence";
+    const payload = {
+      action: "ready_for_review",
+      installation: { id: 286 },
+      repository: { id: 8286, full_name: "octo/convergence", private: false },
+      pull_request: {
+        number: 26,
+        head: { sha: "event-head" },
+        base: { sha: "event-base" },
+        updated_at: "2026-08-12T03:04:05.000Z",
+      },
+    };
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      open: false,
+      merged: false,
+      draft: true,
+      headSha: "lagging-live-head",
+      baseSha: "lagging-live-base",
+      updatedAt: "2026-08-12T03:04:04.999Z",
+    };
+
+    expect((await post("pull_request", payload, deliveryId)).status).toBe(200);
+    expect(pullRequestReviewContextFetchCount).toBe(1);
+    expect((await pool.query<{ completed: boolean }>(
+      `SELECT completed_at IS NOT NULL AS completed
+         FROM webhook_deliveries WHERE delivery_id = $1`,
+      [deliveryId],
+    )).rows[0]?.completed).toBe(false);
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM jobs WHERE kind = 'review'",
+    )).rows[0]?.count).toBe(0);
+
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      open: true,
+      draft: false,
+      headSha: "event-head",
+      baseSha: "event-base",
+      updatedAt: "2026-08-12T03:04:05.000Z",
+    };
+    await retryWebhookDelivery(deliveryId);
+    expect(pullRequestReviewContextFetchCount).toBe(2);
+    const queued = await pool.query<{
+      payload: {
+        headSha: string;
+        baseSha: string;
+        expectedPullRequestUpdatedAt: string;
+        sourceDeliveryId: string;
+      };
+    }>("SELECT payload FROM jobs WHERE kind = 'review'");
+    expect(queued.rows).toHaveLength(1);
+    expect(queued.rows[0]!.payload).toMatchObject({
+      headSha: "event-head",
+      baseSha: "event-base",
+      expectedPullRequestUpdatedAt: "2026-08-12T03:04:05.000Z",
+      sourceDeliveryId: deliveryId,
+    });
+
+    expect((await post("pull_request", payload, deliveryId)).status).toBe(200);
+    expect(pullRequestReviewContextFetchCount).toBe(2);
+
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      open: false,
+      draft: true,
+      headSha: "contradictory-live-head",
+      baseSha: "contradictory-live-base",
+      updatedAt: "2026-08-12T03:04:05.001Z",
+    };
+    expect((await post(
+      "pull_request",
+      payload,
+      "delivery-newer-contradiction",
+    )).status).toBe(200);
+    expect(pullRequestReviewContextFetchCount).toBe(3);
+    expect((await pool.query<{ completed: boolean }>(
+      `SELECT completed_at IS NOT NULL AS completed
+         FROM webhook_deliveries WHERE delivery_id = 'delivery-newer-contradiction'`,
+    )).rows[0]?.completed).toBe(true);
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM jobs WHERE kind = 'review'",
     )).rows[0]?.count).toBe(1);
   });
 
