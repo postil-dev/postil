@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  completeGitHubCheckRun,
+  createGitHubCheckRun,
   findGitHubReviewByMarker,
   GitHubPublicationAmbiguousError,
   GitHubPublicationRejectedError,
@@ -16,6 +18,8 @@ const HEAD_SHA = "a".repeat(40);
 const REVIEW_MARKER = `<!-- postil-review:v2:${"b".repeat(32)} -->`;
 const FINDING_MARKER = `<!-- postil-finding:v2:${"c".repeat(32)} -->`;
 const SECOND_FINDING_MARKER = `<!-- postil-finding:v2:${"d".repeat(32)} -->`;
+const CHECK_EXTERNAL_ID = "postil:review-run:review";
+const CHECK_DETAILS_URL = "https://postil.dev/orgs/octo/runs/review-run";
 
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
@@ -63,6 +67,68 @@ const compositeIntent = {
     },
   ],
 };
+
+const checkRunStartIntent = {
+  name: "postil/review" as const,
+  headSha: HEAD_SHA,
+  externalId: CHECK_EXTERNAL_ID,
+  detailsUrl: CHECK_DETAILS_URL,
+};
+
+const checkRunCompletionIntent = {
+  ...checkRunStartIntent,
+  checkRunId: "61",
+  conclusion: "success" as const,
+  title: "Review complete",
+  summary: "The review completed.",
+  annotations: [
+    {
+      path: "src/main.ts",
+      startLine: 12,
+      endLine: 12,
+      startColumn: 3,
+      endColumn: 9,
+      annotationLevel: "warning" as const,
+      message: "Review finding",
+      title: "Finding",
+      rawDetails: "Use the safe branch.",
+    },
+  ],
+};
+
+function checkRun(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 61,
+    name: checkRunStartIntent.name,
+    external_id: checkRunStartIntent.externalId,
+    head_sha: HEAD_SHA,
+    status: "in_progress",
+    conclusion: null,
+    details_url: CHECK_DETAILS_URL,
+    app: { slug: "postil-dev" },
+    output: null,
+    ...overrides,
+  };
+}
+
+function checkRunAnnotation(overrides: Record<string, unknown> = {}) {
+  return {
+    path: "src/main.ts",
+    start_line: 12,
+    end_line: 12,
+    start_column: 3,
+    end_column: 9,
+    annotation_level: "warning",
+    message: "Review finding",
+    title: "Finding",
+    raw_details: "Use the safe branch.",
+    ...overrides,
+  };
+}
+
+function isCheckRunAnnotationsRequest(input: RequestInfo | URL): boolean {
+  return new URL(String(input)).pathname.endsWith("/annotations");
+}
 
 describe("GitHub composite review publication", () => {
   test("publishes and observes the exact review and inline identities", async () => {
@@ -642,5 +708,486 @@ describe("GitHub owned review comment updates", () => {
       updateGitHubReviewComment("token", "octo/repo", intent),
     ).rejects.toThrow("malformed");
     expect(methods).toEqual(["GET"]);
+  });
+});
+
+describe("GitHub owned check-run creation", () => {
+  test("creates one exact in-progress check run with an encoded repository path", async () => {
+    const requests: Array<{ method: string; url: string; body?: unknown }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({
+        method: init?.method ?? "GET",
+        url: String(input),
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      return Response.json(checkRun());
+    }) as typeof fetch;
+
+    await expect(
+      createGitHubCheckRun("token", "octo space/repo space", checkRunStartIntent),
+    ).resolves.toBe("61");
+    expect(requests).toEqual([
+      {
+        method: "POST",
+        url: expect.stringContaining("/repos/octo%20space/repo%20space/check-runs"),
+        body: {
+          name: "postil/review",
+          head_sha: HEAD_SHA,
+          status: "in_progress",
+          external_id: CHECK_EXTERNAL_ID,
+          details_url: CHECK_DETAILS_URL,
+        },
+      },
+    ]);
+  });
+
+  test("reconciles one uncertain create across every linked page", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const method = init?.method ?? "GET";
+      methods.push(method);
+      if (method === "POST") throw new TypeError("connection reset");
+      if (methods.length === 2) {
+        return Response.json({
+          check_runs: [checkRun({ app: { slug: "other-app" } })],
+        }, {
+          headers: {
+            Link: '<https://api.github.test/check-runs?page=2>; rel="next"',
+          },
+        });
+      }
+      return Response.json({ check_runs: [checkRun()] });
+    }) as typeof fetch;
+
+    await expect(
+      createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
+    ).resolves.toBe("61");
+    expect(methods).toEqual(["POST", "GET", "GET"]);
+    expect(methods.filter((method) => method === "POST")).toHaveLength(1);
+  });
+
+  test("fails closed for duplicate or wrong check-run identities", async () => {
+    const invalidCandidates = [
+      [checkRun(), checkRun({ id: 62 })],
+      [checkRun({ app: { slug: "other-app" } })],
+      [checkRun({ head_sha: "b".repeat(40) })],
+      [checkRun({ name: "postil/gate" })],
+      [checkRun({ id: 0 })],
+    ];
+    for (const candidates of invalidCandidates) {
+      const methods: string[] = [];
+      globalThis.fetch = (async (_input, init) => {
+        methods.push(init?.method ?? "GET");
+        if (init?.method === "POST") return Response.json({ id: "malformed" });
+        return Response.json({ check_runs: candidates });
+      }) as typeof fetch;
+
+      await expect(
+        createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
+      ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+      expect(methods.filter((method) => method === "POST")).toHaveLength(1);
+    }
+  });
+
+  test("treats malformed and oversized successes as uncertain without reading error payloads", async () => {
+    for (const postResponse of [
+      Response.json({ id: "malformed" }),
+      new Response("{}", {
+        status: 201,
+        headers: { "content-length": String(16_777_217) },
+      }),
+      new Response(null, { status: 503 }),
+    ]) {
+      const methods: string[] = [];
+      globalThis.fetch = (async (_input, init) => {
+        methods.push(init?.method ?? "GET");
+        return init?.method === "POST"
+          ? postResponse
+          : Response.json({ check_runs: [checkRun()] });
+      }) as typeof fetch;
+
+      await expect(
+        createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
+      ).resolves.toBe("61");
+      expect(methods.filter((method) => method === "POST")).toHaveLength(1);
+    }
+
+    globalThis.fetch = Object.assign(
+      async () => new Response("remote failure details", { status: 422 }),
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    const rejection = createGitHubCheckRun(
+      "token",
+      "octo/repo",
+      checkRunStartIntent,
+    );
+    await expect(rejection).rejects.toBeInstanceOf(GitHubPublicationRejectedError);
+    await rejection.catch((error: Error) => {
+      expect(error.message).not.toContain("remote failure details");
+    });
+  });
+
+  test("fails closed when a reconciliation page fails or exceeds its page limit", async () => {
+    let request = 0;
+    globalThis.fetch = (async (_input, init) => {
+      request += 1;
+      if (init?.method === "POST") return new Response(null, { status: 503 });
+      if (request === 2) {
+        return Response.json({ check_runs: [checkRun()] }, {
+          headers: {
+            Link: '<https://api.github.test/check-runs?page=2>; rel="next"',
+          },
+        });
+      }
+      return new Response(null, { status: 503 });
+    }) as typeof fetch;
+    await expect(
+      createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+
+    let pages = 0;
+    globalThis.fetch = (async (_input, init) => {
+      if (init?.method === "POST") return new Response(null, { status: 503 });
+      pages += 1;
+      return Response.json({ check_runs: [] }, {
+        headers: {
+          Link: '<https://api.github.test/check-runs?page=next>; rel="next"',
+        },
+      });
+    }) as typeof fetch;
+    await expect(
+      createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(pages).toBe(80);
+  });
+
+  test("validates and aborts before a create write", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    globalThis.fetch = Object.assign(
+      async () => {
+        throw new Error("unexpected request");
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    await expect(
+      createGitHubCheckRun("token", "octo/repo", checkRunStartIntent, controller.signal),
+    ).rejects.toBeDefined();
+    await expect(
+      createGitHubCheckRun("token", "octo/repo", {
+        ...checkRunStartIntent,
+        name: "postil/other" as "postil/review",
+      }),
+    ).rejects.toThrow("intent is invalid");
+  });
+});
+
+describe("GitHub owned check-run completion", () => {
+  test("observes identity, patches once, and verifies exact terminal output", async () => {
+    const requests: Array<{ method: string; body?: unknown }> = [];
+    let checkRunGets = 0;
+    globalThis.fetch = (async (input, init) => {
+      const method = init?.method ?? "GET";
+      requests.push({
+        method,
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if (isCheckRunAnnotationsRequest(input)) {
+        return Response.json(checkRunGets === 1 ? [] : [checkRunAnnotation()]);
+      }
+      if (method === "GET" && checkRunGets++ === 0) return Response.json(checkRun());
+      return Response.json(
+        checkRun({
+          status: "completed",
+          conclusion: "success",
+          output: {
+            title: checkRunCompletionIntent.title,
+            summary: checkRunCompletionIntent.summary,
+          },
+        }),
+      );
+    }) as typeof fetch;
+
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+    ).resolves.toBeUndefined();
+    expect(requests.map((request) => request.method)).toEqual([
+      "GET",
+      "GET",
+      "PATCH",
+      "GET",
+      "GET",
+    ]);
+    expect(requests.filter((request) => request.method === "PATCH")).toHaveLength(1);
+    expect(requests[2]?.body).toEqual({
+      status: "completed",
+      conclusion: "success",
+      details_url: CHECK_DETAILS_URL,
+      output: {
+        title: "Review complete",
+        summary: "The review completed.",
+        annotations: [
+          {
+            path: "src/main.ts",
+            start_line: 12,
+            end_line: 12,
+            start_column: 3,
+            end_column: 9,
+            annotation_level: "warning",
+            message: "Review finding",
+            title: "Finding",
+            raw_details: "Use the safe branch.",
+          },
+        ],
+      },
+    });
+  });
+
+  test("does not patch an already exact terminal check run", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      methods.push(init?.method ?? "GET");
+      if (isCheckRunAnnotationsRequest(input)) {
+        return Response.json([checkRunAnnotation()]);
+      }
+      return Response.json(
+        checkRun({
+          status: "completed",
+          conclusion: "success",
+          output: {
+            title: checkRunCompletionIntent.title,
+            summary: checkRunCompletionIntent.summary,
+          },
+        }),
+      );
+    }) as typeof fetch;
+
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+    ).resolves.toBeUndefined();
+    expect(methods).toEqual(["GET", "GET"]);
+  });
+
+  test("rejects stale, partial, extra, reordered, or changed terminal annotations without patching", async () => {
+    const secondAnnotation = {
+      ...checkRunCompletionIntent.annotations[0]!,
+      path: "src/other.ts",
+      startLine: 4,
+      endLine: 4,
+      startColumn: undefined,
+      endColumn: undefined,
+      message: "Second review finding",
+      title: undefined,
+      rawDetails: undefined,
+    };
+    const intent = {
+      ...checkRunCompletionIntent,
+      annotations: [checkRunCompletionIntent.annotations[0]!, secondAnnotation],
+    };
+    const desired = [
+      checkRunAnnotation(),
+      checkRunAnnotation({
+        path: "src/other.ts",
+        start_line: 4,
+        end_line: 4,
+        start_column: null,
+        end_column: null,
+        message: "Second review finding",
+        title: null,
+        raw_details: null,
+      }),
+    ];
+    for (const annotations of [
+      [],
+      [desired[0]!],
+      [...desired, checkRunAnnotation({ path: "src/extra.ts" })],
+      [desired[1]!, desired[0]!],
+      [checkRunAnnotation({ message: "Changed finding" }), desired[1]!],
+    ]) {
+      const methods: string[] = [];
+      globalThis.fetch = (async (input, init) => {
+        methods.push(init?.method ?? "GET");
+        if (isCheckRunAnnotationsRequest(input)) return Response.json(annotations);
+        return Response.json(
+          checkRun({
+            status: "completed",
+            conclusion: "success",
+            output: {
+              title: intent.title,
+              summary: intent.summary,
+            },
+          }),
+        );
+      }) as typeof fetch;
+      await expect(
+        completeGitHubCheckRun("token", "octo/repo", intent),
+      ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+      expect(methods).toEqual(["GET", "GET"]);
+    }
+  });
+
+  test("fails closed on annotation pagination failure or limit before patching", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      methods.push(init?.method ?? "GET");
+      if (!isCheckRunAnnotationsRequest(input)) return Response.json(checkRun());
+      if (methods.length === 2) {
+        return Response.json([], {
+          headers: {
+            Link: '<https://api.github.test/check-runs/61/annotations?page=2>; rel="next"',
+          },
+        });
+      }
+      return new Response(null, { status: 503 });
+    }) as typeof fetch;
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(methods).toEqual(["GET", "GET", "GET"]);
+    expect(methods.filter((method) => method === "PATCH")).toHaveLength(0);
+
+    let pages = 0;
+    globalThis.fetch = (async (input, init) => {
+      if (!isCheckRunAnnotationsRequest(input)) return Response.json(checkRun());
+      pages += 1;
+      return Response.json([], {
+        headers: {
+          Link: '<https://api.github.test/check-runs/61/annotations?page=next>; rel="next"',
+        },
+      });
+    }) as typeof fetch;
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(pages).toBe(80);
+  });
+
+  test("reconciles uncertain updates only when the exact terminal state appears", async () => {
+    const methods: string[] = [];
+    let checkRunGets = 0;
+    globalThis.fetch = (async (input, init) => {
+      const method = init?.method ?? "GET";
+      methods.push(method);
+      if (isCheckRunAnnotationsRequest(input)) {
+        return Response.json(checkRunGets === 1 ? [] : [checkRunAnnotation()]);
+      }
+      if (checkRunGets++ === 0) return Response.json(checkRun());
+      if (method === "PATCH") throw new TypeError("connection reset");
+      return Response.json(
+        checkRun({
+          status: "completed",
+          conclusion: "success",
+          output: {
+            title: checkRunCompletionIntent.title,
+            summary: checkRunCompletionIntent.summary,
+          },
+        }),
+      );
+    }) as typeof fetch;
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+    ).resolves.toBeUndefined();
+    expect(methods).toEqual(["GET", "GET", "PATCH", "GET", "GET"]);
+    expect(methods.filter((method) => method === "PATCH")).toHaveLength(1);
+
+    for (const patchResponse of [
+      Response.json({ id: "malformed" }),
+      new Response(null, { status: 503 }),
+      new Response("{}", {
+        headers: { "content-length": String(16_777_217) },
+      }),
+    ]) {
+      let request = 0;
+      let checkRuns = 0;
+      globalThis.fetch = (async (input, init) => {
+        request += 1;
+        if (isCheckRunAnnotationsRequest(input)) {
+          return Response.json(checkRuns === 1 ? [] : [checkRunAnnotation()]);
+        }
+        if (checkRuns++ === 0) return Response.json(checkRun());
+        if (init?.method === "PATCH") return patchResponse;
+        return Response.json(
+          checkRun({
+            status: "completed",
+            conclusion: "success",
+            output: {
+              title: checkRunCompletionIntent.title,
+              summary: checkRunCompletionIntent.summary,
+            },
+          }),
+        );
+      }) as typeof fetch;
+      await expect(
+        completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+      ).resolves.toBeUndefined();
+      expect(request).toBe(5);
+    }
+  });
+
+  test("rejects a known patch failure and refuses mismatched identities", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      methods.push(init?.method ?? "GET");
+      if (isCheckRunAnnotationsRequest(input)) return Response.json([]);
+      if (init?.method === "GET") return Response.json(checkRun());
+      return new Response("remote failure details", { status: 422 });
+    }) as typeof fetch;
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+    ).rejects.toBeInstanceOf(GitHubPublicationRejectedError);
+    expect(methods).toEqual(["GET", "GET", "PATCH"]);
+
+    for (const mismatch of [
+      { id: 62 },
+      { app: { slug: "other-app" } },
+      { head_sha: "b".repeat(40) },
+      { name: "postil/gate" },
+    ]) {
+      const observed: string[] = [];
+      globalThis.fetch = (async (_input, init) => {
+        observed.push(init?.method ?? "GET");
+        return Response.json(checkRun(mismatch));
+      }) as typeof fetch;
+      await expect(
+        completeGitHubCheckRun("token", "octo/repo", checkRunCompletionIntent),
+      ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+      expect(observed).toEqual(["GET"]);
+    }
+  });
+
+  test("validates annotations and aborts before a completion write", async () => {
+    const invalidIntents = [
+      { annotations: Array.from({ length: 51 }, () => checkRunCompletionIntent.annotations[0]!) },
+      { annotations: [{ ...checkRunCompletionIntent.annotations[0]!, path: "bad\0path" }] },
+      { annotations: [{ ...checkRunCompletionIntent.annotations[0]!, startLine: 0 }] },
+      { annotations: [{ ...checkRunCompletionIntent.annotations[0]!, endLine: 11 }] },
+      { annotations: [{ ...checkRunCompletionIntent.annotations[0]!, endColumn: undefined }] },
+    ];
+    globalThis.fetch = Object.assign(
+      async () => {
+        throw new Error("unexpected request");
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    for (const invalid of invalidIntents) {
+      await expect(
+        completeGitHubCheckRun("token", "octo/repo", {
+          ...checkRunCompletionIntent,
+          ...invalid,
+        }),
+      ).rejects.toThrow("intent is invalid");
+    }
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      completeGitHubCheckRun(
+        "token",
+        "octo/repo",
+        checkRunCompletionIntent,
+        controller.signal,
+      ),
+    ).rejects.toBeDefined();
   });
 });

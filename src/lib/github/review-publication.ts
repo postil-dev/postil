@@ -1,4 +1,5 @@
 import { apiBase } from "@/lib/github/app-auth";
+import { githubAppSlug } from "@/lib/github-app";
 import { isPostilBotLogin } from "@/lib/github/conversation";
 
 const PAGE_SIZE = 25;
@@ -53,6 +54,37 @@ export interface GitHubReviewCommentUpdateIntent {
   body: string;
 }
 
+export type GitHubCheckRunName = "postil/review" | "postil/gate";
+export type GitHubCheckRunConclusion = "success" | "failure" | "neutral";
+
+export interface GitHubCheckRunStartIntent {
+  readonly name: GitHubCheckRunName;
+  readonly headSha: string;
+  readonly externalId: string;
+  readonly detailsUrl?: string;
+}
+
+export interface GitHubCheckRunAnnotationIntent {
+  readonly path: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly annotationLevel: "notice" | "warning" | "failure";
+  readonly message: string;
+  readonly title?: string;
+  readonly rawDetails?: string;
+  readonly startColumn?: number;
+  readonly endColumn?: number;
+}
+
+export interface GitHubCheckRunCompletionIntent
+  extends GitHubCheckRunStartIntent {
+  readonly checkRunId: string;
+  readonly conclusion: GitHubCheckRunConclusion;
+  readonly title: string;
+  readonly summary: string;
+  readonly annotations?: readonly GitHubCheckRunAnnotationIntent[];
+}
+
 export class GitHubReviewPlacementRejectedError extends Error {
   override name = "GitHubReviewPlacementRejectedError";
 
@@ -98,6 +130,215 @@ interface ReviewCommentResponse {
   pull_request_review_id?: number | null;
   subject_type?: string;
   user?: { login?: string | null } | null;
+}
+
+interface CheckRunResponse {
+  id?: number;
+  name?: string;
+  external_id?: string;
+  head_sha?: string;
+  status?: string;
+  conclusion?: string | null;
+  details_url?: string | null;
+  app?: { slug?: string | null } | null;
+  output?: {
+    title?: string | null;
+    summary?: string | null;
+  } | null;
+}
+
+interface CheckRunAnnotationResponse {
+  path?: string;
+  start_line?: number;
+  end_line?: number;
+  annotation_level?: string;
+  message?: string;
+  title?: string | null;
+  raw_details?: string | null;
+  start_column?: number | null;
+  end_column?: number | null;
+}
+
+interface NormalizedCheckRunAnnotation {
+  path: string;
+  startLine: number;
+  endLine: number;
+  annotationLevel: "notice" | "warning" | "failure";
+  message: string;
+  title: string | null;
+  rawDetails: string | null;
+  startColumn: number | null;
+  endColumn: number | null;
+}
+
+/** Create one owned in-progress check run and reconcile an uncertain POST. */
+export async function createGitHubCheckRun(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunStartIntent,
+  signal?: AbortSignal,
+): Promise<string> {
+  validateCheckRunStartIntent(intent);
+  const path = `${repositoryPath(repoFullName)}/check-runs`;
+  signal?.throwIfAborted();
+
+  let response: Response;
+  try {
+    response = await requestGitHub(
+      token,
+      "POST",
+      path,
+      {
+        name: intent.name,
+        head_sha: intent.headSha,
+        status: "in_progress",
+        external_id: intent.externalId,
+        ...(intent.detailsUrl === undefined
+          ? {}
+          : { details_url: intent.detailsUrl }),
+      },
+      signal,
+    );
+  } catch (error) {
+    return reconcileCheckRunCreation(token, repoFullName, intent, signal, error);
+  }
+
+  if (response.ok) {
+    try {
+      return parseStartedCheckRun(await readBoundedJson(response), intent);
+    } catch (error) {
+      return reconcileCheckRunCreation(
+        token,
+        repoFullName,
+        intent,
+        signal,
+        error,
+      );
+    }
+  }
+
+  await response.body?.cancel().catch(() => undefined);
+  if (response.status < 500) {
+    throw new GitHubPublicationRejectedError("check-run creation", response.status);
+  }
+  return reconcileCheckRunCreation(
+    token,
+    repoFullName,
+    intent,
+    signal,
+    new GitHubPublicationRejectedError("check-run creation", response.status),
+  );
+}
+
+/** Complete one owned check run after proving its immutable identity. */
+export async function completeGitHubCheckRun(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  signal?: AbortSignal,
+): Promise<void> {
+  validateCheckRunCompletionIntent(intent);
+  signal?.throwIfAborted();
+  const current = await getExactCheckRun(token, repoFullName, intent, signal);
+  const currentAnnotations = await getExactCheckRunAnnotations(
+    token,
+    repoFullName,
+    intent,
+    signal,
+  );
+  const annotations = intent.annotations ?? [];
+  const desiredAnnotations = normalizeCheckRunAnnotations(annotations);
+  const annotationsAreExact = checkRunAnnotationsEqual(
+    currentAnnotations,
+    desiredAnnotations,
+  );
+  if (isExactCompletedCheckRun(current, intent)) {
+    if (annotationsAreExact) return;
+    throw new GitHubPublicationAmbiguousError("check-run completion annotations");
+  }
+  if (!annotationsAreExact && currentAnnotations.length > 0) {
+    throw new GitHubPublicationAmbiguousError("check-run completion annotations");
+  }
+  signal?.throwIfAborted();
+
+  const path = `${repositoryPath(repoFullName)}/check-runs/${intent.checkRunId}`;
+  let response: Response;
+  try {
+    response = await requestGitHub(
+      token,
+      "PATCH",
+      path,
+      {
+        status: "completed",
+        conclusion: intent.conclusion,
+        output: {
+          title: intent.title,
+          summary: intent.summary,
+          ...(annotationsAreExact || desiredAnnotations.length === 0
+            ? {}
+            : {
+                annotations: annotations.map((annotation) => ({
+                  path: annotation.path,
+                  start_line: annotation.startLine,
+                  end_line: annotation.endLine,
+                  annotation_level: annotation.annotationLevel,
+                  message: annotation.message,
+                  ...(annotation.title === undefined
+                    ? {}
+                    : { title: annotation.title }),
+                  ...(annotation.rawDetails === undefined
+                    ? {}
+                    : { raw_details: annotation.rawDetails }),
+                  ...(annotation.startColumn === undefined
+                    ? {}
+                    : { start_column: annotation.startColumn }),
+                  ...(annotation.endColumn === undefined
+                    ? {}
+                    : { end_column: annotation.endColumn }),
+                })),
+              }),
+        },
+        ...(intent.detailsUrl === undefined
+          ? {}
+          : { details_url: intent.detailsUrl }),
+      },
+      signal,
+    );
+  } catch (error) {
+    return reconcileCheckRunCompletion(token, repoFullName, intent, signal, error);
+  }
+
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status < 500) {
+      throw new GitHubPublicationRejectedError(
+        "check-run completion",
+        response.status,
+      );
+    }
+    return reconcileCheckRunCompletion(
+      token,
+      repoFullName,
+      intent,
+      signal,
+      new GitHubPublicationRejectedError("check-run completion", response.status),
+    );
+  }
+
+  try {
+    const patched = parseExactCheckRun(await readBoundedJson(response), intent);
+    if (!isExactCompletedCheckRun(patched, intent)) throw malformedResponse();
+  } catch (error) {
+    return reconcileCheckRunCompletion(token, repoFullName, intent, signal, error);
+  }
+
+  try {
+    await verifyExactCompletedCheckRun(token, repoFullName, intent, signal);
+  } catch (error) {
+    throw new GitHubPublicationAmbiguousError("check-run completion verification", {
+      cause: error,
+    });
+  }
 }
 
 /** Publish one submitted composite review and reconcile uncertain writes by marker. */
@@ -728,6 +969,79 @@ async function reconcileReviewCommentUpdate(
   });
 }
 
+async function reconcileCheckRunCreation(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunStartIntent,
+  signal: AbortSignal | undefined,
+  cause: unknown,
+): Promise<string> {
+  try {
+    const matches: string[] = [];
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const query = new URLSearchParams({
+        check_name: intent.name,
+        filter: "all",
+        per_page: String(PAGE_SIZE),
+        page: String(page),
+      });
+      const response = await requestGitHub(
+        token,
+        "GET",
+        `${repositoryPath(repoFullName)}/commits/${encodeURIComponent(intent.headSha)}/check-runs?${query}`,
+        undefined,
+        signal,
+      );
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new GitHubPublicationRejectedError(
+          "check-run creation reconciliation",
+          response.status,
+        );
+      }
+      const value = await readBoundedJson(response);
+      const checkRuns = (value as { check_runs?: unknown })?.check_runs;
+      if (!Array.isArray(checkRuns)) throw malformedResponse();
+      for (const candidate of checkRuns) {
+        const run = candidate as CheckRunResponse;
+        if (matchesCheckRunIdentity(run, intent)) {
+          matches.push(String(run.id));
+        }
+      }
+      if (!hasNextPage(response)) break;
+      if (page === MAX_PAGES) {
+        throw new GitHubPublicationAmbiguousError(
+          "check-run creation reconciliation pagination",
+        );
+      }
+    }
+    if (matches.length === 1) return matches[0]!;
+  } catch (error) {
+    if (error instanceof GitHubPublicationAmbiguousError) throw error;
+    throw new GitHubPublicationAmbiguousError("check-run creation", {
+      cause: error,
+    });
+  }
+  throw new GitHubPublicationAmbiguousError("check-run creation", { cause });
+}
+
+async function reconcileCheckRunCompletion(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  signal: AbortSignal | undefined,
+  cause: unknown,
+): Promise<void> {
+  try {
+    await verifyExactCompletedCheckRun(token, repoFullName, intent, signal);
+    return;
+  } catch (error) {
+    throw new GitHubPublicationAmbiguousError("check-run completion", {
+      cause: error,
+    });
+  }
+}
+
 async function getExactReviewComment(
   token: string,
   repoFullName: string,
@@ -749,6 +1063,98 @@ async function getExactReviewComment(
     );
   }
   return parseReviewComment(await readBoundedJson(response), intent);
+}
+
+async function getExactCheckRun(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  signal?: AbortSignal,
+): Promise<CheckRunResponse> {
+  const response = await requestGitHub(
+    token,
+    "GET",
+    `${repositoryPath(repoFullName)}/check-runs/${intent.checkRunId}`,
+    undefined,
+    signal,
+  );
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new GitHubPublicationRejectedError(
+      "check-run observation",
+      response.status,
+    );
+  }
+  try {
+    return parseExactCheckRun(await readBoundedJson(response), intent);
+  } catch (error) {
+    throw new GitHubPublicationAmbiguousError("check-run identity", {
+      cause: error,
+    });
+  }
+}
+
+async function getExactCheckRunAnnotations(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  signal?: AbortSignal,
+): Promise<NormalizedCheckRunAnnotation[]> {
+  const annotations: NormalizedCheckRunAnnotation[] = [];
+  try {
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const response = await requestGitHub(
+        token,
+        "GET",
+        `${repositoryPath(repoFullName)}/check-runs/${intent.checkRunId}/annotations?per_page=${PAGE_SIZE}&page=${page}`,
+        undefined,
+        signal,
+      );
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new GitHubPublicationRejectedError(
+          "check-run annotation observation",
+          response.status,
+        );
+      }
+      const value = await readBoundedJson(response);
+      if (!Array.isArray(value)) throw malformedResponse();
+      annotations.push(
+        ...value.map((annotation) => normalizeRemoteCheckRunAnnotation(annotation)),
+      );
+      if (!hasNextPage(response)) return annotations;
+      if (page === MAX_PAGES) {
+        throw new GitHubPublicationAmbiguousError("check-run annotation pagination");
+      }
+    }
+  } catch (error) {
+    if (error instanceof GitHubPublicationAmbiguousError) throw error;
+    throw new GitHubPublicationAmbiguousError("check-run annotation observation", {
+      cause: error,
+    });
+  }
+  throw new GitHubPublicationAmbiguousError("check-run annotation pagination");
+}
+
+async function verifyExactCompletedCheckRun(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  signal?: AbortSignal,
+): Promise<void> {
+  const [run, annotations] = await Promise.all([
+    getExactCheckRun(token, repoFullName, intent, signal),
+    getExactCheckRunAnnotations(token, repoFullName, intent, signal),
+  ]);
+  if (
+    !isExactCompletedCheckRun(run, intent) ||
+    !checkRunAnnotationsEqual(
+      annotations,
+      normalizeCheckRunAnnotations(intent.annotations ?? []),
+    )
+  ) {
+    throw new GitHubPublicationAmbiguousError("check-run completion verification");
+  }
 }
 
 async function getExactReview(
@@ -852,6 +1258,157 @@ function parseReviewComment(
     path: comment.path,
     body: comment.body,
   };
+}
+
+function parseStartedCheckRun(
+  value: unknown,
+  intent: GitHubCheckRunStartIntent,
+): string {
+  const run = parseExactCheckRun(value, intent);
+  if (run.status !== "in_progress" || run.conclusion !== null) {
+    throw malformedResponse();
+  }
+  return String(run.id);
+}
+
+function parseExactCheckRun(
+  value: unknown,
+  intent: GitHubCheckRunStartIntent & { checkRunId?: string },
+): CheckRunResponse & { id: number } {
+  const run = value as CheckRunResponse;
+  if (!matchesCheckRunIdentity(run, intent)) throw malformedResponse();
+  if (
+    intent.checkRunId !== undefined &&
+    String(run.id) !== intent.checkRunId
+  ) {
+    throw malformedResponse();
+  }
+  return run as CheckRunResponse & { id: number };
+}
+
+function matchesCheckRunIdentity(
+  run: CheckRunResponse,
+  intent: GitHubCheckRunStartIntent,
+): run is CheckRunResponse & { id: number } {
+  return (
+    Number.isSafeInteger(run?.id) &&
+    run.id! > 0 &&
+    run.name === intent.name &&
+    run.external_id === intent.externalId &&
+    run.head_sha === intent.headSha &&
+    run.app?.slug?.toLowerCase() === githubAppSlug().toLowerCase()
+  );
+}
+
+function isExactCompletedCheckRun(
+  run: CheckRunResponse,
+  intent: GitHubCheckRunCompletionIntent,
+): boolean {
+  return (
+    run.status === "completed" &&
+    run.conclusion === intent.conclusion &&
+    run.output?.title === intent.title &&
+    run.output?.summary === intent.summary &&
+    (intent.detailsUrl === undefined
+      ? run.details_url === undefined || run.details_url === null
+      : run.details_url === intent.detailsUrl)
+  );
+}
+
+function normalizeCheckRunAnnotations(
+  annotations: readonly GitHubCheckRunAnnotationIntent[],
+): NormalizedCheckRunAnnotation[] {
+  return annotations.map((annotation) => ({
+    path: annotation.path,
+    startLine: annotation.startLine,
+    endLine: annotation.endLine,
+    annotationLevel: annotation.annotationLevel,
+    message: annotation.message,
+    title: annotation.title ?? null,
+    rawDetails: annotation.rawDetails ?? null,
+    startColumn: annotation.startColumn ?? null,
+    endColumn: annotation.endColumn ?? null,
+  }));
+}
+
+function normalizeRemoteCheckRunAnnotation(
+  value: unknown,
+): NormalizedCheckRunAnnotation {
+  const annotation = value as CheckRunAnnotationResponse;
+  if (
+    typeof annotation?.path !== "string" ||
+    !Number.isSafeInteger(annotation.start_line) ||
+    annotation.start_line! <= 0 ||
+    !Number.isSafeInteger(annotation.end_line) ||
+    annotation.end_line! < annotation.start_line! ||
+    (annotation.annotation_level !== "notice" &&
+      annotation.annotation_level !== "warning" &&
+      annotation.annotation_level !== "failure") ||
+    typeof annotation.message !== "string"
+  ) {
+    throw malformedResponse();
+  }
+  const title = normalizeNullableAnnotationString(annotation.title);
+  const rawDetails = normalizeNullableAnnotationString(annotation.raw_details);
+  const startColumn = normalizeNullableAnnotationColumn(annotation.start_column);
+  const endColumn = normalizeNullableAnnotationColumn(annotation.end_column);
+  if (
+    (startColumn === null) !== (endColumn === null) ||
+    (startColumn !== null &&
+      (annotation.start_line !== annotation.end_line ||
+        endColumn === null ||
+        endColumn < startColumn))
+  ) {
+    throw malformedResponse();
+  }
+  return {
+    path: annotation.path,
+    startLine: annotation.start_line!,
+    endLine: annotation.end_line!,
+    annotationLevel: annotation.annotation_level,
+    message: annotation.message,
+    title,
+    rawDetails,
+    startColumn,
+    endColumn,
+  };
+}
+
+function normalizeNullableAnnotationString(
+  value: string | null | undefined,
+): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw malformedResponse();
+  return value;
+}
+
+function normalizeNullableAnnotationColumn(
+  value: number | null | undefined,
+): number | null {
+  if (value === undefined || value === null) return null;
+  if (!Number.isSafeInteger(value) || value <= 0) throw malformedResponse();
+  return value;
+}
+
+function checkRunAnnotationsEqual(
+  left: readonly NormalizedCheckRunAnnotation[],
+  right: readonly NormalizedCheckRunAnnotation[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (annotation, index) =>
+        annotation.path === right[index]?.path &&
+        annotation.startLine === right[index]?.startLine &&
+        annotation.endLine === right[index]?.endLine &&
+        annotation.annotationLevel === right[index]?.annotationLevel &&
+        annotation.message === right[index]?.message &&
+        annotation.title === right[index]?.title &&
+        annotation.rawDetails === right[index]?.rawDetails &&
+        annotation.startColumn === right[index]?.startColumn &&
+        annotation.endColumn === right[index]?.endColumn,
+    )
+  );
 }
 
 async function requestGitHub(
@@ -966,6 +1523,108 @@ function validateReviewComment(comment: GitHubReviewCommentIntent): void {
     throw invalidIntent();
   }
   if ((comment.startLine === undefined) !== (comment.startSide === undefined)) {
+    throw invalidIntent();
+  }
+}
+
+function validateCheckRunStartIntent(intent: GitHubCheckRunStartIntent): void {
+  if (intent.name !== "postil/review" && intent.name !== "postil/gate") {
+    throw invalidIntent();
+  }
+  validateSha(intent.headSha);
+  if (
+    typeof intent.externalId !== "string" ||
+    intent.externalId.length === 0 ||
+    Buffer.byteLength(intent.externalId) > 1_024 ||
+    intent.externalId.includes("\0")
+  ) {
+    throw invalidIntent();
+  }
+  if (intent.detailsUrl !== undefined) validateDetailsUrl(intent.detailsUrl);
+}
+
+function validateCheckRunCompletionIntent(
+  intent: GitHubCheckRunCompletionIntent,
+): void {
+  validateCheckRunStartIntent(intent);
+  validateRemoteId(intent.checkRunId);
+  if (
+    intent.conclusion !== "success" &&
+    intent.conclusion !== "failure" &&
+    intent.conclusion !== "neutral"
+  ) {
+    throw invalidIntent();
+  }
+  validateCheckRunOutput(intent.title, 255);
+  validateCheckRunOutput(intent.summary, 65_535);
+  if (intent.annotations === undefined) return;
+  if (!Array.isArray(intent.annotations) || intent.annotations.length > 50) {
+    throw invalidIntent();
+  }
+  for (const annotation of intent.annotations) validateCheckRunAnnotation(annotation);
+}
+
+function validateCheckRunAnnotation(
+  annotation: GitHubCheckRunAnnotationIntent,
+): void {
+  validatePath(annotation.path);
+  if (
+    !Number.isSafeInteger(annotation.startLine) ||
+    annotation.startLine <= 0 ||
+    !Number.isSafeInteger(annotation.endLine) ||
+    annotation.endLine < annotation.startLine ||
+    (annotation.annotationLevel !== "notice" &&
+      annotation.annotationLevel !== "warning" &&
+      annotation.annotationLevel !== "failure")
+  ) {
+    throw invalidIntent();
+  }
+  validateCheckRunOutput(annotation.message, 65_535);
+  if (annotation.title !== undefined) validateCheckRunOutput(annotation.title, 255);
+  if (annotation.rawDetails !== undefined) {
+    validateCheckRunOutput(annotation.rawDetails, 65_535);
+  }
+  if (
+    (annotation.startColumn === undefined) !==
+    (annotation.endColumn === undefined)
+  ) {
+    throw invalidIntent();
+  }
+  if (annotation.startColumn === undefined || annotation.endColumn === undefined) {
+    return;
+  }
+  if (
+    annotation.startLine !== annotation.endLine ||
+    !Number.isSafeInteger(annotation.startColumn) ||
+    annotation.startColumn <= 0 ||
+    !Number.isSafeInteger(annotation.endColumn) ||
+    annotation.endColumn < annotation.startColumn
+  ) {
+    throw invalidIntent();
+  }
+}
+
+function validateCheckRunOutput(value: string, maximumBytes: number): void {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value) > maximumBytes ||
+    value.includes("\0")
+  ) {
+    throw invalidIntent();
+  }
+}
+
+function validateDetailsUrl(value: string): void {
+  if (typeof value !== "string" || Buffer.byteLength(value) > 2_048) {
+    throw invalidIntent();
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) {
+      throw invalidIntent();
+    }
+  } catch {
     throw invalidIntent();
   }
 }
