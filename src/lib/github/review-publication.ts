@@ -1732,7 +1732,7 @@ function repositoryPath(repoFullName: string): string {
 
 function validateMarker(marker: string, kind: "review" | "finding"): void {
   const pattern = new RegExp(
-    `^<!-- postil-${kind}:v[1-9][0-9]{0,8}:[0-9a-f]{12,64} -->$`,
+    `^<!-- postil-${kind}:(?:v1:[0-9a-f]{12}|v2:[0-9a-f]{64}) -->$`,
   );
   if (!pattern.test(marker)) throw invalidIntent();
 }

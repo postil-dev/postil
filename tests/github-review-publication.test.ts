@@ -15,9 +15,9 @@ import {
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const HEAD_SHA = "a".repeat(40);
-const REVIEW_MARKER = `<!-- postil-review:v2:${"b".repeat(32)} -->`;
-const FINDING_MARKER = `<!-- postil-finding:v2:${"c".repeat(32)} -->`;
-const SECOND_FINDING_MARKER = `<!-- postil-finding:v2:${"d".repeat(32)} -->`;
+const REVIEW_MARKER = `<!-- postil-review:v2:${"b".repeat(64)} -->`;
+const FINDING_MARKER = `<!-- postil-finding:v2:${"c".repeat(64)} -->`;
+const SECOND_FINDING_MARKER = `<!-- postil-finding:v2:${"d".repeat(64)} -->`;
 const CHECK_EXTERNAL_ID = "postil:review-run:review";
 const CHECK_DETAILS_URL = "https://postil.dev/orgs/octo/runs/review-run";
 const TEST_GITHUB_APP_ID = 123;
@@ -461,6 +461,31 @@ describe("GitHub composite review publication", () => {
         duplicateIntent,
       ),
     ).rejects.toThrow("invalid");
+    expect(requests).toBe(0);
+  });
+
+  test("accepts only released marker versions and exact digest widths", async () => {
+    let requests = 0;
+    globalThis.fetch = Object.assign(
+      async () => {
+        requests += 1;
+        return Response.json(review());
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    for (const marker of [
+      `<!-- postil-review:v2:${"e".repeat(32)} -->`,
+      `<!-- postil-review:v3:${"e".repeat(64)} -->`,
+    ]) {
+      await expect(
+        publishGitHubCompositeReview("token", "octo/repo", 7, {
+          ...compositeIntent,
+          marker,
+          body: `Review summary\n\n${marker}`,
+        }),
+      ).rejects.toThrow("invalid");
+    }
     expect(requests).toBe(0);
   });
 });
