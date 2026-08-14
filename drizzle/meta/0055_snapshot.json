@@ -1,5 +1,5 @@
 {
-  "id": "2498530f-547a-44e6-a90c-28a1a4fb1d7a",
+  "id": "231d910e-2297-44f9-9eae-edb5f71f9364",
   "prevId": "0b66c412-3a8c-4928-b4ca-c35494c93825",
   "version": "7",
   "dialect": "postgresql",
@@ -5458,7 +5458,7 @@
             "accepted_input_digest",
             "head_sha"
           ],
-          "onDelete": "restrict",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -5481,6 +5481,10 @@
         "pull_request_publication_high_waters_head_sha_check": {
           "name": "pull_request_publication_high_waters_head_sha_check",
           "value": "\"pull_request_publication_high_waters\".\"accepted_head_sha\" ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'"
+        },
+        "pull_request_publication_high_waters_timestamps_check": {
+          "name": "pull_request_publication_high_waters_timestamps_check",
+          "value": "isfinite(\"pull_request_publication_high_waters\".\"created_at\") AND isfinite(\"pull_request_publication_high_waters\".\"updated_at\")"
         }
       },
       "isRLSEnabled": false
@@ -6347,14 +6351,98 @@
           "primaryKey": false,
           "notNull": true
         },
+        "plan_version": {
+          "name": "plan_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_plan": {
+          "name": "accepted_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_plan_bytes": {
+          "name": "accepted_plan_bytes",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_plan_digest": {
+          "name": "accepted_plan_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan_semantic_digest": {
+          "name": "plan_semantic_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "review_input_sequence": {
+          "name": "review_input_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expected_pull_request_updated_at": {
+          "name": "expected_pull_request_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
         "accepted_input_digest": {
           "name": "accepted_input_digest",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
+        "envelope_digest": {
+          "name": "envelope_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repository_full_name": {
+          "name": "repository_full_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "head_sha": {
           "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_sha": {
+          "name": "base_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_sha": {
+          "name": "target_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_branch": {
+          "name": "target_branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pull_request_title": {
+          "name": "pull_request_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pull_request_body": {
+          "name": "pull_request_body",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -6498,7 +6586,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "restrict",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -6518,9 +6606,45 @@
           "name": "review_publication_generations_input_digest_check",
           "value": "\"review_publication_generations\".\"accepted_input_digest\" ~ '^[0-9a-f]{64}$'"
         },
+        "review_publication_generations_plan_check": {
+          "name": "review_publication_generations_plan_check",
+          "value": "\"review_publication_generations\".\"plan_version\" ~ '^github-publication-v[1-9][0-9]{0,8}$' AND jsonb_typeof(\"review_publication_generations\".\"accepted_plan\") = 'object' AND octet_length(\"review_publication_generations\".\"accepted_plan_bytes\") BETWEEN 2 AND 8388608 AND convert_from(\"review_publication_generations\".\"accepted_plan_bytes\", 'UTF8')::jsonb = \"review_publication_generations\".\"accepted_plan\" AND \"review_publication_generations\".\"accepted_plan_digest\" ~ '^[0-9a-f]{64}$' AND \"review_publication_generations\".\"accepted_plan_digest\" = encode(sha256(\"review_publication_generations\".\"accepted_plan_bytes\"), 'hex')"
+        },
+        "review_publication_generations_plan_semantic_digest_check": {
+          "name": "review_publication_generations_plan_semantic_digest_check",
+          "value": "\"review_publication_generations\".\"plan_semantic_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "review_publication_generations_review_input_sequence_check": {
+          "name": "review_publication_generations_review_input_sequence_check",
+          "value": "\"review_publication_generations\".\"review_input_sequence\" > 0"
+        },
+        "review_publication_generations_envelope_digest_check": {
+          "name": "review_publication_generations_envelope_digest_check",
+          "value": "\"review_publication_generations\".\"envelope_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "review_publication_generations_repository_snapshot_check": {
+          "name": "review_publication_generations_repository_snapshot_check",
+          "value": "length(\"review_publication_generations\".\"repository_full_name\") BETWEEN 3 AND 200 AND \"review_publication_generations\".\"repository_full_name\" ~ '^[^/[:space:]]+/[^/[:space:]]+$'"
+        },
         "review_publication_generations_head_sha_check": {
           "name": "review_publication_generations_head_sha_check",
           "value": "\"review_publication_generations\".\"head_sha\" ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'"
+        },
+        "review_publication_generations_base_sha_check": {
+          "name": "review_publication_generations_base_sha_check",
+          "value": "\"review_publication_generations\".\"base_sha\" ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'"
+        },
+        "review_publication_generations_target_sha_check": {
+          "name": "review_publication_generations_target_sha_check",
+          "value": "\"review_publication_generations\".\"target_sha\" ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'"
+        },
+        "review_publication_generations_pull_request_snapshot_check": {
+          "name": "review_publication_generations_pull_request_snapshot_check",
+          "value": "length(btrim(\"review_publication_generations\".\"target_branch\")) BETWEEN 1 AND 255 AND length(btrim(\"review_publication_generations\".\"pull_request_title\")) BETWEEN 1 AND 512 AND length(\"review_publication_generations\".\"pull_request_body\") <= 65536"
+        },
+        "review_publication_generations_created_at_check": {
+          "name": "review_publication_generations_created_at_check",
+          "value": "isfinite(\"review_publication_generations\".\"expected_pull_request_updated_at\") AND isfinite(\"review_publication_generations\".\"created_at\")"
         }
       },
       "isRLSEnabled": false
@@ -6576,6 +6700,24 @@
           "primaryKey": false,
           "notNull": true
         },
+        "operation_ordinal": {
+          "name": "operation_ordinal",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dependency_operation_key": {
+          "name": "dependency_operation_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "activation_condition": {
+          "name": "activation_condition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "kind": {
           "name": "kind",
           "type": "text",
@@ -6585,6 +6727,12 @@
         "desired_payload": {
           "name": "desired_payload",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "desired_payload_bytes": {
+          "name": "desired_payload_bytes",
+          "type": "bytea",
           "primaryKey": false,
           "notNull": true
         },
@@ -6607,6 +6755,31 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "claim_owner": {
+          "name": "claim_owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_id": {
+          "name": "lease_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_generation": {
+          "name": "lease_generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
         },
         "retry_after": {
           "name": "retry_after",
@@ -6650,6 +6823,36 @@
           "primaryKey": false,
           "notNull": false
         },
+        "result_payload": {
+          "name": "result_payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "selected_variant": {
+          "name": "selected_variant",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reconciliation_payload": {
+          "name": "reconciliation_payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "compensated_at": {
+          "name": "compensated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "compensation_payload": {
+          "name": "compensation_payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -6689,6 +6892,39 @@
             },
             {
               "expression": "operation_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "review_publication_operations_ordinal_idx": {
+          "name": "review_publication_operations_ordinal_idx",
+          "columns": [
+            {
+              "expression": "repository_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pr_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "publication_generation",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "operation_ordinal",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -6744,7 +6980,26 @@
             "publication_generation",
             "review_id"
           ],
-          "onDelete": "restrict",
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "review_publication_operations_dependency_fk": {
+          "name": "review_publication_operations_dependency_fk",
+          "tableFrom": "review_publication_operations",
+          "tableTo": "review_publication_operations",
+          "columnsFrom": [
+            "repository_id",
+            "pr_number",
+            "publication_generation",
+            "dependency_operation_key"
+          ],
+          "columnsTo": [
+            "repository_id",
+            "pr_number",
+            "publication_generation",
+            "operation_key"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -6762,7 +7017,15 @@
         },
         "review_publication_operations_key_check": {
           "name": "review_publication_operations_key_check",
-          "value": "\"review_publication_operations\".\"operation_key\" ~ '^[0-9a-f]{64}$'"
+          "value": "\"review_publication_operations\".\"operation_key\" ~ '^github-publication-v1:[a-z][a-z0-9-]{0,99}:sha256:[0-9a-f]{64}$'"
+        },
+        "review_publication_operations_ordinal_check": {
+          "name": "review_publication_operations_ordinal_check",
+          "value": "\"review_publication_operations\".\"operation_ordinal\" BETWEEN 0 AND 100000"
+        },
+        "review_publication_operations_activation_check": {
+          "name": "review_publication_operations_activation_check",
+          "value": "(\"review_publication_operations\".\"activation_condition\" = 'immediate' AND \"review_publication_operations\".\"dependency_operation_key\" IS NULL) OR (\"review_publication_operations\".\"activation_condition\" IN ('after_dependency_applied', 'after_dependency_terminal', 'after_dependency_failed') AND \"review_publication_operations\".\"dependency_operation_key\" IS NOT NULL AND \"review_publication_operations\".\"dependency_operation_key\" <> \"review_publication_operations\".\"operation_key\")"
         },
         "review_publication_operations_kind_check": {
           "name": "review_publication_operations_kind_check",
@@ -6770,19 +7033,23 @@
         },
         "review_publication_operations_payload_check": {
           "name": "review_publication_operations_payload_check",
-          "value": "jsonb_typeof(\"review_publication_operations\".\"desired_payload\") = 'object'"
+          "value": "jsonb_typeof(\"review_publication_operations\".\"desired_payload\") = 'object' AND octet_length(\"review_publication_operations\".\"desired_payload_bytes\") BETWEEN 2 AND 1048576 AND convert_from(\"review_publication_operations\".\"desired_payload_bytes\", 'UTF8')::jsonb = \"review_publication_operations\".\"desired_payload\""
         },
         "review_publication_operations_payload_digest_check": {
           "name": "review_publication_operations_payload_digest_check",
-          "value": "\"review_publication_operations\".\"desired_payload_digest\" ~ '^[0-9a-f]{64}$'"
+          "value": "\"review_publication_operations\".\"desired_payload_digest\" ~ '^[0-9a-f]{64}$' AND \"review_publication_operations\".\"desired_payload_digest\" = encode(sha256(\"review_publication_operations\".\"desired_payload_bytes\"), 'hex')"
         },
         "review_publication_operations_state_check": {
           "name": "review_publication_operations_state_check",
-          "value": "\"review_publication_operations\".\"state\" IN ('pending', 'applying', 'unknown', 'applied', 'superseded', 'compensating', 'failed')"
+          "value": "\"review_publication_operations\".\"state\" IN ('pending', 'applying', 'unknown', 'applied', 'skipped', 'superseded', 'compensating', 'failed')"
         },
         "review_publication_operations_attempt_count_check": {
           "name": "review_publication_operations_attempt_count_check",
-          "value": "\"review_publication_operations\".\"attempt_count\" >= 0"
+          "value": "\"review_publication_operations\".\"attempt_count\" BETWEEN 0 AND 1000000"
+        },
+        "review_publication_operations_lease_generation_check": {
+          "name": "review_publication_operations_lease_generation_check",
+          "value": "\"review_publication_operations\".\"lease_generation\" >= 0"
         },
         "review_publication_operations_deadline_check": {
           "name": "review_publication_operations_deadline_check",
@@ -6799,6 +7066,26 @@
         "review_publication_operations_remote_operation_id_check": {
           "name": "review_publication_operations_remote_operation_id_check",
           "value": "\"review_publication_operations\".\"remote_operation_id\" IS NULL OR length(btrim(\"review_publication_operations\".\"remote_operation_id\")) BETWEEN 1 AND 500"
+        },
+        "review_publication_operations_claim_owner_check": {
+          "name": "review_publication_operations_claim_owner_check",
+          "value": "\"review_publication_operations\".\"claim_owner\" IS NULL OR length(btrim(\"review_publication_operations\".\"claim_owner\")) BETWEEN 1 AND 200"
+        },
+        "review_publication_operations_evidence_payloads_check": {
+          "name": "review_publication_operations_evidence_payloads_check",
+          "value": "(\"review_publication_operations\".\"result_payload\" IS NULL OR (jsonb_typeof(\"review_publication_operations\".\"result_payload\") = 'object' AND \"review_publication_operations\".\"result_payload\" <> '{}'::jsonb AND pg_column_size(\"review_publication_operations\".\"result_payload\") <= 1048576)) AND (\"review_publication_operations\".\"reconciliation_payload\" IS NULL OR (jsonb_typeof(\"review_publication_operations\".\"reconciliation_payload\") = 'object' AND \"review_publication_operations\".\"reconciliation_payload\" <> '{}'::jsonb AND pg_column_size(\"review_publication_operations\".\"reconciliation_payload\") <= 1048576)) AND (\"review_publication_operations\".\"compensation_payload\" IS NULL OR (jsonb_typeof(\"review_publication_operations\".\"compensation_payload\") = 'object' AND \"review_publication_operations\".\"compensation_payload\" <> '{}'::jsonb AND pg_column_size(\"review_publication_operations\".\"compensation_payload\") <= 1048576)) AND (\"review_publication_operations\".\"selected_variant\" IS NULL OR length(btrim(\"review_publication_operations\".\"selected_variant\")) BETWEEN 1 AND 200)"
+        },
+        "review_publication_operations_timestamps_check": {
+          "name": "review_publication_operations_timestamps_check",
+          "value": "isfinite(\"review_publication_operations\".\"created_at\") AND isfinite(\"review_publication_operations\".\"updated_at\") AND (\"review_publication_operations\".\"retry_after\" IS NULL OR isfinite(\"review_publication_operations\".\"retry_after\")) AND (\"review_publication_operations\".\"deadline_at\" IS NULL OR isfinite(\"review_publication_operations\".\"deadline_at\")) AND (\"review_publication_operations\".\"remote_observed_at\" IS NULL OR isfinite(\"review_publication_operations\".\"remote_observed_at\")) AND (\"review_publication_operations\".\"applied_at\" IS NULL OR isfinite(\"review_publication_operations\".\"applied_at\")) AND (\"review_publication_operations\".\"compensated_at\" IS NULL OR isfinite(\"review_publication_operations\".\"compensated_at\")) AND (\"review_publication_operations\".\"lease_expires_at\" IS NULL OR isfinite(\"review_publication_operations\".\"lease_expires_at\"))"
+        },
+        "review_publication_operations_lease_check": {
+          "name": "review_publication_operations_lease_check",
+          "value": "(\"review_publication_operations\".\"state\" IN ('applying', 'compensating') AND \"review_publication_operations\".\"claim_owner\" IS NOT NULL AND \"review_publication_operations\".\"lease_id\" IS NOT NULL AND \"review_publication_operations\".\"lease_expires_at\" IS NOT NULL AND \"review_publication_operations\".\"lease_expires_at\" > \"review_publication_operations\".\"updated_at\" AND \"review_publication_operations\".\"lease_generation\" > 0) OR (\"review_publication_operations\".\"state\" NOT IN ('applying', 'compensating') AND \"review_publication_operations\".\"claim_owner\" IS NULL AND \"review_publication_operations\".\"lease_id\" IS NULL AND \"review_publication_operations\".\"lease_expires_at\" IS NULL)"
+        },
+        "review_publication_operations_state_evidence_check": {
+          "name": "review_publication_operations_state_evidence_check",
+          "value": "(\"review_publication_operations\".\"state\" NOT IN ('applying', 'compensating') OR (\"review_publication_operations\".\"selected_variant\" IS NOT NULL AND \"review_publication_operations\".\"attempt_count\" > 0)) AND (\"review_publication_operations\".\"state\" <> 'unknown' OR (\"review_publication_operations\".\"selected_variant\" IS NOT NULL AND \"review_publication_operations\".\"last_error\" IS NOT NULL AND \"review_publication_operations\".\"attempt_count\" > 0 AND \"review_publication_operations\".\"lease_generation\" > 0)) AND (\"review_publication_operations\".\"state\" <> 'applied' OR (\"review_publication_operations\".\"applied_at\" IS NOT NULL AND \"review_publication_operations\".\"result_payload\" IS NOT NULL AND \"review_publication_operations\".\"selected_variant\" IS NOT NULL AND \"review_publication_operations\".\"remote_identity\" IS NOT NULL AND \"review_publication_operations\".\"remote_operation_id\" IS NOT NULL AND \"review_publication_operations\".\"remote_observed_at\" IS NOT NULL AND \"review_publication_operations\".\"last_error\" IS NULL)) AND (\"review_publication_operations\".\"applied_at\" IS NULL OR (\"review_publication_operations\".\"state\" IN ('applied', 'unknown', 'superseded', 'compensating', 'failed') AND \"review_publication_operations\".\"result_payload\" IS NOT NULL AND \"review_publication_operations\".\"selected_variant\" IS NOT NULL AND \"review_publication_operations\".\"remote_identity\" IS NOT NULL AND \"review_publication_operations\".\"remote_operation_id\" IS NOT NULL AND \"review_publication_operations\".\"remote_observed_at\" IS NOT NULL)) AND (\"review_publication_operations\".\"state\" <> 'skipped' OR (\"review_publication_operations\".\"result_payload\" IS NOT NULL AND \"review_publication_operations\".\"applied_at\" IS NULL AND \"review_publication_operations\".\"compensated_at\" IS NULL)) AND (\"review_publication_operations\".\"state\" <> 'failed' OR \"review_publication_operations\".\"last_error\" IS NOT NULL) AND (\"review_publication_operations\".\"compensated_at\" IS NULL OR (\"review_publication_operations\".\"state\" = 'superseded' AND \"review_publication_operations\".\"compensation_payload\" IS NOT NULL)) AND (\"review_publication_operations\".\"compensation_payload\" IS NULL OR \"review_publication_operations\".\"state\" = 'superseded') AND (\"review_publication_operations\".\"state\" <> 'superseded' OR \"review_publication_operations\".\"applied_at\" IS NULL OR (\"review_publication_operations\".\"compensated_at\" IS NOT NULL AND \"review_publication_operations\".\"compensation_payload\" IS NOT NULL))"
         }
       },
       "isRLSEnabled": false
