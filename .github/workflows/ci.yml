@@ -58,6 +58,10 @@ jobs:
       - run: bun test tests/watchdog.test.ts
         env:
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      - name: Verify publication-controller rollout on PostgreSQL
+        run: bun test --isolate --timeout 30000 tests/publication-controller-release-rollout.test.ts
+        env:
+          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
       - name: Verify self-service billing on fresh Postgres
         run: |
           createdb postil_self_service_billing

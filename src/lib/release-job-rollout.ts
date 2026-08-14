@@ -22,6 +22,8 @@ const PUBLICATION_CONTROLLER_CAPABILITY_PREFIX =
 const PUBLICATION_CONTROLLER_DARK_PREFIX = "publication-controller-dark:";
 const PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX =
   "publication-controller-cli-verified:";
+const PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX =
+  "publication-controller-consumer-ready:";
 const PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER =
   "_postilPublicationControllerReleaseSha";
 const PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER =
@@ -50,23 +52,37 @@ export async function quiesceQueueForLockGeneration(
   pool: Pool,
   options: QueueQuiesceOptions = {},
 ): Promise<number> {
-  await fenceQueuedJobsForLockGeneration(pool, options);
+  const client = await pool.connect();
+  let sessionLocksHeld = false;
+  try {
+    await beginQueueQuiesceSession(client);
+    sessionLocksHeld = true;
+    await fenceQueuedJobsForLockGeneration(client, options);
 
-  const timeoutMs = Math.max(0, options.timeoutMs ?? 15 * 60_000);
-  const pollMs = Math.max(10, options.pollMs ?? 250);
-  const deadline = Date.now() + timeoutMs;
-  let running = await runningQueueJobCount(pool);
-  while (running > 0 && Date.now() < deadline) {
-    options.onWait?.(running);
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-    running = await runningQueueJobCount(pool);
+    const timeoutMs = Math.max(0, options.timeoutMs ?? 15 * 60_000);
+    const pollMs = Math.max(10, options.pollMs ?? 250);
+    const deadline = Date.now() + timeoutMs;
+    let running = await runningQueueJobCount(client);
+    while (running > 0 && Date.now() < deadline) {
+      options.onWait?.(running);
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      running = await runningQueueJobCount(client);
+    }
+    if (running > 0) {
+      throw new Error(
+        `${running} pre-generation queue claim(s) are still running after drain`,
+      );
+    }
+    return running;
+  } finally {
+    try {
+      if (sessionLocksHeld) {
+        await releaseQueueQuiesceSession(client);
+      }
+    } finally {
+      client.release();
+    }
   }
-  if (running > 0) {
-    throw new Error(
-      `${running} pre-generation queue claim(s) are still running after drain`,
-    );
-  }
-  return running;
 }
 
 /** Release fenced jobs after the deployment verifier proves fleet homogeneity. */
@@ -74,8 +90,6 @@ export async function activateQueueLockGeneration(
   pool: Pool,
   options: Pick<QueueQuiesceOptions, "batchSize" | "timeoutMs"> = {},
 ): Promise<number> {
-  await fenceQueuedJobsForLockGeneration(pool, options);
-
   const batchSize = queueRolloutBatchSize(options.batchSize);
   const deadline = Date.now() + Math.max(
     QUEUE_ROLLOUT_LOCK_TIMEOUT_MS,
@@ -84,6 +98,7 @@ export async function activateQueueLockGeneration(
   const client = await pool.connect();
   let releasedTotal = 0;
   try {
+    await fenceQueuedJobsForLockGeneration(client, options);
     while (true) {
       await beginQueueRolloutTransaction(client);
       const active = await queueLockGenerationActive(client);
@@ -129,17 +144,16 @@ export async function activateQueueLockGeneration(
 }
 
 async function fenceQueuedJobsForLockGeneration(
-  pool: Pool,
+  client: PoolClient,
   options: Pick<QueueQuiesceOptions, "batchSize" | "timeoutMs">,
 ): Promise<void> {
-  await backfillActiveReviewInputSequences(pool, options);
+  await backfillActiveReviewInputSequences(client, options);
 
   const batchSize = queueRolloutBatchSize(options.batchSize);
   const deadline = Date.now() + Math.max(
     QUEUE_ROLLOUT_LOCK_TIMEOUT_MS,
     options.timeoutMs ?? QUEUE_ROLLOUT_TIMEOUT_MS,
   );
-  const client = await pool.connect();
   try {
     while (true) {
       await beginQueueRolloutTransaction(client);
@@ -163,13 +177,11 @@ async function fenceQueuedJobsForLockGeneration(
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
-  } finally {
-    client.release();
   }
 }
 
 async function backfillActiveReviewInputSequences(
-  pool: Pool,
+  client: PoolClient,
   options: Pick<QueueQuiesceOptions, "batchSize" | "timeoutMs">,
 ): Promise<void> {
   const batchSize = queueRolloutBatchSize(options.batchSize);
@@ -177,7 +189,6 @@ async function backfillActiveReviewInputSequences(
     QUEUE_ROLLOUT_LOCK_TIMEOUT_MS,
     options.timeoutMs ?? QUEUE_ROLLOUT_TIMEOUT_MS,
   );
-  const client = await pool.connect();
   try {
     while (true) {
       await beginQueueRolloutTransaction(client);
@@ -204,8 +215,47 @@ async function backfillActiveReviewInputSequences(
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
-  } finally {
-    client.release();
+  }
+}
+
+async function beginQueueQuiesceSession(client: PoolClient): Promise<void> {
+  let sessionLocksHeld = false;
+  try {
+    await beginQueueRolloutTransaction(client);
+    await client.query(
+      "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+      [ADVISORY_LOCK_NAME],
+    );
+    await client.query(
+      "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+      [QUEUE_LOCK_GENERATION_LOCK],
+    );
+    sessionLocksHeld = true;
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    if (sessionLocksHeld) {
+      await releaseQueueQuiesceSession(client).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function releaseQueueQuiesceSession(client: PoolClient): Promise<void> {
+  const queue = await client.query<{ unlocked: boolean }>(
+    "SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS unlocked",
+    [QUEUE_LOCK_GENERATION_LOCK],
+  );
+  const release = await client.query<{ unlocked: boolean }>(
+    "SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS unlocked",
+    [ADVISORY_LOCK_NAME],
+  );
+  if (!queue.rows[0]?.unlocked || !release.rows[0]?.unlocked) {
+    throw new Error("queue quiesce advisory lock ownership was lost");
   }
 }
 
@@ -440,6 +490,10 @@ function publicationControllerCliVerifiedCapability(releaseSha: string): string 
   return `${PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX}${normalizedReleaseSha(releaseSha)}`;
 }
 
+function publicationControllerConsumerReadyCapability(releaseSha: string): string {
+  return `${PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX}${normalizedReleaseSha(releaseSha)}`;
+}
+
 /** A legacy review claimed while publication ownership is fenced. */
 export class PublicationControllerReleaseFenceError extends Error {
   override name = "PublicationControllerReleaseFenceError";
@@ -454,34 +508,64 @@ export async function publicationControllerReleaseActivated(
   pool: Pool,
   releaseSha: string,
 ): Promise<boolean> {
+  const normalized = normalizedReleaseSha(releaseSha);
   const result = await pool.query<{ active: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM deployment_capabilities WHERE name = $1
+     ) AND EXISTS (
+       SELECT 1 FROM deployment_capabilities WHERE name = $2
      ) AS active`,
-    [publicationControllerCapability(releaseSha)],
+    [
+      publicationControllerCapability(normalized),
+      publicationControllerConsumerReadyCapability(normalized),
+    ],
   );
   return result.rows[0]?.active === true;
+}
+
+/** True when the exact release records a self-tested controller consumer. */
+export async function publicationControllerConsumerReady(
+  pool: Pick<Pool, "query">,
+  releaseSha: string,
+): Promise<boolean> {
+  const result = await pool.query<{ ready: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM deployment_capabilities WHERE name = $1
+     ) AS ready`,
+    [publicationControllerConsumerReadyCapability(releaseSha)],
+  );
+  return result.rows[0]?.ready === true;
 }
 
 /** Return the exact active capability that a durable controller owns. */
 export async function activePublicationControllerRelease(
   pool: Pick<Pool, "query">,
 ): Promise<string | null> {
-  const result = await pool.query<{ name: string }>(
-    `SELECT name
-       FROM deployment_capabilities
-      WHERE name LIKE $1
-      ORDER BY name
+  const result = await pool.query<{ name: string; consumerReady: boolean }>(
+    `SELECT capability.name,
+            EXISTS (
+              SELECT 1
+                FROM deployment_capabilities ready
+               WHERE ready.name = $2 || substring(
+                 capability.name FROM char_length($1) + 1
+               )
+            ) AS "consumerReady"
+       FROM deployment_capabilities capability
+      WHERE capability.name LIKE $1 || '%'
+      ORDER BY capability.name
       LIMIT 2`,
-    [`${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`],
+    [
+      PUBLICATION_CONTROLLER_CAPABILITY_PREFIX,
+      PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX,
+    ],
   );
   if (result.rows.length > 1) {
     throw new Error("multiple publication-controller releases are active");
   }
-  const name = result.rows[0]?.name;
-  if (!name) return null;
+  const row = result.rows[0];
+  if (!row?.consumerReady) return null;
   return normalizedReleaseSha(
-    name.slice(PUBLICATION_CONTROLLER_CAPABILITY_PREFIX.length),
+    row.name.slice(PUBLICATION_CONTROLLER_CAPABILITY_PREFIX.length),
   );
 }
 
@@ -546,6 +630,44 @@ export async function recordPublicationControllerCliPreflight(
   }
 }
 
+/** Record that an exact dark release's controller consumer passes self-test. */
+export async function recordPublicationControllerConsumerReady(
+  pool: Pool,
+  releaseSha: string,
+): Promise<boolean> {
+  const normalized = normalizedReleaseSha(releaseSha);
+  const darkCapability = publicationControllerDarkCapability(normalized);
+  const readyCapability = publicationControllerConsumerReadyCapability(normalized);
+  const client = await pool.connect();
+  try {
+    await beginPublicationControllerAuthorityTransition(client);
+    const dark = await client.query<{ dark: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $1
+       ) AS dark`,
+      [darkCapability],
+    );
+    if (!dark.rows[0]?.dark) {
+      throw new Error(
+        "publication-controller consumer readiness requires a dark exact release",
+      );
+    }
+    const recorded = await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [readyCapability],
+    );
+    await client.query("COMMIT");
+    return (recorded.rowCount ?? 0) > 0;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /**
  * Activate one exact controller release after the managed-fleet and CLI
  * preflights. Existing review jobs remain durably held for the controller.
@@ -558,22 +680,36 @@ export async function activatePublicationControllerRelease(
   const capability = publicationControllerCapability(normalized);
   const darkCapability = publicationControllerDarkCapability(normalized);
   const verifiedCapability = publicationControllerCliVerifiedCapability(normalized);
+  const consumerReadyCapability =
+    publicationControllerConsumerReadyCapability(normalized);
   const client = await pool.connect();
   try {
     await beginPublicationControllerAuthorityTransition(client);
-    const alreadyActive = await client.query<{ active: boolean }>(
+    const alreadyActive = await client.query<{
+      active: boolean;
+      consumerReady: boolean;
+    }>(
       `SELECT EXISTS (
          SELECT 1 FROM deployment_capabilities WHERE name = $1
-       ) AS active`,
-      [capability],
+       ) AS active,
+       EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $2
+       ) AS "consumerReady"`,
+      [capability, consumerReadyCapability],
     );
     if (alreadyActive.rows[0]?.active) {
+      if (!alreadyActive.rows[0].consumerReady) {
+        throw new Error(
+          "active publication-controller release lacks exact consumer readiness",
+        );
+      }
       await client.query("COMMIT");
       return { activated: false, adopted: 0 };
     }
     const prerequisites = await client.query<{
       dark: boolean;
       verified: boolean;
+      consumerReady: boolean;
       otherActive: boolean;
     }>(
       `SELECT EXISTS (
@@ -583,13 +719,17 @@ export async function activatePublicationControllerRelease(
          SELECT 1 FROM deployment_capabilities WHERE name = $2
        ) AS verified,
        EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $3
+       ) AS "consumerReady",
+       EXISTS (
          SELECT 1
            FROM deployment_capabilities
-          WHERE name LIKE $3 AND name <> $4
+          WHERE name LIKE $4 AND name <> $5
        ) AS "otherActive"`,
       [
         darkCapability,
         verifiedCapability,
+        consumerReadyCapability,
         `${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`,
         capability,
       ],
@@ -602,6 +742,11 @@ export async function activatePublicationControllerRelease(
     if (!prerequisites.rows[0]?.verified) {
       throw new Error(
         "publication-controller activation requires a successful CLI-plan preflight",
+      );
+    }
+    if (!prerequisites.rows[0]?.consumerReady) {
+      throw new Error(
+        "publication-controller activation requires an exact consumer readiness preflight",
       );
     }
     if (prerequisites.rows[0]?.otherActive) {
@@ -661,6 +806,10 @@ export async function deactivatePublicationControllerRelease(
     await client.query(
       "DELETE FROM deployment_capabilities WHERE name LIKE $1",
       [`${PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX}%`],
+    );
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name LIKE $1",
+      [`${PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX}%`],
     );
     await client.query(
       `INSERT INTO deployment_capabilities (name)

@@ -794,6 +794,10 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
       "utf8",
     );
+    const ci = await readFile(
+      join(import.meta.dir, "..", ".github", "workflows", "ci.yml"),
+      "utf8",
+    );
 
     expect(migration).toContain("queue-lock-generation-v1");
     expect(migration).toContain("_postilLockGenerationFence");
@@ -837,6 +841,18 @@ describe("migration lint", () => {
     expect(rollout).toContain("rerun activation to resume");
     expect(rollout).toContain("WHERE status = 'running'");
     expect(rollout).toContain("payload->>$1 = 'true'");
+    const quiesceSession = rollout.slice(
+      rollout.indexOf("async function beginQueueQuiesceSession"),
+      rollout.indexOf("async function releaseQueueQuiesceSession"),
+    );
+    expect(quiesceSession.indexOf("pg_advisory_lock")).toBeGreaterThanOrEqual(0);
+    expect(quiesceSession.indexOf("pg_advisory_lock")).toBeLessThan(
+      quiesceSession.indexOf("DELETE FROM deployment_capabilities"),
+    );
+    expect(quiesceSession).toContain("QUEUE_LOCK_GENERATION_CAPABILITY");
+    expect(rollout).toContain("publication-controller-consumer-ready:");
+    expect(rollout).toContain("recordPublicationControllerConsumerReady");
+    expect(activation).not.toContain("recordPublicationControllerConsumerReady");
     expect(packageJson.scripts["release:prepare"]).toContain(
       "queue:quiesce-lock-generation",
     );
@@ -849,6 +865,10 @@ describe("migration lint", () => {
     );
     expect(deploy.indexOf("verify-managed-fleet.jq")).toBeLessThan(
       deploy.indexOf('bun run jobs:activate-release'),
+    );
+    expect(ci).toContain("Verify publication-controller rollout on PostgreSQL");
+    expect(ci).toContain(
+      "bun test --isolate --timeout 30000 tests/publication-controller-release-rollout.test.ts",
     );
   });
 
