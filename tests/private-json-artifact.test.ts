@@ -12,7 +12,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
-import { readPrivateJsonArtifact } from "@/lib/private-json-artifact";
+import {
+  privateJsonArtifactHandleMatches,
+  readPrivateJsonArtifact,
+} from "@/lib/private-json-artifact";
 
 const directories: string[] = [];
 
@@ -61,6 +64,33 @@ describe("private JSON artifact reader", () => {
     );
   });
 
+  test.each([0o640, 0o604, 0o666])("rejects mode %o", async (mode) => {
+    const path = await artifact("permissive.json", '{"version":1}');
+    await chmod(path, mode);
+
+    await expect(readPrivateJsonArtifact(path, { maximumBytes: MAXIMUM_BYTES })).rejects.toThrow(
+      "private JSON artifact is invalid",
+    );
+  });
+
+  test("requires the opened handle to match the initial file and process owner", () => {
+    const initial = { dev: 10n, ino: 20n };
+    const ownerOnly = { ...initial, mode: 0o100600n, uid: 1_000n };
+
+    expect(privateJsonArtifactHandleMatches(initial, ownerOnly, 1_000)).toBe(true);
+    expect(privateJsonArtifactHandleMatches(initial, { ...ownerOnly, dev: 11n }, 1_000)).toBe(
+      false,
+    );
+    expect(privateJsonArtifactHandleMatches(initial, { ...ownerOnly, ino: 21n }, 1_000)).toBe(
+      false,
+    );
+    expect(privateJsonArtifactHandleMatches(initial, { ...ownerOnly, mode: 0o100640n }, 1_000)).toBe(
+      false,
+    );
+    expect(privateJsonArtifactHandleMatches(initial, ownerOnly, 1_001)).toBe(false);
+    expect(privateJsonArtifactHandleMatches(initial, ownerOnly, undefined)).toBe(true);
+  });
+
   test("rejects oversized, truncated, malformed, and invalid UTF-8 sources", async () => {
     const oversized = await artifact("oversized.json", Buffer.alloc(MAXIMUM_BYTES + 1, 0x20));
     const truncated = await artifact("truncated.json", '{"version":');
@@ -74,7 +104,7 @@ describe("private JSON artifact reader", () => {
     }
   });
 
-  test("returns only a complete JSON value during a replacement race", async () => {
+  test("returns one complete value or rejects a replacement race", async () => {
     const source = await artifact("artifact.json", '{"source":"initial"}');
     const next = join(dirname(source), "replacement.json");
     await writeFile(next, '{"source":"replacement"}', { mode: 0o600 });
@@ -82,12 +112,19 @@ describe("private JSON artifact reader", () => {
 
     const read = readPrivateJsonArtifact(source, { maximumBytes: MAXIMUM_BYTES });
     await rename(next, source);
-    const value = await read;
-    expect(value).toSatisfy((value: unknown) =>
-      value !== null &&
-      typeof value === "object" &&
-      ["initial", "replacement"].includes((value as { source?: unknown }).source as string),
+    const outcome = await read.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
     );
+    if ("value" in outcome) {
+      expect(outcome.value).toSatisfy((value: unknown) =>
+        value !== null &&
+        typeof value === "object" &&
+        ["initial", "replacement"].includes((value as { source?: unknown }).source as string),
+      );
+    } else {
+      expect(String(outcome.error)).toContain("private JSON artifact is invalid");
+    }
     expect((await lstat(source)).isFile()).toBe(true);
   });
 
