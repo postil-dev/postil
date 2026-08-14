@@ -38,6 +38,18 @@ async function artifact(name: string, source: string | Uint8Array): Promise<stri
 }
 
 describe("private JSON artifact reader", () => {
+  test("can bind the read to the inode created before a child writes", async () => {
+    const path = await artifact("artifact.json", '{"safe":true}');
+    const identity = await lstat(path, { bigint: true });
+    const replacement = await artifact("replacement.json", '{"safe":false}');
+    await rename(replacement, path);
+
+    await expect(readPrivateJsonArtifactExact(path, {
+      maximumBytes: MAXIMUM_BYTES,
+      expectedIdentity: { dev: identity.dev, ino: identity.ino },
+    })).rejects.toThrow("private JSON artifact is invalid");
+  });
+
   test("accepts valid absolute and relative regular files", async () => {
     const absolute = await artifact("absolute.json", '{"version":1}');
     const relativePath = relative(process.cwd(), absolute);

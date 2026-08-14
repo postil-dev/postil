@@ -3,6 +3,8 @@ import { lstat, open, type FileHandle } from "node:fs/promises";
 
 export interface PrivateJsonArtifactReadOptions {
   maximumBytes: number;
+  /** Optional identity captured when the service created the artifact path. */
+  expectedIdentity?: Pick<PrivateJsonArtifactIdentity, "dev" | "ino">;
 }
 
 export interface PrivateJsonArtifact {
@@ -82,6 +84,13 @@ export async function readPrivateJsonArtifactExact(
   try {
     const initial = await lstat(artifactPath, { bigint: true });
     if (!initial.isFile() || initial.isSymbolicLink()) throw invalidArtifact();
+    if (
+      options.expectedIdentity !== undefined &&
+      (initial.dev !== options.expectedIdentity.dev ||
+        initial.ino !== options.expectedIdentity.ino)
+    ) {
+      throw invalidArtifact();
+    }
 
     handle = await open(artifactPath, constants.O_RDONLY | constants.O_NOFOLLOW);
     const beforeRead = await handle.stat({ bigint: true });
