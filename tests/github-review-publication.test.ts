@@ -21,20 +21,26 @@ const SECOND_FINDING_MARKER = `<!-- postil-finding:v2:${"d".repeat(32)} -->`;
 const CHECK_EXTERNAL_ID = "postil:review-run:review";
 const CHECK_DETAILS_URL = "https://postil.dev/orgs/octo/runs/review-run";
 const TEST_GITHUB_APP_ID = 123;
+const TEST_GITHUB_APP_SLUG = "postil-dev";
 const ORIGINAL_GITHUB_APP_ID = process.env.GITHUB_APP_ID;
+const ORIGINAL_GITHUB_APP_SLUG = process.env.GITHUB_APP_SLUG;
 
 beforeEach(() => {
   process.env.GITHUB_APP_ID = String(TEST_GITHUB_APP_ID);
+  process.env.GITHUB_APP_SLUG = TEST_GITHUB_APP_SLUG;
 });
 
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
   process.env.GITHUB_APP_ID = String(TEST_GITHUB_APP_ID);
+  process.env.GITHUB_APP_SLUG = TEST_GITHUB_APP_SLUG;
 });
 
 afterAll(() => {
   if (ORIGINAL_GITHUB_APP_ID === undefined) delete process.env.GITHUB_APP_ID;
   else process.env.GITHUB_APP_ID = ORIGINAL_GITHUB_APP_ID;
+  if (ORIGINAL_GITHUB_APP_SLUG === undefined) delete process.env.GITHUB_APP_SLUG;
+  else process.env.GITHUB_APP_SLUG = ORIGINAL_GITHUB_APP_SLUG;
 });
 
 function review(overrides: Record<string, unknown> = {}) {
@@ -81,6 +87,8 @@ const compositeIntent = {
 };
 
 const checkRunStartIntent = {
+  appId: TEST_GITHUB_APP_ID,
+  appSlug: TEST_GITHUB_APP_SLUG,
   name: "postil/review" as const,
   headSha: HEAD_SHA,
   externalId: CHECK_EXTERNAL_ID,
@@ -117,7 +125,7 @@ function checkRun(overrides: Record<string, unknown> = {}) {
     status: "in_progress",
     conclusion: null,
     details_url: CHECK_DETAILS_URL,
-    app: { id: TEST_GITHUB_APP_ID, slug: "postil-dev" },
+    app: { id: TEST_GITHUB_APP_ID, slug: TEST_GITHUB_APP_SLUG },
     output: null,
     ...overrides,
   };
@@ -899,7 +907,7 @@ describe("GitHub owned check-run creation", () => {
     ).rejects.toThrow("intent is invalid");
   });
 
-  test("rejects noncanonical or unsafe configured App IDs before POST", async () => {
+  test("rejects malformed or mismatched App configuration before POST", async () => {
     let requests = 0;
     globalThis.fetch = Object.assign(
       async () => {
@@ -909,12 +917,26 @@ describe("GitHub owned check-run creation", () => {
       { preconnect: ORIGINAL_FETCH.preconnect },
     ) as typeof fetch;
 
-    for (const appId of ["0123", "+123", "9007199254740992"]) {
-      process.env.GITHUB_APP_ID = appId;
+    for (const configuration of [
+      { id: "0123", slug: TEST_GITHUB_APP_SLUG },
+      { id: "+123", slug: TEST_GITHUB_APP_SLUG },
+      { id: "9007199254740992", slug: TEST_GITHUB_APP_SLUG },
+      { id: String(TEST_GITHUB_APP_ID), slug: "Postil-Dev" },
+      { id: String(TEST_GITHUB_APP_ID), slug: "-postil-dev" },
+      { id: String(TEST_GITHUB_APP_ID + 1), slug: TEST_GITHUB_APP_SLUG },
+      { id: String(TEST_GITHUB_APP_ID), slug: "other-app" },
+    ]) {
+      process.env.GITHUB_APP_ID = configuration.id;
+      process.env.GITHUB_APP_SLUG = configuration.slug;
       await expect(
         createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
       ).rejects.toThrow("GitHub App configuration is invalid");
     }
+    process.env.GITHUB_APP_ID = String(TEST_GITHUB_APP_ID);
+    delete process.env.GITHUB_APP_SLUG;
+    await expect(
+      createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
+    ).rejects.toThrow("GitHub App configuration is invalid");
     expect(requests).toBe(0);
   });
 });
@@ -1040,6 +1062,25 @@ describe("GitHub owned check-run completion", () => {
       ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
       expect(methods).toEqual(["GET", "GET"]);
     }
+  });
+
+  test("does not patch a nonterminal details URL that the intent cannot clear", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      methods.push(init?.method ?? "GET");
+      if (isCheckRunAnnotationsRequest(input)) {
+        return Response.json([checkRunAnnotation()]);
+      }
+      return Response.json(checkRun());
+    }) as typeof fetch;
+
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", {
+        ...checkRunCompletionIntent,
+        detailsUrl: undefined,
+      }),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(methods).toEqual(["GET", "GET"]);
   });
 
   test("rejects stale, partial, extra, reordered, or changed terminal annotations without patching", async () => {

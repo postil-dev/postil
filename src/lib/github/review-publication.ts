@@ -1,5 +1,4 @@
 import { apiBase } from "@/lib/github/app-auth";
-import { githubAppSlug } from "@/lib/github-app";
 import { isPostilBotLogin } from "@/lib/github/conversation";
 
 const PAGE_SIZE = 25;
@@ -58,6 +57,8 @@ export type GitHubCheckRunName = "postil/review" | "postil/gate";
 export type GitHubCheckRunConclusion = "success" | "failure" | "neutral";
 
 export interface GitHubCheckRunStartIntent {
+  readonly appId: number;
+  readonly appSlug: string;
   readonly name: GitHubCheckRunName;
   readonly headSha: string;
   readonly externalId: string;
@@ -171,6 +172,11 @@ interface NormalizedCheckRunAnnotation {
   endColumn: number | null;
 }
 
+interface GitHubAppIdentity {
+  id: number;
+  slug: string;
+}
+
 /** Create one owned in-progress check run and reconcile an uncertain POST. */
 export async function createGitHubCheckRun(
   token: string,
@@ -179,7 +185,7 @@ export async function createGitHubCheckRun(
   signal?: AbortSignal,
 ): Promise<string> {
   validateCheckRunStartIntent(intent);
-  const githubAppId = configuredGithubAppId();
+  const githubApp = configuredGithubAppIdentity(intent);
   const path = `${repositoryPath(repoFullName)}/check-runs`;
   signal?.throwIfAborted();
 
@@ -205,7 +211,7 @@ export async function createGitHubCheckRun(
       token,
       repoFullName,
       intent,
-      githubAppId,
+      githubApp,
       signal,
       error,
     );
@@ -216,14 +222,14 @@ export async function createGitHubCheckRun(
       return parseStartedCheckRun(
         await readBoundedJson(response),
         intent,
-        githubAppId,
+        githubApp,
       );
     } catch (error) {
       return reconcileCheckRunCreation(
         token,
         repoFullName,
         intent,
-        githubAppId,
+        githubApp,
         signal,
         error,
       );
@@ -238,7 +244,7 @@ export async function createGitHubCheckRun(
     token,
     repoFullName,
     intent,
-    githubAppId,
+    githubApp,
     signal,
     new GitHubPublicationRejectedError("check-run creation", response.status),
   );
@@ -252,13 +258,13 @@ export async function completeGitHubCheckRun(
   signal?: AbortSignal,
 ): Promise<void> {
   validateCheckRunCompletionIntent(intent);
-  const githubAppId = configuredGithubAppId();
+  const githubApp = configuredGithubAppIdentity(intent);
   signal?.throwIfAborted();
   const current = await getExactCheckRun(
     token,
     repoFullName,
     intent,
-    githubAppId,
+    githubApp,
     signal,
   );
   const currentAnnotations = await getExactCheckRunAnnotations(
@@ -279,6 +285,9 @@ export async function completeGitHubCheckRun(
   }
   if (!annotationsAreExact && currentAnnotations.length > 0) {
     throw new GitHubPublicationAmbiguousError("check-run completion annotations");
+  }
+  if (intent.detailsUrl === undefined && current.details_url != null) {
+    throw new GitHubPublicationAmbiguousError("check-run completion details URL");
   }
   signal?.throwIfAborted();
 
@@ -330,7 +339,7 @@ export async function completeGitHubCheckRun(
       token,
       repoFullName,
       intent,
-      githubAppId,
+      githubApp,
       signal,
       error,
     );
@@ -348,7 +357,7 @@ export async function completeGitHubCheckRun(
       token,
       repoFullName,
       intent,
-      githubAppId,
+      githubApp,
       signal,
       new GitHubPublicationRejectedError("check-run completion", response.status),
     );
@@ -358,7 +367,7 @@ export async function completeGitHubCheckRun(
     const patched = parseExactCheckRun(
       await readBoundedJson(response),
       intent,
-      githubAppId,
+      githubApp,
     );
     if (!isExactCompletedCheckRun(patched, intent)) throw malformedResponse();
   } catch (error) {
@@ -366,7 +375,7 @@ export async function completeGitHubCheckRun(
       token,
       repoFullName,
       intent,
-      githubAppId,
+      githubApp,
       signal,
       error,
     );
@@ -377,7 +386,7 @@ export async function completeGitHubCheckRun(
       token,
       repoFullName,
       intent,
-      githubAppId,
+      githubApp,
       signal,
     );
   } catch (error) {
@@ -1019,7 +1028,7 @@ async function reconcileCheckRunCreation(
   token: string,
   repoFullName: string,
   intent: GitHubCheckRunStartIntent,
-  githubAppId: number,
+  githubApp: GitHubAppIdentity,
   signal: AbortSignal | undefined,
   cause: unknown,
 ): Promise<string> {
@@ -1051,7 +1060,7 @@ async function reconcileCheckRunCreation(
       if (!Array.isArray(checkRuns)) throw malformedResponse();
       for (const candidate of checkRuns) {
         const run = candidate as CheckRunResponse;
-        if (matchesCheckRunIdentity(run, intent, githubAppId)) {
+        if (matchesCheckRunIdentity(run, intent, githubApp)) {
           matches.push(String(run.id));
         }
       }
@@ -1076,7 +1085,7 @@ async function reconcileCheckRunCompletion(
   token: string,
   repoFullName: string,
   intent: GitHubCheckRunCompletionIntent,
-  githubAppId: number,
+  githubApp: GitHubAppIdentity,
   signal: AbortSignal | undefined,
   cause: unknown,
 ): Promise<void> {
@@ -1085,7 +1094,7 @@ async function reconcileCheckRunCompletion(
       token,
       repoFullName,
       intent,
-      githubAppId,
+      githubApp,
       signal,
     );
     return;
@@ -1123,7 +1132,7 @@ async function getExactCheckRun(
   token: string,
   repoFullName: string,
   intent: GitHubCheckRunCompletionIntent,
-  githubAppId: number,
+  githubApp: GitHubAppIdentity,
   signal?: AbortSignal,
 ): Promise<CheckRunResponse> {
   const response = await requestGitHub(
@@ -1141,7 +1150,7 @@ async function getExactCheckRun(
     );
   }
   try {
-    return parseExactCheckRun(await readBoundedJson(response), intent, githubAppId);
+    return parseExactCheckRun(await readBoundedJson(response), intent, githubApp);
   } catch (error) {
     throw new GitHubPublicationAmbiguousError("check-run identity", {
       cause: error,
@@ -1195,11 +1204,11 @@ async function verifyExactCompletedCheckRun(
   token: string,
   repoFullName: string,
   intent: GitHubCheckRunCompletionIntent,
-  githubAppId: number,
+  githubApp: GitHubAppIdentity,
   signal?: AbortSignal,
 ): Promise<void> {
   const [run, annotations] = await Promise.all([
-    getExactCheckRun(token, repoFullName, intent, githubAppId, signal),
+    getExactCheckRun(token, repoFullName, intent, githubApp, signal),
     getExactCheckRunAnnotations(token, repoFullName, intent, signal),
   ]);
   if (
@@ -1319,9 +1328,9 @@ function parseReviewComment(
 function parseStartedCheckRun(
   value: unknown,
   intent: GitHubCheckRunStartIntent,
-  githubAppId: number,
+  githubApp: GitHubAppIdentity,
 ): string {
-  const run = parseExactCheckRun(value, intent, githubAppId);
+  const run = parseExactCheckRun(value, intent, githubApp);
   if (run.status !== "in_progress" || run.conclusion !== null) {
     throw malformedResponse();
   }
@@ -1331,10 +1340,10 @@ function parseStartedCheckRun(
 function parseExactCheckRun(
   value: unknown,
   intent: GitHubCheckRunStartIntent & { checkRunId?: string },
-  githubAppId: number,
+  githubApp: GitHubAppIdentity,
 ): CheckRunResponse & { id: number } {
   const run = value as CheckRunResponse;
-  if (!matchesCheckRunIdentity(run, intent, githubAppId)) {
+  if (!matchesCheckRunIdentity(run, intent, githubApp)) {
     throw malformedResponse();
   }
   if (
@@ -1349,7 +1358,7 @@ function parseExactCheckRun(
 function matchesCheckRunIdentity(
   run: CheckRunResponse,
   intent: GitHubCheckRunStartIntent,
-  githubAppId: number,
+  githubApp: GitHubAppIdentity,
 ): run is CheckRunResponse & { id: number } {
   return (
     Number.isSafeInteger(run?.id) &&
@@ -1357,8 +1366,8 @@ function matchesCheckRunIdentity(
     run.name === intent.name &&
     run.external_id === intent.externalId &&
     run.head_sha === intent.headSha &&
-    run.app?.id === githubAppId &&
-    run.app?.slug?.toLowerCase() === githubAppSlug().toLowerCase()
+    run.app?.id === githubApp.id &&
+    run.app?.slug === githubApp.slug
   );
 }
 
@@ -1589,16 +1598,28 @@ function validateReviewComment(comment: GitHubReviewCommentIntent): void {
   }
 }
 
-function configuredGithubAppId(): number {
-  const source = process.env.GITHUB_APP_ID;
-  if (source === undefined || !/^[1-9][0-9]{0,15}$/.test(source)) {
+function configuredGithubAppIdentity(
+  intent: GitHubCheckRunStartIntent,
+): GitHubAppIdentity {
+  const idSource = process.env.GITHUB_APP_ID;
+  const slugSource = process.env.GITHUB_APP_SLUG;
+  if (
+    idSource === undefined ||
+    !/^[1-9][0-9]{0,15}$/.test(idSource) ||
+    slugSource === undefined ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/.test(slugSource)
+  ) {
     throw new Error("GitHub App configuration is invalid");
   }
-  const value = Number(source);
-  if (!Number.isSafeInteger(value)) {
+  const id = Number(idSource);
+  if (
+    !Number.isSafeInteger(id) ||
+    intent.appId !== id ||
+    intent.appSlug !== slugSource
+  ) {
     throw new Error("GitHub App configuration is invalid");
   }
-  return value;
+  return { id, slug: slugSource };
 }
 
 function validateCheckRunStartIntent(intent: GitHubCheckRunStartIntent): void {
