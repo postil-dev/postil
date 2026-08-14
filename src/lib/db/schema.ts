@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   customType,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -360,6 +361,223 @@ export const reviewPublicationReceipts = pgTable(
     check(
       "review_publication_receipts_github_review_id_check",
       sql`${t.githubReviewId} IS NULL OR ${t.githubReviewId} ~ '^[1-9][0-9]{0,19}$'`,
+    ),
+  ],
+);
+
+/** Immutable accepted inputs for each pull request publication generation. */
+export const reviewPublicationGenerations = pgTable(
+  "review_publication_generations",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    repositoryId: bigint("repository_id", { mode: "number" })
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    prNumber: integer("pr_number").notNull(),
+    publicationGeneration: bigint("publication_generation", { mode: "bigint" }).notNull(),
+    reviewId: bigint("review_id", { mode: "number" })
+      .notNull()
+      .references(() => reviews.id, { onDelete: "restrict" }),
+    acceptedInputDigest: text("accepted_input_digest").notNull(),
+    headSha: text("head_sha").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("review_publication_generations_pr_generation_idx").on(
+      t.repositoryId,
+      t.prNumber,
+      t.publicationGeneration,
+    ),
+    uniqueIndex("review_publication_generations_operation_identity_idx").on(
+      t.repositoryId,
+      t.prNumber,
+      t.publicationGeneration,
+      t.reviewId,
+    ),
+    uniqueIndex("review_publication_generations_identity_idx").on(
+      t.repositoryId,
+      t.prNumber,
+      t.publicationGeneration,
+      t.reviewId,
+      t.acceptedInputDigest,
+      t.headSha,
+    ),
+    check("review_publication_generations_pr_number_check", sql`${t.prNumber} > 0`),
+    check(
+      "review_publication_generations_generation_check",
+      sql`${t.publicationGeneration} > 0`,
+    ),
+    check(
+      "review_publication_generations_input_digest_check",
+      sql`${t.acceptedInputDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "review_publication_generations_head_sha_check",
+      sql`${t.headSha} ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`,
+    ),
+  ],
+);
+
+/** Current publication high-water mark for one repository pull request. */
+export const pullRequestPublicationHighWaters = pgTable(
+  "pull_request_publication_high_waters",
+  {
+    repositoryId: bigint("repository_id", { mode: "number" })
+      .notNull()
+      .references(() => repositories.id, { onDelete: "cascade" }),
+    prNumber: integer("pr_number").notNull(),
+    publicationGeneration: bigint("publication_generation", { mode: "bigint" }).notNull(),
+    acceptedReviewId: bigint("accepted_review_id", { mode: "number" }).notNull(),
+    acceptedInputDigest: text("accepted_input_digest").notNull(),
+    acceptedHeadSha: text("accepted_head_sha").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("pull_request_publication_high_waters_pr_idx").on(
+      t.repositoryId,
+      t.prNumber,
+    ),
+    foreignKey({
+      name: "pull_request_publication_high_waters_generation_fk",
+      columns: [
+        t.repositoryId,
+        t.prNumber,
+        t.publicationGeneration,
+        t.acceptedReviewId,
+        t.acceptedInputDigest,
+        t.acceptedHeadSha,
+      ],
+      foreignColumns: [
+        reviewPublicationGenerations.repositoryId,
+        reviewPublicationGenerations.prNumber,
+        reviewPublicationGenerations.publicationGeneration,
+        reviewPublicationGenerations.reviewId,
+        reviewPublicationGenerations.acceptedInputDigest,
+        reviewPublicationGenerations.headSha,
+      ],
+    }).onDelete("restrict"),
+    check("pull_request_publication_high_waters_pr_number_check", sql`${t.prNumber} > 0`),
+    check(
+      "pull_request_publication_high_waters_generation_check",
+      sql`${t.publicationGeneration} > 0`,
+    ),
+    check(
+      "pull_request_publication_high_waters_input_digest_check",
+      sql`${t.acceptedInputDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "pull_request_publication_high_waters_head_sha_check",
+      sql`${t.acceptedHeadSha} ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'`,
+    ),
+  ],
+);
+
+/** Immutable desired publication operation with durable recovery state. */
+export const reviewPublicationOperations = pgTable(
+  "review_publication_operations",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
+    prNumber: integer("pr_number").notNull(),
+    publicationGeneration: bigint("publication_generation", { mode: "bigint" }).notNull(),
+    reviewId: bigint("review_id", { mode: "number" }).notNull(),
+    operationKey: text("operation_key").notNull(),
+    kind: text("kind").notNull(),
+    desiredPayload: jsonb("desired_payload").$type<Record<string, unknown>>().notNull(),
+    desiredPayloadDigest: text("desired_payload_digest").notNull(),
+    state: text("state").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    retryAfter: timestamp("retry_after", { withTimezone: true }),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    remoteIdentity: text("remote_identity"),
+    remoteOperationId: text("remote_operation_id"),
+    remoteObservedAt: timestamp("remote_observed_at", { withTimezone: true }),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("review_publication_operations_identity_idx").on(
+      t.repositoryId,
+      t.prNumber,
+      t.publicationGeneration,
+      t.operationKey,
+    ),
+    index("review_publication_operations_recovery_idx").on(
+      t.state,
+      t.retryAfter,
+      t.deadlineAt,
+    ),
+    foreignKey({
+      name: "review_publication_operations_generation_fk",
+      columns: [t.repositoryId, t.prNumber, t.publicationGeneration, t.reviewId],
+      foreignColumns: [
+        reviewPublicationGenerations.repositoryId,
+        reviewPublicationGenerations.prNumber,
+        reviewPublicationGenerations.publicationGeneration,
+        reviewPublicationGenerations.reviewId,
+      ],
+    }).onDelete("restrict"),
+    check("review_publication_operations_pr_number_check", sql`${t.prNumber} > 0`),
+    check(
+      "review_publication_operations_generation_check",
+      sql`${t.publicationGeneration} > 0`,
+    ),
+    check(
+      "review_publication_operations_key_check",
+      sql`${t.operationKey} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "review_publication_operations_kind_check",
+      sql`${t.kind} ~ '^[a-z][a-z0-9_]{0,99}$'`,
+    ),
+    check(
+      "review_publication_operations_payload_check",
+      sql`jsonb_typeof(${t.desiredPayload}) = 'object'`,
+    ),
+    check(
+      "review_publication_operations_payload_digest_check",
+      sql`${t.desiredPayloadDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "review_publication_operations_state_check",
+      sql`${t.state} IN ('pending', 'applying', 'unknown', 'applied', 'superseded', 'compensating', 'failed')`,
+    ),
+    check(
+      "review_publication_operations_attempt_count_check",
+      sql`${t.attemptCount} >= 0`,
+    ),
+    check(
+      "review_publication_operations_deadline_check",
+      sql`${t.deadlineAt} IS NULL OR ${t.deadlineAt} >= ${t.createdAt}`,
+    ),
+    check(
+      "review_publication_operations_error_check",
+      sql`${t.lastError} IS NULL OR length(btrim(${t.lastError})) BETWEEN 1 AND 4000`,
+    ),
+    check(
+      "review_publication_operations_remote_identity_check",
+      sql`${t.remoteIdentity} IS NULL OR length(btrim(${t.remoteIdentity})) BETWEEN 1 AND 500`,
+    ),
+    check(
+      "review_publication_operations_remote_operation_id_check",
+      sql`${t.remoteOperationId} IS NULL OR length(btrim(${t.remoteOperationId})) BETWEEN 1 AND 500`,
     ),
   ],
 );
