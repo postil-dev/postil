@@ -9,7 +9,14 @@ interface PrivateJsonArtifactIdentity {
   dev: bigint;
   ino: bigint;
   mode: bigint;
+  nlink: bigint;
   uid: bigint;
+}
+
+interface PrivateJsonArtifactSnapshot extends PrivateJsonArtifactIdentity {
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
 }
 
 /** The opened artifact is the same owner-only file observed at the path. */
@@ -21,8 +28,25 @@ export function privateJsonArtifactHandleMatches(
   return (
     initial.dev === opened.dev &&
     initial.ino === opened.ino &&
+    opened.nlink === 1n &&
     (opened.mode & 0o077n) === 0n &&
     (processUid === undefined || opened.uid === BigInt(processUid))
+  );
+}
+
+/** The opened artifact did not change while its exact bytes were read. */
+export function privateJsonArtifactHandleUnchanged(
+  before: PrivateJsonArtifactSnapshot,
+  after: PrivateJsonArtifactSnapshot,
+): boolean {
+  return (
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    before.nlink === 1n &&
+    after.nlink === 1n &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    before.ctimeNs === after.ctimeNs
   );
 }
 
@@ -69,8 +93,8 @@ export async function readPrivateJsonArtifact(
     const afterRead = await handle.stat({ bigint: true });
     if (
       !afterRead.isFile() ||
-      afterRead.size !== beforeRead.size ||
-      !privateJsonArtifactHandleMatches(initial, afterRead, processUid)
+      !privateJsonArtifactHandleMatches(initial, afterRead, processUid) ||
+      !privateJsonArtifactHandleUnchanged(beforeRead, afterRead)
     ) {
       throw invalidArtifact();
     }

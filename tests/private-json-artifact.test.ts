@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -13,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
 import {
+  privateJsonArtifactHandleUnchanged,
   privateJsonArtifactHandleMatches,
   readPrivateJsonArtifact,
 } from "@/lib/private-json-artifact";
@@ -75,7 +77,12 @@ describe("private JSON artifact reader", () => {
 
   test("requires the opened handle to match the initial file and process owner", () => {
     const initial = { dev: 10n, ino: 20n };
-    const ownerOnly = { ...initial, mode: 0o100600n, uid: 1_000n };
+    const ownerOnly = {
+      ...initial,
+      mode: 0o100600n,
+      nlink: 1n,
+      uid: 1_000n,
+    };
 
     expect(privateJsonArtifactHandleMatches(initial, ownerOnly, 1_000)).toBe(true);
     expect(privateJsonArtifactHandleMatches(initial, { ...ownerOnly, dev: 11n }, 1_000)).toBe(
@@ -89,6 +96,46 @@ describe("private JSON artifact reader", () => {
     );
     expect(privateJsonArtifactHandleMatches(initial, ownerOnly, 1_001)).toBe(false);
     expect(privateJsonArtifactHandleMatches(initial, ownerOnly, undefined)).toBe(true);
+    expect(
+      privateJsonArtifactHandleMatches(
+        initial,
+        { ...ownerOnly, nlink: 2n },
+        1_000,
+      ),
+    ).toBe(false);
+  });
+
+  test("requires unchanged size and nanosecond timestamps across the read", () => {
+    const before = {
+      dev: 10n,
+      ino: 20n,
+      mode: 0o100600n,
+      nlink: 1n,
+      uid: 1_000n,
+      size: 100n,
+      mtimeNs: 200n,
+      ctimeNs: 300n,
+    };
+
+    expect(privateJsonArtifactHandleUnchanged(before, before)).toBe(true);
+    for (const changed of [
+      { ...before, size: 101n },
+      { ...before, mtimeNs: 201n },
+      { ...before, ctimeNs: 301n },
+      { ...before, nlink: 0n },
+      { ...before, ino: 21n },
+    ]) {
+      expect(privateJsonArtifactHandleUnchanged(before, changed)).toBe(false);
+    }
+  });
+
+  test("rejects artifacts with another hard-link name", async () => {
+    const path = await artifact("linked.json", '{"version":1}');
+    await link(path, join(dirname(path), "alias.json"));
+
+    await expect(
+      readPrivateJsonArtifact(path, { maximumBytes: MAXIMUM_BYTES }),
+    ).rejects.toThrow("private JSON artifact is invalid");
   });
 
   test("rejects oversized, truncated, malformed, and invalid UTF-8 sources", async () => {
