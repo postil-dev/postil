@@ -17,6 +17,7 @@ import {
   privateJsonArtifactHandleUnchanged,
   privateJsonArtifactHandleMatches,
   readPrivateJsonArtifact,
+  readPrivateJsonArtifactExact,
 } from "@/lib/private-json-artifact";
 
 const directories: string[] = [];
@@ -47,6 +48,17 @@ describe("private JSON artifact reader", () => {
     await expect(readPrivateJsonArtifact(relativePath, { maximumBytes: MAXIMUM_BYTES })).resolves.toEqual({
       version: 1,
     });
+  });
+
+  test("returns the exact accepted bytes without JSON normalization", async () => {
+    const source = '{\n  "version": 1, "label": "kept"\n}\n';
+    const path = await artifact("exact.json", source);
+
+    const result = await readPrivateJsonArtifactExact(path, {
+      maximumBytes: MAXIMUM_BYTES,
+    });
+    expect(new TextDecoder().decode(result.bytes)).toBe(source);
+    expect(result.value).toEqual({ version: 1, label: "kept" });
   });
 
   test("rejects symlinks and directories", async () => {

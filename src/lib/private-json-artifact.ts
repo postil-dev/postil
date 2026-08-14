@@ -5,6 +5,11 @@ export interface PrivateJsonArtifactReadOptions {
   maximumBytes: number;
 }
 
+export interface PrivateJsonArtifact {
+  bytes: Uint8Array;
+  value: unknown;
+}
+
 interface PrivateJsonArtifactIdentity {
   dev: bigint;
   ino: bigint;
@@ -61,6 +66,14 @@ export async function readPrivateJsonArtifact(
   artifactPath: string,
   options: PrivateJsonArtifactReadOptions,
 ): Promise<unknown> {
+  return (await readPrivateJsonArtifactExact(artifactPath, options)).value;
+}
+
+/** Read one artifact while retaining the exact bytes that passed validation. */
+export async function readPrivateJsonArtifactExact(
+  artifactPath: string,
+  options: PrivateJsonArtifactReadOptions,
+): Promise<PrivateJsonArtifact> {
   if (!Number.isSafeInteger(options.maximumBytes) || options.maximumBytes <= 0) {
     throw invalidArtifact();
   }
@@ -102,7 +115,7 @@ export async function readPrivateJsonArtifact(
     let source: string;
     try {
       source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      return JSON.parse(source);
+      return { bytes, value: JSON.parse(source) };
     } catch {
       throw invalidArtifact();
     }
