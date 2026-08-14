@@ -12,10 +12,12 @@ const HEAD = "a".repeat(40);
 const MERGE_BASE = "b".repeat(40);
 const TARGET = "c".repeat(40);
 const INPUT_IDENTITY = digest("accepted review input");
+const REVIEW_OUTPUT_DIGEST = digest("accepted review output");
 
 const expected: ExpectedGitHubPublicationPlan = {
   controllerGeneration: 17n,
   inputIdentity: INPUT_IDENTITY,
+  reviewOutputDigest: REVIEW_OUTPUT_DIGEST,
   repositoryId: 42n,
   repositoryFullName: "acme/api",
   pullRequestNumber: 7n,
@@ -123,6 +125,20 @@ describe("GitHub publication plan", () => {
     expectRejected(plan, "undeclared dependency");
   });
 
+  test("rejects marker guards substituted under valid resigned digests", () => {
+    const wrongHead = validTwoOperationPlan();
+    wrongHead.operations[0]!.activation.anyOf[0].guard.headSha = "d".repeat(40);
+    resign(wrongHead);
+    expectRejected(wrongHead, "different head");
+
+    const wrongMarker = validTwoOperationPlan();
+    wrongMarker.operations[0]!.activation.anyOf[0].guard.markers = [
+      reviewMarker("unrelated"),
+    ];
+    resign(wrongMarker);
+    expectRejected(wrongMarker, "differs from operation reconciliation markers");
+  });
+
   test("rejects advisory publication that is not unique and terminal", () => {
     const plan = validPlan();
     plan.operations.push(structuredClone(plan.operations[0]!));
@@ -185,6 +201,7 @@ function validPlan(): any {
     forge: "github",
     controllerGeneration: "17",
     inputIdentity: INPUT_IDENTITY,
+    reviewOutputDigest: REVIEW_OUTPUT_DIGEST,
     repository: { id: "42", fullName: "acme/api" },
     pullRequestNumber: "7",
     reviewedSnapshot: {
@@ -314,7 +331,15 @@ function operationDesired(operation: any): Record<string, unknown> {
 
 function computedOperationKey(kind: string, salt = ""): string {
   const hash = createHash("sha256").update("github-publication-operation-v1\0");
-  for (const value of ["42", "7", HEAD, "17", INPUT_IDENTITY, kind]) {
+  for (const value of [
+    "42",
+    "7",
+    HEAD,
+    "17",
+    INPUT_IDENTITY,
+    REVIEW_OUTPUT_DIGEST,
+    kind,
+  ]) {
     hash.update(value).update("\0");
   }
   if (salt) hash.update(salt);
@@ -323,7 +348,14 @@ function computedOperationKey(kind: string, salt = ""): string {
 
 function computedReviewIdentity(): string {
   const hash = createHash("sha256").update("github-publication-logical-review-v1\0");
-  for (const value of ["42", "7", HEAD, "17", INPUT_IDENTITY]) {
+  for (const value of [
+    "42",
+    "7",
+    HEAD,
+    "17",
+    INPUT_IDENTITY,
+    REVIEW_OUTPUT_DIGEST,
+  ]) {
     hash.update(value).update("\0");
   }
   return `github-publication-v1:review:sha256:${hash.digest("hex")}`;

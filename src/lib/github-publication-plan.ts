@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-const MAX_OPERATIONS = 100_001;
+const MAX_OPERATIONS = 128;
+const MAX_DEPENDENCY_EDGES = 1_024;
 const MAX_FINDINGS = 1_000;
-const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+const MAX_TEXT_BYTES = 128 * 1024;
+const MAX_AGGREGATE_TEXT_BYTES = 4 * 1024 * 1024;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const DECIMAL_IDENTIFIER = /^[1-9][0-9]{0,18}$/;
@@ -266,6 +268,7 @@ const publicationPlanSchema = z.object({
   forge: z.literal("github"),
   controllerGeneration: decimalIdentifier,
   inputIdentity: sha256,
+  reviewOutputDigest: sha256,
   repository: repositorySchema,
   pullRequestNumber: decimalIdentifier,
   reviewedSnapshot: snapshotSchema,
@@ -283,6 +286,7 @@ export type GitHubPublicationOperation = GitHubPublicationPlan["operations"][num
 export interface ExpectedGitHubPublicationPlan {
   controllerGeneration: bigint | string;
   inputIdentity: string;
+  reviewOutputDigest: string;
   repositoryId: bigint | string;
   repositoryFullName: string;
   pullRequestNumber: bigint | string;
@@ -325,6 +329,7 @@ function validateExpectedIdentity(
 ): void {
   const exact: Array<[string, string, string]> = [
     ["controller generation", plan.controllerGeneration, String(expected.controllerGeneration)],
+    ["review output digest", plan.reviewOutputDigest, expected.reviewOutputDigest],
     ["repository id", plan.repository.id, String(expected.repositoryId)],
     ["repository full name", plan.repository.fullName, expected.repositoryFullName],
     ["pull request number", plan.pullRequestNumber, String(expected.pullRequestNumber)],
@@ -396,12 +401,15 @@ function validateOperationGraph(plan: GitHubPublicationPlan): void {
     reject("operation count does not match the manifest");
   }
   const ordinalByKey = new Map<string, number>();
+  let dependencyEdges = 0;
   for (const [index, operation] of plan.operations.entries()) {
     if (operation.ordinal !== index + 1) reject("operation ordinals are not contiguous and one-based");
     if (ordinalByKey.has(operation.operationKey)) reject("operation key is duplicated");
     ordinalByKey.set(operation.operationKey, operation.ordinal);
   }
   for (const operation of plan.operations) {
+    dependencyEdges += operation.dependencies.length;
+    if (dependencyEdges > MAX_DEPENDENCY_EDGES) reject("operation dependency graph is too large");
     assertUnique(operation.dependencies, "operation dependencies");
     const dependencies = new Set(operation.dependencies);
     for (const dependency of dependencies) {
@@ -423,8 +431,10 @@ function validateOperationGraph(plan: GitHubPublicationPlan): void {
 function validateOperationSemantics(plan: GitHubPublicationPlan): void {
   const expectedReviewIdentity = reviewIdentity(plan);
   const findingIds = new Set(plan.lifecycleReceipt.findings.map((finding) => finding.findingId));
+  const operationByKey = new Map(plan.operations.map((operation) => [operation.operationKey, operation]));
   let advisoryCount = 0;
   const reviewAttempts = new Set<string>();
+  let aggregateTextBytes = 0;
   for (const operation of plan.operations) {
     const expectedKey = computedOperationKey(plan, operation);
     if (operation.operationKey !== expectedKey) reject("operation key does not match immutable input identity");
@@ -439,6 +449,7 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
       reject("non-review reconciliation has the wrong logical identity");
     }
     if (operation.kind === "reviewCreate") {
+      aggregateTextBytes += Buffer.byteLength(operation.payload.body, "utf8");
       if (reviewAttempts.has(operation.attempt)) reject("review attempt kind is duplicated");
       reviewAttempts.add(operation.attempt);
       if (operation.payload.commitId !== plan.reviewedSnapshot.headSha) {
@@ -448,6 +459,7 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
         reject("review body omits its reconciliation marker");
       }
       for (const comment of operation.payload.comments ?? []) {
+        aggregateTextBytes += Buffer.byteLength(comment.body, "utf8");
         if (comment.startLine === undefined !== (comment.startSide === undefined)) {
           reject("review comment range is incomplete");
         }
@@ -465,6 +477,7 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
       }
     }
     if (operation.kind === "fileCommentFallback") {
+      aggregateTextBytes += Buffer.byteLength(operation.payload.body, "utf8");
       if (!findingIds.has(operation.findingId)) reject("file-comment operation names an unknown finding");
       if (operation.payload.commitId !== plan.reviewedSnapshot.headSha) {
         reject("file-comment operation targets a different head");
@@ -482,6 +495,7 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
       }
     }
     if (operation.kind === "findingCommentUpdate") {
+      aggregateTextBytes += Buffer.byteLength(operation.body, "utf8");
       if (!findingIds.has(operation.findingId)) reject("comment update names an unknown finding");
       if (operation.bodySha256 !== textDigest(operation.body)) reject("comment update body digest is invalid");
       if (operation.reconciliation.observedRemoteId !== operation.observedCommentId) {
@@ -512,6 +526,7 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
         assertUnique(terminal.acceptedOutcomes, "summary terminal outcomes");
       }
       for (const summaryCase of operation.cases) {
+        aggregateTextBytes += Buffer.byteLength(summaryCase.body, "utf8");
         if (!dependencies.has(summaryCase.selectedReviewOperationKey)) {
           reject("summary case selects an undeclared review operation");
         }
@@ -525,6 +540,8 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
       }
     }
     if (operation.kind === "advisoryCheck") {
+      aggregateTextBytes += Buffer.byteLength(operation.title, "utf8") +
+        Buffer.byteLength(operation.summary, "utf8");
       advisoryCount += 1;
       if (operation.headSha !== plan.reviewedSnapshot.headSha) {
         reject("advisory check targets a different head");
@@ -542,8 +559,14 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
         reject("advisory check has an invalid activation contract");
       }
       for (const annotation of operation.annotations ?? []) {
+        aggregateTextBytes += Buffer.byteLength(annotation.title, "utf8") +
+          Buffer.byteLength(annotation.message, "utf8");
         if (annotation.endLine < annotation.startLine) reject("check annotation range is reversed");
       }
+    }
+    validateActivationGuards(plan, operation, operationByKey);
+    if (aggregateTextBytes > MAX_AGGREGATE_TEXT_BYTES) {
+      reject("publication plan text is too large");
     }
   }
   if (advisoryCount !== 1) reject("plan must contain exactly one terminal advisory check operation");
@@ -561,6 +584,40 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
     }
   }
   validateReviewAttemptChain(plan);
+}
+
+function validateActivationGuards(
+  plan: GitHubPublicationPlan,
+  operation: GitHubPublicationOperation,
+  operationByKey: ReadonlyMap<string, GitHubPublicationOperation>,
+): void {
+  const ownMarkers = operation.reconciliation.markers ?? [];
+  for (const condition of operation.activation.anyOf) {
+    const guard = condition.condition === "markerAbsent"
+      ? condition.guard
+      : condition.condition === "semanticPlacementRejected"
+        ? condition.markerAbsence
+        : condition.condition === "partialReviewObserved"
+          ? condition.findingMarkerAbsence
+          : undefined;
+    if (guard !== undefined) {
+      if (guard.headSha !== plan.reviewedSnapshot.headSha) {
+        reject("marker-absence guard targets a different head");
+      }
+      if (!sameStrings(guard.markers, ownMarkers)) {
+        reject("marker-absence guard differs from operation reconciliation markers");
+      }
+    }
+    if (condition.condition === "partialReviewObserved") {
+      const dependency = operationByKey.get(condition.dependencyOperationKey);
+      if (
+        dependency?.kind !== "reviewCreate" ||
+        !sameStrings(condition.reviewMarkers, dependency.reconciliation.markers ?? [])
+      ) {
+        reject("partial-review guard differs from its review dependency markers");
+      }
+    }
+  }
 }
 
 function validateReviewAttemptChain(plan: GitHubPublicationPlan): void {
@@ -661,6 +718,7 @@ function computedOperationKey(
     plan.reviewedSnapshot.headSha,
     plan.controllerGeneration,
     plan.inputIdentity,
+    plan.reviewOutputDigest,
     kind,
   ]) hash.update(value).update("\0");
   if (findingId !== undefined) hash.update(findingId);
@@ -675,6 +733,7 @@ function reviewIdentity(plan: GitHubPublicationPlan): string {
     plan.reviewedSnapshot.headSha,
     plan.controllerGeneration,
     plan.inputIdentity,
+    plan.reviewOutputDigest,
   ]) hash.update(value).update("\0");
   return `github-publication-v1:review:sha256:${hash.digest("hex")}`;
 }
