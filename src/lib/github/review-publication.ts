@@ -58,7 +58,6 @@ export type GitHubCheckRunConclusion = "success" | "failure" | "neutral";
 
 export interface GitHubCheckRunStartIntent {
   readonly appId: number;
-  readonly appSlug: string;
   readonly name: GitHubCheckRunName;
   readonly headSha: string;
   readonly externalId: string;
@@ -174,7 +173,6 @@ interface NormalizedCheckRunAnnotation {
 
 interface GitHubAppIdentity {
   id: number;
-  slug: string;
 }
 
 /** Create one owned in-progress check run and reconcile an uncertain POST. */
@@ -1366,8 +1364,7 @@ function matchesCheckRunIdentity(
     run.name === intent.name &&
     run.external_id === intent.externalId &&
     run.head_sha === intent.headSha &&
-    run.app?.id === githubApp.id &&
-    run.app?.slug === githubApp.slug
+    run.app?.id === githubApp.id
   );
 }
 
@@ -1602,24 +1599,17 @@ function configuredGithubAppIdentity(
   intent: GitHubCheckRunStartIntent,
 ): GitHubAppIdentity {
   const idSource = process.env.GITHUB_APP_ID;
-  const slugSource = process.env.GITHUB_APP_SLUG;
   if (
     idSource === undefined ||
-    !/^[1-9][0-9]{0,15}$/.test(idSource) ||
-    slugSource === undefined ||
-    !/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/.test(slugSource)
+    !/^[1-9][0-9]{0,15}$/.test(idSource)
   ) {
     throw new Error("GitHub App configuration is invalid");
   }
   const id = Number(idSource);
-  if (
-    !Number.isSafeInteger(id) ||
-    intent.appId !== id ||
-    intent.appSlug !== slugSource
-  ) {
+  if (!Number.isSafeInteger(id) || intent.appId !== id) {
     throw new Error("GitHub App configuration is invalid");
   }
-  return { id, slug: slugSource };
+  return { id };
 }
 
 function validateCheckRunStartIntent(intent: GitHubCheckRunStartIntent): void {

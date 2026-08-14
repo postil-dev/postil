@@ -23,24 +23,19 @@ const CHECK_DETAILS_URL = "https://postil.dev/orgs/octo/runs/review-run";
 const TEST_GITHUB_APP_ID = 123;
 const TEST_GITHUB_APP_SLUG = "postil-dev";
 const ORIGINAL_GITHUB_APP_ID = process.env.GITHUB_APP_ID;
-const ORIGINAL_GITHUB_APP_SLUG = process.env.GITHUB_APP_SLUG;
 
 beforeEach(() => {
   process.env.GITHUB_APP_ID = String(TEST_GITHUB_APP_ID);
-  process.env.GITHUB_APP_SLUG = TEST_GITHUB_APP_SLUG;
 });
 
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
   process.env.GITHUB_APP_ID = String(TEST_GITHUB_APP_ID);
-  process.env.GITHUB_APP_SLUG = TEST_GITHUB_APP_SLUG;
 });
 
 afterAll(() => {
   if (ORIGINAL_GITHUB_APP_ID === undefined) delete process.env.GITHUB_APP_ID;
   else process.env.GITHUB_APP_ID = ORIGINAL_GITHUB_APP_ID;
-  if (ORIGINAL_GITHUB_APP_SLUG === undefined) delete process.env.GITHUB_APP_SLUG;
-  else process.env.GITHUB_APP_SLUG = ORIGINAL_GITHUB_APP_SLUG;
 });
 
 function review(overrides: Record<string, unknown> = {}) {
@@ -88,7 +83,6 @@ const compositeIntent = {
 
 const checkRunStartIntent = {
   appId: TEST_GITHUB_APP_ID,
-  appSlug: TEST_GITHUB_APP_SLUG,
   name: "postil/review" as const,
   headSha: HEAD_SHA,
   externalId: CHECK_EXTERNAL_ID,
@@ -732,7 +726,7 @@ describe("GitHub owned review comment updates", () => {
 });
 
 describe("GitHub owned check-run creation", () => {
-  test("creates one exact in-progress check run with an encoded repository path", async () => {
+  test("creates one exact run and tolerates an App slug rename", async () => {
     const requests: Array<{ method: string; url: string; body?: unknown }> = [];
     globalThis.fetch = (async (input, init) => {
       requests.push({
@@ -740,7 +734,9 @@ describe("GitHub owned check-run creation", () => {
         url: String(input),
         ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
       });
-      return Response.json(checkRun());
+      return Response.json(
+        checkRun({ app: { id: TEST_GITHUB_APP_ID, slug: "renamed-postil" } }),
+      );
     }) as typeof fetch;
 
     await expect(
@@ -769,7 +765,11 @@ describe("GitHub owned check-run creation", () => {
       if (method === "POST") throw new TypeError("connection reset");
       if (methods.length === 2) {
         return Response.json({
-          check_runs: [checkRun({ app: { slug: "other-app" } })],
+          check_runs: [
+            checkRun({
+              app: { id: TEST_GITHUB_APP_ID + 1, slug: "other-app" },
+            }),
+          ],
         }, {
           headers: {
             Link: '<https://api.github.test/check-runs?page=2>; rel="next"',
@@ -789,7 +789,6 @@ describe("GitHub owned check-run creation", () => {
   test("fails closed for duplicate or wrong check-run identities", async () => {
     const invalidCandidates = [
       [checkRun(), checkRun({ id: 62 })],
-      [checkRun({ app: { slug: "other-app" } })],
       [
         checkRun({
           app: { id: TEST_GITHUB_APP_ID + 1, slug: "postil-dev" },
@@ -907,7 +906,7 @@ describe("GitHub owned check-run creation", () => {
     ).rejects.toThrow("intent is invalid");
   });
 
-  test("rejects malformed or mismatched App configuration before POST", async () => {
+  test("rejects malformed or mismatched immutable App IDs before POST", async () => {
     let requests = 0;
     globalThis.fetch = Object.assign(
       async () => {
@@ -917,23 +916,18 @@ describe("GitHub owned check-run creation", () => {
       { preconnect: ORIGINAL_FETCH.preconnect },
     ) as typeof fetch;
 
-    for (const configuration of [
-      { id: "0123", slug: TEST_GITHUB_APP_SLUG },
-      { id: "+123", slug: TEST_GITHUB_APP_SLUG },
-      { id: "9007199254740992", slug: TEST_GITHUB_APP_SLUG },
-      { id: String(TEST_GITHUB_APP_ID), slug: "Postil-Dev" },
-      { id: String(TEST_GITHUB_APP_ID), slug: "-postil-dev" },
-      { id: String(TEST_GITHUB_APP_ID + 1), slug: TEST_GITHUB_APP_SLUG },
-      { id: String(TEST_GITHUB_APP_ID), slug: "other-app" },
+    for (const id of [
+      "0123",
+      "+123",
+      "9007199254740992",
+      String(TEST_GITHUB_APP_ID + 1),
     ]) {
-      process.env.GITHUB_APP_ID = configuration.id;
-      process.env.GITHUB_APP_SLUG = configuration.slug;
+      process.env.GITHUB_APP_ID = id;
       await expect(
         createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
       ).rejects.toThrow("GitHub App configuration is invalid");
     }
-    process.env.GITHUB_APP_ID = String(TEST_GITHUB_APP_ID);
-    delete process.env.GITHUB_APP_SLUG;
+    delete process.env.GITHUB_APP_ID;
     await expect(
       createGitHubCheckRun("token", "octo/repo", checkRunStartIntent),
     ).rejects.toThrow("GitHub App configuration is invalid");
@@ -1254,7 +1248,6 @@ describe("GitHub owned check-run completion", () => {
 
     for (const mismatch of [
       { id: 62 },
-      { app: { slug: "other-app" } },
       { app: { id: TEST_GITHUB_APP_ID + 1, slug: "postil-dev" } },
       { head_sha: "b".repeat(40) },
       { name: "postil/gate" },
