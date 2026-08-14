@@ -19,7 +19,7 @@ export function RepositoryAccessCheck({ slug }: { slug: string }) {
       </p>
       <div className="card mt-3 p-4">
         <p className="text-sm text-charcoal/70">
-          Check whether a repository is selected for this GitHub App installation.
+          Check whether the GitHub App is installed for an owner and can access a repository.
         </p>
         <form action={action} className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
           <input type="hidden" name="slug" value={slug} />
@@ -71,6 +71,8 @@ export function RepositoryAccessCheckResult({
           ? "border-gate/50 bg-gate/5 text-charcoal"
           : state.status === "not_selected"
             ? "border-rust/50 bg-rust/5 text-charcoal"
+            : state.status === "not_installed"
+              ? "border-rust/50 bg-rust/5 text-charcoal"
             : "border-stone/70 bg-paper text-charcoal/75"
       }`}
       role={isUnknown ? "alert" : "status"}

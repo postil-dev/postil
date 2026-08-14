@@ -10,6 +10,7 @@ import { hostedInferenceEnabled, optionalEnv, requireEnv } from "@/lib/env";
 import {
   apiBase,
   buildAppJwt,
+  getAppJwt,
   getInstallationToken,
   normalizePrivateKey,
 } from "@/lib/github/app-auth";
@@ -47,6 +48,19 @@ export const INSTALLATION_REPOSITORY_PAGE_SIZE = 100;
 export const MAX_INSTALLATION_REPOSITORY_PAGES = 20;
 
 export type InstallationRepositoryAccess = "selected" | "not_selected" | "unknown";
+
+export type GithubAppRepositoryAccess =
+  | "not_installed"
+  | InstallationRepositoryAccess;
+
+export interface GithubAppRepositoryAccessResult {
+  status: GithubAppRepositoryAccess;
+  installation?: {
+    githubInstallationId: number;
+    accountLogin: string;
+    accountType: "Organization" | "User";
+  };
+}
 
 /**
  * Check whether an installation's repository selection includes one named
@@ -90,6 +104,141 @@ export async function checkInstallationRepositoryAccess(
     if (repositories.length < INSTALLATION_REPOSITORY_PAGE_SIZE) return "not_selected";
   }
   return "unknown";
+}
+
+/**
+ * Check whether the App is installed for an account and, when it is, whether
+ * one repository is selected. The account lookup uses an App JWT; repository
+ * selection uses only that installation's token.
+ */
+export async function checkGithubAppRepositoryAccess(
+  owner: string,
+  repositoryName: string,
+  expectedOwnerId: number,
+  signal?: AbortSignal,
+): Promise<GithubAppRepositoryAccessResult> {
+  try {
+    const jwt = getAppJwt();
+    const installation = await findGithubAppInstallation(
+      jwt,
+      owner,
+      expectedOwnerId,
+      signal,
+    );
+    if (installation.status !== "found") {
+      return { status: installation.status };
+    }
+    const access = await checkInstallationRepositoryAccess(
+      await getInstallationToken(installation.value.githubInstallationId, signal),
+      `${owner}/${repositoryName}`,
+      signal,
+    );
+    return { status: access, installation: installation.value };
+  } catch {
+    return { status: "unknown" };
+  }
+}
+
+type GithubAppInstallationLookup =
+  | { status: "found"; value: NonNullable<GithubAppRepositoryAccessResult["installation"]> }
+  | { status: "not_installed" | "unknown" };
+
+async function findGithubAppInstallation(
+  jwt: string,
+  owner: string,
+  expectedOwnerId: number,
+  signal?: AbortSignal,
+): Promise<GithubAppInstallationLookup> {
+  const organization = await lookupGithubAppInstallation(
+    jwt,
+    owner,
+    expectedOwnerId,
+    "Organization",
+    signal,
+  );
+  if (organization.status !== "not_installed") return organization;
+
+  const user = await lookupGithubAppInstallation(
+    jwt,
+    owner,
+    expectedOwnerId,
+    "User",
+    signal,
+  );
+  if (user.status === "not_installed") return { status: "not_installed" };
+  return user;
+}
+
+async function lookupGithubAppInstallation(
+  jwt: string,
+  owner: string,
+  expectedOwnerId: number,
+  accountType: "Organization" | "User",
+  signal?: AbortSignal,
+): Promise<GithubAppInstallationLookup> {
+  const requestSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+    : AbortSignal.timeout(10_000);
+  const path =
+    accountType === "Organization"
+      ? `/orgs/${encodeURIComponent(owner)}/installation`
+      : `/users/${encodeURIComponent(owner)}/installation`;
+  const response = await fetch(`${apiBase()}${path}`, {
+    headers: githubHeaders(jwt),
+    signal: requestSignal,
+  });
+  if (response.status === 404) return { status: "not_installed" };
+  if (!response.ok) return { status: "unknown" };
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return { status: "unknown" };
+  }
+  const installation = parseGithubAppInstallation(
+    body,
+    owner,
+    expectedOwnerId,
+    accountType,
+  );
+  return installation ? { status: "found", value: installation } : { status: "unknown" };
+}
+
+function parseGithubAppInstallation(
+  value: unknown,
+  owner: string,
+  expectedOwnerId: number,
+  expectedAccountType: "Organization" | "User",
+): NonNullable<GithubAppRepositoryAccessResult["installation"]> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const installation = value as {
+    id?: unknown;
+    suspended_at?: unknown;
+    account?: { id?: unknown; login?: unknown; type?: unknown };
+  };
+  if (
+    typeof installation.id !== "number" ||
+    !Number.isSafeInteger(installation.id) ||
+    installation.id < 1
+  ) {
+    return undefined;
+  }
+  if (
+    !Object.hasOwn(installation, "suspended_at") ||
+    installation.suspended_at !== null ||
+    installation.account?.id !== expectedOwnerId ||
+    typeof installation.account?.login !== "string" ||
+    installation.account.login.toLowerCase() !== owner.toLowerCase() ||
+    installation.account.type !== expectedAccountType
+  ) {
+    return undefined;
+  }
+  return {
+    githubInstallationId: installation.id,
+    accountLogin: installation.account.login,
+    accountType: expectedAccountType,
+  };
 }
 
 /** Read current repository visibility with an installation token. */

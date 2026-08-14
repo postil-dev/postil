@@ -186,6 +186,7 @@ mock.module("@/lib/gate-mode", () => ({
 mock.module("@/lib/github/app-auth", () => ({
   apiBase: () => "https://api.github.test",
   buildAppJwt: () => "app-jwt",
+  getAppJwt: () => "app-jwt",
   getInstallationToken: async () => "installation-token",
   normalizePrivateKey: (value: string) => value,
 }));

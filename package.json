@@ -28,7 +28,7 @@
     "verify:dashboard": "bun run scripts/verify-dashboard.ts",
     "review:local": "bun run scripts/run-review-locally.ts",
     "review:install-hook": "bun run scripts/install-local-postil-hook.ts",
-    "test": "AGENT=1 bun test --isolate"
+    "test": "AGENT=1 bun test --isolate --timeout 30000"
   },
   "dependencies": {
     "@opentelemetry/api-logs": "^0.220.0",

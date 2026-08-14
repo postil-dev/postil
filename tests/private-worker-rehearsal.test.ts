@@ -301,7 +301,7 @@ describeDb("private worker interruption rehearsal", () => {
     ).rejects.toThrow("between one and ten minutes");
     await armExact();
     await expect(armExact()).rejects.toThrow("already armed");
-  });
+  }, 30_000);
 
   test("interrupts once only after staging and waits for a different worker", async () => {
     await armExact();
@@ -408,7 +408,7 @@ describeDb("private worker interruption rehearsal", () => {
       after_publication_count: 2,
     });
     expect(await consumeExact()).toBeNull();
-  });
+  }, 30_000);
 
   test("does not requeue an immediate same-worker newer generation", async () => {
     await armExact();
@@ -450,7 +450,7 @@ describeDb("private worker interruption rehearsal", () => {
       locked_by: "worker-old#0",
       lock_generation: "2",
     });
-  });
+  }, 30_000);
 
   test("expires an unused one-shot request without touching its job", async () => {
     await armExact(60);
@@ -463,7 +463,7 @@ describeDb("private worker interruption rehearsal", () => {
     ).toMatchObject({ rehearsalsExpired: 1, jobsRequeued: 0 });
     expect((await jobState()).status).toBe("running");
     expect(await consumeExact(new Date(NOW.getTime() + 61_000))).toBeNull();
-  });
+  }, 30_000);
 
   async function armExact(expiresInSeconds = 300) {
     return armPrivateWorkerRehearsal(

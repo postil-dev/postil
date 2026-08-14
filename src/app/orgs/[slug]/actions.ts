@@ -48,7 +48,7 @@ import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
 import { getPullRequestHeadSha, getPullRequestReviewContext } from "@/lib/github/checks";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import { githubInstallationSettingsUrl } from "@/lib/github-app";
-import { checkInstallationRepositoryAccess } from "@/lib/github/installation-sync";
+import { checkGithubAppRepositoryAccess } from "@/lib/github/installation-sync";
 import {
   enqueueGateEnforcementSweepOnce,
   findActiveGateEnforcementSweep,
@@ -81,7 +81,7 @@ export type ConfigProbeRefreshState =
 export type RepositoryAccessCheckState =
   | { status: "idle" }
   | {
-      status: "selected" | "not_selected" | "unknown";
+      status: "selected" | "not_installed" | "not_selected" | "unknown";
       message: string;
       settingsUrl?: string;
     };
@@ -103,9 +103,12 @@ export type GateEnforcementRefreshProgress =
  * membership; write actions additionally assert the admin role via
  * requireAdmin below.
  */
-async function requireMembership(
-  slug: string,
-): Promise<{ orgId: number; role: string; userId: number }> {
+async function requireMembership(slug: string): Promise<{
+  orgId: number;
+  role: string;
+  userId: number;
+  org: { name: string; githubOrgId: number | null };
+}> {
   const access = await getOrgMembership(slug);
   if (!access.ok) {
     if (access.reason === "verification_unavailable") {
@@ -118,6 +121,7 @@ async function requireMembership(
     orgId: access.org.id,
     role: access.membership.role,
     userId: access.user.id,
+    org: { name: access.org.name, githubOrgId: access.org.githubOrgId },
   };
 }
 
@@ -129,12 +133,18 @@ async function requireMembership(
  * verification supplies organization roles; personal accounts are always
  * admin.
  */
-async function requireAdmin(slug: string): Promise<{ orgId: number; userId: number }> {
-  const { orgId, role, userId } = await requireMembership(slug);
+async function requireAdmin(
+  slug: string,
+): Promise<{
+  orgId: number;
+  userId: number;
+  org: { name: string; githubOrgId: number | null };
+}> {
+  const { orgId, role, userId, org } = await requireMembership(slug);
   if (role !== "admin") {
     throw new Error("this action requires an organization admin");
   }
-  return { orgId, userId };
+  return { orgId, userId, org };
 }
 
 export async function saveBillingContact(
@@ -492,7 +502,7 @@ export async function checkRepositoryAccess(
   const slug = String(formData.get("slug") ?? "");
   const owner = String(formData.get("owner") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
-  const { orgId } = await requireAdmin(slug);
+  const { org } = await requireAdmin(slug);
 
   if (!isGithubRepositorySegment(owner) || !isGithubRepositorySegment(name)) {
     return {
@@ -501,47 +511,40 @@ export async function checkRepositoryAccess(
     };
   }
 
-  const installations = await getDb()
-    .select({
-      githubInstallationId: schema.installations.githubInstallationId,
-      accountLogin: schema.installations.accountLogin,
-      accountType: schema.installations.accountType,
-    })
-    .from(schema.installations)
-    .where(eq(schema.installations.orgId, orgId))
-    .orderBy(schema.installations.id);
-  const installation = installations.find(
-    (candidate) => candidate.accountLogin.toLowerCase() === owner.toLowerCase(),
-  );
-  if (!installation) {
+  if (org.githubOrgId === null) {
     return {
       status: "unknown",
-      message: "The repository owner must match a GitHub App installation for this organization.",
+      message: "Enter the GitHub owner linked to this organization.",
     };
   }
 
-  const settingsUrl = githubInstallationSettingsUrl(installation);
-  try {
-    const access = await checkInstallationRepositoryAccess(
-      await getInstallationToken(installation.githubInstallationId),
-      `${owner}/${name}`,
-    );
-    if (access === "selected") {
-      return {
-        status: "selected",
-        message: `${owner}/${name} is selected for this GitHub App installation.`,
-        settingsUrl,
-      };
-    }
-    if (access === "not_selected") {
-      return {
-        status: "not_selected",
-        message: `${owner}/${name} is not selected for this GitHub App installation.`,
-        settingsUrl,
-      };
-    }
-  } catch {
-    // The selection cannot be inferred if GitHub rejects or interrupts the listing.
+  const result = await checkGithubAppRepositoryAccess(
+    owner,
+    name,
+    org.githubOrgId,
+  );
+  if (result.status === "not_installed") {
+    return {
+      status: "not_installed",
+      message: `${owner}/${name} cannot receive Postil reviews or checks because the GitHub App is not installed for ${owner}. Postil cannot inspect configuration in this repository.`,
+    };
+  }
+  const settingsUrl = result.installation
+    ? githubInstallationSettingsUrl(result.installation)
+    : undefined;
+  if (result.status === "selected") {
+    return {
+      status: "selected",
+      message: `${owner}/${name} is selected for this GitHub App installation.`,
+      settingsUrl,
+    };
+  }
+  if (result.status === "not_selected") {
+    return {
+      status: "not_selected",
+      message: `${owner}/${name} cannot receive Postil reviews or checks because it is not selected for this GitHub App installation. Postil cannot inspect configuration in this repository.`,
+      settingsUrl,
+    };
   }
   return {
     status: "unknown",
