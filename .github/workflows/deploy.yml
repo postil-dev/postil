@@ -28,9 +28,20 @@ jobs:
     # (manual deploy) has no associated ci run and always proceeds.
     if: vars.FLY_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
     steps:
+      - name: Resolve exact release SHA
+        id: release
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release SHA must be a full lowercase hexadecimal commit SHA."
+            exit 1
+          fi
+          echo "sha=${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ steps.release.outputs.sha }}
       # Bake the pinned CLI into the image so the worker can spawn it.
       # POSTIL_CLI_TAG is a required repo variable naming a compatible
       # postil-cli release tag; this step always runs on deploy so
@@ -259,12 +270,13 @@ jobs:
           flyctl deploy \
             --remote-only \
             --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
-            --build-arg POSTIL_RELEASE_SHA="${GITHUB_SHA}" \
+            --build-arg POSTIL_RELEASE_SHA="${POSTIL_RELEASE_SHA}" \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
           POSTIL_CLI_TAG: ${{ vars.POSTIL_CLI_TAG }}
+          POSTIL_RELEASE_SHA: ${{ steps.release.outputs.sha }}
       - name: Restart any machines left stopped by the deploy
         id: recover
         # Runtime diagnostics stay in private Fly logs and the operator

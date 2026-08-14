@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Client, Pool } from "pg";
@@ -25,6 +25,23 @@ import {
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+const DRIZZLE_DIRECTORY = join(import.meta.dir, "..", "drizzle");
+
+test("migration replay follows the Drizzle journal order", async () => {
+  const files = await migrationFilesInJournalOrder();
+  const first0048 = files.indexOf("0048_woozy_tigra.sql");
+
+  expect(first0048).toBeGreaterThanOrEqual(0);
+  expect(files.slice(first0048, first0048 + 2)).toEqual([
+    "0048_woozy_tigra.sql",
+    "0048_new_jubilee.sql",
+  ]);
+  await expect(
+    Promise.all(
+      files.map((file) => readFile(join(DRIZZLE_DIRECTORY, file), "utf8")),
+    ),
+  ).resolves.toHaveLength(files.length);
+});
 
 describeDb("publication-controller release rollout", () => {
   let database: EphemeralDatabase;
@@ -36,10 +53,8 @@ describeDb("publication-controller release rollout", () => {
     database = await createUnmigratedEphemeralDatabase("publication_controller_rollout");
     const migration = new Client({ connectionString: database.url });
     await migration.connect();
-    for (const file of (await readdir(join(import.meta.dir, "..", "drizzle")))
-      .filter((name) => /^\d{4}_.*\.sql$/.test(name))
-      .sort()) {
-      const source = await readFile(join(import.meta.dir, "..", "drizzle", file), "utf8");
+    for (const file of await migrationFilesInJournalOrder()) {
+      const source = await readFile(join(DRIZZLE_DIRECTORY, file), "utf8");
       for (const statement of source.split("--> statement-breakpoint")) {
         if (statement.trim()) await migration.query(statement);
       }
@@ -430,6 +445,14 @@ describeDb("publication-controller release rollout", () => {
     });
   });
 });
+
+async function migrationFilesInJournalOrder(): Promise<string[]> {
+  const journal = JSON.parse(
+    await readFile(join(DRIZZLE_DIRECTORY, "meta", "_journal.json"), "utf8"),
+  ) as { entries: Array<{ tag: string }> };
+
+  return journal.entries.map((entry) => `${entry.tag}.sql`);
+}
 
 async function activateRelease(pool: Pool, releaseSha: string) {
   await deactivatePublicationControllerRelease(pool, releaseSha);
