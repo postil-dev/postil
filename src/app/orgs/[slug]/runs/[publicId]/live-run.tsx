@@ -11,9 +11,11 @@ import {
 } from "react";
 
 import { formatMs, GateBadge, ReviewStatusBadge } from "@/components/review-status";
+import { boundedRetryAfterDelayMs } from "@/lib/auth-navigation";
 import type { ReviewDisplayStatus } from "@/lib/review-outcome";
 
 const LOG_PAGE_SIZE = 500;
+const POLL_INTERVAL_MS = 2_000;
 
 interface LogLine {
   seq: number;
@@ -64,6 +66,52 @@ function isActive(status: ReviewDisplayStatus): boolean {
   return status === "queued" || status === "running";
 }
 
+interface LiveRunPollActions {
+  clearRun: () => void;
+  applyResponse: (response: LogResponse) => void;
+  reload: () => void;
+  schedule: (delayMs: number) => void;
+  stopped: () => boolean;
+}
+
+export async function handleLiveRunPollResponse(
+  response: Response,
+  actions: LiveRunPollActions,
+): Promise<void> {
+  if (response.status === 401 || response.status === 404) {
+    if (!actions.stopped()) {
+      actions.clearRun();
+      actions.reload();
+    }
+    return;
+  }
+
+  if (response.status === 503) {
+    if (!actions.stopped()) {
+      actions.schedule(
+        boundedRetryAfterDelayMs(response.headers, POLL_INTERVAL_MS),
+      );
+    }
+    return;
+  }
+
+  if (!response.ok) throw new Error(`log request failed with ${response.status}`);
+
+  const body: unknown = await response.json();
+  if (!isLogResponse(body)) throw new Error("log response did not match its contract");
+  if (actions.stopped()) return;
+
+  actions.applyResponse(body);
+  if (body.lines.length === LOG_PAGE_SIZE) {
+    actions.schedule(0);
+  } else if (
+    isActive(body.status) ||
+    ["queued", "running"].includes(body.gateSyncStatus ?? "")
+  ) {
+    actions.schedule(POLL_INTERVAL_MS);
+  }
+}
+
 export function LiveRunProvider({
   slug,
   publicId,
@@ -92,12 +140,17 @@ export function LiveRunProvider({
   const [finishedAt, setFinishedAt] = useState(initialFinishedAt);
   const [gateFailing, setGateFailing] = useState(initialGateFailing);
   const [gateSyncStatus, setGateSyncStatus] = useState(initialGateSyncStatus);
+  const [accessTerminated, setAccessTerminated] = useState(false);
   const latestSeq = useRef(0);
 
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let request: AbortController | undefined;
+
+    const schedule = (delayMs: number) => {
+      if (!stopped) timer = setTimeout(poll, delayMs);
+    };
 
     async function poll(): Promise<void> {
       request = new AbortController();
@@ -106,35 +159,42 @@ export function LiveRunProvider({
           `/api/orgs/${encodeURIComponent(slug)}/runs/${encodeURIComponent(publicId)}/logs?after=${latestSeq.current}`,
           { cache: "no-store", signal: request.signal },
         );
-        if (response.status === 401 || response.status === 404) return;
-        if (!response.ok) throw new Error(`log request failed with ${response.status}`);
-
-        const body: unknown = await response.json();
-        if (!isLogResponse(body)) throw new Error("log response did not match its contract");
-        if (stopped) return;
-
-        if (body.lines.length > 0) {
-          latestSeq.current = Math.max(latestSeq.current, ...body.lines.map((line) => line.seq));
-          setLines((current) => {
-            const seen = new Set(current.map((line) => line.seq));
-            return [...current, ...body.lines.filter((line) => !seen.has(line.seq))].sort(
-              (left, right) => left.seq - right.seq,
-            );
-          });
-        }
-        setStatus(body.status);
-        setFinishedAt(body.finishedAt);
-        setGateFailing(body.gateFailing);
-        setGateSyncStatus(body.gateSyncStatus);
-        if (body.lines.length === LOG_PAGE_SIZE) {
-          timer = setTimeout(poll, 0);
-        } else if (isActive(body.status) || ["queued", "running"].includes(body.gateSyncStatus ?? "")) {
-          timer = setTimeout(poll, 2_000);
-        }
+        await handleLiveRunPollResponse(response, {
+          clearRun: () => {
+            latestSeq.current = 0;
+            setLines([]);
+            setFinishedAt(null);
+            setGateFailing(null);
+            setGateSyncStatus(null);
+            setAccessTerminated(true);
+          },
+          applyResponse: (body) => {
+            if (body.lines.length > 0) {
+              latestSeq.current = Math.max(
+                latestSeq.current,
+                ...body.lines.map((line) => line.seq),
+              );
+              setLines((current) => {
+                const seen = new Set(current.map((line) => line.seq));
+                return [
+                  ...current,
+                  ...body.lines.filter((line) => !seen.has(line.seq)),
+                ].sort((left, right) => left.seq - right.seq);
+              });
+            }
+            setStatus(body.status);
+            setFinishedAt(body.finishedAt);
+            setGateFailing(body.gateFailing);
+            setGateSyncStatus(body.gateSyncStatus);
+          },
+          reload: () => window.location.reload(),
+          schedule,
+          stopped: () => stopped,
+        });
       } catch (error) {
         if (stopped || (error instanceof DOMException && error.name === "AbortError")) return;
         if (isActive(status) || ["queued", "running"].includes(gateSyncStatus ?? "")) {
-          timer = setTimeout(poll, 2_000);
+          schedule(POLL_INTERVAL_MS);
         }
       }
     }
@@ -151,6 +211,14 @@ export function LiveRunProvider({
     () => ({ status, lines, queuedAt, startedAt, finishedAt, recordedDurationMs, gateFailing, gateSyncStatus }),
     [status, lines, queuedAt, startedAt, finishedAt, recordedDurationMs, gateFailing, gateSyncStatus],
   );
+
+  if (accessTerminated) {
+    return (
+      <p className="py-8 text-sm text-ink-soft" role="status">
+        Rechecking access…
+      </p>
+    );
+  }
 
   return <LiveRunContext.Provider value={value}>{children}</LiveRunContext.Provider>;
 }

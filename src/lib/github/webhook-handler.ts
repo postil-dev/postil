@@ -1,7 +1,7 @@
 /** Signed GitHub webhook acceptance and durable event dispatch. */
 import { after, NextResponse } from "next/server";
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 
 import { readBoundedWebhookBody, verifyWebhookSignature } from "@/lib/crypto/webhook";
 import {
@@ -15,6 +15,7 @@ import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
 import {
   ADVISORY_CHECK_NAME,
   GATE_CHECK_NAME,
+  checkRunExternalId,
   getPullRequestReviewComment,
   getPullRequestHeadSha,
   getPullRequestReviewContext,
@@ -59,7 +60,16 @@ import {
   parsePostilDismissCommand,
 } from "@/lib/mentions";
 import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
-import { applyPublicationThreadObservations } from "@/lib/publication-receipt";
+import {
+  applyPublicationThreadObservations,
+  assertOneFindingPerGithubComment,
+  resolveFindingPublicationBinding,
+  type PublicationThreadObservation,
+} from "@/lib/publication-receipt";
+import {
+  hasGitHubRepositoryWriteAuthority,
+  observeGitHubReviewThreads,
+} from "@/lib/github/publication-threads";
 import {
   enqueueOperatorAlert,
   installationRemovedAlertPayload,
@@ -79,7 +89,7 @@ import {
   recordRepositoryEnablementEvent,
   type RepositoryEnablementSource,
 } from "@/lib/repository-enablement";
-import { failCheckRuns, supersedeActiveReviews } from "@/worker/review";
+import { supersedeActiveReviews } from "@/worker/review";
 import {
   drainWebhookDispatch,
   readPositiveIntEnv,
@@ -117,6 +127,7 @@ interface PullRequestEventPayload {
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    updated_at?: string;
     user?: GithubUser;
   };
 }
@@ -128,6 +139,25 @@ const REVIEWABLE_PR_ACTIONS = new Set([
   "ready_for_review",
   "edited",
 ]);
+
+export type PullRequestStateConvergence = "apply" | "retry" | "ignore";
+
+/** Resolve a signed open/closed transition against GitHub's live snapshot. */
+export function pullRequestStateConvergence(
+  action: string,
+  eventUpdatedAt: string,
+  live: { open: boolean; merged: boolean; updatedAt: string },
+): PullRequestStateConvergence {
+  const eventTime = Date.parse(eventUpdatedAt);
+  const liveTime = Date.parse(live.updatedAt);
+  if (!Number.isFinite(eventTime) || !Number.isFinite(liveTime)) {
+    throw new TypeError("pull request state timestamps must be valid");
+  }
+  const eventIsOpen = action !== "closed";
+  const liveIsOpen = live.open && !live.merged;
+  if (eventIsOpen === liveIsOpen) return "apply";
+  return liveTime > eventTime ? "ignore" : "retry";
+}
 
 /**
  * The subset of a check_run/check_suite `pull_requests[]` entry we need to
@@ -194,6 +224,17 @@ interface CommentEventPayload {
   };
   issue?: { number: number; body?: string; pull_request?: unknown };
   pull_request?: { number: number };
+}
+
+interface ReviewThreadEventPayload {
+  action?: string;
+  installation?: { id: number };
+  repository?: RepoSummary;
+  sender?: GithubUser;
+  pull_request?: { number?: number };
+  thread?: {
+    updated_at?: string | null;
+  };
 }
 
 interface IssuesEventPayload {
@@ -315,6 +356,13 @@ export async function dispatchWebhookDelivery(
     case "pull_request_review_comment":
       await handleReviewComment(
         payload as CommentEventPayload,
+        options.deliveryId,
+        triggerFollowupDrain,
+      );
+      break;
+    case "pull_request_review_thread":
+      await handleReviewThread(
+        payload as ReviewThreadEventPayload,
         options.deliveryId,
         triggerFollowupDrain,
       );
@@ -443,25 +491,13 @@ async function handleInstallationRepositories(
   }
   const removed = payload.repositories_removed ?? [];
   if (removed.length > 0) {
-    // The installation is still valid here (only specific repos were removed),
-    // so its token is still mintable. Deleting the repository rows cascades to
-    // their reviews; complete any in-flight review's check-runs first so they
-    // don't hang in_progress forever in the branch-protection UI. Best-effort:
-    // a failure to complete must not block the removal.
-    await completeRunningReviewsForRemovedRepos(installation.id, removed);
-    await db.transaction(async (tx) => {
-      await recordEnabledRepositoryRemovals(
-        tx,
-        installation.id,
-        "github_installation",
-        removed.map((repo) => repo.id),
-      );
-      for (const repo of removed) {
-        await tx
-          .delete(schema.repositories)
-          .where(eq(schema.repositories.githubRepoId, repo.id));
-      }
-    });
+    const cleanupQueued = await removeRepositoriesWithReviewCleanup(
+      db,
+      row.id,
+      installation.id,
+      removed,
+    );
+    if (cleanupQueued > 0) triggerQueueDrain("repository-removal-check-cleanup");
   }
 }
 
@@ -508,73 +544,110 @@ async function recordEnabledRepositoryRemovals(
 }
 
 /**
- * Fail-close the check-runs of any review still `running` for repositories
- * about to be removed from an installation, reusing the watchdog's completion
- * path and wording. Runs before the delete cascades the review rows away.
+ * Lock exact repository identities before scanning their active reviews. A
+ * review insert takes a foreign-key key-share lock on the same repository row,
+ * so it either commits before this lock and is included in cleanup or waits
+ * until deletion commits and fails without creating forge checks.
  */
-async function completeRunningReviewsForRemovedRepos(
+async function removeRepositoriesWithReviewCleanup(
+  db: Database,
+  installationId: number,
   githubInstallationId: number,
   removed: RepoSummary[],
-): Promise<void> {
-  const db = getDb();
+): Promise<number> {
   const githubRepoIds = removed.map((r) => r.id);
-  const stuck = await db
-    .select({
-      id: schema.reviews.id,
-      publicId: schema.reviews.publicId,
-      advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
-      gateCheckRunId: schema.reviews.gateCheckRunId,
-      repoFullName: schema.repositories.fullName,
-      orgSlug: schema.organizations.slug,
-    })
-    .from(schema.reviews)
-    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
-    .innerJoin(
-      schema.installations,
-      eq(schema.installations.id, schema.repositories.installationId),
-    )
-    .leftJoin(
-      schema.organizations,
-      eq(schema.organizations.id, schema.installations.orgId),
-    )
-    .where(
-      and(
-        eq(schema.reviews.status, "running"),
-        inArray(schema.repositories.githubRepoId, githubRepoIds),
-      ),
-    );
-  if (stuck.length === 0) return;
-
   const message = "repository removed from the installation before the review completed";
-  let token: string;
-  try {
-    token = await getInstallationToken(githubInstallationId);
-  } catch (err) {
-    console.error(
-      `installation_repositories removed: could not mint token to complete check-runs: ${redactSecrets(err)}`,
+  return db.transaction(async (tx) => {
+    const locked = await tx.execute(sql<{ repositoryId: number }>`
+      SELECT /* postil:repository-removal-lock */
+             ${schema.repositories.id}::float8 AS "repositoryId"
+      FROM ${schema.repositories}
+      WHERE ${schema.repositories.installationId} = ${installationId}
+        AND ${schema.repositories.githubRepoId} IN (
+          ${sql.join(githubRepoIds.map((id) => sql`${id}`), sql`, `)}
+        )
+      ORDER BY ${schema.repositories.id}
+      FOR UPDATE
+    `);
+    const repositoryIds = locked.rows.map((repo) => Number(repo.repositoryId));
+    if (repositoryIds.length === 0) return 0;
+
+    await recordEnabledRepositoryRemovals(
+      tx,
+      githubInstallationId,
+      "github_installation",
+      githubRepoIds,
     );
-    return;
-  }
-  for (const review of stuck) {
-    await db
-      .update(schema.reviews)
-      .set({ status: "failed", errorMessage: message, finishedAt: new Date() })
-      .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")));
-    await failCheckRuns(
-      token,
-      review.repoFullName,
-      review.advisoryCheckRunId,
-      review.gateCheckRunId,
-      message,
-      undefined,
-      false,
-      reviewDetailsUrl(review.publicId, review.orgSlug),
-    ).catch((err) =>
-      console.error(
-        `installation_repositories removed: could not complete check-runs for review ${review.id}: ${redactSecrets(err)}`,
-      ),
-    );
-  }
+    const running = await tx
+      .select({
+        id: schema.reviews.id,
+        publicId: schema.reviews.publicId,
+        headSha: schema.reviews.headSha,
+        advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
+        gateCheckRunId: schema.reviews.gateCheckRunId,
+        repoFullName: schema.repositories.fullName,
+        orgSlug: schema.organizations.slug,
+      })
+      .from(schema.reviews)
+      .innerJoin(
+        schema.repositories,
+        eq(schema.repositories.id, schema.reviews.repositoryId),
+      )
+      .innerJoin(
+        schema.installations,
+        eq(schema.installations.id, schema.repositories.installationId),
+      )
+      .leftJoin(
+        schema.organizations,
+        eq(schema.organizations.id, schema.installations.orgId),
+      )
+      .where(
+        and(
+          eq(schema.reviews.status, "running"),
+          inArray(schema.repositories.id, repositoryIds),
+        ),
+      );
+
+    let queued = 0;
+    for (const review of running) {
+      const detailsUrl = reviewDetailsUrl(review.publicId, review.orgSlug);
+      const rows = await tx
+        .update(schema.reviews)
+        .set({ status: "failed", errorMessage: message, finishedAt: new Date() })
+        .where(
+          and(
+            eq(schema.reviews.id, review.id),
+            eq(schema.reviews.status, "running"),
+          ),
+        )
+        .returning({ id: schema.reviews.id });
+      if (rows.length === 0) continue;
+      await tx.insert(schema.jobs).values({
+        kind: "check-run-cleanup",
+        payload: {
+          installationId: githubInstallationId,
+          repoFullName: review.repoFullName,
+          advisoryCheckRunId: review.advisoryCheckRunId,
+          gateCheckRunId: review.gateCheckRunId,
+          headSha: review.headSha,
+          advisoryCheckExternalId: checkRunExternalId(review.publicId, "review"),
+          gateCheckExternalId: checkRunExternalId(review.publicId, "gate"),
+          advisoryCheckRunMayExist: review.advisoryCheckRunId == null,
+          gateCheckRunMayExist: review.gateCheckRunId == null,
+          message,
+          detailsUrl,
+          intent: "fail",
+        },
+        maxAttempts: 5,
+      });
+      queued += 1;
+    }
+
+    await tx
+      .delete(schema.repositories)
+      .where(inArray(schema.repositories.id, repositoryIds));
+    return queued;
+  });
 }
 
 async function handlePullRequest(
@@ -590,14 +663,39 @@ async function handlePullRequest(
   if (!pr || !repo || !installationId) return;
   const token = await getInstallationToken(installationId);
   const live = await getPullRequestReviewContext(token, repo.full_name, pr.number);
-  const headSha = pr.head?.sha;
-  const baseSha = pr.base?.sha;
-  if (action === "closed") {
-    if (live.open && !live.merged) return;
-  } else if (!live.open || live.merged || live.draft) {
-    return;
+  const eventHeadSha = pr.head?.sha;
+  const eventBaseSha = pr.base?.sha;
+  const eventUpdatedAt = pr.updated_at;
+  const eventUpdatedTime = Date.parse(eventUpdatedAt ?? "");
+  if (!eventHeadSha || !eventBaseSha || !Number.isFinite(eventUpdatedTime)) return;
+  const stateConvergence = pullRequestStateConvergence(
+    action,
+    eventUpdatedAt!,
+    live,
+  );
+  if (stateConvergence === "ignore") return;
+  if (
+    stateConvergence === "retry" ||
+    (action === "ready_for_review" &&
+      live.draft &&
+      Date.parse(live.updatedAt) <= eventUpdatedTime)
+  ) {
+    throw new Error(
+      `GitHub pull request ${repo.full_name}#${pr.number} has not converged to the signed ${action} transition`,
+    );
   }
-  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) return;
+  if (action !== "closed" && live.draft) return;
+
+  // GitHub's pull-request REST snapshot can lag the signed synchronize event.
+  // Retain that event for worker-side convergence. When the live snapshot is
+  // newer, repair toward its current head instead of allowing a stale delivery
+  // to replace it or leave it without a review owner.
+  const liveLagsEvent = Date.parse(live.updatedAt) < eventUpdatedTime;
+  const headSha = liveLagsEvent ? eventHeadSha : live.headSha;
+  const baseSha = liveLagsEvent ? eventBaseSha : live.baseSha;
+  const expectedPullRequestUpdatedAt = liveLagsEvent
+    ? eventUpdatedAt!
+    : live.updatedAt;
 
   const db = getDb();
   const installation = (
@@ -634,7 +732,6 @@ async function handlePullRequest(
       prNumber: pr.number,
       newHeadSha: headSha,
       repoFullName: repo.full_name,
-      token,
       githubInstallationId: installationId,
       message: `pull request #${pr.number} closed`,
       orgSlug: installation.orgSlug,
@@ -651,6 +748,39 @@ async function handlePullRequest(
     return;
   }
 
+  const queuedReviewId = await enqueueReviewJob({
+    installationId,
+    sourceInstallationId: installation.id,
+    sourceOrgId: installation.orgId,
+    githubRepoId: repo.id,
+    repoFullName: repo.full_name,
+    repositoryPrivate: repo.private,
+    prNumber: pr.number,
+    ...(typeof pr.user?.id === "number"
+      ? { authorGithubId: pr.user.id }
+      : typeof live.authorGithubId === "number"
+        ? { authorGithubId: live.authorGithubId }
+        : {}),
+    ...(pr.user?.login
+      ? { authorLogin: pr.user.login }
+      : live.authorLogin
+        ? { authorLogin: live.authorLogin }
+        : {}),
+    headSha,
+    baseSha,
+    expectedPullRequestUpdatedAt,
+    sourceDeliveryId,
+    ...(["edited", "reopened", "synchronize"].includes(action)
+      ? { forceFullReview: true }
+      : {}),
+    trigger: {
+      source: "automatic_pull_request",
+      webhookDeliveryId: sourceDeliveryId,
+      webhookEvent: "pull_request",
+      webhookAction: action,
+    },
+  }, false);
+
   await supersedeActiveReviews({
     repositoryId: repoRow.id,
     prNumber: pr.number,
@@ -660,28 +790,9 @@ async function handlePullRequest(
     onlyDifferentHead: true,
     orgSlug: installation.orgSlug,
   });
-
-  await enqueueReviewJob({
-    installationId,
-    sourceInstallationId: installation.id,
-    sourceOrgId: installation.orgId,
-    githubRepoId: repo.id,
-    repoFullName: repo.full_name,
-    repositoryPrivate: repo.private,
-    prNumber: pr.number,
-    ...(typeof pr.user?.id === "number" ? { authorGithubId: pr.user.id } : {}),
-    ...(pr.user?.login ? { authorLogin: pr.user.login } : {}),
-    headSha,
-    baseSha,
-    sourceDeliveryId,
-    ...(["edited", "reopened"].includes(action) ? { forceFullReview: true } : {}),
-    trigger: {
-      source: "automatic_pull_request",
-      webhookDeliveryId: sourceDeliveryId,
-      webhookEvent: "pull_request",
-      webhookAction: action,
-    },
-  }, triggerFollowupDrain);
+  if (queuedReviewId !== null && triggerFollowupDrain) {
+    triggerQueueDrain("review");
+  }
 }
 
 /**
@@ -693,15 +804,16 @@ async function handlePullRequest(
 async function enqueueReviewJob(
   job: ReviewJobPayload,
   triggerFollowupDrain: boolean,
-): Promise<void> {
+): Promise<number | null> {
   const id = await enqueueReviewJobOnce(getPool(), job);
   if (id === null) {
     console.log(
       `review job skipped: ${job.repoFullName}#${job.prNumber}@${job.headSha} already queued or running`,
     );
-    return;
+    return null;
   }
   if (triggerFollowupDrain) triggerQueueDrain("review");
+  return id;
 }
 
 /**
@@ -790,6 +902,15 @@ async function handleCheckRerequest(
 
   const authority = await enabledRepoForRerequest(installationId, repo);
   if (!authority) return;
+  const token = await getInstallationToken(installationId);
+  const context = await getPullRequestReviewContext(token, repo.full_name, pr.number);
+  if (
+    !context.open ||
+    context.merged ||
+    context.draft ||
+    context.headSha !== headSha ||
+    context.baseSha !== baseSha
+  ) return;
 
   await enqueueReviewJob({
     installationId,
@@ -799,6 +920,7 @@ async function handleCheckRerequest(
     prNumber: pr.number,
     headSha,
     baseSha,
+    expectedPullRequestUpdatedAt: context.updatedAt,
     sourceDeliveryId,
     forceFullReview: true,
     trigger: {
@@ -1069,6 +1191,379 @@ async function handleIssueComment(
   if (triggerFollowupDrain) triggerQueueDrain("conversation-request-admitted");
 }
 
+interface FindingPublicationBinding {
+  findingId: string;
+  githubCommentId: string;
+  reviewId: number;
+  headSha: string;
+}
+
+interface FindingPublicationBindingWithState extends FindingPublicationBinding {
+  currentState: string;
+}
+
+const REVIEW_THREAD_CONVERGENCE_WINDOW_MS = 60_000;
+
+async function loadFindingPublicationBinding(
+  db: Database,
+  installationId: number,
+  githubRepoId: number,
+  prNumber: number,
+  commentIds: number[],
+): Promise<FindingPublicationBinding | null> {
+  const ids = [...new Set(commentIds)]
+    .filter((id) => Number.isSafeInteger(id) && id > 0)
+    .slice(0, 1_000)
+    .map(String);
+  if (ids.length === 0) return null;
+  const rows = await db
+    .select({
+      findingId: schema.findingPublications.findingId,
+      githubCommentId: schema.findingPublications.githubCommentId,
+      reviewId: schema.reviews.id,
+      headSha: schema.reviews.headSha,
+    })
+    .from(schema.findingPublications)
+    .innerJoin(
+      schema.reviews,
+      eq(schema.reviews.id, schema.findingPublications.reviewId),
+    )
+    .innerJoin(
+      schema.repositories,
+      eq(schema.repositories.id, schema.reviews.repositoryId),
+    )
+    .innerJoin(
+      schema.installations,
+      eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .where(
+      and(
+        eq(schema.installations.githubInstallationId, installationId),
+        eq(schema.repositories.githubRepoId, githubRepoId),
+        eq(schema.reviews.prNumber, prNumber),
+        eq(schema.findingPublications.stableIdentity, true),
+        inArray(schema.findingPublications.githubCommentId, ids),
+      ),
+    )
+    .orderBy(
+      desc(schema.reviews.finishedAt),
+      desc(schema.reviews.id),
+      desc(schema.findingPublications.id),
+    )
+    .limit(1_001);
+  if (rows.length > 1_000) {
+    throw new Error("finding publication reply lookup exceeded its identity bound");
+  }
+  const row = resolveFindingPublicationBinding(rows);
+  return row?.githubCommentId ? { ...row, githubCommentId: row.githubCommentId } : null;
+}
+
+async function loadLatestFindingPublicationBindings(
+  db: Database,
+  installationId: number,
+  githubRepoId: number,
+  prNumber: number,
+): Promise<FindingPublicationBindingWithState[]> {
+  const review = await loadLatestCompletedReviewForPr(
+    db,
+    installationId,
+    githubRepoId,
+    prNumber,
+  );
+  if (!review?.envelope) return [];
+  const findingIds = [...new Set([
+    ...review.envelope.findings,
+    ...review.envelope.resolved,
+  ].flatMap((finding) => finding.id ? [finding.id] : []))];
+  if (findingIds.length === 0) return [];
+  if (findingIds.length > 1_000) {
+    throw new Error("finding publication reconciliation exceeded its identity bound");
+  }
+  const rows = await db
+    .selectDistinctOn([schema.findingPublications.findingId], {
+      findingId: schema.findingPublications.findingId,
+      githubCommentId: schema.findingPublications.githubCommentId,
+      currentState: schema.findingPublications.currentState,
+    })
+    .from(schema.findingPublications)
+    .innerJoin(
+      schema.reviews,
+      eq(schema.reviews.id, schema.findingPublications.reviewId),
+    )
+    .where(
+      and(
+        eq(schema.reviews.repositoryId, review.repositoryId),
+        eq(schema.reviews.prNumber, prNumber),
+        eq(schema.findingPublications.stableIdentity, true),
+        isNotNull(schema.findingPublications.githubCommentId),
+        inArray(schema.findingPublications.findingId, findingIds),
+      ),
+    )
+    .orderBy(
+      schema.findingPublications.findingId,
+      desc(schema.reviews.finishedAt),
+      desc(schema.reviews.id),
+      desc(schema.findingPublications.id),
+    );
+  const bindings = rows.flatMap((row) => row.githubCommentId
+    ? [{
+        ...row,
+        githubCommentId: row.githubCommentId,
+        reviewId: review.id,
+        headSha: review.headSha,
+      }]
+    : []);
+  assertOneFindingPerGithubComment(bindings);
+  return bindings;
+}
+
+function sameGithubActor(
+  sender: GithubUser | undefined,
+  author: GithubUser | undefined,
+): GithubUser | null {
+  if (
+    typeof sender?.id !== "number" ||
+    !Number.isSafeInteger(sender.id) ||
+    sender.id <= 0 ||
+    typeof sender.login !== "string" ||
+    !sender.login ||
+    sender.id !== author?.id ||
+    sender.login.toLowerCase() !== author.login?.toLowerCase()
+  ) return null;
+  return sender;
+}
+
+async function enqueueFindingReconciliationReview(input: {
+  installationId: number;
+  repository: RepoSummary;
+  prNumber: number;
+  binding: FindingPublicationBinding;
+  actor?: GithubUser;
+  sourceDeliveryId: string;
+  webhookEvent: "pull_request_review_comment" | "pull_request_review_thread";
+  webhookAction: string;
+  sourceCommentId?: number;
+  sourceUrl?: string;
+  recordActor?: boolean;
+  triggerFollowupDrain: boolean;
+}): Promise<boolean> {
+  const authority = await enabledRepoForMention(
+    input.installationId,
+    input.repository,
+  );
+  if (!authority) return false;
+  const token = await getInstallationToken(input.installationId);
+  if (
+    !await hasGitHubRepositoryWriteAuthority(
+      token,
+      input.repository.full_name,
+      input.actor,
+    )
+  ) return false;
+  const context = await getPullRequestReviewContext(
+    token,
+    input.repository.full_name,
+    input.prNumber,
+  );
+  if (
+    !context.open ||
+    context.merged ||
+    context.draft ||
+    context.headSha !== input.binding.headSha
+  ) return false;
+  const latest = await loadLatestCompletedReviewForPr(
+    getDb(),
+    input.installationId,
+    input.repository.id,
+    input.prNumber,
+  );
+  if (!latest || latest.headSha !== context.headSha || !latest.envelope) return false;
+  const activeFinding = [
+    ...latest.envelope.findings,
+    ...latest.envelope.resolved,
+  ].find(
+    (finding) => finding.id === input.binding.findingId,
+  );
+  if (!activeFinding || activeFinding.kind === "humanEscalation") return false;
+
+  const queued = await enqueueReviewJob({
+    installationId: input.installationId,
+    ...authority,
+    repoFullName: input.repository.full_name,
+    repositoryPrivate: input.repository.private,
+    prNumber: input.prNumber,
+    ...(context.authorGithubId !== undefined
+      ? { authorGithubId: context.authorGithubId }
+      : {}),
+    ...(context.authorLogin ? { authorLogin: context.authorLogin } : {}),
+    headSha: context.headSha,
+    baseSha: context.baseSha,
+    expectedPullRequestUpdatedAt: context.updatedAt,
+    sourceDeliveryId: input.sourceDeliveryId,
+    forceFullReview: true,
+    trigger: {
+      source: "finding_reconciliation",
+      webhookDeliveryId: input.sourceDeliveryId,
+      webhookEvent: input.webhookEvent,
+      webhookAction: input.webhookAction,
+      ...(input.sourceCommentId !== undefined
+        ? { sourceCommentId: input.sourceCommentId }
+        : {}),
+      ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
+      ...(input.recordActor !== false && typeof input.actor?.id === "number"
+        ? { requestedByGithubId: input.actor.id }
+        : {}),
+      ...(input.recordActor !== false && input.actor?.login
+        ? { requestedByLogin: input.actor.login }
+        : {}),
+    },
+  }, false);
+  if (queued !== null && input.triggerFollowupDrain) {
+    triggerQueueDrain("finding-reconciliation-admitted");
+  }
+  return true;
+}
+
+async function recordFindingLifecycleObservations(
+  sourceDeliveryId: string,
+  webhookAction: "resolved",
+  bindings: FindingPublicationBindingWithState[],
+  observationsByComment: Map<string, PublicationThreadObservation>,
+): Promise<void> {
+  assertOneFindingPerGithubComment(bindings);
+  const rows = bindings.flatMap((binding) => {
+    const observation = observationsByComment.get(binding.githubCommentId);
+    if (observation?.state !== "resolved") return [];
+    return [{
+      sourceDeliveryId,
+      webhookAction,
+      reviewId: binding.reviewId,
+      findingId: binding.findingId,
+      githubCommentId: binding.githubCommentId,
+      observedState: observation.state,
+      resolverGithubId: observation.resolvedByGithubId === undefined
+        ? null
+        : String(observation.resolvedByGithubId),
+      resolverLogin: observation.resolvedByLogin ?? null,
+      resolutionAuthorized: observation.resolutionAuthorized === true,
+      forgeObservedAt: new Date(),
+    }];
+  });
+  if (rows.length === 0) return;
+  await getDb()
+    .insert(schema.findingLifecycleObservations)
+    .values(rows)
+    .onConflictDoNothing();
+}
+
+async function handleReviewThread(
+  payload: ReviewThreadEventPayload,
+  sourceDeliveryId: string,
+  triggerFollowupDrain: boolean,
+): Promise<void> {
+  if (payload.action !== "resolved") return;
+  const installationId = payload.installation?.id;
+  const repository = payload.repository;
+  const prNumber = payload.pull_request?.number;
+  const threadUpdatedAt = payload.thread?.updated_at;
+  const threadUpdatedAtMs = typeof threadUpdatedAt === "string"
+    ? Date.parse(threadUpdatedAt)
+    : Number.NaN;
+  const observedAtMs = Date.now();
+  if (
+    !installationId ||
+    !repository ||
+    !Number.isSafeInteger(prNumber) ||
+    !prNumber ||
+    prNumber <= 0 ||
+    !payload.thread ||
+    (threadUpdatedAt !== null && !Number.isFinite(threadUpdatedAtMs)) ||
+    threadUpdatedAtMs > observedAtMs + REVIEW_THREAD_CONVERGENCE_WINDOW_MS ||
+    isBot(payload.sender)
+  ) return;
+  const bindings = await loadLatestFindingPublicationBindings(
+    getDb(),
+    installationId,
+    repository.id,
+    prNumber,
+  );
+  if (bindings.length === 0) return;
+  const token = await getInstallationToken(installationId);
+  const observations = await observeGitHubReviewThreads(
+    token,
+    repository.full_name,
+    prNumber,
+    bindings.map((binding) => binding.githubCommentId),
+  );
+  const observationsByComment = new Map(
+    observations.map((observation) => [observation.githubCommentId, observation]),
+  );
+  const changed = bindings.filter((binding) => {
+    const observation = observationsByComment.get(binding.githubCommentId);
+    return observation?.state === "resolved" && binding.currentState !== "resolved";
+  });
+  const deliveryReceivedAt = Number.isFinite(threadUpdatedAtMs)
+    ? undefined
+    : (
+        await getDb()
+          .select({ receivedAt: schema.webhookDeliveries.receivedAt })
+          .from(schema.webhookDeliveries)
+          .where(eq(schema.webhookDeliveries.deliveryId, sourceDeliveryId))
+          .limit(1)
+      )[0]?.receivedAt;
+  const eventMayStillConverge = Number.isFinite(threadUpdatedAtMs)
+    ? threadUpdatedAtMs > observedAtMs - REVIEW_THREAD_CONVERGENCE_WINDOW_MS
+    : deliveryReceivedAt === undefined ||
+      deliveryReceivedAt.getTime() > observedAtMs - REVIEW_THREAD_CONVERGENCE_WINDOW_MS;
+  if (eventMayStillConverge) {
+    throw new Error("GitHub review thread state has not converged");
+  }
+  if (changed.length === 0) {
+    await applyPublicationThreadObservations(getDb(), observations);
+    return;
+  }
+  await recordFindingLifecycleObservations(
+    sourceDeliveryId,
+    "resolved",
+    changed,
+    observationsByComment,
+  );
+  const authorizedBindings = changed.filter((binding) =>
+    observationsByComment.get(binding.githubCommentId)?.resolutionAuthorized === true &&
+    typeof observationsByComment.get(binding.githubCommentId)?.resolvedByGithubId === "number" &&
+    typeof observationsByComment.get(binding.githubCommentId)?.resolvedByLogin === "string"
+  );
+  const authorized = authorizedBindings[0];
+  if (!authorized) return;
+  const authorizedObservation = observationsByComment.get(authorized.githubCommentId)!;
+  const queued = await enqueueFindingReconciliationReview({
+    installationId,
+    repository,
+    prNumber,
+    binding: authorized,
+    actor: {
+      id: authorizedObservation.resolvedByGithubId,
+      login: authorizedObservation.resolvedByLogin,
+      type: "User",
+    },
+    sourceDeliveryId,
+    webhookEvent: "pull_request_review_thread",
+    webhookAction: payload.action,
+    recordActor: false,
+    triggerFollowupDrain,
+  });
+  if (!queued) return;
+  const authorizedCommentIds = new Set(
+    authorizedBindings.map((binding) => binding.githubCommentId),
+  );
+  await applyPublicationThreadObservations(
+    getDb(),
+    observations.filter((observation) =>
+      authorizedCommentIds.has(observation.githubCommentId)
+    ),
+  );
+}
+
 async function handleReviewComment(
   payload: CommentEventPayload,
   sourceDeliveryId: string,
@@ -1090,9 +1585,69 @@ async function handleReviewComment(
       triggerFollowupDrain,
     )
   ) return;
+  const inReplyToId = payload.comment?.in_reply_to_id;
+  const replyActor = sameGithubActor(payload.sender, payload.comment?.user);
+  if (
+    typeof body === "string" &&
+    isAcceptableConversationRequest(body) &&
+    !isClarificationRequest(body) &&
+    !isGratitudeOnly(body) &&
+    Number.isSafeInteger(inReplyToId) &&
+    inReplyToId !== undefined &&
+    inReplyToId > 0 &&
+    replyActor &&
+    !isBot(replyActor) &&
+    mayTriggerRespond(payload.comment?.author_association) &&
+    payload.pull_request &&
+    payload.repository &&
+    payload.installation?.id
+  ) {
+    const binding = await loadFindingPublicationBinding(
+      getDb(),
+      payload.installation.id,
+      payload.repository.id,
+      payload.pull_request.number,
+      [inReplyToId],
+    );
+    if (binding) {
+      const queued = await enqueueFindingReconciliationReview({
+        installationId: payload.installation.id,
+        repository: payload.repository,
+        prNumber: payload.pull_request.number,
+        binding,
+        actor: replyActor,
+        sourceDeliveryId,
+        webhookEvent: "pull_request_review_comment",
+        webhookAction: "created",
+        sourceCommentId: Number(binding.githubCommentId),
+        ...(payload.comment?.html_url
+          ? { sourceUrl: payload.comment.html_url }
+          : {}),
+        triggerFollowupDrain: false,
+      });
+      if (queued) {
+        const authority = await enabledRepoForMention(
+          payload.installation.id,
+          payload.repository,
+        );
+        if (authority) {
+          await enqueueConversationReaction(
+            payload,
+            sourceDeliveryId,
+            authority,
+            "pull_request_review_comment",
+            "eyes",
+          );
+        }
+        if (triggerFollowupDrain) {
+          triggerQueueDrain("finding-evidence-admitted");
+        }
+      }
+      return;
+    }
+  }
   if (typeof body !== "string" || !isAcceptableConversationRequest(body)) return;
   const explicitMention = mentionsPostil(body);
-  const inReplyToId = payload.comment?.in_reply_to_id;
   if (
     (!explicitMention &&
       (!Number.isSafeInteger(inReplyToId) || inReplyToId === undefined || inReplyToId <= 0)) ||
@@ -1249,6 +1804,7 @@ async function enqueueMentionReview(
     ...(context.authorLogin ? { authorLogin: context.authorLogin } : {}),
     headSha: context.headSha,
     baseSha: context.baseSha,
+    expectedPullRequestUpdatedAt: context.updatedAt,
     sourceDeliveryId,
     forceFullReview: true,
     trigger: {

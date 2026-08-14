@@ -290,6 +290,7 @@ type HostedReviewTriggerSource =
   | "automatic_pull_request"
   | "requested_review"
   | "github_check_rerun"
+  | "finding_reconciliation"
   | "github_mention";
 
 interface HostedReviewReceiptUsage {

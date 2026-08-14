@@ -6,6 +6,7 @@ import { findAccessibleInstallationOrgSlug } from "@/lib/github/installation-syn
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 
 describeDb("GitHub setup destination", () => {
   let ephemeralDb: EphemeralDatabase;
@@ -13,6 +14,7 @@ describeDb("GitHub setup destination", () => {
 
   beforeAll(async () => {
     ephemeralDb = await createEphemeralDatabase("github_setup_destination");
+    await closeDb();
     // findAccessibleInstallationOrgSlug reaches the database through the
     // getDb() singleton, keyed off DATABASE_URL.
     process.env.DATABASE_URL = ephemeralDb.url;
@@ -31,6 +33,7 @@ describeDb("GitHub setup destination", () => {
     // accessed by other users".
     await closeDb();
     await ephemeralDb?.drop();
+    restoreDatabaseUrl();
   }, 30_000);
 
   test("resolves only installations accessible to the authenticated user", async () => {
@@ -50,7 +53,7 @@ describeDb("GitHub setup destination", () => {
       .returning({ id: schema.organizations.id });
     await db.insert(schema.installations).values([
       {
-        githubInstallationId: 146332124,
+        githubInstallationId: 42424242,
         orgId: personal!.id,
         accountLogin: "octocat",
         accountType: "User",
@@ -68,7 +71,7 @@ describeDb("GitHub setup destination", () => {
     ]);
 
     expect(
-      await findAccessibleInstallationOrgSlug(user!.id, "146332124"),
+      await findAccessibleInstallationOrgSlug(user!.id, "42424242"),
     ).toBe("octocat");
     expect(
       await findAccessibleInstallationOrgSlug(user!.id, "146332125"),
@@ -78,3 +81,8 @@ describeDb("GitHub setup destination", () => {
     ).toBeUndefined();
   });
 });
+
+function restoreDatabaseUrl(): void {
+  if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+}

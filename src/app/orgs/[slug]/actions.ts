@@ -22,6 +22,7 @@ import { hostedInferenceAvailable } from "@/lib/env";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import { DEFAULT_ORGANIZATION_NOTIFICATION_PREFERENCES } from "@/lib/organization-notification-preferences";
 import { getOrgMembership } from "@/lib/org-access";
+import { MembershipVerificationUnavailableError } from "@/lib/auth-navigation";
 import { validateOrgConfigYaml } from "@/lib/org-review-config";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
 import { getSessionUser } from "@/lib/session";
@@ -46,6 +47,8 @@ import { getInstallationToken } from "@/lib/github/app-auth";
 import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
 import { getPullRequestHeadSha, getPullRequestReviewContext } from "@/lib/github/checks";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
+import { githubInstallationSettingsUrl } from "@/lib/github-app";
+import { checkInstallationRepositoryAccess } from "@/lib/github/installation-sync";
 import {
   enqueueGateEnforcementSweepOnce,
   findActiveGateEnforcementSweep,
@@ -75,6 +78,14 @@ export type ConfigProbeRefreshState =
     }
   | { status: "error"; message: string };
 
+export type RepositoryAccessCheckState =
+  | { status: "idle" }
+  | {
+      status: "selected" | "not_selected" | "unknown";
+      message: string;
+      settingsUrl?: string;
+    };
+
 export type GateEnforcementRefreshState =
   | { status: "idle"; pollGeneration: number }
   | { status: "queued" | "active"; message: string; jobId: number; pollGeneration: number }
@@ -98,7 +109,7 @@ async function requireMembership(
   const access = await getOrgMembership(slug);
   if (!access.ok) {
     if (access.reason === "verification_unavailable") {
-      throw new Error("GitHub membership verification is temporarily unavailable");
+      throw new MembershipVerificationUnavailableError(access.retryAvailableAt);
     }
     if (access.reason === "unauthenticated") throw new Error("not signed in");
     throw new Error("organization not found");
@@ -472,6 +483,75 @@ export async function refreshOrgConfigProbes(
       message: "Could not re-check config files. Try again.",
     };
   }
+}
+
+export async function checkRepositoryAccess(
+  _previousState: RepositoryAccessCheckState,
+  formData: FormData,
+): Promise<RepositoryAccessCheckState> {
+  const slug = String(formData.get("slug") ?? "");
+  const owner = String(formData.get("owner") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const { orgId } = await requireAdmin(slug);
+
+  if (!isGithubRepositorySegment(owner) || !isGithubRepositorySegment(name)) {
+    return {
+      status: "unknown",
+      message: "Enter a valid repository owner and name.",
+    };
+  }
+
+  const installations = await getDb()
+    .select({
+      githubInstallationId: schema.installations.githubInstallationId,
+      accountLogin: schema.installations.accountLogin,
+      accountType: schema.installations.accountType,
+    })
+    .from(schema.installations)
+    .where(eq(schema.installations.orgId, orgId))
+    .orderBy(schema.installations.id);
+  const installation = installations.find(
+    (candidate) => candidate.accountLogin.toLowerCase() === owner.toLowerCase(),
+  );
+  if (!installation) {
+    return {
+      status: "unknown",
+      message: "The repository owner must match a GitHub App installation for this organization.",
+    };
+  }
+
+  const settingsUrl = githubInstallationSettingsUrl(installation);
+  try {
+    const access = await checkInstallationRepositoryAccess(
+      await getInstallationToken(installation.githubInstallationId),
+      `${owner}/${name}`,
+    );
+    if (access === "selected") {
+      return {
+        status: "selected",
+        message: `${owner}/${name} is selected for this GitHub App installation.`,
+        settingsUrl,
+      };
+    }
+    if (access === "not_selected") {
+      return {
+        status: "not_selected",
+        message: `${owner}/${name} is not selected for this GitHub App installation.`,
+        settingsUrl,
+      };
+    }
+  } catch {
+    // The selection cannot be inferred if GitHub rejects or interrupts the listing.
+  }
+  return {
+    status: "unknown",
+    message: "Repository access could not be confirmed. Try again.",
+    settingsUrl,
+  };
+}
+
+function isGithubRepositorySegment(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(value);
 }
 
 export async function refreshGateEnforcement(

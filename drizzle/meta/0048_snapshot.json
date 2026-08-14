@@ -1,6 +1,6 @@
 {
-  "id": "996628f2-7f65-461d-87b2-714bf515d3d1",
-  "prevId": "812db0fb-00a4-476f-980e-ef26de865e9d",
+  "id": "32427f1b-3597-482d-bdd5-aabbaafe68e4",
+  "prevId": "996628f2-7f65-461d-87b2-714bf515d3d1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -6687,6 +6687,31 @@
         "avatar_url": {
           "name": "avatar_url",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "membership_checked_at": {
+          "name": "membership_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "membership_refresh_generation": {
+          "name": "membership_refresh_generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "membership_refresh_lease_until": {
+          "name": "membership_refresh_lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "membership_refresh_retry_after": {
+          "name": "membership_refresh_retry_after",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

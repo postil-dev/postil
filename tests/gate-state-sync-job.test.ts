@@ -19,6 +19,7 @@ let tokenReleaseResolve: (() => void) | null = null;
 let tokenEntered = Promise.resolve();
 let tokenRelease = Promise.resolve();
 let loseLeaseAfterCheck = false;
+let organizationSettingsHref: string | undefined;
 
 const row = {
   id: 7,
@@ -138,6 +139,7 @@ mock.module("@/lib/db", () => ({
 mock.module("@/lib/oauth", () => ({
   reviewDetailsUrl: (publicId: string, orgSlug: string) =>
     `https://postil.dev/orgs/${orgSlug}/runs/${publicId}`,
+  organizationSettingsUrl: () => organizationSettingsHref,
 }));
 
 mock.module("@/lib/gate-mode", () => ({
@@ -212,6 +214,7 @@ mock.module("@/lib/github/checks", () => ({
 const { runGateStateSyncJob } = await import("@/worker/gate-state-sync");
 
 beforeEach(() => {
+  row.status = "completed";
   lockCalls = 0;
   checkCalls = [];
   checkTitles = [];
@@ -219,6 +222,7 @@ beforeEach(() => {
   checkError = null;
   effectiveFailing = false;
   effectiveUnavailable = false;
+  row.status = "completed";
   storedStates = [];
   tokenWaitForAbort = false;
   transactionsFinalized = 0;
@@ -227,6 +231,7 @@ beforeEach(() => {
   leaseHeld = false;
   blockToken = false;
   loseLeaseAfterCheck = false;
+  organizationSettingsHref = "https://postil.dev/orgs/acme/settings";
   tokenEntered = new Promise<void>((resolve) => {
     tokenEnteredResolve = resolve;
   });
@@ -304,19 +309,86 @@ describe("durable gate state synchronization", () => {
     expect(leaseHeld).toBe(false);
   });
 
-  test("publishes neutral and stores advisory state when blocking is disabled", async () => {
+  test("makes an overridden repository blocking request visible in the neutral gate", async () => {
     gateEnabled = false;
     effectiveFailing = true;
 
     await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
 
     expect(checkCalls[0]?.conclusion).toBe("neutral");
-    expect(checkTitles).toEqual(["Postil gate is advisory"]);
+    expect(checkTitles).toEqual(["Postil gate blocking overridden"]);
+    expect(checkSummaries).toEqual([
+      "This repository's effective Postil gate policy requested merge blocking, but merge blocking is disabled for this organization.\n\n" +
+        "[Enable merge blocking in organization settings](https://postil.dev/orgs/acme/settings).",
+    ]);
     expect(checkCalls[0]?.detailsUrl).toBe(
       "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
     );
     expect(storedStates).toEqual([true]);
     expect(storedEnforcement).toEqual([false]);
+  });
+
+  test("keeps ordinary advisory output when the repository did not request blocking", async () => {
+    gateEnabled = false;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls[0]?.conclusion).toBe("neutral");
+    expect(checkTitles).toEqual(["Postil gate is advisory"]);
+    expect(checkSummaries).toEqual([
+      "Merge blocking is disabled. Review findings remain advisory.",
+    ]);
+  });
+
+  test("keeps the failure conclusion and blocker output when merge blocking is enabled", async () => {
+    effectiveFailing = true;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls[0]?.conclusion).toBe("failure");
+    expect(checkTitles).toEqual(["Postil gate blocked"]);
+    expect(checkSummaries).toEqual(["One or more blocking findings remain.\n\n- remaining finding"]);
+  });
+
+  test("keeps unavailable reviews on the existing advisory path when blocking is disabled", async () => {
+    gateEnabled = false;
+    effectiveFailing = true;
+    effectiveUnavailable = true;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls[0]?.conclusion).toBe("neutral");
+    expect(checkTitles).toEqual(["Postil gate is advisory"]);
+    expect(checkSummaries).toEqual([
+      "Merge blocking is disabled. Review findings remain advisory.",
+    ]);
+  });
+
+  test("keeps failed reviews on the existing advisory path when blocking is disabled", async () => {
+    gateEnabled = false;
+    row.status = "failed";
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls[0]?.conclusion).toBe("neutral");
+    expect(checkTitles).toEqual(["Postil gate is advisory"]);
+    expect(checkSummaries).toEqual([
+      "Merge blocking is disabled. The incomplete review remains advisory.",
+    ]);
+  });
+
+  test("keeps the override check output bounded when no safe settings URL is available", async () => {
+    gateEnabled = false;
+    effectiveFailing = true;
+    organizationSettingsHref = undefined;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkSummaries).toEqual([
+      "This repository's effective Postil gate policy requested merge blocking, but merge blocking is disabled for this organization.\n\n" +
+        "Enable merge blocking in the organization settings to enforce this gate.",
+    ]);
+    expect(checkSummaries[0]!.length).toBeLessThan(2_048);
   });
 
   test("never describes an operationally unavailable review as passing", async () => {
@@ -330,6 +402,31 @@ describe("durable gate state synchronization", () => {
       "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
     );
     expect(storedStates).toEqual([false]);
+  });
+
+  test("fails an enforced gate for a terminal no-verdict run", async () => {
+    row.status = "failed";
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls[0]?.conclusion).toBe("failure");
+    expect(checkTitles).toEqual(["Review unavailable"]);
+    expect(checkSummaries[0]).toContain("merge check remains blocked");
+    expect(storedStates).toEqual([true]);
+    expect(storedEnforcement).toEqual([true]);
+  });
+
+  test("leaves an advisory gate neutral for a terminal no-verdict run", async () => {
+    row.status = "failed";
+    gateEnabled = false;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls[0]?.conclusion).toBe("neutral");
+    expect(checkTitles).toEqual(["Postil gate is advisory"]);
+    expect(checkSummaries[0]).toContain("incomplete review remains advisory");
+    expect(storedStates).toEqual([true]);
+    expect(storedEnforcement).toEqual([false]);
   });
 
   test("does not write through a stale or mismatched check identity", async () => {

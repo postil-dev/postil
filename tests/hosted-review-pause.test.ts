@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, Pool } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 import * as schema from "@/lib/db/schema";
 import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { getOperatorReviewRows } from "@/lib/operator-reviews";
@@ -14,19 +19,16 @@ const describeDb = TEST_URL ? describe : describe.skip;
 const ORIGINAL_PUBLIC_URL = process.env.POSTIL_PUBLIC_URL;
 
 describeDb("paused hosted review claims", () => {
-  const databaseName = `postil_hosted_pause_${process.pid}_${Date.now()}`;
-  let adminClient: Client | undefined;
+  let database: EphemeralDatabase;
   let pool: Pool | undefined;
   let repositoryId = 0;
 
   beforeAll(async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
-    adminClient = new Client({ connectionString: TEST_URL });
-    await adminClient.connect();
-    await adminClient.query(`CREATE DATABASE "${databaseName}"`);
-    const databaseUrl = new URL(TEST_URL!);
-    databaseUrl.pathname = `/${databaseName}`;
-    const migrationClient = new Client({ connectionString: databaseUrl.toString() });
+    database = await createUnmigratedEphemeralDatabase("hosted_pause", {
+      maxConnections: 4,
+    });
+    const migrationClient = new Client({ connectionString: database.url });
     await migrationClient.connect();
     const migrationsDir = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDir))
@@ -53,15 +55,11 @@ describeDb("paused hosted review claims", () => {
     );
     repositoryId = Number(repository.rows[0]!.id);
     await migrationClient.end();
-    pool = new Pool({ connectionString: databaseUrl.toString(), max: 4 });
+    pool = database.pool;
   }, 30_000);
 
   afterAll(async () => {
-    await pool?.end();
-    if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-      await adminClient.end();
-    }
+    await database?.drop();
     if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
     else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
   }, 30_000);

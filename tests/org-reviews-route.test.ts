@@ -25,12 +25,16 @@ beforeEach(() => {
 
 describe("GET organization reviews", () => {
   test("returns a retryable JSON error during membership verification outages", async () => {
-    accessState = { ok: false, reason: "verification_unavailable" };
+    accessState = {
+      ok: false,
+      reason: "verification_unavailable",
+      retryAvailableAt: new Date(Date.now() + 60_000),
+    };
 
     const response = await invoke();
 
     expect(response.status).toBe(503);
-    expect(response.headers.get("retry-after")).toBe("30");
+    expect(response.headers.get("retry-after")).toBe("60");
     expect(await response.json()).toEqual({
       error: "membership verification unavailable",
     });

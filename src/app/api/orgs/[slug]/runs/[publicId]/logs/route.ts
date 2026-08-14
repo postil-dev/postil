@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 
+import { membershipRetryAfterHeader } from "@/lib/auth-navigation";
 import { schema } from "@/lib/db";
 import { getOrgMembership } from "@/lib/org-access";
 import { reviewDisplayStatus } from "@/lib/review-outcome";
@@ -22,7 +23,12 @@ export async function GET(
     if (access.reason === "verification_unavailable") {
       return NextResponse.json(
         { error: "membership verification unavailable" },
-        { status: 503, headers: { "retry-after": "30" } },
+        {
+          status: 503,
+          headers: {
+            "retry-after": membershipRetryAfterHeader(access.retryAvailableAt),
+          },
+        },
       );
     }
     return NextResponse.json(

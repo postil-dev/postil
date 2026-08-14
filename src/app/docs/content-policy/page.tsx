@@ -13,9 +13,9 @@ export default function ContentPolicyPage() {
       <h1 className="serif-display text-4xl text-charcoal">Content policy</h1>
       <p className="mt-4 text-lg">
         On by default. A review dimension is an additional lens the reviewer
-        applies to a diff, on top of the core correctness/security review. The{" "}
+        applies to a change, on top of the core correctness/security review. The{" "}
         <strong>content policy</strong> dimension applies the built-in baseline
-        below to the human-readable prose in a diff (Markdown,
+        below to changed human-readable prose (Markdown,
         code comments, docstrings, user-facing or log strings, and the PR
         title/description), never code logic, identifiers, or structured
         data. Violations are reported as <code>contentPolicy</code> findings
@@ -78,7 +78,7 @@ export default function ContentPolicyPage() {
             <td><code>error</code></td>
             <td>
               A changed comment, docstring, or doc line that contradicts the
-              code/config/files in the diff or repo, or describes a command,
+              code, configuration, or other files in the repository, or describes a command,
               flag, path, env var, or behavior that does not exist. A
               plausible description is not flagged merely for being
               unproven: only claims the model can show are false.
@@ -88,9 +88,9 @@ export default function ContentPolicyPage() {
             <td>Self-contradiction within the change</td>
             <td><code>warn</code></td>
             <td>
-              A changed doc or comment asserts something that another file
-              changed in the same diff plainly refutes. Both sides of the
-              contradiction must be in the diff.
+              A changed doc or comment asserts something that repository
+              evidence plainly refutes. The reviewer searches beyond the
+              changed files when the local context does not settle the claim.
             </td>
           </tr>
           <tr>

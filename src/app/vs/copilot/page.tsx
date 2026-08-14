@@ -9,7 +9,7 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs GitHub Copilot code review",
   description:
-    "Postil is a Copilot code review alternative with a blocking merge gate, active-author pricing, BYOK, and free self-hosting.",
+    "Postil is a Copilot code review alternative with a dedicated merge gate, active-author pricing, BYOK, and free self-hosting.",
   alternates: { canonical: "/vs/copilot" },
   openGraph: {
     title: "Postil vs GitHub Copilot code review",
@@ -24,9 +24,9 @@ const COLUMNS = ["Postil", "Copilot code review"];
 
 const ROWS: ComparisonRow[] = [
   {
-    feature: "Hard merge gate (separate blocking check)",
+    feature: "Dedicated merge gate (separate policy check)",
     cells: [
-      { kind: "yes", note: "postil/gate, fail-closed" },
+      { kind: "yes", note: "postil/gate, configurable enforcement" },
       {
         kind: "no",
         note: "always a Comment review; never counts toward required approvals",
@@ -126,9 +126,9 @@ export default function VsCopilotPage() {
           . Postil separates the two roles: <code>postil/review</code> carries
           advisory commentary, and <code>postil/gate</code> is a real pass/fail
           check you can require in branch protection. On operational errors the
-          gate fails closed by default; repos can opt into{" "}
-          <code>gate.onError: advisory</code>, which fails open on provider
-          outages only.
+          review check is neutral with no verdict. The gate fails when
+          organization merge enforcement is enabled and remains neutral while
+          advisory.
         </p>
 
         <h2>AI Credits made review cost a variable</h2>

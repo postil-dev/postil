@@ -4,8 +4,11 @@
 #   # Download the postil-cli release matching POSTIL_CLI_REV below, verify
 #   # its checksum/signature, and place the binary at vendor/postil - the
 #   # Dockerfile bakes it in from there and does not fetch one itself.
+#   docker compose up -d db
+#   docker compose run --rm web bun run db:migrate
+#   docker compose run --rm web bun run operational:indexes
+#   docker compose run --rm web bun run queue:activate-lock-generation
 #   docker compose up -d
-#   docker compose exec web bun run db:migrate
 #
 # Web, worker, and monitor processes validate required configuration at boot and exit with
 # an actionable message if anything is missing.
@@ -34,7 +37,7 @@ services:
         # whatever binary is at vendor/postil (see the header comment).
         # Override alongside a new vendor/postil binary to upgrade the
         # reviewer version.
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.13}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.16}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     env_file: .env
     environment:
@@ -55,7 +58,7 @@ services:
     build:
       context: .
       args:
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.13}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.16}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     command: ["bun", "scripts/start-managed-process.ts", "worker"]
     env_file: .env
@@ -71,7 +74,7 @@ services:
     build:
       context: .
       args:
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.13}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.16}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     command: ["bun", "scripts/start-managed-process.ts", "monitor"]
     env_file: .env

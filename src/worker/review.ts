@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
 import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
@@ -29,7 +29,6 @@ import {
   isEnvelopeOperationallyUnavailable,
   type Envelope,
 } from "@/lib/envelope";
-import { enqueueGateStateSync } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
@@ -71,9 +70,16 @@ import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { withoutOrgModelConfig } from "@/lib/org-review-config";
 import {
   externalSideEffectLeaseActive,
+  COALESCED_REVIEW_PAYLOAD_KEY,
+  enqueueObservedReviewSnapshot,
+  pendingReviewInputSupersedes,
+  providerRetryLineageForJob,
   PermanentJobError,
+  reviewInputLeaseState,
+  withReviewPublicationFence,
   type CheckRunCleanupJobPayload,
-  type ExternalSideEffectLease,
+  type JobLease,
+  type ReviewInputLeaseState,
   type ReviewJobPayload,
 } from "@/lib/queue";
 import {
@@ -92,7 +98,10 @@ import {
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
   finalizeStagedReviewCompletionWithGateMode,
+  markReviewStaleWithDurableCleanup,
+  OPERATIONAL_NO_VERDICT_MESSAGE,
   stageReviewCompletionCandidate,
+  type StaleReviewCleanupIdentity,
   type ReviewCompletionInput,
 } from "@/lib/review-completion";
 import {
@@ -144,6 +153,94 @@ export class ReviewPublicationReconciliationError extends OperationalError {
     super(message);
     this.name = "ReviewPublicationReconciliationError";
   }
+}
+
+export class ReviewInputConvergenceError extends OperationalError {
+  constructor(message = "review input convergence is pending") {
+    super(message);
+    this.name = "ReviewInputConvergenceError";
+  }
+}
+
+/** True when GitHub's live pull request snapshot predates the signed event. */
+export function livePullRequestSnapshotLagsEvent(
+  expectedUpdatedAt: string,
+  liveUpdatedAt: string,
+): boolean {
+  const expectedTime = Date.parse(expectedUpdatedAt);
+  const liveTime = Date.parse(liveUpdatedAt);
+  if (!Number.isFinite(expectedTime) || !Number.isFinite(liveTime)) {
+    throw new TypeError("pull request update timestamps must be valid");
+  }
+  return liveTime < expectedTime;
+}
+
+export type InterruptedHostedSpendAction =
+  | "receipt"
+  | "retain-resumable"
+  | "reconcile-ambiguous"
+  | "release-unused";
+
+/** Select the only safe settlement path for interrupted hosted inference. */
+export function interruptedHostedSpendAction(input: {
+  receiptAvailable: boolean;
+  cliStarted: boolean;
+  billingOutcome: "unused" | "resumable" | "ambiguous";
+}): InterruptedHostedSpendAction {
+  if (input.receiptAvailable) return "receipt";
+  if (!input.cliStarted || input.billingOutcome === "unused") {
+    return "release-unused";
+  }
+  return input.billingOutcome === "resumable"
+    ? "retain-resumable"
+    : "reconcile-ambiguous";
+}
+
+class ReviewInputSupersededError extends ReviewInputConvergenceError {
+  constructor() {
+    super("a newer same-head pull request edit is retained for review");
+    this.name = "ReviewInputSupersededError";
+  }
+}
+
+export interface ReviewInputLeaseMonitor {
+  check(): Promise<void>;
+  stop(): void;
+}
+
+/** Abort active review work when its exact queue claim is lost or superseded. */
+export function startReviewInputLeaseMonitor(
+  readState: () => Promise<ReviewInputLeaseState>,
+  controller: AbortController,
+  intervalMs = REVIEW_CANCELLATION_POLL_MS,
+): ReviewInputLeaseMonitor {
+  let stopped = false;
+  let checkInFlight = false;
+  const check = async (): Promise<void> => {
+    if (stopped || checkInFlight || controller.signal.aborted) return;
+    checkInFlight = true;
+    try {
+      const state = await readState();
+      if (state === "newer-pending") {
+        controller.abort(new ReviewInputSupersededError());
+      } else if (state === "inactive") {
+        controller.abort();
+      }
+    } catch {
+      controller.abort();
+    } finally {
+      checkInFlight = false;
+    }
+  };
+  const timer = setInterval(() => void check(), intervalMs);
+  timer.unref?.();
+  return {
+    check,
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
 }
 
 interface ExpectedFailureCheckRuns {
@@ -367,7 +464,6 @@ const REQUIRED_HOSTED_PUBLICATION_FAILURE =
 // report completed, so it must never be handed to indefinite reconciliation.
 const PULL_REQUEST_SNAPSHOT_CHANGED =
   /pull request snapshot changed after review/i;
-
 /** True when the CLI declined to publish because the reviewed head moved. */
 export function publicationSkippedForChangedSnapshot(stderr: string): boolean {
   return PULL_REQUEST_SNAPSHOT_CHANGED.test(stderr);
@@ -405,9 +501,31 @@ export function ingestCompletedHostedReview(
       );
     }
   }
+  if (result.exitCode === 2) {
+    try {
+      const ingested = ingestEnvelope(result.stdout);
+      if (isEnvelopeOperationallyUnavailable(ingested.envelope)) {
+        return ingested;
+      }
+    } catch {
+      // The public worker error below carries the bounded CLI diagnostic. A
+      // malformed or ordinary exit-2 envelope is not a completed review.
+    }
+  }
   throw new OperationalError(
     `postil CLI exited with code ${result.exitCode}: ${redactAndTruncate(result.stderr, 500, sensitiveValues)}`,
   );
+}
+
+export function formatHostedReviewIngestionLog(
+  stdout: string,
+  envelope: Envelope,
+  gateFailing: boolean,
+): string {
+  const outcome = isEnvelopeOperationallyUnavailable(envelope)
+    ? "no reviewer verdict"
+    : `gate ${gateFailing ? "failing" : "passing"}`;
+  return `envelope ingested (${Buffer.byteLength(stdout)} bytes, ${envelope.findings.length} findings, ${outcome})`;
 }
 
 interface CliObservers {
@@ -666,7 +784,7 @@ function throwIfWorkerStopping(signal?: AbortSignal): void {
   }
 }
 
-function reviewUsageFromEnvelope(
+export function reviewUsageFromEnvelope(
   envelope: Envelope,
   input: { orgId: number | null; repositoryId: number; byok: boolean },
 ): ReviewCompletionInput["usage"] {
@@ -698,11 +816,12 @@ function reviewUsageFromEnvelope(
 async function resumeStagedReviewCompletion(input: {
   db: Database;
   payload: ReviewJobPayload;
+  lease: JobLease;
   installation: { id: number; orgId: number | null; orgSlug: string | null };
   repository: { id: number; githubRepoId: number; fullName: string };
   signal?: AbortSignal;
 }): Promise<boolean> {
-  const { db, payload, installation, repository, signal } = input;
+  const { db, payload, lease, installation, repository, signal } = input;
   const trigger = normalizeReviewTriggerContext(payload.trigger);
   const selection = {
     id: schema.reviews.id,
@@ -771,13 +890,47 @@ async function resumeStagedReviewCompletion(input: {
     stagedReview.status !== "running" &&
     stagedReview.status !== "completed"
   ) {
-    console.warn(
-      `review publication recovery ${stagedReview.id} is already ${stagedReview.status}`,
+    if (stagedReview.status !== "stale") {
+      throw new PermanentJobError(
+        `review publication recovery is already ${stagedReview.status}`,
+      );
+    }
+  }
+  if (!stagedReview.envelope) {
+    throw new PermanentJobError("review publication recovery state is incomplete");
+  }
+
+  const detailsUrl = reviewDetailsUrl(
+    stagedReview.publicId,
+    installation.orgSlug,
+  );
+  const cleanupIdentity: StaleReviewCleanupIdentity = {
+    reviewId: stagedReview.id,
+    installationId: payload.installationId,
+    repoFullName: payload.repoFullName,
+    headSha: payload.headSha,
+    advisoryCheckRunId: stagedReview.advisoryCheckRunId,
+    gateCheckRunId: stagedReview.gateCheckRunId,
+    advisoryCheckExternalId: checkRunExternalId(stagedReview.publicId, "review"),
+    gateCheckExternalId: checkRunExternalId(stagedReview.publicId, "gate"),
+    advisoryCheckRunMayExist: stagedReview.advisoryCheckRunId == null,
+    gateCheckRunMayExist:
+      stagedReview.gateCheckRunId == null && stagedReview.advisoryCheckRunId != null,
+    message: "superseded by newer pull request input before publication recovery",
+    detailsUrl,
+    intent: "neutralize",
+  };
+  if (stagedReview.status === "stale") {
+    await markReviewStaleWithDurableCleanup(db, cleanupIdentity);
+    return true;
+  }
+  if (stagedReview.status === "completed") {
+    void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+      triggerQueueDrain("gate-state-sync"),
     );
     return true;
   }
   if (
-    !stagedReview.envelope ||
     stagedReview.advisoryCheckRunId == null ||
     stagedReview.gateCheckRunId == null
   ) {
@@ -803,10 +956,95 @@ async function resumeStagedReviewCompletion(input: {
   const operationallyUnavailable = isEnvelopeOperationallyUnavailable(
     stagedReview.envelope,
   );
-  const detailsUrl = reviewDetailsUrl(
-    stagedReview.publicId,
-    installation.orgSlug,
+  const liveContext = await translateWorkerAbort(
+    getPullRequestReviewContext(token, payload.repoFullName, payload.prNumber, signal),
+    signal,
   );
+  const storedPayload = payload as ReviewJobPayload & {
+    [COALESCED_REVIEW_PAYLOAD_KEY]?: ReviewJobPayload;
+  };
+  const pending = storedPayload[COALESCED_REVIEW_PAYLOAD_KEY];
+  const expectedUpdatedAt = Date.parse(payload.expectedPullRequestUpdatedAt);
+  const liveUpdatedAt = Date.parse(liveContext.updatedAt);
+  if (
+    liveContext.headSha === payload.headSha &&
+    liveContext.baseSha === payload.baseSha &&
+    liveUpdatedAt < expectedUpdatedAt
+  ) {
+    throw new ReviewPublicationReconciliationError(
+      "pull request state has not converged to the staged publication input",
+    );
+  }
+  const pendingSupersedes = pending !== undefined &&
+    (pendingReviewInputSupersedes(
+      payload.expectedPullRequestUpdatedAt,
+      pending.expectedPullRequestUpdatedAt,
+      payload.reviewInputSequence,
+      pending.reviewInputSequence,
+    ) ||
+      pending.headSha !== payload.headSha ||
+      pending.baseSha !== payload.baseSha);
+  const pendingCoversLive = pending !== undefined &&
+    pending.headSha === liveContext.headSha &&
+    pending.baseSha === liveContext.baseSha &&
+    Date.parse(pending.expectedPullRequestUpdatedAt) >= liveUpdatedAt;
+  const liveIsExact =
+    liveContext.open &&
+    !liveContext.merged &&
+    !liveContext.draft &&
+    liveContext.headSha === payload.headSha &&
+    liveContext.baseSha === payload.baseSha &&
+    liveUpdatedAt === expectedUpdatedAt;
+  if (pendingSupersedes || !liveIsExact) {
+    if (
+      liveContext.open &&
+      !liveContext.merged &&
+      !liveContext.draft &&
+      !pendingCoversLive
+    ) {
+      await enqueueObservedReviewSnapshot(getPool(), storedPayload, liveContext);
+    }
+    await markReviewStaleWithDurableCleanup(db, cleanupIdentity);
+    await neutralizeSupersededCheckRuns(
+      token,
+      payload.repoFullName,
+      stagedReview.advisoryCheckRunId,
+      stagedReview.gateCheckRunId,
+      cleanupIdentity.message,
+      detailsUrl,
+    );
+    console.log(`review publication recovery ${stagedReview.id} superseded`);
+    return true;
+  }
+  if (operationallyUnavailable) {
+    await failCheckRuns(
+      token,
+      payload.repoFullName,
+      stagedReview.advisoryCheckRunId,
+      stagedReview.gateCheckRunId,
+      "the stored review envelope contains an operational sentinel",
+      signal,
+      true,
+      detailsUrl,
+      {
+        advisory: {
+          id: stagedReview.advisoryCheckRunId,
+          name: ADVISORY_CHECK_NAME,
+          externalId: checkRunExternalId(stagedReview.publicId, "review"),
+          headSha: payload.headSha,
+          detailsUrl,
+        },
+        gate: {
+          id: stagedReview.gateCheckRunId,
+          name: GATE_CHECK_NAME,
+          externalId: checkRunExternalId(stagedReview.publicId, "gate"),
+          headSha: payload.headSha,
+          detailsUrl,
+        },
+      },
+      await getOrganizationGateEnabled(db, installation.orgId),
+    );
+  }
   try {
     await verifyCompletedCheckRun(
       token,
@@ -816,7 +1054,7 @@ async function resumeStagedReviewCompletion(input: {
         name: ADVISORY_CHECK_NAME,
         externalId: checkRunExternalId(stagedReview.publicId, "review"),
         headSha: payload.headSha,
-        conclusion: operationallyUnavailable ? "failure" : "success",
+        conclusion: operationallyUnavailable ? "neutral" : "success",
         requireOutput: true,
         detailsUrl,
       },
@@ -842,20 +1080,36 @@ async function resumeStagedReviewCompletion(input: {
           hostedUsageReservationId: reservation?.id ?? null,
           usageAccountingComplete:
             stagedReview.envelope.usageAccountingComplete === true,
+          reviewJobLease: lease,
+          expectedReviewInput: payload,
+          staleCleanup: cleanupIdentity,
+          ...(operationallyUnavailable
+            ? {
+                terminalStatus: "failed" as const,
+                errorMessage: OPERATIONAL_NO_VERDICT_MESSAGE,
+              }
+            : {}),
         },
         installation.orgId,
       );
       if (!completion.completed) {
+        if (completion.superseded) {
+          console.log(
+            `review publication recovery ${stagedReview.id} superseded during verification`,
+          );
+          return true;
+        }
         throw new ReviewPublicationReconciliationError(
           "review publication recovery lost its terminal-state race",
         );
       }
     }
-    await enqueueGateStateSync(db, stagedReview);
     void import("@/worker/runner").then(({ triggerQueueDrain }) =>
       triggerQueueDrain("gate-state-sync"),
     );
-    console.log(`review publication recovery ${stagedReview.id} completed`);
+    console.log(
+      `review publication recovery ${stagedReview.id} ${operationallyUnavailable ? "terminalized without a verdict" : "completed"}`,
+    );
     return true;
   } catch (error) {
     if (signal?.aborted) throw new WorkerShutdownError();
@@ -868,15 +1122,12 @@ async function resumeStagedReviewCompletion(input: {
  *
  * The worker's job is deliberately small: mint a token, create the two
  * check-runs (so it owns their ids even if the CLI crashes), spawn the CLI,
- * store the envelope, and mark the check-runs failed on crash/timeout. All
- * review logic lives in the CLI.
+ * store the envelope, and give each check its policy-correct terminal outcome
+ * on crash or timeout. All review logic lives in the CLI.
  */
 export async function runReviewJob(
   payload: ReviewJobPayload,
-  timing: { queuedAt: Date; startedAt: Date; lease?: ExternalSideEffectLease } = {
-    queuedAt: new Date(),
-    startedAt: new Date(),
-  },
+  timing: { queuedAt: Date; startedAt: Date; lease: JobLease },
   observabilityProcessGroup: ObservabilityProcessGroup = "worker",
   signal?: AbortSignal,
   onPublicationStarted?: () => void,
@@ -890,9 +1141,7 @@ export async function runReviewJob(
     throw new PermanentJobError("review job lacks immutable source identity");
   }
   const db = getDb();
-  const leaseActive = () => timing.lease
-    ? externalSideEffectLeaseActive(getPool(), timing.lease)
-    : Promise.resolve(true);
+  const leaseActive = () => externalSideEffectLeaseActive(getPool(), timing.lease);
   if (!(await leaseActive())) return;
 
   const installation = (
@@ -944,6 +1193,7 @@ export async function runReviewJob(
     await resumeStagedReviewCompletion({
       db,
       payload,
+      lease: timing.lease,
       installation,
       repository,
       signal,
@@ -1034,15 +1284,32 @@ export async function runReviewJob(
     ),
     signal,
   );
+  // Jobs admitted by a pre-rollout binary have no event timestamp. Bind them
+  // to the first live snapshot observed by the homogeneous fleet so they can
+  // drain safely after lock-generation activation.
+  const expectedPullRequestUpdatedAt =
+    typeof payload.expectedPullRequestUpdatedAt === "string" &&
+      Number.isFinite(Date.parse(payload.expectedPullRequestUpdatedAt))
+      ? payload.expectedPullRequestUpdatedAt
+      : liveContext.updatedAt;
+  const liveSnapshotLagsEvent = livePullRequestSnapshotLagsEvent(
+    expectedPullRequestUpdatedAt,
+    liveContext.updatedAt,
+  );
+  if (!(await leaseActive())) {
+    console.warn("review job skipped: lost its lease");
+    return;
+  }
+  if (!liveContext.open || liveContext.merged || liveContext.draft) {
+    console.warn("review job skipped: pull request is not reviewable");
+    return;
+  }
   if (
-    !liveContext.open ||
-    liveContext.merged ||
-    liveContext.draft ||
-    liveContext.headSha !== payload.headSha ||
-    liveContext.baseSha !== payload.baseSha ||
-    !(await leaseActive())
+    !liveSnapshotLagsEvent &&
+    (liveContext.headSha !== payload.headSha || liveContext.baseSha !== payload.baseSha)
   ) {
-    console.warn(`review job skipped: pull request closed, changed, or lost its lease`);
+    await enqueueObservedReviewSnapshot(getPool(), payload, liveContext);
+    console.warn("review job reconciled to the current pull request snapshot");
     return;
   }
   await db
@@ -1167,22 +1434,18 @@ export async function runReviewJob(
   const reviewSignal = signal
     ? AbortSignal.any([signal, leaseAbortController.signal])
     : leaseAbortController.signal;
-  let leasePollInFlight = false;
-  const leasePoll = timing.lease
-    ? setInterval(() => {
-        if (leasePollInFlight || leaseAbortController.signal.aborted) return;
-        leasePollInFlight = true;
-        void leaseActive()
-          .then((active) => {
-            if (!active) leaseAbortController.abort();
-          })
-          .catch(() => leaseAbortController.abort())
-          .finally(() => {
-            leasePollInFlight = false;
-          });
-      }, REVIEW_CANCELLATION_POLL_MS)
+  const inputLeaseMonitor = timing.lease
+    ? startReviewInputLeaseMonitor(
+        () =>
+          reviewInputLeaseState(
+            getPool(),
+            timing.lease!,
+            expectedPullRequestUpdatedAt,
+            payload.reviewInputSequence,
+          ),
+        leaseAbortController,
+      )
     : undefined;
-  leasePoll?.unref?.();
   const publicationAuthorized = async (): Promise<boolean> => {
     if (!(await leaseActive())) return false;
     const current = await translateWorkerAbort(
@@ -1194,12 +1457,33 @@ export async function runReviewJob(
       ),
       reviewSignal,
     );
+    const inputLeaseState = timing.lease
+      ? await reviewInputLeaseState(
+          getPool(),
+          timing.lease,
+          expectedPullRequestUpdatedAt,
+          payload.reviewInputSequence,
+        )
+      : "current";
+    if (inputLeaseState === "inactive") return false;
+    if (inputLeaseState === "newer-pending") {
+      throw new ReviewInputSupersededError();
+    }
+    if (
+      livePullRequestSnapshotLagsEvent(
+        expectedPullRequestUpdatedAt,
+        current.updatedAt,
+      )
+    ) {
+      throw new ReviewInputConvergenceError(
+        `GitHub pull request ${payload.repoFullName}#${payload.prNumber} has not converged to the signed edit`,
+      );
+    }
     return current.open &&
       !current.merged &&
       !current.draft &&
       current.headSha === payload.headSha &&
-      current.baseSha === payload.baseSha &&
-      await leaseActive();
+      current.baseSha === payload.baseSha;
   };
   const advisoryCheckExternalId = checkRunExternalId(publicId, "review");
   const gateCheckExternalId = checkRunExternalId(publicId, "gate");
@@ -1236,9 +1520,21 @@ export async function runReviewJob(
     throwIfWorkerStopping(reviewSignal);
     sensitiveValues = [token];
     reviewLog.setSensitiveValues(sensitiveValues);
-    if (!(await publicationAuthorized())) {
-      reviewLog.line("publication cancelled before forge writes");
-      throw new TerminalReviewError("pull request is no longer eligible for publication");
+    try {
+      if (!(await publicationAuthorized())) {
+        reviewLog.line("publication cancelled before forge writes");
+        throw new TerminalReviewError(
+          "pull request is no longer eligible for publication",
+        );
+      }
+    } catch (error) {
+      // A signed synchronize head owns checks even while GitHub's REST read
+      // lags the event. The second authorization immediately before the CLI
+      // either observes convergence or terminalizes this pair and retries.
+      if (!(error instanceof ReviewInputConvergenceError)) throw error;
+      reviewLog.line(
+        "signed pull request head accepted while GitHub convergence is pending",
+      );
     }
     onPublicationStarted?.();
     const superseded = await supersedeActiveReviews({
@@ -1246,7 +1542,7 @@ export async function runReviewJob(
       prNumber: payload.prNumber,
       newHeadSha: payload.headSha,
       repoFullName: payload.repoFullName,
-      token,
+      githubInstallationId: payload.installationId,
       excludeReviewId: reviewId,
       orgSlug: installation.orgSlug,
     });
@@ -1315,6 +1611,8 @@ export async function runReviewJob(
       String(payload.prNumber),
       "--sha",
       payload.headSha,
+      "--base-sha",
+      payload.baseSha,
       "--check-run-id",
       String(advisoryCheckRunId),
       "--gate-check-run-id",
@@ -1433,9 +1731,7 @@ export async function runReviewJob(
       }),
       headSha: payload.headSha,
       baseSha: payload.baseSha,
-      retryLineage: timing.lease
-        ? `review-job:${timing.lease.id}`
-        : `review:${reviewId}`,
+      retryLineage: providerRetryLineageForJob(payload, timing.lease.id),
     };
     let expectedRunKey: string | undefined;
     if (!llm.byok) {
@@ -1573,17 +1869,31 @@ export async function runReviewJob(
       },
     );
 
-    if (!(await publicationAuthorized())) {
-      reviewLog.line("publication cancelled before CLI start");
-      throw new TerminalReviewError("pull request is no longer eligible for publication");
+    const result = await withReviewPublicationFence(
+      getPool(),
+      payload,
+      async () => {
+        if (!(await publicationAuthorized())) {
+          reviewLog.line("publication cancelled before CLI start");
+          throw new TerminalReviewError(
+            "pull request is no longer eligible for publication",
+          );
+        }
+        reviewLog.line("postil CLI spawned under the pull request publication fence");
+        cliStarted = true;
+        return runCli(args, cliEnv, workDir, {
+          onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
+          signal: reviewSignal,
+          preserveOutputOnInterrupt: true,
+        });
+      },
+    );
+    if (
+      result.interrupted &&
+      leaseAbortController.signal.reason instanceof ReviewInputSupersededError
+    ) {
+      throw leaseAbortController.signal.reason;
     }
-    reviewLog.line("postil CLI spawned");
-    cliStarted = true;
-    const result = await runCli(args, cliEnv, workDir, {
-      onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
-      signal: reviewSignal,
-      preserveOutputOnInterrupt: true,
-    });
     reviewLog.line(
       `postil CLI exited with code ${result.exitCode}${result.timedOut ? " after timeout" : ""}${result.interrupted ? " during worker interruption" : ""}`,
     );
@@ -1610,7 +1920,11 @@ export async function runReviewJob(
       reportOperationalModelIncident(observabilityProcessGroup, incident);
     }
     reviewLog.line(
-      `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
+      formatHostedReviewIngestionLog(
+        result.stdout,
+        ingested.envelope,
+        ingested.gateFailing,
+      ),
     );
     let publicationReceipt: PublicationReceipt | undefined;
     try {
@@ -1639,7 +1953,7 @@ export async function runReviewJob(
       db,
       {
         reviewId,
-        reviewJobId: timing.lease?.id,
+        reviewJobLease: timing.lease,
         envelope: ingested.envelope,
         configFiles,
         configProvenance,
@@ -1672,12 +1986,21 @@ export async function runReviewJob(
           usageAccountingComplete: ingested.usageAccountingComplete,
         });
       }
-      await db
-        .update(schema.reviews)
-        .set({ status: "stale", finishedAt: new Date() })
-        .where(
-          and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")),
-        );
+      await markReviewStaleWithDurableCleanup(db, {
+        reviewId,
+        installationId: payload.installationId,
+        repoFullName: payload.repoFullName,
+        headSha: payload.headSha,
+        advisoryCheckRunId: advisoryCheckRunId ?? null,
+        gateCheckRunId: gateCheckRunId ?? null,
+        advisoryCheckExternalId,
+        gateCheckExternalId,
+        advisoryCheckRunMayExist,
+        gateCheckRunMayExist,
+        message: "the pull request snapshot changed before this review could publish",
+        detailsUrl,
+        intent: "neutralize",
+      });
       await neutralizeSupersededCheckRuns(
         token,
         payload.repoFullName,
@@ -1691,13 +2014,30 @@ export async function runReviewJob(
       );
       return;
     }
-    const workerInstanceId = timing.lease?.lockedBy.match(/^(.+)#\d+$/)?.[1];
-    if (observabilityProcessGroup === "worker" && workerInstanceId && timing.lease) {
+    if (operationallyUnavailable) {
+      await failCheckRuns(
+        token,
+        payload.repoFullName,
+        advisoryCheckRunId,
+        gateCheckRunId,
+        "the review envelope contains an operational sentinel",
+        result.interrupted ? undefined : signal,
+        true,
+        detailsUrl,
+        expectedFailureCheckRuns(),
+        gateEnabled,
+      );
+      reviewLog.line(
+        "operational sentinel published as no reviewer verdict with policy-sensitive gate",
+      );
+    }
+    const workerInstanceId = timing.lease.lockedBy.match(/^(.+)#\d+$/)?.[1];
+    if (observabilityProcessGroup === "worker" && workerInstanceId) {
       const rehearsalNonce = await consumePrivateWorkerRehearsalAfterStaging(
         getPool(),
         {
           reviewId,
-          reviewJobId: timing.lease.id,
+          reviewJobLease: timing.lease,
           repoFullName: payload.repoFullName,
           prNumber: payload.prNumber,
           headSha: payload.headSha,
@@ -1718,7 +2058,7 @@ export async function runReviewJob(
           name: ADVISORY_CHECK_NAME,
           externalId: advisoryCheckExternalId,
           headSha: payload.headSha,
-          conclusion: operationallyUnavailable ? "failure" : "success",
+          conclusion: operationallyUnavailable ? "neutral" : "success",
           requireOutput: true,
           detailsUrl,
         },
@@ -1746,6 +2086,29 @@ export async function runReviewJob(
         usage: receiptUsage,
         hostedUsageReservationId,
         usageAccountingComplete: ingested.usageAccountingComplete,
+        reviewJobLease: timing.lease,
+        expectedReviewInput: payload,
+        staleCleanup: {
+          reviewId,
+          installationId: payload.installationId,
+          repoFullName: payload.repoFullName,
+          advisoryCheckRunId: advisoryCheckRunId ?? null,
+          gateCheckRunId: gateCheckRunId ?? null,
+          headSha: payload.headSha,
+          advisoryCheckExternalId,
+          gateCheckExternalId,
+          advisoryCheckRunMayExist,
+          gateCheckRunMayExist,
+          message: "superseded by newer pull request input before completion",
+          detailsUrl,
+          intent: "neutralize",
+        },
+        ...(operationallyUnavailable
+          ? {
+              terminalStatus: "failed" as const,
+              errorMessage: OPERATIONAL_NO_VERDICT_MESSAGE,
+            }
+          : {}),
       },
       installation.orgId,
     );
@@ -1790,6 +2153,22 @@ export async function runReviewJob(
         reviewLog.line(
           "forge check-runs restored to neutral after supersession",
         );
+      } else if (terminal?.status === "failed") {
+        await failCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId,
+          gateCheckRunId,
+          "the review lost its terminal-state race",
+          undefined,
+          true,
+          detailsUrl,
+          expectedFailureCheckRuns(completionStaged),
+          gateEnabled,
+        );
+        reviewLog.line(
+          "forge check-runs restored to the durable failed terminal state",
+        );
       }
       console.warn(
         `review ${reviewId} completed after it was already superseded or failed`,
@@ -1823,6 +2202,87 @@ export async function runReviewJob(
       }
     }
   } catch (err) {
+    if (
+      leaseAbortController.signal.reason instanceof ReviewInputSupersededError
+    ) {
+      err = leaseAbortController.signal.reason;
+    }
+    const reconcileInterruptedSpend = async (): Promise<void> => {
+      if (!hostedUsageReservationId) return;
+      const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
+      const action = interruptedHostedSpendAction({
+        receiptAvailable: receiptUsageForRace !== undefined,
+        cliStarted,
+        billingOutcome,
+      });
+      if (action === "receipt") {
+        await reconcileHostedReviewSpendFromReceipt(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+          usage: receiptUsageForRace!,
+          usageAccountingComplete: usageAccountingCompleteForRace,
+        });
+        return;
+      }
+      if (action === "retain-resumable") return;
+      if (action === "reconcile-ambiguous") {
+        const largeReviewRunKey = await largeReviewProxy?.boundRunKey();
+        if (!largeReviewRunKey) {
+          throw new PermanentJobError(
+            "ambiguous provider contact lacks a durable run",
+          );
+        }
+        await reconcileConservativeHostedReviewSpend(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+          largeReviewRunKey,
+        });
+        return;
+      }
+      await releaseHostedReviewSpend(db, hostedUsageReservationId);
+    };
+    if (err instanceof ReviewInputConvergenceError) {
+      const retainedRerun = err instanceof ReviewInputSupersededError;
+      const message = retainedRerun
+        ? "newer pull request input retained; current review superseded"
+        : "pull request input convergence deferred; review requeued";
+      reviewLog.line(message);
+      const staleTransitioned = await markReviewStaleWithDurableCleanup(db, {
+        reviewId,
+        installationId: payload.installationId,
+        repoFullName: payload.repoFullName,
+        headSha: payload.headSha,
+        advisoryCheckRunId: advisoryCheckRunId ?? null,
+        gateCheckRunId: gateCheckRunId ?? null,
+        advisoryCheckExternalId,
+        gateCheckExternalId,
+        advisoryCheckRunMayExist,
+        gateCheckRunMayExist,
+        message,
+        detailsUrl,
+        intent: "neutralize",
+      });
+      await reconcileInterruptedSpend();
+      if (staleTransitioned) {
+        await neutralizeSupersededCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? null,
+          gateCheckRunId ?? null,
+          message,
+          detailsUrl,
+        );
+      }
+      if (retainedRerun) {
+        reviewLog.line("retained pull request input queued for a fresh review");
+        return;
+      }
+      throw err;
+    }
     if (err instanceof CheckRunPublicationError && receiptUsageForRace) {
       const terminal = (
         await db
@@ -1869,46 +2329,6 @@ export async function runReviewJob(
       if (err instanceof ReviewPublicationReconciliationError) throw err;
       throw new ReviewPublicationReconciliationError(message);
     }
-    const reconcileInterruptedSpend = async (): Promise<void> => {
-      if (hostedUsageReservationId && cliStarted) {
-        const reservationId = hostedUsageReservationId;
-        const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
-        const reconcile = billingOutcome === "resumable"
-          ? Promise.resolve()
-          : billingOutcome === "ambiguous"
-            ? largeReviewProxy!.boundRunKey().then((largeReviewRunKey) => {
-                if (!largeReviewRunKey) {
-                  throw new Error("ambiguous provider contact lacks a durable run");
-                }
-                return reconcileConservativeHostedReviewSpend(db, {
-                  reservationId,
-                  repositoryId: repository.id,
-                  reviewId,
-                  triggerSource: reviewValues.triggerSource,
-                  largeReviewRunKey,
-                });
-              })
-            : releaseHostedReviewSpend(db, reservationId);
-        await reconcile.catch((reconcileError) => {
-          console.error(
-            `failed to reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
-          );
-          if (billingOutcome === "ambiguous") {
-            throw new PermanentJobError(
-              "ambiguous provider usage could not be settled safely",
-            );
-          }
-        });
-      } else {
-        await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
-          (releaseError) => {
-            console.error(
-              `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
-            );
-          },
-        );
-      }
-    };
     if (err instanceof WorkerShutdownError) {
       // Publication has begun (check-runs exist on the forge), but an
       // instance replacement is not a review failure: the requeued job runs
@@ -1924,19 +2344,21 @@ export async function runReviewJob(
         reviewLog.line(
           "review interrupted by worker shutdown after publication began; a fresh attempt will supersede it",
         );
-        await db
-          .update(schema.reviews)
-          .set({
-            status: "stale",
-            errorMessage: "interrupted by an instance replacement; requeued",
-            finishedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(schema.reviews.id, reviewId),
-              eq(schema.reviews.status, "running"),
-            ),
-          );
+        await markReviewStaleWithDurableCleanup(db, {
+          reviewId,
+          installationId: payload.installationId,
+          repoFullName: payload.repoFullName,
+          advisoryCheckRunId: advisoryCheckRunId ?? null,
+          gateCheckRunId: gateCheckRunId ?? null,
+          headSha: payload.headSha,
+          advisoryCheckExternalId,
+          gateCheckExternalId,
+          advisoryCheckRunMayExist,
+          gateCheckRunMayExist,
+          message: "interrupted by an instance replacement; requeued",
+          detailsUrl,
+          intent: "neutralize",
+        });
         throw err;
       }
       reviewLog.line(
@@ -2013,7 +2435,7 @@ export async function runReviewJob(
     }
     throw err;
   } finally {
-    if (leasePoll) clearInterval(leasePoll);
+    inputLeaseMonitor?.stop();
     largeReviewProxy?.close();
     if (baselinePath)
       await rm(baselinePath, { force: true }).catch(() => undefined);
@@ -2032,13 +2454,12 @@ interface SupersedeActiveReviewsInput {
   repoFullName: string;
   excludeReviewId?: number;
   onlyDifferentHead?: boolean;
-  token?: string;
-  githubInstallationId?: number;
+  githubInstallationId: number;
   message?: string;
   orgSlug?: string | null;
 }
 
-/** Mark active reviews stale and neutralize every recorded forge check-run. */
+/** Atomically mark active reviews stale and retain retryable forge cleanup. */
 export async function supersedeActiveReviews(
   input: SupersedeActiveReviewsInput,
 ): Promise<number> {
@@ -2047,6 +2468,8 @@ export async function supersedeActiveReviews(
     .select({
       id: schema.reviews.id,
       publicId: schema.reviews.publicId,
+      status: schema.reviews.status,
+      headSha: schema.reviews.headSha,
       advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
       gateCheckRunId: schema.reviews.gateCheckRunId,
     })
@@ -2066,47 +2489,35 @@ export async function supersedeActiveReviews(
     );
   if (active.length === 0) return 0;
 
-  let token = input.token;
-  if (
-    !token &&
-    active.some(
-      (review) =>
-        review.advisoryCheckRunId != null || review.gateCheckRunId != null,
-    )
-  ) {
-    if (input.githubInstallationId === undefined) {
-      throw new Error(
-        "cannot complete superseded check-runs without an installation id",
-      );
-    }
-    token = await getInstallationToken(input.githubInstallationId);
-  }
-
   const message = input.message ?? `superseded by a newer review of ${input.newHeadSha}`;
   let superseded = 0;
   for (const review of active) {
-    const changed = await db
-      .update(schema.reviews)
-      .set({ status: "stale", finishedAt: new Date() })
-      .where(
-        and(
-          eq(schema.reviews.id, review.id),
-          inArray(schema.reviews.status, ["queued", "running"]),
-        ),
-      )
-      .returning({ id: schema.reviews.id });
-    if (changed.length === 0) continue;
+    const changed = await markReviewStaleWithDurableCleanup(db, {
+      reviewId: review.id,
+      installationId: input.githubInstallationId,
+      repoFullName: input.repoFullName,
+      advisoryCheckRunId: review.advisoryCheckRunId,
+      gateCheckRunId: review.gateCheckRunId,
+      headSha: review.headSha,
+      advisoryCheckExternalId: checkRunExternalId(review.publicId, "review"),
+      gateCheckExternalId: checkRunExternalId(review.publicId, "gate"),
+      advisoryCheckRunMayExist:
+        review.status === "running" && review.advisoryCheckRunId == null,
+      gateCheckRunMayExist:
+        review.status === "running" &&
+        review.advisoryCheckRunId != null &&
+        review.gateCheckRunId == null,
+      message,
+      detailsUrl: reviewDetailsUrl(review.publicId, input.orgSlug),
+      intent: "neutralize",
+    });
+    if (!changed) continue;
     superseded += 1;
-    if (token) {
-      await neutralizeSupersededCheckRuns(
-        token,
-        input.repoFullName,
-        review.advisoryCheckRunId,
-        review.gateCheckRunId,
-        message,
-        reviewDetailsUrl(review.publicId, input.orgSlug),
-      );
-    }
+  }
+  if (superseded > 0) {
+    void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+      triggerQueueDrain("check-run-cleanup")
+    );
   }
   return superseded;
 }
@@ -2145,6 +2556,7 @@ export async function completeHostedInferenceDisabledCheckRuns(
   gateCheckRunId: number | undefined,
   throwOnError = false,
   detailsUrl?: string,
+  expectedChecks?: ExpectedFailureCheckRuns,
 ): Promise<boolean> {
   const summary =
     "Postil did not run a review for this commit. No review comment or verdict was published.";
@@ -2154,16 +2566,21 @@ export async function completeHostedInferenceDisabledCheckRuns(
     ["gate", gateCheckRunId],
   ] as const) {
     if (checkRunId === undefined) continue;
-    await completeCheckRun(
-      token,
-      repoFullName,
-      checkRunId,
-      "neutral",
-      "Review unavailable",
-      summary,
-      undefined,
-      detailsUrl,
-    ).catch((error) => {
+    const expected = expectedChecks?.[kind];
+    const completion = expected
+      ? completeExpectedCheckRun(
+          token,
+          repoFullName,
+          { ...expected, conclusion: "neutral" },
+          "Review unavailable",
+          summary,
+        )
+      : Promise.reject(
+          new CheckRunPublicationError(
+            "unavailable review cleanup requires the exact GitHub check-run identities",
+          ),
+        );
+    await completion.catch((error) => {
       errors.push(error);
       console.error(
         `failed to neutralize unavailable ${kind} check-run: ${redactSecrets(error, [token])}`,
@@ -2180,8 +2597,9 @@ export async function completeHostedInferenceDisabledCheckRuns(
 }
 
 /**
- * Complete both check-runs after an operational failure. Enforced gates fail
- * closed; advisory gates stand aside while the review check fails truthfully.
+ * Publish no-verdict terminal checks after an operational failure. The review
+ * check is neutral, and the gate fails only when merge enforcement is enabled.
+ * Advisory organizations receive a neutral gate.
  */
 export async function failCheckRuns(
   token: string,
@@ -2198,12 +2616,11 @@ export async function failCheckRuns(
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
   const publicationIncomplete = expectedChecks?.publicationIncomplete === true;
   if (
-    publicationIncomplete &&
-    ((gateCheckRunId != null && !expectedChecks?.gate) ||
-      (advisoryCheckRunId != null && !expectedChecks?.advisory))
+    (gateCheckRunId != null && !expectedChecks?.gate) ||
+    (advisoryCheckRunId != null && !expectedChecks?.advisory)
   ) {
     throw new CheckRunPublicationError(
-      "publication cleanup requires the exact GitHub check-run identities",
+      "terminal cleanup requires the exact GitHub check-run identities",
     );
   }
   const reviewTitle = publicationIncomplete
@@ -2270,7 +2687,7 @@ export async function failCheckRuns(
     await complete(
       advisoryCheckRunId,
       expectedChecks?.advisory,
-      "failure",
+      "neutral",
       reviewTitle,
       summary,
     ).catch((error) => {
@@ -2310,17 +2727,6 @@ export async function runCheckRunCleanupJob(
       advisoryCheckRunId: number | null | undefined,
       gateCheckRunId: number | null | undefined,
     ) => {
-      if (payload.intent === "neutralize") {
-        await completeHostedInferenceDisabledCheckRuns(
-          token,
-          payload.repoFullName,
-          advisoryCheckRunId ?? undefined,
-          gateCheckRunId ?? undefined,
-          true,
-          payload.detailsUrl,
-        );
-        return;
-      }
       const expectedChecks: ExpectedFailureCheckRuns = {
         ...(advisoryCheckRunId != null &&
         payload.headSha &&
@@ -2350,6 +2756,18 @@ export async function runCheckRunCleanupJob(
           : {}),
         publicationIncomplete: payload.publicationIncomplete === true,
       };
+      if (payload.intent === "neutralize") {
+        await completeHostedInferenceDisabledCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? undefined,
+          gateCheckRunId ?? undefined,
+          true,
+          payload.detailsUrl,
+          expectedChecks,
+        );
+        return;
+      }
       await failCheckRuns(
         token,
         payload.repoFullName,
@@ -2498,6 +2916,15 @@ export function validateCheckRunCleanupPayload(
       !payload.advisoryCheckExternalId) ||
       (payload.gateCheckRunId != null && !payload.gateCheckExternalId) ||
       !payload.headSha)
+  ) {
+    throw new PermanentJobError("check-run cleanup job payload is malformed");
+  }
+  if (
+    ((payload.advisoryCheckRunId != null &&
+      !payload.advisoryCheckExternalId) ||
+      (payload.gateCheckRunId != null && !payload.gateCheckExternalId) ||
+      ((payload.advisoryCheckRunId != null || payload.gateCheckRunId != null) &&
+        !payload.headSha))
   ) {
     throw new PermanentJobError("check-run cleanup job payload is malformed");
   }

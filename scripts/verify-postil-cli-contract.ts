@@ -15,6 +15,7 @@ const REQUIRED_REVIEW_FLAGS = [
 ] as const;
 const HEAD_SHA = "1".repeat(40);
 const BASE_SHA = "2".repeat(40);
+const ADVANCED_BASE_SHA = "3".repeat(40);
 
 interface CommandResult {
   exitCode: number;
@@ -157,6 +158,8 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
   let rejectCheckCompletion = false;
   let rejectFileFetch = false;
   let registeredPlan = false;
+  let liveBaseSha = BASE_SHA;
+  let checkCompletionAttempts = 0;
   const planToken = "contract-plan-token";
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -212,7 +215,7 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
           state: "open",
           merged: false,
           head: { sha: HEAD_SHA },
-          base: { sha: BASE_SHA },
+          base: { sha: liveBaseSha },
           changed_files: 0,
         });
       }
@@ -232,6 +235,7 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
         return Response.json([]);
       }
       if (request.method === "PATCH" && path.includes("/check-runs/")) {
+        checkCompletionAttempts += 1;
         if (rejectCheckCompletion) {
           return Response.json(
             { message: "contract smoke rejection" },
@@ -292,6 +296,21 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
     if (!registeredPlan) {
       throw new Error("postil review did not register its provider-request plan");
     }
+
+    const completedBeforeBaseAdvance = checkCompletionAttempts;
+    liveBaseSha = ADVANCED_BASE_SHA;
+    registeredPlan = false;
+    const advancedBase = await run(binary, hostedArgs, {
+      cwd: workDir,
+      env: modelEnv,
+    });
+    if (advancedBase.exitCode === 0) {
+      throw new Error("hosted publication accepted a changed target-branch SHA");
+    }
+    if (checkCompletionAttempts !== completedBeforeBaseAdvance) {
+      throw new Error("hosted publication mutated checks after the target branch advanced");
+    }
+    liveBaseSha = BASE_SHA;
 
     rejectFileFetch = true;
     rejectCheckCompletion = true;

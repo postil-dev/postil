@@ -41,7 +41,7 @@ jobs:
           # every valid concurrent index.
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP TABLE release_steps'
           bun run operational:indexes
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM release_steps WHERE name = 'operational-indexes-v3'" | grep -qx 1
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM release_steps WHERE name = 'operational-indexes-v5'" | grep -qx 1
           bun run jobs:activate-release
         env:
           PGHOST: localhost

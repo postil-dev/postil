@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { membershipRetryAfterHeader } from "@/lib/auth-navigation";
 import { getOrgMembership } from "@/lib/org-access";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 
@@ -19,7 +20,12 @@ export async function GET(
     if (access.reason === "verification_unavailable") {
       return NextResponse.json(
         { error: "membership verification unavailable" },
-        { status: 503, headers: { "retry-after": "30" } },
+        {
+          status: 503,
+          headers: {
+            "retry-after": membershipRetryAfterHeader(access.retryAvailableAt),
+          },
+        },
       );
     }
     return NextResponse.json(

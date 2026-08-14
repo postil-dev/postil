@@ -7,6 +7,7 @@ import { and, eq, gt, or, sql } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import { getOrgMembership } from "@/lib/org-access";
+import { MembershipVerificationUnavailableError } from "@/lib/auth-navigation";
 
 export async function markNotificationRead(formData: FormData): Promise<void> {
   const slug = String(formData.get("slug") ?? "");
@@ -78,7 +79,7 @@ async function requireMembership(slug: string): Promise<{
   const access = await getOrgMembership(slug);
   if (!access.ok) {
     if (access.reason === "verification_unavailable") {
-      throw new Error("GitHub membership verification is temporarily unavailable");
+      throw new MembershipVerificationUnavailableError(access.retryAvailableAt);
     }
     if (access.reason === "unauthenticated") throw new Error("not signed in");
     throw new Error("organization not found");

@@ -7,16 +7,19 @@ import type { Pool } from "pg";
 
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import { closeDb } from "@/lib/db";
+import type { ReviewInputLeaseState } from "@/lib/queue";
 import {
   REVIEW_LOG_MAX_LINES,
   ReviewLogWriter,
   postilCliVersionLogLine,
   probePostilCliVersion,
   runCli,
+  startReviewInputLeaseMonitor,
 } from "@/worker/review";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 
 describe("runCli log observation", () => {
   test("streams stderr by line without exposing envelope stdout to the observer", async () => {
@@ -94,6 +97,46 @@ describe("runCli log observation", () => {
       else process.env.POSTIL_BIN = oldBin;
     }
   });
+
+  test("cancels an in-flight CLI before newer same-head input can publish stale output", async () => {
+    const oldBin = process.env.POSTIL_BIN;
+    process.env.POSTIL_BIN = process.execPath;
+    const controller = new AbortController();
+    let inputState: ReviewInputLeaseState = "current";
+    const monitor = startReviewInputLeaseMonitor(
+      async () => inputState,
+      controller,
+      5,
+    );
+    try {
+      const result = await runCli(
+        [
+          "-e",
+          'process.stderr.write("input loaded\\n"); setTimeout(() => process.stdout.write("published stale review"), 500); setInterval(() => undefined, 1000);',
+        ],
+        {},
+        undefined,
+        {
+          signal: controller.signal,
+          preserveOutputOnInterrupt: true,
+          onStderrLine: (line) => {
+            if (line === "input loaded") inputState = "newer-pending";
+          },
+        },
+      );
+
+      expect(result.interrupted).toBe(true);
+      expect(result.stdout).not.toContain("published stale review");
+      expect(controller.signal.reason).toHaveProperty(
+        "name",
+        "ReviewInputSupersededError",
+      );
+    } finally {
+      monitor.stop();
+      if (oldBin === undefined) delete process.env.POSTIL_BIN;
+      else process.env.POSTIL_BIN = oldBin;
+    }
+  });
 });
 
 async function versionFixture(source: string): Promise<{ directory: string; executable: string }> {
@@ -164,6 +207,7 @@ describeDb("review log persistence", () => {
   beforeAll(async () => {
     db = await createEphemeralDatabase("review_logs");
     pool = db.pool;
+    await closeDb();
     // ReviewLogWriter reaches the database through the getDb() singleton,
     // which is keyed off DATABASE_URL rather than this suite's own pool.
     process.env.DATABASE_URL = db.url;
@@ -202,6 +246,8 @@ describeDb("review log persistence", () => {
     // accessed by other users".
     await closeDb();
     await db?.drop();
+    if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
   }, 30_000);
 
   test("redacts before batching lines into storage", async () => {

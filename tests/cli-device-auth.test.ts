@@ -5,6 +5,12 @@ import { join } from "node:path";
 
 import { Client, Pool } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+import { closeDb } from "@/lib/db";
+
 // Mirrors the private sha256() helper in src/lib/cli-auth.ts: tokens and
 // device codes are looked up by digest only, so tests reaching into the
 // database directly must hash the same way the library does.
@@ -14,21 +20,20 @@ function sha256(value: string): Buffer {
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 
 describeDb("postil login device authorization", () => {
-  const databaseName = `postil_cli_device_auth_${process.pid}_${Date.now()}`;
-  let adminClient: Client | undefined;
+  let database: EphemeralDatabase;
   let pool: Pool | undefined;
   let userId = 0;
   let orgId = 0;
 
   beforeAll(async () => {
-    adminClient = new Client({ connectionString: TEST_URL });
-    await adminClient.connect();
-    await adminClient.query(`CREATE DATABASE "${databaseName}"`);
-    const databaseUrl = new URL(TEST_URL!);
-    databaseUrl.pathname = `/${databaseName}`;
-    const migrationClient = new Client({ connectionString: databaseUrl.toString() });
+    database = await createUnmigratedEphemeralDatabase("cli_device_auth", {
+      forceDrop: true,
+      maxConnections: 4,
+    });
+    const migrationClient = new Client({ connectionString: database.url });
     await migrationClient.connect();
     const migrationsDir = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDir))
@@ -50,19 +55,18 @@ describeDb("postil login device authorization", () => {
     orgId = Number(org.rows[0]?.id);
     await migrationClient.end();
 
+    await closeDb();
     // getDb() is a lazy singleton keyed off DATABASE_URL at first call, so
     // pointing it at this scratch database before any route module is
     // imported makes every route under test talk to this database.
-    process.env.DATABASE_URL = databaseUrl.toString();
-    pool = new Pool({ connectionString: databaseUrl.toString(), max: 4 });
+    process.env.DATABASE_URL = database.url;
+    pool = database.pool;
   }, 30_000);
 
   afterAll(async () => {
-    await pool?.end();
-    if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
-      await adminClient.end();
-    }
+    await closeDb();
+    await database?.drop();
+    restoreDatabaseUrl();
   }, 30_000);
 
   test("start returns an opaque device code and an unambiguous, hyphenated user code", async () => {
@@ -231,6 +235,11 @@ describeDb("postil login device authorization", () => {
     expect(missingAuth.status).toBe(401);
   });
 });
+
+function restoreDatabaseUrl(): void {
+  if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+}
 
 function deviceTokenRequest(deviceCode: string): Request {
   return new Request("https://postil.dev/api/cli/device/token", {

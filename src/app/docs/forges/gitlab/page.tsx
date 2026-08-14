@@ -113,7 +113,7 @@ postil respond --forge gitlab --repo group/project --issue 12 \\
           job result rather than a named external check-run.
         </li>
         <li>
-          The hosted Postil app is GitHub-only today; on GitLab you run the CLI
+          The hosted Postil app is GitHub-only; on GitLab you run the CLI
           in CI, including for the interactive bot.
         </li>
         <li>

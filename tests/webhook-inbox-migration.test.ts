@@ -4,23 +4,23 @@ import { join } from "node:path";
 
 import { Client } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("webhook inbox activation migration", () => {
-  const databaseName = `postil_webhook_migration_${process.pid}_${Date.now()}`;
-  let admin: Client;
+  let database: EphemeralDatabase;
   let client: Client;
 
   beforeAll(async () => {
-    const adminUrl = new URL(TEST_URL!);
-    admin = new Client({ connectionString: adminUrl.toString() });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${databaseName}"`);
-
-    const databaseUrl = new URL(adminUrl);
-    databaseUrl.pathname = `/${databaseName}`;
-    client = new Client({ connectionString: databaseUrl.toString() });
+    database = await createUnmigratedEphemeralDatabase("webhook_migration", {
+      forceDrop: true,
+    });
+    client = new Client({ connectionString: database.url });
     await client.connect();
 
     const migrationDirectory = join(import.meta.dir, "..", "drizzle");
@@ -47,10 +47,7 @@ describeDb("webhook inbox activation migration", () => {
 
   afterAll(async () => {
     await client?.end().catch(() => undefined);
-    if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
-      await admin.end();
-    }
+    await database?.drop();
   });
 
   test("normalizes completion state and queues every retained payload", async () => {

@@ -161,8 +161,11 @@ cp .env.example .env
 #          a session secret, and your LLM key. Each line in
 #          .env.example explains its variable.
 
-docker compose up -d
-docker compose exec web bun run db:migrate`}</code>
+docker compose up -d db
+docker compose run --rm web bun run db:migrate
+docker compose run --rm web bun run operational:indexes
+docker compose run --rm web bun run queue:activate-lock-generation
+docker compose up -d`}</code>
         </pre>
         <p>
           Both the web app and the worker validate their configuration at boot:
@@ -274,12 +277,13 @@ POSTIL_API_KEY=azure-api-key
           <code>/api/health/dependencies</code> checks Postgres readiness.{" "}
           <code>/api/metrics</code> emits Prometheus text, including the silence
           rate and database-up signal, protected by a <code>METRICS_TOKEN</code>{" "}
-          bearer. The worker&apos;s watchdog fails any review running longer than 10 minutes
-          and completes its check runs as failed, so a stuck review never
-          leaves a PR stuck in progress indefinitely. And the CLI binary is baked
-          into the worker image at a pinned commit, so upgrading the reviewer is
-          an image upgrade, not a runtime download from a network you may have
-          deliberately cut off.
+          bearer. The worker&apos;s watchdog fails any review running longer than
+          10 minutes, completes <code>postil/review</code> as neutral, and
+          applies the organization merge-gate setting to{" "}
+          <code>postil/gate</code>. A stuck review does not leave either check in
+          progress indefinitely. The CLI binary is baked into the worker image
+          at a pinned commit, so upgrading the reviewer is an image upgrade, not
+          a runtime download from a network you may have deliberately cut off.
         </p>
 
         <h2>First review now, scale later</h2>

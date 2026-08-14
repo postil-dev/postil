@@ -4,15 +4,22 @@ import { join } from "node:path";
 
 import { Client } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("gate mode migration", () => {
   const schemaName = `gate_mode_${process.pid}_${Date.now()}`;
+  let database: EphemeralDatabase;
   let client: Client;
 
   beforeAll(async () => {
-    client = new Client({ connectionString: TEST_URL });
+    database = await createUnmigratedEphemeralDatabase("gate_mode");
+    client = new Client({ connectionString: database.url });
     await client.connect();
     await client.query(`CREATE SCHEMA "${schemaName}"`);
     await client.query(`SET search_path TO "${schemaName}"`);
@@ -61,9 +68,8 @@ describeDb("gate mode migration", () => {
 
   afterAll(async () => {
     if (!client) return;
-    await client.query("SET search_path TO public");
-    await client.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
     await client.end();
+    await database?.drop();
   });
 
   test("keeps every existing organization gated and gives new settings advisory defaults", async () => {

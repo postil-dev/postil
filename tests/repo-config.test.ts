@@ -351,7 +351,7 @@ test("degrades only effective slots and explains shared-source fallback", () => 
 
 describe("validateOrgConfigYaml", () => {
   test("accepts valid YAML and rejects malformed YAML with a clear error", () => {
-    expect(() => validateOrgConfigYaml("review:\n  minConfidence: 0.8\n")).not.toThrow();
+    expect(() => validateOrgConfigYaml("minConfidence: 0.8\n")).not.toThrow();
     expect(() => validateOrgConfigYaml("review: [broken\n")).toThrow(
       /Config YAML is invalid:/,
     );
@@ -359,7 +359,7 @@ describe("validateOrgConfigYaml", () => {
 
   test("rejects organization model overrides", () => {
     expect(() =>
-      validateOrgConfigYaml("review:\n  minConfidence: 0.8\nmodel:\n  name: org-model\n"),
+      validateOrgConfigYaml("minConfidence: 0.8\nmodel:\n  name: org-model\n"),
     ).toThrow("Organization fallback config cannot set model options");
   });
 

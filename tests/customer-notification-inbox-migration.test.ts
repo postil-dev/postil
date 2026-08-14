@@ -4,16 +4,22 @@ import { join } from "node:path";
 
 import { Client } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("customer notification inbox migration", () => {
+  let database: EphemeralDatabase;
   let client: Client;
 
   beforeAll(async () => {
-    client = new Client({ connectionString: TEST_URL });
+    database = await createUnmigratedEphemeralDatabase("customer_notification_inbox");
+    client = new Client({ connectionString: database.url });
     await client.connect();
-    await client.query("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public");
     await client.query(`
       CREATE TABLE users (
         id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY
@@ -36,6 +42,7 @@ describeDb("customer notification inbox migration", () => {
   afterAll(async () => {
     if (!client) return;
     await client.end();
+    await database?.drop();
   });
 
   test("enforces org idempotency, visibility, safe actions, and cascading reads", async () => {

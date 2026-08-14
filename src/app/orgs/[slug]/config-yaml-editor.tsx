@@ -1,7 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { isMap, parseDocument } from "yaml";
+import { isMap } from "yaml";
+
+import {
+  DEFAULT_BLOCK_ON_KINDS,
+  FINDING_KINDS,
+  isFindingKind,
+  type FindingKind,
+} from "@/lib/finding-kinds";
+import {
+  inspectPostilConfigYaml,
+  parsePostilYamlDocument,
+} from "@/lib/org-review-config";
 
 /**
  * Structured controls over the organization fallback `.postil.yaml`. The YAML
@@ -15,6 +26,18 @@ import { isMap, parseDocument } from "yaml";
  */
 
 const SEVERITIES = ["info", "warn", "error"] as const;
+const BLOCKING_KIND_LABELS: Record<FindingKind, string> = {
+  risk: "Risk",
+  humanEscalation: "Maintainer decision needed",
+  guardrail: "Guardrail",
+  uncertainty: "Uncertainty",
+  contentPolicy: "Content policy",
+};
+
+export interface BlockOnKindsValue {
+  state: "default" | "configured" | "invalid";
+  kinds: FindingKind[];
+}
 
 interface ConfigControlValues {
   severityThreshold: string | null;
@@ -22,27 +45,51 @@ interface ConfigControlValues {
   maxFindings: string;
   gateFailOn: string | null;
   gateOnError: string | null;
+  blockOnKinds: BlockOnKindsValue;
   contentPolicyEnabled: string | null;
   ignore: string;
 }
 
-function readControlValues(text: string): ConfigControlValues | null {
-  const doc = parseDocument(text);
-  if (doc.errors.length > 0) return null;
-  if (doc.contents !== null && !isMap(doc.contents)) return null;
+export function readControlValues(text: string): ConfigControlValues | null {
+  const inspected = inspectPostilConfigYaml(text);
+  const invalidBlockOnKinds =
+    !inspected.ok && inspected.issue.path.startsWith("gate.blockOnKinds");
+  if (!inspected.ok && (!invalidBlockOnKinds || inspected.raw === null)) return null;
+  const config = (inspected.ok ? inspected.parsed.config : inspected.raw) as Record<
+    string,
+    unknown
+  >;
   const scalar = (path: string[]): string | null => {
-    const value = doc.getIn(path);
-    return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+    let value: unknown = config;
+    for (const segment of path) {
+      if (!isRecord(value)) return null;
+      value = value[segment];
+    }
+    return typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "bigint" ||
+      typeof value === "boolean"
       ? String(value)
       : null;
   };
-  const ignoreValue = doc.toJS()?.ignore;
+  const gate = isRecord(config.gate) ? config.gate : undefined;
+  const ignoreValue = config.ignore;
+  const rawBlockOnKinds = gate?.blockOnKinds;
+  const blockOnKinds: BlockOnKindsValue =
+    invalidBlockOnKinds
+      ? { state: "invalid", kinds: [] }
+      : rawBlockOnKinds === undefined || rawBlockOnKinds === null
+      ? { state: "default", kinds: [...DEFAULT_BLOCK_ON_KINDS] }
+      : Array.isArray(rawBlockOnKinds) && rawBlockOnKinds.every(isFindingKind)
+        ? { state: "configured", kinds: rawBlockOnKinds }
+        : { state: "invalid", kinds: [] };
   return {
     severityThreshold: scalar(["severityThreshold"]),
     minConfidence: scalar(["minConfidence"]) ?? "",
     maxFindings: scalar(["maxFindings"]) ?? "",
     gateFailOn: scalar(["gate", "failOn"]),
     gateOnError: scalar(["gate", "onError"]),
+    blockOnKinds,
     contentPolicyEnabled: scalar(["contentPolicy", "enabled"]),
     ignore: Array.isArray(ignoreValue)
       ? ignoreValue.filter((entry) => typeof entry === "string").join("\n")
@@ -50,8 +97,12 @@ function readControlValues(text: string): ConfigControlValues | null {
   };
 }
 
-function withValue(text: string, path: string[], value: unknown): string {
-  const doc = parseDocument(text);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function withValue(text: string, path: string[], value: unknown): string {
+  const doc = parsePostilYamlDocument(text);
   // Controls only render for parseable mapping (or empty) documents; anything
   // else passes through untouched rather than risking a wipe or a throw.
   if (doc.errors.length > 0 || (doc.contents !== null && !isMap(doc.contents))) {
@@ -65,12 +116,32 @@ function withValue(text: string, path: string[], value: unknown): string {
       if (isMap(parent) && parent.items.length === 0) doc.deleteIn(path.slice(0, -1));
     }
   } else {
+    for (let length = 1; length < path.length; length += 1) {
+      const parentPath = path.slice(0, length);
+      if (doc.getIn(parentPath) === null) doc.setIn(parentPath, doc.createNode({}));
+    }
     doc.setIn(path, value);
   }
   if (doc.contents === null || (isMap(doc.contents) && doc.contents.items.length === 0)) {
     return "";
   }
   return String(doc);
+}
+
+export function toggleBlockOnKind(
+  text: string,
+  blockOnKinds: BlockOnKindsValue,
+  kind: FindingKind,
+): string {
+  if (blockOnKinds.state === "invalid") return text;
+  const selected = new Set(blockOnKinds.kinds);
+  if (selected.has(kind)) selected.delete(kind);
+  else selected.add(kind);
+  return withValue(
+    text,
+    ["gate", "blockOnKinds"],
+    FINDING_KINDS.filter((candidate) => selected.has(candidate)),
+  );
 }
 
 function normalizeIgnore(text: string): string {
@@ -118,7 +189,7 @@ export function ConfigYamlEditor({
   if (!values) {
     return (
       <p className="mt-2 rounded-card border border-stone/70 bg-ivory px-3 py-2 text-xs text-charcoal/60">
-        The options return when the YAML parses again. Fix it in the text field below.
+        The options return when this is valid Postil YAML. Fix it in the text field below.
       </p>
     );
   }
@@ -156,13 +227,15 @@ export function ConfigYamlEditor({
           {SEVERITIES.map((severity) => (
             <option key={severity} value={severity}>{severity}</option>
           ))}
+          <option value="never">never</option>
         </select>
         <span className="mt-1 block text-charcoal/55">
-          Findings at or above this severity fail the gate.
+          Sets the gate failure policy. Choose never to disable all ordinary finding blocking,
+          including selected kinds.
         </span>
       </label>
       <label className="block text-xs">
-        <span className="font-medium">On review outage</span>
+        <span className="font-medium">Direct publish outage</span>
         <select
           value={values.gateOnError ?? ""}
           onChange={(event) => setSelect(["gate", "onError"], event.target.value, "string")}
@@ -173,9 +246,58 @@ export function ConfigYamlEditor({
           <option value="advisory">advisory</option>
         </select>
         <span className="mt-1 block text-charcoal/55">
-          What the gate does when a review cannot complete.
+          Gate outcome for provider failures during direct CLI publication.
+          Hosted runs use the organization merge-gate setting.
         </span>
       </label>
+      <fieldset className="block text-xs sm:col-span-3">
+        <legend className="font-medium">Block finding kinds</legend>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          {values.blockOnKinds.state !== "default" && (
+            <button
+              type="button"
+              onClick={() => onChange(withValue(value, ["gate", "blockOnKinds"], undefined))}
+              className="text-rust underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-gate"
+            >
+              Use default
+            </button>
+          )}
+        </div>
+        <span className="mt-1 block text-charcoal/55">
+          After review filters are applied, selected kinds can fail the gate independently of
+          severity, unless Gate fails at is never. Maintainer decisions also require confidence of
+          at least 0.30. Gate fails at applies the severity threshold.
+        </span>
+        {values.blockOnKinds.state === "invalid" ? (
+          <p role="alert" className="mt-2 text-rust">
+            <code>gate.blockOnKinds</code> must be a list of supported finding kinds. Fix it in
+            the YAML source.
+          </p>
+        ) : (
+          <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {FINDING_KINDS.map((kind) => {
+              const checked = values.blockOnKinds.kinds.includes(kind);
+              return (
+                <label
+                  key={kind}
+                  className="flex items-center gap-2 rounded-card border border-stone/70 px-2 py-1.5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onChange(toggleBlockOnKind(value, values.blockOnKinds, kind))}
+                    className="size-3.5 accent-gate"
+                  />
+                  <span>{BLOCKING_KIND_LABELS[kind]}</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <span className="mt-1 block text-charcoal/55">
+          Default: Maintainer decision needed. An empty selection blocks no finding kinds.
+        </span>
+      </fieldset>
       <label className="block text-xs">
         <span className="font-medium">Content policy</span>
         <select

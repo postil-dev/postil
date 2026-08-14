@@ -14,11 +14,16 @@ let membershipSlugs: string[];
 let activeInstallation: boolean;
 let queryCount: number;
 let verificationUnavailable: boolean;
+let retryAvailableAt: Date;
 
 mock.module("@/lib/session", () => ({
   getVerifiedSessionUser: async () =>
     verificationUnavailable
-      ? { ok: false, reason: "verification_unavailable" }
+      ? {
+          ok: false,
+          reason: "verification_unavailable",
+          retryAvailableAt,
+        }
       : sessionUser
       ? { ok: true, user: sessionUser }
       : { ok: false, reason: "unauthenticated" },
@@ -37,6 +42,7 @@ beforeEach(() => {
   activeInstallation = false;
   queryCount = 0;
   verificationUnavailable = false;
+  retryAvailableAt = new Date(Date.now() + 60_000);
 });
 
 describe("GET /api/auth/session", () => {
@@ -56,6 +62,7 @@ describe("GET /api/auth/session", () => {
     const response = await GET();
 
     expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("60");
     expect(await response.json()).toEqual({
       authenticated: false,
       reason: "membership_verification_unavailable",

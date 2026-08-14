@@ -6,6 +6,8 @@ import {
   gateCheckConclusionForEnvelope,
   hasLegacyCombinedModelUsage,
   ingestEnvelope,
+  isEnvelopeOperationallyUnavailable,
+  parseStoredEnvelope,
   type Envelope,
 } from "@/lib/envelope";
 
@@ -53,6 +55,100 @@ describe("envelope ingestion", () => {
     expect(ingested.usageAccountingComplete).toBe(false);
     // Stored verbatim.
     expect(ingested.envelope).toEqual(validEnvelope());
+  });
+
+  test("ingests a CLI-disabled gate with otherwise blocking kinds", () => {
+    const envelope = validEnvelope({
+      gate: {
+        failOn: "never",
+        failing: false,
+        blockOnKinds: ["risk", "humanEscalation"],
+      },
+      findings: [
+        {
+          id: "kind-blocked-risk",
+          path: "src/billing/invoice.ts",
+          line: 84,
+          severity: "error",
+          kind: "risk",
+          confidence: 0.91,
+          title: "Refund path skips idempotency key",
+          body: "A retried webhook double-credits the customer.",
+        },
+        {
+          id: "kind-blocked-escalation",
+          path: "src/billing/invoice.ts",
+          line: 92,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.8,
+          title: "Confirm the refund policy",
+          body: "A maintainer decision is required before this policy is applied.",
+        },
+      ],
+      counts: { info: 0, warn: 1, error: 1, suppressed: 0, ungrounded: 0 },
+    });
+
+    const ingested = ingestEnvelope(JSON.stringify(envelope));
+
+    expect(ingested.envelope.gate.failOn).toBe("never");
+    expect(ingested.gateFailing).toBe(false);
+  });
+
+  test("ingests CLI camelCase blockOnKinds and applies it to the effective gate", () => {
+    const envelope = validEnvelope({
+      gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },
+      findings: [
+        {
+          id: "kind-only",
+          path: "src/app.ts",
+          line: 1,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.8,
+          title: "Needs human approval",
+          body: "Escalated by policy.",
+        },
+      ],
+      counts: { info: 0, warn: 1, error: 0, suppressed: 0, ungrounded: 0 },
+    });
+
+    const ingested = ingestEnvelope(JSON.stringify(envelope));
+
+    expect(ingested.envelope.gate.blockOnKinds).toEqual(["humanEscalation"]);
+    expect(computeEffectiveGate(ingested.envelope, new Set()).failing).toBe(true);
+  });
+
+  test("rejects snake_case and unknown gate fields from CLI output", () => {
+    for (const gate of [
+      { failOn: "error", failing: true, block_on_kinds: ["humanEscalation"] },
+      { failOn: "error", failing: true, blockOnKinds: [], onError: "advisory" },
+    ]) {
+      expect(() => ingestEnvelope(JSON.stringify({ ...validEnvelope(), gate }))).toThrow(
+        /CLI output does not match envelope schema v1 \(gate:/,
+      );
+    }
+  });
+
+  test("normalizes the historical stored snake_case gate without widening ingestion", () => {
+    const stored = {
+      ...validEnvelope(),
+      gate: { failOn: "error", failing: true, block_on_kinds: ["humanEscalation"] },
+    };
+
+    expect(() => ingestEnvelope(JSON.stringify(stored))).toThrow(/envelope schema v1/);
+    const normalized = parseStoredEnvelope(stored);
+    expect(normalized?.gate).toEqual({
+      failOn: "error",
+      failing: true,
+      blockOnKinds: ["humanEscalation"],
+    });
+    expect(stored.gate).toEqual({
+      failOn: "error",
+      failing: true,
+      block_on_kinds: ["humanEscalation"],
+    });
+    expect(computeEffectiveGate(normalized, new Set()).failing).toBe(true);
   });
 
   test("preserves explicit complete accounting", () => {
@@ -470,6 +566,70 @@ describe("envelope ingestion", () => {
 });
 
 describe("effective gate recomputation", () => {
+  test("never short-circuits severity, kind, and human-escalation blockers", () => {
+    const env = validEnvelope({
+      gate: {
+        failOn: "never",
+        failing: false,
+        blockOnKinds: ["risk", "humanEscalation"],
+      },
+      findings: [
+        {
+          id: "error-risk",
+          path: "src/billing/invoice.ts",
+          line: 84,
+          severity: "error",
+          kind: "risk",
+          confidence: 0.91,
+          title: "Refund path skips idempotency key",
+          body: "A retried webhook double-credits the customer.",
+        },
+        {
+          id: "human-escalation",
+          path: "src/billing/invoice.ts",
+          line: 92,
+          severity: "warn",
+          kind: "humanEscalation",
+          confidence: 0.8,
+          title: "Confirm the refund policy",
+          body: "A maintainer decision is required before this policy is applied.",
+        },
+      ],
+      counts: { info: 0, warn: 1, error: 1, suppressed: 0, ungrounded: 0 },
+    });
+
+    const state = computeEffectiveGate(env, new Set());
+
+    expect(state).toMatchObject({ failing: false, unavailable: false });
+    expect(state.blockers).toEqual([]);
+    expect(state.kindBlockers).toEqual([]);
+    expect(gateCheckConclusionForEnvelope(env, new Set(), true)).toBe("success");
+  });
+
+  test("never leaves operational findings unavailable without blocking the gate", () => {
+    const env = validEnvelope({
+      gate: { failOn: "never", failing: false, blockOnKinds: [] },
+      findings: [
+        {
+          id: "provider-unavailable",
+          path: ".postil/provider",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: "Review unavailable",
+          body: "The review provider did not return a usable result.",
+        },
+      ],
+    });
+
+    const state = computeEffectiveGate(env, new Set());
+
+    expect(state).toMatchObject({ failing: false, unavailable: true });
+    expect(state.blockers).toEqual([]);
+    expect(gateCheckConclusionForEnvelope(env, new Set(), true)).toBe("neutral");
+  });
+
   test("does not let a declared pass suppress an admitted blocker", () => {
     const env = validEnvelope({
       gate: {
@@ -635,8 +795,8 @@ describe("effective gate recomputation", () => {
     expect(state.kindBlockers).toEqual([]);
   });
 
-  test("active approval clears kind-only blockers from CLI v0.3 block_on_kinds", () => {
-    const env = validEnvelope({
+  test("legacy stored snake_case gates normalize before effective-gate evaluation", () => {
+    const env = {
       gate: { failOn: "error", failing: true, block_on_kinds: ["humanEscalation"] },
       findings: [
         {
@@ -651,10 +811,11 @@ describe("effective gate recomputation", () => {
         },
       ],
       counts: { info: 0, warn: 1, error: 0, suppressed: 0, ungrounded: 0 },
-    });
+    };
+    const stored = parseStoredEnvelope({ ...validEnvelope(), ...env });
 
-    expect(computeEffectiveGate(env, new Set()).kindBlockers).toHaveLength(1);
-    expect(computeEffectiveGate(env, new Set(["kind-only"])).failing).toBe(false);
+    expect(computeEffectiveGate(stored, new Set()).kindBlockers).toHaveLength(1);
+    expect(computeEffectiveGate(stored, new Set(["kind-only"])).failing).toBe(false);
   });
 
   test("approval does not clear severity blockers on the same finding", () => {
@@ -705,6 +866,36 @@ describe("effective gate recomputation", () => {
       findings: [{ id: "sentinel", ...validEnvelope().findings[0]!, path: ".postil/operational" }],
     });
     expect(computeEffectiveGate(env, new Set(), new Set(["sentinel"])).failing).toBe(true);
+  });
+
+  test("recognizes no-verdict envelopes only when every active finding uses an exact operational path", () => {
+    const sentinel = {
+      ...validEnvelope().findings[0]!,
+      path: ".postil/provider",
+    };
+    expect(
+      isEnvelopeOperationallyUnavailable(
+        validEnvelope({ findings: [sentinel] }),
+      ),
+    ).toBe(true);
+    expect(
+      isEnvelopeOperationallyUnavailable(
+        validEnvelope({
+          findings: [
+            sentinel,
+            { ...sentinel, path: "src/provider.ts" },
+          ],
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isEnvelopeOperationallyUnavailable(
+        validEnvelope({ findings: [{ ...sentinel, path: ".postil/provider/timeout" }] }),
+      ),
+    ).toBe(false);
+    expect(
+      isEnvelopeOperationallyUnavailable(validEnvelope({ findings: [] })),
+    ).toBe(false);
   });
 
   test("all blockers must clear before the effective gate passes", () => {

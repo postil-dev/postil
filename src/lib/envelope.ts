@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { FINDING_KINDS, type FindingKind } from "./finding-kinds";
+
 /**
  * Frozen envelope schema, version 1.
  *
@@ -12,16 +14,9 @@ import { z } from "zod";
  */
 
 export const severitySchema = z.enum(["info", "warn", "error"]);
-export const findingKindSchema = z.enum([
-  "risk",
-  "humanEscalation",
-  "guardrail",
-  "uncertainty",
-  // Opt-in prose/content review dimension (CLI >= v0.1.2). Missing here
-  // meant ingestion rejected the whole envelope and the review failed
-  // closed the first time a repo with a content policy produced a finding.
-  "contentPolicy",
-]);
+export const gateFailOnSchema = z.union([severitySchema, z.literal("never")]);
+// Includes the opt-in content-policy finding emitted by newer CLI versions.
+export const findingKindSchema = z.enum(FINDING_KINDS);
 
 export const findingSchema = z.object({
   id: z.string().min(1).optional(),
@@ -36,8 +31,20 @@ export const findingSchema = z.object({
   generatorKind: findingKindSchema.optional(),
   scorerKind: findingKindSchema.optional(),
   scorerReason: z.string().optional(),
+  repositoryContext: z
+    .object({
+      claim: z.enum(["absence", "mismatch"]),
+      resources: z.array(z.string()).optional(),
+      values: z.array(z.string()).optional(),
+      versions: z.array(z.string()).optional(),
+      paths: z.array(z.string()).optional(),
+      identifiers: z.array(z.string()).optional(),
+    })
+    .strict()
+    .optional(),
   title: z.string(),
   body: z.string(),
+  evidence: z.string().optional(),
 });
 
 export const suppressionReasonSchema = z.enum([
@@ -49,6 +56,7 @@ export const suppressionReasonSchema = z.enum([
   "anchorMismatch",
   "duplicateRootCause",
   "derivedFromSuppressed",
+  "repositoryClaimUnsupported",
 ]);
 
 export const suppressedFindingSchema = z.object({
@@ -79,6 +87,41 @@ export const reviewAdmissionSchema = z.object({
   outputTokens: z.number().int().nonnegative(),
   projectedCostMicros: z.number().int().nonnegative().max(1_000_000),
 });
+
+export const repositorySearchSchema = z
+  .object({
+    headSha: z.string().optional(),
+    state: z.enum(["complete", "unavailable", "exhausted"]),
+    treeSha256: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
+    queries: z
+      .array(
+        z
+          .object({
+            kind: z.enum(["resource", "value", "version", "path", "identifier"]),
+            querySha256: z.string().regex(/^[0-9a-f]{64}$/u),
+          })
+          .strict(),
+      )
+      .optional(),
+    searchedBlobs: z.number().int().nonnegative().optional(),
+    searchedBytes: z.number().int().nonnegative().optional(),
+    matchCount: z.number().int().nonnegative().optional(),
+    matchedQuerySha256: z.array(z.string().regex(/^[0-9a-f]{64}$/u)).optional(),
+    matches: z
+      .array(
+        z
+          .object({
+            querySha256: z.string().regex(/^[0-9a-f]{64}$/u),
+            path: z.string(),
+            occurrences: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .optional(),
+    matchesTruncated: z.boolean().optional(),
+  })
+  .strict();
+
 export const envelopeSchema = z
   .object({
     version: z.literal(1),
@@ -106,11 +149,10 @@ export const envelopeSchema = z
       z.number().int().nonnegative(),
     ]),
     gate: z.object({
-      failOn: severitySchema,
+      failOn: gateFailOnSchema,
       failing: z.boolean(),
       blockOnKinds: z.array(findingKindSchema).optional(),
-      block_on_kinds: z.array(findingKindSchema).optional(),
-    }),
+    }).strict(),
     modelUsed: z.string(),
     scorerModel: z.string().optional(),
     scorerError: z.string().optional(),
@@ -135,6 +177,7 @@ export const envelopeSchema = z
     // them verbatim is required for durable large-review audit and recovery.
     reviewCoverage: reviewCoverageSchema.optional(),
     reviewAdmission: reviewAdmissionSchema.optional(),
+    repositorySearch: repositorySearchSchema.optional(),
     usageAccountingComplete: z.boolean().optional(),
     // Engine wall-clock duration in milliseconds (0 when emitted by older CLIs).
     durationMs: z.number().int().nonnegative().optional().default(0),
@@ -152,6 +195,16 @@ export const envelopeSchema = z
           message: "selected review batches cannot exceed total batches",
         });
       }
+    }
+    if (
+      envelope.repositorySearch?.state === "complete" &&
+      envelope.repositorySearch.headSha !== envelope.headSha
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["repositorySearch", "headSha"],
+        message: "complete repository search must match the reviewed head",
+      });
     }
     if (envelope.modelUsage) {
       const totals = envelope.modelUsage.reduce(
@@ -207,12 +260,36 @@ export const envelopeSchema = z
   });
 
 export type Severity = z.infer<typeof severitySchema>;
-export type FindingKind = z.infer<typeof findingKindSchema>;
+export type GateFailOn = z.infer<typeof gateFailOnSchema>;
+export type { FindingKind } from "./finding-kinds";
 export type Finding = z.infer<typeof findingSchema>;
 export type SuppressionReason = z.infer<typeof suppressionReasonSchema>;
 export type SuppressedFinding = z.infer<typeof suppressedFindingSchema>;
 export type ModelIncident = z.infer<typeof modelIncidentSchema>;
+export type RepositorySearchReceipt = z.infer<typeof repositorySearchSchema>;
 export type Envelope = z.infer<typeof envelopeSchema>;
+
+/**
+ * Read legacy stored CLI v0.3 records without widening the CLI wire schema.
+ * The translation is intentionally one-way and refuses mixed gate spellings.
+ */
+export function parseStoredEnvelope(value: unknown): Envelope | null {
+  const normalized = normalizeStoredEnvelope(value);
+  const result = envelopeSchema.safeParse(normalized);
+  return result.success ? result.data : null;
+}
+
+function normalizeStoredEnvelope(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.gate)) return value;
+  const gate = value.gate;
+  if (!("block_on_kinds" in gate) || "blockOnKinds" in gate) return value;
+  const { block_on_kinds: blockOnKinds, ...currentGate } = gate;
+  return { ...value, gate: { ...currentGate, blockOnKinds } };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 export const LEGACY_COMBINED_USAGE_NOTICE =
   "This run records one token total that may combine reviewer and independent-check calls. Its older envelope cannot split usage by model.";
@@ -307,8 +384,9 @@ export interface IngestedEnvelope {
 /**
  * Parse and validate CLI stdout into a stored envelope plus the
  * denormalized columns the dashboard queries on. Throws with a precise
- * message on malformed input; callers treat that as an operational
- * failure of the review (fail closed), never as a clean pass.
+ * message on malformed input; callers record an operational failure with no
+ * reviewer verdict, never a clean pass. Merge enforcement is applied
+ * separately.
  */
 export function ingestEnvelope(raw: string): IngestedEnvelope {
   let parsed: unknown;
@@ -409,7 +487,8 @@ function modelIncidentClassificationKey(
   ].join(":");
 }
 
-export function severityBlocksGate(severity: Severity, failOn: Severity): boolean {
+export function severityBlocksGate(severity: Severity, failOn: GateFailOn): boolean {
+  if (failOn === "never") return false;
   return SEVERITY_RANK[severity] <= SEVERITY_RANK[failOn];
 }
 
@@ -421,11 +500,14 @@ export function isOperationalFinding(finding: Pick<Finding, "path">): boolean {
   );
 }
 
-/** An unrecovered review failure is not a clean review verdict. */
+/** Only an envelope made entirely of exact operational sentinels has no verdict. */
 export function isEnvelopeOperationallyUnavailable(
   envelope: Pick<Envelope, "findings">,
 ): boolean {
-  return envelope.findings.some(isOperationalFinding);
+  return (
+    envelope.findings.length > 0 &&
+    envelope.findings.every(isOperationalFinding)
+  );
 }
 
 export function findingStableId(finding: Finding): string | null {
@@ -447,6 +529,16 @@ export function computeEffectiveGate(
   }
 
   const unavailable = isEnvelopeOperationallyUnavailable(envelope);
+  // The CLI treats `never` as a complete gate opt-out. It bypasses every
+  // finding-based blocker, including kind and human-escalation policy.
+  if (envelope.gate.failOn === "never") {
+    return {
+      failing: false,
+      unavailable,
+      blockers: [],
+      kindBlockers: [],
+    };
+  }
   const blockOnKinds = new Set(getGateBlockOnKinds(envelope));
   const states = envelope.findings.map((finding): FindingBlockState => {
     const findingId = findingStableId(finding);
@@ -503,7 +595,5 @@ export function gateCheckConclusionForEnvelope(
 }
 
 export function getGateBlockOnKinds(envelope: Envelope): FindingKind[] {
-  return Array.from(
-    new Set([...(envelope.gate.block_on_kinds ?? []), ...(envelope.gate.blockOnKinds ?? [])]),
-  );
+  return envelope.gate.blockOnKinds ?? [];
 }

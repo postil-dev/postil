@@ -35,7 +35,7 @@ let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let webhookDeliveryLoadError: Error | undefined;
 let reviewTiming:
-  | { queuedAt: Date; startedAt: Date; lease?: ClaimedJob }
+  | { queuedAt: Date; startedAt: Date; lease: ClaimedJob }
   | undefined;
 let reviewProcessGroup: string | undefined;
 let reviewSignal: AbortSignal | undefined;
@@ -45,6 +45,7 @@ const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
 class MockReviewPublicationReconciliationError extends Error {}
+class MockReviewInputConvergenceError extends Error {}
 class MockPermanentJobError extends Error {
   permanent = true;
 }
@@ -141,15 +142,14 @@ mock.module("@/lib/queue", () => ({
     retriedIndefinitely.push({ id: job.id, error });
     return "retried";
   },
-  requeueJobsOwnedBy: async (
+  requeueClaimedJobs: async (
     _pool: unknown,
-    _lockedByPrefix: string,
     _reason: string,
     _kinds: readonly string[],
-    jobIds: readonly number[],
+    leases: readonly ClaimedJob[],
   ) => {
-    shutdownRequeues.push(...jobIds);
-    return jobIds.length;
+    shutdownRequeues.push(...leases.map((lease) => lease.id));
+    return leases.length;
   },
 }));
 
@@ -158,6 +158,7 @@ mock.module("@/worker/watchdog", () => ({
 }));
 
 mock.module("@/worker/review", () => ({
+  ReviewInputConvergenceError: MockReviewInputConvergenceError,
   ReviewPublicationReconciliationError:
     MockReviewPublicationReconciliationError,
   WorkerShutdownError: MockWorkerShutdownError,
@@ -173,7 +174,7 @@ mock.module("@/worker/review", () => ({
   },
   runReviewJob: async (
     _payload: unknown,
-    timing: { queuedAt: Date; startedAt: Date; lease?: ClaimedJob },
+    timing: { queuedAt: Date; startedAt: Date; lease: ClaimedJob },
     processGroup: string,
     signal?: AbortSignal,
     onPublicationStarted?: () => void,
@@ -235,8 +236,12 @@ mock.module("@/worker/gate-enforcement-sweep", () => ({
   runGateEnforcementSweepJob: async () => null,
 }));
 
-const { drainQueueOnce, runClaimedJob, triggerQueueDrain } =
-  await import("@/worker/runner");
+const {
+  ActiveClaimExecutionRegistry,
+  drainQueueOnce,
+  runClaimedJob,
+  triggerQueueDrain,
+} = await import("@/worker/runner");
 
 function reviewJob(id: number): ClaimedJob {
   return {
@@ -253,6 +258,7 @@ function reviewJob(id: number): ClaimedJob {
     maxAttempts: 3,
     createdAt: new Date("2026-07-10T12:00:00.000Z"),
     lockedAt: new Date("2026-07-10T12:00:05.000Z"),
+    lockGeneration: 1n,
     lockedBy: "test",
   };
 }
@@ -299,6 +305,34 @@ afterEach(() => {
 });
 
 describe("drainQueueOnce", () => {
+  test("old generation completion cannot erase newer generation tracking", () => {
+    const executions = new ActiveClaimExecutionRegistry();
+    const oldJob = reviewJob(91);
+    const currentJob = {
+      ...oldJob,
+      lockGeneration: oldJob.lockGeneration + 1n,
+    };
+    const oldController = new AbortController();
+    const currentController = new AbortController();
+    const oldExecution = executions.add(oldJob, oldController);
+    const currentExecution = executions.add(currentJob, currentController);
+
+    expect(executions.values().map((execution) => execution.job.lockGeneration))
+      .toEqual([1n, 2n]);
+    expect(executions.delete(oldExecution)).toBe(true);
+    expect(executions.values()).toEqual([currentExecution]);
+    expect(executions.delete(oldExecution)).toBe(false);
+
+    const shutdownExecutions = executions.values();
+    for (const execution of shutdownExecutions) execution.controller.abort();
+    const shutdownReviewLeases = shutdownExecutions
+      .filter((execution) => execution.job.kind === "review")
+      .map((execution) => execution.job);
+    expect(oldController.signal.aborted).toBe(false);
+    expect(currentController.signal.aborted).toBe(true);
+    expect(shutdownReviewLeases).toEqual([currentJob]);
+  });
+
   test("forwards worker cancellation to review execution", async () => {
     const controller = new AbortController();
     const onPublicationStarted = () => undefined;
@@ -362,6 +396,22 @@ describe("drainQueueOnce", () => {
     expect(completed).toEqual([]);
   });
 
+  test("retries GitHub input convergence without consuming ordinary attempts", async () => {
+    reviewRun = async () => {
+      throw new MockReviewInputConvergenceError(
+        "GitHub pull request snapshot has not converged",
+      );
+    };
+
+    await runClaimedJob(reviewJob(19), "worker 0", "worker");
+
+    expect(retriedIndefinitely).toEqual([
+      { id: 19, error: "GitHub pull request snapshot has not converged" },
+    ]);
+    expect(failed).toEqual([]);
+    expect(completed).toEqual([]);
+  });
+
   test("does not mask an ordinary failure that races with shutdown", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -414,26 +464,28 @@ describe("drainQueueOnce", () => {
     expect(worker).toContain(
       'readPositiveIntEnv("WORKER_SHUTDOWN_SETTLE_MS", 15_000)',
     );
-    expect(worker).toContain("activeControllers.set(job.id, controller)");
-    expect(worker).toContain("requeueableReviewIds.add(job.id)");
-    expect(worker).toContain("requeueableReviewIds.delete(job.id)");
+    expect(worker).toContain("activeClaimExecutions.add(job, controller)");
+    expect(worker).toContain("activeClaimExecutions.delete(execution)");
+    expect(worker).not.toContain("new Map<number, AbortController>()");
+    expect(worker).not.toContain("new Map<number, JobLease>()");
     expect(worker).toContain("if (shuttingDown && job)");
-    expect(worker).toContain("[job.id]");
+    expect(worker).toContain("[job]");
     expect(shutdown).toContain("controller.abort()");
     expect(shutdown).toContain("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)");
     expect(shutdown).toContain(
-      "const activeReviewJobIds = [...activeControllers.keys()]",
+      "const activeReviewLeases = activeClaimExecutions",
     );
-    expect(shutdown).toContain("requeueableReviewIds.has(jobId)");
-    expect(shutdown).toContain("await requeueJobsOwnedBy(");
-    expect(shutdown).toContain("`${workerId}#`");
+    expect(shutdown).toContain("execution.controller.abort()");
+    expect(shutdown).toContain('execution.job.kind === "review"');
+    expect(shutdown).toContain(".map((execution) => execution.job)");
+    expect(shutdown).toContain("await requeueClaimedJobs(");
     expect(shutdown).toContain('["review"]');
     expect(shutdown.indexOf("controller.abort()")).toBeLessThan(
       shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)"),
     );
     expect(
       shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)"),
-    ).toBeLessThan(shutdown.indexOf("await requeueJobsOwnedBy("));
+    ).toBeLessThan(shutdown.indexOf("await requeueClaimedJobs("));
     expect(webhookRedeliveryLoop).toContain(
       "if (!shuttingDown) {\n      await sleepUntilWebhookRedelivery",
     );

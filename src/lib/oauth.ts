@@ -4,6 +4,7 @@ export const GITHUB_SETUP_INSTALLATION_COOKIE = "postil_setup_installation";
 export const OAUTH_CALLBACK_PATH = "/api/auth/callback";
 
 const RETURN_TARGET_BASE = "https://postil.invalid";
+const MAX_ORGANIZATION_SETTINGS_URL_LENGTH = 2_048;
 
 /**
  * Accept a same-site account path for the post-authentication redirect.
@@ -98,6 +99,19 @@ export function reviewDetailsUrl(
     `/orgs/${encodeURIComponent(orgSlug)}/runs/${encodeURIComponent(publicId)}`,
     origin,
   ).toString();
+}
+
+/** Build a dashboard link to the authenticated settings for one organization. */
+export function organizationSettingsUrl(
+  orgSlug: string | null | undefined,
+): string | undefined {
+  const origin = configuredPublicOrigin();
+  if (!origin || !orgSlug) return undefined;
+  const expectedPath = `/orgs/${encodeURIComponent(orgSlug)}/settings`;
+  const url = new URL(expectedPath, origin);
+  if (url.pathname !== expectedPath) return undefined;
+  const href = url.toString();
+  return href.length <= MAX_ORGANIZATION_SETTINGS_URL_LENGTH ? href : undefined;
 }
 
 function normalizeOrigin(value: string, source: string): string {

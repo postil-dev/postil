@@ -3,6 +3,11 @@ import { readFile } from "node:fs/promises";
 
 import { Client } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
@@ -20,10 +25,12 @@ describe("gate enforcement migration source", () => {
 
 describeDb("gate enforcement migration behavior", () => {
   const schemaName = `gate_enforcement_${process.pid}_${Date.now()}`;
+  let database: EphemeralDatabase;
   let client: Client;
 
   beforeAll(async () => {
-    client = new Client({ connectionString: TEST_URL });
+    database = await createUnmigratedEphemeralDatabase("gate_enforcement");
+    client = new Client({ connectionString: database.url });
     await client.connect();
     await client.query(`CREATE SCHEMA "${schemaName}"`);
     await client.query(`SET search_path TO "${schemaName}"`);
@@ -56,9 +63,8 @@ describeDb("gate enforcement migration behavior", () => {
 
   afterAll(async () => {
     if (!client) return;
-    await client.query("SET search_path TO public");
-    await client.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
     await client.end();
+    await database?.drop();
   });
 
   test("enforces observation states", async () => {

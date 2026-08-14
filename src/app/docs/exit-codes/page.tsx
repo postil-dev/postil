@@ -108,47 +108,39 @@ export default function ExitCodesPage() {
         </li>
       </ul>
       <p>
-        <code>main.rs</code> catches every error <code>dispatch()</code>{" "}
-        returns, prints it as <code>postil: error: {"<detail>"}</code> to
-        stderr, and exits <code>2</code>. Nothing in Postil maps an
-        operational error to exit <code>0</code>; a failure to run a review
-        is never reported as a pass.
+        The CLI writes a bounded <code>postil: error: {"<detail>"}</code>{" "}
+        diagnostic to stderr and exits <code>2</code>. An operational failure
+        is never reported as a clean review.
       </p>
 
-      <h2>The error-path advisory nuance</h2>
+      <h2>Remote publication and hosted runs</h2>
       <p>
-        For remote reviews, a pre-review fetch failure both exits{" "}
-        <code>2</code> at the process level <em>and</em>, on a best-effort
-        basis, posts a synthetic error envelope to the forge&apos;s check-runs before the
-        process exits, so the PR page reflects the failure even though the
-        CLI invocation itself reports an operational error. That check-run
-        outcome depends on <code>gate.onError</code>:
+        A remote review can publish a no-verdict result before exiting{" "}
+        <code>2</code>. That result uses an envelope whose active findings all
+        use reserved operational paths. Ordinary findings, mixed envelopes,
+        and path lookalikes are not accepted as an operational result.
       </p>
       <ul>
         <li>
-          <code>gate.onError: block</code> (default): <code>postil/gate</code>{" "}
-          completes as failing on the forge, matching the process exit code.
+          Direct CLI publication always leaves <code>postil/review</code>{" "}
+          neutral because no reviewer verdict exists.{" "}
+          <code>gate.onError: block</code> makes <code>postil/gate</code> fail;{" "}
+          <code>gate.onError: advisory</code> leaves it neutral. The setting
+          never changes exit code <code>2</code>.
         </li>
         <li>
-          <code>gate.onError: advisory</code>: <code>postil/gate</code>{" "}
-          completes as passing on the forge (a provider outage should not
-          freeze a merge queue), but <code>postil/review</code> still shows{" "}
-          <code>neutral</code> with the error, and the CLI process itself
-          still exits <code>2</code>. <code>gate.onError</code> only changes
-          what the forge check-run reports; it never changes the CLI exit
-          code, and it never applies to unusable model output, only to
-          provider-class failures (timeouts, outages, unreachable
-          endpoints).
+          Hosted Postil retains the validated envelope and usage for private
+          diagnostics, records the run as failed with no verdict, and leaves{" "}
+          <code>postil/review</code> neutral. The organization merge-gate
+          setting controls <code>postil/gate</code>: failure when enforcement
+          is enabled, neutral while advisory.
         </li>
       </ul>
       <p>
-        Once a review actually runs and the model returns output that cannot
-        be validated, that is not an operational error: it is a gate-failing
-        finding at <code>.postil/model-output:1</code> (exit <code>1</code>),
-        because a malicious diff can otherwise induce unusable output through
-        prompt injection and must never be rewarded with a silent pass. Fail
-        closed applies uniformly regardless of <code>gate.onError</code> for
-        that class.
+        A validated review with blocking findings exits <code>1</code>. A model
+        or tooling failure that prevents a reviewer verdict exits <code>2</code>{" "}
+        and remains distinct from a completed review whose publication to the
+        forge is incomplete.
       </p>
 
       <h2>postil doctor</h2>
@@ -168,8 +160,8 @@ export default function ExitCodesPage() {
         <code>{`postil review --repo owner/name --pr "$PR_NUMBER"
 case $? in
   0) echo "clean or below gate threshold" ;;
-  1) echo "gate-failing findings — block the merge" ; exit 1 ;;
-  2) echo "operational error — check postil: error output, not a code review verdict" ; exit 1 ;;
+  1) echo "gate-failing findings: block the merge" ; exit 1 ;;
+  2) echo "operational error: check postil: error output, not a code review verdict" ; exit 1 ;;
 esac`}</code>
       </pre>
       <p>

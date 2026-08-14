@@ -12,9 +12,9 @@ import {
 import { MODELS } from "@/data/models";
 import { schema } from "@/lib/db";
 import {
-  envelopeSchema,
   hasLegacyCombinedModelUsage,
   LEGACY_COMBINED_USAGE_NOTICE,
+  parseStoredEnvelope,
   type Finding,
   type SuppressionReason,
 } from "@/lib/envelope";
@@ -44,6 +44,7 @@ import {
 } from "../../actions";
 import { DismissFindingForm } from "./dismiss-finding-form";
 import { RevokeDismissalForm } from "./revoke-dismissal-form";
+import { partitionRunFindingsForPresentation } from "./run-presentation";
 import {
   LiveDuration,
   LiveFinishedAt,
@@ -189,6 +190,7 @@ const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
   anchorMismatch: "Cited a line its named construct does not sit on",
   duplicateRootCause: "Restates a published finding about another location",
   derivedFromSuppressed: "Built on a finding suppressed as mis-anchored",
+  repositoryClaimUnsupported: "Repository-wide claim lacks complete evidence",
 };
 
 const PUBLICATION_STATE_LABELS: Record<PublicationState, string> = {
@@ -557,8 +559,7 @@ export default async function RunDetailPage({
   // The jsonb column's type is a compile-time cast; re-validate before deep
   // rendering so a legacy or malformed envelope degrades to a notice instead
   // of throwing mid-render.
-  const parsedEnvelope = review.envelope ? envelopeSchema.safeParse(review.envelope) : null;
-  const envelope = parsedEnvelope?.success ? parsedEnvelope.data : null;
+  const envelope = review.envelope ? parseStoredEnvelope(review.envelope) : null;
   const reviewForApproval: ReviewForApproval = {
     id: review.id,
     publicId: review.publicId,
@@ -577,8 +578,12 @@ export default async function RunDetailPage({
     installationAccountType: review.installationAccountType,
   };
   const approvalState = envelope ? await getReviewApprovalState(db, reviewForApproval) : null;
-  const envelopeInvalid = parsedEnvelope !== null && !parsedEnvelope.success;
-  const findings = envelope ? sortFindingsForDisplay(envelope.findings) : [];
+  const envelopeInvalid = review.envelope !== null && envelope === null;
+  const {
+    operationalDiagnostics,
+    reviewerFindings,
+    noReviewerVerdict,
+  } = partitionRunFindingsForPresentation(envelope);
   const resolved = envelope ? sortFindingsForDisplay(envelope.resolved) : [];
   const summary = envelope?.summary.trim() ?? "";
   const estimatedCost = usesByok ? estimateUsageCost(usageEvents) : null;
@@ -617,12 +622,13 @@ export default async function RunDetailPage({
       unknown: 0,
     },
   );
-  const publishedFindingCount =
-    publicationCounts.inline +
-    publicationCounts.checkAnnotation +
-    publicationCounts.summaryOnly +
-    publicationCounts.carried +
-    publicationCounts.inlineRejected;
+  const publishedFindingCount = noReviewerVerdict
+    ? 0
+    : publicationCounts.inline +
+      publicationCounts.checkAnnotation +
+      publicationCounts.summaryOnly +
+      publicationCounts.carried +
+      publicationCounts.inlineRejected;
   const publicationObserved = [1, 2].includes(
     publicationReceiptRows[0]?.receiptVersion ?? 0,
   );
@@ -798,7 +804,7 @@ export default async function RunDetailPage({
           </section>
         )}
 
-        {approvalState && (
+        {approvalState && !noReviewerVerdict && (
           <ApprovalPanel
             slug={org.slug}
             publicId={review.publicId}
@@ -813,36 +819,53 @@ export default async function RunDetailPage({
 
         {envelope && (
           <>
-            <section className="mt-8">
-              <p className="eyebrow">
-                {!publicationObserved || publicationCounts.unknown > 0
-                  ? "Publication not recorded"
-                  : `Published findings (${publishedFindingCount})`} · {publicationCounts.suppressed} suppressed by policy ·{" "}
-                {envelope.counts.ungrounded} dropped ungrounded
-              </p>
+            {noReviewerVerdict ? (
+              <section className="mt-8">
+                <p className="eyebrow">Operational diagnostics</p>
+                <div className="card mt-3 divide-y divide-stone/60">
+                  {operationalDiagnostics.map((finding, index) => (
+                    <FindingCard
+                      key={`${finding.path}:${finding.line}:${index}`}
+                      finding={finding}
+                      repoFullName={review.repoFullName}
+                      headSha={review.headSha}
+                      reviewUrl={reviewUrl}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : (
+              <section className="mt-8">
+                <p className="eyebrow">
+                  {!publicationObserved || publicationCounts.unknown > 0
+                    ? `Review findings (${reviewerFindings.length}) · publication not recorded`
+                    : `Review findings (${reviewerFindings.length}) · ${publishedFindingCount} active · ${publicationCounts.resolved} resolved · ${publicationCounts.outdated} outdated · ${publicationCounts.deleted} deleted`} · {publicationCounts.suppressed} suppressed by policy ·{" "}
+                  {envelope.counts.ungrounded} dropped ungrounded
+                </p>
               <div className="card mt-3 divide-y divide-stone/60">
-                {findings.slice(0, MAX_RENDERED_FINDINGS).map((finding, index) => (
-                  <FindingCard
-                    key={`${finding.path}:${finding.line}:${index}`}
-                    finding={finding}
-                    repoFullName={review.repoFullName}
-                    headSha={review.headSha}
-                    reviewUrl={reviewUrl}
-                    publicationState={finding.id ? (publicationByFindingId.get(finding.id) ?? "unknown") : "unknown"}
-                  />
-                ))}
-                {findings.length > MAX_RENDERED_FINDINGS && (
-                  <p className="px-5 py-4 text-center text-sm text-charcoal/70">
-                    {findings.length - MAX_RENDERED_FINDINGS} more findings not shown
-                  </p>
-                )}
-                {findings.length === 0 && (
-                  <p className="px-5 py-8 text-center text-sm text-charcoal/70">
-                    No findings shipped on this review.
-                  </p>
-                )}
-              </div>
-            </section>
+                  {reviewerFindings.slice(0, MAX_RENDERED_FINDINGS).map((finding, index) => (
+                    <FindingCard
+                      key={`${finding.path}:${finding.line}:${index}`}
+                      finding={finding}
+                      repoFullName={review.repoFullName}
+                      headSha={review.headSha}
+                      reviewUrl={reviewUrl}
+                      publicationState={finding.id ? (publicationByFindingId.get(finding.id) ?? "unknown") : "unknown"}
+                    />
+                  ))}
+                  {reviewerFindings.length > MAX_RENDERED_FINDINGS && (
+                    <p className="px-5 py-4 text-center text-sm text-charcoal/70">
+                      {reviewerFindings.length - MAX_RENDERED_FINDINGS} more findings not shown
+                    </p>
+                  )}
+                  {reviewerFindings.length === 0 && (
+                    <p className="px-5 py-8 text-center text-sm text-charcoal/70">
+                      No findings shipped on this review.
+                    </p>
+                  )}
+                </div>
+              </section>
+            )}
 
             {envelope.counts.suppressed > 0 && (
               <details className="card mt-8 overflow-hidden">

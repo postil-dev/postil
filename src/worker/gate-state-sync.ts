@@ -17,7 +17,7 @@ import {
 } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { reviewDetailsUrl } from "@/lib/oauth";
+import { organizationSettingsUrl, reviewDetailsUrl } from "@/lib/oauth";
 import {
   GATE_CHECK_NAME,
   checkRunExternalId,
@@ -202,6 +202,14 @@ async function loadDesiredGateState(
   const failing = row.status === "failed" || effectiveGate?.failing === true;
   const unavailable =
     row.status === "failed" || effectiveGate?.unavailable === true;
+  const blockingRequestOverridden =
+    !enforced &&
+    row.status === "completed" &&
+    effectiveGate?.failing === true &&
+    !unavailable;
+  const settingsUrl = blockingRequestOverridden
+    ? organizationSettingsUrl(row.orgSlug)
+    : undefined;
   const conclusion = !enforced
     ? "neutral"
     : failing
@@ -209,14 +217,23 @@ async function loadDesiredGateState(
       : unavailable
         ? "neutral"
         : "success";
-  const title = enforced
+  const title = blockingRequestOverridden
+    ? "Postil gate blocking overridden"
+    : enforced
     ? unavailable
       ? "Review unavailable"
       : failing
         ? "Postil gate blocked"
         : "Postil gate passed"
     : "Postil gate is advisory";
-  const summary = !enforced
+  const summary = blockingRequestOverridden
+    ? [
+        "This repository's effective Postil gate policy requested merge blocking, but merge blocking is disabled for this organization.",
+        settingsUrl
+          ? `[Enable merge blocking in organization settings](${settingsUrl}).`
+          : "Enable merge blocking in the organization settings to enforce this gate.",
+      ].join("\n\n")
+    : !enforced
     ? row.status === "failed"
       ? "Merge blocking is disabled. The incomplete review remains advisory."
       : "Merge blocking is disabled. Review findings remain advisory."

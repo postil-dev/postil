@@ -88,9 +88,8 @@ export default function HowItWorksPage() {
           ))}
         </div>
         <p className="mt-4 font-mono text-xs text-charcoal/50">
-          webhook → queue → CLI → check-runs. The worker owns the check-run ids
-          from the start, so even a crashed review completes as failed instead
-          of hanging in_progress.
+          webhook → queue → CLI → check-runs. Checks are registered before the
+          review starts and reach terminal outcomes even when execution fails.
         </p>
       </div>
 
@@ -109,8 +108,10 @@ export default function HowItWorksPage() {
             </p>
             <p>
               With blocking enabled, invalid model output and incomplete hosted
-              reviews fail closed. Turning blocking off reconciles the latest
-              check for every pull request back to neutral.
+              publication fail closed. A no-verdict execution failure and a
+              completed review whose publication is incomplete remain distinct
+              run states. Turning blocking off reconciles the latest check for
+              every pull request back to neutral.
             </p>
           </div>
           <div className="card p-6">
@@ -120,19 +121,24 @@ export default function HowItWorksPage() {
                 <StatusIcon kind="error" />
                 <span>
                   <code className="font-mono">postil/gate</code> on operational
-                  error: <strong>failure</strong> when blocking is enabled
+                  error: <strong>failure</strong> when blocking is enabled and{" "}
+                  <strong>neutral</strong> when advisory
                 </span>
               </li>
               <li className="flex items-center gap-3">
                 <StatusIcon kind="info" />
                 <span>
                   <code className="font-mono">postil/review</code> on
-                  operational error: <strong>failure</strong>, with the error summary
+                  execution error: <strong>neutral</strong>, because no reviewer
+                  verdict exists
                 </span>
               </li>
               <li className="flex items-center gap-3">
                 <StatusIcon kind="pass" />
-                <span>Clean PR: both green, zero comments</span>
+                <span>
+                  Clean PR: review green; gate green when blocking or neutral
+                  when advisory
+                </span>
               </li>
               <li className="flex items-center gap-3">
                 <StatusIcon kind="info" />

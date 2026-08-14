@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { redirect } from "next/navigation";
 
 import { desc, eq, inArray, sql } from "drizzle-orm";
 
@@ -15,7 +14,7 @@ import { getDb, schema } from "@/lib/db";
 import { githubAppInstallUrl } from "@/lib/github-app";
 import { githubPrUrl } from "@/lib/github-links";
 import { reviewDisplayStatus } from "@/lib/review-outcome";
-import { getVerifiedSessionUser } from "@/lib/session";
+import { requireVerifiedPageSessionUser } from "@/lib/session";
 import type { ReviewTriggerSource } from "@/lib/review-trigger";
 
 export const metadata: Metadata = {
@@ -25,15 +24,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function ReportsPage() {
-  const verification = await getVerifiedSessionUser();
-  if (!verification.ok) {
-    redirect(
-      verification.reason === "unauthenticated"
-        ? "/login"
-        : "/login?error=membership_verification",
-    );
-  }
-  const user = verification.user;
+  const user = await requireVerifiedPageSessionUser();
 
   const db = getDb();
   const memberships = await db

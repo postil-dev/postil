@@ -1,7 +1,9 @@
 "use client";
 
 import { initializePaddle } from "@paddle/paddle-js";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { scheduleRetryAfter } from "@/lib/auth-navigation";
 
 interface CheckoutResponse {
   transactionId: string;
@@ -9,17 +11,52 @@ interface CheckoutResponse {
   environment: "sandbox" | "production";
 }
 
+function useRetryAfterBlock(): {
+  retryBlocked: boolean;
+  blockRetry: (headers: Headers) => void;
+} {
+  const [retryBlocked, setRetryBlocked] = useState(false);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(
+    () => () => {
+      if (retryTimer.current !== undefined) clearTimeout(retryTimer.current);
+    },
+    [],
+  );
+
+  const blockRetry = useCallback((headers: Headers) => {
+    if (retryTimer.current !== undefined) clearTimeout(retryTimer.current);
+    setRetryBlocked(true);
+    retryTimer.current = scheduleRetryAfter(
+      headers,
+      () => {
+        retryTimer.current = undefined;
+        setRetryBlocked(false);
+      },
+      5_000,
+      (callback, delayMs) => setTimeout(callback, delayMs),
+    );
+  }, []);
+
+  return { retryBlocked, blockRetry };
+}
+
 export function BillingCheckoutButton({ slug }: { slug: string }) {
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const { retryBlocked, blockRetry } = useRetryAfterBlock();
 
   async function openCheckout() {
-    if (state === "loading") return;
+    if (state === "loading" || retryBlocked) return;
     setState("loading");
     try {
       const response = await fetch(
         `/api/orgs/${encodeURIComponent(slug)}/billing/checkout`,
         { method: "POST", headers: { accept: "application/json" } },
       );
+      if (!response.ok && response.headers.has("retry-after")) {
+        blockRetry(response.headers);
+      }
       if (!response.ok) throw new Error("checkout unavailable");
       const checkout = (await response.json()) as Partial<CheckoutResponse>;
       if (
@@ -55,7 +92,7 @@ export function BillingCheckoutButton({ slug }: { slug: string }) {
       <button
         type="button"
         className="btn-primary text-xs disabled:cursor-wait disabled:opacity-60"
-        disabled={state === "loading"}
+        disabled={state === "loading" || retryBlocked}
         onClick={openCheckout}
       >
         {state === "loading"
@@ -73,15 +110,19 @@ export function BillingCheckoutButton({ slug }: { slug: string }) {
 
 export function BillingPortalButton({ slug }: { slug: string }) {
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const { retryBlocked, blockRetry } = useRetryAfterBlock();
 
   async function openPortal() {
-    if (state === "loading") return;
+    if (state === "loading" || retryBlocked) return;
     setState("loading");
     try {
       const response = await fetch(
         `/api/orgs/${encodeURIComponent(slug)}/billing/portal`,
         { method: "POST", headers: { accept: "application/json" } },
       );
+      if (!response.ok && response.headers.has("retry-after")) {
+        blockRetry(response.headers);
+      }
       if (!response.ok) throw new Error("portal unavailable");
       const payload = (await response.json()) as { url?: unknown };
       if (typeof payload.url !== "string") {
@@ -100,7 +141,7 @@ export function BillingPortalButton({ slug }: { slug: string }) {
       <button
         type="button"
         className="btn-secondary text-xs disabled:cursor-wait disabled:opacity-60"
-        disabled={state === "loading"}
+        disabled={state === "loading" || retryBlocked}
         onClick={openPortal}
       >
         {state === "loading" ? "Opening billing…" : "Manage billing"}

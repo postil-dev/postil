@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  formatHostedReviewIngestionLog,
   ingestCompletedHostedReview,
+  interruptedHostedSpendAction,
+  livePullRequestSnapshotLagsEvent,
   publicationSkippedForChangedSnapshot,
 } from "@/worker/review";
 
@@ -20,6 +23,27 @@ const envelope = JSON.stringify({
   baseSha: "a".repeat(40),
   headSha: "b".repeat(40),
   sinceSha: null,
+});
+
+const operationalEnvelope = JSON.stringify({
+  ...JSON.parse(envelope),
+  summary: "No reviewer verdict exists because execution failed.",
+  silent: false,
+  findings: [
+    {
+      id: "operational-provider",
+      path: ".postil/provider",
+      line: 1,
+      severity: "error",
+      kind: "uncertainty",
+      title: "Review provider unavailable",
+      body: "The review provider did not return a usable result.",
+      confidence: 1,
+      evidence: "The review provider did not return a usable result.",
+    },
+  ],
+  counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+  gate: { failOn: "error", failing: true, blockOnKinds: [] },
 });
 
 describe("hosted CLI publication result", () => {
@@ -59,6 +83,85 @@ describe("hosted CLI publication result", () => {
     ).toThrow("postil CLI exited with code 2");
   });
 
+  test("retains a validated operational sentinel envelope from exit 2", () => {
+    const result = ingestCompletedHostedReview({
+      exitCode: 2,
+      stdout: operationalEnvelope,
+      stderr: "postil: error: provider request failed",
+    });
+
+    expect(result.envelope.findings[0]?.path).toBe(".postil/provider");
+    expect(result.gateFailing).toBe(true);
+  });
+
+  test("logs a no-verdict envelope before policy gate truth", () => {
+    const result = ingestCompletedHostedReview({
+      exitCode: 2,
+      stdout: operationalEnvelope,
+      stderr: "postil: error: provider request failed",
+    });
+
+    const log = formatHostedReviewIngestionLog(
+      operationalEnvelope,
+      result.envelope,
+      false,
+    );
+
+    expect(log).toContain("no reviewer verdict");
+    expect(log).not.toContain("passing");
+    expect(log).not.toContain("passed");
+    expect(log).not.toContain("green");
+  });
+
+  test("rejects exit 2 when a finding only resembles an operational sentinel", () => {
+    const ordinaryFailure = JSON.stringify({
+      ...JSON.parse(operationalEnvelope),
+      findings: [
+        {
+          ...JSON.parse(operationalEnvelope).findings[0],
+          path: "src/provider.ts",
+        },
+      ],
+    });
+
+    expect(() =>
+      ingestCompletedHostedReview({
+        exitCode: 2,
+        stdout: ordinaryFailure,
+        stderr: "postil: error: provider request failed",
+      }),
+    ).toThrow("postil CLI exited with code 2");
+  });
+
+  test("rejects exit 2 when an ordinary finding accompanies a sentinel", () => {
+    const mixedFailure = JSON.stringify({
+      ...JSON.parse(operationalEnvelope),
+      findings: [
+        ...JSON.parse(operationalEnvelope).findings,
+        {
+          ...JSON.parse(operationalEnvelope).findings[0],
+          id: "ordinary-finding",
+          path: "src/provider.ts",
+        },
+      ],
+      counts: {
+        info: 0,
+        warn: 0,
+        error: 2,
+        suppressed: 0,
+        ungrounded: 0,
+      },
+    });
+
+    expect(() =>
+      ingestCompletedHostedReview({
+        exitCode: 2,
+        stdout: mixedFailure,
+        stderr: "postil: error: provider request failed",
+      }),
+    ).toThrow("postil CLI exited with code 2");
+  });
+
   test("fails when strict publication has no valid envelope", () => {
     expect(() =>
       ingestCompletedHostedReview({
@@ -67,6 +170,68 @@ describe("hosted CLI publication result", () => {
         stderr: "postil: error: required hosted publication failed",
       }),
     ).toThrow("publication failed without a valid envelope");
+  });
+});
+
+describe("review input convergence", () => {
+  test("compares event and live snapshots at exact timestamp precision", () => {
+    const event = "2026-08-12T03:04:05.123Z";
+    expect(
+      livePullRequestSnapshotLagsEvent(
+        event,
+        "2026-08-12T03:04:05.122Z",
+      ),
+    ).toBe(true);
+    expect(livePullRequestSnapshotLagsEvent(event, event)).toBe(false);
+    expect(
+      livePullRequestSnapshotLagsEvent(
+        event,
+        "2026-08-12T03:04:05.124Z",
+      ),
+    ).toBe(false);
+    expect(() => livePullRequestSnapshotLagsEvent(event, "invalid")).toThrow(
+      "pull request update timestamps must be valid",
+    );
+  });
+});
+
+describe("interrupted hosted spend", () => {
+  test("prefers receipts and distinguishes every provider outcome", () => {
+    expect(
+      interruptedHostedSpendAction({
+        receiptAvailable: true,
+        cliStarted: true,
+        billingOutcome: "ambiguous",
+      }),
+    ).toBe("receipt");
+    expect(
+      interruptedHostedSpendAction({
+        receiptAvailable: false,
+        cliStarted: true,
+        billingOutcome: "resumable",
+      }),
+    ).toBe("retain-resumable");
+    expect(
+      interruptedHostedSpendAction({
+        receiptAvailable: false,
+        cliStarted: true,
+        billingOutcome: "ambiguous",
+      }),
+    ).toBe("reconcile-ambiguous");
+    expect(
+      interruptedHostedSpendAction({
+        receiptAvailable: false,
+        cliStarted: true,
+        billingOutcome: "unused",
+      }),
+    ).toBe("release-unused");
+    expect(
+      interruptedHostedSpendAction({
+        receiptAvailable: false,
+        cliStarted: false,
+        billingOutcome: "ambiguous",
+      }),
+    ).toBe("release-unused");
   });
 });
 

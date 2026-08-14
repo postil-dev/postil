@@ -4,14 +4,23 @@ import { join } from "node:path";
 
 import { Pool } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("operator alert delivery migration", () => {
-  const pool = new Pool({ connectionString: TEST_URL, max: 2 });
+  let database: EphemeralDatabase;
+  let pool: Pool;
 
   beforeAll(async () => {
-    await pool.query("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public");
+    database = await createUnmigratedEphemeralDatabase("operator_alert_delivery", {
+      maxConnections: 2,
+    });
+    pool = database.pool;
     const migrationDirectory = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationDirectory))
       .filter((file) => file.endsWith(".sql") && file < "0031_")
@@ -86,7 +95,7 @@ describeDb("operator alert delivery migration", () => {
   });
 
   afterAll(async () => {
-    await pool.end();
+    await database?.drop();
   });
 
   test("backfills a stable event key and delivered audit without orphan failure", async () => {

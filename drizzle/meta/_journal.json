@@ -337,6 +337,48 @@
       "when": 1786239138686,
       "tag": "0048_woozy_tigra",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1786376295659,
+      "tag": "0048_new_jubilee",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1786380666087,
+      "tag": "0049_workable_madame_web",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1786383001890,
+      "tag": "0050_queue_lock_generation",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1786590000000,
+      "tag": "0051_finding_reconciliation_trigger",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1786617944387,
+      "tag": "0052_finding_lifecycle_observations",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1786618621508,
+      "tag": "0053_own_finding_lifecycle_observations",
+      "breakpoints": true
     }
   ]
 }

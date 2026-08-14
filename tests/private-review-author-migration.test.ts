@@ -5,19 +5,25 @@ import { join } from "node:path";
 import { Pool } from "pg";
 
 import { activatePrivateReviewAuthorIdentity } from "@/lib/release-job-rollout";
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("private review author migration", () => {
-  const pool = new Pool({ connectionString: TEST_URL, max: 4 });
+  let database: EphemeralDatabase;
+  let pool: Pool;
   let privateRepositoryId: number;
   let publicRepositoryId: number;
 
   beforeAll(async () => {
-    await pool.query(
-      "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public",
-    );
+    database = await createUnmigratedEphemeralDatabase("private_review_author", {
+      maxConnections: 4,
+    });
+    pool = database.pool;
     const migrationDirectory = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationDirectory))
       .filter((file) => file.endsWith(".sql") && file < "0030_")
@@ -68,10 +74,10 @@ describeDb("private review author migration", () => {
     for (const statement of migration.split("--> statement-breakpoint")) {
       if (statement.trim()) await pool.query(statement);
     }
-  });
+  }, 30_000);
 
   afterAll(async () => {
-    await pool.end();
+    await database?.drop();
   });
 
   test("closes the activation race and enforces durable private author identity", async () => {

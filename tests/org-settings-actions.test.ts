@@ -185,7 +185,9 @@ mock.module("@/lib/gate-mode", () => ({
 
 mock.module("@/lib/github/app-auth", () => ({
   apiBase: () => "https://api.github.test",
+  buildAppJwt: () => "app-jwt",
   getInstallationToken: async () => "installation-token",
+  normalizePrivateKey: (value: string) => value,
 }));
 
 mock.module("@/lib/github/approval-actor", () => ({
@@ -574,6 +576,134 @@ describe("organization settings actions", () => {
     expect(result.status).toBe("error");
     expect(result.message).toContain("cannot set model options");
     expect(insertCount).toBe(0);
+  });
+
+  test("rejects malformed and unsupported config values", async () => {
+    for (const configYaml of [
+      "[]\n",
+      "futureOption: true\n",
+      "gate:\n  blockOnKinds: risk\n",
+      "gate:\n  blockOnKinds: [risk, unsupported]\n",
+      "gate: blockOnKinds\n",
+      "gate:\n  futureOption: true\n",
+    ]) {
+      const form = new FormData();
+      form.set("slug", "acme");
+      form.set("configYaml", configYaml);
+
+      const result = await saveOrgConfigFallbacks(null, form);
+
+      expect(result.status).toBe("error");
+      expect(result.message.length).toBeGreaterThan(0);
+      expect(insertCount).toBe(0);
+    }
+  });
+
+  test("saves standard YAML core tags accepted by the CLI parser", async () => {
+    const form = new FormData();
+    const configYaml = `!!map
+enabled: !!bool true
+ignore: !!seq [!!str vendor/**]
+minConfidence: !!float 0.8
+maxFindings: !!int 20
+reviewer: !!map
+  tone: !!str terse
+contentPolicy: !!map
+  enabled: !!null null
+`;
+    form.set("slug", "acme");
+    form.set("configYaml", configYaml);
+
+    const result = await saveOrgConfigFallbacks(null, form);
+
+    expect(result.status).toBe("success");
+    expect(conflictSet).toMatchObject({ configYaml });
+  });
+
+  test("rejects custom and field-mismatched YAML tags in the fallbacks save", async () => {
+    for (const configYaml of [
+      "enabled: !custom true\n",
+      "enabled: !<tag:example.com,2026:value> true\n",
+      "enabled: !!str true\n",
+      "ignore: !!map {entry: vendor/**}\n",
+    ]) {
+      const form = new FormData();
+      form.set("slug", "acme");
+      form.set("configYaml", configYaml);
+
+      const result = await saveOrgConfigFallbacks(null, form);
+
+      expect(result.status).toBe("error");
+      expect(insertCount).toBe(0);
+    }
+  });
+
+  test("saves every supported gate.blockOnKinds value without rewriting it", async () => {
+    const form = new FormData();
+    const configYaml = `gate:\n  failOn: error\n  blockOnKinds:\n${[
+      "risk",
+      "humanEscalation",
+      "guardrail",
+      "uncertainty",
+      "contentPolicy",
+    ]
+      .map((kind) => `    - ${kind}`)
+      .join("\n")}\nminConfidence: 0.8\nignore: [vendor/**]\n`;
+    form.set("slug", "acme");
+    form.set("configYaml", configYaml);
+
+    const result = await saveOrgConfigFallbacks(null, form);
+
+    expect(result.status).toBe("success");
+    expect(conflictSet).toMatchObject({ configYaml });
+  });
+
+  test("saves CLI-compatible null, case-insensitive, and duplicate kind values verbatim", async () => {
+    for (const configYaml of [
+      "gate: null\n",
+      "gate:\n  blockOnKinds: null\n",
+      'gate:\n  blockOnKinds: [Risk, RISK, " humanEscalation ", ContentPolicy]\n',
+    ]) {
+      const form = new FormData();
+      form.set("slug", "acme");
+      form.set("configYaml", configYaml);
+
+      const result = await saveOrgConfigFallbacks(null, form);
+
+      expect(result.status).toBe("success");
+      expect(conflictSet).toMatchObject({ configYaml });
+    }
+  });
+
+  test("saves every CLI-supported non-model config field without rewriting it", async () => {
+    const form = new FormData();
+    const configYaml = `enabled: false
+ignore: [vendor/**]
+severityThreshold: warning
+minConfidence: 0.8
+maxFindings: 20
+reviewer:
+  tone: terse
+  focus: [security]
+review:
+  onClean: comment
+  findingPresentation: checkAnnotations
+  uncertaintyResolution: false
+  conciseFindings: false
+gate:
+  failOn: Never
+  onError: advisory
+  blockOnKinds: [Risk, risk]
+contentPolicy:
+  enabled: false
+`;
+    form.set("slug", "acme");
+    form.set("configYaml", configYaml);
+
+    const result = await saveOrgConfigFallbacks(null, form);
+
+    expect(result.status).toBe("success");
+    expect(conflictSet).toMatchObject({ configYaml });
   });
 
   test("saves config fallback texts without touching provider settings", async () => {
@@ -1047,6 +1177,8 @@ describe("SettingsForm API key handling", () => {
     expect(source).toContain("No verified shared snapshot is available.");
     expect(source).toContain("The App installation does not include");
     expect(source).toContain("Protect its default branch with CODEOWNERS, a ruleset, and required review.");
+    expect(source).not.toContain("CONFIG_FALLBACKS_SAVE_DEBOUNCE_MS");
+    expect(source).not.toContain("clearTimeout(timer)");
     expect(source).not.toContain("defaultValue={settings?.apiKey");
     expect(source).not.toContain("value={settings?.apiKey");
     expect(source).not.toContain("HOSTED_DEFAULT_MODEL_CHAIN");

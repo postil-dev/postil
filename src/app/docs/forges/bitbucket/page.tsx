@@ -87,12 +87,12 @@ postil review --forge bitbucket --repo workspace/repo --pr 7`}</code>
           <code>postil respond</code> (the <code>@postil</code> interactive
           bot) supports <code>--pr</code> only. Bitbucket&apos;s issue
           tracker is a separate, often-disabled product with a different API
-          shape Postil does not talk to yet; pointing <code>respond</code> at{" "}
+          shape Postil does not support; pointing <code>respond</code> at{" "}
           <code>--issue</code> on Bitbucket returns an error rather than
           silently doing nothing.
         </li>
         <li>
-          The hosted Postil app is GitHub-only today; on Bitbucket you run the
+          The hosted Postil app is GitHub-only; on Bitbucket you run the
           CLI in your own pipeline.
         </li>
         <li>

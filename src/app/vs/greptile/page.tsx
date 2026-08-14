@@ -9,7 +9,7 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Greptile",
   description:
-    "Postil is a Greptile alternative with active-author pricing, a hard merge gate, a published silence metric, BYOK, and free self-hosting.",
+    "Postil is a Greptile alternative with active-author pricing, a dedicated merge gate, a published silence metric, BYOK, and free self-hosting.",
   alternates: { canonical: "/vs/greptile" },
   openGraph: {
     title: "Postil vs Greptile",
@@ -24,9 +24,9 @@ const COLUMNS = ["Postil", "Greptile"];
 
 const ROWS: ComparisonRow[] = [
   {
-    feature: "Hard merge gate (separate blocking check)",
+    feature: "Dedicated merge gate (separate policy check)",
     cells: [
-      { kind: "yes", note: "postil/gate, fail-closed" },
+      { kind: "yes", note: "postil/gate, configurable enforcement" },
       { kind: "no", note: "comments only" },
     ],
   },
@@ -116,10 +116,9 @@ export default function VsGreptilePage() {
           Greptile posts findings as PR comments. Postil completes{" "}
           <code>postil/gate</code> as a real, separable check you can require in
           branch protection, distinct from advisory <code>postil/review</code>{" "}
-          commentary. On operational errors the gate fails closed by default
-          rather than completing neutral; repos can opt into{" "}
-          <code>gate.onError: advisory</code>, which fails open on provider
-          outages only.
+          commentary. On operational errors the review check is neutral with no
+          verdict. The gate fails when organization merge enforcement is enabled
+          and remains neutral while advisory.
         </p>
 
         <h2>Restraint is measured</h2>

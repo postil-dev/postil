@@ -52,11 +52,11 @@ export default function TermsPage() {
           There is no uptime or availability commitment. We do not guarantee
           that reviews will run, complete, or complete within any particular
           time. Do not rely on the hosted service as the sole gate on a
-          production-critical workflow; the <code>postil/gate</code> check fails
-          closed by default, so a service interruption surfaces as a failing
-          gate rather than a silent pass. Repositories can opt into{" "}
-          <code>gate.onError: advisory</code>, which fails open on provider
-          outages only; the default remains fail-closed.
+          production-critical workflow. A service interruption leaves{" "}
+          <code>postil/review</code> neutral with no reviewer verdict. It makes{" "}
+          <code>postil/gate</code> fail when organization merge enforcement is
+          enabled and leaves the gate neutral while the organization is
+          advisory.
         </p>
 
         <h2 id="billing-and-fair-use">Billing and fair use</h2>

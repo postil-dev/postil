@@ -1,8 +1,12 @@
 import { and, eq } from "drizzle-orm";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 
 import { getDb, schema } from "@/lib/db";
-import { getVerifiedSessionUser, type SessionUser } from "@/lib/session";
+import {
+  getVerifiedSessionUser,
+  handlePageSessionFailure,
+  type SessionUser,
+} from "@/lib/session";
 
 export type OrgAccessResult =
   | {
@@ -14,7 +18,12 @@ export type OrgAccessResult =
     }
   | {
       ok: false;
-      reason: "unauthenticated" | "verification_unavailable" | "not_found";
+      reason: "unauthenticated" | "not_found";
+    }
+  | {
+      ok: false;
+      reason: "verification_unavailable";
+      retryAvailableAt: Date;
     };
 
 /** Resolve organization access without invoking Next.js page control flow. */
@@ -53,9 +62,16 @@ export async function getOrgMembership(slug: string): Promise<OrgAccessResult> {
 export async function requireOrgMembership(slug: string) {
   const access = await getOrgMembership(slug);
   if (!access.ok) {
-    if (access.reason === "unauthenticated") redirect("/login");
-    if (access.reason === "verification_unavailable") {
-      redirect("/login?error=membership_verification");
+    if (
+      access.reason === "unauthenticated" ||
+      access.reason === "verification_unavailable"
+    ) {
+      await handlePageSessionFailure(
+        access.reason,
+        access.reason === "verification_unavailable"
+          ? access.retryAvailableAt
+          : undefined,
+      );
     }
     notFound();
   }

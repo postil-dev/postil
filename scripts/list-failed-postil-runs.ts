@@ -259,9 +259,9 @@ export function failedRunsForCommit(
           (candidate) => candidate.name === REVIEW_CHECK_NAME,
         ),
       );
-      // Operational failures have no review verdict, so the advisory check is
-      // neutral while the gate fails closed. Titles are presentation copy and
-      // must not be used as the incident contract.
+      // Enforced operational failures have no review verdict, so the advisory
+      // check is neutral while the gate identifies the incident. Titles are
+      // presentation copy and must not be used as the incident contract.
       const operational = review?.conclusion === "neutral";
       return {
         repo,

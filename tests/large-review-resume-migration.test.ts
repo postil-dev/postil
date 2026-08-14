@@ -5,6 +5,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, Pool } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 import * as schema from "@/lib/db/schema";
 import { reconcileConservativeHostedReviewSpend } from "@/lib/hosted-usage-reservations";
 import {
@@ -19,8 +24,7 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("large-review durable resume migration", () => {
-  const databaseName = `postil_large_review_${process.pid}_${Date.now()}`;
-  let admin: Client;
+  let database: EphemeralDatabase;
   let pool: Pool;
   let databaseUrl: string;
   let orgId = 0;
@@ -28,12 +32,11 @@ describeDb("large-review durable resume migration", () => {
   let reviewId = 0;
 
   beforeAll(async () => {
-    admin = new Client({ connectionString: TEST_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${databaseName}"`);
-    const url = new URL(TEST_URL!);
-    url.pathname = `/${databaseName}`;
-    databaseUrl = url.toString();
+    database = await createUnmigratedEphemeralDatabase("large_review", {
+      forceDrop: true,
+      maxConnections: 2,
+    });
+    databaseUrl = database.url;
     const migration = new Client({ connectionString: databaseUrl });
     await migration.connect();
     const migrationDirectory = join(import.meta.dir, "..", "drizzle");
@@ -74,15 +77,11 @@ describeDb("large-review durable resume migration", () => {
     );
     reviewId = Number(review.rows[0]!.id);
     await migration.end();
-    pool = new Pool({ connectionString: databaseUrl, max: 2 });
+    pool = database.pool;
   }, 30_000);
 
   afterAll(async () => {
-    await pool?.end();
-    if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
-      await admin.end();
-    }
+    await database?.drop();
   });
 
   test("claims, completes, replays, and deletes one exact durable run", async () => {

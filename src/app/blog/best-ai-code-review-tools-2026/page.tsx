@@ -250,7 +250,7 @@ export default function BestToolsArticle() {
           </a>
           . Its pricing page lists built-in pre-merge checks on Pro and custom
           pre-merge checks on Pro Plus; compare carefully if you need a
-          dedicated fail-closed gate separate from advisory review.
+          dedicated policy-controlled gate separate from advisory review.
         </p>
 
         <h2>Qodo</h2>
@@ -443,8 +443,9 @@ export default function BestToolsArticle() {
           First, enforcement is separate from commentary:{" "}
           <code>postil/gate</code> is a pass/fail check you can require in
           branch protection, failing only at or above your configured severity
-          and failing closed on operational errors, while{" "}
-          <code>postil/review</code> carries advisory findings. Second,
+          when organization merge enforcement is enabled. Operational failures
+          leave <code>postil/review</code> neutral with no verdict and make the
+          gate fail only under enforcement. Second,
           restraint is measured and reported: the first number on the
           dashboard is the silence rate, the share of PRs where Postil said
           nothing, alongside the confidence distribution of every finding it
@@ -452,7 +453,7 @@ export default function BestToolsArticle() {
           usage is billed directly.
           Self-hosting is free via{" "}
           <Link href="/docs/self-hosted">Docker Compose</Link>, same product as
-          hosted, with Ollama support. The hosted app is GitHub-only today; the
+          hosted, with Ollama support. The hosted app is GitHub-only; the
           CLI covers GitHub and GitLab, with Bitbucket and Azure DevOps support
           on a best-effort CI gate. The CLI and Action are Apache-2.0, and the
           control plane stores review envelopes, which can contain relevant code
@@ -466,7 +467,7 @@ export default function BestToolsArticle() {
         <ul>
           <li>
             <strong>Broadest battle-tested platform coverage</strong>{" "}
-            (Bitbucket, Azure DevOps in production today): CodeRabbit.
+            (Bitbucket and Azure DevOps in production): CodeRabbit.
           </li>
           <li>
             <strong>Open-source self-hosting with a large community</strong>:

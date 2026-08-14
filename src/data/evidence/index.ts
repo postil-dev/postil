@@ -123,7 +123,7 @@ diff --git a/src/app/docs/page.tsx b/src/app/docs/page.tsx
 +  {
 +    href: "/docs/content-policy",
 +    title: "Content policy",
-+    body: "Opt-in review of prose in the diff: fabricated claims, AI-authorship residue, and the built-in baseline.",
++    body: "Opt-in review of changed prose: fabricated claims, AI-authorship residue, and the built-in baseline.",
 +  },
    {
      href: "/docs/gitlab",

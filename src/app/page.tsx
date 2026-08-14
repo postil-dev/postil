@@ -22,7 +22,7 @@ export default function HomePage() {
     <>
       {/* Hero */}
       <section className="relative overflow-hidden">
-        {/* Gate engraving — quiet background watermark, anchored to the right
+        {/* Gate engraving: quiet background watermark, anchored to the right
             edge and held to the hero band. mix-blend-multiply drops the
             sketch's near-white ground onto the ivory page so only the pencil
             lines remain; the gradient mask fades the engraving out under the
@@ -72,7 +72,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* 01 — The noise problem */}
+      {/* 01: The noise problem */}
       <Section
         number="01"
         eyebrow="The noise problem"
@@ -142,7 +142,7 @@ export default function HomePage() {
         </p>
       </Section>
 
-      {/* 02 — The gate */}
+      {/* 02: The gate */}
       <Section
         number="02"
         eyebrow="The gate"
@@ -155,14 +155,13 @@ export default function HomePage() {
               <div>
                 <p className="font-mono text-sm font-semibold">postil/gate</p>
                 <p className="mt-1 text-sm text-ink-soft">
-                  Fails only on gate-level findings (default: severity{" "}
-                  <code className="font-mono text-xs">error</code>). Require it
-                  in branch protection and nothing below the threshold can
-                  block a merge. Fails closed on operational errors by default:
-                  the gate never marks an unreviewed head as passing. Repos can
-                  opt into{" "}
-                  <code className="font-mono text-xs">gate.onError: advisory</code>{" "}
-                  to fail open on provider outages only.
+                  Fails on gate-level findings (default: severity{" "}
+                  <code className="font-mono text-xs">error</code>) and, when
+                  merge enforcement is enabled, operational failures that
+                  prevent a review verdict. Require it in branch protection and
+                  nothing below the threshold can block a merge. New
+                  organizations start in advisory mode, where operational
+                  failures leave this gate neutral.
                 </p>
               </div>
             </div>
@@ -182,8 +181,9 @@ export default function HomePage() {
               <div>
                 <p className="font-mono text-sm font-semibold">clean PR</p>
                 <p className="mt-1 text-sm text-ink-soft">
-                  Both checks complete green. No comment, no summary, no LGTM
-                  filler. The check-run is the entire conversation.
+                  Review and enforced gate green; advisory gate neutral. No
+                  comment, no summary, no LGTM filler. The check-run is the
+                  entire conversation.
                 </p>
               </div>
             </div>
@@ -212,7 +212,7 @@ export default function HomePage() {
         </div>
       </Section>
 
-      {/* 02b — On the PR */}
+      {/* 02b: On the PR */}
       <Section
         number="03"
         eyebrow="On the pull request"
@@ -241,15 +241,16 @@ export default function HomePage() {
                 </span>
               </li>
               <li className="flex gap-3">
-                <span className="font-mono text-gate">→</span>A clean PR shows two
-                green checks and no comments at all.
+                <span className="font-mono text-gate">→</span>A clean PR shows a
+                passing review check and an enforced gate that passes, or an
+                advisory gate that remains neutral, with no comments.
               </li>
             </ul>
           </div>
         </div>
       </Section>
 
-      {/* 04 — Terminal demo */}
+      {/* 04: Terminal demo */}
       <Section
         number="04"
         eyebrow="One engine everywhere"
@@ -286,9 +287,8 @@ export default function HomePage() {
             <p className="text-ink-soft">
               <code className="font-mono text-sm">postil review</code> works on
               your staged changes, against any base ref, on a saved diff, or on
-              a remote PR. The GitHub Action and the hosted worker shell out to
-              the same pinned binary, so there is no second review engine to
-              drift.
+              a remote PR. The GitHub Action and hosted service use the same
+              reviewer and envelope contract.
             </p>
             <ul className="mt-6 space-y-3 text-sm text-ink-soft">
               <li className="flex gap-3">
@@ -305,15 +305,15 @@ export default function HomePage() {
               </li>
               <li className="flex gap-3">
                 <span className="font-mono text-gate">→</span>
-                Fails closed: ungrounded model output becomes a synthetic
-                error finding, never a silent pass.
+                Invalid model output becomes an explicit no-verdict result,
+                never a clean review.
               </li>
             </ul>
           </div>
         </div>
       </Section>
 
-      {/* 05 — Silence dashboard teaser */}
+      {/* 05: Silence dashboard teaser */}
       <Section
         id="silence-rate"
         number="05"
@@ -381,7 +381,7 @@ export default function HomePage() {
         </div>
       </Section>
 
-      {/* 06 — Limits, stated plainly */}
+      {/* 06: Limits, stated plainly */}
       <Section
         number="06"
         eyebrow="Known limits"
@@ -390,12 +390,12 @@ export default function HomePage() {
         <div className="grid gap-6 md:grid-cols-2">
           <div className="card p-6">
             <p className="font-mono text-sm font-semibold text-charcoal">
-              It reasons about your diff, not your repository.
+              Repository search is claim-driven, not exhaustive.
             </p>
             <p className="mt-2 text-sm text-ink-soft">
-              The CLI reviews the changed lines and the context around them,
-              not a full checkout, your test suite, or runtime behavior. A bug
-              that only manifests three call sites away, outside the diff, can
+              Review starts at the changed lines and searches the checked-out
+              repository when a claim depends on surrounding code. The search
+              is bounded, so broad architectural or dynamic defects can still
               be missed.
             </p>
           </div>
@@ -404,7 +404,7 @@ export default function HomePage() {
               It does not execute code.
             </p>
             <p className="mt-2 text-sm text-ink-soft">
-              Findings come from reading the diff; nothing is compiled or run.
+              Findings come from source analysis; nothing is compiled or run.
               Pair the gate with your test suite and type checker: it is a
               review layer on top of them, and it replaces neither.
             </p>
@@ -423,15 +423,16 @@ export default function HomePage() {
           </div>
           <div className="card p-6">
             <p className="font-mono text-sm font-semibold text-charcoal">
-              Ungrounded findings fail closed.
+              Ungrounded findings are not published.
             </p>
             <p className="mt-2 text-sm text-ink-soft">
               Every finding must ground to a real diff location or it is
               dropped before you see it. Findings about the PR title or
               description, which have no diff line of their own, ground
               against a reserved synthetic anchor, and a run whose findings
-              were all dropped fails closed rather than reading as a silent
-              pass.
+              were all dropped becomes an explicit no-verdict result rather
+              than reading as a clean review. The hosted gate applies the
+              organization&apos;s enforcement policy.
             </p>
           </div>
         </div>

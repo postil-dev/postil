@@ -5,13 +5,16 @@ import { join } from "node:path";
 import { Client, Pool } from "pg";
 
 import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("GitHub approval binding migration", () => {
-  const databaseName = `postil_github_approval_binding_${process.pid}_${Date.now()}`;
-  let adminClient: Client | undefined;
+  let database: EphemeralDatabase;
   let client: Client | undefined;
   let orgId = 0;
   let installationId = 0;
@@ -21,21 +24,21 @@ describeDb("GitHub approval binding migration", () => {
   let incompleteApprovalId = "";
 
   beforeAll(async () => {
-    adminClient = new Client({ connectionString: TEST_URL });
-    await adminClient.connect();
-    await adminClient.query(`CREATE DATABASE "${databaseName}"`);
-
-    const databaseUrl = new URL(TEST_URL!);
-    databaseUrl.pathname = `/${databaseName}`;
-    const isolatedDatabaseUrl = databaseUrl.toString();
+    database = await createUnmigratedEphemeralDatabase("github_approval_binding");
+    const isolatedDatabaseUrl = database.url;
     client = new Client({ connectionString: isolatedDatabaseUrl });
     await client.connect();
 
     const migrationsDirectory = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDirectory))
-      .filter((file) => file.endsWith(".sql") && file < "0037_")
+      .filter((file) => file.endsWith(".sql"))
       .sort();
-    for (const migration of migrations) {
+    const approvalBindingMigration = "0037_github_approval_bindings.sql";
+    const approvalBindingIndex = migrations.indexOf(approvalBindingMigration);
+    if (approvalBindingIndex < 0) {
+      throw new Error(`${approvalBindingMigration} is missing`);
+    }
+    for (const migration of migrations.slice(0, approvalBindingIndex)) {
       await applyMigration(client, join(migrationsDirectory, migration));
     }
 
@@ -85,7 +88,9 @@ describeDb("GitHub approval binding migration", () => {
       [incompleteReviewId, actorUserId],
     )).rows[0]!.id;
 
-    await applyMigration(client, join(migrationsDirectory, "0037_github_approval_bindings.sql"));
+    for (const migration of migrations.slice(approvalBindingIndex)) {
+      await applyMigration(client, join(migrationsDirectory, migration));
+    }
     const operationalPool = new Pool({ connectionString: isolatedDatabaseUrl, max: 1 });
     try {
       await ensureOperationalIndexes(operationalPool);
@@ -96,10 +101,7 @@ describeDb("GitHub approval binding migration", () => {
 
   afterAll(async () => {
     await client?.end();
-    if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-      await adminClient.end();
-    }
+    await database?.drop();
   });
 
   test("backfills the immutable review identity onto existing approvals", async () => {

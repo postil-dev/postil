@@ -1,4 +1,4 @@
-import { envelopeSchema, type Envelope, type Finding } from "@/lib/envelope";
+import { parseStoredEnvelope, type Envelope, type Finding } from "@/lib/envelope";
 
 const OPERATIONAL_PATHS = new Set([
   ".postil/provider",
@@ -42,9 +42,6 @@ export function priorReviewsWarrantPreventionHint(
 }
 
 export function parsedPriorReviewsWarrantPreventionHint(rows: readonly unknown[]): boolean {
-  const parsed = rows.map((envelope) => {
-    const result = envelopeSchema.safeParse(envelope);
-    return result.success ? result.data : null;
-  });
+  const parsed = rows.map(parseStoredEnvelope);
   return priorReviewsWarrantPreventionHint(parsed[0] ?? null, parsed[1] ?? null);
 }

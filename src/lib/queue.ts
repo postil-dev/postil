@@ -24,11 +24,12 @@ export interface ClaimedJob {
   maxAttempts: number;
   createdAt: Date;
   lockedAt: Date;
+  /** Monotonic per-row lease identity incremented by every successful claim. */
+  lockGeneration: bigint;
   /**
-   * The worker id this claim was locked under. failJob/completeJob scope their
-   * UPDATEs by this value so a stalled-then-re-claimed job (watchdog requeue +
-   * re-claim by another worker) is not clobbered by the original owner's late
-   * call: only the current lock holder can transition the row.
+   * The worker id this claim was locked under. Queue transitions pair it with
+   * lockGeneration so a stalled, requeued, and reclaimed job is not clobbered
+   * by a late call, including when the same worker identity is reused.
    */
   lockedBy: string;
 }
@@ -45,6 +46,10 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   authorLogin?: string;
   headSha: string;
   baseSha: string;
+  /** Signed event snapshot used to wait for GitHub read-after-write convergence. */
+  expectedPullRequestUpdatedAt: string;
+  /** Database-assigned arrival order for otherwise equal signed snapshots. */
+  reviewInputSequence?: string;
   sourceDeliveryId?: string;
   /** Optional only for jobs queued by an older release during a rolling deploy. */
   trigger?: ReviewTriggerContext;
@@ -52,11 +57,19 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   forceFullReview?: boolean;
   /** Durable pointer written after the CLI result and publication receipt are staged. */
   recoveryReviewId?: number;
+  /** Stable provider-attempt lineage retained when queue rows are promoted. */
+  providerRetryLineage?: string;
   /** Private marker that prevents a web-process queue drain from claiming a rehearsal recovery. */
   privateWorkerRehearsalNonce?: string;
+  /** Exact lock owner recorded when a private-worker rehearsal interrupts this claim. */
+  privateWorkerRehearsalLockedBy?: string;
+  /** Exact lock generation recorded with the private-worker rehearsal owner. */
+  privateWorkerRehearsalLockGeneration?: string;
 }
 
 export const COALESCED_REVIEW_PAYLOAD_KEY = "_postilCoalescedReviewPayload";
+export const PROVIDER_RETRY_LINEAGE_KEY = "providerRetryLineage";
+export const REVIEW_INPUT_SEQUENCE_KEY = "reviewInputSequence";
 
 type StoredReviewJobPayload = ReviewJobPayload & {
   [COALESCED_REVIEW_PAYLOAD_KEY]?: ReviewJobPayload;
@@ -121,10 +134,61 @@ export interface GithubReactionJobPayload extends Record<string, unknown> {
   sourceDeliveryId: string;
 }
 
-export interface ExternalSideEffectLease {
-  id: number;
-  lockedBy: string;
-  lockedAt: Date;
+export type JobLease = Pick<ClaimedJob, "id" | "lockedBy" | "lockGeneration">;
+
+export type ExternalSideEffectLease = JobLease;
+
+function reviewPullRequestLockKey(input: {
+  githubRepoId: number;
+  prNumber: number;
+}): string {
+  if (!Number.isSafeInteger(input.githubRepoId) || input.githubRepoId <= 0) {
+    throw new TypeError("review publication fence requires a positive GitHub repository ID");
+  }
+  if (!Number.isSafeInteger(input.prNumber) || input.prNumber <= 0) {
+    throw new TypeError("review publication fence requires a positive pull request number");
+  }
+  return `postil:review-pr:${[
+    String(input.githubRepoId),
+    String(input.prNumber),
+  ].join("\u001f")}`;
+}
+
+/**
+ * Exclude pull-request queue mutation from the exact external publication
+ * window. PostgreSQL releases the session lock if the worker or connection
+ * dies, while the CLI deadline bounds how long a healthy worker can hold it.
+ */
+export async function withReviewPublicationFence<T>(
+  pool: Pool,
+  input: { githubRepoId: number; prNumber: number },
+  publish: () => Promise<T>,
+): Promise<T> {
+  const key = reviewPullRequestLockKey(input);
+  const client = await pool.connect();
+  let locked = false;
+  let destroyConnection = false;
+  try {
+    await client.query(
+      "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+      [key],
+    );
+    locked = true;
+    return await publish();
+  } finally {
+    if (locked) {
+      try {
+        const result = await client.query<{ unlocked: boolean }>(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS unlocked",
+          [key],
+        );
+        destroyConnection = result.rows[0]?.unlocked !== true;
+      } catch {
+        destroyConnection = true;
+      }
+    }
+    client.release(destroyConnection);
+  }
 }
 
 /** Verify a queue claim without retaining a row or connection lock. */
@@ -138,16 +202,91 @@ export async function externalSideEffectLeaseActive(
       WHERE id = $1
         AND status = 'running'
         AND locked_by = $2
-        AND locked_at = $3
+        AND lock_generation = $3
       LIMIT 1`,
-    [lease.id, lease.lockedBy, lease.lockedAt],
+    [lease.id, lease.lockedBy, lease.lockGeneration],
   );
   return (result.rowCount ?? 0) === 1;
 }
 
+export type ReviewInputLeaseState = "inactive" | "current" | "newer-pending";
+
+/** Return whether a retained edit is newer than the running review input. */
+export function pendingReviewInputSupersedes(
+  runningUpdatedAt: string | undefined,
+  pendingUpdatedAt: string | undefined,
+  runningSequence?: string,
+  pendingSequence?: string,
+): boolean {
+  if (!pendingUpdatedAt) return false;
+  const pendingTime = Date.parse(pendingUpdatedAt);
+  if (!Number.isFinite(pendingTime)) return false;
+  if (!runningUpdatedAt) return true;
+  const runningTime = Date.parse(runningUpdatedAt);
+  if (!Number.isFinite(runningTime) || pendingTime > runningTime) return true;
+  if (pendingTime < runningTime) return false;
+  if (!validReviewInputSequence(pendingSequence)) return false;
+  // Missing sequence authority is never proof that an equal-timestamp input
+  // is current. This only occurs for a legacy claim or malformed row, and a
+  // later retained sequence must conservatively supersede it.
+  if (!validReviewInputSequence(runningSequence)) return true;
+  return BigInt(pendingSequence) > BigInt(runningSequence);
+}
+
+/**
+ * Verify the exact review claim and detect a newer same-head edit retained for
+ * its rerun. This query is the final queue-side authorization before the CLI
+ * starts, so a worker cannot rely only on the payload snapshot it claimed.
+ */
+export async function reviewInputLeaseState(
+  pool: Pick<Pool, "query">,
+  lease: ExternalSideEffectLease,
+  runningUpdatedAt: string | undefined,
+  runningSequence?: string,
+): Promise<ReviewInputLeaseState> {
+  const result = await pool.query<{
+    running_sequence: string | null;
+    pending_updated_at: string | null;
+    pending_sequence: string | null;
+  }>(
+    `SELECT payload->>$4::text AS running_sequence,
+            payload #>> ($5::text[]) AS pending_updated_at,
+            payload #>> ($6::text[]) AS pending_sequence
+       FROM jobs
+      WHERE id = $1
+        AND status = 'running'
+        AND locked_by = $2
+        AND lock_generation = $3
+      LIMIT 1`,
+    [
+      lease.id,
+      lease.lockedBy,
+      lease.lockGeneration,
+      REVIEW_INPUT_SEQUENCE_KEY,
+      [COALESCED_REVIEW_PAYLOAD_KEY, "expectedPullRequestUpdatedAt"],
+      [COALESCED_REVIEW_PAYLOAD_KEY, REVIEW_INPUT_SEQUENCE_KEY],
+    ],
+  );
+  const row = result.rows[0];
+  if (!row) return "inactive";
+  // The database row is authoritative: a worker can have claimed an
+  // old-binary payload before migration backfilled its sequence.
+  const storedRunningSequence = validReviewInputSequence(row.running_sequence)
+    ? row.running_sequence
+    : runningSequence;
+  return pendingReviewInputSupersedes(
+    runningUpdatedAt,
+    row.pending_updated_at ?? undefined,
+    storedRunningSequence,
+    row.pending_sequence ?? undefined,
+  )
+    ? "newer-pending"
+    : "current";
+}
+
 /** Revoke every publication path bound to one exact pull request identity. */
 export async function cancelPullRequestPublication(
-  pool: Pick<Pool, "query">,
+  pool: Pool,
   input: {
     installationId: number;
     sourceInstallationId: number;
@@ -157,7 +296,14 @@ export async function cancelPullRequestPublication(
     prNumber: number;
   },
 ): Promise<number> {
-  const result = await pool.query(
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [reviewPullRequestLockKey(input)],
+    );
+    const result = await client.query(
     `WITH matching_jobs AS MATERIALIZED (
        SELECT id
          FROM jobs
@@ -211,8 +357,15 @@ export async function cancelPullRequestPublication(
       input.repoFullName,
       input.prNumber,
     ],
-  );
-  return result.rowCount ?? 0;
+    );
+    await client.query("COMMIT");
+    return result.rowCount ?? 0;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export interface RespondDeliveryJobPayload extends Record<string, unknown> {
@@ -224,6 +377,7 @@ export interface RespondFailureCommentJobPayload extends RespondJobPayload {
 }
 
 export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
+  reviewId?: number;
   installationId: number;
   repoFullName: string;
   advisoryCheckRunId: number | null;
@@ -630,7 +784,9 @@ export async function enqueueGithubReactionJobOnce(
 /**
  * Atomically retain the newest review intent for an exact repository, PR, and
  * head. Queued work is upgraded in place. Work requested during a running
- * review is retained as one coalesced rerun payload on that job.
+ * review is retained as one unclaimable rerun payload on that job. A newer
+ * edit timestamp in that payload also cancels the running worker's input; the
+ * rerun becomes claimable only after the outer attempt releases its claim.
  */
 export async function enqueueReviewJobOnce(
   pool: Pool,
@@ -639,46 +795,132 @@ export async function enqueueReviewJobOnce(
   if (!Number.isSafeInteger(payload.githubRepoId) || payload.githubRepoId <= 0) {
     throw new TypeError("review job requires a positive GitHub repository ID");
   }
+  if (!validReviewEventTimestamp(payload.expectedPullRequestUpdatedAt)) {
+    throw new TypeError("review job requires a valid pull request update timestamp");
+  }
+  const incomingPayload = withoutAssignedReviewInputSequence(payload);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const identity = reviewJobIdentity(payload);
+    const identity = reviewJobIdentity(incomingPayload);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-      `postil:review-pr:${[String(payload.githubRepoId), String(payload.prNumber)].join("\u001f")}`,
+      reviewPullRequestLockKey(incomingPayload),
     ]);
     // Serialize with writers from releases that still key the active-review
     // lock by repository name. The database trigger independently enforces the
     // stable repository-ID identity for every writer during the rollout.
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:active-review:${[
-        payload.repoFullName,
-        String(payload.prNumber),
-        payload.headSha,
+        incomingPayload.repoFullName,
+        String(incomingPayload.prNumber),
+        incomingPayload.headSha,
       ].join("\u001f")}`,
     ]);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:active-review:${identity}`,
     ]);
-    const active = await selectActiveReviewJob(client, payload);
+    const active = await selectActiveReviewJob(client, incomingPayload);
     if (!active) {
+      const reviewInputSequence = await nextReviewInputSequence(client);
       const result = await client.query<{ id: string }>(
         `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
          VALUES ('review', $1, 'queued', now(), 3)
          RETURNING id`,
-        [JSON.stringify(withoutCoalescedReviewPayload(payload))],
+        [JSON.stringify({
+          ...withoutCoalescedReviewPayload(incomingPayload),
+          reviewInputSequence,
+        })],
       );
+      if (result.rows[0]) {
+        await client.query(
+          `UPDATE jobs
+              SET payload = payload || jsonb_build_object(
+                $2::text, $3::text,
+                $4::text, $5::text
+              )
+            WHERE id = $1`,
+          [
+            result.rows[0].id,
+            PROVIDER_RETRY_LINEAGE_KEY,
+            `review-job:${result.rows[0].id}`,
+            REVIEW_INPUT_SEQUENCE_KEY,
+            reviewInputSequence,
+          ],
+        );
+      }
       await client.query("COMMIT");
       return result.rows[0] ? Number(result.rows[0].id) : null;
     }
 
-    const previous =
-      active.status === "running"
-        ? (active.payload[COALESCED_REVIEW_PAYLOAD_KEY] ?? active.payload)
-        : active.payload;
-    const merged = mergeReviewJobPayload(previous, payload);
+    const providerRetryLineage = validProviderRetryLineage(
+      active.payload.providerRetryLineage,
+    )
+      ? active.payload.providerRetryLineage
+      : `review-job:${active.id}`;
+    const activePayload: StoredReviewJobPayload = {
+      ...active.payload,
+      providerRetryLineage,
+      reviewInputSequence: validReviewInputSequence(
+          active.payload.reviewInputSequence,
+        )
+        ? active.payload.reviewInputSequence
+        : await nextReviewInputSequence(client),
+    };
+    const recoveryPending = activePayload.recoveryReviewId !== undefined;
+    const pendingPayload = activePayload[COALESCED_REVIEW_PAYLOAD_KEY];
+    if (
+      sameReviewSourceDelivery(activePayload, incomingPayload) ||
+      (pendingPayload !== undefined &&
+        sameReviewSourceDelivery(pendingPayload, incomingPayload))
+    ) {
+      await client.query("COMMIT");
+      return null;
+    }
+    const previousRaw = pendingPayload ?? activePayload;
+    const previous = {
+      ...previousRaw,
+      reviewInputSequence: validReviewInputSequence(previousRaw.reviewInputSequence)
+        ? previousRaw.reviewInputSequence
+        : activePayload.reviewInputSequence,
+    };
+    const sequencedIncoming = {
+      ...incomingPayload,
+      reviewInputSequence: await nextReviewInputSequence(client),
+    };
+    const merged = {
+      ...mergeReviewJobPayload(previous, sequencedIncoming),
+      providerRetryLineage,
+    };
+    if (!reviewJobPayloadAdvances(previous, sequencedIncoming)) {
+      await client.query("COMMIT");
+      return null;
+    }
+    if (recoveryPending) {
+      const stored = {
+        ...activePayload,
+        [COALESCED_REVIEW_PAYLOAD_KEY]: withoutRecoveryReviewControl(merged),
+      };
+      const updated = await client.query<{ id: string }>(
+        `UPDATE jobs
+            SET payload = $2
+          WHERE id = $1 AND status = $3
+            AND payload IS DISTINCT FROM $2::jsonb
+          RETURNING id`,
+        [active.id, JSON.stringify(stored), active.status],
+      );
+      await client.query("COMMIT");
+      return updated.rows[0] ? Number(updated.rows[0].id) : null;
+    }
+    const queuedInputSuperseded =
+      active.status === "queued" &&
+      pendingReviewInputSupersedes(
+        activePayload.expectedPullRequestUpdatedAt,
+        merged.expectedPullRequestUpdatedAt,
+      );
     if (
       active.status === "queued" &&
-      !sameReviewPublicationIdentity(active.payload, merged)
+      (queuedInputSuperseded ||
+        !sameReviewPublicationIdentity(active.payload, merged))
     ) {
       const replacement = await client.query<{ id: string }>(
         `WITH retired AS (
@@ -688,8 +930,12 @@ export async function enqueueReviewJobOnce(
             WHERE id = $1 AND status = 'queued'
           RETURNING id, max_attempts
          )
-         INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-         SELECT 'review', $2, 'queued', now(), max_attempts FROM retired
+         INSERT INTO jobs (
+           kind, payload, status, attempts, run_after, max_attempts, created_at
+         )
+         SELECT 'review', $2, 'queued', 0, clock_timestamp(), max_attempts,
+                clock_timestamp()
+           FROM retired
          RETURNING id`,
         [active.id, JSON.stringify(merged)],
       );
@@ -698,7 +944,7 @@ export async function enqueueReviewJobOnce(
     }
     const stored: StoredReviewJobPayload =
       active.status === "running"
-        ? { ...active.payload, [COALESCED_REVIEW_PAYLOAD_KEY]: merged }
+        ? { ...activePayload, [COALESCED_REVIEW_PAYLOAD_KEY]: merged }
         : merged;
     const updated = await client.query<{ id: string }>(
       `UPDATE jobs
@@ -716,6 +962,36 @@ export async function enqueueReviewJobOnce(
   } finally {
     client.release();
   }
+}
+
+export interface ObservedReviewSnapshot {
+  headSha: string;
+  baseSha: string;
+  updatedAt: string;
+  authorGithubId?: number;
+  authorLogin?: string;
+}
+
+/** Retain the live PR snapshot observed while processing an older queued input. */
+export async function enqueueObservedReviewSnapshot(
+  pool: Pool,
+  payload: ReviewJobPayload,
+  observed: ObservedReviewSnapshot,
+): Promise<number | null> {
+  const {
+    sourceDeliveryId: _sourceDeliveryId,
+    ...ordinaryPayload
+  } = withoutRecoveryReviewControl(payload);
+  return enqueueReviewJobOnce(pool, {
+    ...ordinaryPayload,
+    headSha: observed.headSha,
+    baseSha: observed.baseSha,
+    expectedPullRequestUpdatedAt: observed.updatedAt,
+    ...(observed.authorGithubId !== undefined
+      ? { authorGithubId: observed.authorGithubId }
+      : {}),
+    ...(observed.authorLogin ? { authorLogin: observed.authorLogin } : {}),
+  });
 }
 
 async function selectActiveReviewJob(
@@ -775,10 +1051,122 @@ function sameReviewPublicationIdentity(
     left.baseSha === right.baseSha;
 }
 
+function sameReviewSourceDelivery(
+  left: ReviewJobPayload,
+  right: ReviewJobPayload,
+): boolean {
+  return typeof left.sourceDeliveryId === "string" &&
+    left.sourceDeliveryId.length > 0 &&
+    left.sourceDeliveryId === right.sourceDeliveryId &&
+    left.expectedPullRequestUpdatedAt === right.expectedPullRequestUpdatedAt &&
+    sameReviewPublicationIdentity(left, right);
+}
+
+function withoutAssignedReviewInputSequence(
+  payload: ReviewJobPayload,
+): ReviewJobPayload {
+  const { reviewInputSequence: _sequence, ...unassigned } = payload;
+  return unassigned as ReviewJobPayload;
+}
+
 function withoutCoalescedReviewPayload(payload: ReviewJobPayload): ReviewJobPayload {
   const { [COALESCED_REVIEW_PAYLOAD_KEY]: _pending, ...clean } =
     payload as StoredReviewJobPayload;
   return clean as ReviewJobPayload;
+}
+
+function withoutRecoveryReviewControl(
+  payload: ReviewJobPayload,
+): ReviewJobPayload {
+  const {
+    recoveryReviewId: _recoveryReviewId,
+    privateWorkerRehearsalNonce: _privateWorkerRehearsalNonce,
+    privateWorkerRehearsalLockedBy: _privateWorkerRehearsalLockedBy,
+    privateWorkerRehearsalLockGeneration: _privateWorkerRehearsalLockGeneration,
+    ...ordinary
+  } = withoutCoalescedReviewPayload(payload);
+  return ordinary as ReviewJobPayload;
+}
+
+function validReviewEventTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function validReviewInputSequence(value: unknown): value is string {
+  return typeof value === "string" && /^[1-9][0-9]*$/u.test(value);
+}
+
+async function nextReviewInputSequence(
+  client: Pick<PoolClient, "query">,
+): Promise<string> {
+  const result = await client.query<{ sequence: string }>(
+    `SELECT nextval(
+       COALESCE(
+         to_regclass('review_input_arrival_sequence'),
+         pg_get_serial_sequence('jobs', 'id')::regclass
+       )
+     )::text AS sequence`,
+  );
+  const sequence = result.rows[0]?.sequence;
+  if (!validReviewInputSequence(sequence)) {
+    throw new Error("review input sequence allocation returned no value");
+  }
+  return sequence;
+}
+
+export function validProviderRetryLineage(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 200;
+}
+
+export function providerRetryLineageForJob(
+  payload: Pick<ReviewJobPayload, "providerRetryLineage">,
+  jobId: number,
+): string {
+  return validProviderRetryLineage(payload.providerRetryLineage)
+    ? payload.providerRetryLineage
+    : `review-job:${jobId}`;
+}
+
+function reviewJobPayloadAdvances(
+  previous: ReviewJobPayload,
+  incoming: ReviewJobPayload,
+): boolean {
+  const previousTime = Date.parse(previous.expectedPullRequestUpdatedAt);
+  const incomingTime = Date.parse(incoming.expectedPullRequestUpdatedAt);
+  if (!Number.isFinite(previousTime)) return true;
+  if (incomingTime > previousTime) return true;
+  if (
+    incomingTime === previousTime &&
+    !sameReviewPublicationIdentity(previous, incoming)
+  ) {
+    return true;
+  }
+  if (
+    incomingTime === previousTime &&
+    validReviewInputSequence(previous.reviewInputSequence) &&
+    validReviewInputSequence(incoming.reviewInputSequence) &&
+    BigInt(incoming.reviewInputSequence) > BigInt(previous.reviewInputSequence) &&
+    typeof incoming.sourceDeliveryId === "string" &&
+    incoming.sourceDeliveryId.length > 0 &&
+    incoming.sourceDeliveryId !== previous.sourceDeliveryId
+  ) {
+    return true;
+  }
+  if (incoming.forceFullReview === true && previous.forceFullReview !== true) {
+    return true;
+  }
+  return reviewTriggerPriority(incoming.trigger) > reviewTriggerPriority(previous.trigger);
+}
+
+function reviewTriggerPriority(trigger: ReviewJobPayload["trigger"]): number {
+  const priorities: Record<ReviewTriggerContext["source"], number> = {
+    unknown: 0,
+    automatic_pull_request: 1,
+    github_check_rerun: 2,
+    requested_review: 3,
+    finding_reconciliation: 4,
+  };
+  return priorities[trigger?.source ?? "unknown"];
 }
 
 function mergeReviewJobPayload(
@@ -787,21 +1175,32 @@ function mergeReviewJobPayload(
 ): ReviewJobPayload {
   const previousClean = withoutCoalescedReviewPayload(previous);
   const incomingClean = withoutCoalescedReviewPayload(incoming);
-  const triggerPriority: Record<ReviewTriggerContext["source"], number> = {
-    unknown: 0,
-    automatic_pull_request: 1,
-    github_check_rerun: 2,
-    requested_review: 3,
-  };
-  const previousPriority = triggerPriority[previousClean.trigger?.source ?? "unknown"];
-  const incomingPriority = triggerPriority[incomingClean.trigger?.source ?? "unknown"];
+  const previousPriority = reviewTriggerPriority(previousClean.trigger);
+  const incomingPriority = reviewTriggerPriority(incomingClean.trigger);
   const trigger = previousPriority > incomingPriority
     ? previousClean.trigger
     : incomingClean.trigger;
   const forceFullReview =
     previousClean.forceFullReview === true || incomingClean.forceFullReview === true;
+  const previousTime = Date.parse(previousClean.expectedPullRequestUpdatedAt);
+  const incomingTime = Date.parse(incomingClean.expectedPullRequestUpdatedAt);
+  const incomingSequenceIsNewer =
+    previousTime === incomingTime &&
+    validReviewInputSequence(previousClean.reviewInputSequence) &&
+    validReviewInputSequence(incomingClean.reviewInputSequence) &&
+    BigInt(incomingClean.reviewInputSequence) >
+      BigInt(previousClean.reviewInputSequence);
+  const authoritative = previousTime > incomingTime ||
+      (previousTime === incomingTime && !incomingSequenceIsNewer)
+    ? previousClean
+    : incomingClean;
   return {
-    ...incomingClean,
+    ...authoritative,
+    ...(validProviderRetryLineage(previousClean.providerRetryLineage)
+      ? { providerRetryLineage: previousClean.providerRetryLineage }
+      : validProviderRetryLineage(incomingClean.providerRetryLineage)
+        ? { providerRetryLineage: incomingClean.providerRetryLineage }
+        : {}),
     ...(trigger ? { trigger } : {}),
     ...(forceFullReview ? { forceFullReview: true } : {}),
   };
@@ -823,62 +1222,210 @@ export async function claimJob(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const selected = await client.query<{
-      id: string;
-      kind: string;
-      payload: Record<string, unknown>;
-      attempts: number;
-      max_attempts: number;
-      created_at: Date;
-    }>(
-      `SELECT id, kind, payload, attempts, max_attempts, created_at
-       FROM jobs
-       WHERE status = 'queued'
-         AND run_after <= now()
-         AND kind = ANY($1::text[])
-         AND (
-           $2::text IS NULL
-           OR (kind = 'webhook-dispatch' AND payload->>'deliveryId' = $2)
-         )
-         AND (
-           NOT $3::boolean
-           OR NOT payload ? 'privateWorkerRehearsalNonce'
-         )
-       ORDER BY CASE WHEN kind = 'github-reaction' THEN 0 ELSE 1 END, id
-       FOR UPDATE SKIP LOCKED
-       LIMIT 1`,
-      [
-        capabilities,
-        options.exactWebhookDispatchDeliveryId ?? null,
-        options.excludePrivateWorkerRehearsals === true,
-      ],
+    await client.query(
+      `WITH expired AS (
+         SELECT id
+           FROM jobs
+          WHERE status = 'queued'
+            AND kind = ANY($1::text[])
+            AND reconciliation_deadline_at IS NOT NULL
+            AND reconciliation_deadline_at <= clock_timestamp()
+          ORDER BY id
+          FOR UPDATE SKIP LOCKED
+          LIMIT 100
+       ), transitioned AS (
+       UPDATE jobs job
+          SET status = 'failed', locked_at = NULL, locked_by = NULL,
+              last_error = CASE
+                WHEN last_error IS NULL
+                  THEN 'reconciliation budget exhausted before claim'
+                ELSE left(
+                  last_error ||
+                    ' (reconciliation budget exhausted before claim; failing permanently)',
+                  2000
+                )
+              END,
+              run_after = clock_timestamp()
+        FROM expired
+       WHERE job.id = expired.id
+       RETURNING job.id, job.kind, job.payload,
+                 job.payload -> $2 AS pending, job.max_attempts
+       ), promoted AS (
+         INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         SELECT 'review', jsonb_set(
+                  pending, '{providerRetryLineage}',
+                  to_jsonb(COALESCE(
+                    NULLIF(pending->>'providerRetryLineage', ''),
+                    NULLIF(payload->>'providerRetryLineage', ''),
+                    'review-job:' || id::text
+                  )),
+                  true
+                ), 'queued', clock_timestamp(), max_attempts
+           FROM transitioned
+          WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
+         RETURNING id
+       )
+       SELECT count(*) FROM transitioned`,
+      [capabilities, COALESCED_REVIEW_PAYLOAD_KEY],
     );
-    const row = selected.rows[0];
-    if (!row) {
+    while (true) {
+      const result = await client.query<{
+        outcome: "claimed" | "expired" | "suppressed" | "terminalized";
+        id: string;
+        kind: string | null;
+        payload: Record<string, unknown> | null;
+        attempts: number | null;
+        max_attempts: number | null;
+        created_at: Date | null;
+        locked_at: Date | null;
+        lock_generation: string | null;
+      }>(
+        `WITH candidate AS MATERIALIZED (
+         SELECT id
+           FROM jobs
+          WHERE status = 'queued'
+            AND run_after <= clock_timestamp()
+            AND kind = ANY($1::text[])
+            AND (
+              $2::text IS NULL
+              OR (kind = 'webhook-dispatch' AND payload->>'deliveryId' = $2)
+            )
+            AND (
+              NOT $3::boolean
+              OR NOT payload ? 'privateWorkerRehearsalNonce'
+            )
+          ORDER BY CASE WHEN kind = 'github-reaction' THEN 0 ELSE 1 END, id
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1
+       ), admission AS MATERIALIZED (
+         SELECT candidate.id, clock_timestamp() AS admitted_at
+           FROM candidate
+       ), claimed AS (
+         UPDATE jobs job
+            SET status = 'running', attempts = job.attempts + 1,
+                locked_at = admission.admitted_at, locked_by = $4,
+                lock_generation = job.lock_generation + 1
+           FROM admission
+          WHERE job.id = admission.id
+            AND job.status = 'queued'
+            AND (
+              job.reconciliation_deadline_at IS NULL
+              OR job.reconciliation_deadline_at > admission.admitted_at
+            )
+        RETURNING job.id, job.status, job.kind, job.payload, job.attempts,
+                  job.max_attempts, job.created_at, job.locked_at,
+                  job.lock_generation
+       ), expired AS (
+         UPDATE jobs job
+            SET status = 'failed', locked_at = NULL, locked_by = NULL,
+                last_error = CASE
+                  WHEN job.last_error IS NULL
+                    THEN 'reconciliation budget exhausted before claim'
+                  ELSE left(
+                    job.last_error ||
+                      ' (reconciliation budget exhausted before claim; failing permanently)',
+                    2000
+                  )
+                END,
+                run_after = admission.admitted_at
+           FROM admission
+          WHERE job.id = admission.id
+            AND NOT EXISTS (SELECT 1 FROM claimed)
+            AND job.status = 'queued'
+            AND job.reconciliation_deadline_at IS NOT NULL
+            AND job.reconciliation_deadline_at <= admission.admitted_at
+        RETURNING job.id, job.kind, job.payload,
+                  job.payload -> $5 AS pending, job.max_attempts
+       ), promoted AS (
+         INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         SELECT 'review', jsonb_set(
+                  expired.pending, '{providerRetryLineage}',
+                  to_jsonb(COALESCE(
+                    NULLIF(expired.pending->>'providerRetryLineage', ''),
+                    NULLIF(expired.payload->>'providerRetryLineage', ''),
+                    'review-job:' || expired.id::text
+                  )),
+                  true
+                ), 'queued', admission.admitted_at, expired.max_attempts
+           FROM expired
+           CROSS JOIN admission
+          WHERE expired.kind = 'review'
+            AND jsonb_typeof(expired.pending) = 'object'
+         RETURNING id
+       )
+       SELECT 'claimed'::text AS outcome, id, kind, payload, attempts,
+              max_attempts, created_at, locked_at,
+              lock_generation::text AS lock_generation
+         FROM claimed
+        WHERE status = 'running'
+       UNION ALL
+       SELECT 'expired'::text AS outcome, id, NULL::text, NULL::jsonb,
+              NULL::integer, NULL::integer, NULL::timestamptz,
+              NULL::timestamptz, NULL::text
+         FROM expired
+       UNION ALL
+       SELECT 'terminalized'::text AS outcome, id, NULL::text, NULL::jsonb,
+              NULL::integer, NULL::integer, NULL::timestamptz,
+              NULL::timestamptz, NULL::text
+         FROM claimed
+        WHERE status <> 'running'
+       UNION ALL
+       SELECT 'suppressed'::text AS outcome, id, NULL::text, NULL::jsonb,
+              NULL::integer, NULL::integer, NULL::timestamptz,
+              NULL::timestamptz, NULL::text
+         FROM admission
+        WHERE NOT EXISTS (SELECT 1 FROM claimed)
+          AND NOT EXISTS (SELECT 1 FROM expired)`,
+        [
+          capabilities,
+          options.exactWebhookDispatchDeliveryId ?? null,
+          options.excludePrivateWorkerRehearsals === true,
+          workerId,
+          COALESCED_REVIEW_PAYLOAD_KEY,
+        ],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        await client.query("COMMIT");
+        return null;
+      }
+      if (row.outcome === "suppressed") {
+        await client.query(
+          `UPDATE jobs
+              SET status = 'failed', locked_at = NULL, locked_by = NULL,
+                  last_error =
+                    'active review claim was suppressed by queue identity enforcement',
+                  run_after = clock_timestamp()
+            WHERE id = $1 AND status = 'queued'`,
+          [row.id],
+        );
+        continue;
+      }
+      if (row.outcome !== "claimed") continue;
+      if (
+        !row.kind ||
+        !row.payload ||
+        row.attempts === null ||
+        row.max_attempts === null ||
+        !row.created_at ||
+        !row.locked_at ||
+        row.lock_generation === null
+      ) {
+        throw new Error("claimed job returned incomplete lease state");
+      }
       await client.query("COMMIT");
-      return null;
+      return {
+        id: Number(row.id),
+        kind: row.kind,
+        payload: row.payload,
+        attempts: row.attempts,
+        maxAttempts: row.max_attempts,
+        createdAt: row.created_at,
+        lockedAt: row.locked_at,
+        lockGeneration: BigInt(row.lock_generation),
+        lockedBy: workerId,
+      };
     }
-    const claimed = await client.query<{ locked_at: Date }>(
-      `UPDATE jobs
-       SET status = 'running', attempts = attempts + 1,
-           locked_at = date_trunc('milliseconds', clock_timestamp()), locked_by = $2
-       WHERE id = $1
-       RETURNING locked_at`,
-      [row.id, workerId],
-    );
-    const lockedAt = claimed.rows[0]?.locked_at;
-    if (!lockedAt) throw new Error("claimed job returned no lock timestamp");
-    await client.query("COMMIT");
-    return {
-      id: Number(row.id),
-      kind: row.kind,
-      payload: row.payload,
-      attempts: row.attempts + 1,
-      maxAttempts: row.max_attempts,
-      createdAt: row.created_at,
-      lockedAt,
-      lockedBy: workerId,
-    };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw err;
@@ -888,25 +1435,31 @@ export async function claimJob(
 }
 
 /**
- * Mark a job done. Scoped by `status = 'running' AND locked_by = $lockedBy` so
+ * Mark a job done. Scoped by the exact running claim so
  * a worker finishing late cannot stamp `done` over a job the watchdog already
- * requeued and a second worker re-claimed under a new lock (which would mask a
- * concurrent double-run). Only the current lock holder can complete the row.
+ * requeued and a second worker re-claimed under a new generation (which would
+ * mask a concurrent double-run). Only the current lease holder can complete
+ * the row.
  */
 export async function completeJob(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "lockedBy">,
+  job: Pick<ClaimedJob, "id" | "lockGeneration" | "lockedBy">,
 ): Promise<"done" | "coalesced" | "lost"> {
   const result = await pool.query<{ outcome: "done" | "coalesced" | "lost" }>(
     `WITH transitioned AS (
        UPDATE jobs
           SET status = 'done', locked_at = NULL, locked_by = NULL,
               last_error = NULL
-        WHERE id = $1 AND status = 'running' AND locked_by = $2
-      RETURNING kind, payload -> $3 AS pending, max_attempts
+        WHERE id = $1 AND status = 'running'
+          AND locked_by = $2 AND lock_generation = $3
+      RETURNING id, kind, payload -> $4 AS pending, max_attempts
      ), inserted AS (
        INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-       SELECT 'review', pending, 'queued', now(), max_attempts
+       SELECT 'review', jsonb_set(
+                pending, '{providerRetryLineage}',
+                to_jsonb(COALESCE(NULLIF(pending->>'providerRetryLineage', ''), 'review-job:' || id::text)),
+                true
+              ), 'queued', now(), max_attempts
          FROM transitioned
         WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
        RETURNING id
@@ -916,14 +1469,14 @@ export async function completeJob(
        WHEN EXISTS (SELECT 1 FROM transitioned) THEN 'done'
        ELSE 'lost'
      END AS outcome`,
-    [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
+    [job.id, job.lockedBy, job.lockGeneration, COALESCED_REVIEW_PAYLOAD_KEY],
   );
   return result.rows[0]?.outcome ?? "lost";
 }
 
 export async function continueClaimedJob(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "lockedBy">,
+  job: Pick<ClaimedJob, "id" | "lockGeneration" | "lockedBy">,
   payload: Record<string, unknown>,
   options: { runAfter?: Date } = {},
 ): Promise<void> {
@@ -932,64 +1485,98 @@ export async function continueClaimedJob(
         SET payload = $3, status = 'queued', attempts = 0,
             run_after = COALESCE($4, now()), locked_at = NULL,
             locked_by = NULL, last_error = NULL
-      WHERE id = $1 AND status = 'running' AND locked_by = $2`,
-    [job.id, job.lockedBy, JSON.stringify(payload), options.runAfter ?? null],
+      WHERE id = $1 AND status = 'running'
+        AND locked_by = $2 AND lock_generation = $5`,
+    [
+      job.id,
+      job.lockedBy,
+      JSON.stringify(payload),
+      options.runAfter ?? null,
+      job.lockGeneration,
+    ],
   );
   if ((result.rowCount ?? 0) !== 1) {
     throw new Error("job continuation lost its lease");
   }
 }
 
-/** Requeue claims owned by one stopping worker without consuming an attempt. */
-export async function requeueJobsOwnedBy(
+/** Requeue exact claims held by a stopping worker without consuming an attempt. */
+export async function requeueClaimedJobs(
   pool: Pool,
-  lockedByPrefix: string,
   reason: string,
   kinds: readonly string[],
-  jobIds: readonly number[],
+  leases: readonly JobLease[],
 ): Promise<number> {
-  if (!lockedByPrefix) throw new Error("requeueJobsOwnedBy requires a lock-owner prefix");
   const allowedKinds = [...new Set(kinds.filter(Boolean))];
   if (allowedKinds.length === 0) {
-    throw new Error("requeueJobsOwnedBy requires at least one safe job kind");
+    throw new Error("requeueClaimedJobs requires at least one safe job kind");
   }
-  const ownedJobIds = [...new Set(jobIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
-  if (ownedJobIds.length === 0) return 0;
+  const exactLeases = [
+    ...new Map(
+      leases.map((lease) => [
+        `${lease.id}:${lease.lockGeneration}:${lease.lockedBy}`,
+        lease,
+      ]),
+    ).values(),
+  ];
+  for (const lease of exactLeases) {
+    if (!Number.isSafeInteger(lease.id) || lease.id <= 0) {
+      throw new Error("requeueClaimedJobs requires positive safe job ids");
+    }
+    if (!lease.lockedBy) {
+      throw new Error("requeueClaimedJobs requires an exact lock owner");
+    }
+    if (lease.lockGeneration <= 0n) {
+      throw new Error("requeueClaimedJobs requires a positive lock generation");
+    }
+  }
+  if (exactLeases.length === 0) return 0;
   const redactedReason = redactAndTruncate(reason, 2000);
   const result = await pool.query<{ count: string }>(
-    `WITH transitioned AS (
-       UPDATE jobs
+    `WITH requested AS MATERIALIZED (
+       SELECT id, locked_by, lock_generation
+         FROM unnest($1::bigint[], $2::text[], $3::bigint[])
+           AS lease(id, locked_by, lock_generation)
+     ), transitioned AS (
+       UPDATE jobs job
           SET status = CASE
-                WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
+                WHEN job.kind = 'review' AND jsonb_typeof(job.payload -> $6) = 'object'
                   THEN 'done'::job_status
                 ELSE 'queued'::job_status
               END,
               attempts = CASE
-                WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
-                  THEN attempts
-                ELSE GREATEST(attempts - 1, 0)
+                WHEN job.kind = 'review' AND jsonb_typeof(job.payload -> $6) = 'object'
+                  THEN job.attempts
+                ELSE GREATEST(job.attempts - 1, 0)
               END,
               locked_at = NULL, locked_by = NULL,
-              last_error = $2,
+              last_error = $4,
               run_after = now()
-        WHERE status = 'running'
-          AND left(locked_by, length($1)) = $1
-          AND kind = ANY($3::text[])
-          AND id = ANY($4::bigint[])
-      RETURNING kind, payload -> $5 AS pending, max_attempts
+         FROM requested
+        WHERE job.status = 'running'
+          AND job.id = requested.id
+          AND job.locked_by = requested.locked_by
+          AND job.lock_generation = requested.lock_generation
+          AND job.kind = ANY($5::text[])
+      RETURNING job.id, job.kind, job.payload -> $6 AS pending, job.max_attempts
      ), inserted AS (
        INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-       SELECT 'review', pending, 'queued', now(), max_attempts
+       SELECT 'review', jsonb_set(
+                pending, '{providerRetryLineage}',
+                to_jsonb(COALESCE(NULLIF(pending->>'providerRetryLineage', ''), 'review-job:' || id::text)),
+                true
+              ), 'queued', now(), max_attempts
          FROM transitioned
         WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
        RETURNING id
      )
      SELECT count(*)::text AS count FROM transitioned`,
     [
-      lockedByPrefix,
+      exactLeases.map((lease) => String(lease.id)),
+      exactLeases.map((lease) => lease.lockedBy),
+      exactLeases.map((lease) => String(lease.lockGeneration)),
       redactedReason,
       allowedKinds,
-      ownedJobIds,
       COALESCED_REVIEW_PAYLOAD_KEY,
     ],
   );
@@ -1017,7 +1604,10 @@ export function backoffMs(attempts: number): number {
  */
 export async function failJob(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "attempts" | "maxAttempts" | "lockedBy">,
+  job: Pick<
+    ClaimedJob,
+    "id" | "attempts" | "maxAttempts" | "lockGeneration" | "lockedBy"
+  >,
   error: string,
   opts: {
     permanent?: boolean;
@@ -1031,34 +1621,38 @@ export async function failJob(
   const redactedError = redactAndTruncate(error, 2000);
   if (!opts.permanent && job.attempts < job.maxAttempts) {
     const delay = backoffMs(job.attempts);
-    // Guarded by `status = 'running'` (mirroring the final-fail path below).
+    // Guarded by the exact running claim (mirroring the final-fail path below).
     // If the watchdog already requeued this stalled job and a second worker
-    // re-claimed it (`status` now 'queued' or 'running' under a new owner with
-    // a higher attempt count), a late transient-retry from the original worker
-    // must NOT reset it back to 'queued': that would resurrect a job another
-    // worker owns and let a third worker run it concurrently (double review /
-    // reply / check-runs / LLM spend). rowCount 0 means we lost the row; report
-    // "lost" and do not resurrect it.
+    // re-claimed it (`status` now 'queued' or 'running' under a newer
+    // generation), a late transient retry from the original worker must not
+    // reset it back to 'queued'. That would resurrect a job another worker owns
+    // and let a third worker run it concurrently. rowCount 0 means this caller
+    // lost the row, so report "lost" and do not resurrect it.
     const res = await pool.query<{ outcome: "coalesced" | "retried" | "lost" }>(
       `WITH transitioned AS (
          UPDATE jobs
             SET status = CASE
-                  WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
+                  WHEN kind = 'review' AND jsonb_typeof(payload -> $6) = 'object'
                     THEN 'failed'::job_status
                   ELSE 'queued'::job_status
                 END,
                 locked_at = NULL, locked_by = NULL,
                 last_error = $2,
                 run_after = CASE
-                  WHEN kind = 'review' AND jsonb_typeof(payload -> $5) = 'object'
+                  WHEN kind = 'review' AND jsonb_typeof(payload -> $6) = 'object'
                     THEN now()
                   ELSE now() + ($3 || ' milliseconds')::interval
                 END
-          WHERE id = $1 AND status = 'running' AND locked_by = $4
-        RETURNING status, kind, payload -> $5 AS pending, max_attempts
+          WHERE id = $1 AND status = 'running'
+            AND locked_by = $4 AND lock_generation = $5
+        RETURNING id, status, kind, payload -> $6 AS pending, max_attempts
        ), inserted AS (
          INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-         SELECT 'review', pending, 'queued', now(), max_attempts
+         SELECT 'review', jsonb_set(
+                  pending, '{providerRetryLineage}',
+                  to_jsonb(COALESCE(NULLIF(pending->>'providerRetryLineage', ''), 'review-job:' || id::text)),
+                  true
+                ), 'queued', now(), max_attempts
            FROM transitioned
           WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
          RETURNING id
@@ -1068,7 +1662,14 @@ export async function failJob(
          WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'queued') THEN 'retried'
          ELSE 'lost'
        END AS outcome`,
-      [job.id, redactedError, String(delay), job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
+      [
+        job.id,
+        redactedError,
+        String(delay),
+        job.lockedBy,
+        job.lockGeneration,
+        COALESCED_REVIEW_PAYLOAD_KEY,
+      ],
     );
     return res.rows[0]?.outcome ?? "lost";
   }
@@ -1084,17 +1685,22 @@ export async function failJob(
               SET status = 'failed',
                   locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
-            WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING status, kind, payload -> $4 AS pending, max_attempts
+            WHERE id = $1 AND status = 'running'
+              AND locked_by = $3 AND lock_generation = $4
+          RETURNING id, status, kind, payload -> $5 AS pending, max_attempts
          ), inserted_review AS (
            INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-           SELECT 'review', pending, 'queued', now(), max_attempts
+           SELECT 'review', jsonb_set(
+                    pending, '{providerRetryLineage}',
+                    to_jsonb(COALESCE(NULLIF(pending->>'providerRetryLineage', ''), 'review-job:' || id::text)),
+                    true
+                  ), 'queued', now(), max_attempts
              FROM transitioned
             WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
            RETURNING id
          ), inserted_followup AS (
          INSERT INTO jobs (kind, payload, max_attempts)
-         SELECT $5, $6::jsonb, $7
+         SELECT $6, $7::jsonb, $8
            FROM transitioned
           WHERE status = 'failed'
             AND NOT (kind = 'review' AND jsonb_typeof(pending) = 'object')
@@ -1109,6 +1715,7 @@ export async function failJob(
           job.id,
           redactedError,
           job.lockedBy,
+          job.lockGeneration,
           COALESCED_REVIEW_PAYLOAD_KEY,
           opts.failureFollowup.kind,
           JSON.stringify(opts.failureFollowup.payload),
@@ -1121,11 +1728,16 @@ export async function failJob(
               SET status = 'failed',
                   locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
-            WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING status, kind, payload -> $4 AS pending, max_attempts
+            WHERE id = $1 AND status = 'running'
+              AND locked_by = $3 AND lock_generation = $4
+          RETURNING id, status, kind, payload -> $5 AS pending, max_attempts
          ), inserted AS (
            INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-           SELECT 'review', pending, 'queued', now(), max_attempts
+           SELECT 'review', jsonb_set(
+                    pending, '{providerRetryLineage}',
+                    to_jsonb(COALESCE(NULLIF(pending->>'providerRetryLineage', ''), 'review-job:' || id::text)),
+                    true
+                  ), 'queued', now(), max_attempts
              FROM transitioned
             WHERE kind = 'review' AND jsonb_typeof(pending) = 'object'
            RETURNING id
@@ -1135,7 +1747,13 @@ export async function failJob(
            WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'failed'
            ELSE 'lost'
          END AS outcome`,
-        [job.id, redactedError, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
+        [
+          job.id,
+          redactedError,
+          job.lockedBy,
+          job.lockGeneration,
+          COALESCED_REVIEW_PAYLOAD_KEY,
+        ],
       );
   return (res.rows[0] as { outcome?: "coalesced" | "failed" | "lost" } | undefined)
     ?.outcome ?? "lost";
@@ -1155,41 +1773,130 @@ export const PUBLICATION_RECONCILIATION_BUDGET_MS = readPositiveIntEnv(
 
 /**
  * Requeue reconciliation work until its target state is superseded or
- * published, or until `budgetMs` has elapsed since the job was created. Past
- * the budget the job fails permanently instead of requeuing: a forge outage
- * long enough to exceed it needs operator attention, not another retry.
+ * published, or until `budgetMs` has elapsed since the job was created. A
+ * retained review input always replaces the stale attempt with one fresh
+ * queued job. Without retained input, ordinary retries preserve their backoff
+ * and exhaustion makes the attempt terminal.
  */
 export async function retryJobIndefinitely(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "attempts" | "lockedBy" | "createdAt">,
+  job: Pick<ClaimedJob, "id" | "attempts" | "lockGeneration" | "lockedBy">,
   error: string,
   budgetMs: number = PUBLICATION_RECONCILIATION_BUDGET_MS,
-): Promise<"retried" | "lost" | "exhausted"> {
-  const redactedError = redactAndTruncate(error, 2000);
-  const elapsedMs = Date.now() - job.createdAt.getTime();
-  if (elapsedMs > budgetMs) {
-    const budgetMessage = redactAndTruncate(
-      `${error} (reconciliation budget of ${Math.round(budgetMs / 60_000)} minute(s) exhausted after ${Math.round(elapsedMs / 60_000)} minute(s); failing permanently)`,
-      2000,
-    );
-    const res = await pool.query(
-      `UPDATE jobs
-       SET status = 'failed', locked_at = NULL, locked_by = NULL,
-           last_error = $2, run_after = now()
-       WHERE id = $1 AND status = 'running' AND locked_by = $3`,
-      [job.id, budgetMessage, job.lockedBy],
-    );
-    return (res.rowCount ?? 0) > 0 ? "exhausted" : "lost";
+): Promise<"retried" | "coalesced" | "lost" | "exhausted"> {
+  if (!Number.isSafeInteger(budgetMs) || budgetMs <= 0) {
+    throw new TypeError("reconciliation budget must be a positive safe integer");
   }
-  const delay = backoffMs(job.attempts);
-  const res = await pool.query(
-    `UPDATE jobs
-     SET status = 'queued', locked_at = NULL, locked_by = NULL,
-         last_error = $2, run_after = now() + ($3 || ' milliseconds')::interval
-     WHERE id = $1 AND status = 'running' AND locked_by = $4`,
-    [job.id, redactedError, String(delay), job.lockedBy],
+  const redactedError = redactAndTruncate(error, 2000);
+  const budgetMessage = redactAndTruncate(
+    `${error} (reconciliation budget of ${Math.round(budgetMs / 60_000)} minute(s) exhausted; failing permanently)`,
+    2000,
   );
-  return (res.rowCount ?? 0) > 0 ? "retried" : "lost";
+  const delay = backoffMs(job.attempts);
+  const res = await pool.query<{
+    outcome: "coalesced" | "retried" | "exhausted" | "lost";
+  }>(
+    `WITH claimed AS MATERIALIZED (
+       SELECT id, kind, payload, max_attempts,
+              COALESCE(
+                reconciliation_deadline_at,
+                created_at + ($5 || ' milliseconds')::interval
+              ) AS deadline_at,
+              clock_timestamp() AS database_now
+         FROM jobs
+        WHERE id = $1
+          AND status = 'running'
+          AND locked_by = $3
+          AND lock_generation = $4
+        FOR UPDATE
+     ), decision AS MATERIALIZED (
+       SELECT *,
+              database_now + ($6 || ' milliseconds')::interval < deadline_at
+                AS retry_within_budget,
+              kind = 'review' AND jsonb_typeof(payload -> $7) = 'object'
+                AS has_pending_review,
+              kind = 'review' AND payload ? 'recoveryReviewId'
+                AS is_publication_recovery
+         FROM claimed
+     ), transitioned AS (
+       UPDATE jobs job
+          SET status = CASE
+                WHEN decision.has_pending_review
+                  AND (NOT decision.is_publication_recovery OR NOT decision.retry_within_budget)
+                  THEN 'failed'::job_status
+                WHEN decision.retry_within_budget
+                  THEN 'queued'::job_status
+                ELSE 'failed'::job_status
+              END,
+              locked_at = NULL,
+              locked_by = NULL,
+              last_error = CASE
+                WHEN decision.retry_within_budget
+                  OR (
+                    decision.has_pending_review
+                    AND NOT decision.is_publication_recovery
+                  )
+                  THEN $2
+                ELSE $8
+              END,
+              run_after = CASE
+                WHEN decision.retry_within_budget
+                  AND (
+                    NOT decision.has_pending_review
+                    OR decision.is_publication_recovery
+                  )
+                  THEN decision.database_now + ($6 || ' milliseconds')::interval
+                ELSE decision.database_now
+              END,
+              reconciliation_deadline_at = decision.deadline_at
+         FROM decision
+        WHERE job.id = decision.id
+          AND job.status = 'running'
+          AND job.locked_by = $3
+          AND job.lock_generation = $4
+      RETURNING job.id, job.status, decision.kind, decision.payload,
+                decision.payload -> $7 AS pending,
+                decision.max_attempts,
+                decision.retry_within_budget,
+                decision.has_pending_review,
+                decision.is_publication_recovery
+     ), inserted AS (
+       INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       SELECT 'review', jsonb_set(
+                pending, '{providerRetryLineage}',
+                to_jsonb(COALESCE(
+                  NULLIF(pending->>'providerRetryLineage', ''),
+                  NULLIF(payload->>'providerRetryLineage', ''),
+                  'review-job:' || id::text
+                )),
+                true
+              ), 'queued', clock_timestamp(), max_attempts
+         FROM transitioned
+        WHERE has_pending_review
+          AND (NOT is_publication_recovery OR NOT retry_within_budget)
+       RETURNING id
+     )
+     SELECT CASE
+       WHEN EXISTS (SELECT 1 FROM inserted) THEN 'coalesced'
+       WHEN EXISTS (
+         SELECT 1 FROM transitioned
+          WHERE status = 'queued' AND retry_within_budget
+       ) THEN 'retried'
+       WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'exhausted'
+       ELSE 'lost'
+     END AS outcome`,
+    [
+      job.id,
+      redactedError,
+      job.lockedBy,
+      job.lockGeneration,
+      String(budgetMs),
+      String(delay),
+      COALESCED_REVIEW_PAYLOAD_KEY,
+      budgetMessage,
+    ],
+  );
+  return res.rows[0]?.outcome ?? "lost";
 }
 
 export async function queueDepth(pool: Pool): Promise<number> {

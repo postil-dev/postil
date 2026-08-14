@@ -11,7 +11,7 @@ import {
   type DeviceAuthorizationRow,
 } from "@/lib/cli-auth";
 import { getDb, schema, type Database } from "@/lib/db";
-import { getSessionUser } from "@/lib/session";
+import { requireVerifiedPageSessionUser } from "@/lib/session";
 
 async function requirePendingDeviceAuthorization(
   db: Database,
@@ -27,8 +27,7 @@ async function requirePendingDeviceAuthorization(
 
 /** Approve a device authorization for one organization the caller administers. */
 export async function approveDeviceAuthorizationAction(formData: FormData): Promise<void> {
-  const user = await getSessionUser();
-  if (!user) throw new Error("not signed in");
+  const user = await requireVerifiedPageSessionUser();
   const db = getDb();
   const { code, row } = await requirePendingDeviceAuthorization(db, formData);
 
@@ -60,8 +59,7 @@ export async function approveDeviceAuthorizationAction(formData: FormData): Prom
 
 /** Deny a device authorization. The CLI's poll then reports denial and stops. */
 export async function denyDeviceAuthorizationAction(formData: FormData): Promise<void> {
-  const user = await getSessionUser();
-  if (!user) throw new Error("not signed in");
+  const user = await requireVerifiedPageSessionUser();
   const db = getDb();
   const { code, row } = await requirePendingDeviceAuthorization(db, formData);
 

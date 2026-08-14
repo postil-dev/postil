@@ -9,7 +9,7 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs CodeRabbit",
   description:
-    "Postil is a CodeRabbit alternative with a hard merge gate, a published silence metric, active-author pricing, and free self-hosting.",
+    "Postil is a CodeRabbit alternative with a dedicated merge gate, a published silence metric, active-author pricing, and free self-hosting.",
   alternates: { canonical: "/vs/coderabbit" },
   openGraph: {
     title: "Postil vs CodeRabbit",
@@ -24,9 +24,9 @@ const COLUMNS = ["Postil", "CodeRabbit"];
 
 const ROWS: ComparisonRow[] = [
   {
-    feature: "Dedicated fail-closed merge gate",
+    feature: "Dedicated policy-controlled merge gate",
     cells: [
-      { kind: "yes", note: "postil/gate, fail-closed" },
+      { kind: "yes", note: "postil/gate, configurable enforcement" },
       {
         kind: "partial",
         note: "built-in checks; custom checks on Pro Plus",
@@ -80,7 +80,7 @@ export default function VsCodeRabbitPage() {
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         CodeRabbit is the most widely deployed AI reviewer and has the broadest
         platform coverage. Postil is a CodeRabbit alternative built around
-        restraint and structure: a hard merge gate separate from advisory
+        restraint and structure: a dedicated merge gate separate from advisory
         comments, a published silence rate, and pricing based on active
         private-PR authors rather than repositories.
       </p>
@@ -105,9 +105,9 @@ export default function VsCodeRabbitPage() {
           <code>postil/gate</code> fails only at or above your configured
           severity and is safe to require in branch protection, while{" "}
           <code>postil/review</code> carries advisory findings. On operational
-          errors the gate fails closed by default; repos can opt into{" "}
-          <code>gate.onError: advisory</code>, which fails open on provider
-          outages only.
+          errors the review check is neutral with no verdict. The gate fails
+          when organization merge enforcement is enabled and remains neutral
+          while advisory.
         </p>
 
         <h2>CodeRabbit's noise rate, measured directly</h2>

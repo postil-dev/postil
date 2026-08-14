@@ -6,8 +6,9 @@ import { isPostilBotLogin } from "./conversation";
  *
  * The worker (not the CLI) creates both check-runs so it owns their ids
  * even if the CLI crashes; the CLI completes them on the happy path. On
- * crash/timeout the worker completes them itself: the review check fails with
- * the operational error summary, while the gate follows organization policy.
+ * crash/timeout the worker completes them itself: the review check is neutral
+ * because no reviewer verdict exists, while the gate follows organization
+ * policy.
  */
 
 export const ADVISORY_CHECK_NAME = "postil/review";
@@ -663,6 +664,7 @@ export interface PullRequestReviewContext {
   open: boolean;
   merged: boolean;
   draft: boolean;
+  updatedAt: string;
   authorGithubId?: number;
   authorLogin?: string;
 }
@@ -685,13 +687,15 @@ export async function getPullRequestReviewContext(
     state?: string;
     merged?: boolean;
     draft?: boolean;
+    updated_at?: string;
     head?: { sha?: string };
     base?: { sha?: string };
     user?: { id?: number; login?: string };
   };
   const headSha = data.head?.sha;
   const baseSha = data.base?.sha;
-  if (!headSha || !baseSha) {
+  const updatedAt = data.updated_at;
+  if (!headSha || !baseSha || !updatedAt || !Number.isFinite(Date.parse(updatedAt))) {
     throw new Error(
       `GitHub pull request ${repoFullName}#${number} has incomplete refs`,
     );
@@ -705,6 +709,7 @@ export async function getPullRequestReviewContext(
     open: data.state === "open",
     merged: data.merged === true,
     draft: data.draft === true,
+    updatedAt,
     ...(typeof authorGithubId === "number" &&
     Number.isSafeInteger(authorGithubId) &&
     authorGithubId > 0

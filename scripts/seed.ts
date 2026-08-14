@@ -11,6 +11,8 @@
  */
 import { randomBytes } from "node:crypto";
 
+import { eq } from "drizzle-orm";
+
 import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 import { closeDb, getDb, schema } from "@/lib/db";
 import type { Envelope, Finding } from "@/lib/envelope";
@@ -304,11 +306,18 @@ async function main(): Promise<void> {
   const secret = process.env.POSTIL_SESSION_SECRET;
   if (secret) {
     const sessionId = randomBytes(32).toString("base64url");
-    await db.insert(schema.sessions).values({
-      id: sessionId,
-      userId: user.id,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      membershipCheckedAt: new Date(),
+    const membershipCheckedAt = new Date();
+    await db.transaction(async (tx) => {
+      await tx
+        .update(schema.users)
+        .set({ membershipCheckedAt })
+        .where(eq(schema.users.id, user.id));
+      await tx.insert(schema.sessions).values({
+        id: sessionId,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        membershipCheckedAt,
+      });
     });
     const cookie = await signSessionToken(sessionId, secret);
     console.log(`Demo session cookie (membership verified for 15 minutes):\n  postil_session=${cookie}`);

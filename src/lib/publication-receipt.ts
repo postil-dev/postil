@@ -30,6 +30,39 @@ export const PUBLICATION_STATES = [
 export type PublicationState = (typeof PUBLICATION_STATES)[number];
 export type InitialPublicationState = Exclude<PublicationState, "outdated" | "deleted">;
 
+export interface FindingPublicationCommentBinding {
+  findingId: string;
+  githubCommentId: string | null;
+}
+
+/** A GitHub comment may be retained historically, but only for one finding. */
+export function assertOneFindingPerGithubComment(
+  bindings: readonly FindingPublicationCommentBinding[],
+): void {
+  const findingByComment = new Map<string, string>();
+  for (const binding of bindings) {
+    if (binding.githubCommentId === null) continue;
+    const existingFindingId = findingByComment.get(binding.githubCommentId);
+    if (
+      existingFindingId !== undefined &&
+      existingFindingId !== binding.findingId
+    ) {
+      throw new Error(
+        "GitHub publication comment identity belongs to multiple findings",
+      );
+    }
+    findingByComment.set(binding.githubCommentId, binding.findingId);
+  }
+}
+
+/** Resolve the newest reply binding after proving historical rows are unambiguous. */
+export function resolveFindingPublicationBinding<
+  T extends FindingPublicationCommentBinding,
+>(bindingsNewestFirst: readonly T[]): T | null {
+  assertOneFindingPerGithubComment(bindingsNewestFirst);
+  return bindingsNewestFirst[0] ?? null;
+}
+
 const receiptFindingSchema = z
   .object({
     findingId: z.string().trim().min(1).max(500),
@@ -80,6 +113,7 @@ const publicationReceiptSchema = z
       });
     }
     const ids = new Set<string>();
+    const commentIds = new Set<string>();
     for (const [index, finding] of receipt.findings.entries()) {
       if (ids.has(finding.findingId)) {
         context.addIssue({
@@ -89,6 +123,14 @@ const publicationReceiptSchema = z
         });
       }
       ids.add(finding.findingId);
+      if (finding.commentId && commentIds.has(finding.commentId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "commentId"],
+          message: "duplicate GitHub comment identity",
+        });
+      }
+      if (finding.commentId) commentIds.add(finding.commentId);
       if (receipt.version === 1 && finding.initialOutcome === "checkAnnotation") {
         context.addIssue({
           code: "custom",
@@ -206,6 +248,12 @@ export function validateReceiptAgainstEnvelope(
 ): void {
   const envelopeIds = envelopeFindingIds(envelope);
   const publicationFindings = receiptPublicationFindings(receipt, envelope);
+  assertOneFindingPerGithubComment(
+    publicationFindings.map((finding) => ({
+      findingId: finding.findingId,
+      githubCommentId: finding.commentId ?? null,
+    })),
+  );
   if (publicationFindings.length !== envelopePublicationFindings(envelope).length) {
     throw new Error("publication receipt finding count does not match the review envelope");
   }
@@ -339,6 +387,11 @@ export async function persistPublicationReceipt(
 export interface PublicationThreadObservation {
   githubCommentId: string;
   state: "inline" | "resolved" | "outdated" | "deleted";
+  /** True only when GitHub currently proves the resolver has write-level repository authority. */
+  resolutionAuthorized?: boolean;
+  /** Live resolver identity accompanying an authorized resolution observation. */
+  resolvedByGithubId?: number;
+  resolvedByLogin?: string;
 }
 
 /** Apply only forge-observed thread state; human prose and review dismissal are not inputs. */
@@ -347,22 +400,33 @@ export async function applyPublicationThreadObservations(
   observations: PublicationThreadObservation[],
 ): Promise<void> {
   if (observations.length === 0) return;
-  const ids = observations.map((entry) => entry.githubCommentId);
-  const known = await db
-    .select({ id: schema.findingPublications.id, githubCommentId: schema.findingPublications.githubCommentId })
-    .from(schema.findingPublications)
-    .where(inArray(schema.findingPublications.githubCommentId, ids));
-  const rowIds = new Map(known.map((row) => [row.githubCommentId, row.id]));
+  const observationsByComment = new Map<string, PublicationThreadObservation>();
   for (const observation of observations) {
-    const id = rowIds.get(observation.githubCommentId);
-    if (id === undefined) continue;
-    const update = observation.state === "inline"
+    const existing = observationsByComment.get(observation.githubCommentId);
+    if (existing !== undefined && (
+      existing.state !== observation.state ||
+      existing.resolutionAuthorized !== observation.resolutionAuthorized ||
+      existing.resolvedByGithubId !== observation.resolvedByGithubId ||
+      existing.resolvedByLogin !== observation.resolvedByLogin
+    )) {
+      throw new Error("conflicting GitHub publication thread observations");
+    }
+    if (existing === undefined) {
+      observationsByComment.set(observation.githubCommentId, observation);
+    }
+  }
+  for (const observation of observationsByComment.values()) {
+    const update = observation.state === "inline" ||
+        (observation.state === "resolved" && observation.resolutionAuthorized !== true)
       ? { lifecycleObservedAt: new Date() }
       : { currentState: observation.state, lifecycleObservedAt: new Date() };
     await db
       .update(schema.findingPublications)
       .set(update)
-      .where(eq(schema.findingPublications.id, id));
+      .where(eq(
+        schema.findingPublications.githubCommentId,
+        observation.githubCommentId,
+      ));
   }
 }
 

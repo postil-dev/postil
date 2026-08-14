@@ -33,8 +33,8 @@ export default function GateSeparateFromReviewArticle() {
           split directly. <code>postil/gate</code> is the blocking verdict and
           the check teams require in branch protection. It fails when a finding
           reaches the configured threshold, whose default is{" "}
-          <code>error</code>, or when the review cannot complete and the
-          repository uses the default fail-closed behavior.{" "}
+          <code>error</code>, or when the review cannot produce a verdict and
+          organization merge enforcement is enabled.{" "}
           <code>postil/review</code> carries advisory output and inline
           comments. The docs say not to require it.
         </p>
@@ -42,9 +42,9 @@ export default function GateSeparateFromReviewArticle() {
           That separation matters because advisory output is allowed to be more
           expressive than a merge rule. A warning can be useful without being a
           blocker. A clean review can leave no visible comment while the passing
-          check-run remains the record. An operational error can be visible in
-          the advisory check without quietly turning an unreviewed head into a
-          passing gate.
+          check-run remains the record. An operational error leaves the review
+          check neutral with no verdict and gives the gate the organization&apos;s
+          configured enforcement outcome.
         </p>
 
         <h2>The required check is the product behavior</h2>
@@ -69,17 +69,10 @@ export default function GateSeparateFromReviewArticle() {
         <p>
           A product claim like &quot;blocks merges&quot; is only meaningful when
           the example shows which check carried the block and what source state
-          it reviewed. The evidence-truthfulness work merged in{" "}
-          <a
-            href="https://github.com/postil-dev/postil/pull/321"
-            rel="noopener"
-          >
-            postil-dev/postil#321
-          </a>{" "}
-          tightened the public examples around that rule: evidence cards now
-          link to the source repository and to the pull request files at the
-          reviewed commit. The evidence data also retains the reviewed head SHA
-          and the review and gate check-run URLs as verification records.
+          it reviewed. Evidence cards link to the source repository and to the
+          pull request files at the reviewed commit. They also retain the
+          reviewed head SHA and the review and gate check-run URLs as
+          verification records.
         </p>
         <p>
           The standard is simple: advisory text can help a reviewer understand

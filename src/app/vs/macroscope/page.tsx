@@ -9,7 +9,7 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Macroscope",
   description:
-    "Postil is a Macroscope alternative with active-author pricing, a dedicated fail-closed merge gate, BYOK, and free self-hosting.",
+    "Postil is a Macroscope alternative with active-author pricing, a dedicated merge gate, BYOK, and free self-hosting.",
   alternates: { canonical: "/vs/macroscope" },
   openGraph: {
     title: "Postil vs Macroscope",
@@ -24,9 +24,9 @@ const COLUMNS = ["Postil", "Macroscope"];
 
 const ROWS: ComparisonRow[] = [
   {
-    feature: "Dedicated fail-closed merge gate",
+    feature: "Dedicated policy-controlled merge gate",
     cells: [
-      { kind: "yes", note: "postil/gate, fail-closed" },
+      { kind: "yes", note: "postil/gate, configurable enforcement" },
       {
         kind: "text",
         note: "defaults neutral; can configure failure checks",
@@ -83,7 +83,7 @@ export default function VsMacroscopePage() {
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
         Macroscope ships fast and takes precision seriously. Postil is a
         Macroscope alternative for teams who need three things it does not
-        put first: a dedicated fail-closed merge gate, a bill that does not
+        put first: a dedicated policy-controlled merge gate, a bill that does not
         scale with diff size, and a deployment that runs anywhere other than
         GitHub Cloud.
       </p>
@@ -119,9 +119,9 @@ export default function VsMacroscopePage() {
           makes the gate a separate pass/fail check from the start: require{" "}
           <code>postil/gate</code> in branch protection while{" "}
           <code>postil/review</code> stays advisory. On operational errors the
-          gate fails closed by default; repos can opt into{" "}
-          <code>gate.onError: advisory</code>, which fails open on provider
-          outages only.
+          review check is neutral with no verdict. The gate fails when
+          organization merge enforcement is enabled and remains neutral while
+          advisory.
         </p>
 
         <h2>Per-kilobyte billing charges by diff size</h2>

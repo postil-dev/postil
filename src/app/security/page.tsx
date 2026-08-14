@@ -7,12 +7,12 @@ import { StatusIcon } from "@/components/status-icon";
 export const metadata: Metadata = {
   title: "Security",
   description:
-    "Postil's security posture: least-privilege GitHub permissions, fail-closed gate semantics, AES-256-GCM key sealing, short-lived tokens, and coordinated disclosure.",
+    "Postil's security posture: least-privilege GitHub permissions, policy-controlled gate semantics, AES-256-GCM key sealing, short-lived tokens, and coordinated disclosure.",
   alternates: { canonical: "/security" },
   openGraph: {
     title: "Postil security",
     description:
-      "Least-privilege permissions, fail-closed by design, AES-256-GCM key sealing, short-lived tokens, coordinated disclosure.",
+      "Least-privilege permissions, explicit merge policy, AES-256-GCM key sealing, short-lived tokens, coordinated disclosure.",
     url: "https://postil.dev/security",
     images: ["/opengraph-image"],
   },
@@ -125,41 +125,44 @@ export default function SecurityPage() {
 
       <Section
         number="02"
-        eyebrow="Fail closed"
-        title="The gate never marks an unreviewed head as passing."
+        eyebrow="Explicit policy"
+        title="The gate applies organization policy to an unreviewed head."
       >
         <div className="grid gap-8 md:grid-cols-2">
           <div className="space-y-4 text-ink-soft">
             <p>
-              When the model returns invalid or ungrounded output, Postil retries
-              one JSON repair, then emits a synthetic{" "}
-              <code className="font-mono text-sm">error</code> finding and fails
-              the gate. When the worker crashes or a review exceeds its
-              ten-minute deadline, a watchdog completes{" "}
-              <code className="font-mono text-sm">postil/gate</code> as{" "}
-              <strong>failure</strong>, never neutral.
+              When the model returns invalid or wholly ungrounded output, Postil
+              retries one JSON repair, then records an explicit no-verdict
+              result. The review check is neutral and the gate applies the
+              organization&apos;s enforcement policy. When the worker crashes or a
+              review exceeds its ten-minute deadline, a watchdog also completes{" "}
+              <code className="font-mono text-sm">postil/review</code> as neutral
+              because no reviewer verdict exists. The watchdog applies the
+              organization&apos;s enforcement policy to{" "}
+              <code className="font-mono text-sm">postil/gate</code>.
             </p>
             <p>
-              The worker owns the check-run ids from the moment the job starts,
-              so there is no window in which a crashed review leaves a check
-              hanging <code className="font-mono text-sm">in_progress</code> and
+              Both checks are registered before review execution and receive
+              terminal outcomes after a crash, so neither remains{" "}
+              <code className="font-mono text-sm">in_progress</code> and
               merge-eligible.
             </p>
             <p>
-              Repositories can opt into{" "}
-              <code className="font-mono text-sm">gate.onError: advisory</code>,
-              which fails open on provider outages only; the default remains
-              fail-closed.
+              New organizations start with an advisory merge gate. An
+              organization admin can enable enforcement after adding{" "}
+              <code className="font-mono text-sm">postil/gate</code> to branch
+              protection.
             </p>
           </div>
           <div className="card p-6">
-            <p className="eyebrow">Failure semantics</p>
+            <p className="eyebrow">Terminal semantics</p>
             <ul className="mt-4 space-y-3 text-sm">
               <li className="flex items-center gap-3">
                 <StatusIcon kind="error" />
                 <span>
                   <code className="font-mono">postil/gate</code> on operational
-                  error: <strong>failure</strong>
+                  error: <strong>failure</strong> when blocking and neutral when
+                  advisory
                 </span>
               </li>
               <li className="flex items-center gap-3">
@@ -171,7 +174,10 @@ export default function SecurityPage() {
               </li>
               <li className="flex items-center gap-3">
                 <StatusIcon kind="pass" />
-                <span>Clean PR: both green, zero comments</span>
+                <span>
+                  Clean PR: review green; gate green when blocking or neutral
+                  when advisory
+                </span>
               </li>
             </ul>
           </div>

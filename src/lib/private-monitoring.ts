@@ -653,7 +653,7 @@ export async function runDatabaseMonitoringChecks(
               : ""
           }`,
     },
-    thresholdCheck("review-operational-failures", "provider", "critical", "Reviews complete without operational sentinels", count("operational_failures"), 0),
+    thresholdCheck("review-operational-failures", "provider", "critical", "Review attempts finish without operational sentinels", count("operational_failures"), 0),
     thresholdCheck("scorer-failures", "provider", "critical", "Scoring completes", count("scorer_failures"), 0),
     thresholdCheck("scorer-fallbacks", "provider", "warning", "Scoring avoids repeated fallback", count("scorer_fallbacks"), 2),
     thresholdCheck("model-fallbacks", "provider", "warning", "Review models avoid repeated fallback", count("model_fallbacks"), 5),

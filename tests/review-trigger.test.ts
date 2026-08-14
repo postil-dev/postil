@@ -77,6 +77,37 @@ describe("review trigger context", () => {
       webhookEvent: "issue_comment",
     });
   });
+
+  test("keeps exact finding reconciliation provenance", () => {
+    expect(
+      normalizeReviewTriggerContext({
+        source: "finding_reconciliation",
+        webhookDeliveryId: "delivery-reconcile-1",
+        webhookEvent: "pull_request_review_thread",
+        webhookAction: "resolved",
+        sourceCommentId: 8800,
+        sourceUrl: "https://github.com/octo/repo/pull/9#discussion_r8800",
+        requestedByGithubId: 501,
+        requestedByLogin: "maintainer",
+      }),
+    ).toEqual({
+      source: "finding_reconciliation",
+      webhookDeliveryId: "delivery-reconcile-1",
+      webhookEvent: "pull_request_review_thread",
+      webhookAction: "resolved",
+      sourceCommentId: 8800,
+      sourceUrl: "https://github.com/octo/repo/pull/9#discussion_r8800",
+      requestedByGithubId: 501,
+      requestedByLogin: "maintainer",
+    });
+    expect(
+      normalizeReviewTriggerContext({
+        source: "finding_reconciliation",
+        webhookDeliveryId: "delivery-reconcile-2",
+        webhookEvent: "issue_comment",
+      }),
+    ).toEqual({ source: "unknown" });
+  });
 });
 
 describe("review diff selection", () => {

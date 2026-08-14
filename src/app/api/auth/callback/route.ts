@@ -7,7 +7,6 @@ import {
   findAccessibleInstallationOrgSlug,
   syncInstallationsFromGithub,
 } from "@/lib/github/installation-sync";
-import { fetchAllActiveOrgMemberships } from "@/lib/github/user-memberships";
 import {
   GITHUB_SETUP_INSTALLATION_COOKIE,
   oauthCallbackUrl,
@@ -16,8 +15,12 @@ import {
   publicOrigin,
   safeReturnTarget,
 } from "@/lib/oauth";
-import { type GithubAccountMembership, reconcileOrgMemberships } from "@/lib/org-sync";
-import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/lib/session";
+import {
+  createSession,
+  refreshUserMembershipsForOAuth,
+  SESSION_COOKIE,
+  SESSION_TTL_SECONDS,
+} from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,6 +31,59 @@ interface GithubUser {
   name: string | null;
   email: string | null;
   avatar_url: string | null;
+}
+
+const GITHUB_OAUTH_REQUEST_TIMEOUT_MS = 10_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function accessTokenFrom(value: unknown): string | undefined {
+  if (!isRecord(value) || typeof value.access_token !== "string") return undefined;
+  return value.access_token.length > 0 ? value.access_token : undefined;
+}
+
+function githubUserFrom(value: unknown): GithubUser | undefined {
+  if (!isRecord(value)) return undefined;
+  const nullableString = (candidate: unknown) =>
+    candidate === null || typeof candidate === "string";
+  if (
+    !Number.isSafeInteger(value.id) ||
+    Number(value.id) <= 0 ||
+    typeof value.login !== "string" ||
+    value.login.length === 0 ||
+    !nullableString(value.name) ||
+    !nullableString(value.email) ||
+    !nullableString(value.avatar_url)
+  ) {
+    return undefined;
+  }
+  return {
+    id: Number(value.id),
+    login: value.login,
+    name: value.name as string | null,
+    email: value.email as string | null,
+    avatar_url: value.avatar_url as string | null,
+  };
+}
+
+async function fetchGithubOAuthJson(
+  input: string,
+  init: RequestInit,
+): Promise<{ response: Response; data: unknown }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    GITHUB_OAUTH_REQUEST_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetch(input, { ...init, signal: controller.signal });
+    const data = response.ok ? await response.json() : undefined;
+    return { response, data };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function getCookie(request: Request, name: string): string | undefined {
@@ -58,21 +114,29 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   // Exchange the code for a user access token.
-  const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({
-      client_id: requireEnv("GITHUB_OAUTH_CLIENT_ID"),
-      client_secret: requireEnv("GITHUB_OAUTH_CLIENT_SECRET"),
-      code,
-      redirect_uri: oauthCallbackUrl(request),
-    }),
-  });
+  let tokenRes: Response;
+  let tokenData: unknown;
+  try {
+    ({ response: tokenRes, data: tokenData } = await fetchGithubOAuthJson(
+      "https://github.com/login/oauth/access_token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          client_id: requireEnv("GITHUB_OAUTH_CLIENT_ID"),
+          client_secret: requireEnv("GITHUB_OAUTH_CLIENT_SECRET"),
+          code,
+          redirect_uri: oauthCallbackUrl(request),
+        }),
+      },
+    ));
+  } catch {
+    return NextResponse.redirect(loginErrorUrl(request, "token_exchange"));
+  }
   if (!tokenRes.ok) {
     return NextResponse.redirect(loginErrorUrl(request, "token_exchange"));
   }
-  const tokenData = (await tokenRes.json()) as { access_token?: string };
-  const accessToken = tokenData.access_token;
+  const accessToken = accessTokenFrom(tokenData);
   if (!accessToken) {
     return NextResponse.redirect(loginErrorUrl(request, "token_exchange"));
   }
@@ -82,11 +146,23 @@ export async function GET(request: Request): Promise<NextResponse> {
     Accept: "application/vnd.github+json",
     "User-Agent": "postil-control-plane",
   };
-  const userRes = await fetch("https://api.github.com/user", { headers: ghHeaders });
+  let userRes: Response;
+  let userData: unknown;
+  try {
+    ({ response: userRes, data: userData } = await fetchGithubOAuthJson(
+      "https://api.github.com/user",
+      { headers: ghHeaders },
+    ));
+  } catch {
+    return NextResponse.redirect(loginErrorUrl(request, "profile"));
+  }
   if (!userRes.ok) {
     return NextResponse.redirect(loginErrorUrl(request, "profile"));
   }
-  const ghUser = (await userRes.json()) as GithubUser;
+  const ghUser = githubUserFrom(userData);
+  if (!ghUser) {
+    return NextResponse.redirect(loginErrorUrl(request, "profile"));
+  }
 
   const db = getDb();
   const upserted = await db
@@ -124,7 +200,30 @@ export async function GET(request: Request): Promise<NextResponse> {
   // we cannot tell "left every org" from a temporary GitHub failure or a
   // truncated page. Sign-in fails with a retryable error instead of creating a
   // session from stale or incomplete account access.
-  const membershipResult = await fetchAllActiveOrgMemberships(accessToken);
+  const membershipResult = await refreshUserMembershipsForOAuth({
+    userId,
+    githubId: ghUser.id,
+    accessToken,
+    onFetchedMemberships: async (memberships) => {
+      // Synchronize installation rows before membership reconciliation so every
+      // installed account can materialize as an organization. This repair is
+      // best effort inside the installation synchronizer.
+      const syncAccounts: AccountRef[] = [
+        { githubId: ghUser.id, login: ghUser.login, type: "User" },
+      ];
+      for (const membership of memberships) {
+        const org = membership.organization;
+        if (typeof org?.id === "number" && typeof org.login === "string") {
+          syncAccounts.push({
+            githubId: org.id,
+            login: org.login,
+            type: "Organization",
+          });
+        }
+      }
+      await syncInstallationsFromGithub(syncAccounts, ghUser.id);
+    },
+  });
   if (!membershipResult.ok) {
     const response = NextResponse.redirect(
       loginErrorUrl(request, "organization_memberships"),
@@ -132,48 +231,21 @@ export async function GET(request: Request): Promise<NextResponse> {
     response.cookies.delete(OAUTH_STATE_COOKIE);
     return response;
   }
-  const memberships = membershipResult.memberships;
-
-  // Synchronize installation rows before linking memberships so every
-  // installed account can materialize as an organization. This best-effort
-  // repair does not block sign-in.
-  const syncAccounts: AccountRef[] = [
-    { githubId: ghUser.id, login: ghUser.login, type: "User" },
-  ];
-  for (const m of memberships) {
-    const org = m.organization;
-    if (typeof org?.id === "number" && typeof org.login === "string") {
-      syncAccounts.push({ githubId: org.id, login: org.login, type: "Organization" });
-    }
-  }
-  await syncInstallationsFromGithub(syncAccounts, ghUser.id);
-
-  // The user owns their personal account; user-scoped installations are
-  // always administered by the account holder.
-  const accounts: GithubAccountMembership[] = [{ githubOrgId: ghUser.id, role: "admin" }];
-  for (const m of memberships) {
-    const orgId = m.organization?.id;
-    if (typeof orgId !== "number") continue;
-    // GitHub reports "admin" or "member"; keep it verbatim and default any
-    // unexpected value to the least-privileged role.
-    accounts.push({ githubOrgId: orgId, role: m.role === "admin" ? "admin" : "member" });
-  }
-  await reconcileOrgMemberships(db, userId, accounts);
-
-  const setupOrgSlug = await findAccessibleInstallationOrgSlug(
-    userId,
-    getCookie(request, GITHUB_SETUP_INSTALLATION_COOKIE),
-  );
   const returnTo = safeReturnTarget(getCookie(request, OAUTH_RETURN_TO_COOKIE));
-  const sessionToken = await createSession(userId, accessToken, new Date());
-  const response = NextResponse.redirect(
-    new URL(
-      setupOrgSlug
-        ? `/orgs/${encodeURIComponent(setupOrgSlug)}`
-        : (returnTo ?? "/reports"),
-      origin,
-    ),
+  const setupOrgSlug = returnTo
+    ? undefined
+    : await findAccessibleInstallationOrgSlug(
+        userId,
+        getCookie(request, GITHUB_SETUP_INSTALLATION_COOKIE),
+      );
+  const destination =
+    returnTo ?? (setupOrgSlug ? `/orgs/${encodeURIComponent(setupOrgSlug)}` : "/reports");
+  const sessionToken = await createSession(
+    userId,
+    accessToken,
+    membershipResult.checkedAt,
   );
+  const response = NextResponse.redirect(new URL(destination, origin));
   response.cookies.set(SESSION_COOKIE, sessionToken, {
     httpOnly: true,
     sameSite: "lax",

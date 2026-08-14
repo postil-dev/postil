@@ -1,3 +1,8 @@
+import {
+  boundedRetryAfterDelayMs,
+  boundedRetryDelayMs,
+} from "@/lib/auth-navigation";
+
 export interface GithubOrgMembership {
   role?: string;
   state?: string;
@@ -13,11 +18,9 @@ const MEMBERSHIPS_URL =
   "https://api.github.com/user/memberships/orgs?per_page=100&state=active";
 const MAX_MEMBERSHIP_PAGES = 100;
 const MEMBERSHIP_REQUEST_TIMEOUT_MS = 10_000;
-const MEMBERSHIP_TOTAL_TIMEOUT_MS = 30_000;
+export const MEMBERSHIP_TOTAL_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRY_AFTER_MS = 30_000;
 const RATE_LIMIT_RETRY_AFTER_MS = 60_000;
-const MIN_RETRY_AFTER_MS = 5_000;
-const MAX_RETRY_AFTER_MS = 60 * 60 * 1000;
 
 /** Fetch the authenticated user's complete active organization membership set. */
 export async function fetchAllActiveOrgMemberships(
@@ -71,34 +74,24 @@ export async function fetchAllActiveOrgMemberships(
 
 function unavailable(response?: Response): GithubMembershipFetchResult {
   const now = Date.now();
-  const retryAfter = response?.headers.get("retry-after");
-  let retryAfterMs: number | undefined;
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      retryAfterMs = seconds * 1000;
-    } else {
-      const retryAt = Date.parse(retryAfter);
-      if (Number.isFinite(retryAt)) retryAfterMs = retryAt - now;
+  let fallbackMs =
+    response?.status === 403 || response?.status === 429
+      ? RATE_LIMIT_RETRY_AFTER_MS
+      : DEFAULT_RETRY_AFTER_MS;
+  if (response?.headers.get("x-ratelimit-remaining") === "0") {
+    const resetHeader = response.headers.get("x-ratelimit-reset")?.trim();
+    if (resetHeader && /^\d+$/.test(resetHeader)) {
+      const resetSeconds = Number(resetHeader);
+      if (Number.isFinite(resetSeconds)) fallbackMs = resetSeconds * 1000 - now;
     }
   }
-  if (retryAfterMs === undefined && response?.headers.get("x-ratelimit-remaining") === "0") {
-    const resetSeconds = Number(response.headers.get("x-ratelimit-reset"));
-    if (Number.isFinite(resetSeconds)) retryAfterMs = resetSeconds * 1000 - now;
-  }
-  if (retryAfterMs === undefined) {
-    retryAfterMs =
-      response?.status === 403 || response?.status === 429
-        ? RATE_LIMIT_RETRY_AFTER_MS
-        : DEFAULT_RETRY_AFTER_MS;
-  }
+  const retryAfterMs = response?.headers.has("retry-after")
+    ? boundedRetryAfterDelayMs(response.headers, fallbackMs, now)
+    : boundedRetryDelayMs(undefined, fallbackMs);
   return {
     ok: false,
     reason: "unavailable",
-    retryAfterMs: Math.min(
-      Math.max(Math.ceil(retryAfterMs), MIN_RETRY_AFTER_MS),
-      MAX_RETRY_AFTER_MS,
-    ),
+    retryAfterMs,
   };
 }
 

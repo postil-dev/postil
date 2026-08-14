@@ -9,7 +9,7 @@ import {
 export const metadata: Metadata = {
   title: "Postil vs Qodo",
   description:
-    "Postil is a Qodo alternative with active-author pricing instead of credit packs, a hard merge gate, and self-hosting of the full product.",
+    "Postil is a Qodo alternative with active-author pricing instead of credit packs, a dedicated merge gate, and self-hosting of the full product.",
   alternates: { canonical: "/vs/qodo" },
   openGraph: {
     title: "Postil vs Qodo",
@@ -24,9 +24,9 @@ const COLUMNS = ["Postil", "Qodo"];
 
 const ROWS: ComparisonRow[] = [
   {
-    feature: "Hard merge gate (separate blocking check)",
+    feature: "Dedicated merge gate (separate policy check)",
     cells: [
-      { kind: "yes", note: "postil/gate, fail-closed" },
+      { kind: "yes", note: "postil/gate, configurable enforcement" },
       { kind: "no", note: "no separable blocking check" },
     ],
   },
@@ -136,11 +136,11 @@ export default function VsQodoPage() {
           Postil separates enforcement from commentary: <code>postil/gate</code>{" "}
           is a real check you can require in branch protection, failing only at
           or above your configured severity, while <code>postil/review</code>{" "}
-          carries everything advisory. On operational errors the gate fails
-          closed by default; repos can opt into{" "}
-          <code>gate.onError: advisory</code>, which fails open on provider
-          outages only. Qodo&apos;s public materials describe review automation
-          but do not document a separate branch-protection check equivalent to
+          carries everything advisory. On operational errors the review check
+          is neutral with no verdict. The gate fails when organization merge
+          enforcement is enabled and remains neutral while advisory.
+          Qodo&apos;s public materials describe review automation but do not
+          document a separate branch-protection check equivalent to
           Postil&apos;s gate.
         </p>
 

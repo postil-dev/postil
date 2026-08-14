@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, Pool } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 import { schema } from "@/lib/db";
 import {
   cancelPullRequestPublication,
@@ -20,22 +25,15 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("revocable pull-request publication lease", () => {
-  let admin: Client;
+  let database: EphemeralDatabase;
   let pool: Pool;
-  let databaseName: string;
 
   beforeAll(async () => {
-    const source = new URL(TEST_URL!);
-    databaseName = `postil_publication_${randomUUID().replaceAll("-", "")}`;
-    const adminUrl = new URL(source);
-    adminUrl.pathname = "/postgres";
-    admin = new Client({ connectionString: adminUrl.toString() });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${databaseName}"`);
-
-    const testUrl = new URL(source);
-    testUrl.pathname = `/${databaseName}`;
-    pool = new Pool({ connectionString: testUrl.toString(), max: 2 });
+    database = await createUnmigratedEphemeralDatabase("publication", {
+      forceDrop: true,
+      maxConnections: 2,
+    });
+    pool = database.pool;
     const migrationDir = join(import.meta.dir, "..", "drizzle");
     const files = (await readdir(migrationDir))
       .filter((file) => file.endsWith(".sql"))
@@ -49,11 +47,7 @@ describeDb("revocable pull-request publication lease", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-    if (admin && databaseName) {
-      await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
-      await admin.end();
-    }
+    await database?.drop();
   });
 
   test("close wins during POST without starving the pool or cancelling another PR", async () => {
@@ -81,8 +75,10 @@ describeDb("revocable pull-request publication lease", () => {
 
     const insertPublication = async (prNumber: number) => {
       const job = await pool.query<{ id: string }>(
-        `INSERT INTO jobs (kind, payload, status, attempts, locked_at, locked_by)
-         VALUES ('respond', $1::jsonb, 'running', 1, $2, 'lease-test') RETURNING id`,
+        `INSERT INTO jobs
+           (kind, payload, status, attempts, locked_at, locked_by, lock_generation)
+         VALUES ('respond', $1::jsonb, 'running', 1, $2, 'lease-test', 1)
+         RETURNING id`,
         [
           JSON.stringify({
             installationId: 42001,
@@ -113,7 +109,7 @@ describeDb("revocable pull-request publication lease", () => {
       return {
         jobId,
         publicationLeaseId,
-        lease: { id: jobId, lockedBy: "lease-test", lockedAt },
+        lease: { id: jobId, lockedBy: "lease-test", lockGeneration: 1n },
       };
     };
 
@@ -196,11 +192,11 @@ describeDb("revocable pull-request publication lease", () => {
   });
 
   test("migration binds eligible legacy work and retires ambiguous PR delivery", async () => {
-    const legacyDatabase = `postil_legacy_${randomUUID().replaceAll("-", "")}`;
-    await admin.query(`CREATE DATABASE "${legacyDatabase}"`);
-    const source = new URL(TEST_URL!);
-    source.pathname = `/${legacyDatabase}`;
-    const legacyPool = new Pool({ connectionString: source.toString(), max: 2 });
+    const legacyDatabase = await createUnmigratedEphemeralDatabase("legacy", {
+      forceDrop: true,
+      maxConnections: 2,
+    });
+    const legacyPool = legacyDatabase.pool;
     try {
       const migrationDir = join(import.meta.dir, "..", "drizzle");
       const files = (await readdir(migrationDir))
@@ -483,8 +479,7 @@ describeDb("revocable pull-request publication lease", () => {
         ),
       ).rejects.toMatchObject({ code: "P0001" });
     } finally {
-      await legacyPool.end();
-      await admin.query(`DROP DATABASE "${legacyDatabase}" WITH (FORCE)`);
+      await legacyDatabase.drop();
     }
   }, 20_000);
 });

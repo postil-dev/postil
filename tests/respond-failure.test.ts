@@ -169,6 +169,7 @@ mock.module("@/lib/github/checks", () => ({
     draft: false,
     headSha: "head-sha",
     baseSha: "base-sha",
+    updatedAt: "2026-08-12T03:04:05.000Z",
   }),
 }));
 
@@ -297,7 +298,7 @@ const enabledRepository = {
   enabled: true,
   private: false,
 };
-const lease = { id: 123, lockedBy: "worker", lockedAt: new Date() };
+const lease = { id: 123, lockedBy: "worker", lockGeneration: 1n };
 
 beforeEach(() => {
   installationRows = [enabledInstallation];

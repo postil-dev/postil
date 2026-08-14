@@ -63,6 +63,20 @@ describe("billing checkout route", () => {
     expect(checkoutCalls).toBe(0);
   });
 
+  test("preserves membership verification backoff without starting checkout", async () => {
+    accessResult = {
+      ok: false,
+      reason: "verification_unavailable",
+      retryAvailableAt: new Date(Date.now() + 60_000),
+    };
+
+    const response = await sameOriginPost();
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("60");
+    expect(checkoutCalls).toBe(0);
+  });
+
   test("returns a retryable unavailable response while billing is disabled", async () => {
     checkoutConfigured = false;
     const response = await sameOriginPost();

@@ -157,7 +157,7 @@ describe("failed Postil run polling", () => {
     expect(failure?.model).toBe("matching/model");
   });
 
-  test("classifies fail-closed operational errors by check state, not display title", () => {
+  test("classifies enforced operational errors by check state, not display title", () => {
     const advisory = check({
       id: 30,
       name: "postil/review",
@@ -173,7 +173,7 @@ describe("failed Postil run polling", () => {
       details_url: null,
       output: {
         title: "Required review unavailable",
-        summary: "The gate fails closed because the review did not complete",
+        summary: "The enforced gate failed because the review did not complete",
       },
     });
 

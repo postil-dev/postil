@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   oauthCallbackUrl,
+  organizationSettingsUrl,
   publicOrigin,
   publicRequestUrl,
   reviewDetailsUrl,
@@ -70,6 +71,17 @@ describe("Public origin for browser-facing redirects", () => {
     expect(reviewDetailsUrl("run-id", "customer org")).toBe(
       "https://postil.dev/orgs/customer%20org/runs/run-id",
     );
+  });
+
+  test("builds one encoded organization path segment and rejects normalized dot segments", () => {
+    process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
+
+    expect(organizationSettingsUrl("customer org/../billing")).toBe(
+      "https://postil.dev/orgs/customer%20org%2F..%2Fbilling/settings",
+    );
+    expect(organizationSettingsUrl(".")).toBeUndefined();
+    expect(organizationSettingsUrl("..")).toBeUndefined();
+    expect(organizationSettingsUrl("x".repeat(2_048))).toBeUndefined();
   });
 
   test("omits dashboard run URLs when no public origin or organization is available", () => {

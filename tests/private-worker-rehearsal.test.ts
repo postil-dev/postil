@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Pool } from "pg";
@@ -15,7 +15,9 @@ import {
   type PrivateWorkerRehearsalTarget,
 } from "@/lib/private-worker-rehearsal";
 import { claimJob } from "@/lib/queue";
+import { activateQueueLockGeneration } from "@/lib/release-job-rollout";
 import { parseArgs } from "../scripts/arm-private-worker-rehearsal";
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
@@ -131,6 +133,33 @@ describe("private worker rehearsal validation", () => {
     expect(source).toContain("rehearsal.state = 'awaiting_replacement'");
   });
 
+  test("fences rehearsal claimant mutations with the exact lease generation", async () => {
+    const source = await readFile(
+      join(import.meta.dir, "..", "src", "lib", "private-worker-rehearsal.ts"),
+      "utf8",
+    );
+    const consume = source.slice(
+      source.indexOf("export async function consumePrivateWorkerRehearsalAfterStaging"),
+      source.indexOf("export async function reconcilePrivateWorkerRehearsals"),
+    );
+    const reconcile = source.slice(
+      source.indexOf("export async function reconcilePrivateWorkerRehearsals"),
+      source.indexOf("export function newPrivateWorkerRehearsalNonce"),
+    );
+    expect(consume).toContain("job.locked_by = $7");
+    expect(consume).toContain("job.lock_generation = $8");
+    expect(consume).toContain("AND locked_by = $4");
+    expect(consume).toContain("AND lock_generation = $5");
+    expect(reconcile).toContain(
+      "locked_by = payload->>'privateWorkerRehearsalLockedBy'",
+    );
+    expect(reconcile).toContain(
+      "lock_generation::text =\n              payload->>'privateWorkerRehearsalLockGeneration'",
+    );
+    expect(consume).not.toContain("left(job.locked_by");
+    expect(reconcile).not.toContain("left(locked_by");
+  });
+
   test("gives an interrupted worker an explicit platform restart route", async () => {
     const source = await readFile(join(import.meta.dir, "..", "fly.toml"), "utf8");
     const worker = await readFile(
@@ -153,24 +182,16 @@ describe("private worker rehearsal validation", () => {
 });
 
 describeDb("private worker interruption rehearsal", () => {
-  const pool = new Pool({ connectionString: TEST_URL, max: 4 });
+  let database: EphemeralDatabase;
+  let pool: Pool;
   let orgId = 0;
   let repositoryId = 0;
   let reviewId = 0;
   let jobId = 0;
 
   beforeAll(async () => {
-    await pool.query("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public");
-    const migrationDirectory = join(import.meta.dir, "..", "drizzle");
-    const migrations = (await readdir(migrationDirectory))
-      .filter((file) => file.endsWith(".sql"))
-      .sort();
-    for (const migration of migrations) {
-      const source = await readFile(join(migrationDirectory, migration), "utf8");
-      for (const statement of source.split("--> statement-breakpoint")) {
-        if (statement.trim()) await pool.query(statement);
-      }
-    }
+    database = await createEphemeralDatabase("private_worker_rehearsal");
+    pool = database.pool;
   }, 30_000);
 
   beforeEach(async () => {
@@ -224,9 +245,9 @@ describeDb("private worker interruption rehearsal", () => {
     const job = await pool.query<{ id: string }>(
       `INSERT INTO jobs
          (kind, payload, status, attempts, max_attempts, run_after,
-          locked_at, locked_by, created_at)
+          locked_at, locked_by, lock_generation, created_at)
        VALUES
-         ('review', $1::jsonb, 'running', 1, 3, $2, $2, 'worker-old#0', $2)
+         ('review', $1::jsonb, 'running', 1, 3, $2, $2, 'worker-old#0', 1, $2)
        RETURNING id`,
       [
         JSON.stringify({
@@ -247,7 +268,7 @@ describeDb("private worker interruption rehearsal", () => {
   });
 
   afterAll(async () => {
-    await pool.end();
+    await database?.drop();
   });
 
   test("fails closed for a mismatched target, duplicate nonce, and unsafe expiry", async () => {
@@ -334,6 +355,7 @@ describeDb("private worker interruption rehearsal", () => {
       status: "queued",
       locked_by: null,
     });
+    expect(await activateQueueLockGeneration(pool)).toBeGreaterThan(0);
 
     const webClaim = await claimJob(pool, "web-drain", ["review"], {
       excludePrivateWorkerRehearsals: true,
@@ -388,6 +410,48 @@ describeDb("private worker interruption rehearsal", () => {
     expect(await consumeExact()).toBeNull();
   });
 
+  test("does not requeue an immediate same-worker newer generation", async () => {
+    await armExact();
+    await stageTarget();
+    expect(await consumeExact()).toBe(NONCE);
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'queued', locked_at = NULL, locked_by = NULL
+        WHERE id = $1`,
+      [jobId],
+    );
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'running', locked_at = $2, locked_by = 'worker-old#0',
+              lock_generation = lock_generation + 1
+        WHERE id = $1`,
+      [jobId, NOW],
+    );
+    await pool.query(
+      `UPDATE service_heartbeats
+          SET instance_id = 'worker-new', observed_at = $1
+        WHERE component = 'worker'`,
+      [new Date(NOW.getTime() + 2_000)],
+    );
+
+    expect(
+      await reconcilePrivateWorkerRehearsals(
+        pool,
+        new Date(NOW.getTime() + 3_000),
+        TARGET,
+      ),
+    ).toMatchObject({
+      replacementsVerified: 1,
+      jobsRequeued: 0,
+      rehearsalsFailed: 1,
+    });
+    expect(await jobState()).toMatchObject({
+      status: "running",
+      locked_by: "worker-old#0",
+      lock_generation: "2",
+    });
+  });
+
   test("expires an unused one-shot request without touching its job", async () => {
     await armExact(60);
     expect(
@@ -418,7 +482,11 @@ describeDb("private worker interruption rehearsal", () => {
   async function consumeExact(now = new Date(NOW.getTime() + 1_000)) {
     return consumePrivateWorkerRehearsalAfterStaging(pool, {
       reviewId,
-      reviewJobId: jobId,
+      reviewJobLease: {
+        id: jobId,
+        lockedBy: "worker-old#0",
+        lockGeneration: 1n,
+      },
       repoFullName: TARGET.repoFullName,
       prNumber: TARGET.prNumber,
       headSha: TARGET.headSha,
@@ -445,7 +513,12 @@ describeDb("private worker interruption rehearsal", () => {
     const result = await pool.query<{
       status: string;
       locked_by: string | null;
-    }>("SELECT status, locked_by FROM jobs WHERE id = $1", [jobId]);
+      lock_generation: string;
+    }>(
+      `SELECT status, locked_by, lock_generation::text AS lock_generation
+         FROM jobs WHERE id = $1`,
+      [jobId],
+    );
     return result.rows[0]!;
   }
 });

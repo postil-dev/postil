@@ -3,6 +3,7 @@ export const REVIEW_TRIGGER_SOURCES = [
   "automatic_pull_request",
   "requested_review",
   "github_check_rerun",
+  "finding_reconciliation",
 ] as const;
 
 export type ReviewTriggerSource = (typeof REVIEW_TRIGGER_SOURCES)[number];
@@ -10,7 +11,7 @@ export type ReviewTriggerSource = (typeof REVIEW_TRIGGER_SOURCES)[number];
 export interface ReviewTriggerContext {
   source: ReviewTriggerSource;
   webhookDeliveryId?: string;
-  webhookEvent?: "pull_request" | "issue_comment" | "pull_request_review_comment" | "check_run" | "check_suite";
+  webhookEvent?: "pull_request" | "issue_comment" | "pull_request_review_comment" | "pull_request_review_thread" | "check_run" | "check_suite";
   webhookAction?: string;
   sourceCommentId?: number;
   sourceUrl?: string;
@@ -24,6 +25,7 @@ const TRIGGER_LABELS: Record<ReviewTriggerSource, string> = {
   automatic_pull_request: "Automatic",
   requested_review: "Requested",
   github_check_rerun: "Check rerun",
+  finding_reconciliation: "Finding reconciliation",
 };
 
 export function reviewTriggerLabel(source: ReviewTriggerSource): string {
@@ -34,6 +36,7 @@ export function reviewTriggerSearchTerms(source: ReviewTriggerSource): string {
   if (source === "automatic_pull_request") return "automatic pull request webhook";
   if (source === "requested_review") return "requested tagged mention command";
   if (source === "github_check_rerun") return "github check rerun rerequested";
+  if (source === "finding_reconciliation") return "finding reconciliation webhook";
   return "unknown legacy";
 }
 
@@ -41,6 +44,7 @@ export function reviewTriggerDescription(source: ReviewTriggerSource): string {
   if (source === "automatic_pull_request") return "Started by a pull request event";
   if (source === "requested_review") return "Requested in a GitHub comment";
   if (source === "github_check_rerun") return "Started by rerunning a GitHub check";
+  if (source === "finding_reconciliation") return "Started by finding evidence or thread state";
   return "Origin not recorded";
 }
 
@@ -77,7 +81,9 @@ export function normalizeReviewTriggerContext(value: unknown): ReviewTriggerCont
       ? ["pull_request"]
       : candidate.source === "requested_review"
         ? ["issue_comment", "pull_request_review_comment"]
-        : ["check_run", "check_suite"];
+        : candidate.source === "github_check_rerun"
+          ? ["check_run", "check_suite"]
+          : ["pull_request_review_comment", "pull_request_review_thread"];
   if (!candidate.webhookEvent || !allowedEvents.includes(candidate.webhookEvent)) {
     return { source: "unknown" };
   }

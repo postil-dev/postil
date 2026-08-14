@@ -3,8 +3,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { EventEntity, Paddle } from "@paddle/paddle-node-sdk";
-import { drizzle } from "drizzle-orm/node-postgres";
+import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
 
 import * as schema from "@/lib/db/schema";
 import {
@@ -20,13 +25,19 @@ const PRICE_ID = `pri_${"a".repeat(26)}`;
 const ZERO_PRICE_ID = `pri_${"b".repeat(26)}`;
 
 describeDb("self-service billing", () => {
-  const pool = new Pool({ connectionString: TEST_URL, max: 4 });
-  const db = drizzle(pool, { schema });
+  let database: EphemeralDatabase;
+  let pool: Pool;
+  let db: NodePgDatabase<typeof schema>;
   let orgId = 0;
   let userId = 0;
   let checkoutId = "";
 
   beforeAll(async () => {
+    database = await createUnmigratedEphemeralDatabase("self_service_billing", {
+      maxConnections: 4,
+    });
+    pool = database.pool;
+    db = drizzle(pool, { schema });
     process.env.PADDLE_ACTIVE_AUTHOR_PRICE_ID = PRICE_ID;
     process.env.PADDLE_ZERO_BASE_PRICE_ID = ZERO_PRICE_ID;
     process.env.PADDLE_CLIENT_TOKEN = "test_client_token";
@@ -34,9 +45,6 @@ describeDb("self-service billing", () => {
     process.env.POSTIL_PADDLE_BILLING_ENABLED = "1";
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.com";
-    await pool.query(
-      "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public",
-    );
     const migrationDirectory = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationDirectory))
       .filter((file) => file.endsWith(".sql"))
@@ -73,7 +81,7 @@ describeDb("self-service billing", () => {
        VALUES ($1, 'byok', 'trialing', '2026-07-15T00:00:00Z', 'test')`,
       [orgId],
     );
-  });
+  }, 30_000);
 
   afterAll(async () => {
     delete process.env.PADDLE_ACTIVE_AUTHOR_PRICE_ID;
@@ -83,8 +91,8 @@ describeDb("self-service billing", () => {
     delete process.env.POSTIL_PADDLE_BILLING_ENABLED;
     delete process.env.POSTIL_PUBLIC_URL;
     delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
-    await pool.end();
-  });
+    await database?.drop();
+  }, 30_000);
 
   test("projects a verified subscription event once and rejects stale state", async () => {
     const created = subscriptionEvent({

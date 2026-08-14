@@ -1,21 +1,31 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import {
   computeEffectiveGate,
   envelopeSchema,
+  isEnvelopeOperationallyUnavailable,
   type Envelope,
 } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
 import { lockReviewDecisionScopeById } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import {
+  COALESCED_REVIEW_PAYLOAD_KEY,
+  type CheckRunCleanupJobPayload,
+  type JobLease,
+  type ReviewJobPayload,
+} from "@/lib/queue";
+import {
   persistPublicationReceipt,
   type PublicationReceipt,
 } from "@/lib/publication-receipt";
 
-interface ReviewCompletionAccountingInput {
+export const OPERATIONAL_NO_VERDICT_MESSAGE =
+  "Review execution did not produce a reviewer verdict.";
+
+export interface ReviewCompletionAccountingInput {
   reviewId: number;
   usage: Array<{
     orgId: number | null;
@@ -28,6 +38,8 @@ interface ReviewCompletionAccountingInput {
   }>;
   hostedUsageReservationId?: string | null;
   usageAccountingComplete: boolean;
+  terminalStatus?: "completed" | "failed";
+  errorMessage?: string | null;
 }
 
 export interface ReviewCompletionInput extends ReviewCompletionAccountingInput {
@@ -43,6 +55,23 @@ export interface ReviewCompletionWithGateModeResult {
   completed: boolean;
   gateEnabled: boolean;
   gateFailing: boolean;
+  superseded?: boolean;
+  promoted?: boolean;
+}
+
+export interface StaleReviewCleanupIdentity extends CheckRunCleanupJobPayload {
+  reviewId: number;
+  headSha: string;
+  advisoryCheckExternalId: string;
+  gateCheckExternalId: string;
+  intent: "neutralize";
+}
+
+export interface StagedReviewFinalizationInput
+  extends ReviewCompletionAccountingInput {
+  reviewJobLease: JobLease;
+  expectedReviewInput: ReviewJobPayload;
+  staleCleanup: StaleReviewCleanupIdentity;
 }
 
 export interface StagedReviewCompletionInput extends Pick<
@@ -55,7 +84,111 @@ export interface StagedReviewCompletionInput extends Pick<
   | "gateFailing"
   | "publicationReceipt"
 > {
-  reviewJobId?: number;
+  reviewJobLease: JobLease;
+}
+
+class ReviewCompletionJobLeaseLostError extends Error {
+  constructor(
+    readonly gateEnabled: boolean,
+    readonly gateFailing: boolean,
+  ) {
+    super("review completion lost its exact job lease");
+    this.name = "ReviewCompletionJobLeaseLostError";
+  }
+}
+
+function exactReviewInputMatches(
+  current: ReviewJobPayload,
+  expected: ReviewJobPayload,
+): boolean {
+  return current.installationId === expected.installationId &&
+    current.sourceInstallationId === expected.sourceInstallationId &&
+    current.sourceOrgId === expected.sourceOrgId &&
+    current.githubRepoId === expected.githubRepoId &&
+    current.repoFullName === expected.repoFullName &&
+    current.prNumber === expected.prNumber &&
+    current.headSha === expected.headSha &&
+    current.baseSha === expected.baseSha &&
+    current.expectedPullRequestUpdatedAt ===
+      expected.expectedPullRequestUpdatedAt &&
+    current.reviewInputSequence === expected.reviewInputSequence &&
+    current.sourceDeliveryId === expected.sourceDeliveryId;
+}
+
+function promotedReviewInput(
+  parent: ReviewJobPayload,
+  pending: ReviewJobPayload,
+  parentJobId: number,
+): ReviewJobPayload {
+  const {
+    [COALESCED_REVIEW_PAYLOAD_KEY]: _nestedPending,
+    recoveryReviewId: _recoveryReviewId,
+    privateWorkerRehearsalNonce: _privateWorkerRehearsalNonce,
+    privateWorkerRehearsalLockedBy: _privateWorkerRehearsalLockedBy,
+    privateWorkerRehearsalLockGeneration: _privateWorkerRehearsalLockGeneration,
+    ...ordinary
+  } = pending as ReviewJobPayload & Record<string, unknown>;
+  const lineage = [pending.providerRetryLineage, parent.providerRetryLineage]
+    .find((value) => typeof value === "string" && value.length > 0 && value.length <= 200) ??
+    `review-job:${parentJobId}`;
+  return { ...ordinary, providerRetryLineage: lineage } as ReviewJobPayload;
+}
+
+async function markReviewStaleWithDurableCleanupInTransaction(
+  db: Database,
+  input: StaleReviewCleanupIdentity,
+): Promise<boolean> {
+  const locked = await db
+    .select({ status: schema.reviews.status })
+    .from(schema.reviews)
+    .where(eq(schema.reviews.id, input.reviewId))
+    .for("update")
+    .limit(1);
+  const status = locked[0]?.status;
+  if (status !== "queued" && status !== "running" && status !== "stale") {
+    return false;
+  }
+  if (status !== "stale") {
+    await db
+      .update(schema.reviews)
+      .set({
+        status: "stale",
+        errorMessage: input.message,
+        finishedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.reviews.id, input.reviewId),
+          inArray(schema.reviews.status, ["queued", "running"]),
+        ),
+      );
+  }
+  await db.execute(sql`
+    INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+    SELECT 'check-run-cleanup', ${JSON.stringify(input)}::jsonb,
+           'queued', clock_timestamp(), 5
+    WHERE NOT EXISTS (
+      SELECT 1
+        FROM jobs
+       WHERE kind = 'check-run-cleanup'
+         AND status IN ('queued', 'running', 'done')
+         AND payload->>'reviewId' = ${String(input.reviewId)}
+         AND payload->>'headSha' = ${input.headSha}
+         AND payload->>'advisoryCheckExternalId' = ${input.advisoryCheckExternalId}
+         AND payload->>'gateCheckExternalId' = ${input.gateCheckExternalId}
+         AND payload->>'intent' = 'neutralize'
+    )
+  `);
+  return true;
+}
+
+export async function markReviewStaleWithDurableCleanup(
+  db: Database,
+  input: StaleReviewCleanupIdentity,
+): Promise<boolean> {
+  return db.transaction((tx) =>
+    markReviewStaleWithDurableCleanupInTransaction(tx as Database, input)
+  );
 }
 
 function requireEnvelopeGateTruth(
@@ -77,10 +210,29 @@ function requireEnvelopeGateTruth(
   return { envelope: parsed.data, gateFailing };
 }
 
+function terminalReviewState(
+  input: Pick<ReviewCompletionAccountingInput, "terminalStatus" | "errorMessage">,
+  envelope: Envelope,
+): { status: "completed" | "failed"; errorMessage: string | null } {
+  const operationalNoVerdict = isEnvelopeOperationallyUnavailable(envelope);
+  const status = operationalNoVerdict
+    ? "failed"
+    : input.terminalStatus ?? "completed";
+  if (status === "completed") return { status, errorMessage: null };
+  const errorMessage =
+    input.errorMessage?.trim() ||
+    (operationalNoVerdict ? OPERATIONAL_NO_VERDICT_MESSAGE : "");
+  if (!errorMessage) {
+    throw new Error("failed review completion requires an error message");
+  }
+  return { status, errorMessage };
+}
+
 async function persistReviewCompletionAccounting(
   db: Database,
   input: ReviewCompletionAccountingInput,
   review: { publicId: string; triggerSource: string },
+  options: { enqueueGateStateSync?: boolean } = {},
 ): Promise<void> {
   const persistedUsageRows = input.usage.map((usage) => ({
     ...usage,
@@ -132,7 +284,7 @@ async function persistReviewCompletionAccounting(
       .where(
         and(
           eq(schema.hostedUsageReservations.id, input.hostedUsageReservationId),
-          eq(schema.hostedUsageReservations.status, "active"),
+          inArray(schema.hostedUsageReservations.status, ["active", "released"]),
         ),
       )
       .returning({ id: schema.hostedUsageReservations.id });
@@ -140,14 +292,29 @@ async function persistReviewCompletionAccounting(
       throw new Error("hosted usage reservation is not active");
     }
   }
-  await db.insert(schema.usageEvents).values(persistedUsageRows);
-  await db.insert(schema.jobs).values({
-    kind: "gate-state-sync",
-    payload: {
-      reviewId: input.reviewId,
-      reviewPublicId: review.publicId,
-    },
-    maxAttempts: 5,
+  if (persistedUsageRows.length > 0) {
+    await db.insert(schema.usageEvents).values(persistedUsageRows);
+  }
+  if (options.enqueueGateStateSync !== false) {
+    await db.insert(schema.jobs).values({
+      kind: "gate-state-sync",
+      payload: {
+        reviewId: input.reviewId,
+        reviewPublicId: review.publicId,
+      },
+      maxAttempts: 5,
+    });
+  }
+}
+
+/** Persist receipt-backed usage without scheduling publication for a failed review. */
+export async function persistFailedStagedReviewAccounting(
+  db: Database,
+  input: ReviewCompletionAccountingInput,
+  review: { publicId: string; triggerSource: string },
+): Promise<void> {
+  await persistReviewCompletionAccounting(db, input, review, {
+    enqueueGateStateSync: false,
   });
 }
 
@@ -162,79 +329,185 @@ export async function stageReviewCompletionCandidate(
   input: StagedReviewCompletionInput,
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult & { staged: boolean }> {
-  return db.transaction(async (tx) => {
-    await lockReviewDecisionScopeById(tx, input.reviewId);
-    const gateTruth = requireEnvelopeGateTruth(
-      input.envelope,
-      input.gateFailing,
-    );
-    const gateEnabled =
-      orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
-    const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
-    const rows = await tx
-      .update(schema.reviews)
-      .set({
-        envelope: gateTruth.envelope,
-        configFiles: input.configFiles,
-        configProvenance: input.configProvenance ?? {
-          entries: [],
-          degraded: false,
-        },
-        silent: input.silent,
-        engineGateFailing: gateTruth.gateFailing,
-        gateFailing: effectiveGateFailing,
-      })
-      .where(
-        and(
-          eq(schema.reviews.id, input.reviewId),
-          eq(schema.reviews.status, "running"),
-        ),
-      )
-      .returning({ id: schema.reviews.id });
-    if (rows.length === 0) {
-      return {
-        staged: false,
-        completed: false,
-        gateEnabled,
-        gateFailing: effectiveGateFailing,
-      };
-    }
+  try {
+    return await db.transaction(async (tx) => {
+      await lockReviewDecisionScopeById(tx, input.reviewId);
+      const gateTruth = requireEnvelopeGateTruth(
+        input.envelope,
+        input.gateFailing,
+      );
+      const gateEnabled =
+        orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
+      const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
+      const rows = await tx
+        .update(schema.reviews)
+        .set({
+          envelope: gateTruth.envelope,
+          configFiles: input.configFiles,
+          configProvenance: input.configProvenance ?? {
+            entries: [],
+            degraded: false,
+          },
+          silent: input.silent,
+          engineGateFailing: gateTruth.gateFailing,
+          gateFailing: effectiveGateFailing,
+        })
+        .where(
+          and(
+            eq(schema.reviews.id, input.reviewId),
+            eq(schema.reviews.status, "running"),
+          ),
+        )
+        .returning({ id: schema.reviews.id });
+      if (rows.length === 0) {
+        return {
+          staged: false,
+          completed: false,
+          gateEnabled,
+          gateFailing: effectiveGateFailing,
+        };
+      }
 
-    await persistPublicationReceipt(tx as Database, {
-      reviewId: input.reviewId,
-      envelope: gateTruth.envelope,
-      receipt: input.publicationReceipt,
-    });
-    if (input.reviewJobId !== undefined) {
-      await tx
+      await persistPublicationReceipt(tx as Database, {
+        reviewId: input.reviewId,
+        envelope: gateTruth.envelope,
+        receipt: input.publicationReceipt,
+      });
+      const recoveryPointer = await tx
         .update(schema.jobs)
         .set({
           payload: sql`${schema.jobs.payload} || jsonb_build_object(
             'recoveryReviewId', ${input.reviewId}::bigint
           )`,
         })
-        .where(eq(schema.jobs.id, input.reviewJobId));
-    }
+        .where(
+          and(
+            eq(schema.jobs.id, input.reviewJobLease.id),
+            eq(schema.jobs.status, "running"),
+            eq(schema.jobs.lockedBy, input.reviewJobLease.lockedBy),
+            eq(schema.jobs.lockGeneration, input.reviewJobLease.lockGeneration),
+          ),
+        )
+        .returning({ id: schema.jobs.id });
+      if (recoveryPointer.length !== 1) {
+        throw new ReviewCompletionJobLeaseLostError(
+          gateEnabled,
+          effectiveGateFailing,
+        );
+      }
 
-    return {
-      staged: true,
-      completed: false,
-      gateEnabled,
-      gateFailing: effectiveGateFailing,
-    };
-  });
+      return {
+        staged: true,
+        completed: false,
+        gateEnabled,
+        gateFailing: effectiveGateFailing,
+      };
+    });
+  } catch (error) {
+    if (error instanceof ReviewCompletionJobLeaseLostError) {
+      return {
+        staged: false,
+        completed: false,
+        gateEnabled: error.gateEnabled,
+        gateFailing: error.gateFailing,
+      };
+    }
+    throw error;
+  }
 }
 
 /** Finalize an already-staged review without repeating any GitHub write. */
 export async function finalizeStagedReviewCompletionWithGateMode(
   db: Database,
-  input: ReviewCompletionAccountingInput,
+  input: StagedReviewFinalizationInput,
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult> {
   return db.transaction(async (tx) => {
     await lockReviewDecisionScopeById(tx, input.reviewId);
     const gateEnabled =
       orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
+    const jobResult = await tx.execute(sql<{
+      payload: ReviewJobPayload;
+      maxAttempts: number;
+    }>`
+      SELECT ${schema.jobs.payload} AS payload,
+             ${schema.jobs.maxAttempts} AS "maxAttempts"
+        FROM ${schema.jobs}
+       WHERE ${schema.jobs.id} = ${input.reviewJobLease.id}
+         AND ${schema.jobs.kind} = 'review'
+         AND ${schema.jobs.status} = 'running'
+         AND ${schema.jobs.lockedBy} = ${input.reviewJobLease.lockedBy}
+         AND ${schema.jobs.lockGeneration} = ${input.reviewJobLease.lockGeneration}
+       FOR UPDATE
+    `);
+    const jobRow = jobResult.rows[0] as
+      | { payload: ReviewJobPayload; maxAttempts: number }
+      | undefined;
+    const currentPayload = jobRow?.payload;
+    if (!currentPayload || !jobRow) {
+      return { completed: false, gateEnabled, gateFailing: false };
+    }
+    const pending = (
+      currentPayload as ReviewJobPayload & Record<string, unknown>
+    )[COALESCED_REVIEW_PAYLOAD_KEY];
+    const pendingInput = pending && typeof pending === "object" && !Array.isArray(pending)
+      ? pending as ReviewJobPayload
+      : null;
+    const currentInputIsExact = exactReviewInputMatches(
+      currentPayload,
+      input.expectedReviewInput,
+    );
+    const successorInput = pendingInput ??
+      (currentInputIsExact ? null : currentPayload);
+    if (
+      successorInput !== null
+    ) {
+      await markReviewStaleWithDurableCleanupInTransaction(
+        tx as Database,
+        input.staleCleanup,
+      );
+      const retired = await tx
+        .update(schema.jobs)
+        .set({
+          status: "failed",
+          lockedAt: null,
+          lockedBy: null,
+          lastError: "superseded before staged review completion",
+          runAfter: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.jobs.id, input.reviewJobLease.id),
+            eq(schema.jobs.status, "running"),
+            eq(schema.jobs.lockedBy, input.reviewJobLease.lockedBy),
+            eq(schema.jobs.lockGeneration, input.reviewJobLease.lockGeneration),
+          ),
+        )
+        .returning({ id: schema.jobs.id });
+      if (retired.length !== 1) {
+        return { completed: false, gateEnabled, gateFailing: false };
+      }
+      if (successorInput) {
+        await tx.insert(schema.jobs).values({
+          kind: "review",
+          payload: promotedReviewInput(
+            currentPayload,
+            successorInput,
+            input.reviewJobLease.id,
+          ),
+          status: "queued",
+          runAfter: new Date(),
+          maxAttempts: jobRow.maxAttempts,
+        });
+      }
+      return {
+        completed: false,
+        gateEnabled,
+        gateFailing: false,
+        superseded: true,
+        promoted: successorInput !== null,
+      };
+    }
     const staged = (
       await tx
         .select({
@@ -258,13 +531,16 @@ export async function finalizeStagedReviewCompletionWithGateMode(
       staged.envelope,
       staged.engineGateFailing,
     );
-    const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
+    const terminal = terminalReviewState(input, gateTruth.envelope);
+    const effectiveGateFailing =
+      gateEnabled && (terminal.status === "failed" || gateTruth.gateFailing);
 
     const rows = await tx
       .update(schema.reviews)
       .set({
-        status: "completed",
+        status: terminal.status,
         gateFailing: effectiveGateFailing,
+        errorMessage: terminal.errorMessage,
         finishedAt: new Date(),
       })
       .where(
@@ -302,11 +578,13 @@ export async function persistReviewCompletionWithGateMode(
     );
     const gateEnabled =
       orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
-    const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
+    const terminal = terminalReviewState(input, gateTruth.envelope);
+    const effectiveGateFailing =
+      gateEnabled && (terminal.status === "failed" || gateTruth.gateFailing);
     const rows = await tx
       .update(schema.reviews)
       .set({
-        status: "completed",
+        status: terminal.status,
         envelope: gateTruth.envelope,
         configFiles: input.configFiles,
         configProvenance: input.configProvenance ?? {
@@ -316,6 +594,7 @@ export async function persistReviewCompletionWithGateMode(
         silent: input.silent,
         engineGateFailing: gateTruth.gateFailing,
         gateFailing: effectiveGateFailing,
+        errorMessage: terminal.errorMessage,
         finishedAt: new Date(),
       })
       .where(

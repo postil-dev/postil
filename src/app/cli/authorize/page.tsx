@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { redirect } from "next/navigation";
 
 import { and, asc, eq } from "drizzle-orm";
 
@@ -9,7 +8,7 @@ import {
   normalizeUserCodeInput,
 } from "@/lib/cli-auth";
 import { getDb, schema } from "@/lib/db";
-import { getVerifiedSessionUser } from "@/lib/session";
+import { requireVerifiedPageSessionUser } from "@/lib/session";
 import { approveDeviceAuthorizationAction, denyDeviceAuthorizationAction } from "./actions";
 
 export const metadata: Metadata = {
@@ -28,18 +27,7 @@ export default async function CliAuthorizePage({
   // Belt-and-suspenders: the middleware already redirects unauthenticated
   // requests, but only checks the signed cookie. This checks the session row
   // and GitHub organization membership, same as every other account page.
-  const verification = await getVerifiedSessionUser();
-  if (!verification.ok) {
-    const next = params.code
-      ? `/cli/authorize?code=${encodeURIComponent(params.code)}`
-      : "/cli/authorize";
-    redirect(
-      verification.reason === "verification_unavailable"
-        ? `/login?next=${encodeURIComponent(next)}&error=membership_verification`
-        : `/login?next=${encodeURIComponent(next)}`,
-    );
-  }
-  const user = verification.user;
+  const user = await requireVerifiedPageSessionUser();
 
   if (params.result === "approved") {
     return (

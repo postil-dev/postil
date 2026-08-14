@@ -22,7 +22,7 @@ describe("private repository worker defense in depth", () => {
       "await getInstallationToken",
       "await createCheckRun",
       "await materializeRepoConfig",
-      "await runCli",
+      "return runCli",
     ]) {
       expect(
         source.indexOf(sideEffect, source.indexOf("runReviewJob")),
@@ -44,9 +44,9 @@ describe("private repository worker defense in depth", () => {
       source.indexOf("fetchRepositorySummary", gate),
     );
     expect(providerFailure).toBeGreaterThan(checkCreation);
-    expect(providerFailure).toBeLessThan(source.indexOf("await runCli", gate));
+    expect(providerFailure).toBeLessThan(source.indexOf("return runCli", gate));
     expect(
-      source.slice(providerFailure, source.indexOf("await runCli", gate)),
+      source.slice(providerFailure, source.indexOf("return runCli", gate)),
     ).toContain("configured provider mode does not match");
     expect(source.indexOf("fetchRepositorySummary", gate)).toBeLessThan(
       source.indexOf("insert(schema.reviews)", gate),
@@ -57,7 +57,7 @@ describe("private repository worker defense in depth", () => {
     expect(authorLookup).toBeLessThan(
       source.indexOf("await reserveHostedReviewSpend", gate),
     );
-    expect(authorLookup).toBeLessThan(source.indexOf("await runCli", gate));
+    expect(authorLookup).toBeLessThan(source.indexOf("return runCli", gate));
     expect(
       source.slice(
         authorLookup,
@@ -117,7 +117,7 @@ describe("private repository worker defense in depth", () => {
       "await materializeRepoConfig",
       start,
     );
-    const cli = source.indexOf("await runCli", start);
+    const cli = source.indexOf("return runCli", start);
     const versionProbe = source.indexOf("postilCliVersionLogLine()", start);
 
     expect(mode).toBeGreaterThan(start);
@@ -236,6 +236,8 @@ describe("private repository worker defense in depth", () => {
       args.indexOf('"--repo"'),
     );
     expect(args.indexOf('"--publish"')).toBeLessThan(args.indexOf('"--repo"'));
+    expect(args).toContain('"--sha",\n      payload.headSha');
+    expect(args).toContain('"--base-sha",\n      payload.baseSha');
     expect(args).not.toContain('"--no-post"');
   });
 
@@ -256,7 +258,7 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const reviewStart = source.indexOf("export async function runReviewJob");
     const cliCompletion = source.indexOf(
-      "const result = await runCli",
+      "return runCli",
       reviewStart,
     );
     const staging = source.indexOf(
@@ -294,6 +296,26 @@ describe("private repository worker defense in depth", () => {
     );
   });
 
+  test("completion staging binds the recovery pointer to the exact running claim", () => {
+    const completion = readFileSync("src/lib/review-completion.ts", "utf8");
+    const review = readFileSync("src/worker/review.ts", "utf8");
+    const staging = completion.slice(
+      completion.indexOf("export async function stageReviewCompletionCandidate"),
+      completion.indexOf("export async function finalizeStagedReviewCompletionWithGateMode"),
+    );
+
+    expect(staging).toContain('eq(schema.jobs.status, "running")');
+    expect(staging).toContain(
+      "eq(schema.jobs.lockedBy, input.reviewJobLease.lockedBy)",
+    );
+    expect(staging).toContain(
+      "eq(schema.jobs.lockGeneration, input.reviewJobLease.lockGeneration)",
+    );
+    expect(staging).toContain("throw new ReviewCompletionJobLeaseLostError");
+    expect(review).toContain("reviewJobLease: timing.lease");
+    expect(review).not.toContain("reviewJobId: timing.lease");
+  });
+
   test("publication recovery retries the exact gate after database completion", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const recoveryStart = source.indexOf(
@@ -305,8 +327,13 @@ describe("private repository worker defense in depth", () => {
     expect(recovery).toContain('stagedReview.status !== "running"');
     expect(recovery).toContain('stagedReview.status !== "completed"');
     expect(recovery).toContain('if (stagedReview.status === "running")');
-    expect(recovery).toContain("await enqueueGateStateSync(db, stagedReview)");
+    expect(recovery).not.toContain("await enqueueGateStateSync(db, stagedReview)");
     expect(recovery).toContain('triggerQueueDrain("gate-state-sync")');
+    expect(recovery).toContain("getPullRequestReviewContext(");
+    expect(recovery).toContain("pendingReviewInputSupersedes(");
+    expect(recovery.indexOf("getPullRequestReviewContext(")).toBeLessThan(
+      recovery.indexOf("await verifyCompletedCheckRun("),
+    );
     expect(recovery).toContain("const detailsUrl = reviewDetailsUrl(");
     expect(recovery).toContain("stagedReview.publicId");
     expect(recovery).not.toContain("await completeExpectedCheckRun");
@@ -362,7 +389,8 @@ describe("private repository worker defense in depth", () => {
       failureBody.indexOf("const publicationIncomplete"),
     );
     expect(shutdownBranch).not.toContain('kind: "check-run-cleanup"');
-    expect(shutdownBranch).toContain('status: "stale"');
+    expect(shutdownBranch).toContain("await markReviewStaleWithDurableCleanup");
+    expect(shutdownBranch).toContain('intent: "neutralize"');
     expect(failureBody).toContain("db.transaction");
     expect(failureBody).toContain('kind: "check-run-cleanup"');
     expect(failureBody).toContain('intent: "fail"');
@@ -380,7 +408,7 @@ describe("private repository worker defense in depth", () => {
       checkCreation,
     );
     const cliCompletion = source.indexOf(
-      "const result = await runCli",
+      "return runCli",
       checkCreation,
     );
     const persistence = source.indexOf(
@@ -408,6 +436,135 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(cliCompletion, persistence)).not.toContain(
       "throwIfWorkerStopping(signal)",
     );
+  });
+
+  test("review input convergence retains signed heads and is enforced before CLI invocation", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const reviewStart = source.indexOf("export async function runReviewJob");
+    const liveContext = source.indexOf("const liveContext", reviewStart);
+    const convergenceCheck = source.indexOf(
+      "livePullRequestSnapshotLagsEvent(",
+      liveContext,
+    );
+    const reviewInsert = source.indexOf(".insert(schema.reviews)", liveContext);
+    const cliInvocation = source.indexOf("return runCli", liveContext);
+    const publicationFence = source.indexOf(
+      "const result = await withReviewPublicationFence",
+      liveContext,
+    );
+    const finalAuthorization = source.lastIndexOf(
+      "if (!(await publicationAuthorized()))",
+      cliInvocation,
+    );
+    const authorizationDefinition = source.indexOf(
+      "const publicationAuthorized",
+      convergenceCheck,
+    );
+    const authorizationLiveFetch = source.indexOf(
+      "getPullRequestReviewContext(",
+      authorizationDefinition,
+    );
+    const durableInputAuthority = source.indexOf(
+      "await reviewInputLeaseState(",
+      authorizationDefinition,
+    );
+    const activeInputMonitor = source.indexOf(
+      "startReviewInputLeaseMonitor(",
+      reviewInsert,
+    );
+    const newerPendingRejection = source.indexOf(
+      'inputLeaseState === "newer-pending"',
+      durableInputAuthority,
+    );
+    const firstAuthorization = source.indexOf(
+      "if (!(await publicationAuthorized()))",
+      authorizationDefinition,
+    );
+    const advisoryCheckCreation = source.indexOf(
+      "advisoryCheckRunId = await createCheckRun",
+      firstAuthorization,
+    );
+
+    expect(liveContext).toBeGreaterThan(reviewStart);
+    expect(convergenceCheck).toBeGreaterThan(liveContext);
+    expect(source.slice(liveContext, reviewInsert)).toContain(
+      "const expectedPullRequestUpdatedAt",
+    );
+    expect(source.slice(convergenceCheck, reviewInsert)).toContain(
+      "liveSnapshotLagsEvent",
+    );
+    expect(reviewInsert).toBeGreaterThan(convergenceCheck);
+    expect(authorizationDefinition).toBeGreaterThan(reviewInsert);
+    expect(activeInputMonitor).toBeGreaterThan(reviewInsert);
+    expect(activeInputMonitor).toBeLessThan(cliInvocation);
+    expect(publicationFence).toBeGreaterThan(advisoryCheckCreation);
+    expect(publicationFence).toBeLessThan(finalAuthorization);
+    expect(source.slice(activeInputMonitor, cliInvocation)).toContain(
+      "reviewInputLeaseState(",
+    );
+    expect(durableInputAuthority).toBeGreaterThan(authorizationLiveFetch);
+    expect(newerPendingRejection).toBeGreaterThan(durableInputAuthority);
+    expect(newerPendingRejection).toBeLessThan(finalAuthorization);
+    expect(
+      source.slice(authorizationDefinition, finalAuthorization),
+    ).toContain("expectedPullRequestUpdatedAt");
+    expect(firstAuthorization).toBeGreaterThan(authorizationDefinition);
+    expect(advisoryCheckCreation).toBeGreaterThan(firstAuthorization);
+    expect(source.slice(firstAuthorization, advisoryCheckCreation)).toContain(
+      "error instanceof ReviewInputConvergenceError",
+    );
+    expect(finalAuthorization).toBeGreaterThan(advisoryCheckCreation);
+    expect(finalAuthorization).toBeGreaterThan(authorizationDefinition);
+    expect(cliInvocation).toBeGreaterThan(finalAuthorization);
+
+    const catchStart = source.indexOf("} catch (err) {", cliInvocation);
+    expect(source.slice(cliInvocation, catchStart)).toContain(
+      "ReviewInputSupersededError",
+    );
+    const convergenceRetry = source.indexOf(
+      "if (err instanceof ReviewInputConvergenceError)",
+      catchStart,
+    );
+    const terminalFailure = source.indexOf("const failedRows", convergenceRetry);
+    const retryPath = source.slice(convergenceRetry, terminalFailure);
+    expect(convergenceRetry).toBeGreaterThan(catchStart);
+    expect(retryPath).toContain("await markReviewStaleWithDurableCleanup");
+    expect(retryPath).toContain('intent: "neutralize"');
+    expect(retryPath).toContain("markReviewStaleWithDurableCleanup");
+    expect(source).toContain('intent: "neutralize"');
+    expect(retryPath).toContain("await reconcileInterruptedSpend()");
+    expect(retryPath).not.toContain("await releaseHostedReviewSpend");
+    expect(retryPath).toContain("retained pull request input queued");
+    expect(retryPath.indexOf("return;")).toBeLessThan(
+      retryPath.indexOf("throw err"),
+    );
+    expect(retryPath).toContain("throw err");
+  });
+
+  test("reconciliation retry promotes retained input under the exact claim", () => {
+    const source = readFileSync("src/lib/queue.ts", "utf8");
+    const retryStart = source.indexOf(
+      "export async function retryJobIndefinitely",
+    );
+    const deadlineBranch = source.indexOf(
+      "if (nextRunAt === null)",
+      retryStart,
+    );
+    const ordinaryTransition = source.indexOf(
+      "const res = await pool.query<{",
+      source.indexOf("return res.rows[0]?.outcome", deadlineBranch) + 1,
+    );
+    const retryEnd = source.indexOf(
+      "export async function queueDepth",
+      ordinaryTransition,
+    );
+    const retryBody = source.slice(ordinaryTransition, retryEnd);
+
+    expect(ordinaryTransition).toBeGreaterThan(deadlineBranch);
+    expect(retryBody).toContain("jsonb_typeof(payload -> $7) = 'object'");
+    expect(retryBody).toContain("INSERT INTO jobs");
+    expect(retryBody).toContain("THEN 'coalesced'");
+    expect(retryBody).toContain("AND job.lock_generation = $4");
   });
 
   test("publication verification races preserve superseded review semantics", () => {

@@ -3,6 +3,7 @@ import { finalizeEscalationEmailRetirement } from "@/lib/escalation-email-retire
 import {
   activateHostedInferenceRelease,
   activatePrivateReviewAuthorIdentity,
+  activateQueueLockGeneration,
   activateReleaseJobs,
 } from "@/lib/release-job-rollout";
 import { hostedInferenceEnabled, optionalEnv } from "@/lib/env";
@@ -15,6 +16,7 @@ async function main(): Promise<void> {
     // Migration 0020 holds all release-v1 job kinds at infinity until the
     // homogeneous fleet check completes. Every operation is idempotent.
     const retirement = await finalizeEscalationEmailRetirement(getPool());
+    const lockGenerationReleased = await activateQueueLockGeneration(getPool());
     const billing = await backfillBillingContactVerification(getDb(), {
       confirm: true,
     });
@@ -33,6 +35,7 @@ async function main(): Promise<void> {
       : null;
     console.log(
       `release job kinds activated: released=${released} ` +
+        `lock_generation_released=${lockGenerationReleased} ` +
         `private_review_author=${privateReviewAuthorActivated ? "activated" : "already_active"} ` +
         `hosted_inference=${hostedInferenceActivated === null ? "unmanaged" : hostedInferenceActivated ? "activated" : "already_active"} ` +
         `self_service_trials_eligible=${selfServiceTrials.eligible} ` +

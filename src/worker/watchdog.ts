@@ -4,6 +4,7 @@ import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { scheduleCustomerNotificationEmailJobs } from "@/lib/customer-notification-email";
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
 import { checkRunExternalId } from "@/lib/github/checks";
+import { parseStoredEnvelope } from "@/lib/envelope";
 import { reviewDetailsUrl } from "@/lib/oauth";
 import {
   COALESCED_REVIEW_PAYLOAD_KEY,
@@ -13,8 +14,9 @@ import {
   reconcileOperatorAlertDeliveries,
   sweepExpiredSelfServiceTrials,
 } from "@/lib/operator-alerts";
+import { persistFailedStagedReviewAccounting } from "@/lib/review-completion";
 import { scheduleBillingSettlementJobs } from "@/lib/paddle-billing";
-import { REVIEW_DEADLINE_MS } from "./review";
+import { REVIEW_DEADLINE_MS, reviewUsageFromEnvelope } from "./review";
 
 export const WATCHDOG_ERROR_PREFIX = "watchdog:";
 
@@ -28,6 +30,10 @@ interface StuckReview {
   repoFullName: string;
   githubInstallationId: number;
   orgSlug: string | null;
+  orgId: number | null;
+  repositoryId: number;
+  triggerSource: string;
+  envelope: unknown;
 }
 
 const stuckReviewSelection = {
@@ -40,6 +46,10 @@ const stuckReviewSelection = {
   repoFullName: schema.repositories.fullName,
   githubInstallationId: schema.installations.githubInstallationId,
   orgSlug: schema.organizations.slug,
+  orgId: schema.installations.orgId,
+  repositoryId: schema.reviews.repositoryId,
+  triggerSource: schema.reviews.triggerSource,
+  envelope: schema.reviews.envelope,
 };
 
 function stuckReviewQuery(db: Database) {
@@ -61,11 +71,11 @@ function stuckReviewQuery(db: Database) {
 }
 
 /**
- * Fail one `running` review closed: mark it failed and durably queue its
- * check-run completion (gate: policy outcome, review: failure). `returning()`
+ * Terminalize one `running` review without a verdict and durably queue its
+ * check-run completion (gate: policy outcome, review: neutral). `returning()`
  * turns the status update into the compare-and-swap that decides a race with
- * a normal completion or a superseding push; the loser must not touch the
- * check-runs a second time.
+ * a normal completion or a superseding push. Exact-identity completion is
+ * idempotent when a racing worker restores the same durable terminal state.
  */
 async function failStuckReview(
   db: Database,
@@ -86,6 +96,43 @@ async function failStuckReview(
       )
       .returning({ id: schema.reviews.id });
     if (rows.length === 0) return false;
+    if (opts.publicationIncomplete) {
+      const reservation = (
+        await tx
+          .select({ id: schema.hostedUsageReservations.id })
+          .from(schema.hostedUsageReservations)
+          .where(eq(schema.hostedUsageReservations.reviewId, review.id))
+          .limit(1)
+      )[0];
+      const storedEnvelope = parseStoredEnvelope(review.envelope);
+      const usage = storedEnvelope
+        ? reviewUsageFromEnvelope(storedEnvelope, {
+            orgId: review.orgId,
+            repositoryId: review.repositoryId,
+            byok: !reservation,
+          })
+        : reservation
+          ? [{
+              orgId: review.orgId,
+              repositoryId: review.repositoryId,
+              promptTokens: 0,
+              completionTokens: 0,
+              modelUsed: "unattributed provider usage",
+              costMicros: null,
+              billingScope: "private_hosted" as const,
+            }]
+          : [];
+      await persistFailedStagedReviewAccounting(
+        tx as Database,
+        {
+          reviewId: review.id,
+          usage,
+          hostedUsageReservationId: reservation?.id ?? null,
+          usageAccountingComplete: storedEnvelope?.usageAccountingComplete === true,
+        },
+        { publicId: review.publicId, triggerSource: review.triggerSource },
+      );
+    }
     await tx.insert(schema.jobs).values({
       kind: "check-run-cleanup",
       payload: {
@@ -232,7 +279,14 @@ export async function watchdogPass(
      INSERT INTO jobs (kind, payload, max_attempts)
      SELECT
        'review',
-       payload -> $2,
+       jsonb_set(
+         payload -> $2, '{providerRetryLineage}',
+         to_jsonb(COALESCE(
+           NULLIF(payload -> $2 ->> 'providerRetryLineage', ''),
+           'review-job:' || id::text
+         )),
+         true
+       ),
        max_attempts
      FROM updated
      WHERE kind = 'review'

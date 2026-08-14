@@ -35,10 +35,10 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.8.13",
+    version: "0.8.13-0.8.16",
     date: "August 13, 2026",
     summary:
-      "Large reviews bind every credited hunk to exact model-visible evidence and stop before inference when the bounded request budget cannot cover the complete change.",
+      "Review findings are adjudicated against candidate-bound direct evidence and a complete repository receipt before publication, while large changes remain bounded without silently skipping required source.",
     changes: [
       {
         label: "Fixed",
@@ -46,7 +46,15 @@ const RELEASES: Release[] = [
       },
       {
         label: "Changed",
-        text: "A review that cannot inspect every required hunk returns an explicit incomplete result instead of silently clearing findings from unseen evidence.",
+        text: "Absence, removal, conditional, and delegated-verification claims use the same complete-corpus adjudication regardless of generated kind; refuted and unresolved delegated checks are not published.",
+      },
+      {
+        label: "Fixed",
+        text: "Repository-wide claims are bound to immutable search receipts, and time-sensitive claims use the trusted UTC request date instead of model memory.",
+      },
+      {
+        label: "Fixed",
+        text: "Inline code in GitHub review findings preserves comparison operators while surrounding prose remains HTML-safe.",
       },
     ],
   },
@@ -74,7 +82,7 @@ const RELEASES: Release[] = [
     version: "0.8.7–0.8.8",
     date: "August 9, 2026",
     summary:
-      "Ignored paths do not consume bounded-review coverage, and uncertainty resolution can continue from exact diff evidence when repository lookup is unavailable.",
+      "Ignored paths do not consume bounded-review coverage, and uncertainty resolution withholds repository-dependent claims when repository lookup is unavailable.",
     changes: [
       {
         label: "Changed",
@@ -82,7 +90,7 @@ const RELEASES: Release[] = [
       },
       {
         label: "Fixed",
-        text: "When repository file lookup fails, uncertainty resolution uses exact evidence already present in the reviewed diff. Any uncertainty that remains unresolved is reported as a warning rather than an operational failure.",
+        text: "When repository file lookup fails, uncertainty resolution retains directly cited changed-line evidence and withholds claims that require unavailable repository context. Any uncertainty that remains unresolved is reported as a warning rather than an operational failure.",
       },
     ],
   },
@@ -130,7 +138,7 @@ const RELEASES: Release[] = [
       },
       {
         label: "Fixed",
-        text: "A review that cannot produce a verdict fails postil/review instead of appearing skipped; postil/gate still follows the configured outage policy.",
+        text: "A review that cannot produce a verdict leaves postil/review neutral with an explicit no-verdict result; postil/gate follows the organization merge-gate setting.",
       },
       {
         label: "Changed",
@@ -387,7 +395,7 @@ const RELEASES: Release[] = [
       },
       {
         label: "Security",
-        text: "Least-privilege GitHub App (no contents:write), fail-closed gate on operational errors (repos can opt into gate.onError: advisory), AES-256-GCM sealing for bring-your-own inference keys, Sigstore keyless signing of release artifacts in CI.",
+        text: "Least-privilege GitHub App (no contents:write), organization-controlled merge enforcement on operational errors, AES-256-GCM sealing for bring-your-own inference keys, and Sigstore keyless signing of release artifacts in CI.",
       },
     ],
   },

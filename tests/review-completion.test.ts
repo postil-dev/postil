@@ -8,9 +8,11 @@ import { persistReviewCompletionWithGateMode } from "@/lib/review-completion";
 function fakeDb(reviewUpdated = true): {
   db: Database;
   inserted: Array<{ table: unknown; values: unknown }>;
+  updates: Array<Record<string, unknown>>;
   transactions: number;
 } {
   const inserted: Array<{ table: unknown; values: unknown }> = [];
+  const updates: Array<Record<string, unknown>> = [];
   let transactions = 0;
   const tx = {
     execute() {
@@ -35,7 +37,8 @@ function fakeDb(reviewUpdated = true): {
     },
     update() {
       const chain = {
-        set() {
+        set(values: Record<string, unknown>) {
+          updates.push(values);
           return chain;
         },
         where() {
@@ -69,6 +72,7 @@ function fakeDb(reviewUpdated = true): {
   return {
     db,
     inserted,
+    updates,
     get transactions() {
       return transactions;
     },
@@ -164,6 +168,52 @@ describe("review completion transaction", () => {
       await persistReviewCompletionWithGateMode(state.db, base, null),
     ).toMatchObject({ completed: false });
     expect(state.inserted).toEqual([]);
+  });
+
+  test("never persists an all-operational envelope as completed", async () => {
+    const state = fakeDb();
+    const operationalEnvelope: Envelope = {
+      ...envelope,
+      silent: false,
+      findings: [
+        {
+          path: ".postil/provider",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: "Review provider unavailable",
+          body: "The review provider did not return a usable result.",
+        },
+      ],
+      counts: {
+        info: 0,
+        warn: 0,
+        error: 1,
+        suppressed: 0,
+        ungrounded: 0,
+      },
+      confidenceBuckets: [0, 0, 0, 0, 1],
+      gate: { failOn: "error", failing: true },
+    };
+
+    expect(
+      await persistReviewCompletionWithGateMode(
+        state.db,
+        {
+          ...base,
+          envelope: operationalEnvelope,
+          gateFailing: true,
+          terminalStatus: "completed",
+        },
+        null,
+      ),
+    ).toMatchObject({ completed: true, gateFailing: false });
+    expect(state.updates[0]).toMatchObject({
+      status: "failed",
+      errorMessage: "Review execution did not produce a reviewer verdict.",
+      gateFailing: false,
+    });
   });
 
   test("rejects a completion whose claimed gate contradicts its envelope", async () => {

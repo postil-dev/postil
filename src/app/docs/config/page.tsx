@@ -23,8 +23,7 @@ export default function ConfigPage() {
         , with no setup step: a repo migrating from CodeRabbit gets a sensible
         translation of the overlapping settings on the first run, before
         anyone writes a line of Postil-specific config. This compatibility
-        read covers CodeRabbit's config today only; see exactly what
-        translates below.
+        read covers the CodeRabbit settings listed below.
       </p>
 
       <h2>Precedence</h2>
@@ -98,9 +97,8 @@ export default function ConfigPage() {
         simple filters, and any CodeRabbit-only knob not listed above) is not
         read. Configs from Qodo, Macroscope, or other review tools are{" "}
         <strong>not translated at all</strong>; only <code>.coderabbit.yaml</code>{" "}
-        gets a compatibility read today. This translation surface is small by
-        design and expected to grow; it is not a claim of broad config
-        compatibility across the category.
+        gets a compatibility read. This narrow translation surface is not a
+        claim of broad config compatibility across the category.
       </p>
 
       <h2>Full reference</h2>
@@ -139,7 +137,7 @@ contentPolicy:
 gate:
   failOn: error          # the gate fails at/above this severity
   onError: block         # block (fail closed, default) | advisory
-                         # advisory fails open on provider outages only
+                         # direct CLI publication only
 
 model:
   name: z-ai/glm-5.2
@@ -153,13 +151,14 @@ model:
 
       <h2>Gate behavior on operational errors</h2>
       <p>
-        <code>gate.onError</code> controls what happens when a review cannot
-        complete: a provider outage, an exhausted key, model output that fails
-        validation. The default, <code>block</code>, fails the gate; the gate
-        never marks an unreviewed head as passing. Setting it to{" "}
-        <code>advisory</code> lets the gate pass on provider outages only, for
-        repos that prefer fail-open over a blocked merge queue when the model
-        endpoint is down. Findings the model did produce still gate normally.
+        <code>gate.onError</code> controls the gate check produced by direct CLI
+        publication when a provider failure prevents a verdict. The default,
+        <code>block</code>, fails that gate; <code>advisory</code> leaves it
+        neutral. It does not change the CLI&apos;s operational exit code. Hosted
+        Postil uses the organization merge-gate setting instead: enforced
+        organizations receive a failing <code>postil/gate</code> for a
+        no-verdict run, while advisory organizations receive a neutral gate.
+        Findings from completed reviews still use <code>gate.failOn</code>.
       </p>
 
       <h2>Repo guardrails</h2>
@@ -179,8 +178,8 @@ model:
 
       <h2>Content policy</h2>
       <p>
-        On by default, content policy reviews the human-readable prose in a
-        diff (comments, docstrings, Markdown, and the PR title/description)
+        On by default, content policy reviews changed human-readable prose
+        (comments, docstrings, Markdown, and the PR title/description)
         against the built-in baseline. A <code>.postil/content-policy.md</code>{" "}
         file appends repo-specific rules to that baseline. Set{" "}
         <code>contentPolicy.enabled: false</code> to opt out entirely.

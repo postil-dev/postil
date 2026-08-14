@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
 import { optionalEnv } from "@/lib/env";
+import type { JobLease } from "@/lib/queue";
 
 const MAX_ARMING_WINDOW_MS = 10 * 60 * 1_000;
 const MIN_ARMING_WINDOW_MS = 60 * 1_000;
@@ -30,7 +31,7 @@ export interface ArmPrivateWorkerRehearsalInput extends PrivateWorkerRehearsalTa
 
 export interface StagedPrivateWorkerRehearsalInput {
   reviewId: number;
-  reviewJobId: number;
+  reviewJobLease: JobLease;
   repoFullName: string;
   prNumber: number;
   headSha: string;
@@ -242,6 +243,9 @@ export async function consumePrivateWorkerRehearsalAfterStaging(
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(input.workerInstanceId)) {
     throw new Error("private worker rehearsal instance id is malformed");
   }
+  if (!input.reviewJobLease.lockedBy.startsWith(`${input.workerInstanceId}#`)) {
+    throw new Error("private worker rehearsal lease does not belong to its worker instance");
+  }
 
   const client = await pool.connect();
   try {
@@ -273,13 +277,14 @@ export async function consumePrivateWorkerRehearsalAfterStaging(
           AND job.kind = 'review'
           AND job.status = 'running'
           AND job.payload->>'recoveryReviewId' = review.id::text
-          AND left(job.locked_by, length($6) + 1) = $6 || '#'
+          AND job.locked_by = $7
+          AND job.lock_generation = $8
          JOIN service_heartbeats heartbeat
            ON heartbeat.component = 'worker'
           AND heartbeat.instance_id = $6
         WHERE rehearsal.state = 'armed'
-          AND rehearsal.expires_at > $7
-          AND rehearsal.org_slug = $8
+          AND rehearsal.expires_at > $9
+          AND rehearsal.org_slug = $10
           AND rehearsal.review_id = $1
           AND rehearsal.job_id = $2
           AND rehearsal.repo_full_name = $3
@@ -288,11 +293,13 @@ export async function consumePrivateWorkerRehearsalAfterStaging(
         FOR UPDATE OF rehearsal`,
       [
         input.reviewId,
-        input.reviewJobId,
+        input.reviewJobLease.id,
         input.repoFullName,
         input.prNumber,
         input.headSha,
         input.workerInstanceId,
+        input.reviewJobLease.lockedBy,
+        input.reviewJobLease.lockGeneration,
         now,
         sandbox.orgSlug,
       ],
@@ -333,14 +340,23 @@ export async function consumePrivateWorkerRehearsalAfterStaging(
     const marked = await client.query(
       `UPDATE jobs
           SET payload = payload || jsonb_build_object(
-            'privateWorkerRehearsalNonce', $2::text
+            'privateWorkerRehearsalNonce', $2::text,
+            'privateWorkerRehearsalLockedBy', $4::text,
+            'privateWorkerRehearsalLockGeneration', $5::bigint::text
           )
         WHERE id = $1
           AND kind = 'review'
           AND status = 'running'
           AND payload->>'recoveryReviewId' = $3
-          AND left(locked_by, length($4) + 1) = $4 || '#'`,
-      [input.reviewJobId, row.nonce, String(input.reviewId), input.workerInstanceId],
+          AND locked_by = $4
+          AND lock_generation = $5`,
+      [
+        input.reviewJobLease.id,
+        row.nonce,
+        String(input.reviewId),
+        input.reviewJobLease.lockedBy,
+        input.reviewJobLease.lockGeneration,
+      ],
     );
     if ((marked.rowCount ?? 0) !== 1) {
       throw new Error("private worker rehearsal lost its exact recovery job lease");
@@ -447,14 +463,15 @@ export async function reconcilePrivateWorkerRehearsals(
             AND status = 'running'
             AND payload->>'recoveryReviewId' = $3
             AND payload->>'privateWorkerRehearsalNonce' = $4
-            AND left(locked_by, length($5) + 1) = $5 || '#'
+            AND locked_by = payload->>'privateWorkerRehearsalLockedBy'
+            AND lock_generation::text =
+              payload->>'privateWorkerRehearsalLockGeneration'
           RETURNING id`,
         [
           rehearsal.job_id,
           now,
           rehearsal.review_id,
           rehearsal.nonce,
-          rehearsal.interrupted_worker_instance,
         ],
       );
       if ((requeued.rowCount ?? 0) === 1) {

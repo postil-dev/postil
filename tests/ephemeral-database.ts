@@ -9,7 +9,7 @@ import { Client, Pool } from "pg";
  * runs order-dependent: a suite that left rows behind, or that omitted a
  * tolerated code another suite's migrations required, turned green in
  * isolation and red next to a sibling. Each suite instead gets its own
- * database, created and migrated fresh in beforeAll and dropped in afterAll,
+ * database, created and migrated fresh in beforeAll and released in afterAll,
  * so no suite can observe another's schema or data regardless of run order.
  */
 
@@ -30,6 +30,67 @@ export interface EphemeralDatabase {
   drop(): Promise<void>;
 }
 
+export async function createUnmigratedEphemeralDatabase(
+  label: string,
+  options: { forceDrop?: boolean; maxConnections?: number } = {},
+): Promise<EphemeralDatabase> {
+  const baseUrl = process.env.POSTIL_TEST_DATABASE_URL;
+  if (!baseUrl) throw new Error("POSTIL_TEST_DATABASE_URL is not set");
+
+  const databaseName = `postil_${label}_${process.pid}_${Date.now()}`;
+  const admin = new Client({ connectionString: baseUrl });
+  try {
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${databaseName}"`);
+  } catch (error) {
+    await admin.end().catch(() => undefined);
+    throw error;
+  }
+
+  const url = new URL(baseUrl);
+  url.pathname = `/${databaseName}`;
+  const pool = new Pool({
+    connectionString: url.toString(),
+    max: options.maxConnections,
+  });
+
+  return {
+    pool,
+    databaseName,
+    url: url.toString(),
+    async drop() {
+      let cleanupError: unknown;
+      try {
+        await pool.end();
+        await retainOrDropTestDatabase(admin, databaseName, {
+          force: options.forceDrop,
+        });
+      } catch (error) {
+        cleanupError = error;
+      }
+      try {
+        await admin.end();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+      if (cleanupError) throw cleanupError;
+    },
+  };
+}
+
+export async function retainOrDropTestDatabase(
+  admin: Client,
+  databaseName: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
+  if (process.env.POSTIL_TEST_KEEP_DATABASE === "1") {
+    console.log(`test database retained: ${databaseName}`);
+    return;
+  }
+  const force = options.force ? " WITH (FORCE)" : "";
+  await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"${force}`);
+}
+
 /**
  * Creates a uniquely named database on the server addressed by
  * POSTIL_TEST_DATABASE_URL, replays the full drizzle migration chain onto
@@ -38,51 +99,37 @@ export interface EphemeralDatabase {
  * that skipped afterAll) is identifiable by which suite created it.
  */
 export async function createEphemeralDatabase(label: string): Promise<EphemeralDatabase> {
-  const baseUrl = process.env.POSTIL_TEST_DATABASE_URL;
-  if (!baseUrl) throw new Error("POSTIL_TEST_DATABASE_URL is not set");
+  const database = await createUnmigratedEphemeralDatabase(label);
 
-  const databaseName = `postil_${label}_${process.pid}_${Date.now()}`;
-  const admin = new Client({ connectionString: baseUrl });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${databaseName}"`);
-
-  const url = new URL(baseUrl);
-  url.pathname = `/${databaseName}`;
-
-  const migration = new Client({ connectionString: url.toString() });
-  await migration.connect();
-  const directory = join(import.meta.dir, "..", "drizzle");
-  const files = (await readdir(directory))
-    .filter((file) => file.endsWith(".sql"))
-    .sort();
-  for (const file of files) {
-    const source = await readFile(join(directory, file), "utf8");
-    for (const statement of source.split("--> statement-breakpoint")) {
-      const trimmed = statement.trim();
-      if (!trimmed) continue;
-      try {
-        await migration.query(trimmed);
-      } catch (err) {
-        const code = (err as { code?: string }).code;
-        // A fresh database should never collide with itself. This tolerance
-        // is cheap insurance against a prior run of the same database name
-        // (e.g. a crash that skipped drop()) rather than the expected path.
-        if (!TOLERATED_MIGRATION_REPLAY_CODES.has(code ?? "")) throw err;
+  const migration = new Client({ connectionString: database.url });
+  try {
+    await migration.connect();
+    const directory = join(import.meta.dir, "..", "drizzle");
+    const files = (await readdir(directory))
+      .filter((file) => file.endsWith(".sql"))
+      .sort();
+    for (const file of files) {
+      const source = await readFile(join(directory, file), "utf8");
+      for (const statement of source.split("--> statement-breakpoint")) {
+        const trimmed = statement.trim();
+        if (!trimmed) continue;
+        try {
+          await migration.query(trimmed);
+        } catch (err) {
+          const code = (err as { code?: string }).code;
+          // A fresh database should never collide with itself. This tolerance
+          // is cheap insurance against a prior run of the same database name
+          // (e.g. a crash that skipped drop()) rather than the expected path.
+          if (!TOLERATED_MIGRATION_REPLAY_CODES.has(code ?? "")) throw err;
+        }
       }
     }
+    await migration.end();
+  } catch (error) {
+    await migration.end().catch(() => undefined);
+    await database.drop().catch(() => undefined);
+    throw error;
   }
-  await migration.end();
 
-  const pool = new Pool({ connectionString: url.toString() });
-
-  return {
-    pool,
-    databaseName,
-    url: url.toString(),
-    async drop() {
-      await pool.end();
-      await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-      await admin.end();
-    },
-  };
+  return database;
 }

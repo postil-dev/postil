@@ -38,6 +38,21 @@ or publishes the private dataset.
 
 Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
 
+Each successful job claim increments the row's non-resetting `lock_generation`.
+Claim completion, continuation, failure, reconciliation retry, and external
+side-effect authorization require the worker identity and that exact generation.
+`locked_at` records claim timing for observability and watchdog age checks; it is
+not lease authority. Reconciliation admission compares the database clock with
+the row's absolute deadline in the same statement that increments the generation.
+
+Transactional schema changes run through `db:migrate`. The separate
+`operational:indexes` command installs and verifies concurrent indexes and the
+nonlocking active-review identity trigger. Hosted releases and self-hosted
+upgrades run both commands in that order before new processes receive traffic.
+Self-hosted deployments then run `queue:activate-lock-generation` before
+starting workers. Managed deployments activate the same capability only after
+fleet replacement verifies one homogeneous release.
+
 Web, worker, and monitor processes use `DATABASE_URL`. The release migration subprocess
 uses an optional `POSTIL_DIRECT_DATABASE_URL`, or derives the known Supabase
 session-pool endpoint from a port-6543 transaction-pool URL. Only the Drizzle
@@ -315,12 +330,32 @@ noindexed:
 Authorization is uniform: every page and server action re-derives access from
 the session. A sealed GitHub OAuth credential refreshes the complete active
 organization membership set every 15 minutes during the seven-day session.
-Refreshes use a database lease, revoke removed memberships, apply role changes,
-and fail closed without deleting known membership state when GitHub is
-unavailable. An `org_members` row grants read access; the `admin` role gates
-writes. Rows and aggregates are scoped through `installations.org_id`, so an id
-belonging to another organization returns 404. Sign-in also synchronizes known
-GitHub App installations (`src/lib/github/installation-sync.ts`).
+Refreshes and OAuth callbacks share per-user generation authority. A distinct
+active lease serializes GitHub snapshots across sessions, while retry backoff
+fails fast. Stale generations cannot replace newer membership state. Successful
+refreshes revoke removed memberships and apply role changes; unavailable GitHub
+responses fail closed without deleting known membership state.
+Database triggers use the per-user refresh generation as a rolling-release
+compatibility fence. Legacy membership writes remain valid at generation zero
+and fail closed after a current process claims a generation. Current membership
+writers identify their transaction before reconciling rows. Legacy session
+writes cannot retain membership freshness after the generation fence activates.
+Legacy trigger checks hold a share lock on each affected `users` row through
+commit, while generation claims update that same row. Multi-user legacy writes
+lock users in ascending id order. Fenced reconciliation does not acquire these
+compatibility locks; it writes `org_members`, then legacy `sessions`, and writes
+final user freshness last. This lock order prevents compatibility checks from
+deadlocking with reconciliation. Losing the generation fence rolls back the
+complete membership transaction.
+Page requests retain their protected target and render a retryable error without
+loading organization data during a transient verification failure. The retry
+control remains unavailable until the server-provided bounded retry time. It
+displays a countdown while announcements are limited to meaningful pending and
+ready transitions. An
+`org_members` row grants read access; the `admin` role gates writes. Rows and
+aggregates are scoped through `installations.org_id`, so an id belonging to
+another organization returns 404. Sign-in also synchronizes known GitHub App
+installations (`src/lib/github/installation-sync.ts`).
 
 GitHub finding-decision commands authorize independently from dashboard sessions. The
 signed webhook identifies the actor, and the installation token reads that
@@ -329,10 +364,12 @@ Dashboard dismissal and revocation actions perform the same live check. The resp
 must bind the expected user and organization identities and report an active
 `role=admin`. Missing, ambiguous, stale, or unavailable membership data fails
 closed. Personal-account installations bind the actor to the installed account
-id. The decision record snapshots the actor and rationale against the reviewed
-commit and finding. Dismissals also retain their structured reason and whether
-the pull request author performed the action. The durable webhook delivery id
-prevents replay.
+id. Live decision authorization synchronizes the verified actor's GitHub
+identity but does not mutate cached organization memberships. The decision
+record snapshots the actor and rationale against the reviewed commit and
+finding. Dismissals also retain their structured reason and whether the pull
+request author performed the action. The durable webhook delivery id prevents
+replay.
 
 Repository config status crosses the latest completed review's recorded
 `config_files` with a cached default-branch GitHub contents probe. The settings

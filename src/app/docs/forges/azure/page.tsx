@@ -99,7 +99,7 @@ postil review --forge azure --repo organization/project/repository --pr 7`}</cod
           silently doing nothing.
         </li>
         <li>
-          The hosted Postil app is GitHub-only today; on Azure DevOps you run
+          The hosted Postil app is GitHub-only; on Azure DevOps you run
           the CLI in your own pipeline.
         </li>
         <li>

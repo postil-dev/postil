@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import { useActionState, useRef, useState, useTransition } from "react";
 
 import {
   saveOrgConfigFallbacks,
@@ -152,8 +152,6 @@ function AutoSaveToggle({
   );
 }
 
-const CONFIG_FALLBACKS_SAVE_DEBOUNCE_MS = 1200;
-
 export function SettingsForm({
   slug,
   settings,
@@ -183,49 +181,50 @@ export function SettingsForm({
   const [guardrailsMd, setGuardrailsMd] = useState(settings?.guardrailsMd ?? "");
   const [contentPolicyMd, setContentPolicyMd] = useState(settings?.contentPolicyMd ?? "");
   const [fallbacksStatus, setFallbacksStatus] = useState<SaveStatus>({ state: "idle" });
-  const fallbacksDirty = useRef(false);
   const fallbacksSequence = useRef(0);
   const fallbacksChain = useRef<Promise<void>>(Promise.resolve());
   const [, startFallbacksTransition] = useTransition();
 
-  // Debounced save for the fallback texts. Only edits mark the state dirty, so
-  // the initial render never saves; the server rejects invalid YAML and the
-  // error stays on screen until the next edit resolves it. Saves chain so an
-  // older payload can never land after a newer one, and only the latest save
-  // sends or reports.
-  useEffect(() => {
-    if (!fallbacksDirty.current) return;
-    const timer = setTimeout(() => {
-      const sequence = ++fallbacksSequence.current;
-      setFallbacksStatus({ state: "saving" });
-      startFallbacksTransition(async () => {
-        fallbacksChain.current = fallbacksChain.current.then(async () => {
+  const queueFallbackSave = (values: {
+    configYaml: string;
+    guardrailsMd: string;
+    contentPolicyMd: string;
+  }) => {
+    const sequence = ++fallbacksSequence.current;
+    setFallbacksStatus({ state: "saving" });
+    startFallbacksTransition(async () => {
+      fallbacksChain.current = fallbacksChain.current.then(async () => {
+        if (sequence !== fallbacksSequence.current) return;
+        const form = new FormData();
+        form.set("slug", slug);
+        form.set("configYaml", values.configYaml);
+        form.set("guardrailsMd", values.guardrailsMd);
+        form.set("contentPolicyMd", values.contentPolicyMd);
+        try {
+          const result = await saveOrgConfigFallbacks(null, form);
           if (sequence !== fallbacksSequence.current) return;
-          const form = new FormData();
-          form.set("slug", slug);
-          form.set("configYaml", configYaml);
-          form.set("guardrailsMd", guardrailsMd);
-          form.set("contentPolicyMd", contentPolicyMd);
-          try {
-            const result = await saveOrgConfigFallbacks(null, form);
-            if (sequence !== fallbacksSequence.current) return;
-            setFallbacksStatus(
-              result.status === "error"
-                ? { state: "error", message: result.message }
-                : { state: "saved", message: "Saved." },
-            );
-          } catch {
-            if (sequence !== fallbacksSequence.current) return;
-            setFallbacksStatus({ state: "error", message: "Could not save. Try again." });
-          }
-        });
-        await fallbacksChain.current;
+          setFallbacksStatus(
+            result.status === "error"
+              ? { state: "error", message: result.message }
+              : { state: "saved", message: "Saved." },
+          );
+        } catch {
+          if (sequence !== fallbacksSequence.current) return;
+          setFallbacksStatus({ state: "error", message: "Could not save. Try again." });
+        }
       });
-    }, CONFIG_FALLBACKS_SAVE_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [slug, configYaml, guardrailsMd, contentPolicyMd]);
-  const editFallback = (setter: (value: string) => void) => (value: string) => {
-    fallbacksDirty.current = true;
+      await fallbacksChain.current;
+    });
+  };
+  const editFallback = (
+    field: "configYaml" | "guardrailsMd" | "contentPolicyMd",
+    setter: (value: string) => void,
+  ) => (value: string) => {
+    queueFallbackSave({
+      configYaml: field === "configYaml" ? value : configYaml,
+      guardrailsMd: field === "guardrailsMd" ? value : guardrailsMd,
+      contentPolicyMd: field === "contentPolicyMd" ? value : contentPolicyMd,
+    });
     setter(value);
   };
 
@@ -546,12 +545,17 @@ export function SettingsForm({
           Sets review, gate, and integration options for repositories without a root
           Postil config file. Hosted model selection is managed by Postil.
         </span>
-        <ConfigYamlEditor value={configYaml} onChange={editFallback(setConfigYaml)} />
+        <ConfigYamlEditor
+          value={configYaml}
+          onChange={editFallback("configYaml", setConfigYaml)}
+        />
         <textarea
           name="configYaml"
           aria-label=".postil.yaml source"
           value={configYaml}
-          onChange={(event) => editFallback(setConfigYaml)(event.target.value)}
+          onChange={(event) =>
+            editFallback("configYaml", setConfigYaml)(event.target.value)
+          }
           placeholder={"review:\n  minConfidence: 0.8"}
           spellCheck={false}
           className={textareaClass}
@@ -565,7 +569,9 @@ export function SettingsForm({
         <textarea
           name="guardrailsMd"
           value={guardrailsMd}
-          onChange={(event) => editFallback(setGuardrailsMd)(event.target.value)}
+          onChange={(event) =>
+            editFallback("guardrailsMd", setGuardrailsMd)(event.target.value)
+          }
           placeholder="No new production dependencies without approval."
           spellCheck={false}
           className={textareaClass}
@@ -579,7 +585,9 @@ export function SettingsForm({
         <textarea
           name="contentPolicyMd"
           value={contentPolicyMd}
-          onChange={(event) => editFallback(setContentPolicyMd)(event.target.value)}
+          onChange={(event) =>
+            editFallback("contentPolicyMd", setContentPolicyMd)(event.target.value)
+          }
           placeholder="Avoid unsupported performance claims."
           spellCheck={false}
           className={textareaClass}

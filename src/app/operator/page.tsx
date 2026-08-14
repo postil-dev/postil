@@ -7,7 +7,7 @@ import {
   GateBadge,
   ReviewStatusBadge,
 } from "@/components/review-status";
-import { envelopeSchema, type Finding } from "@/lib/envelope";
+import { parseStoredEnvelope, type Finding } from "@/lib/envelope";
 import { sortFindingsForDisplay } from "@/lib/findings";
 import { githubFindingLocationUrl, githubPrUrl } from "@/lib/github-links";
 import { requireOperatorAccess } from "@/lib/operator-access";
@@ -371,9 +371,8 @@ function checkRunUrl(repoFullName: string, checkRunId: number): string {
 }
 
 function ReviewContent({ review }: { review: OperatorReviewRow }) {
-  const parsedEnvelope = review.envelope ? envelopeSchema.safeParse(review.envelope) : null;
-  const envelope = parsedEnvelope?.success ? parsedEnvelope.data : null;
-  const envelopeInvalid = parsedEnvelope !== null && !parsedEnvelope.success;
+  const envelope = review.envelope ? parseStoredEnvelope(review.envelope) : null;
+  const envelopeInvalid = review.envelope !== null && envelope === null;
   const findings = envelope ? sortFindingsForDisplay(envelope.findings) : [];
   const resolved = envelope ? sortFindingsForDisplay(envelope.resolved) : [];
   const summary = envelope?.summary.trim() ?? "";

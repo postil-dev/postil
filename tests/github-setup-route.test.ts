@@ -14,14 +14,14 @@ describe("GET /api/github/setup", () => {
 
     const response = await GET(
       new Request(
-        "https://internal:3000/api/github/setup?installation_id=146332124&setup_action=install",
+        "https://internal:3000/api/github/setup?installation_id=42424242&setup_action=install",
       ),
     );
 
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("https://postil.dev/api/auth/login");
     expect(response.headers.get("set-cookie")).toContain(
-      "postil_setup_installation=146332124",
+      "postil_setup_installation=42424242",
     );
     expect(response.headers.get("set-cookie")).toContain("HttpOnly");
     expect(response.headers.get("set-cookie")).toContain("SameSite=lax");
@@ -32,7 +32,7 @@ describe("GET /api/github/setup", () => {
 
     const response = await GET(
       new Request(
-        "https://internal:3000/api/github/setup?installation_id=146332124&setup_action=update",
+        "https://internal:3000/api/github/setup?installation_id=42424242&setup_action=update",
       ),
     );
 

@@ -5,7 +5,9 @@ import { join } from "node:path";
 
 import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import {
+  assertOneFindingPerGithubComment,
   readPublicationReceipt,
+  resolveFindingPublicationBinding,
   validateReceiptAgainstEnvelope,
 } from "@/lib/publication-receipt";
 import type { Envelope, Finding } from "@/lib/envelope";
@@ -248,6 +250,38 @@ describe("publication receipt contract", () => {
     expect(receipt.findings[0]?.commentId).toBe("8003");
   });
 
+  test("rejects a GitHub comment identity reused across receipt findings", async () => {
+    const duplicateCommentReceipt = {
+      version: 1 as const,
+      receiptId: "github-review-v1:duplicate-comment",
+      findings: [
+        {
+          findingId: "first-id",
+          stableIdentity: true,
+          initialOutcome: "inline" as const,
+          inlineRejected: false,
+          commentId: "8111",
+        },
+        {
+          findingId: "second-id",
+          stableIdentity: true,
+          initialOutcome: "inline" as const,
+          inlineRejected: false,
+          commentId: "8111",
+        },
+      ],
+    };
+    await expect(
+      readPublicationReceipt(await receiptFile(duplicateCommentReceipt)),
+    ).rejects.toThrow("duplicate GitHub comment identity");
+    expect(() =>
+      validateReceiptAgainstEnvelope(
+        duplicateCommentReceipt,
+        envelope(["first-id", "second-id"]),
+      )
+    ).toThrow("belongs to multiple findings");
+  });
+
   test("rejects public receipt permissions and cross-envelope identities", async () => {
     const path = await receiptFile({
       version: 1,
@@ -264,10 +298,56 @@ describe("publication receipt contract", () => {
   });
 });
 
+describe("GitHub publication reply bindings", () => {
+  test("uses the newest row when one finding legitimately reuses a comment", () => {
+    const newest = {
+      findingId: "reused-finding",
+      githubCommentId: "8222",
+      reviewId: 22,
+    };
+    expect(
+      resolveFindingPublicationBinding([
+        newest,
+        {
+          findingId: "reused-finding",
+          githubCommentId: "8222",
+          reviewId: 21,
+        },
+      ]),
+    ).toBe(newest);
+  });
+
+  test("fails closed when duplicate reply rows bind one comment to two findings", () => {
+    const duplicateBindings = [
+      { findingId: "first-finding", githubCommentId: "8333" },
+      { findingId: "second-finding", githubCommentId: "8333" },
+    ];
+    expect(() => resolveFindingPublicationBinding(duplicateBindings)).toThrow(
+      "belongs to multiple findings",
+    );
+    expect(() => assertOneFindingPerGithubComment(duplicateBindings)).toThrow(
+      "belongs to multiple findings",
+    );
+  });
+});
+
 describe("GitHub publication thread observations", () => {
   test("uses thread flags and absence, not replies or review dismissal", async () => {
-    globalThis.fetch = (async () =>
-      new Response(
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/collaborators/maintainer/permission")) {
+        return new Response(JSON.stringify({
+          permission: "write",
+          user: { id: 501, login: "maintainer" },
+        }));
+      }
+      if (url.includes("/collaborators/reader/permission")) {
+        return new Response(JSON.stringify({
+          permission: "read",
+          user: { id: 502, login: "reader" },
+        }));
+      }
+      return new Response(
         JSON.stringify({
           data: {
             repository: {
@@ -278,8 +358,29 @@ describe("GitHub publication thread observations", () => {
                       id: "thread-11",
                       isResolved: true,
                       isOutdated: false,
+                      resolvedBy: { databaseId: 501, login: "maintainer" },
                       comments: {
                         nodes: [{ databaseId: 11 }, { databaseId: 91 }],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+                    },
+                    {
+                      id: "thread-15",
+                      isResolved: true,
+                      isOutdated: false,
+                      resolvedBy: { databaseId: 502, login: "reader" },
+                      comments: {
+                        nodes: [{ databaseId: 15 }],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+                    },
+                    {
+                      id: "thread-unrelated",
+                      isResolved: true,
+                      isOutdated: false,
+                      resolvedBy: { databaseId: 599, login: "unrelated" },
+                      comments: {
+                        nodes: [{ databaseId: 99 }],
                         pageInfo: { hasNextPage: false, endCursor: null },
                       },
                     },
@@ -309,21 +410,35 @@ describe("GitHub publication thread observations", () => {
           },
         }),
         { status: 200 },
-      )) as unknown as typeof fetch;
+      );
+    }) as unknown as typeof fetch;
 
     expect(
-      await observeGitHubReviewThreads("token", "owner/repo", 4, ["11", "12", "13", "14"]),
+      await observeGitHubReviewThreads("token", "owner/repo", 4, ["11", "12", "13", "14", "15"]),
     ).toEqual([
-      { githubCommentId: "11", state: "resolved" },
+      {
+        githubCommentId: "11",
+        state: "resolved",
+        resolutionAuthorized: true,
+        resolvedByGithubId: 501,
+        resolvedByLogin: "maintainer",
+      },
       { githubCommentId: "12", state: "outdated" },
       { githubCommentId: "13", state: "inline" },
       { githubCommentId: "14", state: "deleted" },
+      { githubCommentId: "15", state: "resolved", resolutionAuthorized: false },
     ]);
   });
 
   test("paginates comments within a review thread before classifying absence", async () => {
     const requests: Array<Record<string, unknown>> = [];
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(_input).includes("/collaborators/maintainer/permission")) {
+        return new Response(JSON.stringify({
+          permission: "admin",
+          user: { id: 501, login: "maintainer" },
+        }));
+      }
       const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
       requests.push(request);
       if (requests.length === 1) {
@@ -336,6 +451,7 @@ describe("GitHub publication thread observations", () => {
                     id: "thread-paged",
                     isResolved: true,
                     isOutdated: false,
+                    resolvedBy: { databaseId: 501, login: "maintainer" },
                     comments: {
                       nodes: [{ databaseId: 91 }],
                       pageInfo: { hasNextPage: true, endCursor: "comment-page-2" },
@@ -361,7 +477,13 @@ describe("GitHub publication thread observations", () => {
     }) as unknown as typeof fetch;
 
     expect(await observeGitHubReviewThreads("token", "owner/repo", 4, ["11"])).toEqual([
-      { githubCommentId: "11", state: "resolved" },
+      {
+        githubCommentId: "11",
+        state: "resolved",
+        resolutionAuthorized: true,
+        resolvedByGithubId: 501,
+        resolvedByLogin: "maintainer",
+      },
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[1]?.variables).toEqual({

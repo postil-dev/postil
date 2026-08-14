@@ -8,10 +8,43 @@ import { ReviewTriggerBadge } from "@/components/review-trigger-badge";
 import { githubPrUrl } from "@/lib/github-links";
 import type { OrgReviewRow } from "@/lib/org-reviews";
 import { reviewTriggerLabel, reviewTriggerSearchTerms } from "@/lib/review-trigger";
+import { boundedRetryAfterDelayMs } from "@/lib/auth-navigation";
 import { formatAbsoluteTimestamp, formatRelativeTime } from "@/lib/time";
 
 const POLL_INTERVAL_MS = 5_000;
 const CLOCK_INTERVAL_MS = 1_000;
+
+interface ReviewPollActions {
+  replaceReviews: (reviews: OrgReviewRow[]) => void;
+  reload: () => void;
+  schedule: (delayMs: number) => void;
+  stopped: () => boolean;
+}
+
+export async function handleReviewPollResponse(
+  response: Response,
+  actions: ReviewPollActions,
+): Promise<void> {
+  if (response.status === 401 || response.status === 404) {
+    if (!actions.stopped()) actions.reload();
+    return;
+  }
+
+  let nextPollDelayMs = POLL_INTERVAL_MS;
+  if (response.ok) {
+    const nextReviews: unknown = await response.json();
+    if (!actions.stopped() && Array.isArray(nextReviews)) {
+      actions.replaceReviews(nextReviews as OrgReviewRow[]);
+    }
+  } else if (response.status === 503) {
+    nextPollDelayMs = boundedRetryAfterDelayMs(
+      response.headers,
+      POLL_INTERVAL_MS,
+    );
+  }
+
+  if (!actions.stopped()) actions.schedule(nextPollDelayMs);
+}
 
 const FILTERS = ["all", "running", "failed", "unavailable", "gate-failing"] as const;
 type QuickFilter = (typeof FILTERS)[number];
@@ -115,31 +148,30 @@ export function ReviewsTable({
     let timeout: number | undefined;
     let controller: AbortController | undefined;
 
+    const schedule = (delayMs: number) => {
+      if (!stopped) timeout = window.setTimeout(refresh, delayMs);
+    };
+
     const refresh = async () => {
-      let nextPollDelayMs = POLL_INTERVAL_MS;
       controller = new AbortController();
       try {
         const response = await fetch(`/api/orgs/${encodeURIComponent(orgSlug)}/reviews?limit=50`, {
           cache: "no-store",
           signal: controller.signal,
         });
-        if (response.ok) {
-          const nextReviews = (await response.json()) as OrgReviewRow[];
-          if (!stopped && Array.isArray(nextReviews)) setReviews(nextReviews);
-        } else if (response.status === 503) {
-          const retryAfterSeconds = Number(response.headers.get("retry-after"));
-          if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
-            nextPollDelayMs = Math.min(retryAfterSeconds * 1000, 60_000);
-          }
-        }
+        await handleReviewPollResponse(response, {
+          replaceReviews: setReviews,
+          reload: () => window.location.reload(),
+          schedule,
+          stopped: () => stopped,
+        });
       } catch {
         // A transient refresh failure leaves the last known rows in place.
-      } finally {
-        if (!stopped) timeout = window.setTimeout(refresh, nextPollDelayMs);
+        schedule(POLL_INTERVAL_MS);
       }
     };
 
-    timeout = window.setTimeout(refresh, POLL_INTERVAL_MS);
+    schedule(POLL_INTERVAL_MS);
     return () => {
       stopped = true;
       if (timeout) window.clearTimeout(timeout);
@@ -199,7 +231,7 @@ export function ReviewsTable({
                 <th className="px-4 py-3 font-normal">trigger</th>
                 <th className="px-4 py-3 font-normal">status</th>
                 <th className="px-4 py-3 font-normal">gate</th>
-                <th className="px-4 py-3 font-normal">findings</th>
+                <th className="px-4 py-3 font-normal">active findings</th>
                 <th className="px-4 py-3 font-normal">model</th>
                 <th className="px-4 py-3 font-normal">started</th>
                 <th className="px-4 py-3 font-normal">duration</th>

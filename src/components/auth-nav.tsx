@@ -8,6 +8,7 @@ import {
   MobileNav,
   type NavItem,
 } from "@/components/mobile-nav";
+import { scheduleRetryAfter } from "@/lib/auth-navigation";
 
 export interface AuthSession {
   login: string;
@@ -32,8 +33,13 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
   useEffect(() => {
     let cancelled = false;
     let requestId = 0;
+    let retryTimer: number | undefined;
 
     function loadSession() {
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
       const activeRequest = ++requestId;
       fetch("/api/auth/session", { cache: "no-store" })
         .then(async (res) => {
@@ -46,6 +52,14 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
             // A temporary verification or network failure is not evidence that
             // the visitor signed out. Retain the neutral loading state rather
             // than flashing anonymous actions into an authenticated shell.
+            if (res.status === 503) {
+              retryTimer = scheduleRetryAfter(
+                res.headers,
+                loadSession,
+                5_000,
+                (callback, delayMs) => window.setTimeout(callback, delayMs),
+              );
+            }
             return;
           }
           const data = (await res.json()) as Partial<AuthSession>;
@@ -60,7 +74,15 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
               : undefined,
           );
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (cancelled || activeRequest !== requestId) return;
+          retryTimer = scheduleRetryAfter(
+            new Headers(),
+            loadSession,
+            5_000,
+            (callback, delayMs) => window.setTimeout(callback, delayMs),
+          );
+        });
     }
 
     function refreshRestoredPage(event: PageTransitionEvent) {
@@ -73,6 +95,7 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
     window.addEventListener("pageshow", refreshRestoredPage);
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       window.removeEventListener("pageshow", refreshRestoredPage);
     };
   }, []);

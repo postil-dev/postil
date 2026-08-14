@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
 import * as schema from "@/lib/db/schema";
+import { GateBadge, ReviewStatusBadge } from "@/components/review-status";
 import type { Envelope, Finding } from "@/lib/envelope";
 import { getOrgReviewRows } from "@/lib/org-reviews";
 import {
@@ -18,6 +20,8 @@ import {
   persistReviewCompletionWithGateMode,
   stageReviewCompletionCandidate,
 } from "@/lib/review-completion";
+import { QUEUE_LOCK_GENERATION_CAPABILITY } from "@/lib/release-job-rollout";
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
@@ -72,14 +76,51 @@ function envelope(input: {
   };
 }
 
+function operationalEnvelope(head: string): Envelope {
+  return {
+    ...envelope({ head }),
+    summary: "No reviewer verdict exists because execution failed.",
+    silent: false,
+    findings: [
+      {
+        id: `operational-${head.slice(0, 8)}`,
+        path: ".postil/provider",
+        line: 1,
+        severity: "error",
+        kind: "uncertainty",
+        confidence: 1,
+        title: "Review provider unavailable",
+        body: "The review provider did not return a usable result.",
+      },
+    ],
+    counts: {
+      info: 0,
+      warn: 0,
+      error: 1,
+      suppressed: 0,
+      ungrounded: 0,
+    },
+    confidenceBuckets: [0, 0, 0, 0, 1],
+    gate: { failOn: "error", failing: true },
+  };
+}
+
 describeDb("publication receipt migration and lifecycle", () => {
-  const pool = new Pool({ connectionString: TEST_URL, max: 2 });
-  const db = drizzle(pool, { schema });
+  let database: EphemeralDatabase;
+  let pool: Pool;
+  let db: ReturnType<typeof drizzle<typeof schema>>;
   let orgId = 0;
+  let sourceInstallationId = 0;
   let repositoryId = 0;
   const reviewIds: number[] = [];
+  let firstPublicationReviewId = 0;
+  let secondPublicationReviewId = 0;
 
-  async function createRunningReview(headSha: string, sinceSha: string | null = null) {
+  async function createRunningReview(
+    headSha: string,
+    sinceSha: string | null = null,
+    trackForLifecycleAssertions = true,
+  ) {
     const result = await pool.query<{ id: string }>(
       `INSERT INTO reviews
         (repository_id, pr_number, head_sha, base_sha, since_sha, status, trigger_source, queued_at, started_at)
@@ -88,7 +129,7 @@ describeDb("publication receipt migration and lifecycle", () => {
       [repositoryId, headSha, "a".repeat(40), sinceSha],
     );
     const id = Number(result.rows[0]!.id);
-    reviewIds.push(id);
+    if (trackForLifecycleAssertions) reviewIds.push(id);
     return id;
   }
 
@@ -122,17 +163,15 @@ describeDb("publication receipt migration and lifecycle", () => {
   }
 
   beforeAll(async () => {
-    await pool.query("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public");
-    const migrationDirectory = join(import.meta.dir, "..", "drizzle");
-    const migrations = (await readdir(migrationDirectory))
-      .filter((file) => file.endsWith(".sql"))
-      .sort();
-    for (const migration of migrations) {
-      const source = await readFile(join(migrationDirectory, migration), "utf8");
-      for (const statement of source.split("--> statement-breakpoint")) {
-        if (statement.trim()) await pool.query(statement);
-      }
-    }
+    database = await createEphemeralDatabase("publication_receipt");
+    pool = database.pool;
+    db = drizzle(pool, { schema });
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
     const organization = await pool.query<{ id: string }>(
       "INSERT INTO organizations (slug, name, github_org_id) VALUES ('publication', 'Publication', 1001) RETURNING id",
     );
@@ -148,6 +187,7 @@ describeDb("publication receipt migration and lifecycle", () => {
        RETURNING id`,
       [orgId],
     );
+    sourceInstallationId = Number(installation.rows[0]!.id);
     const repository = await pool.query<{ id: string }>(
       `INSERT INTO repositories
         (github_repo_id, installation_id, full_name, private, enabled)
@@ -159,11 +199,22 @@ describeDb("publication receipt migration and lifecycle", () => {
   }, 30_000);
 
   afterAll(async () => {
-    await pool.end();
-      }, orgId);
+    await database?.drop();
+  }, 30_000);
 
   test("resumes a staged terminal publication after worker interruption without duplicates", async () => {
     const reviewEnvelope = envelope({ head: "9".repeat(40) });
+    const expectedReviewInput = {
+      installationId: 1002,
+      sourceInstallationId,
+      sourceOrgId: orgId,
+      githubRepoId: 1003,
+      repoFullName: "publication/repo",
+      prNumber: 70,
+      headSha: reviewEnvelope.headSha!,
+      baseSha: "a".repeat(40),
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:05.000Z",
+    };
     const review = await pool.query<{ id: string }>(
       `INSERT INTO reviews
         (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at, started_at)
@@ -172,12 +223,39 @@ describeDb("publication receipt migration and lifecycle", () => {
       [repositoryId, reviewEnvelope.headSha!, "a".repeat(40)],
     );
     const reviewId = Number(review.rows[0]!.id);
-    const job = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (kind, payload, status, locked_at, locked_by)
-       VALUES ('review', '{"repoFullName":"publication/repo","prNumber":7}', 'running', now(), 'worker-before-restart')
-       RETURNING id`,
+    const job = await pool.query<{
+      id: string;
+      locked_by: string;
+      lock_generation: string;
+      payload: typeof expectedReviewInput & { reviewInputSequence: string };
+    }>(
+      `INSERT INTO jobs
+         (kind, payload, status, locked_at, locked_by, lock_generation)
+       VALUES
+         ('review', $1, 'running', now(), 'worker-before-restart', 1)
+       RETURNING id, locked_by, lock_generation::text, payload`,
+      [JSON.stringify(expectedReviewInput)],
     );
     const reviewJobId = Number(job.rows[0]!.id);
+    const reviewJobLease = {
+      id: reviewJobId,
+      lockedBy: job.rows[0]!.locked_by,
+      lockGeneration: BigInt(job.rows[0]!.lock_generation),
+    };
+    const staleCleanup = {
+      reviewId,
+      installationId: 1002,
+      repoFullName: "publication/repo",
+      advisoryCheckRunId: null,
+      gateCheckRunId: null,
+      headSha: reviewEnvelope.headSha!,
+      advisoryCheckExternalId: `postil:${reviewId}:review`,
+      gateCheckExternalId: `postil:${reviewId}:gate`,
+      advisoryCheckRunMayExist: false,
+      gateCheckRunMayExist: false,
+      message: "superseded during publication verification",
+      intent: "neutralize" as const,
+    };
     const usage = [
       {
         orgId,
@@ -195,7 +273,7 @@ describeDb("publication receipt migration and lifecycle", () => {
         db,
         {
           reviewId,
-          reviewJobId,
+          reviewJobLease,
           envelope: reviewEnvelope,
           configFiles: [],
           silent: true,
@@ -238,14 +316,28 @@ describeDb("publication receipt migration and lifecycle", () => {
     expect(
       await finalizeStagedReviewCompletionWithGateMode(
         db,
-        { reviewId, usage, usageAccountingComplete: true },
+        {
+          reviewId,
+          usage,
+          usageAccountingComplete: true,
+          reviewJobLease,
+          expectedReviewInput: job.rows[0]!.payload,
+          staleCleanup,
+        },
         orgId,
       ),
     ).toMatchObject({ completed: true });
     expect(
       await finalizeStagedReviewCompletionWithGateMode(
         db,
-        { reviewId, usage, usageAccountingComplete: true },
+        {
+          reviewId,
+          usage,
+          usageAccountingComplete: true,
+          reviewJobLease,
+          expectedReviewInput: job.rows[0]!.payload,
+          staleCleanup,
+        },
         orgId,
       ),
     ).toMatchObject({ completed: false });
@@ -271,8 +363,257 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
   });
 
+  test("staging rejects an immediate same-owner stale generation atomically", async () => {
+    const reviewEnvelope = envelope({ head: "8".repeat(40) });
+    const reviewId = await createRunningReview(reviewEnvelope.headSha!);
+    const job = await pool.query<{
+      id: string;
+      locked_at: Date;
+      locked_by: string;
+      lock_generation: string;
+    }>(
+      `INSERT INTO jobs
+         (kind, payload, status, locked_at, locked_by, lock_generation)
+       VALUES
+         ('review', '{"repoFullName":"publication/repo","prNumber":8}',
+          'running', clock_timestamp(), 'reused-completion-worker', 1)
+       RETURNING id, locked_at, locked_by, lock_generation::text`,
+    );
+    const jobId = Number(job.rows[0]!.id);
+    const staleLease = {
+      id: jobId,
+      lockedBy: job.rows[0]!.locked_by,
+      lockGeneration: BigInt(job.rows[0]!.lock_generation),
+    };
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'queued', locked_at = NULL, locked_by = NULL
+        WHERE id = $1`,
+      [jobId],
+    );
+    const reclaimed = await pool.query<{ lock_generation: string }>(
+      `UPDATE jobs
+          SET status = 'running', locked_by = $2, locked_at = $3,
+              lock_generation = lock_generation + 1
+        WHERE id = $1
+        RETURNING lock_generation::text`,
+      [jobId, staleLease.lockedBy, job.rows[0]!.locked_at],
+    );
+    const currentLease = {
+      ...staleLease,
+      lockGeneration: BigInt(reclaimed.rows[0]!.lock_generation),
+    };
+    const stagedInput = {
+      reviewId,
+      envelope: reviewEnvelope,
+      configFiles: [],
+      silent: true,
+      gateFailing: false,
+      publicationReceipt: {
+        version: 1 as const,
+        receiptId: "github-review-v1:exact-completion-lease",
+        findings: [],
+      },
+    };
+
+    expect(
+      await stageReviewCompletionCandidate(
+        db,
+        { ...stagedInput, reviewJobLease: staleLease },
+        orgId,
+      ),
+    ).toMatchObject({ staged: false, completed: false });
+    const rejected = await pool.query<{
+      has_envelope: boolean;
+      recovery_review_id: string | null;
+      receipts: string;
+    }>(
+      `SELECT review.envelope IS NOT NULL AS has_envelope,
+              job.payload->>'recoveryReviewId' AS recovery_review_id,
+              (SELECT count(*)::text
+                 FROM review_publication_receipts receipt
+                WHERE receipt.review_id = review.id) AS receipts
+         FROM reviews review
+         JOIN jobs job ON job.id = $2
+        WHERE review.id = $1`,
+      [reviewId, jobId],
+    );
+    expect(rejected.rows[0]).toEqual({
+      has_envelope: false,
+      recovery_review_id: null,
+      receipts: "0",
+    });
+
+    expect(
+      await stageReviewCompletionCandidate(
+        db,
+        { ...stagedInput, reviewJobLease: currentLease },
+        orgId,
+      ),
+    ).toMatchObject({ staged: true, completed: false });
+  });
+
+  test("operational envelopes retain diagnostics but render failed with a policy-sensitive gate", async () => {
+    try {
+      for (const gateEnabled of [true, false]) {
+        await pool.query(
+          "UPDATE org_settings SET gate_enabled = $2 WHERE org_id = $1",
+          [orgId, gateEnabled],
+        );
+        const reviewEnvelope = operationalEnvelope(
+          (gateEnabled ? "d" : "e").repeat(40),
+        );
+        const reviewId = await createRunningReview(
+          reviewEnvelope.headSha,
+          null,
+          false,
+        );
+        const expectedReviewInput = {
+          installationId: 1002,
+          sourceInstallationId,
+          sourceOrgId: orgId,
+          githubRepoId: 1003,
+          repoFullName: "publication/repo",
+          prNumber: 7,
+          headSha: reviewEnvelope.headSha!,
+          baseSha: "a".repeat(40),
+          expectedPullRequestUpdatedAt: "2026-08-10T00:00:05.000Z",
+        };
+        const job = await pool.query<{
+          id: string;
+          locked_by: string;
+          lock_generation: string;
+          payload: typeof expectedReviewInput & { reviewInputSequence: string };
+        }>(
+          `INSERT INTO jobs
+             (kind, payload, status, locked_at, locked_by, lock_generation)
+           VALUES ('review', $1, 'running', now(), 'operational-test-worker', 1)
+           RETURNING id, locked_by, lock_generation::text, payload`,
+          [JSON.stringify(expectedReviewInput)],
+        );
+        const reviewJobLease = {
+          id: Number(job.rows[0]!.id),
+          lockedBy: job.rows[0]!.locked_by,
+          lockGeneration: BigInt(job.rows[0]!.lock_generation),
+        };
+        const staleCleanup = {
+          reviewId,
+          installationId: 1002,
+          repoFullName: "publication/repo",
+          advisoryCheckRunId: null,
+          gateCheckRunId: null,
+          headSha: reviewEnvelope.headSha!,
+          advisoryCheckExternalId: `postil:${reviewId}:review`,
+          gateCheckExternalId: `postil:${reviewId}:gate`,
+          advisoryCheckRunMayExist: false,
+          gateCheckRunMayExist: false,
+          message: "superseded during publication verification",
+          intent: "neutralize" as const,
+        };
+        expect(
+          await stageReviewCompletionCandidate(
+            db,
+            {
+              reviewId,
+              reviewJobLease,
+              envelope: reviewEnvelope,
+              configFiles: [],
+              silent: false,
+              gateFailing: true,
+            },
+            orgId,
+          ),
+        ).toMatchObject({ staged: true });
+        expect(
+          await finalizeStagedReviewCompletionWithGateMode(
+            db,
+            {
+              reviewId,
+              reviewJobLease,
+              expectedReviewInput: job.rows[0]!.payload,
+              staleCleanup,
+              usageAccountingComplete: true,
+              terminalStatus: "failed",
+              errorMessage: "Review execution did not produce a reviewer verdict.",
+              usage: [
+                {
+                  orgId,
+                  repositoryId,
+                  promptTokens: 1,
+                  completionTokens: 1,
+                  modelUsed: "test/model",
+                  costMicros: 0,
+                  billingScope: "analytics",
+                },
+              ],
+            },
+            orgId,
+          ),
+        ).toMatchObject({
+          completed: true,
+          gateEnabled,
+          gateFailing: gateEnabled,
+        });
+
+        const persisted = await pool.query<{
+          status: string;
+          error_message: string | null;
+          has_envelope: boolean;
+          usage: number;
+          gate_failing: boolean;
+        }>(
+          `SELECT status, error_message, envelope IS NOT NULL AS has_envelope,
+                  gate_failing,
+                  (SELECT count(*)::int FROM usage_events WHERE review_id = reviews.id) AS usage
+             FROM reviews WHERE id = $1`,
+          [reviewId],
+        );
+        expect(persisted.rows[0]).toEqual({
+          status: "failed",
+          error_message: "Review execution did not produce a reviewer verdict.",
+          has_envelope: true,
+          usage: 1,
+          gate_failing: gateEnabled,
+        });
+
+        const row = (await getOrgReviewRows(db, orgId, 20)).find(
+          (entry) => entry.id === reviewId,
+        );
+        expect(row).toMatchObject({ status: "failed", gateFailing: gateEnabled });
+        const reviewMarkup = renderToStaticMarkup(
+          createElement(ReviewStatusBadge, {
+            status: row!.status,
+            gateFailing: row!.gateFailing,
+          }),
+        );
+        const gateMarkup = renderToStaticMarkup(
+          createElement(GateBadge, {
+            status: row!.status,
+            gateFailing: row!.gateFailing,
+          }),
+        );
+        expect(reviewMarkup).toContain("failed");
+        expect(reviewMarkup).not.toContain("/status/pass.svg");
+        if (gateEnabled) {
+          expect(gateMarkup).toContain("failing");
+          expect(gateMarkup).toContain("/status/error.svg");
+        } else {
+          expect(gateMarkup).toContain("neutral");
+          expect(gateMarkup).toContain("/status/info.svg");
+        }
+        expect(gateMarkup).not.toContain("passing");
+      }
+    } finally {
+      await pool.query(
+        "UPDATE org_settings SET gate_enabled = true WHERE org_id = $1",
+        [orgId],
+      );
+    }
+  });
+
   test("persists exact initial channels and reconciles later carried and resolved states", async () => {
     const firstId = await createRunningReview("b".repeat(40));
+    firstPublicationReviewId = firstId;
     await complete(
       firstId,
       envelope({
@@ -302,6 +643,7 @@ describeDb("publication receipt migration and lifecycle", () => {
     );
 
     const secondId = await createRunningReview("c".repeat(40), "b".repeat(40));
+    secondPublicationReviewId = secondId;
     await complete(
       secondId,
       envelope({
@@ -364,6 +706,98 @@ describeDb("publication receipt migration and lifecycle", () => {
     ).rejects.toThrow("immutable");
   });
 
+  test("reconciles same-finding comment reuse and rejects cross-finding reuse", async () => {
+    const firstReviewId = await createRunningReview("91".repeat(20), null, false);
+    const secondReviewId = await createRunningReview("92".repeat(20), null, false);
+    for (const reviewId of [firstReviewId, secondReviewId]) {
+      await pool.query(
+        `INSERT INTO finding_publications
+          (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+         VALUES ($1, 'reused-comment-finding', true, 'inline', 'inline', '8701')`,
+        [reviewId],
+      );
+    }
+
+    await applyPublicationThreadObservations(db, [
+      {
+        githubCommentId: "8701",
+        state: "resolved",
+        resolutionAuthorized: true,
+      },
+    ]);
+    expect(
+      (
+        await pool.query<{ review_id: string; current_state: string }>(
+          `SELECT review_id, current_state
+             FROM finding_publications
+            WHERE github_comment_id = '8701'
+            ORDER BY review_id`,
+        )
+      ).rows,
+    ).toEqual([
+      { review_id: String(firstReviewId), current_state: "resolved" },
+      { review_id: String(secondReviewId), current_state: "resolved" },
+    ]);
+    const dashboardRows = await getOrgReviewRows(db, orgId, 20);
+    expect(dashboardRows.find((row) => row.id === firstReviewId)).toMatchObject({
+      findingsCount: 0,
+    });
+    expect(dashboardRows.find((row) => row.id === secondReviewId)).toMatchObject({
+      findingsCount: 0,
+    });
+
+    await expect(
+      applyPublicationThreadObservations(db, [
+        { githubCommentId: "8701", state: "outdated" },
+        { githubCommentId: "8701", state: "deleted" },
+      ]),
+    ).rejects.toThrow("conflicting GitHub publication thread observations");
+
+    const conflictingReviewId = await createRunningReview(
+      "93".repeat(20),
+      null,
+      false,
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO finding_publications
+          (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+         VALUES ($1, 'different-finding', true, 'inline', 'inline', '8701')`,
+        [conflictingReviewId],
+      ),
+    ).rejects.toThrow(
+      "GitHub publication comment identity already belongs to another finding",
+    );
+  });
+
+  test("serializes concurrent cross-finding GitHub comment claims", async () => {
+    const firstReviewId = await createRunningReview("94".repeat(20), null, false);
+    const secondReviewId = await createRunningReview("95".repeat(20), null, false);
+    const claims = await Promise.allSettled([
+      pool.query(
+        `INSERT INTO finding_publications
+          (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+         VALUES ($1, 'concurrent-first', true, 'inline', 'inline', '8702')`,
+        [firstReviewId],
+      ),
+      pool.query(
+        `INSERT INTO finding_publications
+          (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+         VALUES ($1, 'concurrent-second', true, 'inline', 'inline', '8702')`,
+        [secondReviewId],
+      ),
+    ]);
+    expect(claims.filter((claim) => claim.status === "fulfilled")).toHaveLength(1);
+    expect(claims.filter((claim) => claim.status === "rejected")).toHaveLength(1);
+    expect(
+      (
+        await pool.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM finding_publications WHERE github_comment_id = '8702'",
+        )
+      ).rows[0]?.count,
+    ).toBe("1");
+  });
+
   test.each([".postil/provider", ".postil/model-output"])(
     "does not persist %s receipt entries as finding lifecycle rows",
     async (operationalPath) => {
@@ -409,7 +843,7 @@ describeDb("publication receipt migration and lifecycle", () => {
   );
 
   test("authoritative observations produce resolved, outdated, and deleted lifecycle states", async () => {
-    const firstId = reviewIds[0]!;
+    const firstId = firstPublicationReviewId;
     await applyPublicationThreadObservations(db, [
       { githubCommentId: "8001", state: "outdated" },
     ]);
@@ -422,7 +856,9 @@ describeDb("publication receipt migration and lifecycle", () => {
       ).rows[0]?.current_state,
     ).toBe("outdated");
     await applyPublicationThreadObservations(db, [
-      { githubCommentId: "8001", state: "resolved" },
+      { githubCommentId: "8001", state: "resolved", resolutionAuthorized: true },
+    ]);
+    await applyPublicationThreadObservations(db, [
       { githubCommentId: "8001", state: "deleted" },
     ]);
     expect(
@@ -433,6 +869,36 @@ describeDb("publication receipt migration and lifecycle", () => {
         )
       ).rows[0]?.current_state,
     ).toBe("deleted");
+  });
+
+  test("does not accept a resolution without current maintainer authority", async () => {
+    const reviewId = await createRunningReview("e".repeat(40));
+    await complete(
+      reviewId,
+      envelope({ head: "e".repeat(40), findings: [finding("untrusted-resolution")] }),
+      {
+        version: 1,
+        receiptId: "forge-review-v1:untrusted-resolution",
+        findings: [{
+          findingId: "untrusted-resolution",
+          stableIdentity: true,
+          initialOutcome: "inline",
+          inlineRejected: false,
+          commentId: "8999",
+        }],
+      },
+    );
+    await applyPublicationThreadObservations(db, [
+      { githubCommentId: "8999", state: "resolved", resolutionAuthorized: false },
+    ]);
+    expect(
+      (
+        await pool.query<{ current_state: string }>(
+          "SELECT current_state FROM finding_publications WHERE review_id = $1 AND finding_id = 'untrusted-resolution'",
+          [reviewId],
+        )
+      ).rows[0]?.current_state,
+    ).toBe("inline");
   });
 
   test("records deployed CLI reviews as legacy unknown and dashboard counts use publication state", async () => {
@@ -448,7 +914,7 @@ describeDb("publication receipt migration and lifecycle", () => {
     expect(dashboardRows.find((row) => row.id === legacyId)).toMatchObject({
       findingsCount: null,
     });
-    expect(dashboardRows.find((row) => row.id === reviewIds[1])).toMatchObject({
+    expect(dashboardRows.find((row) => row.id === secondPublicationReviewId)).toMatchObject({
       findingsCount: 1,
     });
   });

@@ -2,8 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { drizzle } from "drizzle-orm/node-postgres";
+import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
 
 import {
   CUSTOMER_EMAIL_CLAIM_TIMEOUT_MS,
@@ -20,11 +25,16 @@ const describeDb = TEST_URL ? describe : describe.skip;
 const NOW = new Date("2026-07-21T12:00:00.000Z");
 
 describeDb("customer notification email delivery", () => {
-  const pool = new Pool({ connectionString: TEST_URL, max: 6 });
-  const db = drizzle(pool, { schema });
+  let database: EphemeralDatabase;
+  let pool: Pool;
+  let db: NodePgDatabase<typeof schema>;
 
   beforeAll(async () => {
-    await pool.query("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public");
+    database = await createUnmigratedEphemeralDatabase("customer_notification_email", {
+      maxConnections: 6,
+    });
+    pool = database.pool;
+    db = drizzle(pool, { schema });
     const migrationDirectory = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationDirectory))
       .filter((file) => file.endsWith(".sql"))
@@ -44,7 +54,7 @@ describeDb("customer notification email delivery", () => {
   });
 
   afterAll(async () => {
-    await pool.end();
+    await database?.drop();
   });
 
   test("queues mandatory events immediately and delays one optional billing batch", async () => {

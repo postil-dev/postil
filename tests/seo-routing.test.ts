@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { NextRequest, type NextFetchEvent } from "next/server";
 
 import robots from "@/app/robots";
+import { PROTECTED_RETURN_TO_HEADER } from "@/lib/auth-navigation";
 import { SESSION_COOKIE, signSessionToken } from "@/lib/session-token";
 import { middleware } from "@/middleware";
 
@@ -20,6 +23,26 @@ function requestWithHost(url: string, host: string): NextRequest {
 }
 
 describe("crawler routing", () => {
+  test("describes repository corroboration accurately", async () => {
+    const landingSource = await readFile(
+      join(import.meta.dir, "..", "src", "app", "page.tsx"),
+      "utf8",
+    );
+    const changelogSource = await readFile(
+      join(import.meta.dir, "..", "src", "app", "changelog", "page.tsx"),
+      "utf8",
+    );
+
+    expect(landingSource).toContain("searches the checked-out");
+    expect(landingSource).toContain(
+      "repository when a claim depends on surrounding code",
+    );
+    expect(landingSource).not.toContain("not your repository");
+    expect(landingSource).not.toContain("outside the diff");
+    expect(changelogSource).toContain("withholds repository-dependent claims");
+    expect(changelogSource).not.toContain("exact diff evidence");
+  });
+
   test("robots.txt keeps public crawl access open", () => {
     const policy = robots();
 
@@ -63,14 +86,33 @@ describe("crawler routing", () => {
     expect(api.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
 
-  test("keeps unauthenticated dashboard redirects out of the index", async () => {
-    const response = await middleware(request("https://postil.dev/reports"), event);
+  test("keeps unauthenticated GET redirects replay-safe and out of the index", async () => {
+    const response = await middleware(
+      request("https://postil.dev/reports?status=failed", { method: "GET" }),
+      event,
+    );
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe(
-      "https://postil.dev/login?next=%2Freports",
+      "https://postil.dev/login?next=%2Freports%3Fstatus%3Dfailed",
     );
     expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+  });
+
+  test("converts unauthenticated protected POST requests to login GET navigation", async () => {
+    const response = await middleware(
+      request("https://postil.dev/cli/authorize?code=device-code", {
+        method: "POST",
+        body: "decision=approve",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      }),
+      event,
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/login?next=%2Fcli%2Fauthorize%3Fcode%3Ddevice-code",
+    );
   });
 
   test("preserves a protected query in the post-login return target", async () => {
@@ -116,6 +158,36 @@ describe("crawler routing", () => {
       );
 
       expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    } finally {
+      if (previousSecret === undefined) delete process.env.POSTIL_SESSION_SECRET;
+      else process.env.POSTIL_SESSION_SECRET = previousSecret;
+    }
+  });
+
+  test("stamps the exact protected target for page-level session checks", async () => {
+    const secret = "session-secret-for-protected-target-tests";
+    const previousSecret = process.env.POSTIL_SESSION_SECRET;
+    process.env.POSTIL_SESSION_SECRET = secret;
+    const target =
+      "/orgs/example-org/runs/11111111-2222-4333-8444-555555555555?tab=findings&severity=error";
+
+    try {
+      const token = await signSessionToken("session-for-protected-target", secret);
+      const response = await middleware(
+        request(`https://postil.dev${target}`, {
+          headers: {
+            cookie: `${SESSION_COOKIE}=${token}`,
+            [PROTECTED_RETURN_TO_HEADER]: "https://evil.example/account",
+          },
+        }),
+        event,
+      );
+
+      expect(
+        response.headers.get(
+          `x-middleware-request-${PROTECTED_RETURN_TO_HEADER}`,
+        ),
+      ).toBe(target);
     } finally {
       if (previousSecret === undefined) delete process.env.POSTIL_SESSION_SECRET;
       else process.env.POSTIL_SESSION_SECRET = previousSecret;

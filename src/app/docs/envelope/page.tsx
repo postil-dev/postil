@@ -58,7 +58,7 @@ export default function EnvelopePage() {
       "kind": "risk|humanEscalation|guardrail|uncertainty|contentPolicy",
       "confidence": 0.85, "title": "short", "body": "markdown" }
   ],
-  "resolved": [ /* same shape as findings; no longer apply as of this head */ ],
+  "resolved": [ /* same shape as findings; do not apply to this head */ ],
   "counts": { "info": 0, "warn": 0, "error": 0, "suppressed": 0, "ungrounded": 0 },
   "confidenceBuckets": [0, 0, 0, 0, 0],
   "gate": { "failOn": "error", "failing": false },
@@ -94,7 +94,7 @@ export default function EnvelopePage() {
               a rule stated in <code>.postil/guardrails.md</code>; the finding
               quotes the rule it breaks), <code>uncertainty</code> (the
               model flags its own doubt), <code>contentPolicy</code> (default-on
-              review of prose in the diff; see{" "}
+              review of changed prose against repository evidence; see{" "}
               <Link href="/docs/content-policy">content policy</Link>).
             </td>
           </tr>
@@ -109,9 +109,9 @@ export default function EnvelopePage() {
             <td><code>resolved</code></td>
             <td>
               Only populated on an incremental review (<code>--since-sha</code>{" "}
-              with a <code>--baseline</code> envelope from the previous review
+              with a <code>--baseline</code> envelope from the prior review
               of the same PR head lineage): findings from that baseline which
-              no longer apply at the new head. This is a diff against the
+              do not apply at the new head. This is a diff against the
               prior envelope, not conversation memory. Postil does not carry
               chat history or retain state between PRs. Powers "N resolved, M
               open" on incremental re-review.
@@ -128,9 +128,11 @@ export default function EnvelopePage() {
           <tr>
             <td><code>gate</code></td>
             <td>
-              The configured fail-on severity and whether this review fails the
-              gate. Mirrors the exit code: <code>failing: true</code> means
-              exit <code>1</code>.
+              The configured fail-on severity and the completed review&apos;s gate
+              result. A completed review with <code>failing: true</code> exits
+              <code>1</code>. An operational no-verdict envelope exits
+              <code>2</code>; direct CLI <code>gate.onError</code> and hosted
+              merge enforcement determine the separate gate outcome.
             </td>
           </tr>
           <tr>
@@ -138,8 +140,9 @@ export default function EnvelopePage() {
             <td>
               Findings the model reported that did not cite a changed line and
               were dropped. A nonzero value is a model-quality signal; a run
-              where every finding was ungrounded fails closed. Optional within
-              v1 (absent means 0).
+              where every finding was ungrounded produces an explicit
+              no-verdict operational result. Optional within v1 (absent means
+              0).
             </td>
           </tr>
           <tr>
@@ -152,7 +155,7 @@ export default function EnvelopePage() {
           <tr>
             <td><code>sinceSha</code></td>
             <td>
-              The previously reviewed head when this was an incremental
+              The prior reviewed head when this was an incremental
               review; <code>null</code> on a full review.
             </td>
           </tr>
@@ -164,9 +167,10 @@ export default function EnvelopePage() {
         Every finding must cite a (path, line) present in the reviewed diff.
         Ungrounded model output is dropped; an entirely invalid response
         becomes a synthetic <code>error</code> finding at{" "}
-        <code>.postil/model-output:1</code> after one JSON-repair retry, and
-        the gate fails. There is no code path in which malformed model output
-        produces a passing review.
+        <code>.postil/model-output:1</code> after one JSON-repair retry. That
+        envelope represents no reviewer verdict, not a successful completed
+        review. Direct CLI publication applies <code>gate.onError</code>;
+        hosted Postil applies the organization merge-gate setting.
       </p>
 
       <h2>Stability</h2>

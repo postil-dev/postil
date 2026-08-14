@@ -11,6 +11,7 @@ import {
   loadWebhookDelivery,
   pruneCompletedWebhookDeliveries,
 } from "@/lib/queue";
+import { activateQueueLockGeneration } from "@/lib/release-job-rollout";
 
 const realAppAuth = await import("@/lib/github/app-auth");
 mock.module("@/lib/github/app-auth", () => ({
@@ -26,6 +27,7 @@ mock.module("@/lib/github/checks", () => ({
     draft: false,
     headSha: "headsha",
     baseSha: "basesha",
+    updatedAt: "2026-08-12T03:04:05.000Z",
     authorGithubId: 100,
     authorLogin: "octocat",
   }),
@@ -43,6 +45,7 @@ const { drainQueueOnce, drainWebhookDispatch } = await import("@/worker/runner")
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 
 const WEBHOOK_SECRET = "test-webhook-secret-for-dedupe";
 const DELIVERY_ID = "00000000-dead-beef-0000-000000000001";
@@ -54,6 +57,8 @@ describeDb("webhook delivery dedupe durability", () => {
   beforeAll(async () => {
     db = await createEphemeralDatabase("webhook_dedupe");
     pool = db.pool;
+    await activateQueueLockGeneration(pool);
+    await closeDb();
     // The webhook route and worker runner reach the database through the
     // getDb()/getPool() singleton, keyed off DATABASE_URL.
     process.env.DATABASE_URL = db.url;
@@ -97,6 +102,7 @@ describeDb("webhook delivery dedupe durability", () => {
     // accessed by other users".
     await closeDb();
     await db?.drop();
+    restoreDatabaseUrl();
   }, 30_000);
 
   function prRequest(): Request {
@@ -105,7 +111,12 @@ describeDb("webhook delivery dedupe durability", () => {
       number: 7,
       installation: { id: 42 },
       repository: { id: 7777, full_name: "octo/repo", private: false },
-      pull_request: { number: 7, head: { sha: "headsha" }, base: { sha: "basesha" } },
+      pull_request: {
+        number: 7,
+        head: { sha: "headsha" },
+        base: { sha: "basesha" },
+        updated_at: "2026-08-12T03:04:05.000Z",
+      },
     });
   }
 
@@ -466,3 +477,8 @@ describeDb("webhook delivery dedupe durability", () => {
     expect(jobs.rows[0]?.c).toBe(1);
   });
 });
+
+function restoreDatabaseUrl(): void {
+  if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+}

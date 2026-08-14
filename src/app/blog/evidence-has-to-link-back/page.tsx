@@ -35,40 +35,17 @@ export default function EvidenceLinksArticle() {
           has to point at the reviewed commit, not only at the PR conversation.
         </p>
         <p>
-          The work merged in{" "}
-          <a
-            href="https://github.com/postil-dev/postil/pull/321"
-            rel="noopener"
-          >
-            postil-dev/postil#321
-          </a>{" "}
-          added that breadcrumb to the evidence UI. Each evidence card exposes a
-          repository link and a pull-request-files link scoped to the reviewed
-          commit SHA. PR #321 is merged into <code>main</code>; its merge commit
-          is{" "}
-          <a
-            href="https://github.com/postil-dev/postil/commit/1b9182c262e55609a60a4723b2c5bd1f74651c1b"
-            rel="noopener"
-          >
-            <code>1b9182c262e55609a60a4723b2c5bd1f74651c1b</code>
-          </a>
-          .
+          Each evidence card exposes a repository link and a pull-request-files
+          link scoped to the reviewed commit SHA. The link therefore remains
+          tied to the exact source state behind the review claim.
         </p>
 
         <h2>The data keeps the verification record</h2>
         <p>
-          The public evidence data is in{" "}
-          <a
-            href="https://github.com/postil-dev/postil/blob/main/src/data/evidence/index.ts"
-            rel="noopener"
-          >
-            <code>src/data/evidence/index.ts</code>
-          </a>
-          . The file documents the rule it follows: public examples come from
-          Postil&apos;s public repositories; finding titles and bodies are copied
-          from check-run annotations; review and gate titles and summaries are
-          copied from their check-runs; check-run IDs and the reviewed head SHA
-          are retained as the verification record.
+          Public examples come from Postil&apos;s public repositories. Finding
+          titles and bodies match check-run annotations; review and gate titles
+          and summaries match their check-runs; check-run IDs and the reviewed
+          head SHA remain part of the verification record.
         </p>
         <p>
           The page does not rely on invented sample PRs for those cases. Its UI

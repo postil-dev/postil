@@ -21,11 +21,11 @@ export default function GatePage() {
       <h2>Why the gate is a separate check</h2>
       <p>
         A single check-run cannot do both jobs well. <code>postil/review</code>{" "}
-        always completes (even on an operational error), so findings and
-        inline comments are visible on every PR, including ones nobody has
-        required. <code>postil/gate</code> is the one context you put in
+        reports whether a reviewer verdict exists and carries findings when it
+        does. <code>postil/gate</code> is the one context you put in
         branch protection: its name is stable, it exists on every reviewed
-        commit, and it fails closed when the review itself fails. Collapsing
+        commit, and it applies the configured enforcement policy when review
+        execution fails. Collapsing
         them into one check forces a choice between hiding findings on PRs
         that do not require the check, or giving the required check an
         unstable name (or unstable pass/fail rules) as its job changes. Two
@@ -44,17 +44,18 @@ export default function GatePage() {
             <td><code>postil/gate</code></td>
             <td>The blocking verdict. Require this one in branch protection.</td>
             <td>
-              A finding at or above <code>gate.failOn</code> (default{" "}
-              <code>error</code>) exists, or the review could not complete
-              (fail closed).
+              With merge enforcement enabled, a finding at or above{" "}
+              <code>gate.failOn</code> (default <code>error</code>) exists or
+              the review could not produce a verdict. Advisory organizations
+              receive a neutral gate.
             </td>
           </tr>
           <tr>
             <td><code>postil/review</code></td>
             <td>Advisory findings and inline comments. Never require this one.</td>
             <td>
-              Never blocks. Completes <code>neutral</code> on operational
-              error, green otherwise.
+              Never blocks. Completes <code>neutral</code> when no published
+              reviewer verdict exists and green after a verdict is published.
             </td>
           </tr>
         </tbody>
@@ -127,9 +128,8 @@ gate:
         The default blocks only on <code>error</code>: findings the model is
         confident affect correctness, security, or data integrity. Warnings
         and informational findings stay in the advisory check where they
-        cannot stop a merge. This is the missing primitive the category has:
-        teams that wanted "block on critical, ignore nits" previously had to
-        accept blocking on everything or nothing.
+        cannot stop a merge. Teams can block on critical issues while keeping
+        lower-severity notes advisory.
       </p>
       <p>
         <code>humanEscalation</code> findings are also kind-blocking by
@@ -141,39 +141,33 @@ gate:
         also blocks by severity requires a change and cannot be approved away.
       </p>
 
-      <h2>Fail-closed semantics</h2>
+      <h2>Operational failures</h2>
       <p>
         If the review crashes, times out (10-minute watchdog), or the model
-        returns garbage, <code>postil/gate</code> completes as{" "}
-        <code>failure</code> with the operational error in the summary. It is
-        never left in-progress and never marked neutral. The gate never marks
-        an unreviewed head as passing; pushing again or re-requesting the
-        check re-runs the review. This is the default,{" "}
-        <code>gate.onError: block</code>.
+        returns unusable output, <code>postil/review</code> completes neutral
+        because no reviewer verdict exists. <code>postil/gate</code> completes
+        as <code>failure</code> when the organization has enabled merge
+        enforcement and as <code>neutral</code> while the merge gate is
+        advisory. Neither check remains in progress. Pushing again or
+        re-requesting the check re-runs the review.
       </p>
       <p>
-        Repos that prefer fail-open over a blocked merge queue during a model
-        outage can set <code>gate.onError: advisory</code>. This only changes
-        behavior on <em>provider</em> errors (a provider outage, an exhausted
-        key, a connection timeout) and lets the gate pass in those cases
-        instead of failing closed. Model output that fails validation even
-        after a retry is deliberately <em>not</em> covered: a diff can be
-        crafted to induce that class of failure, so it always fails the gate,
-        even under <code>advisory</code>. Nothing else weakens either:
-        findings the model did produce still gate normally, and a review that
-        completes successfully with an <code>error</code>-severity finding
-        still fails the gate regardless of this setting. Choose <code>advisory</code> deliberately; it trades an
-        unreviewed head being treated as passing for never blocking merges on
-        Postil's own availability. See{" "}
-        <Link href="/docs/config">configuration</Link>.
+        New organizations start with an advisory merge gate. An organization
+        admin can enable merge enforcement after adding <code>postil/gate</code>{" "}
+        to branch protection. Enforcement applies to both validated blocking
+        findings and execution failures that produce no verdict. Repository
+        thresholds still determine which completed-review findings block. See{" "}
+        <Link href="/docs/config">configuration</Link> for repository policy.
       </p>
 
       <h2>Local parity</h2>
       <p>
-        The same gate runs locally: <code>postil review --staged</code> exits{" "}
-        <code>1</code> exactly when the hosted gate would fail, so a pre-push
-        hook (<code>postil hook install</code>) gives you the verdict before
-        CI does. Preview threshold changes with{" "}
+        The same finding threshold runs locally: <code>postil review --staged</code>{" "}
+        exits <code>1</code> when a completed review has blocking findings, and
+        exits <code>2</code> on an operational failure. A pre-push hook
+        (<code>postil hook install</code>) gives you that result before CI.
+        Hosted <code>postil/gate</code> additionally applies the organization
+        merge-gate setting. Preview threshold changes with{" "}
         <Link href="/docs/plan"><code>postil plan</code></Link>.
       </p>
     </div>

@@ -9,12 +9,12 @@ import {
 export const metadata: Metadata = {
   title: "Why Postil",
   description:
-    "Postil as a CodeRabbit alternative: a hard merge gate, a published silence metric, active-author pricing, BYOK, and self-hosting.",
+    "Postil as a CodeRabbit alternative: a dedicated merge gate, a published silence metric, active-author pricing, BYOK, and self-hosting.",
   alternates: { canonical: "/why-postil" },
   openGraph: {
     title: "Why Postil: product comparison",
     description:
-      "Hard merge gate, a published silence metric, active-author pricing, BYOK, and real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
+      "Dedicated merge gate, a published silence metric, active-author pricing, BYOK, and real self-hosting. Postil vs CodeRabbit, Greptile, and Copilot code review.",
     url: "https://postil.dev/why-postil",
     images: ["/opengraph-image"],
   },
@@ -29,9 +29,9 @@ const COMPARISON_COLUMNS = [
 
 const COMPARISON_ROWS: ComparisonRow[] = [
   {
-    feature: "Hard merge gate (separate blocking check)",
+    feature: "Dedicated merge gate (separate policy check)",
     cells: [
-      { kind: "yes", note: "postil/gate, fail-closed" },
+      { kind: "yes", note: "postil/gate, configurable enforcement" },
       { kind: "partial", note: "built-in checks; custom checks on Pro Plus" },
       { kind: "no", note: "comments only" },
       { kind: "partial", note: "neutral check, not blocking" },
@@ -193,9 +193,9 @@ const wedges: Wedge[] = [
           <code>postil/gate</code> fails only at or above your configured
           severity and is safe to require in branch protection;{" "}
           <code>postil/review</code> carries everything advisory. On
-          operational errors the gate fails closed by default, never neutral.
-          Repos can opt into <code>gate.onError: advisory</code>, which fails
-          open on provider outages only.
+          operational errors the review check is neutral because no reviewer
+          verdict exists. The gate fails when organization merge enforcement
+          is enabled and remains neutral while the organization is advisory.
         </p>
       </>
     ),

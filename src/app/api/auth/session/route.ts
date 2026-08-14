@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 
 import { getDb, schema } from "@/lib/db";
+import { membershipRetryAfterHeader } from "@/lib/auth-navigation";
 import { getVerifiedSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -24,7 +25,17 @@ export async function GET(): Promise<NextResponse> {
           ? { reason: "membership_verification_unavailable" }
           : {}),
       },
-      { status: verification.reason === "unauthenticated" ? 401 : 503 },
+      {
+        status: verification.reason === "unauthenticated" ? 401 : 503,
+        headers:
+          verification.reason === "verification_unavailable"
+            ? {
+                "retry-after": membershipRetryAfterHeader(
+                  verification.retryAvailableAt,
+                ),
+              }
+            : undefined,
+      },
     );
   }
   const user = verification.user;

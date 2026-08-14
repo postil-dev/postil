@@ -124,6 +124,62 @@ describe("GitHub user organization memberships", () => {
       reason: "unavailable",
       retryAfterMs: 120_000,
     });
+
+    responses = [
+      new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "86400" },
+      }),
+    ];
+    expect(await fetchAllActiveOrgMemberships("token")).toEqual({
+      ok: false,
+      reason: "unavailable",
+      retryAfterMs: 3_600_000,
+    });
+
+    const resetAt = Math.ceil(Date.now() / 1_000) + 90;
+    responses = [
+      new Response("rate limited", {
+        status: 429,
+        headers: {
+          "retry-after": "invalid",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": String(resetAt),
+        },
+      }),
+    ];
+    const resetResult = await fetchAllActiveOrgMemberships("token");
+    expect(resetResult).toMatchObject({
+      ok: false,
+      reason: "unavailable",
+    });
+    if (resetResult.ok || resetResult.reason !== "unavailable") {
+      throw new Error("expected a retryable membership response");
+    }
+    expect(resetResult.retryAfterMs).toBeGreaterThanOrEqual(89_000);
+    expect(resetResult.retryAfterMs).toBeLessThanOrEqual(91_000);
+  });
+
+  test("keeps the rate-limit fallback when the reset header is absent or invalid", async () => {
+    for (const resetHeader of [undefined, "invalid"]) {
+      responses = [
+        new Response("rate limited", {
+          status: 403,
+          headers: {
+            "x-ratelimit-remaining": "0",
+            ...(resetHeader
+              ? { "x-ratelimit-reset": resetHeader }
+              : {}),
+          },
+        }),
+      ];
+
+      expect(await fetchAllActiveOrgMemberships("token")).toEqual({
+        ok: false,
+        reason: "unavailable",
+        retryAfterMs: 60_000,
+      });
+    }
   });
 });
 

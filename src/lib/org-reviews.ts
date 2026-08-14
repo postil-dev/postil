@@ -90,9 +90,12 @@ export async function getOrgReviewRows(
         ...row,
         status: reviewDisplayStatus(row.status, errorMessage),
         triggerSource: row.triggerSource as ReviewTriggerSource,
-        gateFailing: envelope
-          ? computeEffectiveGate(envelope, approvalIds, dismissalIds).failing
-          : row.gateFailing,
+        gateFailing:
+          row.status === "failed"
+            ? row.gateFailing
+            : envelope
+              ? computeEffectiveGate(envelope, approvalIds, dismissalIds).failing
+              : row.gateFailing,
         findingsCount: counts && counts.unknown === 0 ? activePublished : null,
         modelUsed: envelope?.modelUsed ?? null,
         startedAt: row.startedAt?.toISOString() ?? null,

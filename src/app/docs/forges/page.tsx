@@ -12,7 +12,7 @@ const FORGES = [
   {
     href: "/docs/forges/github",
     title: "GitHub",
-    body: "github.com and GHES. Issues and PRs. The only forge the hosted app talks to today.",
+    body: "github.com and GHES. Issues and PRs. The hosted app runs on GitHub.",
   },
   {
     href: "/docs/forges/gitlab",
@@ -148,16 +148,15 @@ export default function ForgesIndexPage() {
       <p>
         Stated plainly: GitHub and GitLab cover issues and PRs/MRs for the
         interactive bot; Bitbucket and Azure DevOps cover pull requests only.
-        Their issue tracker and work-item APIs use a different shape Postil
-        does not talk to yet. The hosted app at{" "}
-        <Link href="/">postil.dev</Link> is GitHub-only today; every other
+        Their issue tracker and work-item APIs use a different shape that
+        Postil does not support. The hosted app at{" "}
+        <Link href="/">postil.dev</Link> is GitHub-only; every other
         forge runs the same binary in your own CI with your own inference
         key, which is why the CLI ships forge support independent of hosted
         rollout.
       </p>
       <p>
-        Gitea and Forgejo are not supported. The forge abstraction would cover
-        them the same way, but no implementation exists yet.
+        Gitea and Forgejo are not supported.
       </p>
 
       <h2>One command per forge</h2>

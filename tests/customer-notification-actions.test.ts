@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 
+import {
+  membershipRetryDelayFromDigest,
+  MembershipVerificationUnavailableError,
+} from "@/lib/auth-navigation";
+
 let accessRole = "member";
 let visibleRows: Array<{ id: number }> = [{ id: 9 }];
 let inserted: Record<string, unknown> | null = null;
 let executeCount = 0;
 let revalidated: string[] = [];
+let verificationRetryAvailableAt: Date | undefined;
 
 const schema = {
   customerNotificationEvents: {
@@ -26,13 +32,20 @@ mock.module("next/cache", () => ({
   revalidatePath: (path: string) => revalidated.push(path),
 }));
 mock.module("@/lib/org-access", () => ({
-  getOrgMembership: async () => ({
-    ok: true,
-    db: fakeDb(),
-    user: { id: 7 },
-    org: { id: 20 },
-    membership: { id: 1, role: accessRole },
-  }),
+  getOrgMembership: async () =>
+    verificationRetryAvailableAt
+      ? {
+          ok: false,
+          reason: "verification_unavailable",
+          retryAvailableAt: verificationRetryAvailableAt,
+        }
+      : {
+          ok: true,
+          db: fakeDb(),
+          user: { id: 7 },
+          org: { id: 20 },
+          membership: { id: 1, role: accessRole },
+        },
 }));
 
 const { markAllNotificationsRead, markNotificationRead } = await import(
@@ -45,6 +58,7 @@ beforeEach(() => {
   inserted = null;
   executeCount = 0;
   revalidated = [];
+  verificationRetryAvailableAt = undefined;
 });
 
 describe("customer notification actions", () => {
@@ -75,6 +89,28 @@ describe("customer notification actions", () => {
 
     expect(executeCount).toBe(1);
     expect(revalidated).toEqual(["/orgs/acme", "/orgs/acme/notifications"]);
+  });
+
+  test("preserves retry timing when membership verification blocks a server action", async () => {
+    verificationRetryAvailableAt = new Date(Date.now() + 60_000);
+    const form = new FormData();
+    form.set("slug", "acme");
+    form.set("eventId", "9");
+
+    let rejected: unknown;
+    try {
+      await markNotificationRead(form);
+    } catch (error) {
+      rejected = error;
+    }
+
+    expect(rejected).toBeInstanceOf(MembershipVerificationUnavailableError);
+    const retryDelayMs = membershipRetryDelayFromDigest(
+      (rejected as MembershipVerificationUnavailableError).digest,
+    );
+    expect(retryDelayMs).toBeGreaterThanOrEqual(59_000);
+    expect(retryDelayMs).toBeLessThanOrEqual(60_000);
+    expect(inserted).toBeNull();
   });
 
   test("keeps member and administrator visibility checks in both actions", async () => {

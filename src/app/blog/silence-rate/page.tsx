@@ -91,7 +91,7 @@ export default function SilenceRateArticle() {
           nitpicks, 15% as useless, and 13% as based on wrong assumptions.
           Roughly a third of the output of a well-regarded tool, measured by a
           sympathetic reviewer, was waste. That is what &quot;good&quot;
-          currently looks like in this category, and it sits right at the
+          looks like in this category, and it sits right at the
           threshold where developers start tuning out.
         </p>
 
@@ -201,8 +201,8 @@ export default function SilenceRateArticle() {
         <p>
           What we are not claiming: that Postil&apos;s silence rate beats any
           competitor&apos;s. No peer has run our private evaluation data and we have
-          not published comparative numbers, so there is nothing honest to claim
-          yet. The claim is narrower and checkable: the metric exists, it is
+          not published comparative numbers, so there is no honest comparative
+          claim. The narrower, checkable claim is that the metric exists, it is
           on the dashboard from day one, and you can watch it on your own
           traffic. You can <Link href="/evidence">see it run</Link> across the
           public evidence cases, including one where it correctly stays silent.

@@ -43,6 +43,55 @@ export interface RepoSummary {
   private: boolean;
 }
 
+export const INSTALLATION_REPOSITORY_PAGE_SIZE = 100;
+export const MAX_INSTALLATION_REPOSITORY_PAGES = 20;
+
+export type InstallationRepositoryAccess = "selected" | "not_selected" | "unknown";
+
+/**
+ * Check whether an installation's repository selection includes one named
+ * repository. This only lists the installation selection and never requests
+ * repository contents.
+ */
+export async function checkInstallationRepositoryAccess(
+  token: string,
+  repositoryFullName: string,
+  signal?: AbortSignal,
+): Promise<InstallationRepositoryAccess> {
+  const requestedName = repositoryFullName.toLowerCase();
+  for (let page = 1; page <= MAX_INSTALLATION_REPOSITORY_PAGES; page += 1) {
+    const requestSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+      : AbortSignal.timeout(10_000);
+    const response = await fetch(
+      `${apiBase()}/installation/repositories?per_page=${INSTALLATION_REPOSITORY_PAGE_SIZE}&page=${page}`,
+      { headers: githubHeaders(token), signal: requestSignal },
+    );
+    if (!response.ok) {
+      throw new Error(`installation repository listing failed with HTTP ${response.status}`);
+    }
+    const data = (await response.json()) as { repositories?: unknown };
+    if (!Array.isArray(data.repositories)) {
+      throw new Error("installation repository listing returned an invalid response");
+    }
+    const repositories = data.repositories;
+    if (
+      repositories.some(
+        (repository) =>
+          typeof repository === "object" &&
+          repository !== null &&
+          "full_name" in repository &&
+          typeof repository.full_name === "string" &&
+          repository.full_name.toLowerCase() === requestedName,
+      )
+    ) {
+      return "selected";
+    }
+    if (repositories.length < INSTALLATION_REPOSITORY_PAGE_SIZE) return "not_selected";
+  }
+  return "unknown";
+}
+
 /** Read current repository visibility with an installation token. */
 export async function fetchRepositorySummary(
   token: string,
@@ -536,9 +585,9 @@ async function syncOneAccount(
 
   const token = await getInstallationToken(found.id);
   // Bounded pagination, same defensive style as the login org walk.
-  for (let page = 1; page <= 20; page++) {
+  for (let page = 1; page <= MAX_INSTALLATION_REPOSITORY_PAGES; page++) {
     const listRes = await fetch(
-      `${apiBase()}/installation/repositories?per_page=100&page=${page}`,
+      `${apiBase()}/installation/repositories?per_page=${INSTALLATION_REPOSITORY_PAGE_SIZE}&page=${page}`,
       { headers: githubHeaders(token) },
     );
     if (!listRes.ok)
@@ -547,6 +596,6 @@ async function syncOneAccount(
     const repos = data.repositories ?? [];
     if (repos.length === 0) break;
     await upsertRepositories(installationRowId, repos);
-    if (repos.length < 100) break;
+    if (repos.length < INSTALLATION_REPOSITORY_PAGE_SIZE) break;
   }
 }

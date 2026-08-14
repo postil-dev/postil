@@ -57,6 +57,20 @@ describe("billing portal route", () => {
     expect(portalCalls).toBe(1);
   });
 
+  test("preserves membership verification backoff without opening a portal", async () => {
+    accessResult = {
+      ok: false,
+      reason: "verification_unavailable",
+      retryAvailableAt: new Date(Date.now() + 60_000),
+    };
+
+    const response = await request("https://postil.dev");
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("60");
+    expect(portalCalls).toBe(0);
+  });
+
   test("stays unavailable while Paddle billing is disabled", async () => {
     configured = false;
     const response = await request("https://postil.dev");

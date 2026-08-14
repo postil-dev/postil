@@ -27,7 +27,11 @@ import { Client } from "pg";
 
 import release from "@/data/public-cli-release.json";
 import { seal } from "@/lib/crypto/seal";
-import type { Envelope, Finding } from "@/lib/envelope";
+import {
+  isEnvelopeOperationallyUnavailable,
+  type Envelope,
+  type Finding,
+} from "@/lib/envelope";
 
 const root = join(import.meta.dir, "..");
 const DEFAULT_INSTALLATION_ID = 990_001;
@@ -204,6 +208,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
           syntheticSha("0"),
         )
       : headSha;
+  const expectedPullRequestUpdatedAt = new Date().toISOString();
   const repositorySource: RepositorySource =
     options.target.kind === "staged"
       ? { kind: "index" }
@@ -224,6 +229,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     headSha,
     baseSha,
     pullRequestTitle,
+    expectedPullRequestUpdatedAt,
     repositorySource,
     baseRepositorySource,
   });
@@ -303,6 +309,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
       prNumber: options.prNumber,
       headSha,
       baseSha,
+      expectedPullRequestUpdatedAt,
     };
     const jobId = await enqueueJob(pool, "review", payload, { maxAttempts: 1 });
     const drained = await drainQueueOnce("local-review", {
@@ -330,7 +337,14 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     const review = reviewRow.rows[0];
     if (!review) throw new Error("worker did not create a review row");
     const jobStatus = jobRow.rows[0]?.status ?? "missing";
-    if (jobStatus !== "done" || review.status !== "completed") {
+    const operationalNoVerdict =
+      review.status === "failed" &&
+      review.envelope !== null &&
+      isEnvelopeOperationallyUnavailable(review.envelope);
+    if (
+      jobStatus !== "done" ||
+      (review.status !== "completed" && !operationalNoVerdict)
+    ) {
       throw new Error(
         `local review did not complete: job=${jobStatus} review=${review.status}` +
           (review.error_message ? `: ${review.error_message}` : ""),
@@ -403,10 +417,26 @@ export function formatRunSummary(result: RunResult): string {
   lines.push("");
   lines.push("Review findings:");
   const findings = result.envelope?.findings ?? [];
-  if (findings.length === 0) {
+  const operationalNoVerdict =
+    result.reviewStatus === "failed" &&
+    result.envelope !== null &&
+    isEnvelopeOperationallyUnavailable(result.envelope);
+  const reviewerFindings = operationalNoVerdict ? [] : findings;
+  const operationalDiagnostics = operationalNoVerdict ? findings : [];
+  if (reviewerFindings.length === 0) {
     lines.push("  none");
   } else {
-    for (const finding of findings) {
+    for (const finding of reviewerFindings) {
+      lines.push(`  ${formatFinding(finding)}`);
+      lines.push(`    ${finding.title}`);
+      if (finding.scorerReason) lines.push(`    scorer_reason=${finding.scorerReason}`);
+    }
+  }
+
+  if (operationalDiagnostics.length > 0) {
+    lines.push("");
+    lines.push("Operational diagnostics:");
+    for (const finding of operationalDiagnostics) {
       lines.push(`  ${formatFinding(finding)}`);
       lines.push(`    ${finding.title}`);
       if (finding.scorerReason) lines.push(`    scorer_reason=${finding.scorerReason}`);
@@ -415,9 +445,14 @@ export function formatRunSummary(result: RunResult): string {
 
   if (result.envelope) {
     lines.push("");
+    if (operationalNoVerdict) {
+      lines.push("Reviewer verdict: unavailable");
+    }
     lines.push(
-      `Gate: ${result.gateFailing ? "failed" : "passed"} ` +
-        `(fail_on=${result.envelope.gate.failOn}, model=${result.envelope.modelUsed})`,
+      operationalNoVerdict
+        ? `Gate: ${result.gateFailing ? "failed" : "neutral"} (no reviewer verdict, fail_on=${result.envelope.gate.failOn}, model=${result.envelope.modelUsed})`
+        : `Gate: ${result.gateFailing ? "failed" : "passed"} ` +
+          `(fail_on=${result.envelope.gate.failOn}, model=${result.envelope.modelUsed})`,
     );
     if (result.envelope.scorerModel) lines.push(`Scorer: ${result.envelope.scorerModel}`);
     if (result.envelope.scorerError) lines.push(`Scorer error: ${result.envelope.scorerError}`);
@@ -440,6 +475,7 @@ function createLocalGitHubServer(input: {
   headSha: string;
   baseSha: string;
   pullRequestTitle: string;
+  expectedPullRequestUpdatedAt: string;
   repositorySource: RepositorySource;
   baseRepositorySource: RepositorySource;
 }): LocalGitHubServer {
@@ -484,6 +520,8 @@ function createLocalGitHubServer(input: {
           head: { sha: input.headSha },
           base: { sha: input.baseSha },
           changed_files: pullFiles.length,
+          updated_at: input.expectedPullRequestUpdatedAt,
+          draft: false,
         });
       }
 
@@ -778,6 +816,11 @@ async function seedFixture(databaseUrl: string, repoFullName: string): Promise<v
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
+    await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('release-v1-jobs'), ('queue-lock-generation-v1')
+       ON CONFLICT (name) DO NOTHING`,
+    );
     await client.query(`
       WITH org AS (
         INSERT INTO organizations (slug, name, github_org_id)
@@ -1331,7 +1374,11 @@ if (import.meta.main) {
     console.log("");
     console.log(formatRunSummary(result));
     const hasFindings = (result.envelope?.findings.length ?? 0) > 0;
-    process.exitCode = result.gateFailing || (options.requireClean && hasFindings) ? 1 : 0;
+    process.exitCode = result.reviewStatus === "failed"
+      ? 2
+      : result.gateFailing || (options.requireClean && hasFindings)
+        ? 1
+        : 0;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 2;

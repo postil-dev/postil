@@ -4,9 +4,9 @@ import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import {
   computeEffectiveGate,
-  envelopeSchema,
   findingStableId,
   isOperationalFinding,
+  parseStoredEnvelope,
   qualifiesHumanEscalation,
   type EffectiveGateState,
   type Envelope,
@@ -148,8 +148,7 @@ export function validateApprovalRationale(value: string): string {
 
 export function parseEnvelopeForApprovals(value: unknown): Envelope | null {
   if (!value) return null;
-  const parsed = envelopeSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
+  return parseStoredEnvelope(value);
 }
 
 export async function getActiveApprovalIds(

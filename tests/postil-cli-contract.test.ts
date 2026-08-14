@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   assertEnvelopeContract,
@@ -17,6 +18,23 @@ describe("postil CLI release contract", () => {
     expect(() => assertReviewHelp(help.replace("--publish", ""))).toThrow(
       "missing required option --publish",
     );
+  });
+
+  test("contract smoke rejects a target-branch advance before check mutation", () => {
+    const source = readFileSync("scripts/verify-postil-cli-contract.ts", "utf8");
+    const advanced = source.indexOf("liveBaseSha = ADVANCED_BASE_SHA");
+    const staleRejection = source.indexOf(
+      "hosted publication accepted a changed target-branch SHA",
+      advanced,
+    );
+    const mutationRejection = source.indexOf(
+      "hosted publication mutated checks after the target branch advanced",
+      staleRejection,
+    );
+
+    expect(advanced).toBeGreaterThan(0);
+    expect(staleRejection).toBeGreaterThan(advanced);
+    expect(mutationRejection).toBeGreaterThan(staleRejection);
   });
 
   test("accepts the compatible empty review envelope", () => {

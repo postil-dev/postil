@@ -169,24 +169,11 @@ export default function CopilotMergeGateArticle() {
         <h2>How Postil&apos;s two-check model works</h2>
         <p>
           Postil splits the two roles into two distinct GitHub check runs,
-          created on every reviewed commit. The backing for what follows is the{" "}
-          <a
-            href="https://github.com/postil-dev/postil-cli/blob/main/src/forge/github.rs"
-            rel="noopener"
-          >
-            postil-cli source
-          </a>
-          : the checks are created in <code>start_checks</code> and their
-          conclusions are written in <code>complete_checks</code>.
-        </p>
-        <p>
-          The CLI opens both checks <code>in_progress</code> at the start of a
-          review:
+          created on every reviewed commit:
         </p>
         <pre tabIndex={0} aria-label="Code sample">
-          <code>{`for name in ["postil/review", "postil/gate"] {
-    // POST /check-runs  { name, head_sha, status: "in_progress" }
-}`}</code>
+          <code>{`postil/review: reviewer verdict and advisory findings
+postil/gate: organization merge policy`}</code>
         </pre>
         <p>
           <code>postil/review</code> is the advisory check. It carries the
@@ -198,69 +185,40 @@ export default function CopilotMergeGateArticle() {
           enforcement signal is never diluted by the volume of advisory
           commentary.
         </p>
-        <p>
-          The conclusions are not interchangeable, and the design rule is
-          written directly into the source. The doc comment on the{" "}
-          <code>CheckState</code> enum in <code>src/forge/mod.rs</code> states the
-          contract:
-        </p>
+        <p>The hosted service maps the two terminal outcomes independently:</p>
         <pre tabIndex={0} aria-label="Code sample">
-          <code>{`/// Check conclusions, mapped per-forge. Postil semantics:
-/// - advisory check (\`postil/review\`): success unless the run itself failed.
-/// - gate check (\`postil/gate\`): failure iff gate-level findings exist (or the
-///   run failed, so it fails closed). Never \`neutral\` for the gate: a grey square
-///   that reads as "didn't fail" is the GitHub Copilot mistake.`}</code>
+          <code>{`completed review: postil/review = success
+review execution failed: postil/review = neutral
+blocking finding: postil/gate = failure
+review execution failed: postil/gate = organization policy`}</code>
         </pre>
         <p>
-          That last sentence is the whole article in one line, and it is in the
-          shipping code, not a slide. The gate check is only ever{" "}
-          <code>success</code> or <code>failure</code>. It is structurally not
-          allowed to take the neutral conclusion that makes Claude Code review
-          and default-neutral checks non-blocking. The conclusion is computed
-          straight from the gate outcome:
-        </p>
-        <pre tabIndex={0} aria-label="Code sample">
-          <code>{`let gate_state = if envelope.gate.failing {
-    CheckState::Failure
-} else {
-    CheckState::Success
-};`}</code>
-        </pre>
-        <p>
-          Whether the gate is failing is itself a policy decision you control:
-          findings at or above your configured <code>failOn</code> severity flip{" "}
-          <code>gate.failing</code> to true. When the review itself hits an
-          operational error, such as a provider outage or unusable model output,
-          the review check fails. It cannot look skipped or clean, while the
-          merge gate applies its configured blocking policy separately.
+          A completed review can contain blocking findings, so a successful{" "}
+          <code>postil/review</code> means the reviewer ran, not that the change
+          passed the gate. Findings at or above the configured{" "}
+          <code>failOn</code> severity make <code>postil/gate</code> fail. When
+          hosted execution stops before producing a verdict, the run status is
+          failed and <code>postil/review</code> completes neutral with an
+          explicit no-verdict result. The gate applies the organization&apos;s
+          merge-gate setting separately.
         </p>
 
-        <h2>The gate fails closed on error</h2>
+        <h2>Execution failures remain explicit</h2>
         <p>
           The dangerous failure mode for a merge gate is the silent pass: the
           reviewer errors out, reports nothing alarming, and the merge proceeds
-          as if it had been checked. Postil&apos;s default is the opposite. When
-          a run errors, the gate concludes <code>failure</code> rather than
-          standing aside:
+          as if it had been checked. Postil records that run as failed, leaves{" "}
+          <code>postil/review</code> neutral because no reviewer verdict exists,
+          and gives the gate an explicit policy outcome.
         </p>
-        <pre tabIndex={0} aria-label="Code sample">
-          <code>{`let gate_state = match cfg.gate_on_error {
-    OnError::Block => CheckState::Failure,   // default: fail closed
-    OnError::Advisory => CheckState::Success,
-};`}</code>
-        </pre>
         <p>
-          By default <code>gate.onError</code> is <code>block</code>: an errored
-          run blocks the merge. A repository can opt into{" "}
-          <code>onError: advisory</code> so a provider blip does not freeze every
-          merge, in which case the gate stands aside but the advisory check still
-          goes neutral to show the error. The source comment names the constraint
-          that keeps this honest: unusable model output never bypasses the gate,
-          because a malicious diff could otherwise induce that error via prompt
-          injection to slip past review. Either way the gate is binary on the
-          merge decision and never neutral. That is the difference between
-          &quot;the check didn&apos;t fail&quot; and &quot;the check passed,&quot;
-          and it is the difference branch protection actually reads.
+          New organizations start with an advisory merge gate, so an execution
+          failure leaves <code>postil/gate</code> neutral. An organization admin
+          can enable merge enforcement after adding the check to branch
+          protection; under enforcement, the same no-verdict run makes the gate
+          fail. Completed reviews continue to use the repository&apos;s{" "}
+          <code>failOn</code> threshold. <code>postil/gate</code> is the check
+          whose conclusion carries the merge policy branch protection reads.
         </p>
 
         <h2>Adopt the gate without surprises: postil plan</h2>
@@ -293,7 +251,8 @@ export default function CopilotMergeGateArticle() {
           default-neutral check) has chosen, by design, a signal that branch
           protection will not enforce. A real gate is one check run that is
           willing to conclude failure, marked required, kept separate from the
-          advisory chatter, and failing closed on error. You can{" "}
+          advisory chatter, and willing to fail when merge enforcement is
+          enabled. You can{" "}
           <Link href="/docs/gate">read how the gate is configured</Link>, dry-run
           it with <code>postil plan</code> before arming it, or{" "}
           <Link href="/evidence">see a review run</Link> end to end first.
@@ -362,23 +321,6 @@ export default function CopilotMergeGateArticle() {
               the enforcement point)
             </a>
           </li>
-          <li>
-            Postil mechanics:{" "}
-            <a
-              href="https://github.com/postil-dev/postil-cli/blob/main/src/forge/mod.rs"
-              rel="noopener"
-            >
-              src/forge/mod.rs
-            </a>{" "}
-            (CheckState contract),{" "}
-            <a
-              href="https://github.com/postil-dev/postil-cli/blob/main/src/forge/github.rs"
-              rel="noopener"
-            >
-              src/forge/github.rs
-            </a>{" "}
-            (check-run creation and conclusions)
-          </li>
         </ul>
       </div>
 
@@ -386,9 +328,9 @@ export default function CopilotMergeGateArticle() {
         <div>
           <h2 className="serif-display text-2xl">A required check that can fail.</h2>
           <p className="mt-2 max-w-md text-sm text-ivory/70">
-            postil/gate is a required check that concludes failure on
-            gate-level findings and fails closed on error. Dry-run it with
-            postil plan before you arm it.
+            postil/gate carries organization merge policy for completed reviews
+            and execution failures. Dry-run repository thresholds with postil
+            plan before you arm it.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:shrink-0">

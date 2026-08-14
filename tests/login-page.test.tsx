@@ -27,24 +27,26 @@ beforeEach(() => {
 describe("login page session contract", () => {
   test("renders one anonymous sign-in action for a signed-out request", async () => {
     const page = await LoginPage({
-      searchParams: Promise.resolve({ next: "/orgs/postil-dev/settings?tab=billing" }),
+      searchParams: Promise.resolve({ next: "/orgs/example-org/settings?tab=billing" }),
     });
     const markup = renderToStaticMarkup(page);
 
     expect(markup).toContain("Sign in to Postil");
     expect(markup).toContain(
-      'href="/api/auth/login?next=%2Forgs%2Fpostil-dev%2Fsettings%3Ftab%3Dbilling"',
+      'href="/api/auth/login?next=%2Forgs%2Fexample-org%2Fsettings%3Ftab%3Dbilling"',
     );
     expect(markup).not.toContain("Dashboard");
   });
 
-  test("redirects an authenticated request before rendering anonymous content", async () => {
+  test("redirects an authenticated request to a safe protected return target", async () => {
     sessionUser = { id: 7, login: "octocat" };
+    const returnTo =
+      "/orgs/example-org/runs/11111111-2222-4333-8444-555555555555";
 
     await expect(
-      LoginPage({ searchParams: Promise.resolve({ next: "/reports?status=failed" }) }),
+      LoginPage({ searchParams: Promise.resolve({ next: returnTo }) }),
     ).rejects.toBeInstanceOf(RedirectSignal);
-    expect(redirectCalls).toEqual(["/reports"]);
+    expect(redirectCalls).toEqual([returnTo]);
   });
 
   test("ignores an unsafe return target for both page links and authenticated redirects", async () => {

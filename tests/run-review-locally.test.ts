@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import release from "@/data/public-cli-release.json";
 import {
   downloadHostedPostilExecutable,
+  formatRunSummary,
   pullFilesFromDiff,
 } from "../scripts/run-review-locally";
 
@@ -55,6 +56,86 @@ deleted file mode 100644
     { filename: "added.ts", status: "added", changes: 1 },
     { filename: "removed.ts", status: "removed", changes: 1 },
   ]);
+});
+
+test("renders an advisory no-verdict result as operational diagnostics with a neutral gate", () => {
+  const summary = formatRunSummary({
+    reviewId: 1,
+    jobStatus: "done",
+    reviewStatus: "failed",
+    gateFailing: false,
+    envelope: {
+      version: 1,
+      summary: "No reviewer verdict exists because execution failed.",
+      silent: false,
+      findings: [{
+        path: ".postil/provider",
+        line: 1,
+        severity: "error",
+        kind: "uncertainty",
+        confidence: 1,
+        title: "Review provider unavailable",
+        body: "The review provider did not return a usable result.",
+      }],
+      resolved: [],
+      counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      confidenceBuckets: [0, 0, 0, 0, 1],
+      gate: { failOn: "error", failing: false, blockOnKinds: [] },
+      modelUsed: "test-model",
+      usage: { promptTokens: 0, completionTokens: 0 },
+      durationMs: 0,
+      baseSha: "0".repeat(40),
+      headSha: "1".repeat(40),
+      sinceSha: null,
+    },
+    events: [],
+  });
+
+  expect(summary).toContain("Reviewer verdict: unavailable");
+  expect(summary).toContain("Review findings:\n  none");
+  expect(summary).toContain("Operational diagnostics:\n  error/uncertainty .postil/provider:1");
+  expect(summary).toContain("Gate: neutral (no reviewer verdict");
+  expect(summary).not.toContain("Gate: passed");
+  expect(summary).not.toContain("green");
+});
+
+test("reports a failed gate separately from an unavailable reviewer verdict", () => {
+  const summary = formatRunSummary({
+    reviewId: 1,
+    jobStatus: "done",
+    reviewStatus: "failed",
+    gateFailing: true,
+    envelope: {
+      version: 1,
+      summary: "No reviewer verdict exists because execution failed.",
+      silent: false,
+      findings: [{
+        path: ".postil/model-output",
+        line: 1,
+        severity: "error",
+        kind: "uncertainty",
+        confidence: 1,
+        title: "Review output unavailable",
+        body: "The review provider did not return a usable result.",
+      }],
+      resolved: [],
+      counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      confidenceBuckets: [0, 0, 0, 0, 1],
+      gate: { failOn: "error", failing: true, blockOnKinds: [] },
+      modelUsed: "test-model",
+      usage: { promptTokens: 0, completionTokens: 0 },
+      durationMs: 0,
+      baseSha: "0".repeat(40),
+      headSha: "1".repeat(40),
+      sinceSha: null,
+    },
+    events: [],
+  });
+
+  expect(summary).toContain("Reviewer verdict: unavailable");
+  expect(summary).toContain("Gate: failed (no reviewer verdict");
+  expect(summary).not.toContain("Gate: passed");
+  expect(summary).not.toContain("green");
 });
 
 test("downloads, verifies, and cleans up the authoritative local-review CLI", async () => {
@@ -183,6 +264,8 @@ console.log("fixture-key");
         "--pr",
         "1",
         "--sha",
+        "1".repeat(40),
+        "--base-sha",
         "1".repeat(40),
         "--check-run-id",
         "1000",
@@ -327,7 +410,9 @@ console.log("fixture-key");
       },
     });
 
-    expect(result.stderr).toMatch(/git|Postil (?:binary|v0\.6)/i);
+    expect(result.stderr).toMatch(
+      /git|Postil (?:binary|v\d+\.\d+\.\d+)|pinned hosted CLI/i,
+    );
     expect(await Bun.file(shadowMarker).exists()).toBe(false);
   }, 120_000);
 
@@ -384,28 +469,29 @@ console.log("fixture-key");
     expect(result.stdout).toContain("Local fixture finding");
   }, 120_000);
 
-  test("preserves an operational finding when the local review check fails", async () => {
+  test("renders an operational diagnostic without a reviewer finding when execution produces no verdict", async () => {
     const repo = await createFixtureRepo("failed-review-check");
 
-    const result = await runLocalReview(repo, "0", 1, {
+    const result = await runLocalReview(repo, "0", 2, {
       args: ["--require-clean"],
       env: { POSTIL_FAKE_ADVISORY_NEUTRAL: "1" },
     });
 
-    expect(result.stdout).toContain(
-      "would complete check-run #1000 as failure",
-    );
-    expect(result.stdout).toContain("Review findings:");
+    expect(result.stdout).toContain("#1000 neutral: Review did not complete");
+    expect(result.stdout).toContain("Review findings:\n  none");
+    expect(result.stdout).toContain("Operational diagnostics:");
     expect(result.stdout).toContain(".postil/provider:1");
     expect(result.stdout).toContain("Local provider unavailable");
     expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
-    expect(result.stdout).toContain("Gate: passed");
+    expect(result.stdout).toContain("Reviewer verdict: unavailable");
+    expect(result.stdout).toContain("Gate: failed (no reviewer verdict");
+    expect(result.stdout).not.toContain("Gate: passed");
   }, 120_000);
 
   test("persists a model-output sentinel omitted from the GitHub receipt", async () => {
     const repo = await createFixtureRepo("model-output-sentinel");
 
-    const result = await runLocalReview(repo, "1", 1, {
+    const result = await runLocalReview(repo, "1", 2, {
       args: ["--require-clean"],
       env: {
         POSTIL_FAKE_ADVISORY_NEUTRAL: "1",
@@ -413,10 +499,12 @@ console.log("fixture-key");
       },
     });
 
-    expect(result.stdout).toContain("would complete check-run #1000 as failure");
+    expect(result.stdout).toContain("#1000 neutral: Review did not complete");
     expect(result.stdout).toContain(".postil/model-output:1");
     expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
-    expect(result.stdout).toContain("Gate: failed");
+    expect(result.stdout).toContain("Reviewer verdict: unavailable");
+    expect(result.stdout).toContain("Gate: failed (no reviewer verdict");
+    expect(result.stdout).not.toContain("Gate: passed");
   }, 120_000);
 
   test("base mode uses the exact selected head and serves files from its tree", async () => {
@@ -542,12 +630,15 @@ console.log("fixture-key");
     await rm(invocationMarker, { force: true });
     await rm(secretsInvocationMarker, { force: true });
     const targetArgs = options.includeTarget === false ? [] : ["--staged"];
+    const databaseRetentionArgs =
+      process.env.POSTIL_TEST_KEEP_DATABASE === "1" ? ["--keep-database"] : [];
     const child = Bun.spawn(
       [
         "bun",
         "run",
         "scripts/run-review-locally.ts",
         ...targetArgs,
+        ...databaseRetentionArgs,
         "--repo-path",
         repo,
         "--repo",
@@ -746,8 +837,8 @@ async function patchCheck(id, conclusion, title, summary) {
     })
   });
 }
-await patchCheck(advisory, operational ? "failure" : "success", failing || operational ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
-await patchCheck(gate, failing ? "failure" : "success", failing ? "Merge gate failed" : "Merge gate passed", envelope.summary);
+await patchCheck(advisory, operational ? "neutral" : "success", failing || operational ? "Review did not complete" : "No merge-relevant findings", envelope.summary);
+await patchCheck(gate, failing || operational ? "failure" : "success", failing || operational ? "Merge gate failed" : "Merge gate passed", envelope.summary);
 if (hasFinding && !operational) {
   await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}/reviews\`, {
     method: "POST",
@@ -761,6 +852,6 @@ if (hasFinding && !operational) {
   });
 }
 console.log(JSON.stringify(envelope));
-process.exit(failing ? 1 : 0);
+process.exit(operational ? 2 : failing ? 1 : 0);
 `;
 }

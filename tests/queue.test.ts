@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import type { Pool, PoolClient } from "pg";
 
@@ -7,25 +9,36 @@ import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-dat
 import {
   backoffMs,
   claimJob as claimJobWithCapabilities,
+  COALESCED_REVIEW_PAYLOAD_KEY,
   completeJob,
+  continueClaimedJob,
   enqueueGithubReactionJobOnce,
   enqueueJob,
+  enqueueObservedReviewSnapshot,
   enqueueRespondJobWithinHourlyCap,
   enqueueReviewJobOnce,
   failJob,
+  pendingReviewInputSupersedes,
   queueDepth,
-  requeueJobsOwnedBy,
+  type ReviewJobPayload,
+  reviewInputLeaseState,
+  requeueClaimedJobs,
   retryJobIndefinitely,
+  withReviewPublicationFence,
 } from "@/lib/queue";
 import {
   finalizeEscalationEmailRetirement,
   quiesceEscalationEmailJobs,
 } from "@/lib/escalation-email-retirement";
 import {
+  activateQueueLockGeneration,
   activatePrivateReviewAuthorIdentity,
   activateReleaseJobs,
   PRIVATE_REVIEW_AUTHOR_CAPABILITY,
+  QUEUE_LOCK_GENERATION_CAPABILITY,
+  quiesceQueueForLockGeneration,
 } from "@/lib/release-job-rollout";
+import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
 
 /**
  * Queue claim semantics against a real Postgres (FOR UPDATE SKIP LOCKED
@@ -37,10 +50,188 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 
 const describeDb = TEST_URL ? describe : describe.skip;
 const TEST_JOB_KINDS = ["review", "respond"] as const;
+const REVIEW_UPDATED_AT = "2026-08-10T00:00:05.000Z";
+
+function validReviewPayload(
+  overrides: Record<string, unknown> = {},
+): ReviewJobPayload {
+  return {
+    installationId: 1,
+    sourceInstallationId: 1,
+    sourceOrgId: 1,
+    githubRepoId: 9_001,
+    repoFullName: "octo/queue-test",
+    prNumber: 1,
+    headSha: "a".repeat(40),
+    baseSha: "b".repeat(40),
+    expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
+    ...overrides,
+  } as ReviewJobPayload;
+}
 
 function claimJob(pool: Pool, workerId: string) {
   return claimJobWithCapabilities(pool, workerId, TEST_JOB_KINDS);
 }
+
+async function waitForAdvisoryWaiter(pool: Pool): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const result = await pool.query<{ waiting: number }>(
+      `SELECT count(*)::int AS waiting
+         FROM pg_locks
+        WHERE locktype = 'advisory' AND NOT granted`,
+    );
+    if ((result.rows[0]?.waiting ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("queue mutation did not wait for the publication fence");
+}
+
+describe("queue transition structure", () => {
+  test("uses the database clock for guarded reconciliation decisions", async () => {
+    const source = await readFile(
+      join(import.meta.dir, "..", "src", "lib", "queue.ts"),
+      "utf8",
+    );
+    const retrySource = source.slice(
+      source.indexOf("export async function retryJobIndefinitely"),
+      source.indexOf("export async function queueDepth"),
+    );
+
+    expect(retrySource).toContain("clock_timestamp()");
+    expect(retrySource).toContain("reconciliation_deadline_at");
+    expect(retrySource).toContain("retry_within_budget");
+    expect(retrySource).toContain("lock_generation = $4");
+    expect(retrySource).not.toContain("Date.now");
+  });
+
+  test("claims and deadline admission share one guarded database statement", async () => {
+    const source = await readFile(
+      join(import.meta.dir, "..", "src", "lib", "queue.ts"),
+      "utf8",
+    );
+    const claimSource = source.slice(
+      source.indexOf("export async function claimJob"),
+      source.indexOf("export async function completeJob"),
+    );
+
+    expect(claimSource).toContain("candidate AS MATERIALIZED");
+    expect(claimSource).toContain("admission AS MATERIALIZED");
+    expect(claimSource).toContain(
+      "SELECT candidate.id, clock_timestamp() AS admitted_at",
+    );
+    expect(claimSource).toContain(
+      "job.reconciliation_deadline_at > admission.admitted_at",
+    );
+    expect(claimSource).toContain(
+      "job.reconciliation_deadline_at <= admission.admitted_at",
+    );
+    expect(claimSource).toContain(
+      "lock_generation = job.lock_generation + 1",
+    );
+    expect(claimSource).toContain("'terminalized'::text AS outcome");
+    expect(claimSource).toContain('if (row.outcome !== "claimed") continue');
+    expect(claimSource).toContain(
+      "active review claim was suppressed by queue identity enforcement",
+    );
+  });
+
+  test("complete, continue, and failure transitions fence the exact lease", async () => {
+    const source = await readFile(
+      join(import.meta.dir, "..", "src", "lib", "queue.ts"),
+      "utf8",
+    );
+    const completeSource = source.slice(
+      source.indexOf("export async function completeJob"),
+      source.indexOf("export async function continueClaimedJob"),
+    );
+    const continueSource = source.slice(
+      source.indexOf("export async function continueClaimedJob"),
+      source.indexOf("export async function requeueClaimedJobs"),
+    );
+    const requeueSource = source.slice(
+      source.indexOf("export async function requeueClaimedJobs"),
+      source.indexOf("export function backoffMs"),
+    );
+    const failureSource = source.slice(
+      source.indexOf("export async function failJob"),
+      source.indexOf("export const PUBLICATION_RECONCILIATION_BUDGET_MS"),
+    );
+
+    expect(completeSource).toContain("lock_generation = $3");
+    expect(continueSource).toContain("lock_generation = $5");
+    expect(requeueSource).toContain("job.locked_by = requested.locked_by");
+    expect(requeueSource).toContain(
+      "job.lock_generation = requested.lock_generation",
+    );
+    expect(requeueSource).toContain(
+      "`${lease.id}:${lease.lockGeneration}:${lease.lockedBy}`",
+    );
+    expect(requeueSource).not.toContain("left(locked_by");
+    expect(failureSource.match(/lock_generation = \$[45]/gu)).toHaveLength(3);
+    expect(completeSource).not.toContain("AND locked_at =");
+    expect(continueSource).not.toContain("AND locked_at =");
+    expect(failureSource).not.toContain("AND locked_at =");
+  });
+});
+
+describe("review input rerun authority", () => {
+  test("a parseable newer pending edit supersedes the claimed input", () => {
+    expect(
+      pendingReviewInputSupersedes(
+        undefined,
+        "2026-08-10T00:00:10.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      pendingReviewInputSupersedes(
+        "2026-08-10T00:00:05.000Z",
+        "2026-08-10T00:00:10.000Z",
+      ),
+    ).toBe(true);
+  });
+
+  test("equal timestamps use durable arrival order", () => {
+    const updatedAt = "2026-08-10T00:00:10.000Z";
+    expect(
+      pendingReviewInputSupersedes(updatedAt, updatedAt, "40", "41"),
+    ).toBe(true);
+    expect(
+      pendingReviewInputSupersedes(updatedAt, updatedAt, "41", "40"),
+    ).toBe(false);
+  });
+
+  test("equal unordered, older, missing, and invalid pending timestamps do not supersede", () => {
+    const running = "2026-08-10T00:00:10.000Z";
+    expect(pendingReviewInputSupersedes(running, running)).toBe(false);
+    expect(
+      pendingReviewInputSupersedes(
+        running,
+        "2026-08-10T00:00:05.000Z",
+      ),
+    ).toBe(false);
+    expect(pendingReviewInputSupersedes(running, undefined)).toBe(false);
+    expect(pendingReviewInputSupersedes(running, "invalid")).toBe(false);
+  });
+
+  test("stored arrival order supersedes an equal timestamp despite a legacy claim payload", async () => {
+    const state = await reviewInputLeaseState(
+      {
+        query: async () => ({
+          rows: [{
+            running_sequence: "41",
+            pending_updated_at: "2026-08-10T00:00:10.000Z",
+            pending_sequence: "42",
+          }],
+        }),
+      } as unknown as Pick<Pool, "query">,
+      { id: 1, lockedBy: "mixed-version-worker", lockGeneration: 1n },
+      "2026-08-10T00:00:10.000Z",
+      undefined,
+    );
+
+    expect(state).toBe("newer-pending");
+  });
+});
 
 describeDb("postgres job queue", () => {
   let db: EphemeralDatabase;
@@ -49,11 +240,16 @@ describeDb("postgres job queue", () => {
   beforeAll(async () => {
     db = await createEphemeralDatabase("queue");
     pool = db.pool;
+    await ensureOperationalIndexes(pool);
   }, 30_000);
 
   beforeEach(async () => {
     await pool.query(
       "TRUNCATE private_worker_rehearsals, respond_deliveries, jobs, deployment_capabilities RESTART IDENTITY",
+    );
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name) VALUES ($1)`,
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
     );
   });
 
@@ -62,30 +258,350 @@ describeDb("postgres job queue", () => {
   }, 30_000);
 
   test("claim returns the oldest runnable job and marks it running", async () => {
-    const id = await enqueueJob(pool, "review", { prNumber: 1 });
+    const payload = validReviewPayload();
+    const id = await enqueueJob(pool, "review", payload);
     const job = await claimJob(pool, "worker-a");
     expect(job).not.toBeNull();
     expect(job?.id).toBe(id);
     expect(job?.kind).toBe("review");
-    expect(job?.payload).toEqual({ prNumber: 1 });
+    expect(job?.payload).toEqual({
+      ...payload,
+      reviewInputSequence: expect.any(String),
+    });
     expect(job?.attempts).toBe(1);
+    expect(job?.lockGeneration).toBe(1n);
     expect(job?.createdAt).toBeInstanceOf(Date);
     expect(job?.lockedAt).toBeInstanceOf(Date);
     expect(job!.lockedAt.getTime()).toBeGreaterThanOrEqual(job!.createdAt.getTime());
 
     const row = await pool.query(
-      "SELECT status, locked_by, created_at, locked_at FROM jobs WHERE id = $1",
+      `SELECT status, locked_by, created_at, locked_at,
+              lock_generation::text AS lock_generation
+         FROM jobs WHERE id = $1`,
       [id],
     );
     expect(row.rows[0].status).toBe("running");
     expect(row.rows[0].locked_by).toBe("worker-a");
     expect(job?.createdAt).toEqual(row.rows[0].created_at);
     expect(job?.lockedAt).toEqual(row.rows[0].locked_at);
+    expect(BigInt(row.rows[0].lock_generation)).toBe(job!.lockGeneration);
+  });
+
+  test("activated databases assign a generation to rollback worker claims", async () => {
+    const id = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ prNumber: 80, headSha: "7".repeat(40) }),
+    );
+
+    const claimed = await pool.query<{
+      status: string;
+      locked_by: string;
+      lock_generation: string;
+    }>(
+      `UPDATE jobs
+          SET status = 'running', attempts = attempts + 1,
+              locked_at = clock_timestamp(), locked_by = 'rollback-worker'
+        WHERE id = $1 AND status = 'queued'
+      RETURNING status, locked_by,
+                lock_generation::text AS lock_generation`,
+      [id],
+    );
+
+    expect(claimed.rows[0]).toEqual({
+      status: "running",
+      locked_by: "rollback-worker",
+      lock_generation: "1",
+    });
+  });
+
+  test("inactive databases hold a pre-migration queued claim without terminalizing it", async () => {
+    const id = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ prNumber: 79, headSha: "6".repeat(40) }),
+    );
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
+
+    expect(await claimJob(pool, "inactive-worker")).toBeNull();
+    const held = await pool.query<{
+      status: string;
+      attempts: number;
+      held: boolean;
+      marker: string | null;
+      last_error: string | null;
+    }>(
+      `SELECT status, attempts,
+              run_after = 'infinity'::timestamptz AS held,
+              payload->>'_postilLockGenerationFence' AS marker,
+              last_error
+         FROM jobs WHERE id = $1`,
+      [id],
+    );
+    expect(held.rows[0]).toEqual({
+      status: "queued",
+      attempts: 0,
+      held: true,
+      marker: "true",
+      last_error: null,
+    });
+  });
+
+  test("bounded rollout backfills legacy review order and preserves schedules", async () => {
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
+    const dueAt: [Date, Date] = [
+      new Date("2026-08-14T10:00:00.000Z"),
+      new Date("2026-08-15T11:30:00.000Z"),
+    ];
+    await pool.query(
+      "ALTER TABLE jobs DISABLE TRIGGER jobs_stage_unactivated_release_trigger",
+    );
+    try {
+      await pool.query(
+        `INSERT INTO jobs (kind, payload, status, run_after)
+         VALUES
+           ('review', $1::jsonb, 'queued', $2),
+           ('review', $3::jsonb, 'queued', $4)`,
+        [
+          JSON.stringify(validReviewPayload({
+            prNumber: 77,
+            headSha: "4".repeat(40),
+            _postilCoalescedReviewPayload: validReviewPayload({
+              prNumber: 77,
+              headSha: "5".repeat(40),
+            }),
+          })),
+          dueAt[0],
+          JSON.stringify(validReviewPayload({
+            prNumber: 78,
+            headSha: "5".repeat(40),
+          })),
+          dueAt[1],
+        ],
+      );
+    } finally {
+      await pool.query(
+        "ALTER TABLE jobs ENABLE TRIGGER jobs_stage_unactivated_release_trigger",
+      );
+    }
+
+    await expect(
+      quiesceQueueForLockGeneration(pool, { timeoutMs: 0, batchSize: 1 }),
+    ).resolves.toBe(0);
+    const held = await pool.query<{
+      id: string;
+      current_sequence: string;
+      pending_sequence: string | null;
+      scheduled_for: Date;
+      held: boolean;
+      marker: string | null;
+    }>(
+      `SELECT id,
+              payload->>'reviewInputSequence' AS current_sequence,
+              payload#>>'{_postilCoalescedReviewPayload,reviewInputSequence}'
+                AS pending_sequence,
+              (payload->>'_postilLockGenerationRunAfter')::timestamptz
+                AS scheduled_for,
+              run_after = 'infinity'::timestamptz AS held,
+              payload->>'_postilLockGenerationFence' AS marker
+         FROM jobs
+        ORDER BY id`,
+    );
+    expect(held.rows).toHaveLength(2);
+    for (const [index, row] of held.rows.entries()) {
+      expect(BigInt(row.current_sequence)).toBeGreaterThan(0n);
+      expect(row.scheduled_for).toEqual(dueAt[index]!);
+      expect(row.held).toBe(true);
+      expect(row.marker).toBe("true");
+    }
+    expect(BigInt(held.rows[0]!.pending_sequence!)).toBeGreaterThan(
+      BigInt(held.rows[0]!.current_sequence),
+    );
+
+    expect(
+      await activateQueueLockGeneration(pool, { batchSize: 1 }),
+    ).toBe(2);
+    const released = await pool.query<{
+      run_after: Date;
+      marker: string | null;
+      scheduled_for: string | null;
+    }>(
+      `SELECT run_after,
+              payload->>'_postilLockGenerationFence' AS marker,
+              payload->>'_postilLockGenerationRunAfter' AS scheduled_for
+         FROM jobs
+        ORDER BY id`,
+    );
+    expect(released.rows).toEqual([
+      { run_after: dueAt[0], marker: null, scheduled_for: null },
+      { run_after: dueAt[1], marker: null, scheduled_for: null },
+    ]);
+  });
+
+  test("lock-generation rollout fences mixed-binary work until quiesce and activation", async () => {
+    const runningId = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ prNumber: 81, headSha: "8".repeat(40) }),
+    );
+    const queuedBeforeMigrationId = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ prNumber: 82, headSha: "9".repeat(40) }),
+    );
+    const running = await claimJob(pool, "pre-generation-worker");
+    expect(running?.id).toBe(runningId);
+
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
+    const fencedId = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ prNumber: 83, headSha: "a".repeat(40) }),
+    );
+    const fenced = await pool.query<{
+      held: boolean;
+      marker: string | null;
+    }>(
+      `SELECT run_after = 'infinity'::timestamptz AS held,
+              payload->>'_postilLockGenerationFence' AS marker
+         FROM jobs WHERE id = $1`,
+      [fencedId],
+    );
+    expect(fenced.rows[0]).toEqual({ held: true, marker: "true" });
+
+    await expect(
+      quiesceQueueForLockGeneration(pool, { timeoutMs: 0, batchSize: 1 }),
+    ).rejects.toThrow("queue claim(s) are still running after drain");
+    const queuedBeforeMigration = await pool.query<{
+      held: boolean;
+      marker: string | null;
+    }>(
+      `SELECT run_after = 'infinity'::timestamptz AS held,
+              payload->>'_postilLockGenerationFence' AS marker
+         FROM jobs WHERE id = $1`,
+      [queuedBeforeMigrationId],
+    );
+    expect(queuedBeforeMigration.rows[0]).toEqual({
+      held: true,
+      marker: "true",
+    });
+    expect(await completeJob(pool, running!)).toBe("done");
+    await expect(
+      quiesceQueueForLockGeneration(pool, { timeoutMs: 0, batchSize: 1 }),
+    )
+      .resolves.toBe(0);
+    expect(
+      await activateQueueLockGeneration(pool, { batchSize: 1 }),
+    ).toBe(2);
+
+    const released = await pool.query<{
+      held: boolean;
+      marker: string | null;
+    }>(
+      `SELECT run_after = 'infinity'::timestamptz AS held,
+              payload->>'_postilLockGenerationFence' AS marker
+         FROM jobs WHERE id = $1`,
+      [fencedId],
+    );
+    expect(released.rows[0]).toEqual({ held: false, marker: null });
+    const firstGenerationAware = await claimJob(pool, "generation-aware-worker-1");
+    expect(firstGenerationAware?.id).toBe(queuedBeforeMigrationId);
+    expect(await completeJob(pool, firstGenerationAware!)).toBe("done");
+    const generationAware = await claimJob(pool, "generation-aware-worker-2");
+    expect(generationAware?.id).toBe(fencedId);
+    expect(await activateQueueLockGeneration(pool)).toBe(0);
+    expect(await completeJob(pool, generationAware!)).toBe("done");
+  });
+
+  test("fresh self-hosted activation releases work before its first worker claim", async () => {
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
+    const id = await enqueueReviewJobOnce(
+      pool,
+      validReviewPayload({
+        prNumber: 83,
+        headSha: "f".repeat(40),
+        sourceDeliveryId: "fresh-self-hosted",
+      }),
+    );
+    expect(id).not.toBeNull();
+    if (id === null) throw new Error("fresh self-hosted job was not retained");
+    expect(await claimJob(pool, "pre-activation-worker")).toBeNull();
+
+    expect(await activateQueueLockGeneration(pool)).toBe(1);
+    const claimed = await claimJob(pool, "first-self-hosted-worker");
+    expect(claimed?.id).toBe(id);
+    expect(claimed?.lockGeneration).toBe(1n);
+  });
+
+  test("self-hosted upgrade activation releases migration-fenced existing work", async () => {
+    const id = await enqueueReviewJobOnce(
+      pool,
+      validReviewPayload({
+        prNumber: 84,
+        headSha: "e".repeat(40),
+        sourceDeliveryId: "upgrade-self-hosted",
+      }),
+    );
+    if (id === null) throw new Error("upgrade self-hosted job was not retained");
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
+    await expect(
+      quiesceQueueForLockGeneration(pool, { timeoutMs: 0, batchSize: 1 }),
+    ).resolves.toBe(0);
+    expect(await claimJob(pool, "upgrade-fenced-worker")).toBeNull();
+
+    expect(await activateQueueLockGeneration(pool)).toBe(1);
+    expect((await claimJob(pool, "upgraded-self-hosted-worker"))?.id).toBe(id);
+  });
+
+  test("terminalizes a malformed candidate and claims the next runnable job", async () => {
+    let malformedId: number;
+    await pool.query(
+      "ALTER TABLE jobs DISABLE TRIGGER jobs_suppress_duplicate_active_review_trigger",
+    );
+    try {
+      const malformed = await pool.query<{ id: string }>(
+        `INSERT INTO jobs (kind, payload, status)
+         VALUES ('review', '{"prNumber":1}'::jsonb, 'queued')
+         RETURNING id`,
+      );
+      malformedId = Number(malformed.rows[0]!.id);
+    } finally {
+      await pool.query(
+        "ALTER TABLE jobs ENABLE TRIGGER jobs_suppress_duplicate_active_review_trigger",
+      );
+    }
+    const runnableId = await enqueueJob(pool, "respond", { number: 1 });
+
+    const claimed = await claimJob(pool, "progress-worker");
+    expect(claimed?.id).toBe(runnableId);
+    const malformed = await pool.query<{
+      status: string;
+      last_error: string | null;
+    }>("SELECT status, last_error FROM jobs WHERE id = $1", [malformedId!]);
+    expect(malformed.rows[0]).toEqual({
+      status: "failed",
+      last_error: "active review identity is invalid",
+    });
   });
 
   test("leaves unsupported job kinds queued for a capable release", async () => {
     const unknownId = await enqueueJob(pool, "future-release-job", { version: 2 });
-    const reviewId = await enqueueJob(pool, "review", { prNumber: 1 });
+    const reviewId = await enqueueJob(pool, "review", validReviewPayload());
 
     const claimed = await claimJobWithCapabilities(pool, "current-worker", ["review"]);
     expect(claimed?.id).toBe(reviewId);
@@ -103,7 +619,7 @@ describeDb("postgres job queue", () => {
   });
 
   test("claims admitted acknowledgement work ahead of long review work", async () => {
-    const reviewId = await enqueueJob(pool, "review", { prNumber: 1 });
+    const reviewId = await enqueueJob(pool, "review", validReviewPayload());
     const reactionId = await enqueueJob(pool, "github-reaction", {
       sourceDeliveryId: "priority-reaction",
     });
@@ -177,13 +693,29 @@ describeDb("postgres job queue", () => {
   });
 
   test("stages new job kinds until the post-deploy capability activation", async () => {
+    const scheduledFor = new Date("2026-08-16T12:00:00.000Z");
     const id = await enqueueJob(pool, "billing-contact-verification", { orgId: 1 });
-    const deliveryId = await enqueueJob(pool, "respond-delivery", { jobId: 9 });
-    const staged = await pool.query<{ run_after: Date | string }>(
-      "SELECT run_after FROM jobs WHERE id = $1",
-      [id],
+    const deliveryId = await enqueueJob(
+      pool,
+      "respond-delivery",
+      { jobId: 9 },
+      { runAfter: scheduledFor },
+    );
+    const staged = await pool.query<{
+      id: string;
+      run_after: Date | string;
+      scheduled_for: Date;
+    }>(
+      `SELECT id, run_after,
+              (payload->>'_postilReleaseV1RunAfter')::timestamptz
+                AS scheduled_for
+         FROM jobs
+        WHERE id = ANY($1::bigint[])
+        ORDER BY id`,
+      [[id, deliveryId]],
     );
     expect(String(staged.rows[0]?.run_after).toLowerCase()).toContain("infinity");
+    expect(staged.rows[1]?.scheduled_for).toEqual(scheduledFor);
 
     // Reproduce the pre-capability worker query, which has no kind filter.
     const oldClaim = await pool.query(
@@ -193,13 +725,26 @@ describeDb("postgres job queue", () => {
     );
     expect(oldClaim.rows).toHaveLength(0);
 
-    expect(await activateReleaseJobs(pool)).toBe(2);
+    expect(await activateReleaseJobs(pool, { batchSize: 1 })).toBe(2);
     const nowRunnable = await pool.query<{ id: string }>(
       `SELECT id FROM jobs
        WHERE status = 'queued' AND run_after <= now()
        ORDER BY id`,
     );
-    expect(nowRunnable.rows.map((row) => Number(row.id))).toEqual([id, deliveryId]);
+    expect(nowRunnable.rows.map((row) => Number(row.id))).toEqual([id]);
+    const scheduled = await pool.query<{
+      run_after: Date;
+      schedule_receipt: string | null;
+    }>(
+      `SELECT run_after,
+              payload->>'_postilReleaseV1RunAfter' AS schedule_receipt
+         FROM jobs WHERE id = $1`,
+      [deliveryId],
+    );
+    expect(scheduled.rows[0]).toEqual({
+      run_after: scheduledFor,
+      schedule_receipt: null,
+    });
 
     // Activation is idempotent, and later inserts are immediately runnable.
     expect(await activateReleaseJobs(pool)).toBe(0);
@@ -210,6 +755,92 @@ describeDb("postgres job queue", () => {
     );
     expect(later.rows[0]?.runnable).toBe(true);
   });
+
+  test("preserves a scheduled release job when release activation runs first", async () => {
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
+    const scheduledFor = new Date("2026-08-16T13:00:00.000Z");
+    const id = await enqueueJob(
+      pool,
+      "respond-delivery",
+      { jobId: 10 },
+      { runAfter: scheduledFor },
+    );
+
+    expect(await activateReleaseJobs(pool, { batchSize: 1 })).toBe(1);
+    const releaseFirst = await pool.query<{
+      held: boolean;
+      queue_schedule: Date;
+      release_schedule: string | null;
+    }>(
+      `SELECT run_after = 'infinity'::timestamptz AS held,
+              (payload->>'_postilLockGenerationRunAfter')::timestamptz
+                AS queue_schedule,
+              payload->>'_postilReleaseV1RunAfter' AS release_schedule
+         FROM jobs WHERE id = $1`,
+      [id],
+    );
+    expect(releaseFirst.rows[0]).toEqual({
+      held: true,
+      queue_schedule: scheduledFor,
+      release_schedule: null,
+    });
+
+    expect(await activateQueueLockGeneration(pool, { batchSize: 1 })).toBe(1);
+    const released = await pool.query<{
+      run_after: Date;
+      queue_schedule: string | null;
+      release_schedule: string | null;
+    }>(
+      `SELECT run_after,
+              payload->>'_postilLockGenerationRunAfter' AS queue_schedule,
+              payload->>'_postilReleaseV1RunAfter' AS release_schedule
+         FROM jobs WHERE id = $1`,
+      [id],
+    );
+    expect(released.rows[0]).toEqual({
+      run_after: scheduledFor,
+      queue_schedule: null,
+      release_schedule: null,
+    });
+  });
+
+  test("serializes concurrent queue and release activation", async () => {
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [QUEUE_LOCK_GENERATION_CAPABILITY],
+    );
+    const scheduledFor = new Date("2026-08-16T14:00:00.000Z");
+    const id = await enqueueJob(
+      pool,
+      "respond-delivery",
+      { jobId: 11 },
+      { runAfter: scheduledFor },
+    );
+
+    await expect(Promise.all([
+      activateQueueLockGeneration(pool, { batchSize: 1, timeoutMs: 10_000 }),
+      activateReleaseJobs(pool, { batchSize: 1, timeoutMs: 10_000 }),
+    ])).resolves.toEqual(expect.arrayContaining([1, 1]));
+    const released = await pool.query<{
+      run_after: Date;
+      queue_schedule: string | null;
+      release_schedule: string | null;
+    }>(
+      `SELECT run_after,
+              payload->>'_postilLockGenerationRunAfter' AS queue_schedule,
+              payload->>'_postilReleaseV1RunAfter' AS release_schedule
+         FROM jobs WHERE id = $1`,
+      [id],
+    );
+    expect(released.rows[0]).toEqual({
+      run_after: scheduledFor,
+      queue_schedule: null,
+      release_schedule: null,
+    });
+  }, 30_000);
 
   test("activates private author enforcement idempotently", async () => {
     expect(await activatePrivateReviewAuthorIdentity(pool)).toBe(true);
@@ -291,10 +922,12 @@ describeDb("postgres job queue", () => {
     const runningId = await enqueueJob(pool, "escalation-email-verification", {
       running: true,
     });
-    await pool.query(
+    const locked = await pool.query<{ locked_at: Date; lock_generation: string }>(
       `UPDATE jobs
-       SET status = 'running', locked_at = now(), locked_by = 'old-worker'
-       WHERE id = $1`,
+       SET status = 'running', locked_at = now(), locked_by = 'old-worker',
+           lock_generation = lock_generation + 1
+       WHERE id = $1
+       RETURNING locked_at, lock_generation::text`,
       [runningId],
     );
 
@@ -312,7 +945,13 @@ describeDb("postgres job queue", () => {
     expect(
       await failJob(
         pool,
-        { id: runningId, attempts: 1, maxAttempts: 3, lockedBy: "old-worker" },
+        {
+          id: runningId,
+          attempts: 1,
+          maxAttempts: 3,
+          lockedBy: "old-worker",
+          lockGeneration: BigInt(locked.rows[0]!.lock_generation),
+        },
         "provider timeout",
       ),
     ).toBe("retried");
@@ -324,7 +963,8 @@ describeDb("postgres job queue", () => {
 
     await pool.query(
       `UPDATE jobs
-       SET status = 'running', locked_at = now(), locked_by = 'old-worker'
+       SET status = 'running', locked_at = now(), locked_by = 'old-worker',
+           lock_generation = lock_generation + 1
        WHERE id = $1`,
       [runningId],
     );
@@ -348,7 +988,8 @@ describeDb("postgres job queue", () => {
     });
     await pool.query(
       `UPDATE jobs
-       SET status = 'running', locked_at = now(), locked_by = 'old-worker'
+       SET status = 'running', locked_at = now(), locked_by = 'old-worker',
+           lock_generation = lock_generation + 1
        WHERE id = $1`,
       [runningId],
     );
@@ -375,8 +1016,16 @@ describeDb("postgres job queue", () => {
   });
 
   test("a locked row is skipped, not waited on (SKIP LOCKED)", async () => {
-    const first = await enqueueJob(pool, "review", { n: 1 });
-    const second = await enqueueJob(pool, "review", { n: 2 });
+    const first = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ n: 1, prNumber: 1 }),
+    );
+    const second = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ n: 2, prNumber: 2 }),
+    );
 
     // Hold a row lock on the first job in an open transaction.
     const holder: PoolClient = await pool.connect();
@@ -395,8 +1044,8 @@ describeDb("postgres job queue", () => {
   });
 
   test("two concurrent claims never take the same job", async () => {
-    await enqueueJob(pool, "review", { n: 1 });
-    await enqueueJob(pool, "review", { n: 2 });
+    await enqueueJob(pool, "review", validReviewPayload({ n: 1, prNumber: 1 }));
+    await enqueueJob(pool, "review", validReviewPayload({ n: 2, prNumber: 2 }));
     const [a, b] = await Promise.all([claimJob(pool, "w1"), claimJob(pool, "w2")]);
     expect(a).not.toBeNull();
     expect(b).not.toBeNull();
@@ -404,8 +1053,16 @@ describeDb("postgres job queue", () => {
   });
 
   test("worker shutdown requeues only its claims without consuming attempts", async () => {
-    const first = await enqueueJob(pool, "review", { n: 1 });
-    const second = await enqueueJob(pool, "review", { n: 2 });
+    const first = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ n: 1, prNumber: 1 }),
+    );
+    const second = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ n: 2, prNumber: 2 }),
+    );
     const sideEffect = await enqueueJob(pool, "respond", { n: 3 });
     const owned = await claimJob(pool, "worker-a#0");
     const foreign = await claimJob(pool, "worker-b#0");
@@ -415,12 +1072,11 @@ describeDb("postgres job queue", () => {
     expect(ownedSideEffect?.id).toBe(sideEffect);
 
     expect(
-      await requeueJobsOwnedBy(
+      await requeueClaimedJobs(
         pool,
-        "worker-a#",
         "worker shutdown interrupted the claim",
         ["review"],
-        [first, sideEffect],
+        [owned!, ownedSideEffect!],
       ),
     ).toBe(1);
 
@@ -456,6 +1112,47 @@ describeDb("postgres job queue", () => {
     ]);
   });
 
+  test("shutdown requeue rejects an immediate same-owner stale generation", async () => {
+    await enqueueJob(pool, "respond", { number: 1 });
+    const stale = await claimJob(pool, "reused-shutdown-worker");
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'queued', locked_at = NULL, locked_by = NULL,
+              run_after = clock_timestamp()
+        WHERE id = $1`,
+      [stale!.id],
+    );
+    const current = await claimJob(pool, "reused-shutdown-worker");
+    expect(current?.lockGeneration).toBe(stale!.lockGeneration + 1n);
+    await pool.query("UPDATE jobs SET locked_at = $2 WHERE id = $1", [
+      current!.id,
+      stale!.lockedAt,
+    ]);
+
+    expect(
+      await requeueClaimedJobs(pool, "late shutdown", ["respond"], [stale!]),
+    ).toBe(0);
+    const stillRunning = await pool.query<{
+      status: string;
+      locked_by: string;
+      lock_generation: string;
+      locked_at: Date;
+    }>(
+      `SELECT status, locked_by, lock_generation::text AS lock_generation, locked_at
+         FROM jobs WHERE id = $1`,
+      [current!.id],
+    );
+    expect(stillRunning.rows[0]).toEqual({
+      status: "running",
+      locked_by: "reused-shutdown-worker",
+      lock_generation: String(current!.lockGeneration),
+      locked_at: stale!.lockedAt,
+    });
+    expect(
+      await requeueClaimedJobs(pool, "current shutdown", ["respond"], [current!]),
+    ).toBe(1);
+  });
+
   test("concurrent review enqueue creates one active job per repository PR head", async () => {
     const payload = {
       installationId: 1,
@@ -464,6 +1161,7 @@ describeDb("postgres job queue", () => {
       prNumber: 42,
       headSha: "a".repeat(40),
       baseSha: "b".repeat(40),
+      expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
     };
     const results = await Promise.all(
       Array.from({ length: 12 }, () => enqueueReviewJobOnce(pool, payload)),
@@ -485,6 +1183,98 @@ describeDb("postgres job queue", () => {
     expect(await enqueueReviewJobOnce(pool, payload)).not.toBeNull();
   });
 
+  test("replacement insertion cannot invert the enqueue lock order", async () => {
+    const payload = {
+      installationId: 1,
+      githubRepoId: 991,
+      repoFullName: "octo/no-lock-inversion",
+      prNumber: 42,
+      headSha: "9".repeat(40),
+      baseSha: "8".repeat(40),
+      expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
+    };
+    const id = await enqueueReviewJobOnce(pool, payload);
+    if (id === null) throw new Error("review job was not retained");
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'running', locked_by = 'promotion-worker',
+              locked_at = clock_timestamp(),
+              lock_generation = lock_generation + 1
+        WHERE id = $1`,
+      [id],
+    );
+
+    const promotion = await pool.connect();
+    const enqueue = await pool.connect();
+    try {
+      await promotion.query("BEGIN");
+      await enqueue.query("BEGIN");
+      await promotion.query("SET LOCAL statement_timeout = '2s'");
+      await enqueue.query("SET LOCAL statement_timeout = '2s'");
+      await promotion.query("SELECT id FROM jobs WHERE id = $1 FOR UPDATE", [id]);
+      const pullRequestIdentity = [String(payload.githubRepoId), String(payload.prNumber)].join(
+        "\u001f",
+      );
+      const legacyIdentity = [
+        payload.repoFullName,
+        String(payload.prNumber),
+        payload.headSha,
+      ].join("\u001f");
+      const stableIdentity = [
+        String(payload.githubRepoId),
+        String(payload.prNumber),
+        payload.headSha,
+      ].join("\u001f");
+      for (const lock of [
+        `postil:review-pr:${pullRequestIdentity}`,
+        `postil:active-review:${legacyIdentity}`,
+        `postil:active-review:${stableIdentity}`,
+      ]) {
+        await enqueue.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [lock],
+        );
+      }
+      const waitingEnqueue = enqueue.query(
+        `SELECT id
+           FROM jobs
+          WHERE id = $1 AND status IN ('queued', 'running')
+          FOR UPDATE`,
+        [id],
+      );
+      await Bun.sleep(20);
+
+      await promotion.query(
+        "UPDATE jobs SET status = 'failed', locked_at = NULL, locked_by = NULL WHERE id = $1",
+        [id],
+      );
+      const inserted = await promotion.query<{ id: string }>(
+        `INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         VALUES ('review', $1, 'queued', clock_timestamp(), 3)
+         RETURNING id`,
+        [JSON.stringify({ ...payload, sourceDeliveryId: "replacement" })],
+      );
+      await promotion.query("COMMIT");
+      await waitingEnqueue;
+      await enqueue.query("COMMIT");
+
+      expect(inserted.rows).toHaveLength(1);
+      const trigger = await pool.query<{ definition: string }>(
+        `SELECT pg_get_functiondef(
+           'suppress_duplicate_active_review_job()'::regprocedure
+         ) AS definition`,
+      );
+      expect(trigger.rows[0]?.definition).not.toContain(
+        "pg_advisory_xact_lock",
+      );
+    } finally {
+      await promotion.query("ROLLBACK").catch(() => undefined);
+      await enqueue.query("ROLLBACK").catch(() => undefined);
+      promotion.release();
+      enqueue.release();
+    }
+  });
+
   test("rejects an invalid review repository identity before enqueue", async () => {
     await expect(
       enqueueReviewJobOnce(pool, {
@@ -494,11 +1284,12 @@ describeDb("postgres job queue", () => {
         prNumber: 42,
         headSha: "a".repeat(40),
         baseSha: "b".repeat(40),
+        expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
       }),
     ).rejects.toThrow("review job requires a positive GitHub repository ID");
   });
 
-  test("same-head queued reviews retain newest metadata and sticky full-review intent", async () => {
+  test("a newer queued edit starts a fresh budget and retains sticky intent", async () => {
     const initial = {
       installationId: 1,
       githubRepoId: 99,
@@ -507,6 +1298,7 @@ describeDb("postgres job queue", () => {
       headSha: "a".repeat(40),
       baseSha: "old-base",
       sourceDeliveryId: "initial",
+      expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
       trigger: {
         source: "automatic_pull_request" as const,
         webhookDeliveryId: "initial",
@@ -530,24 +1322,74 @@ describeDb("postgres job queue", () => {
         },
       }),
     ).toBe(id);
+    await pool.query(
+      `UPDATE jobs
+          SET attempts = 19,
+              created_at = clock_timestamp() - interval '2 hours',
+              run_after = clock_timestamp() + interval '30 minutes',
+              reconciliation_deadline_at = clock_timestamp() + interval '1 minute'
+        WHERE id = $1`,
+      [id],
+    );
+    const replacementId = await enqueueReviewJobOnce(pool, {
+      ...initial,
+      sourceDeliveryId: "newest",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+      trigger: {
+        source: "automatic_pull_request",
+        webhookDeliveryId: "newest",
+        webhookEvent: "pull_request",
+        webhookAction: "edited",
+      },
+    });
+    expect(replacementId).not.toBeNull();
+    expect(replacementId).not.toBe(id);
     expect(
       await enqueueReviewJobOnce(pool, {
         ...initial,
-        sourceDeliveryId: "newest",
+        sourceDeliveryId: "last-arrival",
+        expectedPullRequestUpdatedAt: "2026-08-10T00:00:05.000Z",
         trigger: {
           source: "automatic_pull_request",
-          webhookDeliveryId: "newest",
+          webhookDeliveryId: "last-arrival",
           webhookEvent: "pull_request",
           webhookAction: "edited",
         },
       }),
-    ).toBe(id);
+    ).toBeNull();
 
-    const row = await pool.query<{ payload: Record<string, unknown> }>(
-      "SELECT payload FROM jobs WHERE id = $1",
-      [id],
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      attempts: number;
+      run_after: Date;
+      created_at: Date;
+      reconciliation_deadline_at: Date | null;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT id, status, attempts, run_after, created_at,
+              reconciliation_deadline_at, payload
+         FROM jobs
+        WHERE id IN ($1, $2)
+        ORDER BY id`,
+      [id, replacementId],
     );
-    expect(row.rows[0]?.payload).toMatchObject({
+    expect(rows.rows[0]).toMatchObject({
+      id: String(id),
+      status: "done",
+      attempts: 19,
+    });
+    expect(rows.rows[1]).toMatchObject({
+      id: String(replacementId),
+      status: "queued",
+      attempts: 0,
+      reconciliation_deadline_at: null,
+    });
+    expect(rows.rows[1]!.created_at.getTime()).toBeGreaterThan(
+      rows.rows[0]!.created_at.getTime(),
+    );
+    expect(rows.rows[1]!.run_after.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(rows.rows[1]?.payload).toMatchObject({
       baseSha: "old-base",
       sourceDeliveryId: "newest",
       forceFullReview: true,
@@ -568,6 +1410,7 @@ describeDb("postgres job queue", () => {
       headSha: "c".repeat(40),
       baseSha: "base",
       sourceDeliveryId: "initial",
+      expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
     };
     const id = await enqueueReviewJobOnce(pool, initial);
     if (id === null) throw new Error("initial review job was not retained");
@@ -606,6 +1449,408 @@ describeDb("postgres job queue", () => {
     expect(await claimJob(pool, "extra-worker")).toBeNull();
   });
 
+  test("a newer same-head edit blocks the claimed input and survives as its rerun", async () => {
+    const initial = {
+      installationId: 1,
+      githubRepoId: 99,
+      repoFullName: "octo/running-edit",
+      prNumber: 44,
+      headSha: "e".repeat(40),
+      baseSha: "base",
+      sourceDeliveryId: "initial-edit",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:05.000Z",
+    };
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("initial edit review was not retained");
+    const running = await claimJob(pool, "running-edit-worker");
+    expect(running?.id).toBe(id);
+
+    const newerEdit = {
+      ...initial,
+      sourceDeliveryId: "newer-edit",
+      forceFullReview: true,
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+    };
+    expect(await enqueueReviewJobOnce(pool, newerEdit)).toBe(id);
+    expect(
+      await reviewInputLeaseState(
+        pool,
+        running!,
+        initial.expectedPullRequestUpdatedAt,
+      ),
+    ).toBe("newer-pending");
+
+    expect(await completeJob(pool, running!)).toBe("coalesced");
+    const rerun = await claimJob(pool, "newer-edit-worker");
+    expect(rerun).toMatchObject({
+      attempts: 1,
+      payload: {
+        sourceDeliveryId: "newer-edit",
+        forceFullReview: true,
+        expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+      },
+    });
+    expect(
+      await reviewInputLeaseState(
+        pool,
+        rerun!,
+        newerEdit.expectedPullRequestUpdatedAt,
+      ),
+    ).toBe("current");
+  });
+
+  test("equal-timestamp same-head edits retain arrival order and supersede the claim", async () => {
+    const initial = validReviewPayload({
+      prNumber: 45,
+      headSha: "4".repeat(40),
+      sourceDeliveryId: "equal-edit-a",
+      forceFullReview: true,
+      trigger: {
+        source: "automatic_pull_request",
+        webhookDeliveryId: "equal-edit-a",
+        webhookEvent: "pull_request",
+        webhookAction: "edited",
+      },
+    });
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("equal-timestamp edit was not retained");
+    const running = await claimJob(pool, "equal-edit-worker");
+    expect(running?.id).toBe(id);
+
+    expect(
+      await enqueueReviewJobOnce(pool, {
+        ...initial,
+        sourceDeliveryId: "equal-edit-b",
+        trigger: {
+          ...initial.trigger!,
+          webhookDeliveryId: "equal-edit-b",
+        },
+      }),
+    ).toBe(id);
+    expect(
+      await reviewInputLeaseState(
+        pool,
+        running!,
+        initial.expectedPullRequestUpdatedAt,
+        running!.payload.reviewInputSequence as string,
+      ),
+    ).toBe("newer-pending");
+    expect(await completeJob(pool, running!)).toBe("coalesced");
+    const rerun = await claimJob(pool, "equal-edit-rerun-worker");
+    expect(rerun?.payload).toMatchObject({
+      sourceDeliveryId: "equal-edit-b",
+      expectedPullRequestUpdatedAt: initial.expectedPullRequestUpdatedAt,
+      forceFullReview: true,
+    });
+    expect(
+      BigInt(rerun!.payload.reviewInputSequence as string),
+    ).toBeGreaterThan(BigInt(running!.payload.reviewInputSequence as string));
+  });
+
+  test("equal-timestamp base changes retain exact successor provenance", async () => {
+    const initial = validReviewPayload({
+      prNumber: 46,
+      headSha: "5".repeat(40),
+      baseSha: "old-base",
+      sourceDeliveryId: "equal-base-a",
+      forceFullReview: true,
+    });
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("equal-timestamp base change was not retained");
+    const running = await claimJob(pool, "equal-base-worker");
+
+    expect(
+      await enqueueReviewJobOnce(pool, {
+        ...initial,
+        baseSha: "new-base",
+        sourceDeliveryId: "equal-base-b",
+      }),
+    ).toBe(id);
+    expect(
+      await reviewInputLeaseState(
+        pool,
+        running!,
+        initial.expectedPullRequestUpdatedAt,
+        running!.payload.reviewInputSequence as string,
+      ),
+    ).toBe("newer-pending");
+    expect(await completeJob(pool, running!)).toBe("coalesced");
+    expect((await claimJob(pool, "equal-base-rerun"))?.payload).toMatchObject({
+      baseSha: "new-base",
+      sourceDeliveryId: "equal-base-b",
+    });
+  });
+
+  test("reversed equal-timestamp base arrival converges to the worker-observed snapshot", async () => {
+    const current = validReviewPayload({
+      prNumber: 58,
+      headSha: "8".repeat(40),
+      baseSha: "new-merge-base",
+      sourceDeliveryId: "equal-base-current",
+      forceFullReview: true,
+    });
+    const currentId = await enqueueReviewJobOnce(pool, current);
+    if (currentId === null) throw new Error("current base snapshot was not retained");
+
+    const stale = {
+      ...current,
+      baseSha: "old-merge-base",
+      sourceDeliveryId: "equal-base-stale",
+    };
+    const staleId = await enqueueReviewJobOnce(pool, stale);
+    if (staleId === null) throw new Error("reversed stale snapshot was not retained");
+    expect(staleId).not.toBe(currentId);
+
+    const running = await claimJob(pool, "equal-base-reversed-worker");
+    expect(running?.payload).toMatchObject({
+      baseSha: "old-merge-base",
+      sourceDeliveryId: "equal-base-stale",
+    });
+    expect(
+      await enqueueObservedReviewSnapshot(
+        pool,
+        running!.payload as ReviewJobPayload,
+        {
+          headSha: current.headSha,
+          baseSha: current.baseSha,
+          updatedAt: current.expectedPullRequestUpdatedAt,
+        },
+      ),
+    ).toBe(staleId);
+    expect(
+      await reviewInputLeaseState(
+        pool,
+        running!,
+        stale.expectedPullRequestUpdatedAt,
+        running!.payload.reviewInputSequence as string,
+      ),
+    ).toBe("newer-pending");
+    expect(await completeJob(pool, running!)).toBe("coalesced");
+
+    const converged = await claimJob(pool, "equal-base-converged-worker");
+    expect(converged?.payload).toMatchObject({
+      headSha: current.headSha,
+      baseSha: "new-merge-base",
+      expectedPullRequestUpdatedAt: current.expectedPullRequestUpdatedAt,
+    });
+    expect(converged?.payload).not.toHaveProperty("sourceDeliveryId");
+    expect(await completeJob(pool, converged!)).toBe("done");
+  });
+
+  test("publication fence closes the former authorization-to-publication window", async () => {
+    const initial = validReviewPayload({
+      prNumber: 47,
+      headSha: "6".repeat(40),
+      sourceDeliveryId: "fence-a",
+      forceFullReview: true,
+    });
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("publication-fence input was not retained");
+    const running = await claimJob(pool, "publication-fence-worker");
+    expect(running?.id).toBe(id);
+
+    let releasePublication!: () => void;
+    const holdPublication = new Promise<void>((resolve) => {
+      releasePublication = resolve;
+    });
+    let fenceEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      fenceEntered = resolve;
+    });
+    const order: string[] = [];
+    const publication = withReviewPublicationFence(pool, initial, async () => {
+      expect(
+        await reviewInputLeaseState(
+          pool,
+          running!,
+          initial.expectedPullRequestUpdatedAt,
+          running!.payload.reviewInputSequence as string,
+        ),
+      ).toBe("current");
+      fenceEntered();
+      await holdPublication;
+      order.push("published");
+    });
+    await entered;
+
+    const mutation = enqueueReviewJobOnce(pool, {
+      ...initial,
+      sourceDeliveryId: "fence-b",
+    }).then((result) => {
+      order.push("mutation-committed");
+      return result;
+    });
+    await waitForAdvisoryWaiter(pool);
+    expect(order).toEqual([]);
+    releasePublication();
+
+    await expect(publication).resolves.toBeUndefined();
+    await expect(mutation).resolves.toBe(id);
+    expect(order).toEqual(["published", "mutation-committed"]);
+    expect(
+      await reviewInputLeaseState(
+        pool,
+        running!,
+        initial.expectedPullRequestUpdatedAt,
+        running!.payload.reviewInputSequence as string,
+      ),
+    ).toBe("newer-pending");
+  });
+
+  test("a delayed running event cannot replace newer retained metadata", async () => {
+    const initial = {
+      installationId: 1,
+      githubRepoId: 99,
+      repoFullName: "octo/running-delayed-edit",
+      prNumber: 144,
+      headSha: "1".repeat(40),
+      baseSha: "base",
+      sourceDeliveryId: "initial",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+    };
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("initial review job was not retained");
+    const running = await claimJob(pool, "running-delayed-worker");
+    await enqueueReviewJobOnce(pool, {
+      ...initial,
+      sourceDeliveryId: "newest",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:20.000Z",
+    });
+
+    expect(
+      await enqueueReviewJobOnce(pool, {
+        ...initial,
+        sourceDeliveryId: "delayed",
+        expectedPullRequestUpdatedAt: "2026-08-10T00:00:15.000Z",
+      }),
+    ).toBeNull();
+    expect(await completeJob(pool, running!)).toBe("coalesced");
+    const rerun = await claimJob(pool, "running-delayed-rerun");
+    expect(rerun?.payload).toMatchObject({
+      sourceDeliveryId: "newest",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:20.000Z",
+    });
+  });
+
+  test("publication recovery remains immutable while incoming work coalesces", async () => {
+    const recovery = {
+      installationId: 1,
+      githubRepoId: 99,
+      repoFullName: "octo/publication-recovery",
+      prNumber: 145,
+      headSha: "2".repeat(40),
+      baseSha: "base",
+      recoveryReviewId: 77,
+      sourceDeliveryId: "recovery",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+    };
+    const id = await enqueueReviewJobOnce(pool, recovery);
+    if (id === null) throw new Error("recovery review job was not retained");
+    expect(
+      await enqueueReviewJobOnce(pool, {
+        ...recovery,
+        recoveryReviewId: undefined,
+        sourceDeliveryId: "newer-edit",
+        expectedPullRequestUpdatedAt: "2026-08-10T00:00:20.000Z",
+      }),
+    ).toBe(id);
+    const stored = await pool.query<{ payload: Record<string, unknown> }>(
+      "SELECT payload FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(stored.rows[0]?.payload).toMatchObject({
+      recoveryReviewId: 77,
+      sourceDeliveryId: "recovery",
+      providerRetryLineage: `review-job:${id}`,
+      [COALESCED_REVIEW_PAYLOAD_KEY]: {
+        sourceDeliveryId: "newer-edit",
+        providerRetryLineage: `review-job:${id}`,
+        expectedPullRequestUpdatedAt: "2026-08-10T00:00:20.000Z",
+      },
+    });
+    expect(
+      stored.rows[0]?.payload[COALESCED_REVIEW_PAYLOAD_KEY],
+    ).not.toHaveProperty("recoveryReviewId");
+
+    const running = await claimJob(pool, "publication-recovery-worker");
+    expect(
+      await retryJobIndefinitely(
+        pool,
+        running!,
+        "publication verification deferred",
+      ),
+    ).toBe("retried");
+    const retry = await pool.query<{
+      id: string;
+      status: string;
+      payload: Record<string, unknown>;
+    }>("SELECT id, status, payload FROM jobs WHERE id = $1", [id]);
+    expect(retry.rows[0]).toMatchObject({
+      id: String(id),
+      status: "queued",
+      payload: {
+        recoveryReviewId: 77,
+        [COALESCED_REVIEW_PAYLOAD_KEY]: {
+          sourceDeliveryId: "newer-edit",
+        },
+      },
+    });
+    await pool.query("UPDATE jobs SET run_after = clock_timestamp() WHERE id = $1", [id]);
+    const recoveryRetry = await claimJob(pool, "publication-recovery-retry");
+    expect(await completeJob(pool, recoveryRetry!)).toBe("coalesced");
+    const incoming = await claimJob(pool, "publication-recovery-incoming");
+    expect(incoming?.payload).toMatchObject({ sourceDeliveryId: "newer-edit" });
+    expect(incoming?.payload.providerRetryLineage).toBe(`review-job:${id}`);
+    expect(incoming?.payload).not.toHaveProperty("recoveryReviewId");
+  });
+
+  test("mixed legacy promotion reconstructs the provider lineage from the retiring job", async () => {
+    const payload = {
+      installationId: 1,
+      githubRepoId: 99,
+      repoFullName: "octo/legacy-lineage",
+      prNumber: 146,
+      headSha: "3".repeat(40),
+      baseSha: "base",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+    };
+    const inserted = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, max_attempts)
+       VALUES ('review', $1::jsonb, 'running', 3)
+       RETURNING id`,
+      [
+        JSON.stringify({
+          ...payload,
+          [COALESCED_REVIEW_PAYLOAD_KEY]: {
+            ...payload,
+            expectedPullRequestUpdatedAt: "2026-08-10T00:00:20.000Z",
+          },
+        }),
+      ],
+    );
+    const id = Number(inserted.rows[0]!.id);
+    await pool.query(
+      `UPDATE jobs
+          SET locked_by = 'legacy-worker', locked_at = now(), lock_generation = 1
+        WHERE id = $1`,
+      [id],
+    );
+
+    expect(
+      await completeJob(pool, {
+        id,
+        lockedBy: "legacy-worker",
+        lockGeneration: 1n,
+      }),
+    ).toBe("coalesced");
+    const promoted = await pool.query<{ payload: Record<string, unknown> }>(
+      "SELECT payload FROM jobs WHERE kind = 'review' AND status = 'queued'",
+    );
+    expect(promoted.rows[0]?.payload.providerRetryLineage).toBe(
+      `review-job:${id}`,
+    );
+  });
+
   test("a terminal failure promotes its retained review", async () => {
     const initial = {
       installationId: 1,
@@ -614,6 +1859,7 @@ describeDb("postgres job queue", () => {
       prNumber: 44,
       headSha: "d".repeat(40),
       baseSha: "base",
+      expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
     };
     const id = await enqueueReviewJobOnce(pool, initial);
     if (id === null) throw new Error("initial review job was not retained");
@@ -674,6 +1920,7 @@ describeDb("postgres job queue", () => {
       prNumber: 45,
       headSha: "e".repeat(40),
       baseSha: "base",
+      expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
     };
     const id = await enqueueReviewJobOnce(pool, initial);
     if (id === null) throw new Error("initial review job was not retained");
@@ -724,6 +1971,7 @@ describeDb("postgres job queue", () => {
       prNumber: 46,
       headSha: "f".repeat(40),
       baseSha: "old-base",
+      expectedPullRequestUpdatedAt: REVIEW_UPDATED_AT,
     };
     const initialId = await enqueueReviewJobOnce(pool, initial);
     if (initialId === null) throw new Error("initial review job was not retained");
@@ -753,13 +2001,17 @@ describeDb("postgres job queue", () => {
   });
 
   test("jobs scheduled in the future are not claimed", async () => {
-    await enqueueJob(pool, "review", { n: 1 }, { runAfter: new Date(Date.now() + 60_000) });
+    await enqueueJob(pool, "review", validReviewPayload({ n: 1 }), {
+      runAfter: new Date(Date.now() + 60_000),
+    });
     expect(await claimJob(pool, "w")).toBeNull();
     expect(await queueDepth(pool)).toBe(1);
   });
 
   test("failJob requeues with backoff until attempts are exhausted", async () => {
-    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 2 });
+    await enqueueJob(pool, "review", validReviewPayload({ n: 1 }), {
+      maxAttempts: 2,
+    });
 
     const firstTry = await claimJob(pool, "w");
     expect(firstTry?.attempts).toBe(1);
@@ -826,7 +2078,9 @@ describeDb("postgres job queue", () => {
   test("failJob {permanent} fails immediately without consuming remaining attempts", async () => {
     // A deterministic error (broken CA store, missing binary) must not burn the
     // retry budget: the very first attempt goes straight to `failed`.
-    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 3 });
+    await enqueueJob(pool, "review", validReviewPayload({ n: 1 }), {
+      maxAttempts: 3,
+    });
 
     const job = await claimJob(pool, "w");
     expect(job?.attempts).toBe(1);
@@ -853,7 +2107,9 @@ describeDb("postgres job queue", () => {
   });
 
   test("durable reconciliation requeues after its ordinary retry budget", async () => {
-    await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    await enqueueJob(pool, "review", validReviewPayload({ reconcile: true }), {
+      maxAttempts: 1,
+    });
     const job = await claimJob(pool, "reconciler");
     expect(job?.attempts).toBe(1);
 
@@ -861,13 +2117,153 @@ describeDb("postgres job queue", () => {
       await retryJobIndefinitely(pool, job!, "GitHub unavailable"),
     ).toBe("retried");
     const row = await pool.query(
-      "SELECT status, max_attempts, last_error FROM jobs WHERE id = $1",
+      `SELECT status, max_attempts, last_error,
+              run_after < reconciliation_deadline_at AS scheduled_within_budget
+         FROM jobs WHERE id = $1`,
       [job!.id],
     );
     expect(row.rows[0]).toMatchObject({
       status: "queued",
       max_attempts: 1,
       last_error: "GitHub unavailable",
+      scheduled_within_budget: true,
+    });
+  });
+
+  test("an expired reconciliation retry is terminalized before claim", async () => {
+    const id = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ reconcile: true }),
+    );
+    const first = await claimJob(pool, "reconciler");
+    expect(await retryJobIndefinitely(pool, first!, "GitHub unavailable")).toBe(
+      "retried",
+    );
+    await pool.query(
+      `UPDATE jobs
+          SET run_after = clock_timestamp(),
+              reconciliation_deadline_at = clock_timestamp()
+        WHERE id = $1`,
+      [id],
+    );
+
+    expect(await claimJob(pool, "late-reconciler")).toBeNull();
+    const row = await pool.query<{ status: string; last_error: string }>(
+      "SELECT status, last_error FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(row.rows[0]).toMatchObject({ status: "failed" });
+    expect(row.rows[0]?.last_error).toContain(
+      "reconciliation budget exhausted before claim",
+    );
+  });
+
+  test("claim-time expiration promotes retained review provenance and provider lineage", async () => {
+    const initial = validReviewPayload({
+      repoFullName: "octo/claim-expiration-promotion",
+      prNumber: 81,
+    });
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("initial review job was not retained");
+    const parent = (
+      await pool.query<{ payload: Record<string, unknown> }>(
+        "SELECT payload FROM jobs WHERE id = $1",
+        [id],
+      )
+    ).rows[0]!.payload;
+    const pending = {
+      ...initial,
+      baseSha: "c".repeat(40),
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+      sourceDeliveryId: "claim-expiration-delivery",
+      trigger: {
+        source: "automatic_pull_request",
+        webhookDeliveryId: "claim-expiration-delivery",
+        webhookEvent: "pull_request",
+        webhookAction: "edited",
+      },
+    };
+    await pool.query(
+      `UPDATE jobs
+          SET payload = jsonb_set(payload, ARRAY[$2]::text[], $3::jsonb, true),
+              run_after = clock_timestamp(),
+              reconciliation_deadline_at = clock_timestamp()
+        WHERE id = $1`,
+      [id, COALESCED_REVIEW_PAYLOAD_KEY, JSON.stringify(pending)],
+    );
+
+    const promotedClaim = await claimJob(pool, "expiration-worker");
+    expect(promotedClaim).not.toBeNull();
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      payload: Record<string, unknown>;
+    }>("SELECT id, status, payload FROM jobs WHERE kind = 'review' ORDER BY id");
+    expect(rows.rows).toHaveLength(2);
+    expect(rows.rows[0]).toMatchObject({ id: String(id), status: "failed" });
+    expect(rows.rows[1]).toMatchObject({
+      status: "running",
+      payload: {
+        baseSha: "c".repeat(40),
+        sourceDeliveryId: "claim-expiration-delivery",
+        expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+        providerRetryLineage: parent.providerRetryLineage,
+        trigger: { webhookDeliveryId: "claim-expiration-delivery" },
+      },
+    });
+    expect(rows.rows[1]!.payload).not.toHaveProperty(COALESCED_REVIEW_PAYLOAD_KEY);
+  });
+
+  test("candidate expiration race promotes retained input after the sweep limit", async () => {
+    await pool.query(
+      `INSERT INTO jobs
+         (kind, payload, status, run_after, reconciliation_deadline_at)
+       SELECT 'respond', '{}'::jsonb, 'queued', clock_timestamp(), clock_timestamp()
+         FROM generate_series(1, 100)`,
+    );
+    const initial = validReviewPayload({
+      repoFullName: "octo/candidate-expiration-promotion",
+      prNumber: 82,
+    });
+    const id = await enqueueReviewJobOnce(pool, initial);
+    if (id === null) throw new Error("initial review job was not retained");
+    const parent = (
+      await pool.query<{ payload: Record<string, unknown> }>(
+        "SELECT payload FROM jobs WHERE id = $1",
+        [id],
+      )
+    ).rows[0]!.payload;
+    const pending = {
+      ...initial,
+      forceFullReview: true,
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:11.000Z",
+      sourceDeliveryId: "candidate-expiration-delivery",
+    };
+    await pool.query(
+      `UPDATE jobs
+          SET payload = jsonb_set(payload, ARRAY[$2]::text[], $3::jsonb, true),
+              reconciliation_deadline_at = clock_timestamp()
+        WHERE id = $1`,
+      [id, COALESCED_REVIEW_PAYLOAD_KEY, JSON.stringify(pending)],
+    );
+
+    const promotedClaim = await claimJob(pool, "candidate-expiration-worker");
+    expect(promotedClaim).not.toBeNull();
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      payload: Record<string, unknown>;
+    }>("SELECT id, status, payload FROM jobs WHERE kind = 'review' ORDER BY id");
+    expect(rows.rows).toHaveLength(2);
+    expect(rows.rows[0]).toMatchObject({ id: String(id), status: "failed" });
+    expect(rows.rows[1]).toMatchObject({
+      status: "running",
+      payload: {
+        sourceDeliveryId: "candidate-expiration-delivery",
+        forceFullReview: true,
+        providerRetryLineage: parent.providerRetryLineage,
+      },
     });
   });
 
@@ -875,7 +2271,12 @@ describeDb("postgres job queue", () => {
     // Production showed attempts=10 and attempts=28 against max_attempts=3:
     // indefinite reconciliation must never consult attempts. Wall clock is
     // the only thing that can end it.
-    const id = await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    const id = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ reconcile: true }),
+      { maxAttempts: 1 },
+    );
     const job = await claimJob(pool, "reconciler");
     expect(job?.attempts).toBe(1);
 
@@ -894,8 +2295,248 @@ describeDb("postgres job queue", () => {
     expect(row.rows[0]).toMatchObject({ status: "queued", max_attempts: 1 });
   });
 
+  test("durable reconciliation immediately promotes retained input within its budget", async () => {
+    const initial = {
+      installationId: 1,
+      githubRepoId: 99,
+      repoFullName: "octo/reconciliation-retry-upgrade",
+      prNumber: 47,
+      headSha: "a".repeat(40),
+      baseSha: "base",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:05.000Z",
+    };
+    const initialId = await enqueueReviewJobOnce(pool, initial);
+    if (initialId === null) throw new Error("initial review job was not retained");
+    const running = await claimJob(pool, "reconciler");
+    await enqueueReviewJobOnce(pool, {
+      ...initial,
+      sourceDeliveryId: "newer-edit-before-budget",
+      forceFullReview: true,
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+    });
+
+    expect(
+      await retryJobIndefinitely(
+        pool,
+        running!,
+        "GitHub unavailable",
+        60 * 60 * 1000,
+      ),
+    ).toBe("coalesced");
+
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT id, status, payload
+         FROM jobs
+        WHERE kind = 'review'
+        ORDER BY id`,
+    );
+    expect(rows.rows).toHaveLength(2);
+    expect(rows.rows[0]).toMatchObject({
+      id: String(initialId),
+      status: "failed",
+    });
+    expect(rows.rows[1]).toMatchObject({
+      status: "queued",
+      payload: {
+        sourceDeliveryId: "newer-edit-before-budget",
+        forceFullReview: true,
+        expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+      },
+    });
+    expect(rows.rows[1]?.payload).not.toHaveProperty(
+      COALESCED_REVIEW_PAYLOAD_KEY,
+    );
+  });
+
+  test("durable reconciliation exhausts before a retry could reach its deadline", async () => {
+    const id = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ reconcile: true }),
+      { maxAttempts: 1 },
+    );
+    await pool.query(
+      "UPDATE jobs SET created_at = now() - interval '59 minutes' WHERE id = $1",
+      [id],
+    );
+    const job = await claimJob(pool, "reconciler");
+    expect(job).not.toBeNull();
+
+    expect(
+      await retryJobIndefinitely(
+        pool,
+        { ...job!, attempts: 20 },
+        "GitHub unavailable",
+        60 * 60 * 1000,
+      ),
+    ).toBe("exhausted");
+    const row = await pool.query<{
+      status: string;
+      last_error: string;
+    }>(
+      `SELECT status, last_error
+         FROM jobs WHERE id = $1`,
+      [id],
+    );
+    expect(row.rows[0]).toMatchObject({ status: "failed" });
+    expect(row.rows[0]?.last_error).toContain("reconciliation budget");
+  });
+
+  test("reconciliation exhaustion atomically promotes one retained review input", async () => {
+    const initial = {
+      installationId: 1,
+      githubRepoId: 99,
+      repoFullName: "octo/reconciliation-upgrade",
+      prNumber: 46,
+      headSha: "f".repeat(40),
+      baseSha: "base",
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:05.000Z",
+    };
+    const initialId = await enqueueReviewJobOnce(pool, initial);
+    if (initialId === null) throw new Error("initial review job was not retained");
+    await pool.query(
+      "UPDATE jobs SET created_at = clock_timestamp() - interval '2 seconds' WHERE id = $1",
+      [initialId],
+    );
+    const running = await claimJob(pool, "reconciler");
+    await enqueueReviewJobOnce(pool, {
+      ...initial,
+      sourceDeliveryId: "newer-edit",
+      forceFullReview: true,
+      expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+    });
+
+    expect(
+      await retryJobIndefinitely(
+        pool,
+        running!,
+        "GitHub unavailable",
+        1_000,
+      ),
+    ).toBe("coalesced");
+
+    const rows = await pool.query<{
+      id: string;
+      status: string;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT id, status, payload
+         FROM jobs
+        WHERE kind = 'review'
+        ORDER BY id`,
+    );
+    expect(rows.rows).toHaveLength(2);
+    expect(rows.rows[0]).toMatchObject({
+      id: String(initialId),
+      status: "failed",
+    });
+    expect(rows.rows[1]).toMatchObject({
+      status: "queued",
+      payload: {
+        sourceDeliveryId: "newer-edit",
+        forceFullReview: true,
+        expectedPullRequestUpdatedAt: "2026-08-10T00:00:10.000Z",
+      },
+    });
+    expect(rows.rows[1]?.payload).not.toHaveProperty(
+      COALESCED_REVIEW_PAYLOAD_KEY,
+    );
+  });
+
+  test("durable reconciliation retry cannot mutate a newer exact claim", async () => {
+    await enqueueJob(pool, "review", validReviewPayload({ reconcile: true }));
+    const first = await claimJob(pool, "reused-worker");
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'queued', locked_at = NULL, locked_by = NULL,
+              run_after = now()
+        WHERE id = $1`,
+      [first!.id],
+    );
+    const second = await claimJob(pool, "reused-worker");
+    expect(second?.lockGeneration).toBe(first!.lockGeneration + 1n);
+
+    expect(
+      await retryJobIndefinitely(pool, first!, "late retry"),
+    ).toBe("lost");
+    const row = await pool.query<{
+      status: string;
+      locked_by: string;
+      locked_at: Date;
+      lock_generation: string;
+    }>(
+      `SELECT status, locked_by, locked_at,
+              lock_generation::text AS lock_generation
+         FROM jobs WHERE id = $1`,
+      [first!.id],
+    );
+    expect(row.rows[0]).toEqual({
+      status: "running",
+      locked_by: "reused-worker",
+      locked_at: second!.lockedAt,
+      lock_generation: String(second!.lockGeneration),
+    });
+  });
+
+  test("durable reconciliation exhaustion cannot terminalize a newer exact claim", async () => {
+    const id = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ reconcile: true }),
+    );
+    await pool.query(
+      "UPDATE jobs SET created_at = clock_timestamp() - interval '2 seconds' WHERE id = $1",
+      [id],
+    );
+    const first = await claimJob(pool, "reused-worker");
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'queued', locked_at = NULL, locked_by = NULL,
+              run_after = now()
+        WHERE id = $1`,
+      [first!.id],
+    );
+    const second = await claimJob(pool, "reused-worker");
+    expect(second?.lockGeneration).toBe(first!.lockGeneration + 1n);
+
+    expect(
+      await retryJobIndefinitely(
+        pool,
+        first!,
+        "late exhaustion",
+        1_000,
+      ),
+    ).toBe("lost");
+    const row = await pool.query<{
+      status: string;
+      locked_by: string;
+      locked_at: Date;
+      lock_generation: string;
+    }>(
+      `SELECT status, locked_by, locked_at,
+              lock_generation::text AS lock_generation
+         FROM jobs WHERE id = $1`,
+      [first!.id],
+    );
+    expect(row.rows[0]).toEqual({
+      status: "running",
+      locked_by: "reused-worker",
+      locked_at: second!.lockedAt,
+      lock_generation: String(second!.lockGeneration),
+    });
+  });
+
   test("durable reconciliation fails permanently once its wall-clock budget is exceeded", async () => {
-    const id = await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    const id = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ reconcile: true }),
+      { maxAttempts: 1 },
+    );
     await pool.query(
       "UPDATE jobs SET created_at = now() - interval '2 hours' WHERE id = $1",
       [id],
@@ -952,11 +2593,13 @@ describeDb("postgres job queue", () => {
     // H1 race: worker W claims J; the job stalls past the watchdog deadline;
     // the watchdog requeues J; worker W2 re-claims and is now running J; then
     // W's late transient error reaches failJob's retry branch. Without the
-    // `status='running' AND locked_by=$owner` guard, W would reset the running
-    // row back to 'queued' and a third worker could run J concurrently with W2.
-    // With the guard, W's retry matches 0 rows (W2 holds the lock under a new
-    // attempt) and returns "lost", leaving W2's claim intact.
-    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 3 });
+    // exact running-lease guard, W would reset the running row back to 'queued'
+    // and a third worker could run J concurrently with W2. With the generation
+    // guard, W's retry matches 0 rows and returns "lost", leaving W2's claim
+    // intact.
+    await enqueueJob(pool, "review", validReviewPayload({ n: 1 }), {
+      maxAttempts: 3,
+    });
 
     const w1 = await claimJob(pool, "w1");
     expect(w1?.attempts).toBe(1);
@@ -990,7 +2633,9 @@ describeDb("postgres job queue", () => {
   test("failJob retry still requeues when the caller still owns the running row", async () => {
     // Control for the guard above: the normal retry path (no intervening
     // re-claim) must keep working and return "retried".
-    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 3 });
+    await enqueueJob(pool, "review", validReviewPayload({ n: 1 }), {
+      maxAttempts: 3,
+    });
     const job = await claimJob(pool, "w");
     expect(job?.attempts).toBe(1);
     expect(await failJob(pool, job!, "transient boom")).toBe("retried");
@@ -998,29 +2643,122 @@ describeDb("postgres job queue", () => {
     expect(row.rows[0].status).toBe("queued");
   });
 
-  test("completeJob does not stamp 'done' over a re-claimed running job", async () => {
-    // Symmetric defense-in-depth: a worker finishing late must not mark a job
-    // 'done' after the watchdog requeued it and another worker re-claimed it.
-    await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 3 });
-    const w1 = await claimJob(pool, "w1");
+  test("failJob rejects stale same-owner retry and follow-up claims", async () => {
+    const retryId = await enqueueJob(
+      pool,
+      "review",
+      validReviewPayload({ n: 1 }),
+      { maxAttempts: 3 },
+    );
+    const staleRetry = await claimJob(pool, "reused-failure-worker");
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'queued', locked_at = NULL, locked_by = NULL,
+              run_after = clock_timestamp()
+        WHERE id = $1`,
+      [retryId],
+    );
+    const currentRetry = await claimJob(pool, "reused-failure-worker");
+    expect(currentRetry?.lockGeneration).toBe(staleRetry!.lockGeneration + 1n);
+    expect(await failJob(pool, staleRetry!, "late transient failure")).toBe(
+      "lost",
+    );
 
-    // Watchdog requeue + W2 re-claim.
+    await pool.query(
+      "UPDATE jobs SET status = 'done', locked_at = NULL, locked_by = NULL WHERE id = $1",
+      [retryId],
+    );
+    const finalId = await enqueueJob(pool, "respond", { n: 2 });
+    const staleFinal = await claimJob(pool, "reused-failure-worker");
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'queued', locked_at = NULL, locked_by = NULL,
+              run_after = clock_timestamp()
+        WHERE id = $1`,
+      [finalId],
+    );
+    const currentFinal = await claimJob(pool, "reused-failure-worker");
+    expect(currentFinal?.lockGeneration).toBe(staleFinal!.lockGeneration + 1n);
+    expect(
+      await failJob(pool, staleFinal!, "late permanent failure", {
+        permanent: true,
+        failureFollowup: {
+          kind: "respond-failure-comment",
+          payload: { respondJobId: finalId },
+          maxAttempts: 3,
+        },
+      }),
+    ).toBe("lost");
+    expect(
+      await pool.query(
+        "SELECT 1 FROM jobs WHERE kind = 'respond-failure-comment'",
+      ),
+    ).toHaveProperty("rowCount", 0);
+  });
+
+  test("completeJob rejects an immediate stale same-owner claim with identical lockedAt", async () => {
+    await enqueueJob(pool, "review", validReviewPayload({ n: 1 }), {
+      maxAttempts: 3,
+    });
+    const stale = await claimJob(pool, "reused-completion-worker");
+
     await pool.query(
       "UPDATE jobs SET status = 'queued', locked_at = NULL, locked_by = NULL, run_after = now() WHERE id = $1",
-      [w1!.id],
+      [stale!.id],
     );
-    const w2 = await claimJob(pool, "w2");
-    expect(w2?.id).toBe(w1?.id);
+    const current = await claimJob(pool, "reused-completion-worker");
+    expect(current?.id).toBe(stale?.id);
+    expect(current?.lockGeneration).toBe(stale!.lockGeneration + 1n);
+    await pool.query(
+      "UPDATE jobs SET locked_at = $2 WHERE id = $1",
+      [stale!.id, stale!.lockedAt],
+    );
+    const currentWithCollidingTimestamp = {
+      ...current!,
+      lockedAt: stale!.lockedAt,
+    };
 
-    // W1 completes late; the guard means it does not clobber W2's running claim.
-    await completeJob(pool, w1!);
-    const row = await pool.query("SELECT status, locked_by FROM jobs WHERE id = $1", [w1!.id]);
+    expect(await completeJob(pool, stale!)).toBe("lost");
+    const row = await pool.query(
+      `SELECT status, locked_by, locked_at,
+              lock_generation::text AS lock_generation
+         FROM jobs WHERE id = $1`,
+      [stale!.id],
+    );
     expect(row.rows[0].status).toBe("running");
-    expect(row.rows[0].locked_by).toBe("w2");
+    expect(row.rows[0].locked_by).toBe("reused-completion-worker");
+    expect(row.rows[0].locked_at).toEqual(stale!.lockedAt);
+    expect(BigInt(row.rows[0].lock_generation)).toBe(current!.lockGeneration);
+    expect(await completeJob(pool, currentWithCollidingTimestamp)).toBe("done");
+  });
+
+  test("continueClaimedJob rejects a stale same-owner claim", async () => {
+    await enqueueJob(pool, "review", validReviewPayload({ stage: "old" }));
+    const stale = await claimJob(pool, "reused-continuation-worker");
+    await pool.query(
+      "UPDATE jobs SET status = 'queued', locked_at = NULL, locked_by = NULL, run_after = now() WHERE id = $1",
+      [stale!.id],
+    );
+    const current = await claimJob(pool, "reused-continuation-worker");
+    expect(current?.lockGeneration).toBe(stale!.lockGeneration + 1n);
+
+    await expect(
+      continueClaimedJob(pool, stale!, { stage: "new" }),
+    ).rejects.toThrow("job continuation lost its lease");
+    const row = await pool.query(
+      "SELECT status, locked_by, locked_at, payload FROM jobs WHERE id = $1",
+      [stale!.id],
+    );
+    expect(row.rows[0]).toMatchObject({
+      status: "running",
+      locked_by: "reused-continuation-worker",
+      locked_at: current!.lockedAt,
+      payload: { stage: "old" },
+    });
   });
 
   test("completeJob marks the job done and releases the lock", async () => {
-    await enqueueJob(pool, "review", { n: 1 });
+    await enqueueJob(pool, "review", validReviewPayload({ n: 1 }));
     const job = await claimJob(pool, "w");
     await completeJob(pool, job!);
     const row = await pool.query("SELECT status, locked_by FROM jobs");

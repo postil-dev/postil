@@ -71,9 +71,10 @@ export default function ModelsPage() {
           Local inference is best for sensitive repositories and for teams
           that already operate GPU capacity. The catalog above marks
           open-weights models under 40B parameters as{" "}
-          <code>locally runnable</code>. Start there. Postil fails closed
-          when a model cannot produce a valid review envelope, so pick a
-          coder-tuned model that follows JSON schema reliably.
+          <code>locally runnable</code>. Start there. Postil records a
+          no-verdict operational result when a model cannot produce a valid
+          review envelope, so pick a coder-tuned model that follows JSON schema
+          reliably.
         </p>
         <h3>Ollama</h3>
         <pre tabIndex={0} aria-label="Code sample">

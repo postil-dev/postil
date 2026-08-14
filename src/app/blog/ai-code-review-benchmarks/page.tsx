@@ -267,7 +267,8 @@ export default function BenchmarkAuthorArticle() {
           check-runs so each published catch can be inspected at its source. We
           report no Postil score against a competitor. The product doctrine is
           narrower: silence is a feature, findings without a citation are
-          discarded, and the system fails closed rather than guessing loudly.
+          discarded, and a run without a reviewer verdict says so rather than
+          guessing loudly.
         </p>
         <p>
           We have not run a peer benchmark or put a rival tool on our fixtures.

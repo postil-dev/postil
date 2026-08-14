@@ -14,7 +14,7 @@ import {
   claimJob,
   enqueueGateEnforcementSweepOnce,
   pruneCompletedWebhookDeliveries,
-  requeueJobsOwnedBy,
+  requeueClaimedJobs,
   WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE,
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
@@ -30,7 +30,12 @@ import {
   reportOperationalWarning,
   shutdownServerObservability,
 } from "@/lib/server-observability";
-import { PROCESSABLE_JOB_KINDS, readPositiveIntEnv, runClaimedJob } from "./runner";
+import {
+  ActiveClaimExecutionRegistry,
+  PROCESSABLE_JOB_KINDS,
+  readPositiveIntEnv,
+  runClaimedJob,
+} from "./runner";
 import { tlsSelfTest } from "./tls-selftest";
 import { watchdogPass } from "./watchdog";
 
@@ -74,8 +79,7 @@ let wakeWebhookRedelivery: (() => void) | undefined;
 let wakeHeartbeat: (() => void) | undefined;
 let activeWebhookRedeliveryController: AbortController | undefined;
 const activeRuns = new Set<Promise<unknown>>();
-const activeControllers = new Map<number, AbortController>();
-const requeueableReviewIds = new Set<number>();
+const activeClaimExecutions = new ActiveClaimExecutionRegistry();
 let pendingClaims = 0;
 
 function sleep(ms: number): Promise<void> {
@@ -135,12 +139,11 @@ async function claimLoop(slot: number): Promise<void> {
     try {
       job = await claimJob(getPool(), `${workerId}#${slot}`, PROCESSABLE_JOB_KINDS);
       if (shuttingDown && job) {
-        await requeueJobsOwnedBy(
+        await requeueClaimedJobs(
           getPool(),
-          `${workerId}#${slot}`,
           "worker stopped before starting the claim",
           [job.kind],
-          [job.id],
+          [job],
         );
         return;
       }
@@ -160,10 +163,10 @@ async function claimLoop(slot: number): Promise<void> {
     }
     idleDelayMs = POLL_INTERVAL_MS;
     const controller = new AbortController();
-    if (job.kind === "review") requeueableReviewIds.add(job.id);
     // Interrupted reviews stay requeueable through publication: a fresh
     // attempt supersedes the interrupted one's check-runs, so forced
     // shutdown requeues every active review claim.
+    const execution = activeClaimExecutions.add(job, controller);
     const run = runClaimedJob(
       job,
       `worker ${slot}`,
@@ -171,13 +174,11 @@ async function claimLoop(slot: number): Promise<void> {
       controller.signal,
     );
     activeRuns.add(run);
-    activeControllers.set(job.id, controller);
     try {
       await run;
     } finally {
       activeRuns.delete(run);
-      activeControllers.delete(job.id);
-      requeueableReviewIds.delete(job.id);
+      activeClaimExecutions.delete(execution);
     }
   }
 }
@@ -205,19 +206,21 @@ async function shutdown(signal: string): Promise<void> {
       console.warn(
         `shutdown drain expired with ${activeRuns.size} active job(s); interrupting active reviews`,
       );
-      for (const controller of activeControllers.values()) controller.abort();
+      for (const execution of activeClaimExecutions.values()) {
+        execution.controller.abort();
+      }
       activeWebhookRedeliveryController?.abort();
       const settled = await waitForWorkerIdle(SHUTDOWN_SETTLE_MS);
       if (!settled) {
-        const activeReviewJobIds = [...activeControllers.keys()].filter((jobId) =>
-          requeueableReviewIds.has(jobId),
-        );
-        const requeued = await requeueJobsOwnedBy(
+        const activeReviewLeases = activeClaimExecutions
+          .values()
+          .filter((execution) => execution.job.kind === "review")
+          .map((execution) => execution.job);
+        const requeued = await requeueClaimedJobs(
           getPool(),
-          `${workerId}#`,
           "worker shutdown interrupted the claim",
           ["review"],
-          activeReviewJobIds,
+          activeReviewLeases,
         ).catch((error) => {
           console.error(`failed to requeue shutdown claims: ${redactSecrets(error)}`);
           return 0;

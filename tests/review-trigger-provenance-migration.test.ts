@@ -4,15 +4,24 @@ import { join } from "node:path";
 
 import { Pool } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("review trigger provenance migration", () => {
-  const pool = new Pool({ connectionString: TEST_URL, max: 1 });
+  let database: EphemeralDatabase;
+  let pool: Pool;
   let repositoryId: number;
 
   beforeAll(async () => {
-    await pool.query("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public");
+    database = await createUnmigratedEphemeralDatabase("review_trigger_provenance", {
+      maxConnections: 1,
+    });
+    pool = database.pool;
     const migrationDirectory = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationDirectory))
       .filter((file) => file.endsWith(".sql") && file < "0029_")
@@ -60,7 +69,7 @@ describeDb("review trigger provenance migration", () => {
   });
 
   afterAll(async () => {
-    await pool.end();
+    await database?.drop();
   });
 
   test("marks historical reviews unknown without inventing context", async () => {

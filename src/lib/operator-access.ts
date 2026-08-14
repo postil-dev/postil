@@ -1,7 +1,10 @@
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 
 import { getDb } from "@/lib/db";
-import { getSessionUser, type SessionUser } from "@/lib/session";
+import {
+  requireVerifiedPageSessionUser,
+  type SessionUser,
+} from "@/lib/session";
 
 function operatorGithubIds(): Set<number> {
   const raw = process.env.POSTIL_OPERATOR_GITHUB_IDS ?? "";
@@ -25,8 +28,7 @@ export function isOperatorUser(user: Pick<SessionUser, "githubId">): boolean {
  * must never grant access to cross-tenant review data.
  */
 export async function requireOperatorAccess() {
-  const user = await getSessionUser();
-  if (!user) redirect("/login");
+  const user = await requireVerifiedPageSessionUser();
   if (!isOperatorUser(user)) notFound();
   return { db: getDb(), user };
 }

@@ -8,6 +8,7 @@ import type {
   OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 import { runOpenRouterCapMonitoringChecks } from "@/lib/openrouter-cap-monitoring";
+import { activateQueueLockGeneration } from "@/lib/release-job-rollout";
 import {
   acquirePrivateMonitorLease,
   claimPrivateMonitoringNotifications,
@@ -176,6 +177,7 @@ describeDb("private monitoring durability", () => {
     async () => {
       db = await createEphemeralDatabase("private_monitoring");
       pool = db.pool;
+      await activateQueueLockGeneration(pool);
     },
     30_000,
   );

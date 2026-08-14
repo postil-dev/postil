@@ -64,8 +64,11 @@ cp .env.example .env
 # .env.example explains its variable. See "Required configuration"
 # below for the full list and how to generate each one.
 
-docker compose up -d
-docker compose exec web bun run db:migrate`}</code>
+docker compose up -d db
+docker compose run --rm web bun run db:migrate
+docker compose run --rm web bun run operational:indexes
+docker compose run --rm web bun run queue:activate-lock-generation
+docker compose up -d`}</code>
       </pre>
       <p>
         The Docker image bakes in the reviewer CLI from a binary you supply at{" "}
@@ -300,9 +303,10 @@ ${doctorTranscript}`}</code>
           <code>@postil</code> bot, also add <code>issues: write</code>,{" "}
           <code>members: read</code>,{" "}
           <code>issue_comment</code>, and pull request review comment events.
-          Also add the <code>check_run</code> event so the "Re-run" button on
-          a failed <code>postil/gate</code> or <code>postil/review</code>{" "}
-          check re-enqueues the review instead of requiring a new push.
+          Add the <code>check_run</code> and <code>check_suite</code> events so
+          both check rerun controls re-enqueue reviews. Add the pull request
+          review thread event so resolving a finding triggers lifecycle
+          reconciliation.
         </li>
         <li>
           Set the webhook URL to{" "}
@@ -398,18 +402,36 @@ ${doctorTranscript}`}</code>
         </li>
         <li>
           The worker's watchdog fails any review running longer than 10
-          minutes and completes its check-runs as failed, so a stuck review
-          never leaves a PR stuck in progress indefinitely.
+          minutes, completes <code>postil/review</code> as neutral, and applies
+          the organization merge-gate setting to <code>postil/gate</code>. A
+          stuck review does not leave either check in progress indefinitely.
         </li>
         <li>
           The CLI binary is baked into the worker image at a pinned commit;
           upgrading the reviewer is an image upgrade, not a runtime download.
         </li>
         <li>
-          Schema migrations run with{" "}
-          <code>docker compose exec web bun run db:migrate</code> (Drizzle).
-          Run it once after the initial <code>up</code> and again after every
-          upgrade that changes the schema, before traffic hits the new image.
+          Stop the web and worker services before a database upgrade with{" "}
+          <code>docker compose stop web worker</code>. With the database service
+          healthy, run <code>docker compose run --rm web bun run db:migrate</code>,
+          then{" "}
+          <code>docker compose run --rm web bun run operational:indexes</code>,
+          then{" "}
+          <code>
+            docker compose run --rm web bun run queue:activate-lock-generation
+          </code>.
+          The first applies transactional Drizzle migrations. The second
+          installs verified concurrent indexes and the nonlocking active-review
+          identity trigger outside the Drizzle transaction. The third activates
+          lock-generation claims and releases work held during migration. Run all
+          three before the first full <code>up</code> and after every image upgrade,
+          then start the web and worker services.
+        </li>
+        <li>
+          After lock-generation activation, a queued job claim advances
+          <code>lock_generation</code> by one. The database supplies the increment
+          for a rollback worker whose claim SQL omits it and rejects a writer that
+          attempts any other generation transition.
         </li>
       </ul>
     </div>

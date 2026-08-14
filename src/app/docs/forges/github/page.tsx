@@ -14,7 +14,7 @@ export default function GitHubForgePage() {
       <h1 className="serif-display text-4xl text-charcoal">GitHub</h1>
       <p className="mt-4 text-lg">
         GitHub is the default forge and the only one the hosted app at{" "}
-        <Link href="/">postil.dev</Link> talks to today. It is also a
+        <Link href="/">postil.dev</Link> supports. It is also a
         first-class CLI target: run it yourself in Actions, another CI, or
         locally with no dependency on the hosted platform.
       </p>

@@ -4,22 +4,21 @@ import { join } from "node:path";
 
 import { Client } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("finding approvals repair migration", () => {
-  const databaseName = `postil_approvals_repair_${process.pid}_${Date.now()}`;
-  let adminClient: Client | undefined;
+  let database: EphemeralDatabase;
   let migrationClient: Client | undefined;
 
   beforeAll(async () => {
-    adminClient = new Client({ connectionString: TEST_URL });
-    await adminClient.connect();
-    await adminClient.query(`CREATE DATABASE "${databaseName}"`);
-
-    const databaseUrl = new URL(TEST_URL!);
-    databaseUrl.pathname = `/${databaseName}`;
-    migrationClient = new Client({ connectionString: databaseUrl.toString() });
+    database = await createUnmigratedEphemeralDatabase("approvals_repair");
+    migrationClient = new Client({ connectionString: database.url });
     await migrationClient.connect();
 
     const migrationsDir = join(import.meta.dir, "..", "drizzle");
@@ -33,10 +32,7 @@ describeDb("finding approvals repair migration", () => {
 
   afterAll(async () => {
     await migrationClient?.end();
-    if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-      await adminClient.end();
-    }
+    await database?.drop();
   });
 
   test("repairs a database where the out-of-order 0007 migration was skipped", async () => {

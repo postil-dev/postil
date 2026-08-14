@@ -29,6 +29,7 @@ import {
 import { ConfigRecheckButton } from "../config-recheck-button";
 import { GateEnforcementRecheckButton } from "../gate-enforcement-recheck-button";
 import { RepoHealthBanner } from "../repo-health-banner";
+import { RepositoryAccessCheck } from "../repository-access-check";
 import { SettingsForm } from "../settings-form";
 
 export const metadata: Metadata = {
@@ -282,8 +283,11 @@ export default async function OrgSettingsPage({
           />
         </div>
 
+        <div>
+          <RepositoryAccessCheck slug={org.slug} />
+        </div>
         {showConfigFiles && (
-          <div>
+          <div className="mt-8">
             {enabledRepos.length > 0 && (
               <GateEnforcementCoverage
                 slug={org.slug}

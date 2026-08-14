@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "b
 import type { Pool } from "pg";
 
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
+import { activateQueueLockGeneration } from "@/lib/release-job-rollout";
 
 /**
  * Watchdog kill semantics against a real Postgres. The row's `startedAt`
@@ -17,6 +18,7 @@ import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-dat
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 const ORIGINAL_PUBLIC_URL = process.env.POSTIL_PUBLIC_URL;
+const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
 
 let tokenCalls = 0;
 let failCheckRunsCalls = 0;
@@ -55,6 +57,8 @@ describeDb("watchdog stuck-review kill", () => {
   beforeAll(async () => {
     db = await createEphemeralDatabase("watchdog");
     pool = db.pool;
+    await activateQueueLockGeneration(pool);
+    await closeDb();
     // watchdogPass() reaches the database through the getDb() singleton,
     // which is keyed off DATABASE_URL rather than this suite's own pool.
     process.env.DATABASE_URL = db.url;
@@ -78,6 +82,8 @@ describeDb("watchdog stuck-review kill", () => {
     // accessed by other users".
     await closeDb();
     await db?.drop();
+    if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
     if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
     else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
   }, 30_000);
@@ -256,6 +262,77 @@ describeDb("watchdog stuck-review kill", () => {
     });
   });
 
+  test("reconciles staged hosted receipt usage exactly once before watchdog failure", async () => {
+    const repositoryId = await seedRepo();
+    const startedAt = new Date(Date.now() - 61 * 60 * 1000);
+    const reviewId = await seedStuckReview(repositoryId, startedAt);
+    const envelope = {
+      version: 1,
+      summary: "No actionable findings.",
+      silent: false,
+      findings: [],
+      resolved: [],
+      counts: { info: 0, warn: 0, error: 0, suppressed: 0, ungrounded: 0 },
+      confidenceBuckets: [0, 0, 0, 0, 0],
+      gate: { failOn: "error", failing: false, blockOnKinds: [] },
+      modelUsed: "unknown/provider-model",
+      usage: { promptTokens: 1200, completionTokens: 300 },
+      usageAccountingComplete: false,
+      durationMs: 1000,
+      baseSha: "base",
+      headSha: "head",
+      sinceSha: null,
+    };
+    await pool.query(
+      `UPDATE reviews
+          SET envelope = $2::jsonb, advisory_check_run_id = 501,
+              gate_check_run_id = 502
+        WHERE id = $1`,
+      [reviewId, JSON.stringify(envelope)],
+    );
+    const reservation = await pool.query<{ id: string }>(
+      `INSERT INTO hosted_usage_reservations
+         (org_id, review_id, operation, reserved_micros, status, expires_at)
+       SELECT installation.org_id, $1, 'review', 9000, 'released', now() - interval '1 minute'
+         FROM repositories repository
+         JOIN installations installation ON installation.id = repository.installation_id
+        WHERE repository.id = $2
+       RETURNING id`,
+      [reviewId, repositoryId],
+    );
+
+    const [first, second] = await Promise.all([
+      watchdogPass(new Date()),
+      watchdogPass(new Date()),
+    ]);
+    expect(first.killed + second.killed).toBe(1);
+    const accounting = await pool.query<{
+      status: string;
+      actual_micros: string;
+      usage_count: number;
+      usage_micros: string;
+    }>(
+      `SELECT reservation.status, reservation.actual_micros::text,
+              count(event.id)::int AS usage_count,
+              COALESCE(sum(event.cost_micros), 0)::text AS usage_micros
+         FROM hosted_usage_reservations reservation
+         LEFT JOIN usage_events event ON event.review_id = reservation.review_id
+        WHERE reservation.id = $1
+        GROUP BY reservation.id`,
+      [reservation.rows[0]!.id],
+    );
+    expect(accounting.rows[0]).toEqual({
+      status: "reconciled",
+      actual_micros: "9000",
+      usage_count: 2,
+      usage_micros: "9000",
+    });
+    const syncs = await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM jobs WHERE kind = 'gate-state-sync'",
+    );
+    expect(syncs.rows[0]?.count).toBe(0);
+  });
+
   test("two concurrent passes over the same stuck review only kill it once", async () => {
     const repositoryId = await seedRepo();
     await seedStuckReview(repositoryId);
@@ -418,13 +495,19 @@ describeDb("watchdog stuck-review kill", () => {
       sourceDeliveryId: "edited-delivery",
       forceFullReview: true,
     };
-    await pool.query(
+    const inserted = await pool.query<{
+      id: string;
+      payload: {
+        _postilCoalescedReviewPayload: { reviewInputSequence: string };
+      };
+    }>(
       `INSERT INTO jobs
          (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
        VALUES (
          'review', $1::jsonb, 'running', 3, 7,
          now() - interval '20 minutes', 'dead-review-worker'
-       )`,
+       )
+       RETURNING id, payload`,
       [
         JSON.stringify({
           ...pending,
@@ -454,7 +537,12 @@ describeDb("watchdog stuck-review kill", () => {
       attempts: 0,
       max_attempts: 7,
       last_error: null,
-      payload: pending,
+      payload: {
+        ...pending,
+        reviewInputSequence:
+          inserted.rows[0]!.payload._postilCoalescedReviewPayload.reviewInputSequence,
+        providerRetryLineage: `review-job:${inserted.rows[0]!.id}`,
+      },
     });
     const failed = await pool.query<{ status: string; attempts: number; last_error: string }>(
       `SELECT status, attempts, last_error

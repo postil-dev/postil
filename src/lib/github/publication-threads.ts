@@ -8,6 +8,7 @@ interface ThreadNode {
   id?: string | null;
   isResolved?: boolean;
   isOutdated?: boolean;
+  resolvedBy?: { databaseId?: number | null; login?: string | null } | null;
   comments?: CommentsConnection | null;
 }
 
@@ -39,11 +40,89 @@ interface ThreadCommentsResponse {
   errors?: Array<{ message?: string }>;
 }
 
+interface RepositoryPermissionResponse {
+  permission?: string;
+  user?: { id?: number; login?: string };
+}
+
+interface GithubActorIdentity {
+  id?: number;
+  login?: string;
+}
+
 function graphqlApi(): string {
   const rest = apiBase().replace(/\/+$/, "");
   return rest.endsWith("/api/v3")
     ? `${rest.slice(0, -"/api/v3".length)}/api/graphql`
     : `${rest}/graphql`;
+}
+
+function validActorIdentity(
+  actor: GithubActorIdentity | null | undefined,
+): actor is { id: number; login: string } {
+  return typeof actor?.id === "number" &&
+    Number.isSafeInteger(actor.id) &&
+    actor.id > 0 &&
+    typeof actor.login === "string" &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(actor.login);
+}
+
+async function fetchRepositoryWriteAuthority(
+  token: string,
+  repositoryOwner: string,
+  repositoryName: string,
+  actor: { id: number; login: string },
+  signal: AbortSignal,
+): Promise<boolean> {
+  const response = await fetch(
+    `${apiBase().replace(/\/+$/, "")}/repos/${encodeURIComponent(repositoryOwner)}/${encodeURIComponent(repositoryName)}/collaborators/${encodeURIComponent(actor.login)}/permission`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "postil-control-plane",
+      },
+      signal,
+    },
+  );
+  if (response.status === 404) return false;
+  if (!response.ok) {
+    throw new Error(`GitHub actor authority failed with HTTP ${response.status}`);
+  }
+  let permission: RepositoryPermissionResponse;
+  try {
+    permission = (await response.json()) as RepositoryPermissionResponse;
+  } catch {
+    throw new Error("GitHub actor authority returned malformed JSON");
+  }
+  if (
+    permission.user?.id !== actor.id ||
+    permission.user.login?.toLowerCase() !== actor.login.toLowerCase() ||
+    !["admin", "write", "read", "none"].includes(permission.permission ?? "")
+  ) {
+    throw new Error("GitHub actor authority returned an inconsistent identity");
+  }
+  return permission.permission === "admin" || permission.permission === "write";
+}
+
+/** Re-read one exact GitHub identity's current repository authority. */
+export async function hasGitHubRepositoryWriteAuthority(
+  token: string,
+  repoFullName: string,
+  actor: GithubActorIdentity | null | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const [owner, name, extra] = repoFullName.split("/");
+  if (!owner || !name || extra || !validActorIdentity(actor)) return false;
+  const timeoutSignal = AbortSignal.timeout(10_000);
+  return fetchRepositoryWriteAuthority(
+    token,
+    owner,
+    name,
+    actor,
+    signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+  );
 }
 
 /**
@@ -62,8 +141,11 @@ export async function observeGitHubReviewThreads(
   if (!owner || !name || extra || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid GitHub pull request identity for publication observation");
   }
+  const repositoryOwner = owner;
+  const repositoryName = name;
   const expected = new Set(expectedCommentIds);
-  const observed = new Map<string, PublicationThreadObservation["state"]>();
+  const observed = new Map<string, Omit<PublicationThreadObservation, "githubCommentId">>();
+  const maintainerAuthority = new Map<string, boolean>();
   const timeoutSignal = AbortSignal.timeout(15_000);
   const requestSignal = signal
     ? AbortSignal.any([signal, timeoutSignal])
@@ -86,22 +168,43 @@ export async function observeGitHubReviewThreads(
     }
     return (await response.json()) as T;
   }
-  function recordComments(
+  function collectExpectedComments(
     comments: CommentsConnection | null | undefined,
-    state: PublicationThreadObservation["state"],
+    matched: Set<string>,
   ): void {
     for (const comment of comments?.nodes ?? []) {
       const id = comment?.databaseId;
       if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) {
         const key = String(id);
-        if (expected.has(key)) observed.set(key, state);
+        if (expected.has(key)) matched.add(key);
       }
     }
+  }
+  async function resolverHasMaintainerAuthority(
+    resolver: ThreadNode["resolvedBy"],
+  ): Promise<boolean> {
+    const actor = {
+      id: resolver?.databaseId ?? undefined,
+      login: resolver?.login ?? undefined,
+    };
+    if (!validActorIdentity(actor)) return false;
+    const cacheKey = `${actor.id}:${actor.login.toLowerCase()}`;
+    const cached = maintainerAuthority.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const authorized = await fetchRepositoryWriteAuthority(
+      token,
+      repositoryOwner,
+      repositoryName,
+      actor,
+      requestSignal,
+    );
+    maintainerAuthority.set(cacheKey, authorized);
+    return authorized;
   }
   async function observeRemainingComments(
     threadId: string,
     initialCursor: string,
-    state: PublicationThreadObservation["state"],
+    matched: Set<string>,
   ): Promise<void> {
     let commentsCursor: string | null = initialCursor;
     for (let page = 1; page < MAX_PAGES; page += 1) {
@@ -125,7 +228,7 @@ export async function observeGitHubReviewThreads(
       if (!comments) {
         throw new Error("GitHub review thread comment observation returned no thread");
       }
-      recordComments(comments, state);
+      collectExpectedComments(comments, matched);
       if (!comments.pageInfo?.hasNextPage) return;
       commentsCursor = comments.pageInfo.endCursor ?? null;
       if (!commentsCursor) {
@@ -145,6 +248,7 @@ export async function observeGitHubReviewThreads(
                   id
                   isResolved
                   isOutdated
+                  resolvedBy { databaseId login }
                   comments(first: ${PAGE_SIZE}) {
                     nodes { databaseId }
                     pageInfo { hasNextPage endCursor }
@@ -166,25 +270,45 @@ export async function observeGitHubReviewThreads(
     if (!threads) throw new Error("GitHub review thread observation returned no pull request");
     for (const thread of threads.nodes ?? []) {
       if (!thread) continue;
-      const state = thread.isResolved
-        ? "resolved"
-        : thread.isOutdated
-          ? "outdated"
-          : "inline";
-      recordComments(thread.comments, state);
+      const matched = new Set<string>();
+      collectExpectedComments(thread.comments, matched);
       if (thread.comments?.pageInfo?.hasNextPage) {
         const threadId = thread.id;
         const commentsCursor = thread.comments.pageInfo.endCursor ?? null;
         if (!threadId || !commentsCursor) {
           throw new Error("GitHub review thread comment pagination omitted its identity or cursor");
         }
-        await observeRemainingComments(threadId, commentsCursor, state);
+        await observeRemainingComments(threadId, commentsCursor, matched);
+      }
+      if (matched.size > 0) {
+        const resolver = {
+          id: thread.resolvedBy?.databaseId ?? undefined,
+          login: thread.resolvedBy?.login ?? undefined,
+        };
+        const observation: Omit<PublicationThreadObservation, "githubCommentId"> =
+          thread.isOutdated
+            ? { state: "outdated" }
+            : thread.isResolved
+              ? await resolverHasMaintainerAuthority(thread.resolvedBy)
+                ? {
+                    state: "resolved",
+                    resolutionAuthorized: true,
+                    ...(validActorIdentity(resolver)
+                      ? {
+                          resolvedByGithubId: resolver.id,
+                          resolvedByLogin: resolver.login,
+                        }
+                      : {}),
+                  }
+                : { state: "resolved", resolutionAuthorized: false }
+              : { state: "inline" };
+        for (const commentId of matched) observed.set(commentId, observation);
       }
     }
     if (!threads.pageInfo?.hasNextPage) {
       return expectedCommentIds.map((githubCommentId) => ({
         githubCommentId,
-        state: observed.get(githubCommentId) ?? "deleted",
+        ...(observed.get(githubCommentId) ?? { state: "deleted" as const }),
       }));
     }
     cursor = threads.pageInfo.endCursor ?? null;

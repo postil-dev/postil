@@ -5,6 +5,12 @@ import { join } from "node:path";
 
 import { Client, Pool } from "pg";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+import { closeDb } from "@/lib/db";
+
 // Mirrors the private sha256() helper in src/lib/cli-auth.ts.
 function sha256(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
@@ -14,6 +20,7 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_ENV = {
+  DATABASE_URL: process.env.DATABASE_URL,
   REVIEW_MODEL: process.env.REVIEW_MODEL,
   REVIEW_MODEL_CASCADE: process.env.REVIEW_MODEL_CASCADE,
   POSTIL_API_BASE: process.env.POSTIL_API_BASE,
@@ -23,19 +30,17 @@ const ORIGINAL_ENV = {
 };
 
 describeDb("POST /api/inference/v1/chat/completions", () => {
-  const databaseName = `postil_cli_gateway_${process.pid}_${Date.now()}`;
-  let adminClient: Client | undefined;
+  let database: EphemeralDatabase;
   let pool: Pool | undefined;
   let userId = 0;
   let orgCounter = 0;
 
   beforeAll(async () => {
-    adminClient = new Client({ connectionString: TEST_URL });
-    await adminClient.connect();
-    await adminClient.query(`CREATE DATABASE "${databaseName}"`);
-    const databaseUrl = new URL(TEST_URL!);
-    databaseUrl.pathname = `/${databaseName}`;
-    const migrationClient = new Client({ connectionString: databaseUrl.toString() });
+    database = await createUnmigratedEphemeralDatabase("cli_gateway", {
+      forceDrop: true,
+      maxConnections: 4,
+    });
+    const migrationClient = new Client({ connectionString: database.url });
     await migrationClient.connect();
     const migrationsDir = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDir))
@@ -53,21 +58,19 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     userId = Number(user.rows[0]?.id);
     await migrationClient.end();
 
-    process.env.DATABASE_URL = databaseUrl.toString();
+    await closeDb();
+    process.env.DATABASE_URL = database.url;
     process.env.REVIEW_MODEL = "z-ai/glm-5.2";
     process.env.REVIEW_MODEL_CASCADE = "moonshotai/kimi-k2.7-code";
     process.env.POSTIL_API_BASE = "https://mock-upstream.test/v1";
     process.env.POSTIL_API_FORMAT = "openai-compatible";
     process.env.MODEL_API_KEY = "test-fixture-upstream-key";
-    pool = new Pool({ connectionString: databaseUrl.toString(), max: 4 });
+    pool = database.pool;
   }, 30_000);
 
   afterAll(async () => {
-    await pool?.end();
-    if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
-      await adminClient.end();
-    }
+    await closeDb();
+    await database?.drop();
     for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

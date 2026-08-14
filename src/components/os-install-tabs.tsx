@@ -21,8 +21,8 @@ export POSTIL_API_KEY="$MODEL_API_KEY"`,
 # cargo install --git https://github.com/postil-dev/postil-cli --locked
 export MODEL_API_KEY=sk-or-...
 export POSTIL_API_KEY="$MODEL_API_KEY"`,
-  windows: `# No native Windows build yet — install.sh covers Linux and macOS only.
-# Easiest path today: WSL, then follow the Linux tab above.
+  windows: `# Native Windows binaries are unavailable; install.sh covers Linux and macOS only.
+# Use WSL, then follow the Linux tab above.
 
 # Without WSL, build from source with a Rust toolchain:
 cargo install --git https://github.com/postil-dev/postil-cli --locked
@@ -33,7 +33,7 @@ $env:POSTIL_API_KEY = $env:MODEL_API_KEY`,
 /**
  * OS-aware install instructions. Linux and macOS share install.sh (it
  * detects arch/libc itself); Windows has no prebuilt binary in the release
- * matrix today, so it gets the honest fallback: WSL, or build from source.
+ * matrix, so it gets the explicit fallback: WSL, or build from source.
  */
 export function OsInstallTabs() {
   const [active, setActive] = useState<OsId>("linux");
@@ -79,7 +79,7 @@ export function OsInstallTabs() {
       {active === "windows" && (
         <p className="text-sm text-charcoal/70">
           The release workflow does not build a{" "}
-          <code>x86_64-pc-windows-msvc</code> target today, so there is no
+          <code>x86_64-pc-windows-msvc</code> target, so there is no
           signed <code>.exe</code> to download or verify with{" "}
           <code>Invoke-WebRequest</code>. WSL gets you the real, signed Linux
           binary; building from source needs a Rust toolchain installed

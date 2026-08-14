@@ -6,6 +6,11 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, Pool } from "pg";
 
 import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
+import {
   hasHostedReservationCapacity,
   reconcileConservativeHostedReviewSpend,
   reconcileHostedReviewSpendFromReceipt,
@@ -70,20 +75,18 @@ const completedEnvelope = {
 } as Envelope;
 
 describeDb("hosted usage reservations on PostgreSQL", () => {
-  const databaseName = `postil_usage_reservations_${process.pid}_${Date.now()}`;
-  let adminClient: Client | undefined;
+  let database: EphemeralDatabase;
   let pool: Pool | undefined;
   let orgId = 0;
   let repositoryId = 0;
   let reviewIds: number[] = [];
 
   beforeAll(async () => {
-    adminClient = new Client({ connectionString: TEST_URL });
-    await adminClient.connect();
-    await adminClient.query(`CREATE DATABASE "${databaseName}"`);
-    const databaseUrl = new URL(TEST_URL!);
-    databaseUrl.pathname = `/${databaseName}`;
-    const migrationClient = new Client({ connectionString: databaseUrl.toString() });
+    database = await createUnmigratedEphemeralDatabase("usage_reservations", {
+      forceDrop: true,
+      maxConnections: 4,
+    });
+    const migrationClient = new Client({ connectionString: database.url });
     await migrationClient.connect();
     const migrationsDir = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDir))
@@ -127,15 +130,11 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       ) VALUES (${orgId}, 'hosted', 'active', 1000000, 0, 100, 0, 'test');
     `);
     await migrationClient.end();
-    pool = new Pool({ connectionString: databaseUrl.toString(), max: 4 });
+    pool = database.pool;
   }, 30_000);
 
   afterAll(async () => {
-    await pool?.end();
-    if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
-      await adminClient.end();
-    }
+    await database?.drop();
   }, 30_000);
 
   test("row locking admits only one concurrent hold and recovers an expired hold", async () => {

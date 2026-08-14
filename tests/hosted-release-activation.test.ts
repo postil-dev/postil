@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { Client, Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 
+import {
+  createUnmigratedEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
+
 import { hostedInferenceAvailable } from "@/lib/env";
 import * as schema from "@/lib/db/schema";
 import {
@@ -13,6 +18,7 @@ import {
 } from "@/lib/private-repository-entitlement";
 import {
   activateHostedInferenceRelease,
+  activateQueueLockGeneration,
   deactivateHostedInferenceRelease,
   deferHostedReviewForRelease,
   hostedInferenceReleaseActivated,
@@ -24,23 +30,18 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("managed hosted inference release activation", () => {
-  const databaseName = `postil_hosted_activation_${process.pid}_${Date.now()}`;
+  let database: EphemeralDatabase;
   const releaseA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const releaseB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   const releaseC = "cccccccccccccccccccccccccccccccccccccccc";
   const releaseD = "dddddddddddddddddddddddddddddddddddddddd";
   const releaseE = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
   const releaseF = "ffffffffffffffffffffffffffffffffffffffff";
-  let admin: Client;
   let pool: Pool;
 
   beforeAll(async () => {
-    admin = new Client({ connectionString: TEST_URL });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${databaseName}"`);
-    const url = new URL(TEST_URL!);
-    url.pathname = `/${databaseName}`;
-    const migration = new Client({ connectionString: url.toString() });
+    database = await createUnmigratedEphemeralDatabase("hosted_activation");
+    const migration = new Client({ connectionString: database.url });
     await migration.connect();
     for (const file of (await readdir(join(import.meta.dir, "..", "drizzle")))
       .filter((name) => /^\d{4}_.*\.sql$/.test(name))
@@ -54,13 +55,12 @@ describeDb("managed hosted inference release activation", () => {
       }
     }
     await migration.end();
-    pool = new Pool({ connectionString: url.toString() });
+    pool = database.pool;
+    await activateQueueLockGeneration(pool);
   }, 30_000);
 
   afterAll(async () => {
-    await pool?.end();
-    await admin?.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
-    await admin?.end();
+    await database?.drop();
     delete process.env.POSTIL_RELEASE_SHA;
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
     delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
@@ -278,19 +278,23 @@ describeDb("managed hosted inference release activation", () => {
 
   test("a verified successor release adopts work parked by an unactivated release", async () => {
     await deactivateHostedInferenceRelease(pool, releaseE);
-    const job = await pool.query<{ id: string }>(
+    const job = await pool.query<{ id: string; lock_generation: string }>(
       `INSERT INTO jobs
-         (kind, payload, status, attempts, locked_at, locked_by)
+         (kind, payload, status, attempts, locked_at, locked_by, lock_generation)
        VALUES (
          'review',
-         '{"repoFullName":"successor/repo","prNumber":1,"headSha":"head"}'::jsonb,
-         'running', 1, now(), 'release-e-worker'
+         '{"githubRepoId":75003,"repoFullName":"dark-review-reconcile/repo","prNumber":1,"headSha":"head"}'::jsonb,
+         'running', 1, now(), 'release-e-worker', 1
        )
-       RETURNING id`,
+       RETURNING id, lock_generation::text`,
     );
     expect(await deferHostedReviewForRelease(
       pool,
-      { id: Number(job.rows[0]!.id), lockedBy: "release-e-worker" },
+      {
+        id: Number(job.rows[0]!.id),
+        lockedBy: "release-e-worker",
+        lockGeneration: BigInt(job.rows[0]!.lock_generation),
+      },
       releaseE,
     )).toBe("deferred");
     await deactivateHostedInferenceRelease(pool, releaseF);

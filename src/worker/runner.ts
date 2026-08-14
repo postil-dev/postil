@@ -16,7 +16,7 @@ import {
   failJob,
   isPermanentJobError,
   loadWebhookDelivery,
-  requeueJobsOwnedBy,
+  requeueClaimedJobs,
   retryJobIndefinitely,
   type CheckRunCleanupJobPayload,
   type ClaimedJob,
@@ -73,6 +73,7 @@ import {
 import {
   runCheckRunCleanupJob,
   runReviewJob,
+  ReviewInputConvergenceError,
   ReviewPublicationReconciliationError,
   validateCheckRunCleanupPayload,
   WorkerShutdownError,
@@ -111,6 +112,41 @@ export const PROCESSABLE_JOB_KINDS = [
   ...WEB_PROCESSABLE_JOB_KINDS,
   "gate-enforcement-sweep",
 ] as const;
+
+export interface ActiveClaimExecution {
+  readonly identity: string;
+  readonly job: ClaimedJob;
+  readonly controller: AbortController;
+}
+
+export class ActiveClaimExecutionRegistry {
+  private readonly executions = new Map<string, ActiveClaimExecution>();
+
+  add(job: ClaimedJob, controller: AbortController): ActiveClaimExecution {
+    const identity = activeClaimExecutionIdentity(job);
+    if (this.executions.has(identity)) {
+      throw new Error("exact job claim execution is already active");
+    }
+    const execution = { identity, job, controller };
+    this.executions.set(identity, execution);
+    return execution;
+  }
+
+  delete(execution: ActiveClaimExecution): boolean {
+    if (this.executions.get(execution.identity) !== execution) return false;
+    return this.executions.delete(execution.identity);
+  }
+
+  values(): ActiveClaimExecution[] {
+    return [...this.executions.values()];
+  }
+}
+
+function activeClaimExecutionIdentity(
+  job: Pick<ClaimedJob, "id" | "lockGeneration">,
+): string {
+  return `${job.id}:${job.lockGeneration}`;
+}
 
 interface JobContinuation {
   payload: Record<string, unknown>;
@@ -254,12 +290,11 @@ export async function runClaimedJob(
     if (err instanceof WorkerInterruptionRehearsalError) throw err;
     const message = redactSecrets(err);
     if (err instanceof WorkerShutdownError && job.kind === "review") {
-      const requeued = await requeueJobsOwnedBy(
+      const requeued = await requeueClaimedJobs(
         getPool(),
-        job.lockedBy,
         "worker shutdown interrupted the claim",
         ["review"],
-        [job.id],
+        [job],
       );
       console.warn(
         `[${label}] job ${job.id} requeued after worker shutdown (${requeued})`,
@@ -318,6 +353,7 @@ export async function runClaimedJob(
         !invalidWebhookDelivery) ||
       (job.kind === "webhook-comment" && !malformedWebhookComment) ||
       (job.kind === "github-reaction" && !malformedGithubReaction) ||
+      err instanceof ReviewInputConvergenceError ||
       err instanceof ReviewPublicationReconciliationError;
     const outcome = reconcileIndefinitely
       ? await retryJobIndefinitely(getPool(), job, message)

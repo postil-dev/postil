@@ -28,9 +28,9 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string; next?: string }>;
 }) {
   const params = await searchParams;
-  if (await getSessionUser()) redirect("/reports");
-
   const returnTo = safeReturnTarget(params.next);
+  if (await getSessionUser()) redirect(returnTo ?? "/reports");
+
   const error = params.error
     ? (ERROR_MESSAGES[params.error] ?? "Sign-in failed. Try again.")
     : null;

@@ -52,7 +52,7 @@ export default function QuickstartPage() {
         The GitHub App also handles <code>@postil</code> mentions. Exact review
         commands on a pull request run the structured reviewer; questions get
         a compact thread reply. It reviews and answers only: it never opens PRs
-        or pushes commits. GitHub only today.
+        or pushes commits. The hosted app supports GitHub.
       </p>
 
       <h2>2. Local CLI</h2>
@@ -130,8 +130,9 @@ jobs:
         commit SHA for <code>cli-ref</code>: tags move, SHAs do not.
       </p>
       <p>
-        As a recommended bonus, make review failures block merges by requiring{" "}
-        <code>postil/gate</code> in branch protection. See{" "}
+        To block merges on findings or execution failures, enable organization
+        merge enforcement and require <code>postil/gate</code> in branch
+        protection. See{" "}
         <Link href="/docs/gate">the gate</Link>.
       </p>
 

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { getDb, schema, type Database } from "@/lib/db";
 import type { ApprovalActor } from "@/lib/finding-approvals";
@@ -59,7 +59,6 @@ export async function loadLiveApprovalActor(
   ) {
     return null;
   }
-
   // A user-account installation has one owner whose stable GitHub id is the
   // installed account id. No organization membership endpoint applies.
   if (
@@ -67,7 +66,10 @@ export async function loadLiveApprovalActor(
     organization.githubId === user.id &&
     ownerLogin.toLowerCase() === user.login.toLowerCase()
   ) {
-    return persistApprovalActor(db, review.orgId, user.id, user.login, "admin");
+    const actorUserId = await upsertApprovalActorIdentity(db, user.id, user.login);
+    return actorUserId === undefined
+      ? null
+      : approvalActor(actorUserId, user.id, user.login, "admin");
   }
   if (review.installationAccountType !== "Organization") return null;
 
@@ -89,10 +91,7 @@ export async function loadLiveApprovalActor(
     return null;
   }
 
-  if (response.status === 404) {
-    await removeCachedMembership(db, review.orgId, user.id);
-    return null;
-  }
+  if (response.status === 404) return null;
   if (!response.ok) return null;
 
   let membership: GithubMembershipResponse;
@@ -113,55 +112,28 @@ export async function loadLiveApprovalActor(
     return null;
   }
 
-  return persistApprovalActor(db, review.orgId, user.id, user.login, role);
+  const actorUserId = await upsertApprovalActorIdentity(db, user.id, user.login);
+  return actorUserId === undefined
+    ? null
+    : approvalActor(actorUserId, user.id, user.login, role);
 }
 
-async function persistApprovalActor(
+async function upsertApprovalActorIdentity(
   db: Database,
-  orgId: number,
   githubId: number,
   login: string,
-  role: "member" | "admin",
-): Promise<ApprovalActor> {
-  return db.transaction(async (tx) => {
-    const row = (
-      await tx
-        .insert(schema.users)
-        .values({ githubId, login })
-        .onConflictDoUpdate({
-          target: schema.users.githubId,
-          set: { login },
-        })
-        .returning({ id: schema.users.id })
-    )[0];
-    if (!row) throw new Error("approval actor could not be persisted");
-    await tx
-      .insert(schema.orgMembers)
-      .values({ orgId, userId: row.id, role })
-      .onConflictDoUpdate({
-        target: [schema.orgMembers.orgId, schema.orgMembers.userId],
-        set: { role },
-      });
-    return approvalActor(row.id, githubId, login, role);
-  });
-}
-
-async function removeCachedMembership(
-  db: Database,
-  orgId: number,
-  githubId: number,
-): Promise<void> {
-  const row = (
+): Promise<number | undefined> {
+  const actorUser = (
     await db
-      .select({ id: schema.users.id })
-      .from(schema.users)
-      .where(eq(schema.users.githubId, githubId))
-      .limit(1)
+      .insert(schema.users)
+      .values({ githubId, login })
+      .onConflictDoUpdate({
+        target: schema.users.githubId,
+        set: { login },
+      })
+      .returning({ id: schema.users.id })
   )[0];
-  if (!row) return;
-  await db
-    .delete(schema.orgMembers)
-    .where(and(eq(schema.orgMembers.orgId, orgId), eq(schema.orgMembers.userId, row.id)));
+  return actorUser?.id;
 }
 
 function approvalActor(

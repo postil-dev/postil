@@ -204,6 +204,7 @@ describe("pull-request review context", () => {
         state: "open",
         merged: false,
         draft: false,
+        updated_at: "2026-08-12T03:04:05.123Z",
         head: { sha: "head-sha" },
         base: { sha: "base-sha" },
         user: { id: 42, login: "octocat" },
@@ -217,6 +218,7 @@ describe("pull-request review context", () => {
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
+      updatedAt: "2026-08-12T03:04:05.123Z",
       authorGithubId: 42,
       authorLogin: "octocat",
     });
@@ -228,6 +230,7 @@ describe("pull-request review context", () => {
         state: "open",
         merged: false,
         draft: false,
+        updated_at: "2026-08-12T03:04:05.123Z",
         head: { sha: "head-sha" },
         base: { sha: "base-sha" },
         user: { id: 0, login: "   " },
@@ -241,6 +244,7 @@ describe("pull-request review context", () => {
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
+      updatedAt: "2026-08-12T03:04:05.123Z",
     });
 
     globalThis.fetch = (async (_input) =>
@@ -248,6 +252,7 @@ describe("pull-request review context", () => {
         state: "open",
         merged: false,
         draft: false,
+        updated_at: "2026-08-12T03:04:05.123Z",
         head: { sha: "head-sha" },
         base: { sha: "base-sha" },
         user: { id: 42, login: ` ${"a".repeat(101)} ` },
@@ -261,6 +266,7 @@ describe("pull-request review context", () => {
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
+      updatedAt: "2026-08-12T03:04:05.123Z",
       authorGithubId: 42,
     });
   });

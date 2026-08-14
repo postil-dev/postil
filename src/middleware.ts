@@ -1,5 +1,6 @@
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 
+import { PROTECTED_RETURN_TO_HEADER } from "@/lib/auth-navigation";
 import { publicOrigin, publicRequestUrl } from "@/lib/oauth";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/session-token";
 import {
@@ -38,12 +39,21 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     const secret = process.env.POSTIL_SESSION_SECRET;
     const sessionId = secret ? await verifySessionToken(token, secret) : null;
     if (sessionId) {
+      const requestHeaders = new Headers(request.headers);
+      requestHeaders.set(
+        PROTECTED_RETURN_TO_HEADER,
+        `${request.nextUrl.pathname}${request.nextUrl.search}`,
+      );
+      response = NextResponse.next({ request: { headers: requestHeaders } });
       return responseWithTelemetry(request, event, responseWithCrawlerHeaders(request, response));
     }
 
     const login = new URL("/login", publicOrigin(request));
     login.searchParams.set("next", `${request.nextUrl.pathname}${request.nextUrl.search}`);
-    response = NextResponse.redirect(login);
+    response = NextResponse.redirect(
+      login,
+      request.method === "GET" || request.method === "HEAD" ? 307 : 303,
+    );
   }
 
   return responseWithTelemetry(request, event, responseWithCrawlerHeaders(request, response));

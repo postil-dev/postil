@@ -4,8 +4,16 @@ const realDb = await import("@/lib/db");
 const realChecks = await import("@/lib/github/checks");
 const realAppAuth = await import("@/lib/github/app-auth");
 
-const activeReviews = [{ id: 10, advisoryCheckRunId: 11, gateCheckRunId: 22 }];
+const activeReviews = [{
+  id: 10,
+  publicId: "00000000-0000-0000-0000-000000000010",
+  status: "running",
+  headSha: "old-head-sha",
+  advisoryCheckRunId: 11,
+  gateCheckRunId: 22,
+}];
 const transitions: Array<Record<string, unknown>> = [];
+let cleanupIntents = 0;
 const completions: Array<{
   id: number;
   conclusion: string;
@@ -18,15 +26,53 @@ let reconciledCheckRunId: number | null = null;
 const verifiedCompletionIds: number[] = [];
 let organizationGateEnabled = true;
 
-function fakeDb() {
+function exactChecks(
+  detailsUrl?: string,
+  publicationIncomplete = false,
+) {
   return {
+    advisory: {
+      id: 11,
+      name: "postil/review",
+      externalId: "postil:run-id:review",
+      headSha: "head-sha",
+      ...(detailsUrl ? { detailsUrl } : {}),
+    },
+    gate: {
+      id: 22,
+      name: "postil/gate",
+      externalId: "postil:run-id:gate",
+      headSha: "head-sha",
+      ...(detailsUrl ? { detailsUrl } : {}),
+    },
+    publicationIncomplete,
+  };
+}
+
+function fakeDb(): any {
+  const db = {
+    transaction<T>(callback: (tx: ReturnType<typeof fakeDb>) => Promise<T>) {
+      return callback(fakeDb());
+    },
     select() {
       const chain = {
         from() {
           return chain;
         },
         where() {
+          return chain;
+        },
+        for() {
+          return chain;
+        },
+        limit() {
           return Promise.resolve(activeReviews);
+        },
+        then<TResult1 = typeof activeReviews, TResult2 = never>(
+          onfulfilled?: ((value: typeof activeReviews) => TResult1 | PromiseLike<TResult1>) | null,
+          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+        ) {
+          return Promise.resolve(activeReviews).then(onfulfilled, onrejected);
         },
       };
       return chain;
@@ -46,7 +92,12 @@ function fakeDb() {
       };
       return chain;
     },
+    execute() {
+      cleanupIntents += 1;
+      return Promise.resolve({ rows: [] });
+    },
   };
+  return db;
 }
 
 mock.module("@/lib/db", () => ({
@@ -118,6 +169,7 @@ const {
 
 beforeEach(() => {
   transitions.length = 0;
+  cleanupIntents = 0;
   completions.length = 0;
   failingCompletionIds.clear();
   reconciledCheckRunId = null;
@@ -139,12 +191,27 @@ describe("review terminal check-runs", () => {
     ).toThrow("check-run cleanup job payload is malformed");
   });
 
+  test("requires immutable identity evidence for known check ids", () => {
+    expect(() =>
+      validateCheckRunCleanupPayload({
+        installationId: 42,
+        repoFullName: "postil-dev/postil",
+        advisoryCheckRunId: 11,
+        gateCheckRunId: 22,
+        message: "worker stopped",
+      }),
+    ).toThrow("check-run cleanup job payload is malformed");
+  });
+
   test("disabled hosted inference leaves both checks neutral without provider detail", async () => {
     await completeHostedInferenceDisabledCheckRuns(
       "test-token",
       "postil-dev/postil",
       11,
       22,
+      false,
+      undefined,
+      exactChecks(),
     );
 
     expect(completions).toEqual([
@@ -175,6 +242,9 @@ describe("review terminal check-runs", () => {
         "postil-dev/postil",
         11,
         22,
+        false,
+        undefined,
+        exactChecks(),
       ),
     ).resolves.toBe(false);
 
@@ -199,6 +269,8 @@ describe("review terminal check-runs", () => {
         11,
         22,
         true,
+        undefined,
+        exactChecks(),
       ),
     ).rejects.toThrow("could not neutralize unavailable review check-runs");
     expect(
@@ -212,47 +284,40 @@ describe("review terminal check-runs", () => {
       prNumber: 313,
       newHeadSha: "new-head-sha",
       repoFullName: "postil-dev/postil",
-      token: "test-token",
+      githubInstallationId: 42,
     });
 
     expect(count).toBe(1);
     expect(transitions).toHaveLength(1);
     expect(transitions[0]!.status).toBe("stale");
-    expect(completions).toEqual([
-      {
-        id: 22,
-        conclusion: "neutral",
-        title: "Review superseded",
-        summary: "superseded by a newer review of new-head-sha",
-      },
-      {
-        id: 11,
-        conclusion: "neutral",
-        title: "Review superseded",
-        summary: "superseded by a newer review of new-head-sha",
-      },
-    ]);
+    expect(cleanupIntents).toBe(1);
+    expect(completions).toEqual([]);
   });
 
-  test("operational failure fails both the gate and review checks", async () => {
+  test("execution failure is neutral on review and fails the enforced gate", async () => {
     await failCheckRuns(
       "test-token",
       "postil-dev/postil",
       11,
       22,
       "worker stopped",
+      undefined,
+      false,
+      undefined,
+      exactChecks(),
     );
 
     expect(
       completions.map(({ id, conclusion }) => ({ id, conclusion })),
     ).toEqual([
       { id: 22, conclusion: "failure" },
-      { id: 11, conclusion: "failure" },
+      { id: 11, conclusion: "neutral" },
     ]);
     expect(
       completions.every(({ summary }) => !summary.includes("worker stopped")),
     ).toBe(true);
     expect(completions[0]?.summary).toContain("no review verdict exists");
+    expect(completions[1]?.title).toBe("Review did not complete");
   });
 
   test("public failure output links the private run without exposing provider detail", async () => {
@@ -265,6 +330,7 @@ describe("review terminal check-runs", () => {
       undefined,
       false,
       "https://postil.dev/orgs/postil-dev/runs/run-id",
+      exactChecks("https://postil.dev/orgs/postil-dev/runs/run-id"),
     );
 
     expect(
@@ -350,6 +416,8 @@ describe("review terminal check-runs", () => {
         "watchdog deadline",
         undefined,
         true,
+        undefined,
+        exactChecks(),
       ),
     ).rejects.toThrow("could not complete failed review check-runs");
     expect(completions.map(({ id }) => id)).toEqual([11]);
@@ -362,6 +430,10 @@ describe("review terminal check-runs", () => {
       11,
       22,
       "publication failed",
+      undefined,
+      false,
+      undefined,
+      exactChecks(),
     );
     await failCheckRuns(
       "test-token",
@@ -369,15 +441,19 @@ describe("review terminal check-runs", () => {
       11,
       22,
       "publication failed",
+      undefined,
+      false,
+      undefined,
+      exactChecks(),
     );
 
     expect(
       completions.map(({ id, conclusion }) => ({ id, conclusion })),
     ).toEqual([
       { id: 22, conclusion: "failure" },
-      { id: 11, conclusion: "failure" },
+      { id: 11, conclusion: "neutral" },
       { id: 22, conclusion: "failure" },
-      { id: 11, conclusion: "failure" },
+      { id: 11, conclusion: "neutral" },
     ]);
   });
 
@@ -391,14 +467,14 @@ describe("review terminal check-runs", () => {
       undefined,
       false,
       "https://postil.dev/orgs/postil-dev/runs/run-id",
-      undefined,
+      exactChecks("https://postil.dev/orgs/postil-dev/runs/run-id"),
       false,
     );
 
     expect(completions.map(({ id, conclusion, title }) => ({ id, conclusion, title })))
       .toEqual([
         { id: 22, conclusion: "neutral", title: "Postil gate is advisory" },
-        { id: 11, conclusion: "failure", title: "Review did not complete" },
+        { id: 11, conclusion: "neutral", title: "Review did not complete" },
       ]);
     expect(completions.map(({ detailsUrl }) => detailsUrl)).toEqual([
       "https://postil.dev/orgs/postil-dev/runs/run-id",
@@ -413,14 +489,41 @@ describe("review terminal check-runs", () => {
       repoFullName: "postil-dev/postil",
       advisoryCheckRunId: 11,
       gateCheckRunId: 22,
+      headSha: "head-sha",
+      advisoryCheckExternalId: "postil:run-id:review",
+      gateCheckExternalId: "postil:run-id:gate",
       message: "worker stopped",
     });
 
     expect(completions.map(({ id, conclusion, title }) => ({ id, conclusion, title })))
       .toEqual([
         { id: 22, conclusion: "neutral", title: "Postil gate is advisory" },
-        { id: 11, conclusion: "failure", title: "Review did not complete" },
+        { id: 11, conclusion: "neutral", title: "Review did not complete" },
       ]);
+  });
+
+  test("durable unavailable cleanup verifies exact identities", async () => {
+    await runCheckRunCleanupJob({
+      installationId: 42,
+      repoFullName: "postil-dev/postil",
+      advisoryCheckRunId: 11,
+      gateCheckRunId: 22,
+      headSha: "head-sha",
+      advisoryCheckExternalId: "postil:run-id:review",
+      gateCheckExternalId: "postil:run-id:gate",
+      message: "hosted review unavailable",
+      intent: "neutralize",
+    });
+
+    expect(verifiedCompletionIds).toEqual([11, 22]);
+    expect(completions.map(({ id, conclusion, title }) => ({
+      id,
+      conclusion,
+      title,
+    }))).toEqual([
+      { id: 11, conclusion: "neutral", title: "Review unavailable" },
+      { id: 22, conclusion: "neutral", title: "Review unavailable" },
+    ]);
   });
 
   test("queued publication cleanup keeps the exact run identity", async () => {
@@ -456,6 +559,7 @@ describe("review terminal check-runs", () => {
         advisoryCheckRunId: 11,
         gateCheckRunId: null,
         headSha: "head-sha",
+        advisoryCheckExternalId: "postil:run-id:review",
         gateCheckExternalId: "postil:run:gate",
         gateCheckRunMayExist: true,
         message: "worker stopped",
@@ -466,6 +570,6 @@ describe("review terminal check-runs", () => {
 
     expect(
       completions.map(({ id, conclusion }) => ({ id, conclusion })),
-    ).toEqual([{ id: 11, conclusion: "failure" }]);
+    ).toEqual([{ id: 11, conclusion: "neutral" }]);
   });
 });
