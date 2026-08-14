@@ -21,8 +21,9 @@ export default function GitHubForgePage() {
 
       <h2>Hosted app</h2>
       <p>
-        Install the GitHub App and reviews start on the next PR: inline
-        comments, both check-runs (<code>postil/review</code>,{" "}
+        Install the GitHub App and reviews start on the next PR: line-level or
+        file-level review comments with summary fallback, both check-runs {"("}
+        <code>postil/review</code>,{" "}
         <code>postil/gate</code>), and the <code>@postil</code> interactive
         bot on issues and pull requests. No CI job to write.
       </p>
@@ -44,7 +45,10 @@ export POSTIL_API_KEY="$MODEL_API_KEY"
 postil review --repo owner/name --pr 123 --publish`}</code>
       </pre>
       <p>
-        Findings appear in one batched review by default. Set{" "}
+        Findings appear in one batched review by default. GitHub uses line
+        comments when it can place them, file comments when the changed file has
+        no usable line, and the review summary when the file is not part of the
+        pull request. Set{" "}
         <code>review.findingPresentation: checkAnnotations</code> to publish them
         only on <code>postil/review</code>. A gate-failing review exits{" "}
         <code>1</code>; a clean review exits <code>0</code> with successful checks
@@ -77,7 +81,7 @@ postil review --repo owner/name --pr 123 --publish`}</code>
         <code>@postil re-review</code> runs the structured reviewer, with
         findings in the configured presentation and a compact summary. Other mentions are
         treated as questions and receive a bounded reply. Postil reacts with
-        eyes when it accepts a comment request. In an inline Postil review
+        eyes when it accepts a comment request. In a Postil review
         thread, a collaborator can ask a clear follow-up question without
         mentioning the bot again; the answer stays in that thread. A brief
         thank-you receives a thumbs-up without a model call. Issue comments

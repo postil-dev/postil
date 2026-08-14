@@ -3,13 +3,17 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
 import * as schema from "@/lib/db/schema";
 import { GateBadge, ReviewStatusBadge } from "@/components/review-status";
 import type { Envelope, Finding } from "@/lib/envelope";
-import { getOrgReviewRows } from "@/lib/org-reviews";
+import {
+  getOrgReviewRows,
+  shippedPublicationStateSql,
+} from "@/lib/org-reviews";
 import {
   applyPublicationThreadObservations,
   getReviewPublicationCounts,
@@ -969,6 +973,133 @@ describeDb("publication receipt migration and lifecycle", () => {
         [annotationId],
       ),
     ).rejects.toThrow("immutable");
+  });
+
+  test("persists version 2 file-level comment identity and dashboard counts", async () => {
+    const reviewId = await createRunningReview("1".repeat(40), "e".repeat(40));
+    await complete(
+      reviewId,
+      envelope({
+        head: "1".repeat(40),
+        findings: [finding("file-comment-id")],
+      }),
+      {
+        version: 2,
+        channel: "reviewComments",
+        receiptId: "github-review-v2:file-comment",
+        reviewId: "9005",
+        findings: [
+          {
+            findingId: "file-comment-id",
+            stableIdentity: true,
+            initialOutcome: "fileComment",
+            inlineRejected: false,
+            commentId: "8005",
+          },
+        ],
+      },
+    );
+
+    expect(
+      (
+        await pool.query<{
+          initial_state: string;
+          current_state: string;
+          github_comment_id: string;
+        }>(
+          `SELECT initial_state, current_state, github_comment_id
+             FROM finding_publications WHERE review_id = $1`,
+          [reviewId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        initial_state: "fileComment",
+        current_state: "fileComment",
+        github_comment_id: "8005",
+      },
+    ]);
+    const counts = await getReviewPublicationCounts(db, [reviewId]);
+    expect(counts.get(reviewId)?.fileComment).toBe(1);
+    expect(
+      (await getOrgReviewRows(db, orgId, 20)).find((row) => row.id === reviewId),
+    ).toMatchObject({ findingsCount: 1 });
+    const dashboardMetrics = await db.execute(sql<{
+      confidences: number[];
+      shipped: number;
+    }>`
+      SELECT
+        ARRAY(
+          SELECT (entry ->> 'confidence')::double precision
+          FROM reviews dashboard_review,
+               jsonb_array_elements(COALESCE(dashboard_review.envelope -> 'findings', '[]'::jsonb)) entry
+          WHERE dashboard_review.id = ${reviewId}
+            AND EXISTS (
+              SELECT 1
+              FROM finding_publications publication
+              WHERE publication.review_id = dashboard_review.id
+                AND publication.finding_id = entry ->> 'id'
+                AND ${shippedPublicationStateSql(sql.raw("publication.initial_state"))}
+            )
+        ) AS confidences,
+        (
+          SELECT count(*)::int
+          FROM finding_publications publication
+          INNER JOIN reviews published_review ON published_review.id = publication.review_id
+          INNER JOIN repositories published_repository ON published_repository.id = published_review.repository_id
+          INNER JOIN installations published_installation ON published_installation.id = published_repository.installation_id
+          WHERE published_installation.org_id = ${orgId}
+            AND published_review.id = ${reviewId}
+            AND published_review.status = 'completed'
+            AND ${shippedPublicationStateSql(sql.raw("publication.initial_state"))}
+        ) AS shipped
+    `);
+    expect(dashboardMetrics.rows).toEqual([{ confidences: [0.8], shipped: 1 }]);
+
+    await applyPublicationThreadObservations(db, [
+      { githubCommentId: "8005", state: "inline" },
+    ]);
+    expect(
+      (
+        await pool.query<{ current_state: string }>(
+          "SELECT current_state FROM finding_publications WHERE review_id = $1",
+          [reviewId],
+        )
+      ).rows[0]?.current_state,
+    ).toBe("fileComment");
+
+    await applyPublicationThreadObservations(db, [
+      { githubCommentId: "8005", state: "deleted" },
+    ]);
+    expect(
+      (
+        await pool.query<{ current_state: string }>(
+          "SELECT current_state FROM finding_publications WHERE review_id = $1",
+          [reviewId],
+        )
+      ).rows[0]?.current_state,
+    ).toBe("deleted");
+
+    const invalidReviewId = await createRunningReview(
+      "2".repeat(40),
+      "1".repeat(40),
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO finding_publications
+          (review_id, finding_id, stable_identity, initial_state, current_state)
+         VALUES ($1, 'missing-file-comment-id', true, 'fileComment', 'fileComment')`,
+        [invalidReviewId],
+      ),
+    ).rejects.toThrow("finding_publications_file_comment_identity_check");
+    await expect(
+      pool.query(
+        `INSERT INTO finding_publications
+          (review_id, finding_id, stable_identity, initial_state, current_state)
+         VALUES ($1, 'missing-current-file-comment-id', true, 'inline', 'fileComment')`,
+        [invalidReviewId],
+      ),
+    ).rejects.toThrow("finding_publications_file_comment_identity_check");
   });
 
   test("rejects a version 2 receipt without a publication channel", async () => {

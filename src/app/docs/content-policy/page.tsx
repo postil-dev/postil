@@ -145,7 +145,7 @@ export default function ContentPolicyPage() {
         <code>kind: &quot;contentPolicy&quot;</code> in the{" "}
         <Link href="/docs/envelope">envelope</Link> and are otherwise
         indistinguishable from other findings: same severity levels, same{" "}
-        <code>confidence</code> and suppression rules, same inline comments on{" "}
+        <code>confidence</code> and suppression rules, same review placement on{" "}
         <code>postil/review</code>. An <code>error</code>-severity{" "}
         <code>contentPolicy</code> finding gates the PR exactly like any other
         error finding; see <Link href="/docs/gate">the gate</Link>.

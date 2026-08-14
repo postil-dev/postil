@@ -195,6 +195,7 @@ const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
 
 const PUBLICATION_STATE_LABELS: Record<PublicationState, string> = {
   inline: "inline",
+  fileComment: "file comment",
   checkAnnotation: "check annotation",
   summaryOnly: "summary",
   carried: "carried",
@@ -611,6 +612,7 @@ export default async function RunDetailPage({
     },
     {
       inline: 0,
+      fileComment: 0,
       checkAnnotation: 0,
       summaryOnly: 0,
       carried: 0,
@@ -625,6 +627,7 @@ export default async function RunDetailPage({
   const publishedFindingCount = noReviewerVerdict
     ? 0
     : publicationCounts.inline +
+      publicationCounts.fileComment +
       publicationCounts.checkAnnotation +
       publicationCounts.summaryOnly +
       publicationCounts.carried +

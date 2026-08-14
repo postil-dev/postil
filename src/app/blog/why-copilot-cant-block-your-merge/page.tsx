@@ -177,8 +177,8 @@ postil/gate: organization merge policy`}</code>
         </pre>
         <p>
           <code>postil/review</code> is the advisory check. It carries the
-          summary and the inline finding annotations: the explanatory feedback,
-          the part you read. <code>postil/gate</code> is the enforcing check.
+          summary and finding feedback: the explanatory output, the part you
+          read. <code>postil/gate</code> is the enforcing check.
           It carries the merge decision and nothing else. You mark{" "}
           <code>postil/gate</code> as required in branch protection; you leave{" "}
           <code>postil/review</code> advisory. The split exists so that the

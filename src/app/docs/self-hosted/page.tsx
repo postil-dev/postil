@@ -44,7 +44,7 @@ postil review --repo owner/name --pr 123`}</code>
       <h2>Hosting the control plane</h2>
       <p>
         The rest of this page is for organizations that also want the bot
-        experience (inline PR comments posted automatically, the{" "}
+        experience (PR review feedback posted automatically, the{" "}
         <code>@postil</code> mention bot, a dashboard, webhook-driven reviews)
         running on their own infrastructure instead of postil.dev. That
         means standing up the same stack we run hosted: Postgres, the web
@@ -319,7 +319,7 @@ ${doctorTranscript}`}</code>
         </li>
         <li>
           Set <code>GITHUB_APP_SLUG</code> to the App page&apos;s URL slug. Postil
-          uses it to recognize its own inline review threads.
+          uses it to recognize its own review threads.
         </li>
         <li>Install the App on a test repository and open a PR.</li>
       </ol>

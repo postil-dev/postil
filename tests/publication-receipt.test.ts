@@ -125,6 +125,74 @@ describe("publication receipt contract", () => {
     ]);
   });
 
+  test("accepts a version 2 file-level review comment with its GitHub identity", async () => {
+    const receipt = await readPublicationReceipt(
+      await receiptFile({
+        version: 2,
+        channel: "reviewComments",
+        receiptId: "github-review-v2:file-comment",
+        reviewId: "9005",
+        findings: [
+          {
+            findingId: "file-comment-id",
+            stableIdentity: true,
+            initialOutcome: "fileComment",
+            commentId: "8005",
+          },
+        ],
+      }),
+    );
+    validateReceiptAgainstEnvelope(receipt, envelope(["file-comment-id"]));
+    expect(receipt.findings[0]).toMatchObject({
+      initialOutcome: "fileComment",
+      commentId: "8005",
+    });
+  });
+
+  test.each([
+    {
+      channel: "reviewComments",
+      finding: { findingId: "missing-comment", initialOutcome: "fileComment" },
+    },
+    {
+      channel: "checkAnnotations",
+      finding: {
+        findingId: "wrong-channel",
+        initialOutcome: "fileComment",
+        commentId: "8006",
+      },
+    },
+  ])("rejects an invalid file-level review comment receipt", async ({ channel, finding }) => {
+    await expect(
+      readPublicationReceipt(
+        await receiptFile({
+          version: 2,
+          channel,
+          receiptId: "github-review-v2:invalid-file-comment",
+          findings: [finding],
+        }),
+      ),
+    ).rejects.toThrow("publication receipt is invalid");
+  });
+
+  test("rejects file-level comments in a version 1 receipt", async () => {
+    await expect(
+      readPublicationReceipt(
+        await receiptFile({
+          version: 1,
+          receiptId: "github-review-v1:file-comment",
+          findings: [
+            {
+              findingId: "version-one-file-comment",
+              initialOutcome: "fileComment",
+              commentId: "8007",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow("publication receipt is invalid");
+  });
+
   test("rejects publication outcomes that contradict the version 2 channel", async () => {
     await expect(
       readPublicationReceipt(

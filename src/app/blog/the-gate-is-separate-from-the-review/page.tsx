@@ -20,7 +20,7 @@ export default function GateSeparateFromReviewArticle() {
         <p>
           A review and a gate sound similar until a branch protection rule has
           to make a decision. The review is the explanatory surface: findings,
-          inline comments, summaries, and context for a human. The gate is the
+          review comments, summaries, and context for a human. The gate is the
           control surface: one required status check that either lets the head
           commit merge or blocks it. Postil exposes those as two GitHub
           check-runs, <code>postil/review</code> and <code>postil/gate</code>,
@@ -35,8 +35,8 @@ export default function GateSeparateFromReviewArticle() {
           reaches the configured threshold, whose default is{" "}
           <code>error</code>, or when the review cannot produce a verdict and
           organization merge enforcement is enabled.{" "}
-          <code>postil/review</code> carries advisory output and inline
-          comments. The docs say not to require it.
+          <code>postil/review</code> carries advisory output and review
+          feedback. The docs say not to require it.
         </p>
         <p>
           That separation matters because advisory output is allowed to be more

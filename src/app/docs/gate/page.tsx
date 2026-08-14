@@ -52,7 +52,7 @@ export default function GatePage() {
           </tr>
           <tr>
             <td><code>postil/review</code></td>
-            <td>Advisory findings and inline comments. Never require this one.</td>
+            <td>Advisory findings and pull-request review comments. Never require this one.</td>
             <td>
               Never blocks. Completes <code>neutral</code> when no published
               reviewer verdict exists and green after a verdict is published.

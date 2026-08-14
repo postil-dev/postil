@@ -38,7 +38,7 @@ describe("migration lint", () => {
 
   test("keeps the active Drizzle snapshot lineage cumulative", async () => {
     const snapshots = await Promise.all(
-      ["0048", "0049", "0050", "0051", "0052", "0053"].map(async (index) =>
+      ["0048", "0049", "0050", "0051", "0052", "0053", "0054"].map(async (index) =>
         JSON.parse(
           await readFile(
             join(import.meta.dir, "..", "drizzle", "meta", `${index}_snapshot.json`),
@@ -84,6 +84,18 @@ describe("migration lint", () => {
       latest.tables["public.finding_lifecycle_observations"]?.checkConstraints
         ?.finding_lifecycle_observations_resolver_check?.value,
     ).toContain("resolution_authorized");
+    expect(
+      latest.tables["public.finding_publications"]?.checkConstraints
+        ?.finding_publications_initial_state_check?.value,
+    ).toContain("fileComment");
+    expect(
+      latest.tables["public.finding_publications"]?.checkConstraints
+        ?.finding_publications_file_comment_identity_check?.value,
+    ).toContain("github_comment_id");
+    expect(
+      latest.tables["public.finding_publications"]?.checkConstraints
+        ?.finding_publications_file_comment_identity_check?.value,
+    ).toContain("current_state");
     const creationMigration = await readFile(
       join(
         import.meta.dir,
@@ -108,6 +120,20 @@ describe("migration lint", () => {
     expect(creationMigration).toContain('"review_id" bigint NOT NULL');
     expect(ownershipMigration).not.toContain("ADD COLUMN");
     expect(ownershipMigration).not.toMatch(/\bUPDATE\s+"finding_lifecycle_observations"/u);
+
+    const fileCommentMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0054_thick_scarlet_witch.sql",
+      ),
+      "utf8",
+    );
+    expect(fileCommentMigration).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(fileCommentMigration).toContain(
+      '"finding_publications_file_comment_identity_check"',
+    );
     expect(ownershipMigration).not.toMatch(/\bDELETE\s+FROM\s+"finding_lifecycle_observations"/u);
     expect(ownershipMigration).not.toContain("finding_publications");
     expect(ownershipMigration).not.toContain("ALTER COLUMN");

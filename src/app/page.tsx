@@ -104,10 +104,11 @@ export default function HomePage() {
           </div>
         </div>
         <p className="mt-8 max-w-2xl text-ink-soft">
-          A Postil finding ships only when it cites a diff location, clears a
-          confidence threshold, and could change the merge decision. Everything
-          below that bar stays silent, and the silence rate itself is measured
-          and published on every dashboard.
+          A Postil finding ships only when its evidence is grounded in the
+          changed code or checked-out repository, clears a confidence threshold,
+          and could change the merge decision. Everything below that bar stays
+          silent, and the silence rate itself is measured and published on every
+          dashboard.
         </p>
         <p className="mt-6 max-w-3xl font-mono text-[13px] leading-relaxed text-charcoal/75">
           Sources: the 28-PR audit is{" "}
@@ -170,9 +171,9 @@ export default function HomePage() {
               <div>
                 <p className="font-mono text-sm font-semibold">postil/review</p>
                 <p className="mt-1 text-sm text-ink-soft">
-                  Advisory findings as inline comments in a single batched
-                  review: warnings, escalations to accountable humans,
-                  guardrail candidates. Informative, never required.
+                  Advisory findings as line comments, file comments, or review
+                  summary entries: warnings, escalations to accountable
+                  humans, guardrail candidates. Informative, never required.
                 </p>
               </div>
             </div>
@@ -223,15 +224,16 @@ export default function HomePage() {
           <div>
             <p className="text-ink-soft">
               On GitHub, Postil shows up as exactly two check-runs plus, when
-              warranted, batched inline comments. The gate fails on a finding it
+              warranted, review feedback placed on lines, files, or the review
+              summary. The gate fails on a finding it
               can stand behind (here a missing idempotency key on a refund
               path) while advisory commentary stays out of the blocking lane.
             </p>
             <ul className="mt-6 space-y-3 text-sm text-ink-soft">
               <li className="flex gap-3">
                 <span className="font-mono text-gate">→</span>
-                Every finding cites a file and line, and carries a confidence
-                score you can threshold on.
+                Every finding cites its evidence location and carries a
+                confidence score you can threshold on.
               </li>
               <li className="flex gap-3">
                 <span className="font-mono text-gate">→</span>
@@ -426,9 +428,9 @@ export default function HomePage() {
               Ungrounded findings are not published.
             </p>
             <p className="mt-2 text-sm text-ink-soft">
-              Every finding must ground to a real diff location or it is
+              Every finding must ground to verifiable review evidence or it is
               dropped before you see it. Findings about the PR title or
-              description, which have no diff line of their own, ground
+              description, which have no source line of their own, ground
               against a reserved synthetic anchor, and a run whose findings
               were all dropped becomes an explicit no-verdict result rather
               than reading as a clean review. The hosted gate applies the

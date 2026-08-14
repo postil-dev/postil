@@ -42,7 +42,7 @@ const PIPELINE = [
     step: "4",
     name: "Check-runs",
     detail:
-      "The CLI posts inline comments in one batched review and completes postil/review. After the envelope is stored, the control plane completes postil/gate according to the organization’s merge-gate setting. The diff is not stored.",
+      "The CLI publishes findings as line comments, file comments, or review summary entries and completes postil/review. After the envelope is stored, the control plane completes postil/gate according to the organization’s merge-gate setting. The diff is not stored.",
   },
 ] as const;
 

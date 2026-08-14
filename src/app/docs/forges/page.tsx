@@ -37,7 +37,7 @@ export default function ForgesIndexPage() {
       <h1 className="serif-display text-4xl text-charcoal">Forges</h1>
       <p className="mt-4 text-lg">
         Postil is one review engine behind a <code>Forge</code> trait: fetch
-        the diff, post inline comments, complete two check-runs, reply to a
+        the diff, publish review feedback, complete two check-runs, reply to a
         mention. Four code hosts implement it (GitHub, GitLab, Bitbucket,
         and Azure DevOps), each covering its self-managed or server variant
         through a base-URL environment variable. Pick a forge with{" "}

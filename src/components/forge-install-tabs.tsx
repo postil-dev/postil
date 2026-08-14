@@ -250,8 +250,8 @@ function BitbucketPanel() {
         </div>
         <div className="min-w-0 space-y-4">
           <p className="text-ink-soft">
-            The CLI posts inline comments and makes a gate-failing review fail
-            the pipeline step.
+            The CLI publishes review feedback and makes a gate-failing review
+            fail the pipeline step.
           </p>
           <Terminal title="bitbucket-pipelines.yml">
             <code>{`pipelines:

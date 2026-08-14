@@ -284,7 +284,8 @@ export default function WhereDoesYourCodeGoArticle() {
         <p>
           The GitHub App asks for the smallest permission set that does the job:{" "}
           <code>contents: read</code> to fetch the diff,{" "}
-          <code>pull_requests: write</code> to post one batched review,{" "}
+          <code>pull_requests: write</code> to publish line-level and file-level
+          review comments with summary fallback,{" "}
           <code>checks: write</code> for the two check-runs, and{" "}
           <code>issues: write</code> for explicit command replies,{" "}
           <code>members: read</code> to verify organization admins before

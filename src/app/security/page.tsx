@@ -23,7 +23,8 @@ const PERMISSIONS = [
   {
     scope: "pull_requests",
     level: "write",
-    note: "Post inline review comments in one batched review.",
+    note:
+      "Post line and file-level review comments, with summary placement when needed.",
   },
   {
     scope: "checks",

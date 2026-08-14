@@ -138,8 +138,9 @@ export default function EnvelopePage() {
           <tr>
             <td><code>counts.ungrounded</code></td>
             <td>
-              Findings the model reported that did not cite a changed line and
-              were dropped. A nonzero value is a model-quality signal; a run
+              Findings the model reported that could not be grounded in the
+              available review evidence and were dropped. A nonzero value is a
+              model-quality signal; a run
               where every finding was ungrounded produces an explicit
               no-verdict operational result. Optional within v1 (absent means
               0).
@@ -164,9 +165,11 @@ export default function EnvelopePage() {
 
       <h2>Grounding guarantee</h2>
       <p>
-        Every finding must cite a (path, line) present in the reviewed diff.
-        Ungrounded model output is dropped; an entirely invalid response
-        becomes a synthetic <code>error</code> finding at{" "}
+        Every finding must carry a path and line and ground its claim in
+        verifiable review evidence from the reviewed change, checked-out
+        repository, or a reserved pull-request metadata anchor. Ungrounded
+        model output is dropped; an entirely invalid response becomes a
+        synthetic <code>error</code> finding at{" "}
         <code>.postil/model-output:1</code> after one JSON-repair retry. That
         envelope represents no reviewer verdict, not a successful completed
         review. Direct CLI publication applies <code>gate.onError</code>;
