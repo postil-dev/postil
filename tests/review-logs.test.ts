@@ -38,8 +38,57 @@ describe("runCli log observation", () => {
       );
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe("large-envelope-json");
+      expect(Buffer.from(result.stdoutBytes)).toEqual(
+        Buffer.from("large-envelope-json"),
+      );
       expect(lines).toEqual(["phase one", "phase two"]);
       expect(lines.join("\n")).not.toContain("large-envelope-json");
+    } finally {
+      if (oldBin === undefined) delete process.env.POSTIL_BIN;
+      else process.env.POSTIL_BIN = oldBin;
+    }
+  });
+
+  test("retains exact UTF-8 stdout bytes across child chunks", async () => {
+    const oldBin = process.env.POSTIL_BIN;
+    process.env.POSTIL_BIN = process.execPath;
+    try {
+      const result = await runCli(
+        [
+          "-e",
+          'process.stdout.write(Buffer.from([0xe2])); setTimeout(() => process.stdout.write(Buffer.from([0x82, 0xac])), 10);',
+        ],
+        {},
+      );
+
+      expect(result.stdout).toBe("€");
+      expect([...result.stdoutBytes]).toEqual([0xe2, 0x82, 0xac]);
+    } finally {
+      if (oldBin === undefined) delete process.env.POSTIL_BIN;
+      else process.env.POSTIL_BIN = oldBin;
+    }
+  });
+
+  test("kills child output that exceeds an explicit protocol bound", async () => {
+    const oldBin = process.env.POSTIL_BIN;
+    process.env.POSTIL_BIN = process.execPath;
+    try {
+      await expect(runCli(
+        ["-e", 'process.stdout.write("x".repeat(33));'],
+        {},
+        undefined,
+        { maxStdoutBytes: 32 },
+      )).rejects.toThrow("stdout exceeded its 32 byte limit");
+
+      await expect(runCli(
+        ["-e", 'process.stderr.write("x".repeat(33));'],
+        {},
+        undefined,
+        { maxStderrBytes: 32 },
+      )).rejects.toThrow("stderr exceeded its 32 byte limit");
+
+      await expect(runCli([], {}, undefined, { maxStdoutBytes: 0 }))
+        .rejects.toThrow("stdout byte limit is invalid");
     } finally {
       if (oldBin === undefined) delete process.env.POSTIL_BIN;
       else process.env.POSTIL_BIN = oldBin;
