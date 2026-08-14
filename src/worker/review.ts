@@ -117,9 +117,9 @@ import {
   WorkerInterruptionRehearsalError,
 } from "@/lib/private-worker-rehearsal";
 import {
-  applyPublicationThreadObservations,
   getPullRequestPublicationCommentIds,
   readPublicationReceipt,
+  reconcilePublicationThreadObservations,
   type PublicationReceipt,
 } from "@/lib/publication-receipt";
 import {
@@ -2180,18 +2180,34 @@ export async function runReviewJob(
           repository.id,
           payload.prNumber,
         );
-        const observations = await observeGitHubReviewThreads(
-          token,
-          payload.repoFullName,
-          payload.prNumber,
-          commentIds,
-          signal,
-        );
-        await applyPublicationThreadObservations(db, observations);
-        if (observations.length > 0) {
+        const lifecycleAuthorGithubId = authorGithubId;
+        if (
+          typeof lifecycleAuthorGithubId !== "number" ||
+          !Number.isSafeInteger(lifecycleAuthorGithubId) ||
+          lifecycleAuthorGithubId <= 0
+        ) {
           reviewLog.line(
-            `publication lifecycle reconciled (${observations.length} GitHub threads)`,
+            "publication lifecycle observation skipped because the pull request author identity is unavailable",
           );
+        } else {
+          const observations = await observeGitHubReviewThreads(
+            token,
+            payload.repoFullName,
+            payload.prNumber,
+            commentIds,
+            lifecycleAuthorGithubId,
+            signal,
+          );
+          await reconcilePublicationThreadObservations(
+            db,
+            payload.sourceDeliveryId ?? `review:${publicId}`,
+            observations,
+          );
+          if (observations.length > 0) {
+            reviewLog.line(
+              `publication lifecycle reconciled (${observations.length} GitHub threads)`,
+            );
+          }
         }
       } catch (error) {
         // A transient GitHub read does not invalidate the immutable receipt.

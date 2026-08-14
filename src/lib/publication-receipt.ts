@@ -1,6 +1,6 @@
 import { lstat, readFile } from "node:fs/promises";
 
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import type { Database } from "@/lib/db";
@@ -410,17 +410,20 @@ export interface PublicationThreadObservation {
   state: "inline" | "resolved" | "outdated" | "deleted";
   /** True only when GitHub currently proves the resolver has write-level repository authority. */
   resolutionAuthorized?: boolean;
-  /** Live resolver identity accompanying an authorized resolution observation. */
+  /** Live resolver identity when GitHub supplies one. */
   resolvedByGithubId?: number;
   resolvedByLogin?: string;
 }
 
-/** Apply only forge-observed thread state; human prose and review dismissal are not inputs. */
-export async function applyPublicationThreadObservations(
-  db: Database,
+export interface PublicationThreadObservationBinding {
+  reviewId: number;
+  findingId: string;
+  githubCommentId: string;
+}
+
+function normalizePublicationThreadObservations(
   observations: PublicationThreadObservation[],
-): Promise<void> {
-  if (observations.length === 0) return;
+): PublicationThreadObservation[] {
   const observationsByComment = new Map<string, PublicationThreadObservation>();
   for (const observation of observations) {
     const existing = observationsByComment.get(observation.githubCommentId);
@@ -436,7 +439,59 @@ export async function applyPublicationThreadObservations(
       observationsByComment.set(observation.githubCommentId, observation);
     }
   }
-  for (const observation of observationsByComment.values()) {
+  return [...observationsByComment.values()];
+}
+
+/** Persist the resolver provenance for every resolved forge observation. */
+export async function recordPublicationThreadObservations(
+  db: Database,
+  input: {
+    sourceDeliveryId: string;
+    bindings: PublicationThreadObservationBinding[];
+    observations: PublicationThreadObservation[];
+  },
+): Promise<void> {
+  const sourceDeliveryId = input.sourceDeliveryId.trim();
+  if (sourceDeliveryId.length === 0 || sourceDeliveryId.length > 200) {
+    throw new Error("publication lifecycle observation source identity is invalid");
+  }
+  assertOneFindingPerGithubComment(input.bindings);
+  const observations = normalizePublicationThreadObservations(input.observations);
+  const observationsByComment = new Map(
+    observations.map((observation) => [observation.githubCommentId, observation]),
+  );
+  const rows = input.bindings.flatMap((binding) => {
+    const observation = observationsByComment.get(binding.githubCommentId);
+    if (observation?.state !== "resolved") return [];
+    return [{
+      sourceDeliveryId,
+      webhookAction: "resolved",
+      reviewId: binding.reviewId,
+      findingId: binding.findingId,
+      githubCommentId: binding.githubCommentId,
+      observedState: observation.state,
+      resolverGithubId: observation.resolvedByGithubId === undefined
+        ? null
+        : String(observation.resolvedByGithubId),
+      resolverLogin: observation.resolvedByLogin ?? null,
+      resolutionAuthorized: observation.resolutionAuthorized === true,
+      forgeObservedAt: new Date(),
+    }];
+  });
+  if (rows.length === 0) return;
+  await db
+    .insert(schema.findingLifecycleObservations)
+    .values(rows)
+    .onConflictDoNothing();
+}
+
+/** Apply only forge-observed thread state; human prose and review dismissal are not inputs. */
+export async function applyPublicationThreadObservations(
+  db: Database,
+  observations: PublicationThreadObservation[],
+): Promise<void> {
+  if (observations.length === 0) return;
+  for (const observation of normalizePublicationThreadObservations(observations)) {
     const update = observation.state === "inline" ||
         (observation.state === "resolved" && observation.resolutionAuthorized !== true)
       ? { lifecycleObservedAt: new Date() }
@@ -449,6 +504,51 @@ export async function applyPublicationThreadObservations(
         observation.githubCommentId,
       ));
   }
+}
+
+/** Record resolver provenance and apply forge state in one database transaction. */
+export async function reconcilePublicationThreadObservations(
+  db: Database,
+  sourceDeliveryId: string,
+  observations: PublicationThreadObservation[],
+): Promise<void> {
+  const normalized = normalizePublicationThreadObservations(observations);
+  const resolvedCommentIds = normalized.flatMap((observation) =>
+    observation.state === "resolved" ? [observation.githubCommentId] : []
+  );
+  let bindings: PublicationThreadObservationBinding[] = [];
+  if (resolvedCommentIds.length > 0) {
+    bindings = await db
+      .selectDistinctOn([schema.findingPublications.githubCommentId], {
+        reviewId: schema.findingPublications.reviewId,
+        findingId: schema.findingPublications.findingId,
+        githubCommentId: schema.findingPublications.githubCommentId,
+      })
+      .from(schema.findingPublications)
+      .where(
+        and(
+          eq(schema.findingPublications.stableIdentity, true),
+          isNotNull(schema.findingPublications.githubCommentId),
+          inArray(schema.findingPublications.githubCommentId, resolvedCommentIds),
+        ),
+      )
+      .orderBy(
+        schema.findingPublications.githubCommentId,
+        desc(schema.findingPublications.id),
+      ) as PublicationThreadObservationBinding[];
+    const boundCommentIds = new Set(bindings.map((binding) => binding.githubCommentId));
+    if (resolvedCommentIds.some((commentId) => !boundCommentIds.has(commentId))) {
+      throw new Error("resolved GitHub publication thread has no durable finding binding");
+    }
+  }
+  await db.transaction(async (tx) => {
+    await recordPublicationThreadObservations(tx, {
+      sourceDeliveryId,
+      bindings,
+      observations: normalized,
+    });
+    await applyPublicationThreadObservations(tx, normalized);
+  });
 }
 
 export async function getPullRequestPublicationCommentIds(
@@ -464,6 +564,7 @@ export async function getPullRequestPublicationCommentIds(
       and(
         eq(schema.reviews.repositoryId, repositoryId),
         eq(schema.reviews.prNumber, prNumber),
+        eq(schema.findingPublications.stableIdentity, true),
         sql`${schema.findingPublications.githubCommentId} IS NOT NULL`,
       ),
     );

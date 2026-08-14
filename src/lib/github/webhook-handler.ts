@@ -64,6 +64,7 @@ import { canProcessRepositoryInference } from "@/lib/private-repository-entitlem
 import {
   applyPublicationThreadObservations,
   assertOneFindingPerGithubComment,
+  recordPublicationThreadObservations,
   resolveFindingPublicationBinding,
   type PublicationThreadObservation,
 } from "@/lib/publication-receipt";
@@ -1425,38 +1426,6 @@ async function enqueueFindingReconciliationReview(input: {
   return true;
 }
 
-async function recordFindingLifecycleObservations(
-  sourceDeliveryId: string,
-  webhookAction: "resolved",
-  bindings: FindingPublicationBindingWithState[],
-  observationsByComment: Map<string, PublicationThreadObservation>,
-): Promise<void> {
-  assertOneFindingPerGithubComment(bindings);
-  const rows = bindings.flatMap((binding) => {
-    const observation = observationsByComment.get(binding.githubCommentId);
-    if (observation?.state !== "resolved") return [];
-    return [{
-      sourceDeliveryId,
-      webhookAction,
-      reviewId: binding.reviewId,
-      findingId: binding.findingId,
-      githubCommentId: binding.githubCommentId,
-      observedState: observation.state,
-      resolverGithubId: observation.resolvedByGithubId === undefined
-        ? null
-        : String(observation.resolvedByGithubId),
-      resolverLogin: observation.resolvedByLogin ?? null,
-      resolutionAuthorized: observation.resolutionAuthorized === true,
-      forgeObservedAt: new Date(),
-    }];
-  });
-  if (rows.length === 0) return;
-  await getDb()
-    .insert(schema.findingLifecycleObservations)
-    .values(rows)
-    .onConflictDoNothing();
-}
-
 async function handleReviewThread(
   payload: ReviewThreadEventPayload,
   sourceDeliveryId: string,
@@ -1490,11 +1459,23 @@ async function handleReviewThread(
   );
   if (bindings.length === 0) return;
   const token = await getInstallationToken(installationId);
+  const context = await getPullRequestReviewContext(
+    token,
+    repository.full_name,
+    prNumber,
+  );
+  const authorGithubId = context.authorGithubId;
+  if (
+    typeof authorGithubId !== "number" ||
+    !Number.isSafeInteger(authorGithubId) ||
+    authorGithubId <= 0
+  ) return;
   const observations = await observeGitHubReviewThreads(
     token,
     repository.full_name,
     prNumber,
     bindings.map((binding) => binding.githubCommentId),
+    authorGithubId,
   );
   const observationsByComment = new Map(
     observations.map((observation) => [observation.githubCommentId, observation]),
@@ -1523,12 +1504,11 @@ async function handleReviewThread(
     await applyPublicationThreadObservations(getDb(), observations);
     return;
   }
-  await recordFindingLifecycleObservations(
+  await recordPublicationThreadObservations(getDb(), {
     sourceDeliveryId,
-    "resolved",
-    changed,
-    observationsByComment,
-  );
+    bindings: changed,
+    observations,
+  });
   const authorizedBindings = changed.filter((binding) =>
     observationsByComment.get(binding.githubCommentId)?.resolutionAuthorized === true &&
     typeof observationsByComment.get(binding.githubCommentId)?.resolvedByGithubId === "number" &&

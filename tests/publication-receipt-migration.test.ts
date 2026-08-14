@@ -20,7 +20,9 @@ import {
 } from "@/lib/org-reviews";
 import {
   applyPublicationThreadObservations,
+  getPullRequestPublicationCommentIds,
   getReviewPublicationCounts,
+  reconcilePublicationThreadObservations,
   type PublicationReceipt,
 } from "@/lib/publication-receipt";
 import {
@@ -776,6 +778,70 @@ describeDb("publication receipt migration and lifecycle", () => {
     ).rejects.toThrow(
       "GitHub publication comment identity already belongs to another finding",
     );
+  });
+
+  test("records worker-observed resolver provenance in the lifecycle transition transaction", async () => {
+    const reviewId = await createRunningReview("96".repeat(20), null, false);
+    await pool.query(
+      `INSERT INTO finding_publications
+        (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+       VALUES
+         ($1, 'worker-reconciled-finding', true, 'inline', 'inline', '8799'),
+         ($1, 'unstable-worker-finding', false, 'inline', 'inline', '8798')`,
+      [reviewId],
+    );
+
+    const observedCommentIds = await getPullRequestPublicationCommentIds(db, repositoryId, 7);
+    expect(observedCommentIds).toContain("8799");
+    expect(observedCommentIds).not.toContain("8798");
+
+    await reconcilePublicationThreadObservations(db, `review:${reviewId}`, [
+      {
+        githubCommentId: "8799",
+        state: "resolved",
+        resolutionAuthorized: true,
+        resolvedByGithubId: 502,
+        resolvedByLogin: "maintainer",
+      },
+    ]);
+
+    expect((await pool.query<{
+      current_state: string;
+      resolver_github_id: string;
+      resolver_login: string;
+      resolution_authorized: boolean;
+      source_delivery_id: string;
+    }>(
+      `SELECT publication.current_state,
+              observation.resolver_github_id,
+              observation.resolver_login,
+              observation.resolution_authorized,
+              observation.source_delivery_id
+         FROM finding_publications publication
+         INNER JOIN finding_lifecycle_observations observation
+           ON observation.review_id = publication.review_id
+          AND observation.finding_id = publication.finding_id
+        WHERE publication.review_id = $1`,
+      [reviewId],
+    )).rows).toEqual([{
+      current_state: "resolved",
+      resolver_github_id: "502",
+      resolver_login: "maintainer",
+      resolution_authorized: true,
+      source_delivery_id: `review:${reviewId}`,
+    }]);
+
+    await expect(
+      reconcilePublicationThreadObservations(db, "review:missing-binding", [
+        {
+          githubCommentId: "999999",
+          state: "resolved",
+          resolutionAuthorized: true,
+          resolvedByGithubId: 502,
+          resolvedByLogin: "maintainer",
+        },
+      ]),
+    ).rejects.toThrow("no durable finding binding");
   });
 
   test("serializes concurrent cross-finding GitHub comment claims", async () => {

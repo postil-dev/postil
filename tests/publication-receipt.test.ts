@@ -482,7 +482,7 @@ describe("GitHub publication thread observations", () => {
     }) as unknown as typeof fetch;
 
     expect(
-      await observeGitHubReviewThreads("token", "owner/repo", 4, ["11", "12", "13", "14", "15"]),
+      await observeGitHubReviewThreads("token", "owner/repo", 4, ["11", "12", "13", "14", "15"], 999),
     ).toEqual([
       {
         githubCommentId: "11",
@@ -494,7 +494,13 @@ describe("GitHub publication thread observations", () => {
       { githubCommentId: "12", state: "outdated" },
       { githubCommentId: "13", state: "inline" },
       { githubCommentId: "14", state: "deleted" },
-      { githubCommentId: "15", state: "resolved", resolutionAuthorized: false },
+      {
+        githubCommentId: "15",
+        state: "resolved",
+        resolutionAuthorized: false,
+        resolvedByGithubId: 502,
+        resolvedByLogin: "reader",
+      },
     ]);
   });
 
@@ -544,7 +550,7 @@ describe("GitHub publication thread observations", () => {
       }));
     }) as unknown as typeof fetch;
 
-    expect(await observeGitHubReviewThreads("token", "owner/repo", 4, ["11"])).toEqual([
+    expect(await observeGitHubReviewThreads("token", "owner/repo", 4, ["11"], 999)).toEqual([
       {
         githubCommentId: "11",
         state: "resolved",

@@ -134,9 +134,13 @@ export async function observeGitHubReviewThreads(
   repoFullName: string,
   prNumber: number,
   expectedCommentIds: string[],
+  authorGithubId: number,
   signal?: AbortSignal,
 ): Promise<PublicationThreadObservation[]> {
   if (expectedCommentIds.length === 0) return [];
+  if (!Number.isSafeInteger(authorGithubId) || authorGithubId <= 0) {
+    throw new Error("GitHub pull request observation omitted its author identity");
+  }
   const [owner, name, extra] = repoFullName.split("/");
   if (!owner || !name || extra || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid GitHub pull request identity for publication observation");
@@ -285,22 +289,28 @@ export async function observeGitHubReviewThreads(
           id: thread.resolvedBy?.databaseId ?? undefined,
           login: thread.resolvedBy?.login ?? undefined,
         };
+        const resolverIdentity = validActorIdentity(resolver)
+          ? {
+              resolvedByGithubId: resolver.id,
+              resolvedByLogin: resolver.login,
+            }
+          : {};
+        const resolvedByAuthor = resolver.id === authorGithubId;
         const observation: Omit<PublicationThreadObservation, "githubCommentId"> =
           thread.isOutdated
             ? { state: "outdated" }
             : thread.isResolved
-              ? await resolverHasMaintainerAuthority(thread.resolvedBy)
+              ? !resolvedByAuthor && await resolverHasMaintainerAuthority(thread.resolvedBy)
                 ? {
                     state: "resolved",
                     resolutionAuthorized: true,
-                    ...(validActorIdentity(resolver)
-                      ? {
-                          resolvedByGithubId: resolver.id,
-                          resolvedByLogin: resolver.login,
-                        }
-                      : {}),
+                    ...resolverIdentity,
                   }
-                : { state: "resolved", resolutionAuthorized: false }
+                : {
+                    state: "resolved",
+                    resolutionAuthorized: false,
+                    ...resolverIdentity,
+                  }
               : { state: "inline" };
         for (const commentId of matched) observed.set(commentId, observation);
       }

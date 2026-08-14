@@ -62,6 +62,7 @@ let liveMembershipOrgLogin = "octo";
 let membershipFetchCount = 0;
 let pullRequestReviewContextFetchCount = 0;
 let liveRepositoryPermission: "admin" | "write" | "read" = "write";
+let pullRequestAuthorGithubId: number | undefined = 501;
 let failExpectedCheckCompletion = false;
 let pullRequestReviewContext = {
   open: true,
@@ -131,7 +132,12 @@ mock.module("@/lib/github/checks", () => ({
   getPullRequestHeadSha: async () => pullRequestHeadSha,
   getPullRequestReviewContext: async () => {
     pullRequestReviewContextFetchCount += 1;
-    return pullRequestReviewContext;
+    return {
+      ...pullRequestReviewContext,
+      ...(pullRequestAuthorGithubId === undefined
+        ? { authorGithubId: undefined }
+        : { authorGithubId: pullRequestAuthorGithubId }),
+    };
   },
   getPullRequestReviewComment: async () => reviewCommentRoot,
   findIssueCommentByMarker: async () => null,
@@ -227,6 +233,7 @@ describeDb("webhook handler behaviour", () => {
     membershipFetchCount = 0;
     pullRequestReviewContextFetchCount = 0;
     liveRepositoryPermission = "write";
+    pullRequestAuthorGithubId = 501;
     globalThis.fetch = Object.assign(
       async (input: string | URL | Request) => {
         const url =
@@ -251,6 +258,12 @@ describeDb("webhook handler behaviour", () => {
           return Response.json({
             permission: liveRepositoryPermission,
             user: { id: 501, login: "admin" },
+          });
+        }
+        if (url.includes("/collaborators/maintainer/permission")) {
+          return Response.json({
+            permission: liveRepositoryPermission,
+            user: { id: 502, login: "maintainer" },
           });
         }
         if (!url.includes(`/orgs/octo/memberships/${liveMembershipUserLogin}`)) {
@@ -499,6 +512,55 @@ describeDb("webhook handler behaviour", () => {
       [repoId, JSON.stringify(envelope)],
     );
     return Number(row.rows[0]!.id);
+  }
+
+  async function seedFindingThreadBinding(repoId: number): Promise<number> {
+    const reviewId = await seedCompletedApprovalReview(repoId, reviewFindingEnvelope());
+    await pool.query(
+      `INSERT INTO finding_publications
+         (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+       VALUES ($1, 'review-finding', true, 'inline', 'inline', '8800')`,
+      [reviewId],
+    );
+    return reviewId;
+  }
+
+  function mockResolvedReviewThread(resolver: { id: number; login: string }): void {
+    const ordinaryFetch = globalThis.fetch;
+    globalThis.fetch = Object.assign(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+        if (url.endsWith("/graphql")) {
+          return Response.json({
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    nodes: [{
+                      id: "thread-8800",
+                      isResolved: true,
+                      isOutdated: false,
+                      resolvedBy: { databaseId: resolver.id, login: resolver.login },
+                      comments: {
+                        nodes: [{ databaseId: 8800 }],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+                    }],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            },
+          });
+        }
+        return ordinaryFetch(input, init);
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
   }
 
   function approvalComment(
@@ -2687,7 +2749,7 @@ describeDb("webhook handler behaviour", () => {
                       id: "thread-8800",
                       isResolved: true,
                       isOutdated: false,
-                      resolvedBy: { databaseId: 501, login: "admin" },
+                      resolvedBy: { databaseId: 502, login: "maintainer" },
                       comments: {
                         nodes: [{ databaseId: 8800 }],
                         pageInfo: { hasNextPage: false, endCursor: null },
@@ -2778,10 +2840,139 @@ describeDb("webhook handler behaviour", () => {
       source_delivery_id: "finding-thread-resolved",
       finding_id: "review-finding",
       github_comment_id: "8800",
-      resolver_github_id: "501",
-      resolver_login: "admin",
+      resolver_github_id: "502",
+      resolver_login: "maintainer",
       resolution_authorized: true,
     }]);
+  });
+
+  test("the pull request author cannot resolve a finding even with admin repository access", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 712);
+    const repoId = await seedRepo(inst, 7012, "octo/reconciliation-author");
+    const reviewId = await seedFindingThreadBinding(repoId);
+    liveRepositoryPermission = "admin";
+    mockResolvedReviewThread({ id: 501, login: "admin" });
+
+    expect((await post(
+      "pull_request_review_thread",
+      {
+        action: "resolved",
+        installation: { id: 712 },
+        repository: {
+          id: 7012,
+          full_name: "octo/reconciliation-author",
+          private: false,
+        },
+        sender: { id: 501, login: "admin", type: "User" },
+        pull_request: { number: 9 },
+        thread: { updated_at: new Date(Date.now() - 120_000).toISOString() },
+      },
+      "finding-thread-author-resolution",
+    )).status).toBe(200);
+
+    expect((await pool.query<{ current_state: string }>(
+      "SELECT current_state FROM finding_publications WHERE review_id = $1",
+      [reviewId],
+    )).rows[0]!.current_state).toBe("inline");
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM jobs WHERE kind = 'review'",
+    )).rows[0]!.count).toBe(0);
+    expect((await pool.query<{
+      resolver_github_id: string;
+      resolver_login: string;
+      resolution_authorized: boolean;
+    }>(
+      `SELECT resolver_github_id, resolver_login, resolution_authorized
+         FROM finding_lifecycle_observations`,
+    )).rows).toEqual([{
+      resolver_github_id: "501",
+      resolver_login: "admin",
+      resolution_authorized: false,
+    }]);
+  });
+
+  test("a distinct maintainer can resolve a finding on the current head", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 713);
+    const repoId = await seedRepo(inst, 7013, "octo/reconciliation-maintainer");
+    const reviewId = await seedFindingThreadBinding(repoId);
+    liveRepositoryPermission = "admin";
+    mockResolvedReviewThread({ id: 502, login: "maintainer" });
+
+    expect((await post(
+      "pull_request_review_thread",
+      {
+        action: "resolved",
+        installation: { id: 713 },
+        repository: {
+          id: 7013,
+          full_name: "octo/reconciliation-maintainer",
+          private: false,
+        },
+        sender: { id: 502, login: "maintainer", type: "User" },
+        pull_request: { number: 9 },
+        thread: { updated_at: new Date(Date.now() - 120_000).toISOString() },
+      },
+      "finding-thread-maintainer-resolution",
+    )).status).toBe(200);
+
+    expect((await pool.query<{ current_state: string }>(
+      "SELECT current_state FROM finding_publications WHERE review_id = $1",
+      [reviewId],
+    )).rows[0]!.current_state).toBe("resolved");
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM jobs WHERE kind = 'review'",
+    )).rows[0]!.count).toBe(1);
+    expect((await pool.query<{
+      resolver_github_id: string;
+      resolver_login: string;
+      resolution_authorized: boolean;
+    }>(
+      `SELECT resolver_github_id, resolver_login, resolution_authorized
+         FROM finding_lifecycle_observations`,
+    )).rows).toEqual([{
+      resolver_github_id: "502",
+      resolver_login: "maintainer",
+      resolution_authorized: true,
+    }]);
+  });
+
+  test("thread resolution fails closed when the live pull request author is unavailable", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 714);
+    const repoId = await seedRepo(inst, 7014, "octo/reconciliation-no-author");
+    const reviewId = await seedFindingThreadBinding(repoId);
+    pullRequestAuthorGithubId = undefined;
+    mockResolvedReviewThread({ id: 502, login: "maintainer" });
+
+    expect((await post(
+      "pull_request_review_thread",
+      {
+        action: "resolved",
+        installation: { id: 714 },
+        repository: {
+          id: 7014,
+          full_name: "octo/reconciliation-no-author",
+          private: false,
+        },
+        sender: { id: 502, login: "maintainer", type: "User" },
+        pull_request: { number: 9 },
+        thread: { updated_at: new Date(Date.now() - 120_000).toISOString() },
+      },
+      "finding-thread-missing-author",
+    )).status).toBe(200);
+
+    expect((await pool.query<{ current_state: string }>(
+      "SELECT current_state FROM finding_publications WHERE review_id = $1",
+      [reviewId],
+    )).rows[0]!.current_state).toBe("inline");
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM jobs WHERE kind IN ('review', 'github-reaction')",
+    )).rows[0]!.count).toBe(0);
+    expect((await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM finding_lifecycle_observations",
+    )).rows[0]!.count).toBe(0);
   });
 
   test("ignores an undocumented unresolved thread action", async () => {
@@ -2951,7 +3142,7 @@ describeDb("webhook handler behaviour", () => {
                       id: `thread-${databaseId}`,
                       isResolved: true,
                       isOutdated: false,
-                      resolvedBy: { databaseId: 501, login: "admin" },
+                      resolvedBy: { databaseId: 502, login: "maintainer" },
                       comments: {
                         nodes: [{ databaseId }],
                         pageInfo: { hasNextPage: false, endCursor: null },
@@ -3013,14 +3204,14 @@ describeDb("webhook handler behaviour", () => {
       {
         finding_id: "review-finding",
         github_comment_id: "8800",
-        resolver_github_id: "501",
-        resolver_login: "admin",
+        resolver_github_id: "502",
+        resolver_login: "maintainer",
       },
       {
         finding_id: "other-finding",
         github_comment_id: "8802",
-        resolver_github_id: "501",
-        resolver_login: "admin",
+        resolver_github_id: "502",
+        resolver_login: "maintainer",
       },
     ]);
   });
