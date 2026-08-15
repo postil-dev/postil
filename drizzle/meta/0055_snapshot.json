@@ -6643,7 +6643,7 @@
         },
         "review_publication_generations_plan_check": {
           "name": "review_publication_generations_plan_check",
-          "value": "\"review_publication_generations\".\"plan_version\" ~ '^github-publication-v[1-9][0-9]{0,8}$' AND jsonb_typeof(\"review_publication_generations\".\"accepted_plan\") = 'object' AND octet_length(\"review_publication_generations\".\"accepted_plan_bytes\") BETWEEN 2 AND 8388608 AND convert_from(\"review_publication_generations\".\"accepted_plan_bytes\", 'UTF8')::jsonb = \"review_publication_generations\".\"accepted_plan\" AND \"review_publication_generations\".\"accepted_plan_digest\" ~ '^[0-9a-f]{64}$' AND \"review_publication_generations\".\"accepted_plan_digest\" = encode(sha256(\"review_publication_generations\".\"accepted_plan_bytes\"), 'hex')"
+          "value": "\"review_publication_generations\".\"plan_version\" ~ '^github-publication-v[1-9][0-9]{0,8}$' AND jsonb_typeof(\"review_publication_generations\".\"accepted_plan\") = 'object' AND octet_length(\"review_publication_generations\".\"accepted_plan_bytes\") BETWEEN 3 AND 8388608 AND right(convert_from(\"review_publication_generations\".\"accepted_plan_bytes\", 'UTF8'), 1) = E'\\n' AND right(convert_from(\"review_publication_generations\".\"accepted_plan_bytes\", 'UTF8'), 2) <> E'\\n\\n' AND convert_from(\"review_publication_generations\".\"accepted_plan_bytes\", 'UTF8')::jsonb = \"review_publication_generations\".\"accepted_plan\" AND \"review_publication_generations\".\"accepted_plan_digest\" ~ '^[0-9a-f]{64}$' AND \"review_publication_generations\".\"accepted_plan_digest\" = encode(sha256(\"review_publication_generations\".\"accepted_plan_bytes\"), 'hex')"
         },
         "review_publication_generations_plan_semantic_digest_check": {
           "name": "review_publication_generations_plan_semantic_digest_check",
@@ -6683,7 +6683,7 @@
         },
         "review_publication_generations_controller_manifest_check": {
           "name": "review_publication_generations_controller_manifest_check",
-          "value": "\"review_publication_generations\".\"controller_operation_count\" BETWEEN 2 AND 128 AND \"review_publication_generations\".\"controller_operation_manifest_digest\" ~ '^sha256:[0-9a-f]{64}$' AND jsonb_typeof(\"review_publication_generations\".\"controller_manifest\") = 'object' AND octet_length(\"review_publication_generations\".\"controller_manifest_bytes\") BETWEEN 2 AND 8388608 AND convert_from(\"review_publication_generations\".\"controller_manifest_bytes\", 'UTF8')::jsonb = \"review_publication_generations\".\"controller_manifest\" AND \"review_publication_generations\".\"controller_manifest_digest\" ~ '^sha256:[0-9a-f]{64}$' AND \"review_publication_generations\".\"controller_manifest_digest\" = 'sha256:' || encode(sha256(\"review_publication_generations\".\"controller_manifest_bytes\"), 'hex') AND \"review_publication_generations\".\"controller_manifest\"->>'version' = 'github-publication-controller-v1' AND jsonb_typeof(\"review_publication_generations\".\"controller_manifest\"->'operationCount') = 'number' AND \"review_publication_generations\".\"controller_manifest\"->>'operationCount' = \"review_publication_generations\".\"controller_operation_count\"::text AND \"review_publication_generations\".\"controller_manifest\"->>'operationManifestDigest' = \"review_publication_generations\".\"controller_operation_manifest_digest\" AND jsonb_typeof(\"review_publication_generations\".\"controller_manifest\"->'operations') = 'array'"
+          "value": "\"review_publication_generations\".\"controller_operation_count\" BETWEEN 2 AND 128 AND \"review_publication_generations\".\"controller_operation_manifest_digest\" ~ '^sha256:[0-9a-f]{64}$' AND jsonb_typeof(\"review_publication_generations\".\"controller_manifest\") = 'object' AND octet_length(\"review_publication_generations\".\"controller_manifest_bytes\") BETWEEN 2 AND 8388608 AND convert_from(\"review_publication_generations\".\"controller_manifest_bytes\", 'UTF8') = postil_canonical_json(\"review_publication_generations\".\"controller_manifest\") AND \"review_publication_generations\".\"controller_manifest_digest\" ~ '^sha256:[0-9a-f]{64}$' AND \"review_publication_generations\".\"controller_manifest_digest\" = 'sha256:' || encode(sha256(\"review_publication_generations\".\"controller_manifest_bytes\"), 'hex') AND \"review_publication_generations\".\"controller_manifest\"->>'version' = 'github-publication-controller-v1' AND jsonb_typeof(\"review_publication_generations\".\"controller_manifest\"->'operationCount') = 'number' AND \"review_publication_generations\".\"controller_manifest\"->>'operationCount' = \"review_publication_generations\".\"controller_operation_count\"::text AND \"review_publication_generations\".\"controller_manifest\"->>'operationManifestDigest' = \"review_publication_generations\".\"controller_operation_manifest_digest\" AND jsonb_typeof(\"review_publication_generations\".\"controller_manifest\"->'operations') = 'array'"
         },
         "review_publication_generations_created_at_check": {
           "name": "review_publication_generations_created_at_check",
@@ -7578,6 +7578,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "evidence_generation": {
+          "name": "evidence_generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -7759,7 +7766,7 @@
         },
         "review_publication_operations_controller_record_check": {
           "name": "review_publication_operations_controller_record_check",
-          "value": "jsonb_typeof(\"review_publication_operations\".\"controller_record\") = 'object' AND octet_length(\"review_publication_operations\".\"controller_record_bytes\") BETWEEN 2 AND 4194304 AND convert_from(\"review_publication_operations\".\"controller_record_bytes\", 'UTF8')::jsonb = \"review_publication_operations\".\"controller_record\" AND \"review_publication_operations\".\"controller_record\"->>'source' = \"review_publication_operations\".\"operation_source\" AND \"review_publication_operations\".\"controller_record\"->'operation' = \"review_publication_operations\".\"operation_record\" AND \"review_publication_operations\".\"controller_record\" - ARRAY['source', 'operation']::text[] = '{}'::jsonb"
+          "value": "jsonb_typeof(\"review_publication_operations\".\"controller_record\") = 'object' AND octet_length(\"review_publication_operations\".\"controller_record_bytes\") BETWEEN 2 AND 4194304 AND convert_from(\"review_publication_operations\".\"controller_record_bytes\", 'UTF8') = postil_canonical_json(\"review_publication_operations\".\"controller_record\") AND \"review_publication_operations\".\"controller_record\"->>'source' = \"review_publication_operations\".\"operation_source\" AND \"review_publication_operations\".\"controller_record\"->'operation' = \"review_publication_operations\".\"operation_record\" AND \"review_publication_operations\".\"controller_record\" - ARRAY['source', 'operation']::text[] = '{}'::jsonb"
         },
         "review_publication_operations_record_check": {
           "name": "review_publication_operations_record_check",
@@ -7792,6 +7799,10 @@
         "review_publication_operations_lease_generation_check": {
           "name": "review_publication_operations_lease_generation_check",
           "value": "\"review_publication_operations\".\"lease_generation\" >= 0"
+        },
+        "review_publication_operations_evidence_generation_check": {
+          "name": "review_publication_operations_evidence_generation_check",
+          "value": "\"review_publication_operations\".\"evidence_generation\" >= 0"
         },
         "review_publication_operations_deadline_check": {
           "name": "review_publication_operations_deadline_check",

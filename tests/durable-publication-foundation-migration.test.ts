@@ -14,6 +14,7 @@ const INPUT_ONE = "1".repeat(64);
 const INPUT_TWO = "2".repeat(64);
 const ENVELOPE_DIGEST = "3".repeat(64);
 const PLAN_SEMANTIC_DIGEST = "4".repeat(64);
+const REVIEW_OUTPUT_DIGEST = `sha256:${"5".repeat(64)}`;
 const BASE_SHA = "a".repeat(40);
 const TARGET_SHA = "b".repeat(40);
 const KEY_DIGESTS = ["a", "b", "c", "d", "e", "f"] as const;
@@ -50,6 +51,7 @@ interface OperationFixture {
 
 interface PublicationFixture {
   repositoryId: number;
+  githubRepositoryId: number;
   prNumber: number;
   generation: string;
   reviewId: number;
@@ -61,6 +63,23 @@ interface PublicationFixture {
 
 function sha256(value: string | Buffer) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function nulJoinedSha256(prefix: string, values: readonly (string | number)[]) {
+  const hash = createHash("sha256").update(`${prefix}\0`);
+  for (const value of values) hash.update(String(value)).update("\0");
+  return hash.digest("hex");
 }
 
 function operationKey(kind: string, seed: number) {
@@ -76,6 +95,7 @@ function makeOperation(input: {
   kind?: string;
   body?: string;
   operationSource?: "cli" | "service";
+  reconciliation?: Record<string, unknown>;
 }): OperationFixture {
   const operationKeyValue = input.operationKey
     ?? operationKey("composite-review", input.ordinal);
@@ -98,21 +118,27 @@ function makeOperation(input: {
     : kind === "gateCheckCreate"
       ? {
           kind,
-          name: "postil/gate",
-          headSha: "c".repeat(40),
-          status: "inProgress",
-          title: "Review in progress",
-          summary: "The durable publication controller is applying the accepted plan.",
+          payload: {
+            name: "postil/gate",
+            headSha: "c".repeat(40),
+            status: "in_progress",
+            externalId: "postil-gate-v1:fixture",
+            detailsUrl: "https://postil.example/reviews/fixture",
+          },
         }
       : kind === "gateCheckComplete"
         ? {
             kind,
-            name: "postil/gate",
-            headSha: "c".repeat(40),
-            status: "completed",
-            conclusion: "success",
-            title: "Review complete",
-            summary: "The accepted publication plan is complete.",
+            remoteId: { source: "operation", operationKey: "fixture" },
+            payload: {
+              name: "postil/gate",
+              headSha: "c".repeat(40),
+              status: "completed",
+              conclusion: "success",
+              title: "Review complete",
+              summary: "The accepted publication plan is complete.",
+              detailsUrl: "https://postil.example/reviews/fixture",
+            },
           }
         : {
         kind,
@@ -126,7 +152,7 @@ function makeOperation(input: {
         };
   const desiredPayloadBytes = Buffer.from(JSON.stringify(desiredPayload));
   const desiredPayloadDigest = `sha256:${sha256(desiredPayloadBytes)}`;
-  const reconciliation = {
+  const reconciliation = input.reconciliation ?? {
     logicalIdentity: `logical-${input.ordinal}`,
     markers: [`marker-${input.ordinal}`],
     exclusive: true,
@@ -153,34 +179,92 @@ function makeOperation(input: {
     desiredPayloadBytes,
     desiredPayloadDigest,
     controllerRecord,
-    controllerRecordBytes: Buffer.from(JSON.stringify(controllerRecord)),
+    controllerRecordBytes: Buffer.from(canonicalJson(controllerRecord)),
     operationRecord,
     operationRecordBytes: Buffer.from(JSON.stringify(operationRecord)),
   };
 }
 
-function withServiceGateOperations(cliOperations: OperationFixture[]) {
+function withServiceGateOperations(input: Omit<PublicationFixture, "operations"> & {
+  cliOperations: OperationFixture[];
+}) {
+  const detailsUrl = `https://postil.example/reviews/${input.prNumber}`;
+  const gateOutput = {
+    conclusion: "success",
+    title: "Review complete",
+    summary: "The accepted publication plan is complete.",
+    detailsUrl,
+  };
+  const gateOutputDigest = `sha256:${sha256(canonicalJson(gateOutput))}`;
+  const common = [
+    String(input.githubRepositoryId),
+    input.prNumber,
+    input.headSha,
+    input.generation,
+    `sha256:${input.inputDigest}`,
+    REVIEW_OUTPUT_DIGEST,
+  ];
+  const externalId = `postil-gate-v1:${nulJoinedSha256(
+    "github-publication-controller-gate-external-id-v1",
+    [...common, gateOutputDigest],
+  )}`;
+  const gateCreateKey = `github-publication-controller-v1:gate-create:sha256:${nulJoinedSha256(
+    "github-publication-controller-gate-operation-v1",
+    [...common, "gate-create", gateOutputDigest],
+  )}`;
+  const gateCompleteKey = `github-publication-controller-v1:gate-complete:sha256:${nulJoinedSha256(
+    "github-publication-controller-gate-operation-v1",
+    [...common, "gate-complete", gateOutputDigest],
+  )}`;
   const gateCreate = makeOperation({
-    ordinal: cliOperations.length + 1,
-    operationKey: `github-publication-controller-v1:gate-create:sha256:${sha256(
-      `controller-gate-create:${cliOperations.map((operation) => operation.operationKey).join(",")}`,
-    )}`,
-    dependencies: cliOperations.map((operation) => operation.operationKey),
+    ordinal: input.cliOperations.length + 1,
+    operationKey: gateCreateKey,
+    dependencies: [],
+    activation: { anyOf: [{ condition: "always" }] },
+    reconciliation: { logicalIdentity: externalId, exclusive: true },
     kind: "gateCheckCreate",
     operationSource: "service",
   });
   const gateComplete = makeOperation({
-    ordinal: cliOperations.length + 2,
-    operationKey: `github-publication-controller-v1:gate-complete:sha256:${sha256(
-      `controller-gate-complete:${[...cliOperations, gateCreate]
-        .map((operation) => operation.operationKey)
-        .join(",")}`,
-    )}`,
-    dependencies: [...cliOperations, gateCreate].map((operation) => operation.operationKey),
+    ordinal: input.cliOperations.length + 2,
+    operationKey: gateCompleteKey,
+    dependencies: [gateCreate.operationKey, ...input.cliOperations.map((operation) => operation.operationKey)],
+    activation: { anyOf: [{ condition: "allDependenciesTerminal" }] },
+    reconciliation: {
+      logicalIdentity: externalId,
+      exclusive: true,
+      remoteId: { source: "operation", operationKey: gateCreate.operationKey },
+    },
     kind: "gateCheckComplete",
     operationSource: "service",
   });
-  return [...cliOperations, gateCreate, gateComplete];
+  const createPayload = (gateCreate.desiredPayload.payload as Record<string, unknown>);
+  createPayload.headSha = input.headSha;
+  createPayload.externalId = externalId;
+  createPayload.detailsUrl = detailsUrl;
+  const completePayload = (gateComplete.desiredPayload.payload as Record<string, unknown>);
+  completePayload.headSha = input.headSha;
+  completePayload.detailsUrl = detailsUrl;
+  (gateComplete.desiredPayload.remoteId as Record<string, unknown>).operationKey = gateCreate.operationKey;
+  gateCreate.desiredPayloadBytes = Buffer.from(JSON.stringify(gateCreate.desiredPayload));
+  gateCreate.desiredPayloadDigest = `sha256:${sha256(gateCreate.desiredPayloadBytes)}`;
+  gateComplete.desiredPayloadBytes = Buffer.from(JSON.stringify(gateComplete.desiredPayload));
+  gateComplete.desiredPayloadDigest = `sha256:${sha256(gateComplete.desiredPayloadBytes)}`;
+  for (const operation of [gateCreate, gateComplete]) {
+    operation.operationRecord = {
+      ordinal: operation.ordinal,
+      operationKey: operation.operationKey,
+      dependencies: operation.dependencies,
+      activation: operation.activation,
+      reconciliation: operation.operationRecord.reconciliation,
+      desiredDigest: operation.desiredPayloadDigest,
+      ...operation.desiredPayload,
+    };
+    operation.operationRecordBytes = Buffer.from(JSON.stringify(operation.operationRecord));
+    operation.controllerRecord = { source: operation.operationSource, operation: operation.operationRecord };
+    operation.controllerRecordBytes = Buffer.from(canonicalJson(operation.controllerRecord));
+  }
+  return [...input.cliOperations, gateCreate, gateComplete];
 }
 
 function publicationFixture(input: Omit<PublicationFixture, "operations"> & {
@@ -188,7 +272,7 @@ function publicationFixture(input: Omit<PublicationFixture, "operations"> & {
 }): PublicationFixture {
   return {
     ...input,
-    operations: withServiceGateOperations(input.cliOperations),
+    operations: withServiceGateOperations(input),
   };
 }
 
@@ -210,6 +294,7 @@ describeDb("durable publication foundation migration", () => {
   let database: EphemeralDatabase;
   let pool: Pool;
   let repositoryId = 0;
+  let githubRepositoryId = 0;
   let installationId = 0;
 
   async function createHierarchy(seed: number, queryable: Queryable = pool) {
@@ -233,6 +318,7 @@ describeDb("durable publication foundation migration", () => {
     return {
       installationId: Number(installation.rows[0]!.id),
       repositoryId: Number(repository.rows[0]!.id),
+      githubRepositoryId: 300000 + seed,
       repositoryFullName: `publication-${seed}/repository`,
     };
   }
@@ -271,6 +357,11 @@ describeDb("durable publication foundation migration", () => {
     const queryable = input.queryable ?? pool;
     const baseSha = input.baseSha ?? BASE_SHA;
     const targetSha = input.targetSha ?? TARGET_SHA;
+    const repositorySnapshot = await queryable.query<{ full_name: string }>(
+      `SELECT full_name FROM repositories WHERE id = $1`,
+      [input.repositoryId],
+    );
+    const repositoryFullName = input.repositoryFullName ?? repositorySnapshot.rows[0]!.full_name;
     const cliOperations = input.cliOperations
       ?? input.operations.filter((operation) => operation.operationSource === "cli");
     const operationCount = input.operationCount ?? cliOperations.length;
@@ -281,17 +372,18 @@ describeDb("durable publication foundation migration", () => {
       forge: "github",
       controllerGeneration: input.generation,
       inputIdentity: `sha256:${input.inputDigest}`,
+      reviewOutputDigest: REVIEW_OUTPUT_DIGEST,
       repository: {
-        id: String(input.repositoryId),
-        fullName: input.repositoryFullName ?? "publication-foundation/repository",
+        id: String(input.githubRepositoryId),
+        fullName: repositoryFullName,
       },
       pullRequestNumber: String(input.prNumber),
       reviewedSnapshot: {
         headSha: input.headSha,
         mergeBaseSha: baseSha,
         targetSha,
-        pullRequestTitleSha256: "5".repeat(64),
-        pullRequestBodySha256: "6".repeat(64),
+        pullRequestTitleSha256: `sha256:${sha256("Publication foundation")}`,
+        pullRequestBodySha256: `sha256:${sha256("")}`,
       },
       lifecycleReceipt: { inputIdentity: `sha256:${input.inputDigest}` },
       operationCount,
@@ -299,30 +391,45 @@ describeDb("durable publication foundation migration", () => {
       operations: cliOperations.map((operation) => operation.operationRecord),
       gateAnalysis: {
         ownership: "service",
-        authoritative: true,
+        authoritative: false,
         organizationGateModeRequired: true,
         name: "postil/gate",
         headSha: input.headSha,
         analyzedConclusion: "success",
         title: "Review gate",
         summary: "Review complete",
+        detailsUrl: `https://postil.example/reviews/${input.prNumber}`,
       },
       intentDigest: `sha256:${PLAN_SEMANTIC_DIGEST}`,
     };
     input.planMutator?.(plan);
-    const acceptedPlanBytes = Buffer.from(JSON.stringify(plan));
+    const acceptedPlanBytes = Buffer.from(`${JSON.stringify(plan)}\n`);
     const controllerOperationCount = input.controllerOperationCount ?? input.operations.length;
     const controllerOperationManifestDigest = input.controllerOperationManifestDigest
       ?? controllerManifestDigest(input.operations);
     const controllerManifest: Record<string, unknown> = {
       version: "github-publication-controller-v1",
+      forge: "github",
+      controllerGeneration: input.generation,
+      inputIdentity: `sha256:${input.inputDigest}`,
+      reviewOutputDigest: REVIEW_OUTPUT_DIGEST,
+      repository: {
+        id: String(input.githubRepositoryId),
+        fullName: repositoryFullName,
+      },
+      pullRequestNumber: String(input.prNumber),
+      headSha: input.headSha,
+      acceptedPlanIntentDigest: `sha256:${PLAN_SEMANTIC_DIGEST}`,
+      acceptedPlanOperationManifestDigest: operationManifestDigest,
+      acceptedPlanBytesDigest: `sha256:${sha256(acceptedPlanBytes)}`,
+      acceptedCliOperationCount: operationCount,
       operationCount: controllerOperationCount,
       operationManifestDigest: controllerOperationManifestDigest,
       operations: input.operations.map((operation) => operation.controllerRecord),
     };
     input.controllerManifestMutator?.(controllerManifest);
     const controllerManifestBytes = input.controllerManifestBytes
-      ?? Buffer.from(JSON.stringify(controllerManifest));
+      ?? Buffer.from(canonicalJson(controllerManifest));
     await queryable.query(
       `INSERT INTO review_publication_generations
          (repository_id, pr_number, publication_generation, review_id, plan_version,
@@ -349,7 +456,7 @@ describeDb("durable publication foundation migration", () => {
         input.generation,
         input.inputDigest,
         ENVELOPE_DIGEST,
-        input.repositoryFullName ?? "publication-foundation/repository",
+        repositoryFullName,
         input.headSha,
         baseSha,
         targetSha,
@@ -435,6 +542,7 @@ describeDb("durable publication foundation migration", () => {
 
   async function preparePublication(input: {
     repositoryId?: number;
+    githubRepositoryId?: number;
     repositoryFullName?: string;
     prNumber: number;
     generation?: string;
@@ -446,6 +554,12 @@ describeDb("durable publication foundation migration", () => {
   }): Promise<PublicationFixture> {
     const queryable = input.queryable ?? pool;
     const fixtureRepositoryId = input.repositoryId ?? repositoryId;
+    const fixtureGithubRepositoryId = input.githubRepositoryId ?? Number((await queryable.query<{
+      github_repo_id: string;
+    }>(
+      `SELECT github_repo_id FROM repositories WHERE id = $1`,
+      [fixtureRepositoryId],
+    )).rows[0]!.github_repo_id);
     const generation = input.generation ?? "1";
     const headSha = input.headSha ?? input.prNumber.toString(16).padStart(40, "7").slice(-40);
     const cliOperations = input.operations ?? [makeOperation({ ordinal: 1 })];
@@ -457,6 +571,7 @@ describeDb("durable publication foundation migration", () => {
     });
     const fixture = publicationFixture({
       repositoryId: fixtureRepositoryId,
+      githubRepositoryId: fixtureGithubRepositoryId,
       prNumber: input.prNumber,
       generation,
       reviewId,
@@ -500,7 +615,6 @@ describeDb("durable publication foundation migration", () => {
     owner?: string;
     leaseId?: string;
     variant?: string;
-    updatedOffset?: string;
     expiresOffset?: string;
     queryable?: Queryable;
   }) {
@@ -517,8 +631,7 @@ describeDb("durable publication foundation migration", () => {
            claim_owner = $5,
            lease_id = $6,
            lease_expires_at = clock_timestamp() + $7::interval,
-           selected_variant = $8,
-           updated_at = clock_timestamp() + $9::interval
+           selected_variant = $8
        WHERE repository_id = $1 AND pr_number = $2
          AND publication_generation = $3 AND operation_key = $4
        RETURNING attempt_count, lease_generation, lease_id`,
@@ -531,7 +644,6 @@ describeDb("durable publication foundation migration", () => {
         input.leaseId ?? randomUUID(),
         input.expiresOffset ?? "10 minutes",
         input.variant ?? "primary",
-        input.updatedOffset ?? "0 seconds",
       ],
     );
     return result.rows[0]!;
@@ -548,8 +660,9 @@ describeDb("durable publication foundation migration", () => {
     error?: string;
     remoteIdentity?: string;
     remoteOperationId?: string;
+    queryable?: Queryable;
   }) {
-    await pool.query(
+    await (input.queryable ?? pool).query(
       `INSERT INTO review_publication_operation_attempts
          (repository_id, pr_number, publication_generation, operation_key,
           attempt_number, lease_generation, phase, selected_variant,
@@ -582,7 +695,7 @@ describeDb("durable publication foundation migration", () => {
     await pool.query(
       `UPDATE review_publication_operations
        SET state = 'unknown', claim_owner = NULL, lease_id = NULL,
-           lease_expires_at = NULL, last_error = $5, updated_at = clock_timestamp()
+           lease_expires_at = NULL, last_error = $5
        WHERE repository_id = $1 AND pr_number = $2
          AND publication_generation = $3 AND operation_key = $4`,
       [
@@ -591,6 +704,52 @@ describeDb("durable publication foundation migration", () => {
         input.fixture.generation,
         input.operation.operationKey,
         input.error,
+      ],
+    );
+  }
+
+  async function applyOperation(input: {
+    fixture: PublicationFixture;
+    operation: OperationFixture;
+    queryable?: Queryable;
+  }) {
+    const queryable = input.queryable ?? pool;
+    const claim = await claimOperation({
+      fixture: input.fixture,
+      operation: input.operation,
+      queryable,
+    });
+    await insertAttempt({
+      fixture: input.fixture,
+      operation: input.operation,
+      phase: "dispatched",
+      attemptNumber: claim.attempt_count,
+      leaseGeneration: claim.lease_generation,
+      variant: "primary",
+      queryable,
+    });
+    await insertAttempt({
+      fixture: input.fixture,
+      operation: input.operation,
+      phase: "applied",
+      attemptNumber: claim.attempt_count,
+      leaseGeneration: claim.lease_generation,
+      variant: "primary",
+      remoteIdentity: "github-publication",
+      remoteOperationId: `remote-${input.operation.ordinal}`,
+      queryable,
+    });
+    await queryable.query(
+      `UPDATE review_publication_operations
+       SET state = 'applied', claim_owner = NULL, lease_id = NULL,
+           lease_expires_at = NULL, last_error = NULL
+       WHERE repository_id = $1 AND pr_number = $2
+         AND publication_generation = $3 AND operation_key = $4`,
+      [
+        input.fixture.repositoryId,
+        input.fixture.prNumber,
+        input.fixture.generation,
+        input.operation.operationKey,
       ],
     );
   }
@@ -604,14 +763,16 @@ describeDb("durable publication foundation migration", () => {
     phase: "retry" | "terminal";
     outcome: "exact_absence" | "applied";
     evidence?: Record<string, unknown>;
+    queryable?: Queryable;
+    observedAt?: Date;
   }) {
-    await pool.query(
+    await (input.queryable ?? pool).query(
       `INSERT INTO review_publication_operation_reconciliations
          (repository_id, pr_number, publication_generation, operation_key,
           attempt_number, lease_generation, phase, selected_variant, outcome,
           evidence_payload, remote_identity, remote_operation_id, observed_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12,
-               clock_timestamp())`,
+               $13)`,
       [
         input.fixture.repositoryId,
         input.fixture.prNumber,
@@ -625,6 +786,7 @@ describeDb("durable publication foundation migration", () => {
         JSON.stringify(input.evidence ?? { outcome: input.outcome }),
         input.outcome === "applied" ? "github-review" : null,
         input.outcome === "applied" ? "987654" : null,
+        input.observedAt ?? new Date(),
       ],
     );
   }
@@ -634,6 +796,7 @@ describeDb("durable publication foundation migration", () => {
     pool = database.pool;
     const hierarchy = await createHierarchy(1);
     repositoryId = hierarchy.repositoryId;
+    githubRepositoryId = hierarchy.githubRepositoryId;
     installationId = hierarchy.installationId;
   }, 30_000);
 
@@ -720,6 +883,7 @@ describeDb("durable publication foundation migration", () => {
     const operation = makeOperation({ ordinal: 1 });
     const fixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 102,
       generation: "1",
       reviewId,
@@ -762,6 +926,7 @@ describeDb("durable publication foundation migration", () => {
     const forwardReview = await createReview({ prNumber: 103, headSha: forwardHead });
     const forwardFixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 103,
       generation: "1",
       reviewId: forwardReview,
@@ -790,11 +955,42 @@ describeDb("durable publication foundation migration", () => {
     );
   });
 
+  test("binds immutable GitHub repository identity without replacing internal foreign keys", async () => {
+    const other = await createHierarchy(23);
+    const headSha = "f".repeat(40);
+    const reviewId = await createReview({ prNumber: 119, headSha });
+    const fixture = publicationFixture({
+      repositoryId,
+      githubRepositoryId,
+      prNumber: 119,
+      generation: "1",
+      reviewId,
+      inputDigest: INPUT_ONE,
+      headSha,
+      cliOperations: [makeOperation({ ordinal: 1 })],
+    });
+    expect(fixture.repositoryId).not.toBe(fixture.githubRepositoryId);
+    await expect(insertGeneration({
+      ...fixture,
+      planMutator: (plan) => {
+        (plan.repository as Record<string, unknown>).id = String(other.githubRepositoryId);
+      },
+    })).rejects.toThrow("accepted publication plan does not match");
+    await expect(insertGeneration({
+      ...fixture,
+      controllerManifestMutator: (manifest) => {
+        (manifest.repository as Record<string, unknown>).id = String(other.githubRepositoryId);
+      },
+    })).rejects.toThrow("controller manifest does not bind");
+    await insertGeneration(fixture);
+  });
+
   test("authenticates the combined controller manifest without mutating accepted CLI intent", async () => {
     const exactBytesHead = "2".repeat(40);
     const exactBytesReview = await createReview({ prNumber: 110, headSha: exactBytesHead });
     const exactBytesFixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 110,
       generation: "1",
       reviewId: exactBytesReview,
@@ -806,11 +1002,34 @@ describeDb("durable publication foundation migration", () => {
       ...exactBytesFixture,
       controllerManifestBytes: Buffer.from("{}"),
     })).rejects.toThrow("review_publication_generations_controller_manifest_check");
+    const bindingMutations: Array<(manifest: Record<string, unknown>) => void> = [
+      (manifest) => { manifest.controllerGeneration = "2"; },
+      (manifest) => { manifest.inputIdentity = `sha256:${"6".repeat(64)}`; },
+      (manifest) => { manifest.reviewOutputDigest = `sha256:${"6".repeat(64)}`; },
+      (manifest) => {
+        (manifest.repository as Record<string, unknown>).fullName = "other/repository";
+      },
+      (manifest) => { manifest.pullRequestNumber = "999"; },
+      (manifest) => { manifest.headSha = "6".repeat(40); },
+      (manifest) => { manifest.acceptedPlanIntentDigest = `sha256:${"6".repeat(64)}`; },
+      (manifest) => {
+        manifest.acceptedPlanOperationManifestDigest = `sha256:${"6".repeat(64)}`;
+      },
+      (manifest) => { manifest.acceptedPlanBytesDigest = `sha256:${"6".repeat(64)}`; },
+      (manifest) => { manifest.acceptedCliOperationCount = 0; },
+    ];
+    for (const controllerManifestMutator of bindingMutations) {
+      await expect(insertGeneration({
+        ...exactBytesFixture,
+        controllerManifestMutator,
+      })).rejects.toThrow("controller manifest does not bind the accepted publication plan");
+    }
 
     const omittedHead = "3".repeat(40);
     const omittedReview = await createReview({ prNumber: 111, headSha: omittedHead });
     const omittedFixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 111,
       generation: "1",
       reviewId: omittedReview,
@@ -836,6 +1055,7 @@ describeDb("durable publication foundation migration", () => {
     const alteredReview = await createReview({ prNumber: 112, headSha: alteredHead });
     const alteredFixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 112,
       generation: "1",
       reviewId: alteredReview,
@@ -860,10 +1080,42 @@ describeDb("durable publication foundation migration", () => {
       "stored publication operations do not match the controller manifest",
     );
 
+    const activationHead = "6".repeat(40);
+    const activationReview = await createReview({ prNumber: 130, headSha: activationHead });
+    const activationFixture = publicationFixture({
+      repositoryId,
+      githubRepositoryId,
+      prNumber: 130,
+      generation: "1",
+      reviewId: activationReview,
+      inputDigest: INPUT_ONE,
+      headSha: activationHead,
+      cliOperations: [makeOperation({ ordinal: 1 })],
+    });
+    await insertGeneration({
+      ...activationFixture,
+      controllerManifestMutator: (manifest) => {
+        const records = structuredClone(manifest.operations as Record<string, unknown>[]);
+        const firstOperation = records[0]!.operation as Record<string, unknown>;
+        firstOperation.activation = {
+          anyOf: [{ condition: "markerAbsent", guard: { markers: ["replacement"] } }],
+        };
+        manifest.operations = records;
+      },
+    });
+    for (const publicationOperation of activationFixture.operations) {
+      await insertOperation(activationFixture, publicationOperation);
+      await insertDependencyEdges(activationFixture, publicationOperation);
+    }
+    await expect(insertHighWater(activationFixture)).rejects.toThrow(
+      "stored publication operations do not match the controller manifest",
+    );
+
     const digestHead = "5".repeat(40);
     const digestReview = await createReview({ prNumber: 113, headSha: digestHead });
     const digestFixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 113,
       generation: "1",
       reviewId: digestReview,
@@ -898,6 +1150,7 @@ describeDb("durable publication foundation migration", () => {
     const reviewId = await createReview({ prNumber: 118, headSha });
     const fixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 118,
       generation: "1",
       reviewId,
@@ -948,6 +1201,7 @@ describeDb("durable publication foundation migration", () => {
     const operationReview = await createReview({ prNumber: 114, headSha: operationHead });
     const operationFixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 114,
       generation: "1",
       reviewId: operationReview,
@@ -968,6 +1222,7 @@ describeDb("durable publication foundation migration", () => {
     const dependencyOperation = makeOperation({ ordinal: 1, dependencies });
     const dependencyFixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 115,
       generation: "1",
       reviewId: dependencyReview,
@@ -984,6 +1239,7 @@ describeDb("durable publication foundation migration", () => {
     const bytesReview = await createReview({ prNumber: 116, headSha: bytesHead });
     const bytesFixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber: 116,
       generation: "1",
       reviewId: bytesReview,
@@ -996,8 +1252,76 @@ describeDb("durable publication foundation migration", () => {
       controllerManifestMutator: (manifest) => {
         manifest.padding = "x".repeat(8 * 1024 * 1024);
       },
-    })).rejects.toThrow("review_publication_generations_controller_manifest_check");
-  });
+    })).rejects.toThrow("controller manifest does not bind");
+
+    const boundedOperationKeys = Array.from({ length: 9 }, (_, index) =>
+      `github-publication-v1:composite-review:sha256:${sha256(`canonical-${index + 1}`)}`
+    );
+    const boundedOperations = boundedOperationKeys.map((operationKeyValue, index) => makeOperation({
+      ordinal: index + 1,
+      operationKey: operationKeyValue,
+    }));
+    const canonicalOperations = boundedOperationKeys.map((operationKeyValue, index) => makeOperation({
+      ordinal: index + 1,
+      operationKey: operationKeyValue,
+      body: "x".repeat(1_040_000),
+    }));
+    const canonicalBytes = (operations: OperationFixture[]) => Buffer.byteLength(
+      `[${operations.map((operation) => operation.controllerRecordBytes.toString()).join(",")}]`,
+    );
+    expect(canonicalBytes(canonicalOperations.slice(0, 8))).toBeLessThanOrEqual(8 * 1024 * 1024);
+    expect(canonicalBytes(canonicalOperations)).toBeGreaterThan(8 * 1024 * 1024);
+    const rawReview = await createReview({ prNumber: 125, headSha: "c".repeat(40) });
+    const rawFixture = publicationFixture({
+      repositoryId,
+      githubRepositoryId,
+      prNumber: 125,
+      generation: "1",
+      reviewId: rawReview,
+      inputDigest: INPUT_ONE,
+      headSha: "c".repeat(40),
+      cliOperations: boundedOperations,
+    });
+    await insertGeneration(rawFixture);
+    for (const operation of canonicalOperations.slice(0, 8)) {
+      await insertOperation(rawFixture, operation);
+    }
+    await expect(insertOperation(rawFixture, canonicalOperations[8]!)).rejects.toThrow(
+      "publication generation exceeds the 8 MiB canonical controller-record limit",
+    );
+
+    const edgeKeys = Array.from({ length: 126 }, (_, index) =>
+      `github-publication-v1:composite-review:sha256:${sha256(`edge-${index + 1}`)}`,
+    );
+    const edgeOperations = edgeKeys.map((key, index) => makeOperation({
+      ordinal: index + 1,
+      operationKey: key,
+      dependencies: edgeKeys.slice(0, index),
+    }));
+    const edgeReview = await createReview({ prNumber: 126, headSha: "d".repeat(40) });
+    const edgeFixture = publicationFixture({
+      repositoryId,
+      githubRepositoryId,
+      prNumber: 126,
+      generation: "1",
+      reviewId: edgeReview,
+      inputDigest: INPUT_ONE,
+      headSha: "d".repeat(40),
+      cliOperations: edgeOperations,
+    });
+    await insertGeneration(edgeFixture);
+    let edgeFailure: unknown;
+    for (const operation of edgeOperations) {
+      await insertOperation(edgeFixture, operation);
+      try {
+        await insertDependencyEdges(edgeFixture, operation);
+      } catch (error) {
+        edgeFailure = error;
+        break;
+      }
+    }
+    expect(String(edgeFailure)).toContain("publication generation exceeds the 1024 dependency-edge limit");
+  }, 30_000);
 
   test("serializes concurrent first-generation sealing and rejects post-seal insertion", async () => {
     const fixture = await preparePublication({ prNumber: 104, seal: false });
@@ -1022,6 +1346,82 @@ describeDb("durable publication foundation migration", () => {
     } finally {
       first.release();
       second.release();
+    }
+  });
+
+  test("rejects trigger-induced sealing unless the validated high-water row exists", async () => {
+    const fixture = await preparePublication({ prNumber: 127, seal: false });
+    await pool.query(
+      `CREATE FUNCTION postil_test_force_generation_seal()
+       RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         NEW.sealed_at := clock_timestamp();
+         RETURN NEW;
+       END;
+       $$`,
+    );
+    await pool.query(
+      `CREATE TRIGGER postil_test_force_generation_seal
+       BEFORE UPDATE OF plan_semantic_digest ON review_publication_generations
+       FOR EACH ROW EXECUTE FUNCTION postil_test_force_generation_seal()`,
+    );
+    await expect(
+      pool.query(
+        `UPDATE review_publication_generations
+         SET plan_semantic_digest = plan_semantic_digest
+         WHERE repository_id = $1 AND pr_number = $2 AND publication_generation = $3`,
+        [fixture.repositoryId, fixture.prNumber, fixture.generation],
+      ),
+    ).rejects.toThrow("review publication generation is immutable");
+    const sealed = await pool.query<{ sealed_at: Date | null }>(
+      `SELECT sealed_at FROM review_publication_generations
+       WHERE repository_id = $1 AND pr_number = $2 AND publication_generation = $3`,
+      [fixture.repositoryId, fixture.prNumber, fixture.generation],
+    );
+    expect(sealed.rows[0]!.sealed_at).toBeNull();
+  });
+
+  test("dispatches only the exact current sealed high-water generation", async () => {
+    const first = await preparePublication({ prNumber: 124, generation: "1", inputDigest: INPUT_ONE });
+    const second = await preparePublication({
+      prNumber: 124,
+      generation: "2",
+      inputDigest: INPUT_TWO,
+      headSha: "e".repeat(40),
+      seal: false,
+    });
+    const advancing = await pool.connect();
+    const claimant = await pool.connect();
+    try {
+      await advancing.query("BEGIN");
+      await advancing.query(
+        `UPDATE pull_request_publication_high_waters
+         SET publication_generation = $3, accepted_review_id = $4,
+             accepted_input_digest = $5, accepted_head_sha = $6,
+             updated_at = clock_timestamp()
+         WHERE repository_id = $1 AND pr_number = $2`,
+        [
+          repositoryId,
+          first.prNumber,
+          second.generation,
+          second.reviewId,
+          second.inputDigest,
+          second.headSha,
+        ],
+      );
+      const staleClaim = claimOperation({
+        fixture: first,
+        operation: first.operations[0]!,
+        queryable: claimant,
+      });
+      await advancing.query("COMMIT");
+      await expect(staleClaim).rejects.toThrow("only the current sealed publication generation can be claimed");
+      const currentClaim = await claimOperation({ fixture: second, operation: second.operations[0]! });
+      expect(currentClaim.attempt_count).toBe(1);
+    } finally {
+      await advancing.query("ROLLBACK").catch(() => undefined);
+      advancing.release();
+      claimant.release();
     }
   });
 
@@ -1052,8 +1452,7 @@ describeDb("durable publication foundation migration", () => {
     await pool.query(
       `UPDATE review_publication_operations
        SET state = 'pending', claim_owner = NULL, lease_id = NULL,
-           lease_expires_at = NULL, selected_variant = NULL,
-           updated_at = clock_timestamp()
+           lease_expires_at = NULL, selected_variant = NULL
        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
       [repositoryId, fixture.prNumber, first.operationKey],
     );
@@ -1066,6 +1465,66 @@ describeDb("durable publication foundation migration", () => {
     expect(active.rows).toEqual([{ operation_key: second.operationKey, state: "applying" }]);
   });
 
+  test("claims service gates only after their declared terminal dependencies settle", async () => {
+    const fixture = await preparePublication({ prNumber: 120 });
+    const cli = fixture.operations[0]!;
+    const gateCreate = fixture.operations.find((operation) => operation.kind === "gateCheckCreate")!;
+    const gateComplete = fixture.operations.find((operation) => operation.kind === "gateCheckComplete")!;
+    await expect(claimOperation({ fixture, operation: gateComplete })).rejects.toThrow(
+      "publication claim requires terminal dependencies and immutable activation evidence",
+    );
+    await applyOperation({ fixture, operation: cli });
+    await expect(claimOperation({ fixture, operation: gateComplete })).rejects.toThrow(
+      "publication claim requires terminal dependencies and immutable activation evidence",
+    );
+    await applyOperation({ fixture, operation: gateCreate });
+    const completeClaim = await claimOperation({ fixture, operation: gateComplete });
+    expect(completeClaim.attempt_count).toBe(1);
+  });
+
+  test("seals and completes gate operations when the accepted CLI plan has no operations", async () => {
+    const fixture = await preparePublication({ prNumber: 129, operations: [] });
+    const gateCreate = fixture.operations.find((operation) => operation.kind === "gateCheckCreate")!;
+    const gateComplete = fixture.operations.find((operation) => operation.kind === "gateCheckComplete")!;
+    expect(fixture.cliOperations).toEqual([]);
+    expect(gateComplete.dependencies).toEqual([gateCreate.operationKey]);
+    await applyOperation({ fixture, operation: gateCreate });
+    const completeClaim = await claimOperation({ fixture, operation: gateComplete });
+    expect(completeClaim.attempt_count).toBe(1);
+  });
+
+  test("claims fallback operations only from their immutable predecessor evidence", async () => {
+    const primary = makeOperation({ ordinal: 1 });
+    const fallback = makeOperation({
+      ordinal: 2,
+      operationKey: operationKey("file-comment-fallback", 2),
+      dependencies: [primary.operationKey],
+      kind: "fileCommentFallback",
+      activation: {
+        anyOf: [{
+          condition: "semanticPlacementRejected",
+          dependencyOperationKey: primary.operationKey,
+          httpStatus: 422,
+          classification: "invalidReviewCommentPlacement",
+          markerAbsence: { markers: ["marker-2"], headSha: "7".repeat(40), required: true },
+        }],
+      },
+    });
+    const fixture = await preparePublication({ prNumber: 121, operations: [primary, fallback] });
+    await expect(claimOperation({ fixture, operation: fallback })).rejects.toThrow(
+      "publication claim requires terminal dependencies and immutable activation evidence",
+    );
+    await pool.query(
+      `UPDATE review_publication_operations
+       SET state = 'failed', last_error = 'inline placement rejected',
+           terminal_evidence = '{"httpStatus":422,"classification":"invalidReviewCommentPlacement"}'::jsonb
+       WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+      [repositoryId, fixture.prNumber, primary.operationKey],
+    );
+    const fallbackClaim = await claimOperation({ fixture, operation: fallback, variant: "fallback" });
+    expect(fallbackClaim.attempt_count).toBe(1);
+  });
+
   test("rejects live lease theft, permits renewal, and requires expiry for reclaim", async () => {
     const fixture = await preparePublication({ prNumber: 106 });
     const operation = fixture.operations[0]!;
@@ -1074,7 +1533,6 @@ describeDb("durable publication foundation migration", () => {
       fixture,
       operation,
       leaseId: initialLease,
-      updatedOffset: "1 second",
       expiresOffset: "2 seconds",
     });
     await expect(
@@ -1082,25 +1540,47 @@ describeDb("durable publication foundation migration", () => {
         `UPDATE review_publication_operations
          SET attempt_count = 2, lease_generation = 2, claim_owner = 'thief',
              lease_id = $4, selected_variant = 'fallback',
-             lease_expires_at = clock_timestamp() + interval '10 minutes',
-             updated_at = clock_timestamp() + interval '1500 milliseconds'
+             lease_expires_at = clock_timestamp() + interval '10 minutes'
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, fixture.prNumber, operation.operationKey, randomUUID()],
       ),
     ).rejects.toThrow("requires an expired undispatched attempt");
     await pool.query(
       `UPDATE review_publication_operations
-       SET lease_expires_at = lease_expires_at + interval '1 second',
-           updated_at = updated_at + interval '100 milliseconds'
+       SET lease_expires_at = clock_timestamp() + interval '2 seconds'
        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
       [repositoryId, fixture.prNumber, operation.operationKey],
     );
+    await Bun.sleep(2_100);
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operations
+         SET lease_expires_at = clock_timestamp() + interval '10 minutes'
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      ),
+    ).rejects.toThrow("publication lease renewal may only extend the current lease");
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operations
+         SET updated_at = clock_timestamp() + interval '2 seconds'
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      ),
+    ).rejects.toThrow("timestamps must not be backdated or future-dated");
+    await expect(
+      pool.query(
+        `UPDATE review_publication_operations
+         SET updated_at = created_at - interval '1 second'
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      ),
+    ).rejects.toThrow("timestamps must not be backdated or future-dated");
     await pool.query(
       `UPDATE review_publication_operations
        SET attempt_count = 2, lease_generation = 2, claim_owner = 'worker-two',
-           lease_id = $4, selected_variant = 'fallback',
-           lease_expires_at = clock_timestamp() + interval '10 minutes',
-           updated_at = clock_timestamp() + interval '4 seconds'
+             lease_id = $4, selected_variant = 'fallback',
+             lease_expires_at = clock_timestamp() + interval '10 minutes'
        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
       [repositoryId, fixture.prNumber, operation.operationKey, randomUUID()],
     );
@@ -1161,11 +1641,21 @@ describeDb("durable publication foundation migration", () => {
     await expect(
       pool.query(
         `UPDATE review_publication_operations
-         SET state = 'pending', selected_variant = NULL, updated_at = clock_timestamp()
+         SET state = 'pending', selected_variant = NULL
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, fixture.prNumber, operation.operationKey],
       ),
     ).rejects.toThrow("requires fresh exact-absence reconciliation");
+    await expect(insertReconciliation({
+      fixture,
+      operation,
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      variant: "primary",
+      phase: "retry",
+      outcome: "exact_absence",
+      observedAt: new Date(Date.now() - 6 * 60 * 1000),
+    })).rejects.toThrow("reconciliation evidence timestamps must be fresh database-time observations");
     await insertReconciliation({
       fixture,
       operation,
@@ -1177,7 +1667,7 @@ describeDb("durable publication foundation migration", () => {
     });
     await pool.query(
       `UPDATE review_publication_operations
-       SET state = 'pending', selected_variant = NULL, updated_at = clock_timestamp()
+       SET state = 'pending', selected_variant = NULL
        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
       [repositoryId, fixture.prNumber, operation.operationKey],
     );
@@ -1208,7 +1698,7 @@ describeDb("durable publication foundation migration", () => {
     await expect(
       pool.query(
         `UPDATE review_publication_operations
-         SET state = 'pending', selected_variant = NULL, updated_at = clock_timestamp()
+         SET state = 'pending', selected_variant = NULL
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, fixture.prNumber, operation.operationKey],
       ),
@@ -1224,7 +1714,7 @@ describeDb("durable publication foundation migration", () => {
     });
     await pool.query(
       `UPDATE review_publication_operations
-       SET state = 'applied', last_error = NULL, updated_at = clock_timestamp()
+       SET state = 'applied', last_error = NULL
        WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
       [repositoryId, fixture.prNumber, operation.operationKey],
     );
@@ -1262,6 +1752,119 @@ describeDb("durable publication foundation migration", () => {
     ).rejects.toThrow("append-only");
   });
 
+  test("serializes conflicting reconciliation outcomes under repeatable-read snapshots", async () => {
+    const fixture = await preparePublication({ prNumber: 122 });
+    const operation = fixture.operations[0]!;
+    const claim = await claimOperation({ fixture, operation });
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "dispatched",
+      attemptNumber: claim.attempt_count,
+      leaseGeneration: claim.lease_generation,
+      variant: "primary",
+    });
+    await insertAttempt({
+      fixture,
+      operation,
+      phase: "ambiguous",
+      attemptNumber: claim.attempt_count,
+      leaseGeneration: claim.lease_generation,
+      variant: "primary",
+      error: "remote response was lost",
+    });
+    await moveToUnknown({ fixture, operation, error: "remote response was lost" });
+    const first = await pool.connect();
+    const second = await pool.connect();
+    try {
+      await first.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+      await second.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+      await first.query("SELECT 1");
+      await second.query("SELECT 1");
+      await insertReconciliation({
+        fixture,
+        operation,
+        attemptNumber: claim.attempt_count,
+        leaseGeneration: claim.lease_generation,
+        variant: "primary",
+        phase: "terminal",
+        outcome: "exact_absence",
+        queryable: first,
+      });
+      const retry = insertReconciliation({
+        fixture,
+        operation,
+        attemptNumber: claim.attempt_count,
+        leaseGeneration: claim.lease_generation,
+        variant: "primary",
+        phase: "retry",
+        outcome: "exact_absence",
+        queryable: second,
+      });
+      await first.query("COMMIT");
+      await expect(retry).rejects.toThrow(/could not serialize|only one reconciliation/i);
+      await second.query("ROLLBACK");
+      const reconciliations = await pool.query<{ count: string }>(
+        `SELECT count(*) FROM review_publication_operation_reconciliations
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      );
+      expect(reconciliations.rows[0]!.count).toBe("1");
+    } finally {
+      await first.query("ROLLBACK").catch(() => undefined);
+      await second.query("ROLLBACK").catch(() => undefined);
+      first.release();
+      second.release();
+    }
+  });
+
+  test("serializes dispatched and not-dispatched evidence under repeatable-read snapshots", async () => {
+    const fixture = await preparePublication({ prNumber: 123 });
+    const operation = fixture.operations[0]!;
+    const claim = await claimOperation({ fixture, operation });
+    const first = await pool.connect();
+    const second = await pool.connect();
+    try {
+      await first.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+      await second.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+      await first.query("SELECT 1");
+      await second.query("SELECT 1");
+      await insertAttempt({
+        fixture,
+        operation,
+        phase: "dispatched",
+        attemptNumber: claim.attempt_count,
+        leaseGeneration: claim.lease_generation,
+        variant: "primary",
+        queryable: first,
+      });
+      const notDispatched = insertAttempt({
+        fixture,
+        operation,
+        phase: "not_dispatched",
+        attemptNumber: claim.attempt_count,
+        leaseGeneration: claim.lease_generation,
+        variant: "primary",
+        queryable: second,
+      });
+      await first.query("COMMIT");
+      await expect(notDispatched).rejects.toThrow(/could not serialize|cannot later be dispatched/i);
+      await second.query("ROLLBACK");
+      const phases = await pool.query<{ phase: string }>(
+        `SELECT phase FROM review_publication_operation_attempts
+         WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3
+         ORDER BY phase`,
+        [repositoryId, fixture.prNumber, operation.operationKey],
+      );
+      expect(phases.rows).toEqual([{ phase: "claimed" }, { phase: "dispatched" }]);
+    } finally {
+      await first.query("ROLLBACK").catch(() => undefined);
+      await second.query("ROLLBACK").catch(() => undefined);
+      first.release();
+      second.release();
+    }
+  });
+
   test("rejects empty evidence and escaped-mutation terminal claims", async () => {
     const fixture = await preparePublication({ prNumber: 108 });
     const operation = fixture.operations[0]!;
@@ -1288,8 +1891,7 @@ describeDb("durable publication foundation migration", () => {
         `UPDATE review_publication_operations
          SET state = 'failed', claim_owner = NULL, lease_id = NULL,
              lease_expires_at = NULL, last_error = 'failed after dispatch',
-             terminal_evidence = '{"reason":"failed"}'::jsonb,
-             updated_at = clock_timestamp()
+             terminal_evidence = '{"reason":"failed"}'::jsonb
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, fixture.prNumber, operation.operationKey],
       ),
@@ -1318,8 +1920,7 @@ describeDb("durable publication foundation migration", () => {
     await expect(
       pool.query(
         `UPDATE review_publication_operations
-         SET state = 'skipped', terminal_evidence = '{}'::jsonb,
-             updated_at = clock_timestamp()
+         SET state = 'skipped', terminal_evidence = '{}'::jsonb
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, pendingFixture.prNumber, pendingFixture.operations[0]!.operationKey],
       ),
@@ -1367,7 +1968,7 @@ describeDb("durable publication foundation migration", () => {
     await expect(
       pool.query(
         `UPDATE review_publication_operations
-         SET state = 'compensating', updated_at = clock_timestamp()
+         SET state = 'compensating'
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, fixture.prNumber, primary.operationKey],
       ),
@@ -1384,6 +1985,7 @@ describeDb("durable publication foundation migration", () => {
     const hierarchy = await createHierarchy(20);
     const first = await preparePublication({
       repositoryId: hierarchy.repositoryId,
+      githubRepositoryId: hierarchy.githubRepositoryId,
       repositoryFullName: hierarchy.repositoryFullName,
       prNumber: 201,
       generation: "1",
@@ -1397,6 +1999,7 @@ describeDb("durable publication foundation migration", () => {
     });
     const second = publicationFixture({
       repositoryId: hierarchy.repositoryId,
+      githubRepositoryId: hierarchy.githubRepositoryId,
       prNumber: 201,
       generation: "2",
       reviewId: secondReviewId,
@@ -1467,6 +2070,7 @@ describeDb("durable publication foundation migration", () => {
     const hierarchy = await createHierarchy(21);
     const fixture = await preparePublication({
       repositoryId: hierarchy.repositoryId,
+      githubRepositoryId: hierarchy.githubRepositoryId,
       repositoryFullName: hierarchy.repositoryFullName,
       prNumber: 202,
     });
@@ -1529,6 +2133,7 @@ describeDb("durable publication foundation migration", () => {
     });
     const fixture = await preparePublication({
       repositoryId: hierarchy.repositoryId,
+      githubRepositoryId: hierarchy.githubRepositoryId,
       repositoryFullName: hierarchy.repositoryFullName,
       prNumber: 206,
       operations: [primary, dependent],
@@ -1658,6 +2263,7 @@ describeDb("durable publication foundation migration", () => {
       );
       const fixture = publicationFixture({
         repositoryId,
+        githubRepositoryId,
         prNumber: 203,
         generation: "1",
         reviewId: Number(fakeReviewId),
@@ -1692,6 +2298,7 @@ describeDb("durable publication foundation migration", () => {
     const operation = makeOperation({ ordinal: 1 });
     const fixture = publicationFixture({
       repositoryId,
+      githubRepositoryId,
       prNumber,
       generation: "1",
       reviewId,
@@ -1733,7 +2340,7 @@ describeDb("durable publication foundation migration", () => {
     await expect(
       pool.query(
         `UPDATE review_publication_operations
-         SET last_error = $4, updated_at = clock_timestamp()
+         SET last_error = $4
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, prNumber, operation.operationKey, "x".repeat(4001)],
       ),
@@ -1784,7 +2391,7 @@ describeDb("durable publication foundation migration", () => {
          WHERE repository_id = $1 AND pr_number = $2`,
         [repositoryId, prNumber, "2".repeat(40)],
       ),
-    ).rejects.toThrow("identity requires a higher generation");
+    ).rejects.toThrow("pull_request_publication_high_waters_generation_fk");
   });
 
   test("enforces signed-bigint generations and immutable bounded operation intent", async () => {
@@ -1803,6 +2410,7 @@ describeDb("durable publication foundation migration", () => {
     const invalidReview = await createReview({ prNumber: 205, headSha: "f".repeat(40) });
     await expect(insertGeneration({
       repositoryId,
+      githubRepositoryId,
       prNumber: 205,
       generation: "0",
       reviewId: invalidReview,
@@ -1828,8 +2436,7 @@ describeDb("durable publication foundation migration", () => {
         : [repositoryId, fixture.prNumber, operation.operationKey];
       await expect(
         pool.query(
-          `UPDATE review_publication_operations SET ${column} = ${expression},
-                  updated_at = clock_timestamp()
+          `UPDATE review_publication_operations SET ${column} = ${expression}
            WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
           values,
         ),
@@ -1838,7 +2445,7 @@ describeDb("durable publication foundation migration", () => {
     await expect(
       pool.query(
         `UPDATE review_publication_operations
-         SET deadline_at = created_at - interval '1 second', updated_at = clock_timestamp()
+         SET deadline_at = created_at - interval '1 second'
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, fixture.prNumber, operation.operationKey],
       ),
@@ -1846,7 +2453,7 @@ describeDb("durable publication foundation migration", () => {
     await expect(
       pool.query(
         `UPDATE review_publication_operations
-         SET retry_after = 'infinity'::timestamptz, updated_at = clock_timestamp()
+         SET retry_after = 'infinity'::timestamptz
          WHERE repository_id = $1 AND pr_number = $2 AND operation_key = $3`,
         [repositoryId, fixture.prNumber, operation.operationKey],
       ),

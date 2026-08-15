@@ -445,7 +445,7 @@ export const reviewPublicationGenerations = pgTable(
     ),
     check(
       "review_publication_generations_plan_check",
-      sql`${t.planVersion} ~ '^github-publication-v[1-9][0-9]{0,8}$' AND jsonb_typeof(${t.acceptedPlan}) = 'object' AND octet_length(${t.acceptedPlanBytes}) BETWEEN 2 AND 8388608 AND convert_from(${t.acceptedPlanBytes}, 'UTF8')::jsonb = ${t.acceptedPlan} AND ${t.acceptedPlanDigest} ~ '^[0-9a-f]{64}$' AND ${t.acceptedPlanDigest} = encode(sha256(${t.acceptedPlanBytes}), 'hex')`,
+      sql`${t.planVersion} ~ '^github-publication-v[1-9][0-9]{0,8}$' AND jsonb_typeof(${t.acceptedPlan}) = 'object' AND octet_length(${t.acceptedPlanBytes}) BETWEEN 3 AND 8388608 AND right(convert_from(${t.acceptedPlanBytes}, 'UTF8'), 1) = E'\\n' AND right(convert_from(${t.acceptedPlanBytes}, 'UTF8'), 2) <> E'\\n\\n' AND convert_from(${t.acceptedPlanBytes}, 'UTF8')::jsonb = ${t.acceptedPlan} AND ${t.acceptedPlanDigest} ~ '^[0-9a-f]{64}$' AND ${t.acceptedPlanDigest} = encode(sha256(${t.acceptedPlanBytes}), 'hex')`,
     ),
     check(
       "review_publication_generations_plan_semantic_digest_check",
@@ -485,7 +485,7 @@ export const reviewPublicationGenerations = pgTable(
     ),
     check(
       "review_publication_generations_controller_manifest_check",
-      sql`${t.controllerOperationCount} BETWEEN 2 AND 128 AND ${t.controllerOperationManifestDigest} ~ '^sha256:[0-9a-f]{64}$' AND jsonb_typeof(${t.controllerManifest}) = 'object' AND octet_length(${t.controllerManifestBytes}) BETWEEN 2 AND 8388608 AND convert_from(${t.controllerManifestBytes}, 'UTF8')::jsonb = ${t.controllerManifest} AND ${t.controllerManifestDigest} ~ '^sha256:[0-9a-f]{64}$' AND ${t.controllerManifestDigest} = 'sha256:' || encode(sha256(${t.controllerManifestBytes}), 'hex') AND ${t.controllerManifest}->>'version' = 'github-publication-controller-v1' AND jsonb_typeof(${t.controllerManifest}->'operationCount') = 'number' AND ${t.controllerManifest}->>'operationCount' = ${t.controllerOperationCount}::text AND ${t.controllerManifest}->>'operationManifestDigest' = ${t.controllerOperationManifestDigest} AND jsonb_typeof(${t.controllerManifest}->'operations') = 'array'`,
+      sql`${t.controllerOperationCount} BETWEEN 2 AND 128 AND ${t.controllerOperationManifestDigest} ~ '^sha256:[0-9a-f]{64}$' AND jsonb_typeof(${t.controllerManifest}) = 'object' AND octet_length(${t.controllerManifestBytes}) BETWEEN 2 AND 8388608 AND convert_from(${t.controllerManifestBytes}, 'UTF8') = postil_canonical_json(${t.controllerManifest}) AND ${t.controllerManifestDigest} ~ '^sha256:[0-9a-f]{64}$' AND ${t.controllerManifestDigest} = 'sha256:' || encode(sha256(${t.controllerManifestBytes}), 'hex') AND ${t.controllerManifest}->>'version' = 'github-publication-controller-v1' AND jsonb_typeof(${t.controllerManifest}->'operationCount') = 'number' AND ${t.controllerManifest}->>'operationCount' = ${t.controllerOperationCount}::text AND ${t.controllerManifest}->>'operationManifestDigest' = ${t.controllerOperationManifestDigest} AND jsonb_typeof(${t.controllerManifest}->'operations') = 'array'`,
     ),
     check(
       "review_publication_generations_created_at_check",
@@ -598,6 +598,9 @@ export const reviewPublicationOperations = pgTable(
     deadlineAt: timestamp("deadline_at", { withTimezone: true }),
     lastError: text("last_error"),
     terminalEvidence: jsonb("terminal_evidence").$type<Record<string, unknown>>(),
+    evidenceGeneration: bigint("evidence_generation", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -651,7 +654,7 @@ export const reviewPublicationOperations = pgTable(
     ),
     check(
       "review_publication_operations_controller_record_check",
-      sql`jsonb_typeof(${t.controllerRecord}) = 'object' AND octet_length(${t.controllerRecordBytes}) BETWEEN 2 AND 4194304 AND convert_from(${t.controllerRecordBytes}, 'UTF8')::jsonb = ${t.controllerRecord} AND ${t.controllerRecord}->>'source' = ${t.operationSource} AND ${t.controllerRecord}->'operation' = ${t.operationRecord} AND ${t.controllerRecord} - ARRAY['source', 'operation']::text[] = '{}'::jsonb`,
+      sql`jsonb_typeof(${t.controllerRecord}) = 'object' AND octet_length(${t.controllerRecordBytes}) BETWEEN 2 AND 4194304 AND convert_from(${t.controllerRecordBytes}, 'UTF8') = postil_canonical_json(${t.controllerRecord}) AND ${t.controllerRecord}->>'source' = ${t.operationSource} AND ${t.controllerRecord}->'operation' = ${t.operationRecord} AND ${t.controllerRecord} - ARRAY['source', 'operation']::text[] = '{}'::jsonb`,
     ),
     check(
       "review_publication_operations_record_check",
@@ -684,6 +687,10 @@ export const reviewPublicationOperations = pgTable(
     check(
       "review_publication_operations_lease_generation_check",
       sql`${t.leaseGeneration} >= 0`,
+    ),
+    check(
+      "review_publication_operations_evidence_generation_check",
+      sql`${t.evidenceGeneration} >= 0`,
     ),
     check(
       "review_publication_operations_deadline_check",
