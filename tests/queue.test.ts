@@ -113,6 +113,12 @@ describe("queue transition structure", () => {
       source.indexOf("export async function claimJob"),
       source.indexOf("export async function completeJob"),
     );
+    const controllerClaimSource = source.slice(
+      source.indexOf(
+        "export async function claimPublicationControllerReviewJob",
+      ),
+      source.indexOf("export async function completeJob"),
+    );
 
     expect(claimSource).toContain("candidate AS MATERIALIZED");
     expect(claimSource).toContain("admission AS MATERIALIZED");
@@ -132,6 +138,13 @@ describe("queue transition structure", () => {
     expect(claimSource).toContain('if (row.outcome !== "claimed") continue');
     expect(claimSource).toContain(
       "active review claim was suppressed by queue identity enforcement",
+    );
+    expect(controllerClaimSource).toContain("job.kind = 'review'");
+    expect(controllerClaimSource).toContain(
+      "PUBLICATION_CONTROLLER_CLAIM_LOCK_TIMEOUT_MS",
+    );
+    expect(controllerClaimSource.indexOf("set_config('lock_timeout'")).toBeLessThan(
+      controllerClaimSource.indexOf("pg_advisory_xact_lock"),
     );
   });
 

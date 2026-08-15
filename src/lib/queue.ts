@@ -70,6 +70,22 @@ export interface ReviewJobPayload extends Record<string, unknown> {
 export const COALESCED_REVIEW_PAYLOAD_KEY = "_postilCoalescedReviewPayload";
 export const PROVIDER_RETRY_LINEAGE_KEY = "providerRetryLineage";
 export const REVIEW_INPUT_SEQUENCE_KEY = "reviewInputSequence";
+const PUBLICATION_CONTROLLER_ACTIVE_PREFIX =
+  "publication-controller-release:";
+const PUBLICATION_CONTROLLER_READY_PREFIX =
+  "publication-controller-consumer-ready:";
+const PUBLICATION_CONTROLLER_FENCE_KEY =
+  "_postilPublicationControllerFence";
+const PUBLICATION_CONTROLLER_RELEASE_KEY =
+  "_postilPublicationControllerReleaseSha";
+const PUBLICATION_CONTROLLER_RUN_AFTER_KEY =
+  "_postilPublicationControllerRunAfter";
+const PUBLICATION_CONTROLLER_CLAIM_KEY =
+  "_postilPublicationControllerClaimReleaseSha";
+const QUEUE_LOCK_GENERATION_CAPABILITY = "queue-lock-generation-v1";
+const QUEUE_LOCK_GENERATION_LOCK = "postil:queue-lock-generation-v1";
+const PUBLICATION_CONTROLLER_LOCK = "postil:publication-controller-release";
+const PUBLICATION_CONTROLLER_CLAIM_LOCK_TIMEOUT_MS = 5_000;
 
 type StoredReviewJobPayload = ReviewJobPayload & {
   [COALESCED_REVIEW_PAYLOAD_KEY]?: ReviewJobPayload;
@@ -1429,6 +1445,137 @@ export async function claimJob(
   } catch (err) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Claim one due review owned by the sole active exact controller release. */
+export async function claimPublicationControllerReviewJob(
+  pool: Pool,
+  workerId: string,
+  releaseSha: string,
+): Promise<ClaimedJob | null> {
+  if (!workerId.trim()) {
+    throw new Error(
+      "claimPublicationControllerReviewJob requires a worker identity",
+    );
+  }
+  if (!/^[0-9a-f]{40}$/.test(releaseSha)) {
+    throw new Error(
+      "claimPublicationControllerReviewJob requires a full lowercase release SHA",
+    );
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [
+      `${PUBLICATION_CONTROLLER_CLAIM_LOCK_TIMEOUT_MS}ms`,
+    ]);
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [QUEUE_LOCK_GENERATION_LOCK],
+    );
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [PUBLICATION_CONTROLLER_LOCK],
+    );
+    const result = await client.query<{
+      id: string;
+      kind: string;
+      payload: Record<string, unknown>;
+      attempts: number;
+      max_attempts: number;
+      created_at: Date;
+      locked_at: Date;
+      lock_generation: string;
+    }>(
+      `WITH authority AS MATERIALIZED (
+         SELECT count(*)::integer AS active_count,
+                count(*) FILTER (
+                  WHERE active.name = $1 AND ready.name = $2
+                )::integer AS exact_count
+           FROM deployment_capabilities active
+           LEFT JOIN deployment_capabilities ready
+             ON ready.name = $3 || substring(
+               active.name FROM char_length($4) + 1
+             )
+          WHERE active.name LIKE $4 || '%'
+       ), admission AS MATERIALIZED (
+         SELECT clock_timestamp() AS admitted_at
+       ), candidate AS MATERIALIZED (
+         SELECT job.id
+           FROM jobs job
+           CROSS JOIN authority
+           CROSS JOIN admission
+          WHERE authority.active_count = 1
+            AND authority.exact_count = 1
+            AND EXISTS (
+              SELECT 1 FROM deployment_capabilities WHERE name = $5
+            )
+            AND job.kind = 'review'
+            AND job.status = 'queued'
+            AND job.payload->>$6 = 'true'
+            AND job.payload->>$7 = $8
+            AND jsonb_typeof(job.payload->$9) = 'string'
+            AND (job.payload->>$9)::timestamptz <= admission.admitted_at
+          ORDER BY (job.payload->>$9)::timestamptz, job.id
+          FOR UPDATE OF job SKIP LOCKED
+          LIMIT 1
+       ), claimed AS (
+         UPDATE jobs job
+            SET status = 'running', attempts = job.attempts + 1,
+                locked_at = admission.admitted_at, locked_by = $10,
+                lock_generation = job.lock_generation + 1,
+                payload = jsonb_set(
+                  job.payload,
+                  ARRAY[$11]::text[],
+                  to_jsonb($8::text),
+                  true
+                )
+           FROM candidate
+           CROSS JOIN admission
+          WHERE job.id = candidate.id AND job.status = 'queued'
+        RETURNING job.id, job.status, job.kind, job.payload, job.attempts,
+                  job.max_attempts, job.created_at, job.locked_at,
+                  job.lock_generation
+       )
+       SELECT id, kind, payload, attempts, max_attempts, created_at,
+              locked_at, lock_generation::text AS lock_generation
+         FROM claimed
+        WHERE status = 'running'`,
+      [
+        `${PUBLICATION_CONTROLLER_ACTIVE_PREFIX}${releaseSha}`,
+        `${PUBLICATION_CONTROLLER_READY_PREFIX}${releaseSha}`,
+        PUBLICATION_CONTROLLER_READY_PREFIX,
+        PUBLICATION_CONTROLLER_ACTIVE_PREFIX,
+        QUEUE_LOCK_GENERATION_CAPABILITY,
+        PUBLICATION_CONTROLLER_FENCE_KEY,
+        PUBLICATION_CONTROLLER_RELEASE_KEY,
+        releaseSha,
+        PUBLICATION_CONTROLLER_RUN_AFTER_KEY,
+        workerId,
+        PUBLICATION_CONTROLLER_CLAIM_KEY,
+      ],
+    );
+    await client.query("COMMIT");
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      id: Number(row.id),
+      kind: row.kind,
+      payload: row.payload,
+      attempts: row.attempts,
+      maxAttempts: row.max_attempts,
+      createdAt: row.created_at,
+      lockedAt: row.locked_at,
+      lockGeneration: BigInt(row.lock_generation),
+      lockedBy: workerId,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
   } finally {
     client.release();
   }

@@ -25,6 +25,13 @@ import {
   recordPublicationControllerCliPreflight,
   recordPublicationControllerConsumerReady,
 } from "@/lib/release-job-rollout";
+import {
+  claimJob,
+  claimPublicationControllerReviewJob,
+  COALESCED_REVIEW_PAYLOAD_KEY,
+  continueClaimedJob,
+  retryJobIndefinitely,
+} from "@/lib/queue";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
@@ -292,6 +299,278 @@ describeDb("publication-controller release rollout", () => {
         held: true,
       });
     }
+  });
+
+  test("controller claim admits only due exact-release reviews", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    const originalRunAfter = "2020-03-02T05:06:07.000Z";
+    const dueReview = await insertQueuedReview(
+      pool,
+      {
+        repositoryId: 42,
+        marker: "due-review",
+        [COALESCED_REVIEW_PAYLOAD_KEY]: {
+          repositoryId: 42,
+          marker: "coalesced-review",
+        },
+      },
+      originalRunAfter,
+    );
+    const futureReview = await insertQueuedReview(
+      pool,
+      { repositoryId: 43, marker: "future-review" },
+      "2099-03-03T05:06:07.000Z",
+    );
+    const gate = await insertQueuedMutator(
+      pool,
+      "gate-state-sync",
+      "2020-03-04T05:06:07.000Z",
+    );
+    const cleanup = await insertQueuedMutator(
+      pool,
+      "check-run-cleanup",
+      "2020-03-05T05:06:07.000Z",
+    );
+    await activatePublicationControllerRelease(pool, RELEASE_A);
+    await activateQueueLockGeneration(pool);
+    const payloadBeforeClaim = await storedJobPayload(pool, dueReview);
+
+    expect(
+      await claimJob(pool, "legacy-worker", [
+        "review",
+        "gate-state-sync",
+        "check-run-cleanup",
+      ]),
+    ).toBeNull();
+    expect(
+      await claimAsLegacyWorker(pool, dueReview, "direct-legacy-worker"),
+    ).toEqual({
+      status: "queued",
+      attempts: 0,
+      held: true,
+    });
+    expect(
+      await claimPublicationControllerReviewJob(
+        pool,
+        "wrong-release-controller",
+        RELEASE_B,
+      ),
+    ).toBeNull();
+
+    const claimed = await claimPublicationControllerReviewJob(
+      pool,
+      "exact-release-controller",
+      RELEASE_A,
+    );
+    expect(claimed).toMatchObject({
+      id: dueReview,
+      kind: "review",
+      payload: payloadBeforeClaim,
+      attempts: 1,
+      lockGeneration: 1n,
+      lockedBy: "exact-release-controller",
+    });
+    expect(claimed?.payload[COALESCED_REVIEW_PAYLOAD_KEY]).toEqual(
+      payloadBeforeClaim[COALESCED_REVIEW_PAYLOAD_KEY],
+    );
+    expect(claimed?.payload).not.toHaveProperty(
+      "_postilPublicationControllerClaimReleaseSha",
+    );
+    expect(await jobLeaseState(pool, dueReview)).toEqual({
+      status: "running",
+      attempts: 1,
+      lockGeneration: 1n,
+      releaseSha: RELEASE_A,
+      claimReleaseSha: null,
+      scheduledFor: originalRunAfter,
+    });
+
+    expect(
+      await claimPublicationControllerReviewJob(
+        pool,
+        "future-release-controller",
+        RELEASE_A,
+      ),
+    ).toBeNull();
+    expect((await queuedJobState(pool, futureReview)).held).toBe(true);
+    expect((await jobLeaseState(pool, gate)).attempts).toBe(0);
+    expect((await jobLeaseState(pool, cleanup)).attempts).toBe(0);
+  });
+
+  test("controller claim rejects stale and ambiguous release authority", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    const review = await insertQueuedReview(
+      pool,
+      { marker: "stale-release-review" },
+      "2020-03-06T05:06:07.000Z",
+    );
+    await activatePublicationControllerRelease(pool, RELEASE_A);
+    await activateQueueLockGeneration(pool);
+
+    await pool.query(
+      `DELETE FROM deployment_capabilities
+        WHERE name = $1`,
+      [`publication-controller-release:${RELEASE_A}`],
+    );
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1), ($2)`,
+      [
+        `publication-controller-release:${RELEASE_B}`,
+        `publication-controller-consumer-ready:${RELEASE_B}`,
+      ],
+    );
+    expect(
+      await claimPublicationControllerReviewJob(pool, "stale-a", RELEASE_A),
+    ).toBeNull();
+    expect(
+      await claimPublicationControllerReviewJob(pool, "stale-b", RELEASE_B),
+    ).toBeNull();
+
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name) VALUES ($1)`,
+      [`publication-controller-release:${RELEASE_A}`],
+    );
+    expect(
+      await claimPublicationControllerReviewJob(pool, "ambiguous-a", RELEASE_A),
+    ).toBeNull();
+    expect(
+      await claimPublicationControllerReviewJob(pool, "ambiguous-b", RELEASE_B),
+    ).toBeNull();
+    expect(await jobLeaseState(pool, review)).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      lockGeneration: 0n,
+      releaseSha: RELEASE_A,
+    });
+  });
+
+  test("concurrent controller claims advance one lease generation once", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    const review = await insertQueuedReview(
+      pool,
+      { marker: "concurrent-review" },
+      "2020-03-07T05:06:07.000Z",
+    );
+    await activatePublicationControllerRelease(pool, RELEASE_A);
+    await activateQueueLockGeneration(pool);
+
+    const claims = await Promise.all([
+      claimPublicationControllerReviewJob(pool, "controller-a", RELEASE_A),
+      claimPublicationControllerReviewJob(pool, "controller-b", RELEASE_A),
+    ]);
+    expect(claims.filter((claim) => claim !== null)).toHaveLength(1);
+    expect(claims.find((claim) => claim !== null)).toMatchObject({
+      id: review,
+      attempts: 1,
+      lockGeneration: 1n,
+    });
+    expect(await jobLeaseState(pool, review)).toMatchObject({
+      status: "running",
+      attempts: 1,
+      lockGeneration: 1n,
+      releaseSha: RELEASE_A,
+      claimReleaseSha: null,
+    });
+  });
+
+  test("controller continuation and retry re-fence the exact release", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    const continuedReview = await insertQueuedReview(
+      pool,
+      {
+        marker: "continued-review",
+        [COALESCED_REVIEW_PAYLOAD_KEY]: { marker: "retained-coalesced-review" },
+      },
+      "2020-03-08T05:06:07.000Z",
+    );
+    const retriedReview = await insertQueuedReview(
+      pool,
+      { marker: "retried-review" },
+      "2020-03-09T05:06:07.000Z",
+    );
+    await activatePublicationControllerRelease(pool, RELEASE_A);
+    await activateQueueLockGeneration(pool);
+
+    const firstClaim = await claimPublicationControllerReviewJob(
+      pool,
+      "continuation-controller",
+      RELEASE_A,
+    );
+    expect(firstClaim?.id).toBe(continuedReview);
+    const continuationRunAfter = new Date("2020-03-10T05:06:07.000Z");
+    await continueClaimedJob(
+      pool,
+      firstClaim!,
+      { ...firstClaim!.payload, stage: "continuation" },
+      { runAfter: continuationRunAfter },
+    );
+    expect(await jobLeaseState(pool, continuedReview)).toEqual({
+      status: "queued",
+      attempts: 0,
+      lockGeneration: 1n,
+      releaseSha: RELEASE_A,
+      claimReleaseSha: null,
+      scheduledFor: continuationRunAfter.toISOString(),
+    });
+
+    const continuedClaim = await claimPublicationControllerReviewJob(
+      pool,
+      "continued-controller",
+      RELEASE_A,
+    );
+    expect(continuedClaim).toMatchObject({
+      id: retriedReview,
+      attempts: 1,
+      lockGeneration: 1n,
+    });
+    const retryStartedAt = Date.now();
+    expect(
+      await retryJobIndefinitely(
+        pool,
+        continuedClaim!,
+        "publication controller retry",
+      ),
+    ).toBe("retried");
+    const retryState = await jobLeaseState(pool, retriedReview);
+    expect(retryState).toMatchObject({
+      status: "queued",
+      attempts: 1,
+      lockGeneration: 1n,
+      releaseSha: RELEASE_A,
+      claimReleaseSha: null,
+    });
+    expect(Date.parse(retryState.scheduledFor!)).toBeGreaterThan(retryStartedAt);
+
+    const resumedClaim = await claimPublicationControllerReviewJob(
+      pool,
+      "resumed-controller",
+      RELEASE_A,
+    );
+    expect(resumedClaim).toMatchObject({
+      id: continuedReview,
+      attempts: 1,
+      lockGeneration: 2n,
+      payload: {
+        marker: "continued-review",
+        stage: "continuation",
+        [COALESCED_REVIEW_PAYLOAD_KEY]: {
+          marker: "retained-coalesced-review",
+        },
+      },
+    });
+    expect(
+      await claimPublicationControllerReviewJob(
+        pool,
+        "retry-controller",
+        RELEASE_A,
+      ),
+    ).toMatchObject({
+      id: retriedReview,
+      attempts: 2,
+      lockGeneration: 2n,
+      payload: { marker: "retried-review" },
+    });
   });
 
   test("a stale review worker defers only to the exact active release", async () => {
@@ -655,6 +934,20 @@ async function insertQueuedMutator(
   return Number(inserted.rows[0]!.id);
 }
 
+async function insertQueuedReview(
+  pool: Pool,
+  payload: Record<string, unknown>,
+  runAfter: string,
+): Promise<number> {
+  const inserted = await pool.query<{ id: string }>(
+    `INSERT INTO jobs (kind, payload, status, run_after)
+     VALUES ('review', $1::jsonb, 'queued', $2::timestamptz)
+     RETURNING id`,
+    [JSON.stringify(payload), runAfter],
+  );
+  return Number(inserted.rows[0]!.id);
+}
+
 async function insertRunningMutator(
   pool: Pool,
   kind: (typeof PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS)[number],
@@ -715,6 +1008,46 @@ async function queuedJobState(pool: Pool, id: number) {
   return {
     held: row.held,
     releaseSha: row.release_sha,
+    scheduledFor: row.scheduled_for?.toISOString() ?? null,
+  };
+}
+
+async function storedJobPayload(
+  pool: Pool,
+  id: number,
+): Promise<Record<string, unknown>> {
+  const result = await pool.query<{ payload: Record<string, unknown> }>(
+    "SELECT payload FROM jobs WHERE id = $1",
+    [id],
+  );
+  return result.rows[0]!.payload;
+}
+
+async function jobLeaseState(pool: Pool, id: number) {
+  const result = await pool.query<{
+    status: string;
+    attempts: number;
+    lock_generation: string;
+    release_sha: string | null;
+    claim_release_sha: string | null;
+    scheduled_for: Date | null;
+  }>(
+    `SELECT status, attempts, lock_generation::text,
+            payload->>'_postilPublicationControllerReleaseSha' AS release_sha,
+            payload->>'_postilPublicationControllerClaimReleaseSha' AS claim_release_sha,
+            (payload->>'_postilPublicationControllerRunAfter')::timestamptz
+              AS scheduled_for
+       FROM jobs
+      WHERE id = $1`,
+    [id],
+  );
+  const row = result.rows[0]!;
+  return {
+    status: row.status,
+    attempts: row.attempts,
+    lockGeneration: BigInt(row.lock_generation),
+    releaseSha: row.release_sha,
+    claimReleaseSha: row.claim_release_sha,
     scheduledFor: row.scheduled_for?.toISOString() ?? null,
   };
 }

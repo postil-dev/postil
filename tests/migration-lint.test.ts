@@ -631,6 +631,12 @@ describe("migration lint", () => {
     expect(migration).toContain("_postilPublicationControllerFence");
     expect(migration).toContain("_postilPublicationControllerRunAfter");
     expect(migration).toContain(
+      "NEW.\"payload\" - '_postilPublicationControllerClaimReleaseSha'",
+    );
+    expect(migration).toContain(
+      "AND NOT publication_controller_claim_authorized",
+    );
+    expect(migration).toContain(
       "hashtextextended('postil:publication-controller-release', 0)",
     );
     expect(claimStart).toBeGreaterThanOrEqual(0);

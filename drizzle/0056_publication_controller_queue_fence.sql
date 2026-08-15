@@ -7,7 +7,18 @@ DECLARE
   publication_controller_run_after jsonb;
   publication_controller_release text;
   publication_controller_release_count integer;
+  publication_controller_claim_release text;
+  publication_controller_claim_authorized boolean := false;
 BEGIN
+  IF jsonb_typeof(
+    NEW."payload"->'_postilPublicationControllerClaimReleaseSha'
+  ) = 'string' THEN
+    publication_controller_claim_release :=
+      NEW."payload"->>'_postilPublicationControllerClaimReleaseSha';
+  END IF;
+  NEW."payload" :=
+    NEW."payload" - '_postilPublicationControllerClaimReleaseSha';
+
   -- Pre-rollout workers and the bounded release backfill both cross this
   -- boundary. Assign arrival-order authority here so neither path can bypass
   -- equal-timestamp supersession.
@@ -198,6 +209,8 @@ BEGIN
       IF publication_controller_release IS NOT NULL THEN
         publication_controller_run_after := NULL;
         IF TG_OP = 'UPDATE'
+          AND OLD."status" = 'queued'
+          AND NEW."status" = 'queued'
           AND jsonb_typeof(
             OLD."payload"->'_postilPublicationControllerRunAfter'
           ) = 'string' THEN
@@ -205,6 +218,7 @@ BEGIN
             OLD."payload"->'_postilPublicationControllerRunAfter';
         END IF;
         IF publication_controller_run_after IS NULL
+          AND NEW."run_after" = 'infinity'::timestamptz
           AND jsonb_typeof(
             NEW."payload"->'_postilLockGenerationRunAfter'
           ) = 'string' THEN
@@ -317,6 +331,23 @@ BEGIN
           USING ERRCODE = 'check_violation';
       END IF;
 
+      IF NEW."kind" = 'review'
+        AND publication_controller_claim_release ~ '^[0-9a-f]{40}$'
+        AND publication_controller_release = publication_controller_claim_release
+        AND OLD."payload"->>'_postilPublicationControllerFence' = 'true'
+        AND OLD."payload"->>'_postilPublicationControllerReleaseSha' =
+          publication_controller_claim_release
+        AND jsonb_typeof(
+          OLD."payload"->'_postilPublicationControllerRunAfter'
+        ) = 'string'
+        AND NEW."payload" = OLD."payload"
+        AND NEW."run_after" IS NOT DISTINCT FROM OLD."run_after"
+        AND NEW."attempts" = OLD."attempts" + 1
+        AND NEW."locked_at" IS NOT NULL
+        AND NEW."locked_by" IS NOT NULL THEN
+        publication_controller_claim_authorized := true;
+      END IF;
+
       IF publication_controller_release IS NULL
         AND OLD."payload"->>'_postilPublicationControllerFence' = 'true'
         AND jsonb_typeof(
@@ -358,7 +389,8 @@ BEGIN
         END IF;
       END IF;
 
-      IF publication_controller_release IS NOT NULL THEN
+      IF publication_controller_release IS NOT NULL
+        AND NOT publication_controller_claim_authorized THEN
         NEW."status" := 'queued';
         NEW."attempts" := OLD."attempts";
         NEW."locked_at" := OLD."locked_at";
