@@ -5,6 +5,7 @@ import type { Pool } from "pg";
 
 import { buildGitHubPublicationControllerManifest } from "@/lib/github-publication-controller-manifest";
 import { stageGitHubPublicationControllerGeneration } from "@/lib/github-publication-controller-store";
+import { buildGitHubPublicationInputIdentity } from "@/lib/github-publication-cli-planner";
 import {
   type AmbiguousGitHubPublicationOperation,
   executeOneGitHubPublicationOperation,
@@ -810,6 +811,7 @@ function fixtureFor(kind:
   | "gateCheckCreate"
   | "gateCheckComplete",
   identity: Partial<{
+    databaseRepositoryId: string;
     repositoryId: string;
     repositoryFullName: string;
     pullRequestNumber: string;
@@ -817,9 +819,34 @@ function fixtureFor(kind:
     reviewId: string;
   }> = {},
 ) {
+  const inputIdentity = buildGitHubPublicationInputIdentity({
+    databaseRepositoryId:
+      identity.databaseRepositoryId ?? identity.repositoryId ?? "42",
+    githubRepositoryId: identity.repositoryId ?? "42",
+    repositoryFullName: identity.repositoryFullName ?? "acme/api",
+    pullRequestNumber: identity.pullRequestNumber ?? "7",
+    controllerGeneration: identity.controllerGeneration ?? "17",
+    reviewId: identity.reviewId ?? "1",
+    headSha: HEAD,
+    mergeBaseSha: BASE,
+    targetSha: TARGET,
+    targetBranch: "main",
+    pullRequestTitle: TITLE,
+    pullRequestBody: BODY,
+    expectedPullRequestUpdatedAt: "2026-08-15T00:00:00.000Z",
+    cliVersion: "0.8.17",
+    cliCommitSha: "d".repeat(40),
+    cliArtifactSha256: digest("CLI artifact"),
+    configurationSha256: digest("configuration"),
+    providerIdentity: "provider:test",
+    retryLineage: "initial",
+    bounded: false,
+    forceFullReview: false,
+    detailsUrl: "https://postil.dev/orgs/acme/runs/fixture",
+  });
   const expected: ExpectedGitHubPublicationPlan = {
     controllerGeneration: identity.controllerGeneration ?? "17",
-    inputIdentity: digest("input"),
+    inputIdentity: inputIdentity.digest,
     reviewOutputDigest: digest("output"),
     repositoryId: identity.repositoryId ?? "42",
     repositoryFullName: identity.repositoryFullName ?? "acme/api",
@@ -907,7 +934,7 @@ function fixtureFor(kind:
     retryAuthorization: { kind: "initial" },
     selectedVariant: operation.kind,
   };
-  return { claim, controller, accepted };
+  return { claim, controller, accepted, inputIdentity };
 }
 
 function ambiguousFrom(
@@ -1313,12 +1340,14 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
     [repositoryId, HEAD, TARGET],
   );
   const fixture = fixtureFor("advisoryCheckCreate", {
+    databaseRepositoryId: repositoryId,
     repositoryId: githubRepositoryId,
     repositoryFullName,
     reviewId: review.rows[0]!.id,
   });
   await stageGitHubPublicationControllerGeneration({
     database: pool,
+    acceptedInput: fixture.inputIdentity,
     acceptedPlan: fixture.accepted,
     controllerManifest: fixture.controller,
     snapshot: {
