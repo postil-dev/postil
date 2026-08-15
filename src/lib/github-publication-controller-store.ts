@@ -39,11 +39,15 @@ export interface PublicationControllerGenerationSnapshot {
   pullRequestBody: string;
 }
 
-export interface StageGitHubPublicationControllerGenerationInput {
+export interface GitHubPublicationControllerGenerationInput {
   acceptedInput: BuiltGitHubPublicationInputIdentity;
   acceptedPlan: AcceptedGitHubPublicationPlan;
   controllerManifest: BuiltGitHubPublicationControllerManifest;
   snapshot: PublicationControllerGenerationSnapshot;
+}
+
+export interface StageGitHubPublicationControllerGenerationInput
+  extends GitHubPublicationControllerGenerationInput {
   database: Pick<Pool, "connect">;
 }
 
@@ -151,12 +155,37 @@ interface ReviewRepositoryRow {
 export async function stageGitHubPublicationControllerGeneration(
   input: StageGitHubPublicationControllerGenerationInput,
 ): Promise<StagedGitHubPublicationControllerGeneration> {
-  const staged = validateStageInput(input);
   const client = await input.database.connect();
   let began = false;
   try {
     await client.query("BEGIN");
     began = true;
+    const result = await stageGitHubPublicationControllerGenerationInTransaction(
+      client,
+      input,
+    );
+    await client.query("COMMIT");
+    began = false;
+    return result;
+  } catch (error) {
+    if (began) await client.query("ROLLBACK").catch(() => undefined);
+    if (error instanceof GitHubPublicationControllerStoreRejectedError) throw error;
+    throw new GitHubPublicationControllerStoreRejectedError(
+      "the database transaction could not stage the generation",
+      { cause: error },
+    );
+  } finally {
+    client.release();
+  }
+}
+
+/** Stage and seal one generation inside an existing PostgreSQL transaction. */
+export async function stageGitHubPublicationControllerGenerationInTransaction(
+  client: TransactionClient,
+  input: GitHubPublicationControllerGenerationInput,
+): Promise<StagedGitHubPublicationControllerGeneration> {
+  const staged = validateStageInput(input);
+  try {
     await client.query("SET LOCAL lock_timeout = '5s'");
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `${staged.repositoryId}:${staged.prNumber}`,
@@ -201,10 +230,7 @@ export async function stageGitHubPublicationControllerGeneration(
             ? "the requested publication generation is already being staged"
             : "the requested publication generation has a different immutable identity");
         }
-        const identity = resultFromExisting(current, true);
-        await client.query("COMMIT");
-        began = false;
-        return identity;
+        return resultFromExisting(current, true);
       }
     }
 
@@ -343,23 +369,17 @@ export async function stageGitHubPublicationControllerGeneration(
     if (row === undefined || !isExactSealedReplay(row, staged)) {
       reject("database did not seal the complete immutable publication generation");
     }
-    const identity = resultFromExisting(row, false);
-    await client.query("COMMIT");
-    began = false;
-    return identity;
+    return resultFromExisting(row, false);
   } catch (error) {
-    if (began) await client.query("ROLLBACK").catch(() => undefined);
     if (error instanceof GitHubPublicationControllerStoreRejectedError) throw error;
     throw new GitHubPublicationControllerStoreRejectedError(
       "the database transaction could not stage the generation",
       { cause: error },
     );
-  } finally {
-    (client as PoolClient).release();
   }
 }
 
-function validateStageInput(input: StageGitHubPublicationControllerGenerationInput): ValidatedStage {
+function validateStageInput(input: GitHubPublicationControllerGenerationInput): ValidatedStage {
   const acceptedInput = input.acceptedInput;
   const plan = input.acceptedPlan;
   const manifest = input.controllerManifest;

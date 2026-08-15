@@ -16,7 +16,8 @@ const describeDb = TEST_URL ? describe : describe.skip;
 
 const INPUT_ONE = "1".repeat(64);
 const INPUT_TWO = "2".repeat(64);
-const ENVELOPE_DIGEST = "3".repeat(64);
+const STAGED_ENVELOPE = { fixture: "durable-publication-foundation" };
+const ENVELOPE_DIGEST = sha256(canonicalJson(STAGED_ENVELOPE));
 const PLAN_SEMANTIC_DIGEST = "4".repeat(64);
 const REVIEW_OUTPUT_DIGEST = `sha256:${"5".repeat(64)}`;
 const BASE_SHA = "a".repeat(40);
@@ -678,6 +679,7 @@ describeDb("durable publication foundation migration", () => {
   }
 
   async function insertHighWater(fixture: PublicationFixture, queryable: Queryable = pool) {
+    await stageEnvelope(fixture.reviewId, queryable);
     await queryable.query(
       `INSERT INTO pull_request_publication_high_waters
          (repository_id, pr_number, publication_generation, accepted_review_id,
@@ -691,6 +693,15 @@ describeDb("durable publication foundation migration", () => {
         fixture.inputDigest,
         fixture.headSha,
       ],
+    );
+  }
+
+  async function stageEnvelope(reviewId: number, queryable: Queryable = pool) {
+    await queryable.query(
+      `UPDATE reviews
+          SET envelope = COALESCE(envelope, $2::jsonb), status = 'running'
+        WHERE id = $1`,
+      [reviewId, JSON.stringify(STAGED_ENVELOPE)],
     );
   }
 
@@ -1599,6 +1610,7 @@ describeDb("durable publication foundation migration", () => {
     const advancing = await pool.connect();
     const claimant = await pool.connect();
     try {
+      await stageEnvelope(second.reviewId, advancing);
       await advancing.query("BEGIN");
       await advancing.query(
         `UPDATE pull_request_publication_high_waters
@@ -2219,6 +2231,7 @@ describeDb("durable publication foundation migration", () => {
       await insertOperation(second, publicationOperation);
       await insertDependencyEdges(second, publicationOperation);
     }
+    await stageEnvelope(second.reviewId);
     await pool.query(
       `UPDATE pull_request_publication_high_waters
        SET publication_generation = 2, accepted_review_id = $3,

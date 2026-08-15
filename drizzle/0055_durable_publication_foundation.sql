@@ -1534,6 +1534,19 @@ BEGIN
     IF generation_row.sealed_at IS NOT NULL THEN
       RAISE EXCEPTION 'publication generation is already sealed';
     END IF;
+    IF NOT EXISTS (
+      SELECT 1
+      FROM public.reviews staged_review
+      WHERE staged_review.id = generation_row.review_id
+        AND staged_review.status = 'running'
+        AND staged_review.envelope IS NOT NULL
+        AND encode(
+          sha256(convert_to(postil_canonical_json(staged_review.envelope), 'UTF8')),
+          'hex'
+        ) = generation_row.envelope_digest
+    ) THEN
+      RAISE EXCEPTION 'publication generation requires its matching staged envelope';
+    END IF;
 
     SELECT
       count(*)::integer,

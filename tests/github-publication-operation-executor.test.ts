@@ -1332,12 +1332,15 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
   );
   const repositoryId = repository.rows[0]!.id;
   const githubRepositoryId = String(900_000 + seed);
+  const stagedEnvelope = { fixture: `publication-executor-${seed}` };
   const review = await pool.query<{ id: string }>(
     `INSERT INTO reviews
-       (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at)
-     VALUES ($1::bigint, 7, $2, $3, 'running', 'unknown', clock_timestamp())
+       (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+        envelope, queued_at)
+     VALUES ($1::bigint, 7, $2, $3, 'running', 'unknown', $4::jsonb,
+             clock_timestamp())
      RETURNING id`,
-    [repositoryId, HEAD, TARGET],
+    [repositoryId, HEAD, TARGET, JSON.stringify(stagedEnvelope)],
   );
   const fixture = fixtureFor("advisoryCheckCreate", {
     databaseRepositoryId: repositoryId,
@@ -1356,7 +1359,7 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
       reviewId: review.rows[0]!.id,
       reviewInputSequence: "17",
       expectedPullRequestUpdatedAt: "2026-08-15T00:00:00.000Z",
-      envelopeDigest: hex(`envelope-${seed}`),
+      envelopeDigest: hex(JSON.stringify(stagedEnvelope)),
       targetBranch: "main",
       pullRequestTitle: TITLE,
       pullRequestBody: BODY,
