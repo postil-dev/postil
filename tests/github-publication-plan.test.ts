@@ -30,6 +30,13 @@ const expected: ExpectedGitHubPublicationPlan = {
 };
 
 describe("GitHub publication plan", () => {
+  test("defers the output digest only for envelope-authenticated planning", () => {
+    expect(parseGitHubPublicationPlan(validPlan(), {
+      ...expected,
+      reviewOutputDigest: undefined,
+    }).reviewOutputDigest).toBe(REVIEW_OUTPUT_DIGEST);
+  });
+
   test("accepts one exact canonical no-write plan", () => {
     const plan = validPlan();
 

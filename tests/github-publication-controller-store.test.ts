@@ -381,7 +381,7 @@ function operationKey(expected: ExpectedGitHubPublicationPlan, kind: string): st
     HEAD,
     String(expected.controllerGeneration),
     expected.inputIdentity,
-    expected.reviewOutputDigest,
+    expected.reviewOutputDigest!,
     kind,
   ]) hash.update(value).update("\0");
   return `github-publication-v1:${kind}:sha256:${hash.digest("hex")}`;

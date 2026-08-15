@@ -307,7 +307,8 @@ export type GitHubPublicationOperation = GitHubPublicationPlan["operations"][num
 export interface ExpectedGitHubPublicationPlan {
   controllerGeneration: bigint | string;
   inputIdentity: string;
-  reviewOutputDigest: string;
+  /** Omit only while the planner immediately authenticates it against the envelope. */
+  reviewOutputDigest?: string;
   repositoryId: bigint | string;
   repositoryFullName: string;
   pullRequestNumber: bigint | string;
@@ -391,7 +392,6 @@ function validateExpectedIdentity(
 ): void {
   const exact: Array<[string, string, string]> = [
     ["controller generation", plan.controllerGeneration, String(expected.controllerGeneration)],
-    ["review output digest", plan.reviewOutputDigest, expected.reviewOutputDigest],
     ["repository id", plan.repository.id, String(expected.repositoryId)],
     ["repository full name", plan.repository.fullName, expected.repositoryFullName],
     ["pull request number", plan.pullRequestNumber, String(expected.pullRequestNumber)],
@@ -401,6 +401,9 @@ function validateExpectedIdentity(
     ["title digest", plan.reviewedSnapshot.pullRequestTitleSha256, textDigest(expected.pullRequestTitle)],
     ["body digest", plan.reviewedSnapshot.pullRequestBodySha256, textDigest(expected.pullRequestBody)],
   ];
+  if (expected.reviewOutputDigest !== undefined) {
+    exact.push(["review output digest", plan.reviewOutputDigest, expected.reviewOutputDigest]);
+  }
   exact.push(["input identity", plan.inputIdentity, expected.inputIdentity]);
   for (const [name, actual, wanted] of exact) {
     if (actual !== wanted) reject(`${name} does not match the accepted review input`);
