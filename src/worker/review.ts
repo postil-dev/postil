@@ -2057,7 +2057,7 @@ export async function runReviewJob(
     }
     completionStaged = true;
     await activeLargeReviewProxy.discardCompletedRun();
-    reviewLog.line("review result and publication receipt staged durably");
+    reviewLog.line("review result staged durably");
     if (snapshotChanged) {
       // The CLI refused to complete a check-run for a pull request snapshot
       // that has already moved on. A newer push means a fresher review
