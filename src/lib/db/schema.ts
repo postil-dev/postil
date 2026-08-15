@@ -367,8 +367,8 @@ export const reviewPublicationReceipts = pgTable(
 
 /**
  * Immutable accepted inputs for each pull request publication generation.
- * The exact plan bytes are authoritative. Their digest is distinct from the
- * CLI semantic digest, which the database validates only as a named domain.
+ * Canonical input and plan bytes remain available for exact replay. The plan
+ * byte digest is distinct from the CLI semantic digest.
  */
 export const reviewPublicationGenerations = pgTable(
   "review_publication_generations",
@@ -391,6 +391,10 @@ export const reviewPublicationGenerations = pgTable(
     expectedPullRequestUpdatedAt: timestamp("expected_pull_request_updated_at", {
       withTimezone: true,
     }).notNull(),
+    acceptedInput: jsonb("accepted_input")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    acceptedInputBytes: bytea("accepted_input_bytes").notNull(),
     acceptedInputDigest: text("accepted_input_digest").notNull(),
     envelopeDigest: text("envelope_digest").notNull(),
     repositoryFullName: text("repository_full_name").notNull(),
@@ -440,8 +444,8 @@ export const reviewPublicationGenerations = pgTable(
       sql`${t.publicationGeneration} > 0`,
     ),
     check(
-      "review_publication_generations_input_digest_check",
-      sql`${t.acceptedInputDigest} ~ '^[0-9a-f]{64}$'`,
+      "review_publication_generations_input_artifact_check",
+      sql`jsonb_typeof(${t.acceptedInput}) = 'object' AND octet_length(${t.acceptedInputBytes}) BETWEEN 2 AND 16384 AND convert_from(${t.acceptedInputBytes}, 'UTF8') = postil_canonical_json(${t.acceptedInput}) AND ${t.acceptedInputDigest} ~ '^[0-9a-f]{64}$' AND ${t.acceptedInputDigest} = encode(sha256(${t.acceptedInputBytes}), 'hex')`,
     ),
     check(
       "review_publication_generations_plan_check",
@@ -453,7 +457,7 @@ export const reviewPublicationGenerations = pgTable(
     ),
     check(
       "review_publication_generations_review_input_sequence_check",
-      sql`${t.reviewInputSequence} > 0`,
+      sql`${t.reviewInputSequence} > 0 AND ${t.reviewInputSequence} = ${t.publicationGeneration}`,
     ),
     check(
       "review_publication_generations_envelope_digest_check",

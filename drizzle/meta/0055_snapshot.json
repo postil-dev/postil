@@ -6393,6 +6393,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "accepted_input": {
+          "name": "accepted_input",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_input_bytes": {
+          "name": "accepted_input_bytes",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
         "accepted_input_digest": {
           "name": "accepted_input_digest",
           "type": "text",
@@ -6637,9 +6649,9 @@
           "name": "review_publication_generations_generation_check",
           "value": "\"review_publication_generations\".\"publication_generation\" > 0"
         },
-        "review_publication_generations_input_digest_check": {
-          "name": "review_publication_generations_input_digest_check",
-          "value": "\"review_publication_generations\".\"accepted_input_digest\" ~ '^[0-9a-f]{64}$'"
+        "review_publication_generations_input_artifact_check": {
+          "name": "review_publication_generations_input_artifact_check",
+          "value": "jsonb_typeof(\"review_publication_generations\".\"accepted_input\") = 'object' AND octet_length(\"review_publication_generations\".\"accepted_input_bytes\") BETWEEN 2 AND 16384 AND convert_from(\"review_publication_generations\".\"accepted_input_bytes\", 'UTF8') = postil_canonical_json(\"review_publication_generations\".\"accepted_input\") AND \"review_publication_generations\".\"accepted_input_digest\" ~ '^[0-9a-f]{64}$' AND \"review_publication_generations\".\"accepted_input_digest\" = encode(sha256(\"review_publication_generations\".\"accepted_input_bytes\"), 'hex')"
         },
         "review_publication_generations_plan_check": {
           "name": "review_publication_generations_plan_check",
@@ -6651,7 +6663,7 @@
         },
         "review_publication_generations_review_input_sequence_check": {
           "name": "review_publication_generations_review_input_sequence_check",
-          "value": "\"review_publication_generations\".\"review_input_sequence\" > 0"
+          "value": "\"review_publication_generations\".\"review_input_sequence\" > 0 AND \"review_publication_generations\".\"review_input_sequence\" = \"review_publication_generations\".\"publication_generation\""
         },
         "review_publication_generations_envelope_digest_check": {
           "name": "review_publication_generations_envelope_digest_check",

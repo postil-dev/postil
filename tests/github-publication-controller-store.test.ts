@@ -7,6 +7,9 @@ import {
   buildGitHubPublicationControllerManifest,
 } from "@/lib/github-publication-controller-manifest";
 import {
+  buildGitHubPublicationInputIdentity,
+} from "@/lib/github-publication-cli-planner";
+import {
   parseGitHubPublicationPlanBytes,
   type ExpectedGitHubPublicationPlan,
 } from "@/lib/github-publication-plan";
@@ -61,6 +64,9 @@ describeDb("GitHub publication controller store", () => {
       sealed_at: Date | null;
       accepted_plan_bytes: Buffer;
       accepted_plan_digest: string;
+      accepted_input: unknown;
+      accepted_input_bytes: Buffer;
+      accepted_input_digest: string;
       controller_manifest_bytes: Buffer;
       controller_manifest_digest: string;
       operation_count: number;
@@ -68,7 +74,8 @@ describeDb("GitHub publication controller store", () => {
       operation_manifest_digest: string;
       controller_operation_manifest_digest: string;
     }>(
-      `SELECT sealed_at, accepted_plan_bytes, accepted_plan_digest,
+      `SELECT sealed_at, accepted_plan_bytes, accepted_plan_digest, accepted_input,
+              accepted_input_bytes, accepted_input_digest,
               controller_manifest_bytes, controller_manifest_digest, operation_count,
               controller_operation_count, operation_manifest_digest,
               controller_operation_manifest_digest
@@ -80,6 +87,9 @@ describeDb("GitHub publication controller store", () => {
     expect(stored.rows[0]!.sealed_at).toBeInstanceOf(Date);
     expect(stored.rows[0]!.accepted_plan_bytes).toEqual(Buffer.from(input.acceptedPlan.bytes));
     expect(stored.rows[0]!.accepted_plan_digest).toBe(input.acceptedPlan.digest);
+    expect(stored.rows[0]!.accepted_input).toEqual(input.acceptedInput.value);
+    expect(stored.rows[0]!.accepted_input_bytes).toEqual(Buffer.from(input.acceptedInput.bytes));
+    expect(`sha256:${stored.rows[0]!.accepted_input_digest}`).toBe(input.acceptedInput.digest);
     expect(stored.rows[0]!.controller_manifest_bytes).toEqual(Buffer.from(input.controllerManifest.bytes));
     expect(stored.rows[0]!.controller_manifest_digest).toBe(input.controllerManifest.digest);
     expect(stored.rows[0]!.operation_count).toBe(input.acceptedPlan.value.operationCount);
@@ -119,6 +129,22 @@ describeDb("GitHub publication controller store", () => {
       [concurrentContext.databaseRepositoryId, 72, "18"],
     );
     expect(count.rows[0]!.count).toBe("1");
+
+    const optionalContext = await createContext(4, 74, "20");
+    const withoutOptionalFields = buildStageInput(optionalContext, false);
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...withoutOptionalFields,
+      database: pool,
+    })).resolves.toMatchObject({ status: "sealed", idempotent: false });
+    const optionalArtifact = await pool.query<{ accepted_input: Record<string, unknown> }>(
+      `SELECT accepted_input FROM review_publication_generations
+       WHERE repository_id = $1 AND pr_number = $2 AND publication_generation = $3`,
+      [optionalContext.databaseRepositoryId, 74, "20"],
+    );
+    expect(optionalArtifact.rows[0]!.accepted_input).toMatchObject({
+      baseline: null,
+      detailsUrl: null,
+    });
   }, 60_000);
 
   test("rejects mismatched artifacts and dependency records without partial generations", async () => {
@@ -154,6 +180,35 @@ describeDb("GitHub publication controller store", () => {
       database: pool,
     })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
 
+    const driftedInputBytes = structuredClone(input.acceptedInput);
+    driftedInputBytes.bytes = Buffer.concat([
+      Buffer.from(driftedInputBytes.bytes),
+      Buffer.from("\n"),
+    ]);
+    driftedInputBytes.digest = `sha256:${digestBytes(driftedInputBytes.bytes)}`;
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...input,
+      acceptedInput: driftedInputBytes,
+      database: pool,
+    })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
+
+    const driftedInputValue = structuredClone(input.acceptedInput);
+    driftedInputValue.value.providerIdentity = "provider-v2";
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...input,
+      acceptedInput: driftedInputValue,
+      database: pool,
+    })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
+
+    const crossFieldMismatch = buildAcceptedInput(context, true, {
+      targetBranch: "release",
+    });
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...input,
+      acceptedInput: crossFieldMismatch,
+      database: pool,
+    })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
+
     const nonCanonicalPlan = structuredClone(input.acceptedPlan);
     nonCanonicalPlan.bytes = Buffer.from(JSON.stringify(nonCanonicalPlan.value), "utf8");
     nonCanonicalPlan.digest = digestBytes(nonCanonicalPlan.bytes);
@@ -175,6 +230,11 @@ describeDb("GitHub publication controller store", () => {
       database: pool,
     })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
 
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...input,
+      snapshot: { ...input.snapshot, reviewInputSequence: "20" },
+      database: pool,
+    })).rejects.toThrow("differs from the review input sequence");
     await expect(stageGitHubPublicationControllerGeneration({
       ...input,
       snapshot: { ...input.snapshot, reviewInputSequence: 9_007_199_254_740_993 },
@@ -230,17 +290,20 @@ describeDb("GitHub publication controller store", () => {
   }
 });
 
-function buildStageInput(context: {
+type StoreContext = {
   databaseRepositoryId: number;
   githubRepositoryId: number;
   repositoryFullName: string;
   reviewId: number;
   prNumber: number;
   generation: string;
-}) {
+};
+
+function buildStageInput(context: StoreContext, includeOptionalFields = true) {
+  const acceptedInput = buildAcceptedInput(context, includeOptionalFields);
   const expected: ExpectedGitHubPublicationPlan = {
     controllerGeneration: context.generation,
-    inputIdentity: digest(`input:${context.generation}`),
+    inputIdentity: acceptedInput.digest,
     reviewOutputDigest: digest(`output:${context.generation}`),
     repositoryId: String(context.githubRepositoryId),
     repositoryFullName: context.repositoryFullName,
@@ -268,6 +331,7 @@ function buildStageInput(context: {
     },
   });
   return {
+    acceptedInput,
     acceptedPlan,
     controllerManifest,
     snapshot: {
@@ -282,6 +346,44 @@ function buildStageInput(context: {
       pullRequestBody: BODY,
     },
   };
+}
+
+function buildAcceptedInput(
+  context: StoreContext,
+  includeOptionalFields: boolean,
+  overrides: { targetBranch?: string; providerIdentity?: string } = {},
+) {
+  return buildGitHubPublicationInputIdentity({
+    databaseRepositoryId: String(context.databaseRepositoryId),
+    githubRepositoryId: String(context.githubRepositoryId),
+    repositoryFullName: context.repositoryFullName,
+    pullRequestNumber: String(context.prNumber),
+    controllerGeneration: context.generation,
+    reviewId: String(context.reviewId),
+    headSha: HEAD,
+    mergeBaseSha: BASE,
+    targetSha: TARGET,
+    targetBranch: overrides.targetBranch ?? "main",
+    pullRequestTitle: TITLE,
+    pullRequestBody: BODY,
+    expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000Z",
+    cliVersion: "0.8.17",
+    cliCommitSha: "d".repeat(40),
+    cliArtifactSha256: digest("CLI artifact"),
+    configurationSha256: digest("configuration"),
+    providerIdentity: overrides.providerIdentity ?? "provider-v1",
+    retryLineage: `review:${context.reviewId}:attempt:1`,
+    ...(includeOptionalFields
+      ? {
+          baselineReviewId: String(context.reviewId),
+          baselineHeadSha: "e".repeat(40),
+          baselineEnvelopeSha256: digest("baseline envelope"),
+          detailsUrl: "https://postil.dev/orgs/acme/runs/controller-store",
+        }
+      : {}),
+    bounded: true,
+    forceFullReview: false,
+  });
 }
 
 function validPlan(expected: ExpectedGitHubPublicationPlan): Record<string, unknown> {

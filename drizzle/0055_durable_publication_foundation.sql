@@ -129,6 +129,8 @@ CREATE TABLE "review_publication_generations" (
 	"plan_semantic_digest" text NOT NULL,
 	"review_input_sequence" bigint NOT NULL,
 	"expected_pull_request_updated_at" timestamp with time zone NOT NULL,
+	"accepted_input" jsonb NOT NULL,
+	"accepted_input_bytes" "bytea" NOT NULL,
 	"accepted_input_digest" text NOT NULL,
 	"envelope_digest" text NOT NULL,
 	"repository_full_name" text NOT NULL,
@@ -149,10 +151,10 @@ CREATE TABLE "review_publication_generations" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "review_publication_generations_pr_number_check" CHECK ("review_publication_generations"."pr_number" > 0),
 	CONSTRAINT "review_publication_generations_generation_check" CHECK ("review_publication_generations"."publication_generation" > 0),
-	CONSTRAINT "review_publication_generations_input_digest_check" CHECK ("review_publication_generations"."accepted_input_digest" ~ '^[0-9a-f]{64}$'),
+	CONSTRAINT "review_publication_generations_input_artifact_check" CHECK (jsonb_typeof("review_publication_generations"."accepted_input") = 'object' AND octet_length("review_publication_generations"."accepted_input_bytes") BETWEEN 2 AND 16384 AND convert_from("review_publication_generations"."accepted_input_bytes", 'UTF8') = postil_canonical_json("review_publication_generations"."accepted_input") AND "review_publication_generations"."accepted_input_digest" ~ '^[0-9a-f]{64}$' AND "review_publication_generations"."accepted_input_digest" = encode(sha256("review_publication_generations"."accepted_input_bytes"), 'hex')),
 	CONSTRAINT "review_publication_generations_plan_check" CHECK ("review_publication_generations"."plan_version" ~ '^github-publication-v[1-9][0-9]{0,8}$' AND jsonb_typeof("review_publication_generations"."accepted_plan") = 'object' AND octet_length("review_publication_generations"."accepted_plan_bytes") BETWEEN 3 AND 8388608 AND right(convert_from("review_publication_generations"."accepted_plan_bytes", 'UTF8'), 1) = E'\n' AND right(convert_from("review_publication_generations"."accepted_plan_bytes", 'UTF8'), 2) <> E'\n\n' AND convert_from("review_publication_generations"."accepted_plan_bytes", 'UTF8')::jsonb = "review_publication_generations"."accepted_plan" AND "review_publication_generations"."accepted_plan_digest" ~ '^[0-9a-f]{64}$' AND "review_publication_generations"."accepted_plan_digest" = encode(sha256("review_publication_generations"."accepted_plan_bytes"), 'hex')),
 	CONSTRAINT "review_publication_generations_plan_semantic_digest_check" CHECK ("review_publication_generations"."plan_semantic_digest" ~ '^[0-9a-f]{64}$'),
-	CONSTRAINT "review_publication_generations_review_input_sequence_check" CHECK ("review_publication_generations"."review_input_sequence" > 0),
+	CONSTRAINT "review_publication_generations_review_input_sequence_check" CHECK ("review_publication_generations"."review_input_sequence" > 0 AND "review_publication_generations"."review_input_sequence" = "review_publication_generations"."publication_generation"),
 	CONSTRAINT "review_publication_generations_envelope_digest_check" CHECK ("review_publication_generations"."envelope_digest" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "review_publication_generations_repository_snapshot_check" CHECK (length("review_publication_generations"."repository_full_name") BETWEEN 3 AND 200 AND "review_publication_generations"."repository_full_name" ~ '^[^/[:space:]]+/[^/[:space:]]+$'),
 	CONSTRAINT "review_publication_generations_head_sha_check" CHECK ("review_publication_generations"."head_sha" ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'),
@@ -424,6 +426,91 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'review publication generation does not match its repository identity'
       USING ERRCODE = 'foreign_key_violation';
+  END IF;
+  IF (
+    public.postil_has_exact_json_keys(
+      NEW.accepted_input,
+      ARRAY['version', 'databaseRepositoryId', 'githubRepositoryId', 'repositoryFullName',
+            'pullRequestNumber', 'controllerGeneration', 'reviewId', 'headSha',
+            'mergeBaseSha', 'targetSha', 'targetBranch', 'pullRequestTitleSha256',
+            'pullRequestBodySha256', 'expectedPullRequestUpdatedAt', 'cliVersion',
+            'cliCommitSha', 'cliArtifactSha256', 'configurationSha256', 'providerIdentity',
+            'retryLineage', 'baseline', 'bounded', 'forceFullReview', 'detailsUrl']
+    )
+    AND NEW.accepted_input->>'version' = 'github-publication-input-v1'
+    AND jsonb_typeof(NEW.accepted_input->'databaseRepositoryId') = 'string'
+    AND NEW.accepted_input->>'databaseRepositoryId' = NEW.repository_id::text
+    AND jsonb_typeof(NEW.accepted_input->'githubRepositoryId') = 'string'
+    AND NEW.accepted_input->>'githubRepositoryId' = repository_row.github_repo_id::text
+    AND jsonb_typeof(NEW.accepted_input->'repositoryFullName') = 'string'
+    AND NEW.accepted_input->>'repositoryFullName' = repository_row.full_name
+    AND NEW.repository_full_name = repository_row.full_name
+    AND jsonb_typeof(NEW.accepted_input->'pullRequestNumber') = 'string'
+    AND NEW.accepted_input->>'pullRequestNumber' = NEW.pr_number::text
+    AND jsonb_typeof(NEW.accepted_input->'controllerGeneration') = 'string'
+    AND NEW.accepted_input->>'controllerGeneration' = NEW.publication_generation::text
+    AND jsonb_typeof(NEW.accepted_input->'reviewId') = 'string'
+    AND NEW.accepted_input->>'reviewId' = NEW.review_id::text
+    AND jsonb_typeof(NEW.accepted_input->'headSha') = 'string'
+    AND NEW.accepted_input->>'headSha' = NEW.head_sha
+    AND jsonb_typeof(NEW.accepted_input->'mergeBaseSha') = 'string'
+    AND NEW.accepted_input->>'mergeBaseSha' = NEW.base_sha
+    AND jsonb_typeof(NEW.accepted_input->'targetSha') = 'string'
+    AND NEW.accepted_input->>'targetSha' = NEW.target_sha
+    AND jsonb_typeof(NEW.accepted_input->'targetBranch') = 'string'
+    AND NEW.accepted_input->>'targetBranch' = NEW.target_branch
+    AND jsonb_typeof(NEW.accepted_input->'pullRequestTitleSha256') = 'string'
+    AND NEW.accepted_input->>'pullRequestTitleSha256' =
+      'sha256:' || encode(sha256(convert_to(NEW.pull_request_title, 'UTF8')), 'hex')
+    AND jsonb_typeof(NEW.accepted_input->'pullRequestBodySha256') = 'string'
+    AND NEW.accepted_input->>'pullRequestBodySha256' =
+      'sha256:' || encode(sha256(convert_to(NEW.pull_request_body, 'UTF8')), 'hex')
+    AND jsonb_typeof(NEW.accepted_input->'expectedPullRequestUpdatedAt') = 'string'
+    AND NEW.accepted_input->>'expectedPullRequestUpdatedAt' =
+      to_char(
+        NEW.expected_pull_request_updated_at AT TIME ZONE 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      )
+    AND jsonb_typeof(NEW.accepted_input->'cliVersion') = 'string'
+    AND octet_length(convert_to(NEW.accepted_input->>'cliVersion', 'UTF8')) BETWEEN 1 AND 100
+    AND jsonb_typeof(NEW.accepted_input->'cliCommitSha') = 'string'
+    AND NEW.accepted_input->>'cliCommitSha' ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
+    AND jsonb_typeof(NEW.accepted_input->'cliArtifactSha256') = 'string'
+    AND NEW.accepted_input->>'cliArtifactSha256' ~ '^sha256:[0-9a-f]{64}$'
+    AND jsonb_typeof(NEW.accepted_input->'configurationSha256') = 'string'
+    AND NEW.accepted_input->>'configurationSha256' ~ '^sha256:[0-9a-f]{64}$'
+    AND jsonb_typeof(NEW.accepted_input->'providerIdentity') = 'string'
+    AND octet_length(convert_to(NEW.accepted_input->>'providerIdentity', 'UTF8')) BETWEEN 1 AND 2048
+    AND jsonb_typeof(NEW.accepted_input->'retryLineage') = 'string'
+    AND octet_length(convert_to(NEW.accepted_input->>'retryLineage', 'UTF8')) BETWEEN 1 AND 200
+    AND (
+      jsonb_typeof(NEW.accepted_input->'baseline') = 'null'
+      OR (
+        jsonb_typeof(NEW.accepted_input->'baseline') = 'object'
+        AND public.postil_has_exact_json_keys(
+          NEW.accepted_input->'baseline', ARRAY['reviewId', 'headSha', 'envelopeSha256']
+        )
+        AND jsonb_typeof(NEW.accepted_input->'baseline'->'reviewId') = 'string'
+        AND NEW.accepted_input->'baseline'->>'reviewId' ~ '^[1-9][0-9]{0,18}$'
+        AND (NEW.accepted_input->'baseline'->>'reviewId')::numeric <= 9223372036854775807
+        AND jsonb_typeof(NEW.accepted_input->'baseline'->'headSha') = 'string'
+        AND NEW.accepted_input->'baseline'->>'headSha' ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'
+        AND jsonb_typeof(NEW.accepted_input->'baseline'->'envelopeSha256') = 'string'
+        AND NEW.accepted_input->'baseline'->>'envelopeSha256' ~ '^sha256:[0-9a-f]{64}$'
+      )
+    )
+    AND jsonb_typeof(NEW.accepted_input->'bounded') = 'boolean'
+    AND jsonb_typeof(NEW.accepted_input->'forceFullReview') = 'boolean'
+    AND (
+      jsonb_typeof(NEW.accepted_input->'detailsUrl') = 'null'
+      OR (
+        jsonb_typeof(NEW.accepted_input->'detailsUrl') = 'string'
+        AND octet_length(convert_to(NEW.accepted_input->>'detailsUrl', 'UTF8')) BETWEEN 1 AND 2048
+        AND NEW.accepted_input->>'detailsUrl' ~ '^https?://[^[:space:]]+$'
+      )
+    )
+  ) IS NOT TRUE THEN
+    RAISE EXCEPTION 'accepted publication input does not match its immutable generation snapshot';
   END IF;
   IF (
     public.postil_has_exact_json_keys(

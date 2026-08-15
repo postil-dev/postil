@@ -3,6 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResult } from "pg";
 
 import {
+  buildGitHubPublicationInputIdentity,
+  type BuiltGitHubPublicationInputIdentity,
+} from "@/lib/github-publication-cli-planner";
+import {
   createEphemeralDatabase,
   type EphemeralDatabase,
 } from "./ephemeral-database";
@@ -52,10 +56,12 @@ interface OperationFixture {
 interface PublicationFixture {
   repositoryId: number;
   githubRepositoryId: number;
+  repositoryFullName?: string;
   prNumber: number;
   generation: string;
   reviewId: number;
   inputDigest: string;
+  acceptedInput?: BuiltGitHubPublicationInputIdentity;
   headSha: string;
   operations: OperationFixture[];
   cliOperations?: OperationFixture[];
@@ -267,13 +273,74 @@ function withServiceGateOperations(input: Omit<PublicationFixture, "operations">
   return [...input.cliOperations, gateCreate, gateComplete];
 }
 
-function publicationFixture(input: Omit<PublicationFixture, "operations"> & {
+function publicationFixture(input: Omit<PublicationFixture, "operations" | "acceptedInput"> & {
   cliOperations: OperationFixture[];
 }): PublicationFixture {
-  return {
+  const repositoryFullName = input.repositoryFullName
+    ?? `publication-${input.githubRepositoryId - 300000}/repository`;
+  const acceptedInput = buildFixtureAcceptedInput({
     ...input,
-    operations: withServiceGateOperations(input),
+    repositoryFullName,
+    configurationDigest: input.inputDigest,
+  });
+  const normalized = {
+    ...input,
+    repositoryFullName,
+    acceptedInput,
+    inputDigest: acceptedInput.digest.slice("sha256:".length),
   };
+  return {
+    ...normalized,
+    operations: withServiceGateOperations(normalized),
+  };
+}
+
+function buildFixtureAcceptedInput(input: {
+  repositoryId: number;
+  githubRepositoryId: number;
+  repositoryFullName: string;
+  prNumber: number;
+  generation: string;
+  reviewId: number;
+  headSha: string;
+  configurationDigest: string;
+  baseline?: boolean;
+  detailsUrl?: string;
+  cliVersion?: string;
+  providerIdentity?: string;
+  retryLineage?: string;
+}) {
+  return buildGitHubPublicationInputIdentity({
+    databaseRepositoryId: String(input.repositoryId),
+    githubRepositoryId: String(input.githubRepositoryId),
+    repositoryFullName: input.repositoryFullName,
+    pullRequestNumber: String(input.prNumber),
+    controllerGeneration: input.generation,
+    reviewId: String(input.reviewId),
+    headSha: input.headSha,
+    mergeBaseSha: BASE_SHA,
+    targetSha: TARGET_SHA,
+    targetBranch: "main",
+    pullRequestTitle: "Publication foundation",
+    pullRequestBody: "",
+    expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000Z",
+    cliVersion: input.cliVersion ?? "0.8.17",
+    cliCommitSha: "d".repeat(40),
+    cliArtifactSha256: `sha256:${"6".repeat(64)}`,
+    configurationSha256: `sha256:${input.configurationDigest}`,
+    providerIdentity: input.providerIdentity ?? "provider-v1",
+    retryLineage: input.retryLineage ?? `review:${input.reviewId}:attempt:1`,
+    ...(input.baseline
+      ? {
+          baselineReviewId: String(input.reviewId),
+          baselineHeadSha: "e".repeat(40),
+          baselineEnvelopeSha256: `sha256:${"7".repeat(64)}`,
+        }
+      : {}),
+    bounded: true,
+    forceFullReview: false,
+    ...(input.detailsUrl === undefined ? {} : { detailsUrl: input.detailsUrl }),
+  });
 }
 
 function manifestDigest(operations: OperationFixture[]) {
@@ -352,6 +419,9 @@ describeDb("durable publication foundation migration", () => {
     controllerOperationManifestDigest?: string;
     controllerManifestMutator?: (manifest: Record<string, unknown>) => void;
     controllerManifestBytes?: Buffer;
+    acceptedInputMutator?: (acceptedInput: Record<string, unknown>) => void;
+    acceptedInputBytes?: Buffer;
+    reviewInputSequence?: string;
     createdAt?: string;
   }) {
     const queryable = input.queryable ?? pool;
@@ -362,6 +432,16 @@ describeDb("durable publication foundation migration", () => {
       [input.repositoryId],
     );
     const repositoryFullName = input.repositoryFullName ?? repositorySnapshot.rows[0]!.full_name;
+    const builtAcceptedInput = input.acceptedInput ?? buildFixtureAcceptedInput({
+      ...input,
+      repositoryFullName,
+      configurationDigest: input.inputDigest,
+    });
+    const acceptedInput = structuredClone(builtAcceptedInput.value) as unknown as Record<string, unknown>;
+    input.acceptedInputMutator?.(acceptedInput);
+    const acceptedInputBytes = input.acceptedInputBytes
+      ?? Buffer.from(canonicalJson(acceptedInput), "utf8");
+    const acceptedInputDigest = sha256(acceptedInputBytes);
     const cliOperations = input.cliOperations
       ?? input.operations.filter((operation) => operation.operationSource === "cli");
     const operationCount = input.operationCount ?? cliOperations.length;
@@ -371,7 +451,7 @@ describeDb("durable publication foundation migration", () => {
       version: 1,
       forge: "github",
       controllerGeneration: input.generation,
-      inputIdentity: `sha256:${input.inputDigest}`,
+      inputIdentity: `sha256:${acceptedInputDigest}`,
       reviewOutputDigest: REVIEW_OUTPUT_DIGEST,
       repository: {
         id: String(input.githubRepositoryId),
@@ -385,7 +465,7 @@ describeDb("durable publication foundation migration", () => {
         pullRequestTitleSha256: `sha256:${sha256("Publication foundation")}`,
         pullRequestBodySha256: `sha256:${sha256("")}`,
       },
-      lifecycleReceipt: { inputIdentity: `sha256:${input.inputDigest}` },
+      lifecycleReceipt: { inputIdentity: `sha256:${acceptedInputDigest}` },
       operationCount,
       operationManifestDigest,
       operations: cliOperations.map((operation) => operation.operationRecord),
@@ -411,7 +491,7 @@ describeDb("durable publication foundation migration", () => {
       version: "github-publication-controller-v1",
       forge: "github",
       controllerGeneration: input.generation,
-      inputIdentity: `sha256:${input.inputDigest}`,
+      inputIdentity: `sha256:${acceptedInputDigest}`,
       reviewOutputDigest: REVIEW_OUTPUT_DIGEST,
       repository: {
         id: String(input.githubRepositoryId),
@@ -434,16 +514,17 @@ describeDb("durable publication foundation migration", () => {
       `INSERT INTO review_publication_generations
          (repository_id, pr_number, publication_generation, review_id, plan_version,
           accepted_plan, accepted_plan_bytes, accepted_plan_digest, plan_semantic_digest,
-          review_input_sequence, expected_pull_request_updated_at, accepted_input_digest,
-          envelope_digest, repository_full_name, head_sha, base_sha, target_sha,
+          review_input_sequence, expected_pull_request_updated_at, accepted_input,
+          accepted_input_bytes, accepted_input_digest, envelope_digest, repository_full_name,
+          head_sha, base_sha, target_sha,
           target_branch, pull_request_title, pull_request_body, operation_count,
           operation_manifest_digest, controller_operation_count,
           controller_operation_manifest_digest, controller_manifest,
           controller_manifest_bytes, controller_manifest_digest, created_at)
        VALUES ($1, $2, $3, $4, 'github-publication-v1', $5::jsonb, $6, $7, $8,
-               $9, '2026-08-14T00:00:00Z', $10, $11, $12, $13, $14, $15,
-               'main', 'Publication foundation', '', $16, $17, $18, $19,
-               $20::jsonb, $21, $22, $23)`,
+               $9, '2026-08-14T00:00:00Z', $10::jsonb, $11, $12, $13, $14, $15,
+               $16, $17, 'main', 'Publication foundation', '', $18, $19, $20, $21,
+               $22::jsonb, $23, $24, $25)`,
       [
         input.repositoryId,
         input.prNumber,
@@ -453,8 +534,10 @@ describeDb("durable publication foundation migration", () => {
         acceptedPlanBytes,
         sha256(acceptedPlanBytes),
         PLAN_SEMANTIC_DIGEST,
-        input.generation,
-        input.inputDigest,
+        input.reviewInputSequence ?? input.generation,
+        JSON.stringify(acceptedInput),
+        acceptedInputBytes,
+        acceptedInputDigest,
         ENVELOPE_DIGEST,
         repositoryFullName,
         input.headSha,
@@ -572,6 +655,8 @@ describeDb("durable publication foundation migration", () => {
     const fixture = publicationFixture({
       repositoryId: fixtureRepositoryId,
       githubRepositoryId: fixtureGithubRepositoryId,
+      repositoryFullName: input.repositoryFullName
+        ?? `publication-${fixtureGithubRepositoryId - 300000}/repository`,
       prNumber: input.prNumber,
       generation,
       reviewId,
@@ -875,6 +960,127 @@ describeDb("durable publication foundation migration", () => {
         [repositoryId, fixture.prNumber, fixture.generation, first.operationKey, second.operationKey],
       ),
     ).rejects.toThrow("sealed publication generations cannot accept dependency edges");
+  });
+
+  test("retains and independently validates canonical accepted input artifacts", async () => {
+    const fixtureFor = async (prNumber: number, headNibble: string) => {
+      const headSha = headNibble.repeat(40);
+      const reviewId = await createReview({ prNumber, headSha });
+      return publicationFixture({
+        repositoryId,
+        githubRepositoryId,
+        prNumber,
+        generation: "1",
+        reviewId,
+        inputDigest: INPUT_ONE,
+        headSha,
+        cliOperations: [makeOperation({ ordinal: 1 })],
+      });
+    };
+
+    const exact = await fixtureFor(131, "1");
+    await insertGeneration(exact);
+    const stored = await pool.query<{
+      accepted_input: unknown;
+      accepted_input_bytes: Buffer;
+      accepted_input_digest: string;
+    }>(
+      `SELECT accepted_input, accepted_input_bytes, accepted_input_digest
+       FROM review_publication_generations
+       WHERE repository_id = $1 AND pr_number = $2`,
+      [repositoryId, exact.prNumber],
+    );
+    expect(stored.rows[0]!.accepted_input).toEqual(exact.acceptedInput!.value);
+    expect(stored.rows[0]!.accepted_input_bytes).toEqual(Buffer.from(exact.acceptedInput!.bytes));
+    expect(stored.rows[0]!.accepted_input_digest).toBe(exact.inputDigest);
+
+    const byteDrift = await fixtureFor(132, "2");
+    await expect(insertGeneration({
+      ...byteDrift,
+      acceptedInputBytes: Buffer.concat([
+        Buffer.from(byteDrift.acceptedInput!.bytes),
+        Buffer.from("\n"),
+      ]),
+    })).rejects.toThrow("review_publication_generations_input_artifact_check");
+
+    const semanticDrift = await fixtureFor(133, "3");
+    await expect(insertGeneration({
+      ...semanticDrift,
+      acceptedInputMutator: (acceptedInput) => {
+        acceptedInput.pullRequestTitleSha256 = `sha256:${"9".repeat(64)}`;
+      },
+    })).rejects.toThrow("accepted publication input does not match");
+
+    const identityMismatch = await fixtureFor(134, "4");
+    await expect(insertGeneration({
+      ...identityMismatch,
+      acceptedInputMutator: (acceptedInput) => {
+        acceptedInput.databaseRepositoryId = String(repositoryId + 1);
+      },
+    })).rejects.toThrow("accepted publication input does not match");
+
+    const sequenceMismatch = await fixtureFor(136, "6");
+    await expect(insertGeneration({
+      ...sequenceMismatch,
+      reviewInputSequence: "2",
+    })).rejects.toThrow("review_publication_generations_review_input_sequence_check");
+
+    const optional = await fixtureFor(135, "5");
+    const optionalAcceptedInput = buildFixtureAcceptedInput({
+      repositoryId,
+      githubRepositoryId,
+      repositoryFullName: optional.repositoryFullName!,
+      prNumber: optional.prNumber,
+      generation: optional.generation,
+      reviewId: optional.reviewId,
+      headSha: optional.headSha,
+      configurationDigest: INPUT_TWO,
+      baseline: true,
+      detailsUrl: "https://postil.example/reviews/135",
+    });
+    await insertGeneration({ ...optional, acceptedInput: optionalAcceptedInput });
+    const optionalStored = await pool.query<{ accepted_input: Record<string, unknown> }>(
+      `SELECT accepted_input FROM review_publication_generations
+       WHERE repository_id = $1 AND pr_number = $2`,
+      [repositoryId, optional.prNumber],
+    );
+    expect(optionalStored.rows[0]!.accepted_input).toMatchObject({
+      baseline: {
+        reviewId: String(optional.reviewId),
+        headSha: "e".repeat(40),
+        envelopeSha256: `sha256:${"7".repeat(64)}`,
+      },
+      detailsUrl: "https://postil.example/reviews/135",
+    });
+
+    const nearLimit = await fixtureFor(137, "7");
+    const detailsPrefix = "https://postil.example/reviews/137/";
+    const nearLimitAcceptedInput = buildFixtureAcceptedInput({
+      repositoryId,
+      githubRepositoryId,
+      repositoryFullName: nearLimit.repositoryFullName!,
+      prNumber: nearLimit.prNumber,
+      generation: nearLimit.generation,
+      reviewId: nearLimit.reviewId,
+      headSha: nearLimit.headSha,
+      configurationDigest: INPUT_TWO,
+      baseline: true,
+      cliVersion: "v".repeat(100),
+      providerIdentity: "p".repeat(2_048),
+      retryLineage: "r".repeat(200),
+      detailsUrl: `${detailsPrefix}${"d".repeat(2_048 - detailsPrefix.length)}`,
+    });
+    await insertGeneration({ ...nearLimit, acceptedInput: nearLimitAcceptedInput });
+    const nearLimitStored = await pool.query<{ accepted_input_bytes: Buffer }>(
+      `SELECT accepted_input_bytes FROM review_publication_generations
+       WHERE repository_id = $1 AND pr_number = $2`,
+      [repositoryId, nearLimit.prNumber],
+    );
+    expect(nearLimitStored.rows[0]!.accepted_input_bytes).toEqual(
+      Buffer.from(nearLimitAcceptedInput.bytes),
+    );
+    expect(nearLimitStored.rows[0]!.accepted_input_bytes.byteLength).toBeGreaterThan(4 * 1024);
+    expect(nearLimitStored.rows[0]!.accepted_input_bytes.byteLength).toBeLessThan(16 * 1024);
   });
 
   test("rejects plan-envelope, manifest, forward-edge, and exact-byte mismatches", async () => {
@@ -2000,6 +2206,7 @@ describeDb("durable publication foundation migration", () => {
     const second = publicationFixture({
       repositoryId: hierarchy.repositoryId,
       githubRepositoryId: hierarchy.githubRepositoryId,
+      repositoryFullName: hierarchy.repositoryFullName,
       prNumber: 201,
       generation: "2",
       reviewId: secondReviewId,
@@ -2018,7 +2225,7 @@ describeDb("durable publication foundation migration", () => {
            accepted_input_digest = $4, accepted_head_sha = $5,
            updated_at = clock_timestamp()
        WHERE repository_id = $1 AND pr_number = $2`,
-      [hierarchy.repositoryId, second.prNumber, second.reviewId, INPUT_TWO, secondHead],
+      [hierarchy.repositoryId, second.prNumber, second.reviewId, second.inputDigest, secondHead],
     );
     await pool.query(`DELETE FROM public.reviews WHERE id = ANY($1::bigint[])`, [
       [first.reviewId, second.reviewId],
@@ -2038,7 +2245,7 @@ describeDb("durable publication foundation migration", () => {
              accepted_input_digest = $4, accepted_head_sha = $5,
              updated_at = clock_timestamp()
          WHERE repository_id = $1 AND pr_number = $2`,
-        [hierarchy.repositoryId, first.prNumber, first.reviewId, INPUT_ONE, first.headSha],
+        [hierarchy.repositoryId, first.prNumber, first.reviewId, first.inputDigest, first.headSha],
       ),
     ).rejects.toThrow("generation cannot decrease");
     await expect(
@@ -2279,7 +2486,12 @@ describeDb("durable publication foundation migration", () => {
         headSha,
         queryable: client,
       });
-      await insertGeneration({ ...fixture, reviewId: validReviewId, queryable: client });
+      await insertGeneration({
+        ...fixture,
+        reviewId: validReviewId,
+        acceptedInput: undefined,
+        queryable: client,
+      });
       const stored = await client.query<{ review_id: string }>(
         `SELECT review_id FROM review_publication_generations
          WHERE repository_id = $1 AND pr_number = 203`,

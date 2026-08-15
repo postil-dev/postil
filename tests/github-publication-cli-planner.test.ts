@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  buildGitHubPublicationInputIdentity,
   githubPublicationInputIdentity,
   type PublicationCliExecutor,
   runGitHubPublicationCliPlanning,
@@ -73,8 +74,12 @@ describe("GitHub publication CLI planner", () => {
       forceFullReview: false,
       detailsUrl: "https://postil.dev/orgs/acme/runs/run-17",
     };
-    const identity = githubPublicationInputIdentity(input);
+    const built = buildGitHubPublicationInputIdentity(input);
+    const identity = built.digest;
     expect(identity).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(JSON.parse(Buffer.from(built.bytes).toString("utf8"))).toEqual(built.value);
+    expect(Buffer.from(built.bytes).toString("utf8").startsWith('{"baseline":')).toBe(true);
+    expect(buildGitHubPublicationInputIdentity(structuredClone(input))).toEqual(built);
     expect(githubPublicationInputIdentity(structuredClone(input))).toBe(identity);
     for (const changed of [
       { ...input, databaseRepositoryId: "13" },
@@ -103,12 +108,16 @@ describe("GitHub publication CLI planner", () => {
       { ...input, forceFullReview: true },
       { ...input, detailsUrl: "https://postil.dev/orgs/acme/runs/run-18" },
     ]) expect(githubPublicationInputIdentity(changed)).not.toBe(identity);
-    expect(githubPublicationInputIdentity({
+    const withoutOptionalFields = buildGitHubPublicationInputIdentity({
       ...input,
       baselineReviewId: undefined,
       baselineHeadSha: undefined,
       baselineEnvelopeSha256: undefined,
-    })).not.toBe(identity);
+      detailsUrl: undefined,
+    });
+    expect(withoutOptionalFields.digest).not.toBe(identity);
+    expect(withoutOptionalFields.value.baseline).toBeNull();
+    expect(withoutOptionalFields.value.detailsUrl).toBeNull();
 
     expect(() => githubPublicationInputIdentity({
       ...input,
@@ -130,6 +139,52 @@ describe("GitHub publication CLI planner", () => {
       ...input,
       detailsUrl: "https://user:password@example.test/review",
     })).toThrow("details URL is invalid");
+  });
+
+  test("keeps the maximum accepted input below its canonical artifact ceiling", () => {
+    const detailsPrefix = "https://example.test/";
+    const input = {
+      databaseRepositoryId: "9223372036854775807",
+      githubRepositoryId: "9223372036854775807",
+      repositoryFullName: `${"a".repeat(100)}/${"b".repeat(100)}`,
+      pullRequestNumber: "2147483647",
+      controllerGeneration: "9223372036854775807",
+      reviewId: "9223372036854775807",
+      headSha: "a".repeat(64),
+      mergeBaseSha: "b".repeat(64),
+      targetSha: "c".repeat(64),
+      targetBranch: "t".repeat(255),
+      pullRequestTitle: "T".repeat(512),
+      pullRequestBody: "B".repeat(65_536),
+      expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000Z",
+      cliVersion: "v".repeat(100),
+      cliCommitSha: "d".repeat(64),
+      cliArtifactSha256: digest("maximum CLI artifact"),
+      configurationSha256: digest("maximum configuration"),
+      providerIdentity: "p".repeat(2_048),
+      retryLineage: "r".repeat(200),
+      baselineReviewId: "9223372036854775807",
+      baselineHeadSha: "e".repeat(64),
+      baselineEnvelopeSha256: digest("maximum baseline"),
+      bounded: true,
+      forceFullReview: true,
+      detailsUrl: `${detailsPrefix}${"d".repeat(2_048 - detailsPrefix.length)}`,
+    };
+    const built = buildGitHubPublicationInputIdentity(input);
+    expect(built.bytes.byteLength).toBeLessThan(16 * 1024);
+    expect(built.value.pullRequestTitleSha256).toBe(digest(input.pullRequestTitle));
+    expect(built.value.pullRequestBodySha256).toBe(digest(input.pullRequestBody));
+    expect("pullRequestTitle" in built.value).toBe(false);
+    expect("pullRequestBody" in built.value).toBe(false);
+
+    expect(() => buildGitHubPublicationInputIdentity({
+      ...input,
+      providerIdentity: "p".repeat(2_049),
+    })).toThrow("provider identity is invalid");
+    expect(() => buildGitHubPublicationInputIdentity({
+      ...input,
+      pullRequestBody: "B".repeat(65_537),
+    })).toThrow("pull request snapshot text is invalid");
   });
 
   test("runs a bounded pure planner and retains exact plan and envelope bytes", async () => {

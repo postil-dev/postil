@@ -7,6 +7,10 @@ import type {
   GitHubPublicationControllerManifest,
 } from "@/lib/github-publication-controller-manifest";
 import {
+  buildGitHubPublicationInputIdentity,
+  type BuiltGitHubPublicationInputIdentity,
+} from "@/lib/github-publication-cli-planner";
+import {
   type AcceptedGitHubPublicationPlan,
   parseGitHubPublicationPlanBytes,
 } from "@/lib/github-publication-plan";
@@ -17,6 +21,8 @@ const DECIMAL_IDENTIFIER = /^[1-9][0-9]{0,18}$/;
 const MAX_OPERATION_BYTES = 4 * 1024 * 1024;
 const MAX_DEPENDENCY_EDGES = 1_024;
 const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
+// PR title and body content is represented by digests in this bounded artifact.
+const MAX_INPUT_ARTIFACT_BYTES = 16 * 1024;
 
 type TransactionClient = Pick<PoolClient, "query">;
 export interface PublicationControllerGenerationSnapshot {
@@ -34,6 +40,7 @@ export interface PublicationControllerGenerationSnapshot {
 }
 
 export interface StageGitHubPublicationControllerGenerationInput {
+  acceptedInput: BuiltGitHubPublicationInputIdentity;
   acceptedPlan: AcceptedGitHubPublicationPlan;
   controllerManifest: BuiltGitHubPublicationControllerManifest;
   snapshot: PublicationControllerGenerationSnapshot;
@@ -62,6 +69,7 @@ export class GitHubPublicationControllerStoreRejectedError extends Error {
 }
 
 interface ValidatedStage {
+  acceptedInput: BuiltGitHubPublicationInputIdentity;
   acceptedPlan: AcceptedGitHubPublicationPlan;
   manifest: BuiltGitHubPublicationControllerManifest;
   repositoryId: string;
@@ -110,6 +118,7 @@ interface ExistingGenerationRow {
   plan_semantic_digest: string;
   review_input_sequence: string;
   expected_pull_request_updated_at: Date;
+  accepted_input_bytes: Buffer;
   accepted_input_digest: string;
   envelope_digest: string;
   head_sha: string;
@@ -169,7 +178,8 @@ export async function stageGitHubPublicationControllerGeneration(
     const existing = await client.query<ExistingGenerationRow>(
       `SELECT id, repository_id, pr_number, publication_generation, review_id,
               accepted_plan_digest, accepted_plan_bytes, plan_semantic_digest, review_input_sequence,
-              expected_pull_request_updated_at, accepted_input_digest, envelope_digest,
+              expected_pull_request_updated_at, accepted_input_bytes, accepted_input_digest,
+              envelope_digest,
               head_sha, base_sha, target_sha, target_branch, operation_count,
               operation_manifest_digest, controller_operation_count,
               controller_operation_manifest_digest, controller_manifest_digest,
@@ -202,15 +212,16 @@ export async function stageGitHubPublicationControllerGeneration(
       `INSERT INTO review_publication_generations
          (repository_id, pr_number, publication_generation, review_id, plan_version,
           accepted_plan, accepted_plan_bytes, accepted_plan_digest, plan_semantic_digest,
-          review_input_sequence, expected_pull_request_updated_at, accepted_input_digest,
-          envelope_digest, repository_full_name, head_sha, base_sha, target_sha,
+          review_input_sequence, expected_pull_request_updated_at, accepted_input,
+          accepted_input_bytes, accepted_input_digest, envelope_digest, repository_full_name,
+          head_sha, base_sha, target_sha,
           target_branch, pull_request_title, pull_request_body, operation_count,
           operation_manifest_digest, controller_operation_count,
           controller_operation_manifest_digest, controller_manifest,
           controller_manifest_bytes, controller_manifest_digest)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13,
-               $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25::jsonb,
-               $26, $27)`,
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb,
+               $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
+               $26, $27::jsonb, $28, $29)`,
       [
         staged.repositoryId,
         staged.prNumber,
@@ -223,6 +234,8 @@ export async function stageGitHubPublicationControllerGeneration(
         staged.planSemanticDigest,
         staged.reviewInputSequence,
         staged.expectedPullRequestUpdatedAt,
+        JSON.stringify(staged.acceptedInput.value),
+        Buffer.from(staged.acceptedInput.bytes),
         staged.acceptedInputDigest,
         staged.envelopeDigest,
         staged.acceptedPlan.value.repository.fullName,
@@ -315,7 +328,8 @@ export async function stageGitHubPublicationControllerGeneration(
     const sealed = await client.query<ExistingGenerationRow>(
       `SELECT id, repository_id, pr_number, publication_generation, review_id,
               accepted_plan_digest, accepted_plan_bytes, plan_semantic_digest, review_input_sequence,
-              expected_pull_request_updated_at, accepted_input_digest, envelope_digest,
+              expected_pull_request_updated_at, accepted_input_bytes, accepted_input_digest,
+              envelope_digest,
               head_sha, base_sha, target_sha, target_branch, operation_count,
               operation_manifest_digest, controller_operation_count,
               controller_operation_manifest_digest, controller_manifest_digest,
@@ -346,9 +360,17 @@ export async function stageGitHubPublicationControllerGeneration(
 }
 
 function validateStageInput(input: StageGitHubPublicationControllerGenerationInput): ValidatedStage {
+  const acceptedInput = input.acceptedInput;
   const plan = input.acceptedPlan;
   const manifest = input.controllerManifest;
-  if (!plan || !manifest || !(plan.bytes instanceof Uint8Array) || !(manifest.bytes instanceof Uint8Array)) {
+  if (
+    !acceptedInput ||
+    !plan ||
+    !manifest ||
+    !(acceptedInput.bytes instanceof Uint8Array) ||
+    !(plan.bytes instanceof Uint8Array) ||
+    !(manifest.bytes instanceof Uint8Array)
+  ) {
     reject("accepted artifacts are required");
   }
   const value = plan.value;
@@ -388,6 +410,9 @@ function validateStageInput(input: StageGitHubPublicationControllerGenerationInp
   const publicationGeneration = decimal(value.controllerGeneration, "publication generation");
   const reviewId = decimal(input.snapshot.reviewId, "review identity");
   const reviewInputSequence = decimal(input.snapshot.reviewInputSequence, "review input sequence");
+  if (reviewInputSequence !== publicationGeneration) {
+    reject("publication generation differs from the review input sequence");
+  }
   const envelopeDigest = rawDigest(input.snapshot.envelopeDigest, "envelope digest");
   const expectedPullRequestUpdatedAt = timestamp(input.snapshot.expectedPullRequestUpdatedAt);
   const targetBranch = boundedText(input.snapshot.targetBranch, 255, true, "target branch");
@@ -399,6 +424,21 @@ function validateStageInput(input: StageGitHubPublicationControllerGenerationInp
   ) {
     reject("pull request snapshot text differs from the accepted plan");
   }
+  const validatedInput = validateAcceptedInputArtifact(acceptedInput, {
+    repositoryId,
+    githubRepositoryId,
+    repositoryFullName: value.repository.fullName,
+    prNumber: String(prNumber),
+    publicationGeneration,
+    reviewId,
+    headSha: value.reviewedSnapshot.headSha,
+    mergeBaseSha: value.reviewedSnapshot.mergeBaseSha,
+    targetSha: value.reviewedSnapshot.targetSha,
+    targetBranch,
+    pullRequestTitle,
+    pullRequestBody,
+    expectedPullRequestUpdatedAt,
+  });
   let strictlyParsedPlan: AcceptedGitHubPublicationPlan["value"];
   try {
     strictlyParsedPlan = parseGitHubPublicationPlanBytes(plan.bytes, {
@@ -420,13 +460,20 @@ function validateStageInput(input: StageGitHubPublicationControllerGenerationInp
   if (canonicalJson(strictlyParsedPlan) !== canonicalJson(value)) {
     reject("accepted plan value differs from its strict wire artifact");
   }
-  const acceptedInputDigest = rawDigest(value.inputIdentity.slice("sha256:".length), "accepted input digest");
+  if (value.inputIdentity !== validatedInput.digest) {
+    reject("accepted plan input identity differs from the accepted input artifact");
+  }
+  const acceptedInputDigest = rawDigest(
+    validatedInput.digest.slice("sha256:".length),
+    "accepted input digest",
+  );
   const planSemanticDigest = rawDigest(value.intentDigest.slice("sha256:".length), "plan semantic digest");
   const controllerManifestDigest = manifest.digest;
 
   validateManifestIdentity(value, manifestValue, plan.digest, manifest);
   const operations = stageOperations(value, manifestValue, manifest.operationBytes);
   return {
+    acceptedInput: validatedInput,
     acceptedPlan: plan,
     manifest,
     repositoryId,
@@ -446,6 +493,93 @@ function validateStageInput(input: StageGitHubPublicationControllerGenerationInp
     controllerManifestDigest,
     operations,
   };
+}
+
+function validateAcceptedInputArtifact(
+  acceptedInput: BuiltGitHubPublicationInputIdentity,
+  snapshot: {
+    repositoryId: string;
+    githubRepositoryId: string;
+    repositoryFullName: string;
+    prNumber: string;
+    publicationGeneration: string;
+    reviewId: string;
+    headSha: string;
+    mergeBaseSha: string;
+    targetSha: string;
+    targetBranch: string;
+    pullRequestTitle: string;
+    pullRequestBody: string;
+    expectedPullRequestUpdatedAt: string;
+  },
+): BuiltGitHubPublicationInputIdentity {
+  if (!PREFIXED_SHA256.test(acceptedInput.digest)) {
+    reject("accepted input artifact digest is malformed");
+  }
+  if (
+    acceptedInput.bytes.byteLength < 2 ||
+    acceptedInput.bytes.byteLength > MAX_INPUT_ARTIFACT_BYTES
+  ) {
+    reject("accepted input artifact exceeds the byte limit");
+  }
+  if (
+    digestPrefixed(acceptedInput.bytes) !== acceptedInput.digest ||
+    !bytesParseAs(acceptedInput.bytes, acceptedInput.value) ||
+    !Buffer.from(acceptedInput.bytes).equals(
+      Buffer.from(canonicalJson(acceptedInput.value), "utf8"),
+    )
+  ) {
+    reject("accepted input artifact bytes, value, and digest differ");
+  }
+
+  const value = object(acceptedInput.value, "accepted input artifact");
+  const baseline = value.baseline === null
+    ? null
+    : object(value.baseline, "accepted input baseline");
+  let rebuilt: BuiltGitHubPublicationInputIdentity;
+  try {
+    rebuilt = buildGitHubPublicationInputIdentity({
+      databaseRepositoryId: snapshot.repositoryId,
+      githubRepositoryId: snapshot.githubRepositoryId,
+      repositoryFullName: snapshot.repositoryFullName,
+      pullRequestNumber: snapshot.prNumber,
+      controllerGeneration: snapshot.publicationGeneration,
+      reviewId: snapshot.reviewId,
+      headSha: snapshot.headSha,
+      mergeBaseSha: snapshot.mergeBaseSha,
+      targetSha: snapshot.targetSha,
+      targetBranch: snapshot.targetBranch,
+      pullRequestTitle: snapshot.pullRequestTitle,
+      pullRequestBody: snapshot.pullRequestBody,
+      expectedPullRequestUpdatedAt: snapshot.expectedPullRequestUpdatedAt,
+      cliVersion: value.cliVersion as string,
+      cliCommitSha: value.cliCommitSha as string,
+      cliArtifactSha256: value.cliArtifactSha256 as string,
+      configurationSha256: value.configurationSha256 as string,
+      providerIdentity: value.providerIdentity as string,
+      retryLineage: value.retryLineage as string,
+      ...(baseline === null
+        ? {}
+        : {
+            baselineReviewId: baseline.reviewId as string,
+            baselineHeadSha: baseline.headSha as string,
+            baselineEnvelopeSha256: baseline.envelopeSha256 as string,
+          }),
+      bounded: value.bounded as boolean,
+      forceFullReview: value.forceFullReview as boolean,
+      ...(value.detailsUrl === null ? {} : { detailsUrl: value.detailsUrl as string }),
+    });
+  } catch {
+    reject("accepted input artifact does not satisfy the input identity contract");
+  }
+  if (
+    canonicalJson(rebuilt.value) !== canonicalJson(acceptedInput.value) ||
+    rebuilt.digest !== acceptedInput.digest ||
+    !Buffer.from(rebuilt.bytes).equals(Buffer.from(acceptedInput.bytes))
+  ) {
+    reject("accepted input artifact differs from the publication snapshot");
+  }
+  return rebuilt;
 }
 
 function validateManifestIdentity(
@@ -618,6 +752,7 @@ function isExactSealedReplay(row: ExistingGenerationRow, staged: ValidatedStage)
     && row.plan_semantic_digest === staged.planSemanticDigest
     && row.review_input_sequence === staged.reviewInputSequence
     && row.expected_pull_request_updated_at.getTime() === new Date(staged.expectedPullRequestUpdatedAt).getTime()
+    && row.accepted_input_bytes.equals(Buffer.from(staged.acceptedInput.bytes))
     && row.accepted_input_digest === staged.acceptedInputDigest
     && row.envelope_digest === staged.envelopeDigest
     && row.head_sha === staged.acceptedPlan.value.reviewedSnapshot.headSha

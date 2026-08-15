@@ -94,14 +94,51 @@ export interface GitHubPublicationInputIdentity {
   detailsUrl?: string;
 }
 
+export interface GitHubPublicationInputIdentityValue {
+  version: "github-publication-input-v1";
+  databaseRepositoryId: string;
+  githubRepositoryId: string;
+  repositoryFullName: string;
+  pullRequestNumber: string;
+  controllerGeneration: string;
+  reviewId: string;
+  headSha: string;
+  mergeBaseSha: string;
+  targetSha: string;
+  targetBranch: string;
+  pullRequestTitleSha256: string;
+  pullRequestBodySha256: string;
+  expectedPullRequestUpdatedAt: string;
+  cliVersion: string;
+  cliCommitSha: string;
+  cliArtifactSha256: string;
+  configurationSha256: string;
+  providerIdentity: string;
+  retryLineage: string;
+  baseline: {
+    reviewId: string;
+    headSha: string;
+    envelopeSha256: string;
+  } | null;
+  bounded: boolean;
+  forceFullReview: boolean;
+  detailsUrl: string | null;
+}
+
+export interface BuiltGitHubPublicationInputIdentity {
+  value: GitHubPublicationInputIdentityValue;
+  bytes: Uint8Array;
+  digest: string;
+}
+
 interface GitHubPublicationCliPlanningDependencies {
   parsePlanBytes?: typeof parseGitHubPublicationPlanBytes;
 }
 
-/** Bind every service-owned input that can change one publication plan. */
-export function githubPublicationInputIdentity(
+/** Build the exact canonical artifact for every input that can change a plan. */
+export function buildGitHubPublicationInputIdentity(
   input: GitHubPublicationInputIdentity,
-): string {
+): BuiltGitHubPublicationInputIdentity {
   for (const [name, value] of [
     ["database repository", input.databaseRepositoryId],
     ["GitHub repository", input.githubRepositoryId],
@@ -138,6 +175,9 @@ export function githubPublicationInputIdentity(
   }
   if (input.baselineReviewId !== undefined) {
     assertDecimal(input.baselineReviewId, "baseline review");
+  }
+  if (typeof input.bounded !== "boolean" || typeof input.forceFullReview !== "boolean") {
+    reject("review mode is invalid");
   }
   if (
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
@@ -186,7 +226,7 @@ export function githubPublicationInputIdentity(
       url.password !== ""
     ) reject("details URL is invalid");
   }
-  const canonical = {
+  const value: GitHubPublicationInputIdentityValue = {
     version: "github-publication-input-v1",
     databaseRepositoryId: input.databaseRepositoryId,
     githubRepositoryId: input.githubRepositoryId,
@@ -218,7 +258,19 @@ export function githubPublicationInputIdentity(
     forceFullReview: input.forceFullReview,
     detailsUrl: input.detailsUrl ?? null,
   };
-  return textDigest(JSON.stringify(canonical));
+  const bytes = Buffer.from(canonicalJson(value), "utf8");
+  return {
+    value,
+    bytes,
+    digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  };
+}
+
+/** Bind every service-owned input that can change one publication plan. */
+export function githubPublicationInputIdentity(
+  input: GitHubPublicationInputIdentity,
+): string {
+  return buildGitHubPublicationInputIdentity(input).digest;
 }
 
 /**
@@ -469,6 +521,24 @@ function findingContentDigest(finding: Finding): string {
 
 function textDigest(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function canonicalJson(value: unknown): string {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    typeof value === "string"
+  ) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value !== "object") reject("input identity contains an invalid JSON value");
+  const objectValue = value as Record<string, unknown>;
+  return `{${Object.keys(objectValue)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(objectValue[key])}`)
+    .join(",")}}`;
 }
 
 function assertDecimal(value: string, label: string): void {
