@@ -15,7 +15,7 @@ type JsonPrimitive = boolean | null | number | string;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
 
-export interface AuthoritativeGateOutput {
+export interface AuthoritativeGateOutput extends JsonObject {
   conclusion: "success" | "failure" | "neutral";
   title: string;
   summary: string;
@@ -76,10 +76,16 @@ export interface GateCheckCompleteOperation extends JsonObject {
     name: "postil/gate";
     headSha: string;
     status: "completed";
-    conclusion: "success" | "failure" | "neutral";
-    title: string;
-    summary: string;
-    detailsUrl: string;
+    selection: {
+      kind: "required-terminal-dependency-state-v1";
+      requiredOperationKeys: string[];
+      dependencyFailureStates: ["failed", "superseded"];
+      policyFailurePrecedence: true;
+    };
+    outputs: {
+      policy: AuthoritativeGateOutput;
+      publicationFailure: AuthoritativeGateOutput & { conclusion: "failure" };
+    };
   };
 }
 
@@ -146,6 +152,10 @@ export function buildGitHubPublicationControllerManifest(
     request.requiredTerminalOperationKeys,
     plan.operations,
   );
+  const gateCompletionPolicy = buildGateCompletionPolicy(
+    requiredTerminalOperationKeys,
+    gateOutput,
+  );
 
   const gateOutputDigest = digestCanonical({
     conclusion: gateOutput.conclusion,
@@ -153,8 +163,13 @@ export function buildGitHubPublicationControllerManifest(
     summary: gateOutput.summary,
     detailsUrl: gateOutput.detailsUrl,
   });
+  const gateCompletionPolicyDigest = digestCanonical(gateCompletionPolicy);
   const gateCreateKey = serviceGateOperationKey(plan, "gate-create", gateOutputDigest);
-  const gateCompleteKey = serviceGateOperationKey(plan, "gate-complete", gateOutputDigest);
+  const gateCompleteKey = serviceGateOperationKey(
+    plan,
+    "gate-complete",
+    gateCompletionPolicyDigest,
+  );
   const gateExternalId = serviceGateExternalId(plan, gateOutputDigest);
 
   if (new Set(plan.operations.map((operation) => operation.operationKey)).has(gateCreateKey)) {
@@ -182,7 +197,7 @@ export function buildGitHubPublicationControllerManifest(
     externalId: gateExternalId,
     headSha: plan.headSha,
     requiredTerminalOperationKeys,
-    gateOutput,
+    gateCompletionPolicy,
   });
   const operations: GitHubPublicationControllerOperationRecord[] = [
     ...cliOperations.map((operation) => ({ source: "cli" as const, operation })),
@@ -442,7 +457,7 @@ function buildGateCompleteOperation(input: {
   externalId: string;
   headSha: string;
   requiredTerminalOperationKeys: string[];
-  gateOutput: AuthoritativeGateOutput;
+  gateCompletionPolicy: GateCompletionPolicy;
 }): GateCheckCompleteOperation {
   const remoteId = { source: "operation" as const, operationKey: input.createOperationKey };
   const operation = {
@@ -464,14 +479,48 @@ function buildGateCompleteOperation(input: {
       name: "postil/gate" as const,
       headSha: input.headSha,
       status: "completed" as const,
-      conclusion: input.gateOutput.conclusion,
-      title: input.gateOutput.title,
-      summary: input.gateOutput.summary,
-      detailsUrl: input.gateOutput.detailsUrl,
+      selection: input.gateCompletionPolicy.selection,
+      outputs: input.gateCompletionPolicy.outputs,
     },
   };
   operation.desiredDigest = digestJson(operationDesired(operation));
   return operation;
+}
+
+interface GateCompletionPolicy extends JsonObject {
+  selection: {
+    kind: "required-terminal-dependency-state-v1";
+    requiredOperationKeys: string[];
+    dependencyFailureStates: ["failed", "superseded"];
+    policyFailurePrecedence: true;
+  };
+  outputs: {
+    policy: AuthoritativeGateOutput;
+    publicationFailure: AuthoritativeGateOutput & { conclusion: "failure" };
+  };
+}
+
+function buildGateCompletionPolicy(
+  requiredOperationKeys: string[],
+  policy: AuthoritativeGateOutput,
+): GateCompletionPolicy {
+  return {
+    selection: {
+      kind: "required-terminal-dependency-state-v1",
+      requiredOperationKeys: [...requiredOperationKeys],
+      dependencyFailureStates: ["failed", "superseded"],
+      policyFailurePrecedence: true,
+    },
+    outputs: {
+      policy,
+      publicationFailure: {
+        conclusion: "failure",
+        title: "Review publication incomplete",
+        summary: "Postil could not publish all required review results. The merge check remains blocked.",
+        detailsUrl: policy.detailsUrl,
+      },
+    },
+  };
 }
 
 function validateControllerOperationGraph(

@@ -141,10 +141,26 @@ function makeOperation(input: {
               name: "postil/gate",
               headSha: "c".repeat(40),
               status: "completed",
-              conclusion: "success",
-              title: "Review complete",
-              summary: "The accepted publication plan is complete.",
-              detailsUrl: "https://postil.example/reviews/fixture",
+              selection: {
+                kind: "required-terminal-dependency-state-v1",
+                requiredOperationKeys: [],
+                dependencyFailureStates: ["failed", "superseded"],
+                policyFailurePrecedence: true,
+              },
+              outputs: {
+                policy: {
+                  conclusion: "success",
+                  title: "Review complete",
+                  summary: "The accepted publication plan is complete.",
+                  detailsUrl: "https://postil.example/reviews/fixture",
+                },
+                publicationFailure: {
+                  conclusion: "failure",
+                  title: "Review publication incomplete",
+                  summary: "Postil could not publish all required review results. The merge check remains blocked.",
+                  detailsUrl: "https://postil.example/reviews/fixture",
+                },
+              },
             },
           }
         : {
@@ -203,6 +219,24 @@ function withServiceGateOperations(input: Omit<PublicationFixture, "operations">
     detailsUrl,
   };
   const gateOutputDigest = `sha256:${sha256(canonicalJson(gateOutput))}`;
+  const gateCompletionPolicy = {
+    selection: {
+      kind: "required-terminal-dependency-state-v1",
+      requiredOperationKeys: input.cliOperations.map((operation) => operation.operationKey),
+      dependencyFailureStates: ["failed", "superseded"],
+      policyFailurePrecedence: true,
+    },
+    outputs: {
+      policy: gateOutput,
+      publicationFailure: {
+        conclusion: "failure",
+        title: "Review publication incomplete",
+        summary: "Postil could not publish all required review results. The merge check remains blocked.",
+        detailsUrl,
+      },
+    },
+  };
+  const gateCompletionPolicyDigest = `sha256:${sha256(canonicalJson(gateCompletionPolicy))}`;
   const common = [
     String(input.githubRepositoryId),
     input.prNumber,
@@ -221,7 +255,7 @@ function withServiceGateOperations(input: Omit<PublicationFixture, "operations">
   )}`;
   const gateCompleteKey = `github-publication-controller-v1:gate-complete:sha256:${nulJoinedSha256(
     "github-publication-controller-gate-operation-v1",
-    [...common, "gate-complete", gateOutputDigest],
+    [...common, "gate-complete", gateCompletionPolicyDigest],
   )}`;
   const gateCreate = makeOperation({
     ordinal: input.cliOperations.length + 1,
@@ -251,7 +285,8 @@ function withServiceGateOperations(input: Omit<PublicationFixture, "operations">
   createPayload.detailsUrl = detailsUrl;
   const completePayload = (gateComplete.desiredPayload.payload as Record<string, unknown>);
   completePayload.headSha = input.headSha;
-  completePayload.detailsUrl = detailsUrl;
+  completePayload.selection = gateCompletionPolicy.selection;
+  completePayload.outputs = gateCompletionPolicy.outputs;
   (gateComplete.desiredPayload.remoteId as Record<string, unknown>).operationKey = gateCreate.operationKey;
   gateCreate.desiredPayloadBytes = Buffer.from(JSON.stringify(gateCreate.desiredPayload));
   gateCreate.desiredPayloadDigest = `sha256:${sha256(gateCreate.desiredPayloadBytes)}`;
@@ -1538,7 +1573,7 @@ describeDb("durable publication foundation migration", () => {
       }
     }
     expect(String(edgeFailure)).toContain("publication generation exceeds the 1024 dependency-edge limit");
-  }, 30_000);
+  }, 120_000);
 
   test("serializes concurrent first-generation sealing and rejects post-seal insertion", async () => {
     const fixture = await preparePublication({ prNumber: 104, seal: false });

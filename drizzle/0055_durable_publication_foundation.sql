@@ -1647,12 +1647,18 @@ BEGIN
        AND gate_complete.kind = 'gateCheckComplete'
       CROSS JOIN LATERAL (
         SELECT 'sha256:' || encode(sha256(convert_to(postil_canonical_json(jsonb_build_object(
-          'conclusion', gate_complete.desired_payload->'payload'->'conclusion',
-          'title', gate_complete.desired_payload->'payload'->'title',
-          'summary', gate_complete.desired_payload->'payload'->'summary',
-          'detailsUrl', gate_complete.desired_payload->'payload'->'detailsUrl'
+          'conclusion', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'conclusion',
+          'title', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'title',
+          'summary', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'summary',
+          'detailsUrl', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'detailsUrl'
         )), 'UTF8')), 'hex') AS gate_output_digest
       ) gate_output
+      CROSS JOIN LATERAL (
+        SELECT 'sha256:' || encode(sha256(convert_to(postil_canonical_json(jsonb_build_object(
+          'selection', gate_complete.desired_payload->'payload'->'selection',
+          'outputs', gate_complete.desired_payload->'payload'->'outputs'
+        )), 'UTF8')), 'hex') AS completion_policy_digest
+      ) completion_policy
       CROSS JOIN LATERAL (
         SELECT 'postil-gate-v1:' || postil_nul_join_sha256(
           'github-publication-controller-gate-external-id-v1',
@@ -1682,7 +1688,7 @@ BEGIN
           generation_row.publication_generation::text,
           generation_row.accepted_plan->>'inputIdentity',
           generation_row.accepted_plan->>'reviewOutputDigest',
-          'gate-complete', gate_output.gate_output_digest
+          'gate-complete', completion_policy.completion_policy_digest
         ) AS complete_key
       ) expected
       WHERE gate_create.repository_id = NEW.repository_id
@@ -1702,7 +1708,7 @@ BEGIN
           'payload', jsonb_build_object(
             'name', 'postil/gate', 'headSha', generation_row.head_sha,
             'status', 'in_progress', 'externalId', expected.external_id,
-            'detailsUrl', gate_complete.desired_payload->'payload'->'detailsUrl'
+            'detailsUrl', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'detailsUrl'
           )
         )
         AND gate_complete.operation_ordinal = generation_row.operation_count + 2
@@ -1721,10 +1727,27 @@ BEGIN
           'payload', jsonb_build_object(
             'name', 'postil/gate', 'headSha', generation_row.head_sha,
             'status', 'completed',
-            'conclusion', gate_complete.desired_payload->'payload'->'conclusion',
-            'title', gate_complete.desired_payload->'payload'->'title',
-            'summary', gate_complete.desired_payload->'payload'->'summary',
-            'detailsUrl', gate_complete.desired_payload->'payload'->'detailsUrl'
+            'selection', jsonb_build_object(
+              'kind', 'required-terminal-dependency-state-v1',
+              'requiredOperationKeys',
+                (gate_complete.operation_record->'dependencies') - 0,
+              'dependencyFailureStates', '["failed","superseded"]'::jsonb,
+              'policyFailurePrecedence', true
+            ),
+            'outputs', jsonb_build_object(
+              'policy', jsonb_build_object(
+                'conclusion', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'conclusion',
+                'title', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'title',
+                'summary', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'summary',
+                'detailsUrl', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'detailsUrl'
+              ),
+              'publicationFailure', jsonb_build_object(
+                'conclusion', 'failure',
+                'title', 'Review publication incomplete',
+                'summary', 'Postil could not publish all required review results. The merge check remains blocked.',
+                'detailsUrl', gate_complete.desired_payload->'payload'->'outputs'->'policy'->'detailsUrl'
+              )
+            )
           )
         )
     ) INTO gate_contract_valid;
