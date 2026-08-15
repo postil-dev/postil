@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  githubPublicationInputIdentity,
   type PublicationCliExecutor,
   runGitHubPublicationCliPlanning,
 } from "@/lib/github-publication-cli-planner";
@@ -17,7 +18,24 @@ const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
 const TARGET = "c".repeat(40);
 const INPUT_IDENTITY = digest("input");
-const REVIEW_OUTPUT_DIGEST = digest("output");
+const REVIEW_OUTPUT_DIGEST = digest(JSON.stringify({
+  controllerGeneration: "17",
+  inputIdentity: INPUT_IDENTITY,
+  repositoryId: "42",
+  pullRequestNumber: "7",
+  headSha: HEAD,
+  mergeBaseSha: BASE,
+  targetSha: TARGET,
+  pullRequestTitleSha256: digest("Title"),
+  pullRequestBodySha256: digest("Body"),
+  shouldComment: false,
+  duplicateOfBaseline: false,
+  annotateFindings: false,
+  advisory: "success",
+  gate: "success",
+  detailsUrl: null,
+  findings: [],
+}));
 const directories: string[] = [];
 
 afterEach(async () => {
@@ -27,6 +45,67 @@ afterEach(async () => {
 });
 
 describe("GitHub publication CLI planner", () => {
+  test("binds every service-owned publication input into one stable identity", () => {
+    const input = {
+      databaseRepositoryId: "12",
+      githubRepositoryId: "420042",
+      repositoryFullName: "acme/api",
+      pullRequestNumber: "7",
+      controllerGeneration: "17",
+      reviewId: "99",
+      headSha: HEAD,
+      mergeBaseSha: BASE,
+      targetSha: TARGET,
+      pullRequestTitle: "Title",
+      pullRequestBody: "Body",
+      expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000Z",
+      cliVersion: "0.8.16",
+      configurationSha256: digest("configuration"),
+      providerIdentity: "provider-v1",
+      retryLineage: "review:99:attempt:1",
+      baselineReviewId: "98",
+      baselineHeadSha: "d".repeat(40),
+      baselineEnvelopeSha256: digest("baseline"),
+      bounded: true,
+      forceFullReview: false,
+      detailsUrl: "https://postil.dev/orgs/acme/runs/run-17",
+    };
+    const identity = githubPublicationInputIdentity(input);
+    expect(identity).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(githubPublicationInputIdentity(structuredClone(input))).toBe(identity);
+    for (const changed of [
+      { ...input, githubRepositoryId: "420043" },
+      { ...input, targetSha: "e".repeat(40) },
+      { ...input, pullRequestBody: "Changed body" },
+      { ...input, configurationSha256: digest("changed configuration") },
+      { ...input, providerIdentity: "provider-v2" },
+      { ...input, baselineEnvelopeSha256: digest("changed baseline") },
+      { ...input, bounded: false },
+      { ...input, detailsUrl: "https://postil.dev/orgs/acme/runs/run-18" },
+    ]) expect(githubPublicationInputIdentity(changed)).not.toBe(identity);
+
+    expect(() => githubPublicationInputIdentity({
+      ...input,
+      baselineEnvelopeSha256: undefined,
+    })).toThrow("baseline envelope identity is incomplete");
+    expect(() => githubPublicationInputIdentity({
+      ...input,
+      expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000999Z",
+    })).toThrow("update timestamp is invalid");
+    expect(() => githubPublicationInputIdentity({
+      ...input,
+      expectedPullRequestUpdatedAt: "2026-99-14T00:00:00.000Z",
+    })).toThrow("update timestamp is invalid");
+    expect(() => githubPublicationInputIdentity({
+      ...input,
+      detailsUrl: "not a URL",
+    })).toThrow("details URL is invalid");
+    expect(() => githubPublicationInputIdentity({
+      ...input,
+      detailsUrl: "https://user:password@example.test/review",
+    })).toThrow("details URL is invalid");
+  });
+
   test("runs a bounded pure planner and retains exact plan and envelope bytes", async () => {
     const workingDirectory = await temporaryDirectory();
     let observedArguments: string[] = [];
@@ -62,9 +141,19 @@ describe("GitHub publication CLI planner", () => {
     expect(observedArguments).toContain("--publication-plan-output");
     expect(observedArguments).toContain("--publication-input-identity");
     expect(observedArguments).toContain("--bounded");
+    expect(observedArguments[observedArguments.indexOf("--base-sha") + 1]).toBe(TARGET);
     expect(observedArguments).not.toContain("--publish");
     expect(observedArguments).not.toContain("--check-run-id");
     expect(observedArguments).not.toContain("--gate-check-run-id");
+
+    await expect(lstat(join(workingDirectory, ".postil-controller-envelope.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(runGitHubPublicationCliPlanning({
+      execute,
+      environment: { TEST_MODE: "1" },
+      workingDirectory,
+      expected,
+    }, { parsePlanBytes: acceptedPlanParser() })).resolves.toMatchObject({ exitCode: 0 });
   });
 
   test("rejects replacement of the private envelope inode", async () => {
@@ -83,7 +172,7 @@ describe("GitHub publication CLI planner", () => {
       workingDirectory,
       expected,
     }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(
-      "private JSON artifact is invalid",
+      "private envelope artifact identity changed before cleanup",
     );
   });
 
@@ -157,6 +246,8 @@ describe("GitHub publication CLI planner", () => {
         workingDirectory,
         expected,
       }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(message);
+      await expect(lstat(join(workingDirectory, ".postil-controller-envelope.json")))
+        .rejects.toMatchObject({ code: "ENOENT" });
     }
   });
 });
@@ -253,9 +344,31 @@ function acceptedPlanParser() {
       bytes: Uint8Array.from(source),
       digest: createHash("sha256").update(source).digest("hex"),
       value: {
+        controllerGeneration: String(expected.controllerGeneration),
+        inputIdentity: expected.inputIdentity,
+        reviewOutputDigest: expected.reviewOutputDigest,
+        repository: {
+          id: String(expected.repositoryId),
+          fullName: expected.repositoryFullName,
+        },
+        pullRequestNumber: String(expected.pullRequestNumber),
+        reviewedSnapshot: {
+          headSha: expected.headSha,
+          mergeBaseSha: expected.mergeBaseSha,
+          targetSha: expected.targetSha,
+          pullRequestTitleSha256: digest(expected.pullRequestTitle),
+          pullRequestBodySha256: digest(expected.pullRequestBody),
+        },
         gateAnalysis: { analyzedConclusion: "success" },
-        operations: [{ kind: "advisoryCheckComplete", conclusion: "success" }],
-        lifecycleReceipt: { findings: [] },
+        operations: [
+          { kind: "advisoryCheckCreate" },
+          { kind: "advisoryCheckComplete", conclusion: "success" },
+        ],
+        lifecycleReceipt: {
+          channel: "reviewComments",
+          duplicateOfBaseline: false,
+          findings: [],
+        },
       } as unknown as AcceptedGitHubPublicationPlan["value"],
     };
   };

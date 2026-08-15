@@ -736,10 +736,12 @@ export function runCli(
   }
   const bin = optionalEnv("POSTIL_BIN", "postil") as string;
   return new Promise((resolvePromise, reject) => {
+    const ownsProcessGroup = process.platform !== "win32";
     const child = spawn(bin, args, {
       env: { ...process.env, ...env },
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: ownsProcessGroup,
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -756,21 +758,40 @@ export function runCli(
       if (abortKillTimer) clearTimeout(abortKillTimer);
       observers.signal?.removeEventListener("abort", abort);
     };
+    const signalChildTree = (signal: NodeJS.Signals) => {
+      if (ownsProcessGroup && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // The direct child may have exited between observation and signal.
+        }
+      }
+      child.kill(signal);
+    };
+    const hardStopChildTree = () => {
+      signalChildTree("SIGKILL");
+      // ChildProcess close otherwise waits for descendants that inherited a
+      // protocol pipe and escaped termination. Closing our endpoints keeps
+      // every deadline and byte bound locally enforceable.
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
     const abort = () => {
       if (settled || interrupted) return;
       interrupted = true;
-      child.kill("SIGTERM");
-      abortKillTimer = setTimeout(() => child.kill("SIGKILL"), 1_000);
+      signalChildTree("SIGTERM");
+      abortKillTimer = setTimeout(hardStopChildTree, 1_000);
       abortKillTimer.unref?.();
     };
     const rejectOversizedOutput = (stream: "stdout" | "stderr", maximum: number) => {
       if (outputLimitFailure !== undefined) return;
       outputLimitFailure = `postil CLI ${stream} exceeded its ${maximum} byte limit`;
-      child.kill("SIGKILL");
+      hardStopChildTree();
     };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      hardStopChildTree();
     }, REVIEW_DEADLINE_MS);
     if (observers.signal?.aborted) abort();
     else observers.signal?.addEventListener("abort", abort, { once: true });

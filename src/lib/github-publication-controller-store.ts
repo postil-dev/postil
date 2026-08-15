@@ -6,21 +6,27 @@ import type {
   BuiltGitHubPublicationControllerManifest,
   GitHubPublicationControllerManifest,
 } from "@/lib/github-publication-controller-manifest";
-import type { AcceptedGitHubPublicationPlan } from "@/lib/github-publication-plan";
+import {
+  type AcceptedGitHubPublicationPlan,
+  parseGitHubPublicationPlanBytes,
+} from "@/lib/github-publication-plan";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const PREFIXED_SHA256 = /^sha256:[0-9a-f]{64}$/;
 const DECIMAL_IDENTIFIER = /^[1-9][0-9]{0,18}$/;
 const MAX_OPERATION_BYTES = 4 * 1024 * 1024;
 const MAX_DEPENDENCY_EDGES = 1_024;
+const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
 
 type TransactionClient = Pick<PoolClient, "query">;
-type PoolOrClient = Pick<Pool, "connect"> | TransactionClient;
-
 export interface PublicationControllerGenerationSnapshot {
+  /** Internal database repository identity. */
+  repositoryId: bigint | number | string;
+  /** Immutable GitHub repository identity expected from the CLI. */
+  githubRepositoryId: bigint | number | string;
   reviewId: bigint | number | string;
   reviewInputSequence: bigint | number | string;
-  expectedPullRequestUpdatedAt: Date | string;
+  expectedPullRequestUpdatedAt: string;
   envelopeDigest: string;
   targetBranch: string;
   pullRequestTitle: string;
@@ -31,7 +37,7 @@ export interface StageGitHubPublicationControllerGenerationInput {
   acceptedPlan: AcceptedGitHubPublicationPlan;
   controllerManifest: BuiltGitHubPublicationControllerManifest;
   snapshot: PublicationControllerGenerationSnapshot;
-  database: PoolOrClient;
+  database: Pick<Pool, "connect">;
 }
 
 export interface StagedGitHubPublicationControllerGeneration {
@@ -50,8 +56,8 @@ export interface StagedGitHubPublicationControllerGeneration {
 export class GitHubPublicationControllerStoreRejectedError extends Error {
   override name = "GitHubPublicationControllerStoreRejectedError";
 
-  constructor(reason: string) {
-    super(`GitHub publication controller staging rejected: ${reason}`);
+  constructor(reason: string, options?: ErrorOptions) {
+    super(`GitHub publication controller staging rejected: ${reason}`, options);
   }
 }
 
@@ -59,6 +65,7 @@ interface ValidatedStage {
   acceptedPlan: AcceptedGitHubPublicationPlan;
   manifest: BuiltGitHubPublicationControllerManifest;
   repositoryId: string;
+  githubRepositoryId: string;
   prNumber: number;
   publicationGeneration: string;
   reviewId: string;
@@ -118,6 +125,16 @@ interface ExistingGenerationRow {
   sealed_at: Date | null;
 }
 
+interface ReviewRepositoryRow {
+  repository_id: string;
+  github_repo_id: string;
+  full_name: string;
+  pr_number: number;
+  head_sha: string;
+  base_sha: string;
+  status: string;
+}
+
 /**
  * Stages an immutable accepted CLI plan and service controller manifest, then
  * advances high-water as the final write that asks the database to seal it.
@@ -126,9 +143,7 @@ export async function stageGitHubPublicationControllerGeneration(
   input: StageGitHubPublicationControllerGenerationInput,
 ): Promise<StagedGitHubPublicationControllerGeneration> {
   const staged = validateStageInput(input);
-  const pool = input.database as Pick<Pool, "connect">;
-  const ownsClient = typeof pool.connect === "function";
-  const client = ownsClient ? await pool.connect() : input.database as TransactionClient;
+  const client = await input.database.connect();
   let began = false;
   try {
     await client.query("BEGIN");
@@ -137,6 +152,19 @@ export async function stageGitHubPublicationControllerGeneration(
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `${staged.repositoryId}:${staged.prNumber}`,
     ]);
+
+    const reviewRepository = await client.query<ReviewRepositoryRow>(
+      `SELECT review.repository_id, repository.github_repo_id, repository.full_name,
+              review.pr_number, review.head_sha, review.base_sha, review.status
+         FROM reviews review
+         JOIN repositories repository ON repository.id = review.repository_id
+        WHERE review.id = $1
+        FOR SHARE OF review, repository`,
+      [staged.reviewId],
+    );
+    if (!exactReviewRepositoryMatches(reviewRepository.rows[0], staged)) {
+      reject("the review and repository no longer match the accepted plan");
+    }
 
     const existing = await client.query<ExistingGenerationRow>(
       `SELECT id, repository_id, pr_number, publication_generation, review_id,
@@ -308,9 +336,12 @@ export async function stageGitHubPublicationControllerGeneration(
   } catch (error) {
     if (began) await client.query("ROLLBACK").catch(() => undefined);
     if (error instanceof GitHubPublicationControllerStoreRejectedError) throw error;
-    throw new GitHubPublicationControllerStoreRejectedError("the database transaction could not stage the generation");
+    throw new GitHubPublicationControllerStoreRejectedError(
+      "the database transaction could not stage the generation",
+      { cause: error },
+    );
   } finally {
-    if (ownsClient) (client as PoolClient).release();
+    (client as PoolClient).release();
   }
 }
 
@@ -328,10 +359,31 @@ function validateStageInput(input: StageGitHubPublicationControllerGenerationInp
   if (digestHex(plan.bytes) !== plan.digest || digestPrefixed(manifest.bytes) !== manifest.digest) {
     reject("accepted artifact bytes do not match their digests");
   }
+  if (
+    plan.bytes.byteLength < 3 ||
+    plan.bytes.byteLength > MAX_ARTIFACT_BYTES ||
+    manifest.bytes.byteLength < 2 ||
+    manifest.bytes.byteLength > MAX_ARTIFACT_BYTES
+  ) {
+    reject("accepted artifact exceeds the byte limit");
+  }
   if (!bytesParseAs(plan.bytes, value) || !bytesParseAs(manifest.bytes, manifestValue)) {
     reject("accepted artifact bytes do not match their values");
   }
-  const repositoryId = decimal(value.repository.id, "repository identity");
+  if (
+    !Buffer.from(plan.bytes).equals(Buffer.from(`${JSON.stringify(value)}\n`, "utf8")) ||
+    !Buffer.from(manifest.bytes).equals(Buffer.from(canonicalJson(manifestValue), "utf8"))
+  ) {
+    reject("accepted artifact bytes are not canonical");
+  }
+  const repositoryId = decimal(input.snapshot.repositoryId, "database repository identity");
+  const githubRepositoryId = decimal(
+    input.snapshot.githubRepositoryId,
+    "GitHub repository identity",
+  );
+  if (value.repository.id !== githubRepositoryId) {
+    reject("accepted plan names a different GitHub repository");
+  }
   const prNumber = positiveInteger(value.pullRequestNumber, "pull request identity");
   const publicationGeneration = decimal(value.controllerGeneration, "publication generation");
   const reviewId = decimal(input.snapshot.reviewId, "review identity");
@@ -347,6 +399,27 @@ function validateStageInput(input: StageGitHubPublicationControllerGenerationInp
   ) {
     reject("pull request snapshot text differs from the accepted plan");
   }
+  let strictlyParsedPlan: AcceptedGitHubPublicationPlan["value"];
+  try {
+    strictlyParsedPlan = parseGitHubPublicationPlanBytes(plan.bytes, {
+      controllerGeneration: value.controllerGeneration,
+      inputIdentity: value.inputIdentity,
+      reviewOutputDigest: value.reviewOutputDigest,
+      repositoryId: githubRepositoryId,
+      repositoryFullName: value.repository.fullName,
+      pullRequestNumber: value.pullRequestNumber,
+      headSha: value.reviewedSnapshot.headSha,
+      mergeBaseSha: value.reviewedSnapshot.mergeBaseSha,
+      targetSha: value.reviewedSnapshot.targetSha,
+      pullRequestTitle,
+      pullRequestBody,
+    }).value;
+  } catch {
+    reject("accepted plan does not satisfy the strict CLI contract");
+  }
+  if (canonicalJson(strictlyParsedPlan) !== canonicalJson(value)) {
+    reject("accepted plan value differs from its strict wire artifact");
+  }
   const acceptedInputDigest = rawDigest(value.inputIdentity.slice("sha256:".length), "accepted input digest");
   const planSemanticDigest = rawDigest(value.intentDigest.slice("sha256:".length), "plan semantic digest");
   const controllerManifestDigest = manifest.digest;
@@ -357,6 +430,7 @@ function validateStageInput(input: StageGitHubPublicationControllerGenerationInp
     acceptedPlan: plan,
     manifest,
     repositoryId,
+    githubRepositoryId,
     prNumber,
     publicationGeneration,
     reviewId,
@@ -417,6 +491,10 @@ function stageOperations(
 ): StagedOperation[] {
   const operations: StagedOperation[] = [];
   let dependencyEdges = 0;
+  let aggregateControllerRecordBytes = 0;
+  let aggregateOperationRecordBytes = 0;
+  let aggregateActivationBytes = 0;
+  let aggregateDesiredPayloadBytes = 0;
   const seenKeys = new Set<string>();
   for (const [index, record] of manifest.operations.entries()) {
     const controllerRecord = object(record, "controller operation record");
@@ -427,6 +505,7 @@ function stageOperations(
     }
     const exactControllerBytes = Buffer.from(canonicalJson(controllerRecord), "utf8");
     const suppliedControllerBytes = Buffer.from(controllerBytes[index] ?? []);
+    aggregateControllerRecordBytes += suppliedControllerBytes.byteLength;
     if (!exactControllerBytes.equals(suppliedControllerBytes)) {
       reject("controller operation bytes are not canonical");
     }
@@ -468,6 +547,17 @@ function stageOperations(
     if (operationBytes.byteLength > MAX_OPERATION_BYTES || activationBytes.byteLength > 1024 * 1024) {
       reject("operation record exceeds the byte limit");
     }
+    aggregateOperationRecordBytes += operationBytes.byteLength;
+    aggregateActivationBytes += activationBytes.byteLength;
+    aggregateDesiredPayloadBytes += desiredPayloadBytes.byteLength;
+    if (
+      aggregateControllerRecordBytes > MAX_ARTIFACT_BYTES ||
+      aggregateOperationRecordBytes > MAX_ARTIFACT_BYTES ||
+      aggregateActivationBytes > MAX_ARTIFACT_BYTES ||
+      aggregateDesiredPayloadBytes > MAX_ARTIFACT_BYTES
+    ) {
+      reject("controller operation artifacts exceed the aggregate byte limit");
+    }
     operations.push({
       ordinal,
       source,
@@ -501,6 +591,20 @@ function stageOperations(
     reject("accepted CLI operation bytes do not match the accepted plan digest");
   }
   return operations;
+}
+
+function exactReviewRepositoryMatches(
+  row: ReviewRepositoryRow | undefined,
+  staged: ValidatedStage,
+): boolean {
+  return row !== undefined &&
+    row.repository_id === staged.repositoryId &&
+    row.github_repo_id === staged.githubRepositoryId &&
+    row.full_name === staged.acceptedPlan.value.repository.fullName &&
+    row.pr_number === staged.prNumber &&
+    row.head_sha === staged.acceptedPlan.value.reviewedSnapshot.headSha &&
+    row.base_sha === staged.acceptedPlan.value.reviewedSnapshot.targetSha &&
+    row.status === "running";
 }
 
 function isExactSealedReplay(row: ExistingGenerationRow, staged: ValidatedStage): boolean {
@@ -574,6 +678,9 @@ function stringArray(value: unknown, name: string): string[] {
 }
 
 function decimal(value: bigint | number | string, name: string): string {
+  if (typeof value === "number" && !Number.isSafeInteger(value)) {
+    reject(`${name} is malformed`);
+  }
   const normalized = typeof value === "bigint" ? value.toString() : String(value);
   if (!DECIMAL_IDENTIFIER.test(normalized) || BigInt(normalized) > 9_223_372_036_854_775_807n) {
     reject(`${name} is malformed`);
@@ -598,10 +705,16 @@ function prefixedDigest(value: unknown, name: string): string {
   return value;
 }
 
-function timestamp(value: Date | string): string {
-  const date = value instanceof Date ? value : new Date(value);
-  if (!Number.isFinite(date.getTime())) reject("pull request timestamp is malformed");
-  return date.toISOString();
+function timestamp(value: string): string {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(value).toISOString() !== value
+  ) {
+    reject("pull request timestamp is malformed");
+  }
+  return value;
 }
 
 function boundedText(value: unknown, maximum: number, nonEmpty: boolean, name: string): string {

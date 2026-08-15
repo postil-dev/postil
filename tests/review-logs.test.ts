@@ -95,6 +95,33 @@ describe("runCli log observation", () => {
     }
   });
 
+  test.if(process.platform !== "win32")(
+    "bounds a descendant that inherits the CLI protocol pipes",
+    async () => {
+      const oldBin = process.env.POSTIL_BIN;
+      process.env.POSTIL_BIN = process.execPath;
+      try {
+        const started = Date.now();
+        await expect(runCli(
+          [
+            "-e",
+            `const { spawn } = require("node:child_process");
+             spawn(process.execPath, ["-e", "setInterval(() => process.stdout.write('z'), 10)"], { stdio: "inherit" }).unref();
+             process.stdout.write("x".repeat(33));
+             setInterval(() => undefined, 1000);`,
+          ],
+          {},
+          undefined,
+          { maxStdoutBytes: 32 },
+        )).rejects.toThrow("stdout exceeded its 32 byte limit");
+        expect(Date.now() - started).toBeLessThan(2_000);
+      } finally {
+        if (oldBin === undefined) delete process.env.POSTIL_BIN;
+        else process.env.POSTIL_BIN = oldBin;
+      }
+    },
+  );
+
   test("interrupts a running CLI when worker shutdown is requested", async () => {
     const oldBin = process.env.POSTIL_BIN;
     process.env.POSTIL_BIN = process.execPath;

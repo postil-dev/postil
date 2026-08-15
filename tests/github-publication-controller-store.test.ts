@@ -46,7 +46,7 @@ describeDb("GitHub publication controller store", () => {
 
     const first = await stageGitHubPublicationControllerGeneration({ ...input, database: pool });
     expect(first).toMatchObject({
-      repositoryId: BigInt(context.repositoryId),
+      repositoryId: BigInt(context.databaseRepositoryId),
       pullRequestNumber: 71,
       publicationGeneration: 17n,
       reviewId: BigInt(context.reviewId),
@@ -74,7 +74,7 @@ describeDb("GitHub publication controller store", () => {
               controller_operation_manifest_digest
        FROM review_publication_generations
        WHERE repository_id = $1 AND pr_number = $2 AND publication_generation = $3`,
-      [context.repositoryId, 71, "17"],
+      [context.databaseRepositoryId, 71, "17"],
     );
     expect(stored.rows).toHaveLength(1);
     expect(stored.rows[0]!.sealed_at).toBeInstanceOf(Date);
@@ -93,7 +93,7 @@ describeDb("GitHub publication controller store", () => {
        FROM review_publication_operation_dependencies
        WHERE repository_id = $1 AND pr_number = $2 AND publication_generation = $3
        ORDER BY operation_key, dependency_position`,
-      [context.repositoryId, 71, "17"],
+      [context.databaseRepositoryId, 71, "17"],
     );
     expect(edges.rows).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -116,7 +116,7 @@ describeDb("GitHub publication controller store", () => {
     const count = await pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM review_publication_generations
        WHERE repository_id = $1 AND pr_number = $2 AND publication_generation = $3`,
-      [concurrentContext.repositoryId, 72, "18"],
+      [concurrentContext.databaseRepositoryId, 72, "18"],
     );
     expect(count.rows[0]!.count).toBe("1");
   }, 60_000);
@@ -148,10 +148,51 @@ describeDb("GitHub publication controller store", () => {
       database: pool,
     })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
 
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...input,
+      snapshot: { ...input.snapshot, githubRepositoryId: context.githubRepositoryId + 1 },
+      database: pool,
+    })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
+
+    const nonCanonicalPlan = structuredClone(input.acceptedPlan);
+    nonCanonicalPlan.bytes = Buffer.from(JSON.stringify(nonCanonicalPlan.value), "utf8");
+    nonCanonicalPlan.digest = digestBytes(nonCanonicalPlan.bytes);
+    const matchingManifest = buildGitHubPublicationControllerManifest({
+      acceptedPlan: nonCanonicalPlan.value,
+      acceptedPlanBytesDigest: `sha256:${nonCanonicalPlan.digest}`,
+      requiredTerminalOperationKeys: [nonCanonicalPlan.value.operations[1]!.operationKey],
+      gateOutput: {
+        conclusion: "success",
+        title: "Publication gate complete",
+        summary: "Every required publication operation reached a terminal state.",
+        detailsUrl: "https://postil.dev/orgs/acme/runs/controller-store",
+      },
+    });
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...input,
+      acceptedPlan: nonCanonicalPlan,
+      controllerManifest: matchingManifest,
+      database: pool,
+    })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
+
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...input,
+      snapshot: { ...input.snapshot, reviewInputSequence: 9_007_199_254_740_993 },
+      database: pool,
+    })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...input,
+      snapshot: {
+        ...input.snapshot,
+        expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000999Z",
+      },
+      database: pool,
+    })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
+
     const partial = await pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM review_publication_generations
        WHERE repository_id = $1 AND pr_number = $2`,
-      [context.repositoryId, 73],
+      [context.databaseRepositoryId, 73],
     );
     expect(partial.rows[0]!.count).toBe("0");
   });
@@ -175,11 +216,12 @@ describeDb("GitHub publication controller store", () => {
     const review = await pool.query<{ id: string }>(
       `INSERT INTO reviews
          (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at)
-       VALUES ($1, $2, $3, $4, 'queued', 'unknown', now()) RETURNING id`,
-      [repository.rows[0]!.id, prNumber, HEAD, BASE],
+       VALUES ($1, $2, $3, $4, 'running', 'unknown', now()) RETURNING id`,
+      [repository.rows[0]!.id, prNumber, HEAD, TARGET],
     );
     return {
-      repositoryId: Number(repository.rows[0]!.id),
+      databaseRepositoryId: Number(repository.rows[0]!.id),
+      githubRepositoryId: 720_000 + seed,
       repositoryFullName: `controller-store-${seed}/service`,
       reviewId: Number(review.rows[0]!.id),
       prNumber,
@@ -189,7 +231,8 @@ describeDb("GitHub publication controller store", () => {
 });
 
 function buildStageInput(context: {
-  repositoryId: number;
+  databaseRepositoryId: number;
+  githubRepositoryId: number;
   repositoryFullName: string;
   reviewId: number;
   prNumber: number;
@@ -199,7 +242,7 @@ function buildStageInput(context: {
     controllerGeneration: context.generation,
     inputIdentity: digest(`input:${context.generation}`),
     reviewOutputDigest: digest(`output:${context.generation}`),
-    repositoryId: String(context.repositoryId),
+    repositoryId: String(context.githubRepositoryId),
     repositoryFullName: context.repositoryFullName,
     pullRequestNumber: String(context.prNumber),
     headSha: HEAD,
@@ -228,6 +271,8 @@ function buildStageInput(context: {
     acceptedPlan,
     controllerManifest,
     snapshot: {
+      repositoryId: context.databaseRepositoryId,
+      githubRepositoryId: context.githubRepositoryId,
       reviewId: context.reviewId,
       reviewInputSequence: context.generation,
       expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000Z",
@@ -353,6 +398,10 @@ function digest(value: string): string {
 
 function digestRaw(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function digestBytes(value: Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function digestJson(value: unknown): string {
