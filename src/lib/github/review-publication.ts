@@ -85,6 +85,17 @@ export interface GitHubCheckRunCompletionIntent
   readonly annotations?: readonly GitHubCheckRunAnnotationIntent[];
 }
 
+export interface GitHubCheckRunObservation {
+  readonly checkRunId: string;
+  readonly status: string;
+  readonly conclusion: string | null;
+}
+
+export interface GitHubCheckRunCompletionObservation
+  extends GitHubCheckRunObservation {
+  readonly desiredState: "applied" | "retryable" | "conflict";
+}
+
 export class GitHubReviewPlacementRejectedError extends Error {
   override name = "GitHubReviewPlacementRejectedError";
 
@@ -246,6 +257,83 @@ export async function createGitHubCheckRun(
     signal,
     new GitHubPublicationRejectedError("check-run creation", response.status),
   );
+}
+
+/** Find one exact owned check run, returning null only for proven absence. */
+export async function findGitHubCheckRunByExternalId(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunStartIntent,
+  signal?: AbortSignal,
+): Promise<GitHubCheckRunObservation | null> {
+  validateCheckRunStartIntent(intent);
+  const githubApp = configuredGithubAppIdentity(intent);
+  const matches = await listExactCheckRuns(
+    token,
+    repoFullName,
+    intent,
+    githubApp,
+    signal,
+  );
+  if (matches.length > 1) {
+    throw new GitHubPublicationAmbiguousError("check-run identity");
+  }
+  const run = matches[0];
+  return run === undefined
+    ? null
+    : {
+        checkRunId: String(run.id),
+        status: run.status ?? "",
+        conclusion: run.conclusion ?? null,
+      };
+}
+
+/** Observe whether one owned check run has the exact requested terminal state. */
+export async function observeGitHubCheckRunCompletion(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  signal?: AbortSignal,
+): Promise<GitHubCheckRunCompletionObservation> {
+  validateCheckRunCompletionIntent(intent);
+  const githubApp = configuredGithubAppIdentity(intent);
+  const current = await getExactCheckRun(
+    token,
+    repoFullName,
+    intent,
+    githubApp,
+    signal,
+  );
+  const currentAnnotations = await getExactCheckRunAnnotations(
+    token,
+    repoFullName,
+    intent,
+    signal,
+  );
+  const desiredAnnotations = normalizeCheckRunAnnotations(
+    intent.annotations ?? [],
+  );
+  const annotationsAreExact = checkRunAnnotationsEqual(
+    currentAnnotations,
+    desiredAnnotations,
+  );
+  const desiredState = isExactCompletedCheckRun(current, intent) &&
+      annotationsAreExact
+    ? "applied"
+    : current.status !== "completed" &&
+        (annotationsAreExact || currentAnnotations.length === 0) &&
+        !(
+          intent.detailsUrl === undefined &&
+          current.details_url != null
+        )
+      ? "retryable"
+      : "conflict";
+  return {
+    checkRunId: String(current.id),
+    status: current.status ?? "",
+    conclusion: current.conclusion ?? null,
+    desiredState,
+  };
 }
 
 /** Complete one owned check run after proving its immutable identity. */
@@ -557,6 +645,35 @@ export async function findGitHubReviewByMarker(
   return matches[0] ?? null;
 }
 
+/** Observe one exact submitted composite review and all requested marker identities. */
+export async function observeGitHubCompositeReviewByMarker(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  marker: string,
+  commitId: string,
+  expectedCommentMarkers: string[],
+  signal?: AbortSignal,
+): Promise<GitHubReviewObservation | null> {
+  const review = await findGitHubReviewByMarker(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    marker,
+    commitId,
+    signal,
+  );
+  if (review === null) return null;
+  return materializeReviewObservation(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    review,
+    expectedCommentMarkers,
+    signal,
+  );
+}
+
 /** Replace a review summary only after observing the exact durable identity. */
 export async function updateGitHubReviewSummary(
   token: string,
@@ -706,6 +823,40 @@ export async function publishGitHubFileComment(
     "file review comment",
     response.status,
   );
+}
+
+/** Find one exact owned file comment, returning null only for proven absence. */
+export async function findGitHubFileCommentByMarker(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  intent: GitHubFileCommentIntent,
+  signal?: AbortSignal,
+): Promise<GitHubFileCommentObservation | null> {
+  validateSha(intent.commitId);
+  validatePath(intent.path);
+  validateMarker(intent.marker, "finding");
+  const matches = await listGitHubFileCommentsByMarker(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    intent,
+    signal,
+  );
+  if (matches.length > 1) {
+    throw new GitHubPublicationAmbiguousError("file comment marker identity");
+  }
+  return matches[0] ?? null;
+}
+
+/** Observe one exact owned review comment without changing it. */
+export async function observeGitHubReviewComment(
+  token: string,
+  repoFullName: string,
+  intent: GitHubReviewCommentUpdateIntent,
+  signal?: AbortSignal,
+): Promise<GitHubFileCommentObservation> {
+  return getExactReviewComment(token, repoFullName, intent, signal);
 }
 
 /** Replace one owned review comment after observing its exact durable identity. */
@@ -945,59 +1096,76 @@ async function reconcileFileComment(
   signal: AbortSignal | undefined,
   cause: unknown,
 ): Promise<GitHubFileCommentObservation> {
-  const path = `${pullRequestPath(repoFullName, pullRequestNumber)}/comments`;
-  const matches: GitHubFileCommentObservation[] = [];
   try {
-    for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const response = await requestGitHub(
-        token,
-        "GET",
-        `${path}?sort=created&direction=asc&per_page=${PAGE_SIZE}&page=${page}`,
-        undefined,
-        signal,
-      );
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new GitHubPublicationRejectedError(
-          "file comment reconciliation",
-          response.status,
-        );
-      }
-      const value = await readBoundedJson(response);
-      if (!Array.isArray(value)) throw malformedResponse();
-      for (const candidate of value) {
-        const comment = candidate as ReviewCommentResponse;
-        if (
-          Number.isSafeInteger(comment.id) &&
-          comment.id! > 0 &&
-          comment.original_commit_id === intent.commitId &&
-          comment.path === intent.path &&
-          comment.subject_type === "file" &&
-          typeof comment.body === "string" &&
-          comment.body.includes(intent.marker) &&
-          isPostilBotLogin(comment.user?.login ?? undefined)
-        ) {
-          matches.push({
-            commentId: String(comment.id),
-            commitId: comment.original_commit_id,
-            path: comment.path,
-            body: comment.body,
-          });
-        }
-      }
-      if (!hasNextPage(response)) break;
-      if (page === MAX_PAGES) {
-        throw new GitHubPublicationAmbiguousError("file comment marker search");
-      }
-    }
+    const matches = await listGitHubFileCommentsByMarker(
+      token,
+      repoFullName,
+      pullRequestNumber,
+      intent,
+      signal,
+    );
+    if (matches.length === 1) return matches[0]!;
   } catch (error) {
     if (error instanceof GitHubPublicationAmbiguousError) throw error;
     throw new GitHubPublicationAmbiguousError("file comment reconciliation", {
       cause: error,
     });
   }
-  if (matches.length === 1) return matches[0]!;
   throw new GitHubPublicationAmbiguousError("file review comment", { cause });
+}
+
+async function listGitHubFileCommentsByMarker(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  intent: GitHubFileCommentIntent,
+  signal?: AbortSignal,
+): Promise<GitHubFileCommentObservation[]> {
+  const path = `${pullRequestPath(repoFullName, pullRequestNumber)}/comments`;
+  const matches: GitHubFileCommentObservation[] = [];
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const response = await requestGitHub(
+      token,
+      "GET",
+      `${path}?sort=created&direction=asc&per_page=${PAGE_SIZE}&page=${page}`,
+      undefined,
+      signal,
+    );
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new GitHubPublicationRejectedError(
+        "file comment reconciliation",
+        response.status,
+      );
+    }
+    const value = await readBoundedJson(response);
+    if (!Array.isArray(value)) throw malformedResponse();
+    for (const candidate of value) {
+      const comment = candidate as ReviewCommentResponse;
+      if (
+        Number.isSafeInteger(comment.id) &&
+        comment.id! > 0 &&
+        comment.original_commit_id === intent.commitId &&
+        comment.path === intent.path &&
+        comment.subject_type === "file" &&
+        typeof comment.body === "string" &&
+        comment.body.includes(intent.marker) &&
+        isPostilBotLogin(comment.user?.login ?? undefined)
+      ) {
+        matches.push({
+          commentId: String(comment.id),
+          commitId: comment.original_commit_id,
+          path: comment.path,
+          body: comment.body,
+        });
+      }
+    }
+    if (!hasNextPage(response)) return matches;
+    if (page === MAX_PAGES) {
+      throw new GitHubPublicationAmbiguousError("file comment marker search");
+    }
+  }
+  throw new GitHubPublicationAmbiguousError("file comment pagination");
 }
 
 async function reconcileReviewCommentUpdate(
@@ -1031,45 +1199,14 @@ async function reconcileCheckRunCreation(
   cause: unknown,
 ): Promise<string> {
   try {
-    const matches: string[] = [];
-    for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const query = new URLSearchParams({
-        check_name: intent.name,
-        filter: "all",
-        per_page: String(PAGE_SIZE),
-        page: String(page),
-      });
-      const response = await requestGitHub(
-        token,
-        "GET",
-        `${repositoryPath(repoFullName)}/commits/${encodeURIComponent(intent.headSha)}/check-runs?${query}`,
-        undefined,
-        signal,
-      );
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new GitHubPublicationRejectedError(
-          "check-run creation reconciliation",
-          response.status,
-        );
-      }
-      const value = await readBoundedJson(response);
-      const checkRuns = (value as { check_runs?: unknown })?.check_runs;
-      if (!Array.isArray(checkRuns)) throw malformedResponse();
-      for (const candidate of checkRuns) {
-        const run = candidate as CheckRunResponse;
-        if (matchesCheckRunIdentity(run, intent, githubApp)) {
-          matches.push(String(run.id));
-        }
-      }
-      if (!hasNextPage(response)) break;
-      if (page === MAX_PAGES) {
-        throw new GitHubPublicationAmbiguousError(
-          "check-run creation reconciliation pagination",
-        );
-      }
-    }
-    if (matches.length === 1) return matches[0]!;
+    const matches = await listExactCheckRuns(
+      token,
+      repoFullName,
+      intent,
+      githubApp,
+      signal,
+    );
+    if (matches.length === 1) return String(matches[0]!.id);
   } catch (error) {
     if (error instanceof GitHubPublicationAmbiguousError) throw error;
     throw new GitHubPublicationAmbiguousError("check-run creation", {
@@ -1077,6 +1214,52 @@ async function reconcileCheckRunCreation(
     });
   }
   throw new GitHubPublicationAmbiguousError("check-run creation", { cause });
+}
+
+async function listExactCheckRuns(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunStartIntent,
+  githubApp: GitHubAppIdentity,
+  signal?: AbortSignal,
+): Promise<Array<CheckRunResponse & { id: number }>> {
+  const matches: Array<CheckRunResponse & { id: number }> = [];
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const query = new URLSearchParams({
+      check_name: intent.name,
+      filter: "all",
+      per_page: String(PAGE_SIZE),
+      page: String(page),
+    });
+    const response = await requestGitHub(
+      token,
+      "GET",
+      `${repositoryPath(repoFullName)}/commits/${encodeURIComponent(intent.headSha)}/check-runs?${query}`,
+      undefined,
+      signal,
+    );
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new GitHubPublicationRejectedError(
+        "check-run creation reconciliation",
+        response.status,
+      );
+    }
+    const value = await readBoundedJson(response);
+    const checkRuns = (value as { check_runs?: unknown })?.check_runs;
+    if (!Array.isArray(checkRuns)) throw malformedResponse();
+    for (const candidate of checkRuns) {
+      const run = candidate as CheckRunResponse;
+      if (matchesCheckRunIdentity(run, intent, githubApp)) matches.push(run);
+    }
+    if (!hasNextPage(response)) return matches;
+    if (page === MAX_PAGES) {
+      throw new GitHubPublicationAmbiguousError(
+        "check-run creation reconciliation pagination",
+      );
+    }
+  }
+  throw new GitHubPublicationAmbiguousError("check-run creation reconciliation pagination");
 }
 
 async function reconcileCheckRunCompletion(

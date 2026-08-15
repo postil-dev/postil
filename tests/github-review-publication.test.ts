@@ -3,10 +3,15 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import {
   completeGitHubCheckRun,
   createGitHubCheckRun,
+  findGitHubCheckRunByExternalId,
+  findGitHubFileCommentByMarker,
   findGitHubReviewByMarker,
   GitHubPublicationAmbiguousError,
   GitHubPublicationRejectedError,
   GitHubReviewPlacementRejectedError,
+  observeGitHubCompositeReviewByMarker,
+  observeGitHubCheckRunCompletion,
+  observeGitHubReviewComment,
   publishGitHubCompositeReview,
   publishGitHubFileComment,
   updateGitHubReviewComment,
@@ -143,6 +148,64 @@ function checkRunAnnotation(overrides: Record<string, unknown> = {}) {
 function isCheckRunAnnotationsRequest(input: RequestInfo | URL): boolean {
   return new URL(String(input)).pathname.endsWith("/annotations");
 }
+
+describe("GitHub publication observations", () => {
+  test("observes a composite review and requested finding identities without mutation", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      methods.push(init?.method ?? "GET");
+      return methods.length === 1 ? Response.json([review()]) : Response.json([reviewComment()]);
+    }) as typeof fetch;
+
+    await expect(observeGitHubCompositeReviewByMarker(
+      "token",
+      "octo/repo",
+      7,
+      REVIEW_MARKER,
+      HEAD_SHA,
+      [FINDING_MARKER],
+    )).resolves.toMatchObject({ reviewId: "41", commentIdsByMarker: { [FINDING_MARKER]: "51" } });
+    expect(methods).toEqual(["GET", "GET"]);
+  });
+
+  test("proves exact file-comment and check-run absence with read-only requests", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      methods.push(init?.method ?? "GET");
+      return methods.length === 1 ? Response.json([]) : Response.json({ total_count: 0, check_runs: [] });
+    }) as typeof fetch;
+
+    await expect(findGitHubFileCommentByMarker("token", "octo/repo", 7, {
+      commitId: HEAD_SHA,
+      path: "src/main.ts",
+      body: `Finding body\n\n${FINDING_MARKER}`,
+      marker: FINDING_MARKER,
+    })).resolves.toBeNull();
+    await expect(findGitHubCheckRunByExternalId(
+      "token",
+      "octo/repo",
+      checkRunStartIntent,
+    )).resolves.toBeNull();
+    expect(methods).toEqual(["GET", "GET"]);
+  });
+
+  test("observes one exact review comment without issuing an update", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      methods.push(init?.method ?? "GET");
+      return Response.json(reviewComment());
+    }) as typeof fetch;
+
+    await expect(observeGitHubReviewComment("token", "octo/repo", {
+      commentId: "51",
+      commitId: HEAD_SHA,
+      path: "src/main.ts",
+      expectedMarkers: [FINDING_MARKER],
+      body: `Updated finding\n\n${FINDING_MARKER}`,
+    })).resolves.toMatchObject({ commentId: "51", body: expect.stringContaining(FINDING_MARKER) });
+    expect(methods).toEqual(["GET"]);
+  });
+});
 
 describe("GitHub composite review publication", () => {
   test("publishes and observes the exact review and inline identities", async () => {
@@ -961,6 +1024,53 @@ describe("GitHub owned check-run creation", () => {
 });
 
 describe("GitHub owned check-run completion", () => {
+  test("classifies exact, retryable, and conflicting terminal observations", async () => {
+    const cases = [
+      {
+        run: checkRun({
+          status: "completed",
+          conclusion: "success",
+          output: {
+            title: checkRunCompletionIntent.title,
+            summary: checkRunCompletionIntent.summary,
+          },
+        }),
+        annotations: [checkRunAnnotation()],
+        expected: "applied",
+      },
+      {
+        run: checkRun(),
+        annotations: [],
+        expected: "retryable",
+      },
+      {
+        run: checkRun({
+          status: "completed",
+          conclusion: "failure",
+          output: {
+            title: checkRunCompletionIntent.title,
+            summary: checkRunCompletionIntent.summary,
+          },
+        }),
+        annotations: [checkRunAnnotation()],
+        expected: "conflict",
+      },
+    ] as const;
+    for (const entry of cases) {
+      globalThis.fetch = (async (input) => Response.json(
+        isCheckRunAnnotationsRequest(input) ? entry.annotations : entry.run,
+      )) as typeof fetch;
+      await expect(observeGitHubCheckRunCompletion(
+        "token",
+        "octo/repo",
+        checkRunCompletionIntent,
+      )).resolves.toMatchObject({
+        checkRunId: "61",
+        desiredState: entry.expected,
+      });
+    }
+  });
+
   test("observes identity, patches once, and verifies exact terminal output", async () => {
     const requests: Array<{ method: string; body?: unknown }> = [];
     let checkRunGets = 0;
