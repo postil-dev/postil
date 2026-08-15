@@ -77,18 +77,38 @@ describe("GitHub publication CLI planner", () => {
     expect(identity).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(githubPublicationInputIdentity(structuredClone(input))).toBe(identity);
     for (const changed of [
+      { ...input, databaseRepositoryId: "13" },
       { ...input, githubRepositoryId: "420043" },
+      { ...input, repositoryFullName: "acme/worker" },
+      { ...input, pullRequestNumber: "8" },
+      { ...input, controllerGeneration: "18" },
+      { ...input, reviewId: "100" },
+      { ...input, headSha: "1".repeat(40) },
+      { ...input, mergeBaseSha: "2".repeat(40) },
       { ...input, targetSha: "e".repeat(40) },
       { ...input, targetBranch: "release" },
+      { ...input, pullRequestTitle: "Changed title" },
       { ...input, pullRequestBody: "Changed body" },
+      { ...input, expectedPullRequestUpdatedAt: "2026-08-14T00:00:01.000Z" },
+      { ...input, cliVersion: "0.8.17" },
       { ...input, cliCommitSha: "0".repeat(40) },
       { ...input, cliArtifactSha256: digest("changed CLI artifact") },
       { ...input, configurationSha256: digest("changed configuration") },
       { ...input, providerIdentity: "provider-v2" },
+      { ...input, retryLineage: "review:99:attempt:2" },
+      { ...input, baselineReviewId: "97" },
+      { ...input, baselineHeadSha: "3".repeat(40) },
       { ...input, baselineEnvelopeSha256: digest("changed baseline") },
       { ...input, bounded: false },
+      { ...input, forceFullReview: true },
       { ...input, detailsUrl: "https://postil.dev/orgs/acme/runs/run-18" },
     ]) expect(githubPublicationInputIdentity(changed)).not.toBe(identity);
+    expect(githubPublicationInputIdentity({
+      ...input,
+      baselineReviewId: undefined,
+      baselineHeadSha: undefined,
+      baselineEnvelopeSha256: undefined,
+    })).not.toBe(identity);
 
     expect(() => githubPublicationInputIdentity({
       ...input,
