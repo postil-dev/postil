@@ -41,8 +41,10 @@ interface OperationRow extends QueryResultRow {
   head_sha: string;
   base_sha: string;
   target_sha: string;
+  target_branch: string;
   pull_request_title: string;
   pull_request_body: string;
+  expected_pull_request_updated_at: Date;
   accepted_plan: JsonObject;
   accepted_plan_bytes: Buffer;
   accepted_plan_digest: string;
@@ -376,6 +378,16 @@ export class PostgresGitHubPublicationOperationStore
     });
   }
 
+  async finishSuperseded(
+    claim: ClaimedGitHubPublicationOperation,
+    evidence: PublicationTerminalEvidence,
+  ): Promise<boolean> {
+    if (evidence.outcome !== "superseded" || evidence.result.dispatched !== false) {
+      throw new Error("superseded publication evidence requires a no-write result");
+    }
+    return this.finishWithoutDispatch(claim, evidence, "superseded", null);
+  }
+
   async finishAmbiguous(
     claim: ClaimedGitHubPublicationOperation,
     evidence: PublicationDispatchEvidence & { errorReason: string },
@@ -532,7 +544,7 @@ export class PostgresGitHubPublicationOperationStore
   private async finishWithoutDispatch(
     claim: ClaimedGitHubPublicationOperation,
     evidence: PublicationTerminalEvidence,
-    state: "skipped" | "failed",
+    state: "skipped" | "superseded" | "failed",
     errorReason: string | null,
   ): Promise<boolean> {
     return this.transaction(async (client) => {
@@ -623,6 +635,15 @@ export class PostgresGitHubPublicationOperationStore
       pullRequestNumber: safeInteger(row.pr_number, "pull request number"),
       publicationGeneration: requiredDecimal(row.publication_generation, "publication generation"),
       headSha: requiredText(row.head_sha, "head SHA"),
+      mergeBaseSha: requiredText(row.base_sha, "merge-base SHA"),
+      targetSha: requiredText(row.target_sha, "target SHA"),
+      targetBranch: requiredText(row.target_branch, "target branch"),
+      pullRequestTitle: row.pull_request_title,
+      pullRequestBody: row.pull_request_body,
+      expectedPullRequestUpdatedAt: requiredDate(
+        row.expected_pull_request_updated_at,
+        "expected pull request update time",
+      ).toISOString(),
       operationKey: requiredText(row.operation_key, "operation key"),
       operationOrdinal: safeInteger(row.operation_ordinal, "operation ordinal"),
       operationSource: row.operation_source,
@@ -684,7 +705,9 @@ function operationSelect(): string {
                  operation.publication_generation::text AS publication_generation,
                  operation.review_id::text AS review_id,
                  generation.head_sha, generation.base_sha, generation.target_sha,
+                 generation.target_branch,
                  generation.pull_request_title, generation.pull_request_body,
+                 generation.expected_pull_request_updated_at,
                  generation.accepted_plan, generation.accepted_plan_bytes,
                  generation.accepted_plan_digest,
                  generation.controller_manifest_bytes,
@@ -1232,6 +1255,15 @@ function rowToClaimIdentity(row: OperationRow): ClaimedGitHubPublicationOperatio
     pullRequestNumber: row.pr_number,
     publicationGeneration: row.publication_generation,
     headSha: row.head_sha,
+    mergeBaseSha: row.base_sha,
+    targetSha: row.target_sha,
+    targetBranch: row.target_branch,
+    pullRequestTitle: row.pull_request_title,
+    pullRequestBody: row.pull_request_body,
+    expectedPullRequestUpdatedAt: requiredDate(
+      row.expected_pull_request_updated_at,
+      "expected pull request update time",
+    ).toISOString(),
     operationKey: row.operation_key,
     operationOrdinal: row.operation_ordinal,
     operationSource: row.operation_source,
@@ -1287,7 +1319,7 @@ function requiredOutcome(value: unknown): DurablePublicationDependencyEvidence["
     value !== "created" && value !== "reconciledExisting" &&
     value !== "partialObserved" && value !== "applied" &&
     value !== "notRequiredMarkerPresent" && value !== "notRequiredContentExact" &&
-    value !== "rejected"
+    value !== "rejected" && value !== "superseded"
   ) throw new Error("publication dependency outcome is invalid");
   return value;
 }
