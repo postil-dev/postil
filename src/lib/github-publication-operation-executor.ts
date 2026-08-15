@@ -32,6 +32,10 @@ import {
   type GitHubReviewCommentUpdateIntent,
   type GitHubReviewObservation,
 } from "@/lib/github/review-publication";
+import {
+  getPullRequestPublicationContext,
+  type PullRequestPublicationContext,
+} from "@/lib/github/checks";
 
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const RAW_SHA256 = /^[0-9a-f]{64}$/;
@@ -63,7 +67,8 @@ export type PublicationTerminalOutcome =
   | "applied"
   | "notRequiredMarkerPresent"
   | "notRequiredContentExact"
-  | "rejected";
+  | "rejected"
+  | "superseded";
 
 export interface DurablePublicationDependencyEvidence {
   readonly operationKey: string;
@@ -98,6 +103,12 @@ export interface ClaimedGitHubPublicationOperation {
   readonly pullRequestNumber: number;
   readonly publicationGeneration: string;
   readonly headSha: string;
+  readonly mergeBaseSha: string;
+  readonly targetSha: string;
+  readonly targetBranch: string;
+  readonly pullRequestTitle: string;
+  readonly pullRequestBody: string;
+  readonly expectedPullRequestUpdatedAt: string;
   readonly operationKey: string;
   readonly operationOrdinal: number;
   readonly operationSource: "cli" | "service";
@@ -206,6 +217,10 @@ export interface GitHubPublicationOperationStore {
     claim: ClaimedGitHubPublicationOperation,
     evidence: PublicationTerminalEvidence,
   ): Promise<boolean>;
+  finishSuperseded(
+    claim: ClaimedGitHubPublicationOperation,
+    evidence: PublicationTerminalEvidence,
+  ): Promise<boolean>;
   finishAmbiguous(
     claim: ClaimedGitHubPublicationOperation,
     evidence: PublicationDispatchEvidence & { errorReason: string },
@@ -231,6 +246,12 @@ export interface GitHubPublicationOperationStore {
 }
 
 export interface GitHubPublicationAdapters {
+  getPullRequestPublicationContext(
+    token: string,
+    repo: string,
+    pr: number,
+    signal?: AbortSignal,
+  ): Promise<PullRequestPublicationContext>;
   observeReview(
     token: string,
     repo: string,
@@ -324,7 +345,7 @@ export interface ExecuteGitHubPublicationOperationInput {
 export type GitHubPublicationContinuation =
   | { readonly status: "idle"; readonly shouldContinue: false }
   | {
-      readonly status: "applied" | "skipped" | "rejected" | "unknown";
+      readonly status: "applied" | "skipped" | "rejected" | "superseded" | "unknown";
       readonly shouldContinue: boolean;
       readonly operationKey: string;
       readonly publicationGeneration: string;
@@ -338,6 +359,7 @@ export class GitHubPublicationOperationValidationError extends Error {
 }
 
 const productionAdapters: GitHubPublicationAdapters = {
+  getPullRequestPublicationContext,
   observeReview: observeGitHubCompositeReviewByMarker,
   publishReview: publishGitHubCompositeReview,
   observeFileComment: findGitHubFileCommentByMarker,
@@ -383,6 +405,14 @@ export async function executeOneGitHubPublicationOperation(
     await input.store.finishRejected(claim, evidence);
     throw error;
   }
+
+  const initialSnapshotGuard = await guardLiveSnapshot(
+    input,
+    claim,
+    adapters,
+    now,
+  );
+  if (initialSnapshotGuard !== null) return initialSnapshotGuard;
 
   let activation: ActivationDecision;
   try {
@@ -470,6 +500,14 @@ export async function executeOneGitHubPublicationOperation(
       return continuation("unknown", claim, false);
     }
   }
+
+  const dispatchSnapshotGuard = await guardLiveSnapshot(
+    input,
+    claim,
+    adapters,
+    now,
+  );
+  if (dispatchSnapshotGuard !== null) return dispatchSnapshotGuard;
 
   const dispatched = dispatchEvidence(claim, activation.variant, now());
   if (!await input.store.recordDispatched(claim, dispatched)) {
@@ -902,7 +940,17 @@ function validateSnapshot(
     Number(manifest.pullRequestNumber) !== claim.pullRequestNumber ||
     manifest.controllerGeneration !== claim.publicationGeneration ||
     manifest.headSha !== claim.headSha ||
-    accepted.value.reviewedSnapshot.headSha !== claim.headSha
+    accepted.value.reviewedSnapshot.headSha !== claim.headSha ||
+    accepted.value.reviewedSnapshot.mergeBaseSha !== claim.mergeBaseSha ||
+    accepted.value.reviewedSnapshot.targetSha !== claim.targetSha ||
+    claim.expectedPlan.pullRequestTitle !== claim.pullRequestTitle ||
+    claim.expectedPlan.pullRequestBody !== claim.pullRequestBody ||
+    claim.expectedPlan.mergeBaseSha !== claim.mergeBaseSha ||
+    claim.expectedPlan.targetSha !== claim.targetSha ||
+    claim.targetBranch.length === 0 ||
+    !Number.isFinite(Date.parse(claim.expectedPullRequestUpdatedAt)) ||
+    new Date(claim.expectedPullRequestUpdatedAt).toISOString() !==
+      claim.expectedPullRequestUpdatedAt
   ) reject("generation, repository, pull request, or head identity differs");
 
   const expectedDependencies = requireStringArray(operation.dependencies, "operation dependencies");
@@ -1372,8 +1420,121 @@ function terminalEvidence(
   };
 }
 
+function compareLiveSnapshot(
+  claim: GitHubPublicationOperationSnapshot,
+  live: PullRequestPublicationContext,
+): { exact: true } | { exact: false; evidence: JsonObject } {
+  const mismatches: string[] = [];
+  if (!live.open) mismatches.push("open");
+  if (live.merged) mismatches.push("merged");
+  if (live.draft) mismatches.push("draft");
+  if (live.headSha !== claim.headSha) mismatches.push("headSha");
+  if (live.baseSha !== claim.targetSha) mismatches.push("targetSha");
+  if (live.mergeBaseSha !== claim.mergeBaseSha) mismatches.push("mergeBaseSha");
+  if (live.targetBranch !== claim.targetBranch) mismatches.push("targetBranch");
+  if (live.title !== claim.pullRequestTitle) mismatches.push("title");
+  if (live.body !== claim.pullRequestBody) mismatches.push("body");
+  if (live.updatedAt !== claim.expectedPullRequestUpdatedAt) {
+    mismatches.push("updatedAt");
+  }
+  if (mismatches.length === 0) return { exact: true };
+  return {
+    exact: false,
+    evidence: {
+      reason:
+        "live pull request snapshot differs from the sealed publication generation",
+      mismatches,
+      expected: snapshotEvidence({
+        open: true,
+        merged: false,
+        draft: false,
+        headSha: claim.headSha,
+        targetSha: claim.targetSha,
+        mergeBaseSha: claim.mergeBaseSha,
+        targetBranch: claim.targetBranch,
+        title: claim.pullRequestTitle,
+        body: claim.pullRequestBody,
+        updatedAt: claim.expectedPullRequestUpdatedAt,
+      }),
+      observed: snapshotEvidence({
+        open: live.open,
+        merged: live.merged,
+        draft: live.draft,
+        headSha: live.headSha,
+        targetSha: live.baseSha,
+        mergeBaseSha: live.mergeBaseSha,
+        targetBranch: live.targetBranch,
+        title: live.title,
+        body: live.body,
+        updatedAt: live.updatedAt,
+      }),
+    },
+  };
+}
+
+async function guardLiveSnapshot(
+  input: ExecuteGitHubPublicationOperationInput,
+  claim: ClaimedGitHubPublicationOperation,
+  adapters: GitHubPublicationAdapters,
+  now: () => Date,
+): Promise<GitHubPublicationContinuation | null> {
+  let liveSnapshot: PullRequestPublicationContext;
+  try {
+    liveSnapshot = await adapters.getPullRequestPublicationContext(
+      input.token,
+      claim.repositoryFullName,
+      claim.pullRequestNumber,
+      input.signal,
+    );
+  } catch (error) {
+    await input.store.finishNotDispatched(claim, {
+      ...dispatchEvidence(claim, "live-snapshot-observation", now()),
+      errorReason: safeError(error),
+    });
+    return continuation("unknown", claim, false);
+  }
+  const snapshotGuard = compareLiveSnapshot(claim, liveSnapshot);
+  if (snapshotGuard.exact) return null;
+  const evidence = terminalEvidence(
+    claim,
+    "live-snapshot-superseded",
+    "superseded",
+    { ...snapshotGuard.evidence, dispatched: false },
+    now(),
+    {},
+  );
+  const finished = await input.store.finishSuperseded(claim, evidence);
+  return continuation(finished ? "superseded" : "unknown", claim, finished);
+}
+
+function snapshotEvidence(snapshot: {
+  open: boolean;
+  merged: boolean;
+  draft: boolean;
+  headSha: string;
+  targetSha: string;
+  mergeBaseSha: string;
+  targetBranch: string;
+  title: string;
+  body: string;
+  updatedAt: string;
+}): JsonObject {
+  return {
+    open: snapshot.open,
+    merged: snapshot.merged,
+    draft: snapshot.draft,
+    headSha: snapshot.headSha,
+    targetSha: snapshot.targetSha,
+    mergeBaseSha: snapshot.mergeBaseSha,
+    targetBranch: snapshot.targetBranch,
+    titleSha256: digestPrefixed(Buffer.from(snapshot.title, "utf8")),
+    bodySha256: digestPrefixed(Buffer.from(snapshot.body, "utf8")),
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
 function continuation(
-  status: "applied" | "skipped" | "rejected" | "unknown",
+  status: "applied" | "skipped" | "rejected" | "superseded" | "unknown",
   claim: GitHubPublicationOperationSnapshot,
   shouldContinue: boolean,
 ): GitHubPublicationContinuation {

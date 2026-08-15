@@ -32,8 +32,10 @@ import {
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import {
+  deferLegacyReviewForPublicationController,
   deferHostedReviewForRelease,
   HostedInferenceReleaseDarkError,
+  PublicationControllerReleaseFenceError,
 } from "@/lib/release-job-rollout";
 import {
   reportOperationalFailure,
@@ -309,6 +311,20 @@ export async function runClaimedJob(
       );
       console.warn(
         `[${label}] review job ${job.id} ${outcome} across managed release activation`,
+      );
+      return;
+    }
+    if (
+      err instanceof PublicationControllerReleaseFenceError &&
+      job.kind === "review"
+    ) {
+      await deferLegacyReviewForPublicationController(
+        getPool(),
+        job,
+        err.releaseSha,
+      );
+      console.warn(
+        `[${label}] review job ${job.id} deferred for publication-controller activation`,
       );
       return;
     }

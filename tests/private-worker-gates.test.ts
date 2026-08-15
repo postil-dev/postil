@@ -241,6 +241,24 @@ describe("private repository worker defense in depth", () => {
     expect(args).not.toContain('"--no-post"');
   });
 
+  test("legacy review fencing occurs before any resumable publication path", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const start = source.indexOf("export async function runReviewJob");
+    const fence = source.indexOf(
+      "await publicationControllerLegacyReviewFenced",
+      start,
+    );
+    const resume = source.indexOf("await resumeStagedReviewCompletion", start);
+    const token = source.indexOf("await getInstallationToken", start);
+
+    expect(fence).toBeGreaterThan(start);
+    expect(fence).toBeLessThan(resume);
+    expect(fence).toBeLessThan(token);
+    expect(source.slice(fence, resume)).toContain(
+      "PublicationControllerReleaseFenceError",
+    );
+  });
+
   test("hosted publication is bound to the stored GitHub repository id", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const reviewStart = source.indexOf("export async function runReviewJob");

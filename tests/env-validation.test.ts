@@ -99,6 +99,37 @@ describe("worker startup environment validation", () => {
     expect(hostedInferenceEnabled()).toBe(true);
   });
 
+  test("uses one exact release SHA throughout the managed deployment", async () => {
+    const deployWorkflow = await readFile(
+      join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
+      "utf8",
+    );
+
+    expect(
+      deployWorkflow.match(
+        /\$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/g,
+      ),
+    ).toHaveLength(1);
+    expect(
+      deployWorkflow.match(/\$\{\{ steps\.release\.outputs\.sha \}\}/g),
+    ).toHaveLength(2);
+    expect(deployWorkflow).toContain(
+      'echo "sha=${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"',
+    );
+    expect(deployWorkflow).toContain(
+      'ref: ${{ steps.release.outputs.sha }}',
+    );
+    expect(deployWorkflow).toContain(
+      '--build-arg POSTIL_RELEASE_SHA="${POSTIL_RELEASE_SHA}"',
+    );
+    expect(deployWorkflow).toContain(
+      'POSTIL_RELEASE_SHA: ${{ steps.release.outputs.sha }}',
+    );
+    expect(deployWorkflow).not.toContain(
+      'POSTIL_RELEASE_SHA="${GITHUB_SHA}"',
+    );
+  });
+
   test("enables the provisional hosted roster in the managed deployment and verifies every worker", async () => {
     const root = join(import.meta.dir, "..");
     const [flyConfig, deployWorkflow] = await Promise.all([
@@ -126,6 +157,18 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow.indexOf("bun run hosted:verify-provider")).toBeLessThan(
       deployWorkflow.indexOf("bun run jobs:activate-release"),
     );
+    const releaseActivation = await readFile(
+      join(root, "scripts", "activate-release-jobs.ts"),
+      "utf8",
+    );
+    expect(releaseActivation.indexOf("verifyPublicationControllerCliCapability"))
+      .toBeLessThan(
+        releaseActivation.lastIndexOf("activatePublicationControllerRelease"),
+      );
+    expect(releaseActivation.indexOf("activatePublicationControllerAfterCliPreflight"))
+      .toBeLessThan(
+        releaseActivation.indexOf("await activateQueueLockGeneration"),
+      );
     expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
     expect(deployWorkflow).toMatch(
       /- name: Deploy managed fleet\n\s+id: deploy\n\s+timeout-minutes: 10/,

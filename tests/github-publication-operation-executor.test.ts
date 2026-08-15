@@ -38,6 +38,18 @@ const TARGET = "c".repeat(40);
 const TITLE = "Durable publication executor";
 const BODY = "Each forge write is represented by one immutable operation.";
 const NOW = new Date();
+const SNAPSHOT_DRIFT_CASES = [
+  { name: "head SHA drift", liveSnapshot: { headSha: "d".repeat(40) }, mismatch: "headSha" },
+  { name: "target SHA drift", liveSnapshot: { baseSha: "d".repeat(40) }, mismatch: "targetSha" },
+  { name: "merge-base SHA drift", liveSnapshot: { mergeBaseSha: "d".repeat(40) }, mismatch: "mergeBaseSha" },
+  { name: "target branch drift", liveSnapshot: { targetBranch: "release" }, mismatch: "targetBranch" },
+  { name: "title drift", liveSnapshot: { title: "Changed title" }, mismatch: "title" },
+  { name: "body drift", liveSnapshot: { body: "Changed body" }, mismatch: "body" },
+  { name: "draft pull request", liveSnapshot: { draft: true }, mismatch: "draft" },
+  { name: "closed pull request", liveSnapshot: { open: false }, mismatch: "open" },
+  { name: "merged pull request", liveSnapshot: { open: false, merged: true }, mismatch: "merged" },
+  { name: "updated-at drift", liveSnapshot: { updatedAt: "2026-08-15T00:00:01.000Z" }, mismatch: "updatedAt" },
+] as const;
 
 describe("GitHub publication operation executor", () => {
   test("does not call the forge when the database has no current eligible operation", async () => {
@@ -73,13 +85,53 @@ describe("GitHub publication operation executor", () => {
     expect(store.terminal.at(-1)?.outcome).toBe("rejected");
   });
 
+  for (const snapshotCase of SNAPSHOT_DRIFT_CASES) {
+    test(`supersedes without a mutation on ${snapshotCase.name}`, async () => {
+      const fixture = fixtureFor("advisoryCheckCreate");
+      const store = new MemoryStore([fixture.claim]);
+      const adapters = fakeAdapters({ liveSnapshot: snapshotCase.liveSnapshot });
+
+      await expect(run(store, adapters)).resolves.toMatchObject({
+        status: "superseded",
+        shouldContinue: true,
+      });
+      expect(mutationCalls(adapters.calls)).toEqual([]);
+      expect(store.ambiguous).toHaveLength(0);
+      expect(store.terminal.at(-1)).toMatchObject({
+        outcome: "superseded",
+        result: {
+          dispatched: false,
+          mismatches: expect.arrayContaining([snapshotCase.mismatch]),
+        },
+      });
+    });
+  }
+
+  test("mutates only after the exact live pull request snapshot is observed", async () => {
+    const fixture = fixtureFor("advisoryCheckCreate");
+    const store = new MemoryStore([fixture.claim]);
+    const adapters = fakeAdapters({ createdCheckId: "81" });
+
+    await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeCheck",
+      "getPullRequestPublicationContext",
+      "createCheck",
+    ]);
+    expect(store.terminal.at(-1)).toMatchObject({ outcome: "created", remoteId: "81" });
+  });
+
   test("reconciles an existing create without issuing a second mutation", async () => {
     const fixture = fixtureFor("advisoryCheckCreate");
     const store = new MemoryStore([fixture.claim]);
     const adapters = fakeAdapters({ existingCheckId: "71" });
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "skipped", shouldContinue: true });
-    expect(adapters.calls).toEqual(["observeCheck"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeCheck",
+    ]);
     expect(store.terminal.at(-1)).toMatchObject({ outcome: "reconciledExisting", remoteId: "71" });
   });
 
@@ -89,8 +141,26 @@ describe("GitHub publication operation executor", () => {
     const adapters = fakeAdapters({ failCheckObservation: true });
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "unknown", shouldContinue: false });
-    expect(adapters.calls).toEqual(["observeCheck"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeCheck",
+    ]);
     expect(store.notDispatched).toHaveLength(1);
+  });
+
+  test("records a failed live snapshot read as not dispatched", async () => {
+    const fixture = fixtureFor("advisoryCheckCreate");
+    const store = new MemoryStore([fixture.claim]);
+    const adapters = fakeAdapters({ failSnapshotObservation: true });
+
+    await expect(run(store, adapters)).resolves.toMatchObject({
+      status: "unknown",
+      shouldContinue: false,
+    });
+    expect(adapters.calls).toEqual(["getPullRequestPublicationContext"]);
+    expect(mutationCalls(adapters.calls)).toEqual([]);
+    expect(store.notDispatched).toHaveLength(1);
+    expect(store.ambiguous).toHaveLength(0);
   });
 
   test("uses the exact gate creation dependency remote ID for completion", async () => {
@@ -101,7 +171,11 @@ describe("GitHub publication operation executor", () => {
     const adapters = fakeAdapters({ expectedCompletionExternalId: expectedExternalId });
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
-    expect(adapters.calls).toEqual(["completeCheck:901"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "getPullRequestPublicationContext",
+      "completeCheck:901",
+    ]);
     expect(store.terminal.at(-1)).toMatchObject({ outcome: "applied", remoteId: "901" });
   });
 
@@ -110,13 +184,22 @@ describe("GitHub publication operation executor", () => {
     const advisoryStore = new MemoryStore([advisory.claim]);
     const advisoryAdapters = fakeAdapters();
     await expect(run(advisoryStore, advisoryAdapters)).resolves.toMatchObject({ status: "applied" });
-    expect(advisoryAdapters.calls).toEqual(["completeCheck:801"]);
+    expect(advisoryAdapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "getPullRequestPublicationContext",
+      "completeCheck:801",
+    ]);
 
     const gate = fixtureFor("gateCheckCreate");
     const gateStore = new MemoryStore([gate.claim]);
     const gateAdapters = fakeAdapters({ createdCheckId: "901" });
     await expect(run(gateStore, gateAdapters)).resolves.toMatchObject({ status: "applied" });
-    expect(gateAdapters.calls).toEqual(["observeCheck", "createCheck"]);
+    expect(gateAdapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeCheck",
+      "getPullRequestPublicationContext",
+      "createCheck",
+    ]);
     expect(gateStore.terminal.at(-1)).toMatchObject({ outcome: "created", remoteId: "901" });
   });
 
@@ -127,7 +210,12 @@ describe("GitHub publication operation executor", () => {
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "unknown", shouldContinue: false });
     await expect(run(store, adapters)).resolves.toEqual({ status: "idle", shouldContinue: false });
-    expect(adapters.calls).toEqual(["observeCheck", "createCheck"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeCheck",
+      "getPullRequestPublicationContext",
+      "createCheck",
+    ]);
     expect(store.ambiguous).toHaveLength(1);
   });
 
@@ -142,6 +230,12 @@ describe("GitHub publication operation executor", () => {
       httpStatus: 422,
       classification: "invalidReviewCommentPlacement",
     });
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeReview",
+      "getPullRequestPublicationContext",
+      "publishReview",
+    ]);
   });
 
   test("activates the relocated review only from exact semantic 422 evidence and live marker absence", async () => {
@@ -150,7 +244,12 @@ describe("GitHub publication operation executor", () => {
     const adapters = fakeAdapters();
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied", shouldContinue: true });
-    expect(adapters.calls).toEqual(["observeReview", "publishReview"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeReview",
+      "getPullRequestPublicationContext",
+      "publishReview",
+    ]);
   });
 
   test("retains observed success as unknown when the exact lease CAS is lost", async () => {
@@ -170,7 +269,12 @@ describe("GitHub publication operation executor", () => {
     const adapters = fakeAdapters({ partialReviewId: "501", createdCommentId: "601" });
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
-    expect(adapters.calls).toEqual(["observeReview", "publishFileComment"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeReview",
+      "getPullRequestPublicationContext",
+      "publishFileComment",
+    ]);
     expect(store.terminal.at(-1)).toMatchObject({ outcome: "created", remoteId: "601" });
   });
 
@@ -180,7 +284,12 @@ describe("GitHub publication operation executor", () => {
     const adapters = fakeAdapters();
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
-    expect(adapters.calls).toEqual(["observeReviewComment", "updateReviewComment"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeReviewComment",
+      "getPullRequestPublicationContext",
+      "updateReviewComment",
+    ]);
     expect(store.terminal.at(-1)).toMatchObject({ outcome: "applied", remoteId: "701" });
   });
 
@@ -190,7 +299,11 @@ describe("GitHub publication operation executor", () => {
     const adapters = fakeAdapters();
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
-    expect(adapters.calls).toEqual(["updateReviewSummary"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "getPullRequestPublicationContext",
+      "updateReviewSummary",
+    ]);
     expect(store.terminal.at(-1)).toMatchObject({ outcome: "applied", remoteId: "501" });
   });
 
@@ -247,8 +360,49 @@ describe("GitHub publication operation executor", () => {
     const adapters = fakeAdapters({ createdCheckId: "81" });
 
     await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
-    expect(adapters.calls).toEqual(["observeCheck", "observeCheck", "createCheck"]);
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeCheck",
+      "observeCheck",
+      "getPullRequestPublicationContext",
+      "createCheck",
+    ]);
     expect(adapters.calls.filter((call) => call === "createCheck")).toHaveLength(1);
+  });
+
+  test("supersedes an exact-absence retry when the live snapshot has drifted", async () => {
+    const fixture = fixtureFor("advisoryCheckCreate");
+    const claim = fixture.claim as ClaimedGitHubPublicationOperation & {
+      attemptNumber: number;
+      leaseGeneration: number;
+      retryAuthorization: ClaimedGitHubPublicationOperation["retryAuthorization"];
+    };
+    claim.attemptNumber = 2;
+    claim.leaseGeneration = 2;
+    claim.retryAuthorization = {
+      kind: "exactAbsence",
+      priorAttemptNumber: 1,
+      priorLeaseGeneration: 1,
+      observedAt: NOW,
+      evidenceDigest: digest("absence-evidence"),
+    };
+    const store = new MemoryStore([claim]);
+    const adapters = fakeAdapters({
+      liveSnapshots: [{}, { headSha: "d".repeat(40) }],
+    });
+
+    await expect(run(store, adapters)).resolves.toMatchObject({
+      status: "superseded",
+      shouldContinue: true,
+    });
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeCheck",
+      "observeCheck",
+      "getPullRequestPublicationContext",
+    ]);
+    expect(mutationCalls(adapters.calls)).toEqual([]);
+    expect(store.ambiguous).toHaveLength(0);
   });
 
   test("reconciles ambiguous update operations only from exact desired remote state", async () => {
@@ -346,6 +500,105 @@ describeDb("PostgreSQL publication operation store", () => {
     expect(claim?.databaseRepositoryId).not.toBe(
       unrelated.databaseRepositoryId,
     );
+  });
+
+  for (const [index, snapshotCase] of SNAPSHOT_DRIFT_CASES.entries()) {
+    test(`stores no-write superseded evidence for ${snapshotCase.name}`, async () => {
+      const scope = await stageDatabaseFixture(pool, 201 + index);
+      const store = new PostgresGitHubPublicationOperationStore(pool, scope);
+      const adapters = fakeAdapters({ liveSnapshot: snapshotCase.liveSnapshot });
+
+      await expect(run(store, adapters)).resolves.toMatchObject({
+        status: "superseded",
+        shouldContinue: true,
+      });
+      expect(mutationCalls(adapters.calls)).toEqual([]);
+
+      const stored = await pool.query<{
+        state: string;
+        phases: string[];
+        outcome: string | null;
+        dispatched: boolean | null;
+        mismatches: string[] | null;
+      }>(
+        `SELECT operation.state,
+                operation.terminal_evidence->>'outcome' AS outcome,
+                (operation.terminal_evidence->'result'->>'dispatched')::boolean AS dispatched,
+                ARRAY(
+                  SELECT jsonb_array_elements_text(
+                    operation.terminal_evidence->'result'->'mismatches'
+                  )
+                ) AS mismatches,
+                ARRAY(
+                  SELECT phase FROM review_publication_operation_attempts attempt
+                  WHERE attempt.repository_id = operation.repository_id
+                    AND attempt.pr_number = operation.pr_number
+                    AND attempt.publication_generation = operation.publication_generation
+                    AND attempt.operation_key = operation.operation_key
+                  ORDER BY attempt.id
+                ) AS phases
+         FROM review_publication_operations operation
+         WHERE operation.repository_id = $1::bigint
+           AND operation.pr_number = $2
+           AND operation.publication_generation = $3::bigint
+           AND operation.state = 'superseded'`,
+        [
+          scope.databaseRepositoryId,
+          scope.pullRequestNumber,
+          scope.publicationGeneration,
+        ],
+      );
+      expect(stored.rows).toHaveLength(1);
+      expect(stored.rows[0]).toMatchObject({
+        state: "superseded",
+        phases: ["claimed", "not_dispatched"],
+        outcome: "superseded",
+        dispatched: false,
+        mismatches: expect.arrayContaining([snapshotCase.mismatch]),
+      });
+    });
+  }
+
+  test("executes from the exact PostgreSQL operation snapshot", async () => {
+    const scope = await stageDatabaseFixture(pool, 220);
+    const store = new PostgresGitHubPublicationOperationStore(pool, scope);
+    const adapters = fakeAdapters({ createdCheckId: "81" });
+
+    await expect(run(store, adapters)).resolves.toMatchObject({
+      status: "applied",
+      shouldContinue: true,
+    });
+    expect(adapters.calls).toEqual([
+      "getPullRequestPublicationContext",
+      "observeCheck",
+      "getPullRequestPublicationContext",
+      "createCheck",
+    ]);
+
+    const stored = await pool.query<{ state: string; phases: string[] }>(
+      `SELECT operation.state,
+              ARRAY(
+                SELECT phase FROM review_publication_operation_attempts attempt
+                WHERE attempt.repository_id = operation.repository_id
+                  AND attempt.pr_number = operation.pr_number
+                  AND attempt.publication_generation = operation.publication_generation
+                  AND attempt.operation_key = operation.operation_key
+                ORDER BY attempt.id
+              ) AS phases
+       FROM review_publication_operations operation
+       WHERE operation.repository_id = $1::bigint
+         AND operation.pr_number = $2
+         AND operation.publication_generation = $3::bigint
+         AND operation.state = 'applied'`,
+      [
+        scope.databaseRepositoryId,
+        scope.pullRequestNumber,
+        scope.publicationGeneration,
+      ],
+    );
+    expect(stored.rows).toEqual([
+      { state: "applied", phases: ["claimed", "dispatched", "applied"] },
+    ]);
   });
 
   test("claims one current sealed operation under concurrent workers and appends each phase once", async () => {
@@ -614,6 +867,17 @@ function run(store: GitHubPublicationOperationStore, adapters: GitHubPublication
   });
 }
 
+function mutationCalls(calls: readonly string[]): string[] {
+  return calls.filter((call) =>
+    call === "publishReview" ||
+    call === "publishFileComment" ||
+    call === "updateReviewComment" ||
+    call === "updateReviewSummary" ||
+    call === "createCheck" ||
+    call.startsWith("completeCheck:")
+  );
+}
+
 class MemoryStore implements GitHubPublicationOperationStore {
   terminal: PublicationTerminalEvidence[] = [];
   ambiguous: Array<PublicationDispatchEvidence & { errorReason: string }> = [];
@@ -667,6 +931,11 @@ class MemoryStore implements GitHubPublicationOperationStore {
     return true;
   }
 
+  async finishSuperseded(_claim: ClaimedGitHubPublicationOperation, evidence: PublicationTerminalEvidence) {
+    this.terminal.push(evidence);
+    return true;
+  }
+
   async finishAmbiguous(
     _claim: ClaimedGitHubPublicationOperation,
     evidence: PublicationDispatchEvidence & { errorReason: string },
@@ -702,6 +971,19 @@ class MemoryStore implements GitHubPublicationOperationStore {
   }
 }
 
+type LiveSnapshotOverride = Partial<{
+  headSha: string;
+  baseSha: string;
+  open: boolean;
+  merged: boolean;
+  draft: boolean;
+  updatedAt: string;
+  mergeBaseSha: string;
+  targetBranch: string;
+  title: string;
+  body: string;
+}>;
+
 function fakeAdapters(options: {
   existingCheckId?: string;
   createdCheckId?: string;
@@ -711,13 +993,37 @@ function fakeAdapters(options: {
   createdCommentId?: string;
   expectedCompletionExternalId?: string;
   failCheckObservation?: boolean;
+  failSnapshotObservation?: boolean;
   exactReviewComment?: boolean;
   observedReviewBody?: string;
   checkCompletionState?: "applied" | "retryable" | "conflict";
+  liveSnapshot?: LiveSnapshotOverride;
+  liveSnapshots?: readonly LiveSnapshotOverride[];
 } = {}): GitHubPublicationAdapters & { calls: string[] } {
   const calls: string[] = [];
+  const liveSnapshots = [...(options.liveSnapshots ?? [])];
   return {
     calls,
+    async getPullRequestPublicationContext() {
+      calls.push("getPullRequestPublicationContext");
+      if (options.failSnapshotObservation) {
+        throw new Error("pull request snapshot is unavailable");
+      }
+      const liveSnapshot = liveSnapshots.shift() ?? options.liveSnapshot;
+      return {
+        headSha: HEAD,
+        baseSha: TARGET,
+        open: true,
+        merged: false,
+        draft: false,
+        updatedAt: "2026-08-15T00:00:00.000Z",
+        mergeBaseSha: BASE,
+        targetBranch: "main",
+        title: TITLE,
+        body: BODY,
+        ...liveSnapshot,
+      };
+    },
     async observeReview(_token, _repo, _pr, _marker, headSha, commentMarkers) {
       calls.push("observeReview");
       if (!options.partialReviewId) return null;
@@ -910,6 +1216,12 @@ function fixtureFor(kind:
     pullRequestNumber: Number(expected.pullRequestNumber),
     publicationGeneration: String(expected.controllerGeneration),
     headSha: HEAD,
+    mergeBaseSha: BASE,
+    targetSha: TARGET,
+    targetBranch: "main",
+    pullRequestTitle: TITLE,
+    pullRequestBody: BODY,
+    expectedPullRequestUpdatedAt: "2026-08-15T00:00:00.000Z",
     operationKey: operation.operationKey,
     operationOrdinal: index + 1,
     operationSource: record.source,

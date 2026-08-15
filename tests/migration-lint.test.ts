@@ -557,7 +557,6 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "drizzle", "0050_queue_lock_generation.sql"),
       "utf8",
     );
-
     expect(migration).toContain(
       'ALTER TABLE "jobs" ADD COLUMN "lock_generation" bigint DEFAULT 0 NOT NULL;',
     );
@@ -605,6 +604,42 @@ describe("migration lint", () => {
       "queued-to-running claim must advance lock_generation by one",
     );
     expect(guard).toContain("USING ERRCODE = 'check_violation'");
+  });
+
+  test("fences direct mutator claims only under active controller ownership", async () => {
+    const migration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0056_publication_controller_queue_fence.sql",
+      ),
+      "utf8",
+    );
+    const claimStart = migration.indexOf(
+      'AND OLD."status" = \'queued\'\n    AND NEW."status" = \'running\'',
+    );
+    const claim = migration.slice(claimStart);
+
+    expect(migration.startsWith("SET LOCAL lock_timeout = '5s';")).toBe(true);
+    expect(migration).toContain(
+      'CREATE OR REPLACE FUNCTION "stage_unactivated_release_job"()',
+    );
+    expect(migration).not.toContain("publication-controller-dark:%");
+    expect(migration).toContain("publication-controller-release:%");
+    expect(migration).toContain("publication-controller-recovery:%");
+    expect(migration).toContain("_postilPublicationControllerFence");
+    expect(migration).toContain("_postilPublicationControllerRunAfter");
+    expect(migration).toContain(
+      "hashtextextended('postil:publication-controller-release', 0)",
+    );
+    expect(claimStart).toBeGreaterThanOrEqual(0);
+    expect(claim).toContain(
+      'IF NEW."kind" IN (\'review\', \'gate-state-sync\', \'check-run-cleanup\') THEN',
+    );
+    expect(claim).toContain('NEW."status" := \'queued\';');
+    expect(claim).toContain("NEW.\"attempts\" := OLD.\"attempts\"");
+    expect(claim).toContain("NEW.\"run_after\" := 'infinity'::timestamptz");
   });
 
   test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
@@ -890,6 +925,15 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "drizzle", "0050_queue_lock_generation.sql"),
       "utf8",
     );
+    const publicationControllerMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0056_publication_controller_queue_fence.sql",
+      ),
+      "utf8",
+    );
     const rollout = await readFile(
       join(import.meta.dir, "..", "src", "lib", "release-job-rollout.ts"),
       "utf8",
@@ -907,11 +951,24 @@ describe("migration lint", () => {
       ),
       "utf8",
     );
+    const publicationControllerDeactivation = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "scripts",
+        "deactivate-publication-controller.ts",
+      ),
+      "utf8",
+    );
     const packageJson = JSON.parse(
       await readFile(join(import.meta.dir, "..", "package.json"), "utf8"),
     ) as { scripts: Record<string, string> };
     const deploy = await readFile(
       join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
+      "utf8",
+    );
+    const ci = await readFile(
+      join(import.meta.dir, "..", ".github", "workflows", "ci.yml"),
       "utf8",
     );
 
@@ -957,6 +1014,46 @@ describe("migration lint", () => {
     expect(rollout).toContain("rerun activation to resume");
     expect(rollout).toContain("WHERE status = 'running'");
     expect(rollout).toContain("payload->>$1 = 'true'");
+    const quiesceSession = rollout.slice(
+      rollout.indexOf("async function beginQueueQuiesceSession"),
+      rollout.indexOf("async function releaseQueueQuiesceSession"),
+    );
+    expect(quiesceSession.indexOf("pg_advisory_lock")).toBeGreaterThanOrEqual(0);
+    expect(quiesceSession.indexOf("pg_advisory_lock")).toBeLessThan(
+      quiesceSession.indexOf("DELETE FROM deployment_capabilities"),
+    );
+    expect(quiesceSession).toContain("QUEUE_LOCK_GENERATION_CAPABILITY");
+    expect(rollout).toContain("publication-controller-consumer-ready:");
+    expect(rollout).toContain("publication-controller-recovery:");
+    expect(rollout).toContain("BEGIN TRANSACTION READ ONLY");
+    expect(rollout).toContain("unplannedQueuedJobIds");
+    expect(rollout).not.toContain(
+      "_postilPublicationControllerGenerationId",
+    );
+    expect(rollout).toContain("recordPublicationControllerConsumerReady");
+    expect(activation).toContain("recordPublicationControllerConsumerReady");
+    expect(activation).toContain("consumerProbe");
+    expect(activation).toContain(
+      "production executor no-mutation probe",
+    );
+    expect(publicationControllerDeactivation).toContain(
+      "durable generations are not bound to an exact",
+    );
+    expect(publicationControllerDeactivation).toContain(
+      "readProductionPublicationControllerRecoveryState",
+    );
+    expect(publicationControllerMigration).toContain(
+      "'review', 'gate-state-sync', 'check-run-cleanup'",
+    );
+    expect(publicationControllerMigration).toContain(
+      "publication-controller-recovery:",
+    );
+    expect(publicationControllerMigration).not.toContain(
+      "_postilPublicationControllerGenerationId",
+    );
+    expect(publicationControllerMigration).not.toContain(
+      "publication-controller-dark:%",
+    );
     expect(packageJson.scripts["release:prepare"]).toContain(
       "queue:quiesce-lock-generation",
     );
@@ -970,6 +1067,12 @@ describe("migration lint", () => {
     expect(deploy.indexOf("verify-managed-fleet.jq")).toBeLessThan(
       deploy.indexOf('bun run jobs:activate-release'),
     );
+    expect(ci).toContain(
+      "Verify publication-controller authority and recovery on PostgreSQL",
+    );
+    expect(ci).toContain(
+      "bun test --isolate --timeout 60000 tests/publication-controller-release-rollout.test.ts",
+    );
   });
 
   test("bounds lock acquisition in new hot-table migrations", async () => {
@@ -980,6 +1083,7 @@ describe("migration lint", () => {
       "0051_finding_reconciliation_trigger.sql",
       "0052_finding_lifecycle_observations.sql",
       "0053_own_finding_lifecycle_observations.sql",
+      "0056_publication_controller_queue_fence.sql",
     ]) {
       const migration = await readFile(
         join(import.meta.dir, "..", "drizzle", file),

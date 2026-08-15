@@ -110,7 +110,11 @@ import {
 } from "@/lib/gate-mode";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
-import { HostedInferenceReleaseDarkError } from "@/lib/release-job-rollout";
+import {
+  HostedInferenceReleaseDarkError,
+  PublicationControllerReleaseFenceError,
+  publicationControllerLegacyReviewFenced,
+} from "@/lib/release-job-rollout";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
   consumePrivateWorkerRehearsalAfterStaging,
@@ -1219,6 +1223,13 @@ export async function runReviewJob(
   const db = getDb();
   const leaseActive = () => externalSideEffectLeaseActive(getPool(), timing.lease);
   if (!(await leaseActive())) return;
+  const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+  if (
+    releaseSha &&
+    await publicationControllerLegacyReviewFenced(getPool(), releaseSha)
+  ) {
+    throw new PublicationControllerReleaseFenceError(releaseSha);
+  }
 
   const installation = (
     await db

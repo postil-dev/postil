@@ -198,6 +198,15 @@ const publicationReceiptSchema = z
 
 export type PublicationReceipt = z.infer<typeof publicationReceiptSchema>;
 
+/** Validate an in-memory publication receipt against the persisted wire contract. */
+export function parsePublicationReceipt(value: unknown): PublicationReceipt {
+  const parsed = publicationReceiptSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`publication receipt is invalid: ${z.prettifyError(parsed.error)}`);
+  }
+  return parsed.data;
+}
+
 export async function readPublicationReceipt(path: string): Promise<PublicationReceipt> {
   const stat = await lstat(path);
   if (!stat.isFile() || stat.isSymbolicLink()) {
@@ -215,11 +224,7 @@ export async function readPublicationReceipt(path: string): Promise<PublicationR
   } catch {
     throw new Error("publication receipt is not valid JSON");
   }
-  const parsed = publicationReceiptSchema.safeParse(decoded);
-  if (!parsed.success) {
-    throw new Error(`publication receipt is invalid: ${z.prettifyError(parsed.error)}`);
-  }
-  return parsed.data;
+  return parsePublicationReceipt(decoded);
 }
 
 function envelopeFindingIds(envelope: Envelope): Set<string> {
