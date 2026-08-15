@@ -76,10 +76,13 @@ export interface GitHubPublicationInputIdentity {
   headSha: string;
   mergeBaseSha: string;
   targetSha: string;
+  targetBranch: string;
   pullRequestTitle: string;
   pullRequestBody: string;
   expectedPullRequestUpdatedAt: string;
   cliVersion: string;
+  cliCommitSha: string;
+  cliArtifactSha256: string;
   configurationSha256: string;
   providerIdentity: string;
   retryLineage: string;
@@ -110,12 +113,16 @@ export function githubPublicationInputIdentity(
     ["head", input.headSha],
     ["merge base", input.mergeBaseSha],
     ["target", input.targetSha],
+    ["CLI commit", input.cliCommitSha],
     ...(input.baselineHeadSha === undefined
       ? []
       : [["baseline head", input.baselineHeadSha] as const]),
   ]) assertGitSha(value, `${name} SHA`);
   if (!/^sha256:[0-9a-f]{64}$/.test(input.configurationSha256)) {
     reject("configuration digest is invalid");
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(input.cliArtifactSha256)) {
+    reject("CLI artifact digest is invalid");
   }
   if (
     input.baselineEnvelopeSha256 !== undefined &&
@@ -145,16 +152,28 @@ export function githubPublicationInputIdentity(
   if (!/^[^/\s]{1,100}\/[^/\s]{1,100}$/.test(input.repositoryFullName)) {
     reject("repository full name is invalid");
   }
+  if (
+    input.targetBranch.length === 0 ||
+    Buffer.byteLength(input.targetBranch, "utf8") > 255 ||
+    input.pullRequestTitle.length === 0 ||
+    Buffer.byteLength(input.pullRequestTitle, "utf8") > 512 ||
+    Buffer.byteLength(input.pullRequestBody, "utf8") > 65_536
+  ) {
+    reject("pull request snapshot text is invalid");
+  }
   for (const [name, value, maximum] of [
     ["CLI version", input.cliVersion, 100],
-    ["provider identity", input.providerIdentity, 1_024],
-    ["retry lineage", input.retryLineage, 500],
+    ["provider identity", input.providerIdentity, 2_048],
+    ["retry lineage", input.retryLineage, 200],
   ] as const) {
     if (value.length === 0 || Buffer.byteLength(value, "utf8") > maximum) {
       reject(`${name} is invalid`);
     }
   }
   if (input.detailsUrl !== undefined) {
+    if (Buffer.byteLength(input.detailsUrl, "utf8") > 2_048) {
+      reject("details URL is invalid");
+    }
     let url: URL;
     try {
       url = new URL(input.detailsUrl);
@@ -178,10 +197,13 @@ export function githubPublicationInputIdentity(
     headSha: input.headSha,
     mergeBaseSha: input.mergeBaseSha,
     targetSha: input.targetSha,
+    targetBranch: input.targetBranch,
     pullRequestTitleSha256: textDigest(input.pullRequestTitle),
     pullRequestBodySha256: textDigest(input.pullRequestBody),
     expectedPullRequestUpdatedAt: input.expectedPullRequestUpdatedAt,
     cliVersion: input.cliVersion,
+    cliCommitSha: input.cliCommitSha,
+    cliArtifactSha256: input.cliArtifactSha256,
     configurationSha256: input.configurationSha256,
     providerIdentity: input.providerIdentity,
     retryLineage: input.retryLineage,
