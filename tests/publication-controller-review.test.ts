@@ -46,7 +46,7 @@ describe("publication-controller production consumer probe", () => {
       releaseSha: RELEASE_SHA,
       mode: "no-mutation",
       observedMutationCount: 0,
-      checkedJobKinds: ["review", "gate-state-sync", "check-run-cleanup"],
+      checkedJobKinds: ["review"],
     });
   });
 
@@ -62,9 +62,7 @@ describe("publication-controller production consumer probe", () => {
       client,
       releaseSha: RELEASE_SHA,
       jobKinds: [
-        "review",
         "check-run-cleanup",
-        "gate-state-sync",
       ] as unknown as typeof PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
     })).rejects.toThrow("exact fenced job kinds");
   });

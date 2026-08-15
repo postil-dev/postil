@@ -13,6 +13,7 @@ import {
 } from "@/lib/release-job-rollout";
 import { hostedInferenceEnabled, optionalEnv } from "@/lib/env";
 import { backfillSelfServiceTrials } from "@/lib/self-service-trial";
+import { probePublicationControllerProductionConsumerNoMutation } from "@/worker/publication-controller-review";
 import { backfillBillingContactVerification } from "./backfill-billing-contact-verification";
 import { verifyPublicationControllerCliCapability } from "./verify-postil-cli-contract";
 
@@ -20,7 +21,10 @@ async function main(): Promise<void> {
   try {
     const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
     const publicationController = releaseSha
-      ? await activatePublicationControllerAfterCliPreflight(releaseSha)
+      ? await activatePublicationControllerAfterCliPreflight(
+          releaseSha,
+          probePublicationControllerProductionConsumerNoMutation,
+        )
       : null;
     // Retire escalation email state before unrelated release activation work.
     // Migration 0020 holds all release-v1 job kinds at infinity until the

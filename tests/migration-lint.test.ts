@@ -648,6 +648,49 @@ describe("migration lint", () => {
     expect(claim).toContain("NEW.\"run_after\" := 'infinity'::timestamptz");
   });
 
+  test("narrows publication-controller ownership to reviews and releases old holds", async () => {
+    const migration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0058_publication_controller_review_ownership.sql",
+      ),
+      "utf8",
+    );
+
+    expect(migration).toContain(
+      'CREATE OR REPLACE FUNCTION "stage_unactivated_release_job"()',
+    );
+    expect(migration).not.toContain(
+      'IF NEW."kind" IN (\'review\', \'gate-state-sync\', \'check-run-cleanup\') THEN',
+    );
+    expect(migration).toContain('IF NEW."kind" = \'review\' THEN');
+    expect(migration).toContain(
+      "WHERE kind IN ('gate-state-sync', 'check-run-cleanup')",
+    );
+    expect(migration).toContain(
+      "payload - '_postilPublicationControllerFence'",
+    );
+    expect(migration).toContain(
+      "'_postilPublicationControllerRunAfter'",
+    );
+    expect(migration).toContain("invalid_datetime_format");
+    expect(migration).toContain("datetime_field_overflow");
+    expect(migration).toContain("pg_try_advisory_xact_lock(");
+    expect(migration).not.toContain("pg_advisory_unlock(");
+    expect(migration).toContain(
+      "AND NEW.\"kind\" IN ('gate-state-sync', 'check-run-cleanup')",
+    );
+    expect(migration).toContain("OLD.\"run_after\"");
+    expect(migration).toContain("IF NOT isfinite(restored_run_after) THEN");
+    expect(
+      migration.indexOf("hashtextextended('postil:queue-lock-generation-v1', 0)"),
+    ).toBeLessThan(
+      migration.indexOf("hashtextextended('postil:publication-controller-release', 0)"),
+    );
+  });
+
   test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
     const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"), "utf8");
 

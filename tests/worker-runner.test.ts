@@ -8,6 +8,7 @@ import "./quiet-console";
 const OLD_ENV = { ...process.env };
 
 const jobs: ClaimedJob[] = [];
+const controllerJobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const continued: Array<{ id: number; payload: Record<string, unknown> }> = [];
 const failed: Array<{ id: number; error: string }> = [];
@@ -16,6 +17,7 @@ const permanentFailures: number[] = [];
 const retriedIndefinitely: Array<{ id: number; error: string }> = [];
 const shutdownRequeues: number[] = [];
 let claimCalls = 0;
+const controllerClaimReleases: string[] = [];
 const claimCapabilities: string[][] = [];
 const claimOptions: Array<Record<string, unknown> | undefined> = [];
 let reviewRun: (() => Promise<unknown>) | undefined;
@@ -41,6 +43,7 @@ let reviewTiming:
 let reviewProcessGroup: string | undefined;
 let reviewSignal: AbortSignal | undefined;
 let reviewPublicationStartedCallback: (() => void) | undefined;
+let reviewControllerClaim: { releaseSha: string } | undefined;
 const operationalFailures: string[] = [];
 const operationalWarnings: string[] = [];
 
@@ -109,6 +112,14 @@ mock.module("@/lib/queue", () => ({
     claimCapabilities.push([...allowedKinds]);
     claimOptions.push(options);
     return jobs.shift();
+  },
+  claimPublicationControllerReviewJob: async (
+    _pool: unknown,
+    _workerId: string,
+    releaseSha: string,
+  ) => {
+    controllerClaimReleases.push(releaseSha);
+    return controllerJobs.shift() ?? null;
   },
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
     completed.push(job.id);
@@ -185,11 +196,13 @@ mock.module("@/worker/review", () => ({
     processGroup: string,
     signal?: AbortSignal,
     onPublicationStarted?: () => void,
+    publicationControllerClaim?: { releaseSha: string },
   ) => {
     reviewTiming = timing;
     reviewProcessGroup = processGroup;
     reviewSignal = signal;
     reviewPublicationStartedCallback = onPublicationStarted;
+    reviewControllerClaim = publicationControllerClaim;
     return await reviewRun?.();
   },
 }));
@@ -245,6 +258,7 @@ mock.module("@/worker/gate-enforcement-sweep", () => ({
 
 const {
   ActiveClaimExecutionRegistry,
+  claimPrivateWorkerJob,
   drainQueueOnce,
   runClaimedJob,
   triggerQueueDrain,
@@ -273,6 +287,7 @@ function reviewJob(id: number): ClaimedJob {
 beforeEach(() => {
   Object.assign(process.env, OLD_ENV);
   jobs.length = 0;
+  controllerJobs.length = 0;
   completed.length = 0;
   continued.length = 0;
   failed.length = 0;
@@ -281,6 +296,7 @@ beforeEach(() => {
   retriedIndefinitely.length = 0;
   shutdownRequeues.length = 0;
   claimCalls = 0;
+  controllerClaimReleases.length = 0;
   claimCapabilities.length = 0;
   claimOptions.length = 0;
   reviewRun = async () => undefined;
@@ -301,6 +317,7 @@ beforeEach(() => {
   reviewProcessGroup = undefined;
   reviewSignal = undefined;
   reviewPublicationStartedCallback = undefined;
+  reviewControllerClaim = undefined;
   operationalFailures.length = 0;
   operationalWarnings.length = 0;
 });
@@ -310,6 +327,61 @@ afterEach(() => {
     if (!(key in OLD_ENV)) delete process.env[key];
   }
   Object.assign(process.env, OLD_ENV);
+});
+
+describe("private worker claims", () => {
+  test("claims exact controller work before ordinary work", async () => {
+    const releaseSha = "a".repeat(40);
+    controllerJobs.push(reviewJob(41));
+    jobs.push(reviewJob(42));
+
+    const claim = await claimPrivateWorkerJob({
+      pool: {} as never,
+      workerId: "private-worker",
+      releaseSha,
+    });
+
+    expect(claim).toEqual({
+      job: expect.objectContaining({ id: 41 }),
+      publicationControllerClaim: { releaseSha },
+    });
+    expect(controllerClaimReleases).toEqual([releaseSha]);
+    expect(claimCalls).toBe(0);
+  });
+
+  test("falls back only to unfenced ordinary work", async () => {
+    const releaseSha = "b".repeat(40);
+    jobs.push(reviewJob(42));
+
+    const claim = await claimPrivateWorkerJob({
+      pool: {} as never,
+      workerId: "private-worker",
+      releaseSha,
+    });
+
+    expect(claim?.job.id).toBe(42);
+    expect(claim?.publicationControllerClaim).toBeUndefined();
+    expect(controllerClaimReleases).toEqual([releaseSha]);
+    expect(claimOptions).toEqual([
+      { excludePublicationControllerFencedJobs: true },
+    ]);
+  });
+
+  test("does not enable controller claiming for a short release", async () => {
+    jobs.push(reviewJob(43));
+
+    const claim = await claimPrivateWorkerJob({
+      pool: {} as never,
+      workerId: "private-worker",
+      releaseSha: "c".repeat(39),
+    });
+
+    expect(claim?.job.id).toBe(43);
+    expect(controllerClaimReleases).toEqual([]);
+    expect(claimOptions).toEqual([
+      { excludePublicationControllerFencedJobs: true },
+    ]);
+  });
 });
 
 describe("drainQueueOnce", () => {
@@ -354,6 +426,21 @@ describe("drainQueueOnce", () => {
 
     expect(reviewSignal).toBe(controller.signal);
     expect(reviewPublicationStartedCallback).toBe(onPublicationStarted);
+  });
+
+  test("passes exact controller claim authority to review execution", async () => {
+    const publicationControllerClaim = { releaseSha: "d".repeat(40) };
+
+    await runClaimedJob(
+      reviewJob(4),
+      "worker 0",
+      "worker",
+      undefined,
+      undefined,
+      publicationControllerClaim,
+    );
+
+    expect(reviewControllerClaim).toEqual(publicationControllerClaim);
   });
 
   test("does not complete an atomically settled controller review twice", async () => {
@@ -503,6 +590,8 @@ describe("drainQueueOnce", () => {
     );
     expect(worker).toContain("activeClaimExecutions.add(job, controller)");
     expect(worker).toContain("activeClaimExecutions.delete(execution)");
+    expect(worker).toContain("await claimPrivateWorkerJob({");
+    expect(worker).toContain("claim?.publicationControllerClaim");
     expect(worker).not.toContain("new Map<number, AbortController>()");
     expect(worker).not.toContain("new Map<number, JobLease>()");
     expect(worker).toContain("if (shuttingDown && job)");
@@ -597,7 +686,10 @@ describe("drainQueueOnce", () => {
         "github-reaction",
       ],
     ]);
-    expect(claimOptions).toEqual([{ excludePrivateWorkerRehearsals: true }]);
+    expect(claimOptions).toEqual([{
+      excludePrivateWorkerRehearsals: true,
+      excludePublicationControllerFencedJobs: true,
+    }]);
   });
 
   test("dispatches fixed webhook comments through a durable job", async () => {

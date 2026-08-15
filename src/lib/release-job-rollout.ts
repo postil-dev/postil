@@ -34,8 +34,6 @@ const PUBLICATION_CONTROLLER_QUEUE_FENCE_RUN_AFTER =
   "_postilPublicationControllerRunAfter";
 export const PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS = [
   "review",
-  "gate-state-sync",
-  "check-run-cleanup",
 ] as const;
 export const PUBLICATION_CONTROLLER_LOCK =
   "postil:publication-controller-release";
@@ -925,6 +923,7 @@ export async function activatePublicationControllerRelease(
       );
     }
     await assertNoRunningPublicationControllerMutators(client);
+    await assertNoQueuedLegacyPublicationRecoveries(client);
     await client.query(
       `INSERT INTO deployment_capabilities (name)
        VALUES ($1)
@@ -1255,6 +1254,42 @@ async function assertNoRunningPublicationControllerMutators(
   if (running > 0) {
     throw new Error(
       `${running} direct GitHub mutator job claim(s) are running before ` +
+        "publication-controller activation",
+    );
+  }
+}
+
+async function assertNoQueuedLegacyPublicationRecoveries(
+  client: Pick<PoolClient, "query">,
+): Promise<void> {
+  const result = await client.query<{ count: string }>(
+    `SELECT count(*)::text AS count
+       FROM jobs job
+      WHERE job.kind = 'review'
+        AND job.status = 'queued'
+        AND job.payload ? 'recoveryReviewId'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM review_publication_generations generation
+          WHERE generation.review_id =
+            CASE
+              WHEN job.payload->>'recoveryReviewId' ~ '^[1-9][0-9]*$'
+                THEN (job.payload->>'recoveryReviewId')::bigint
+              ELSE NULL
+            END
+            AND generation.review_input_sequence =
+              CASE
+                WHEN job.payload->>'reviewInputSequence' ~ '^[1-9][0-9]*$'
+                  THEN (job.payload->>'reviewInputSequence')::bigint
+                ELSE NULL
+              END
+            AND generation.sealed_at IS NOT NULL
+        )`,
+  );
+  const queued = Number(result.rows[0]?.count ?? 0);
+  if (queued > 0) {
+    throw new Error(
+      `${queued} legacy staged review recovery job(s) must drain before ` +
         "publication-controller activation",
     );
   }

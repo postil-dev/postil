@@ -407,6 +407,13 @@
       "when": 1786767457851,
       "tag": "0057_publication_controller_supersession_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1786767457852,
+      "tag": "0058_publication_controller_review_ownership",
+      "breakpoints": true
     }
   ]
 }

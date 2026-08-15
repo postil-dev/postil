@@ -1,5 +1,7 @@
 import { hostname } from "node:os";
 
+import type { Pool } from "pg";
+
 import { getDb, getPool } from "@/lib/db";
 import { optionalEnv, readPositiveIntEnv, requireEnv } from "@/lib/env";
 import {
@@ -10,6 +12,7 @@ import {
 import type { GateStateSyncJobPayload } from "@/lib/finding-approvals";
 import {
   claimJob,
+  claimPublicationControllerReviewJob,
   continueClaimedJob,
   completeWebhookDelivery,
   completeJob,
@@ -81,6 +84,7 @@ import {
   WorkerShutdownError,
 } from "./review";
 import { watchdogPass } from "./watchdog";
+import type { PublicationControllerClaimAuthority } from "./publication-controller-review";
 
 const DEFAULT_DRAIN_MAX_JOBS = readPositiveIntEnv(
   "POSTIL_QUEUE_DRAIN_MAX_JOBS",
@@ -114,6 +118,36 @@ export const PROCESSABLE_JOB_KINDS = [
   ...WEB_PROCESSABLE_JOB_KINDS,
   "gate-enforcement-sweep",
 ] as const;
+
+export interface PrivateWorkerClaim {
+  job: ClaimedJob;
+  publicationControllerClaim?: PublicationControllerClaimAuthority;
+}
+
+/** Claim exact controller work first, then ordinary unfenced worker work. */
+export async function claimPrivateWorkerJob(input: {
+  pool: Pool;
+  workerId: string;
+  releaseSha: string | undefined;
+}): Promise<PrivateWorkerClaim | null> {
+  if (input.releaseSha && /^[0-9a-f]{40}$/u.test(input.releaseSha)) {
+    const controllerJob = await claimPublicationControllerReviewJob(
+      input.pool,
+      input.workerId,
+      input.releaseSha,
+    );
+    if (controllerJob) {
+      return {
+        job: controllerJob,
+        publicationControllerClaim: { releaseSha: input.releaseSha },
+      };
+    }
+  }
+  const job = await claimJob(input.pool, input.workerId, PROCESSABLE_JOB_KINDS, {
+    excludePublicationControllerFencedJobs: true,
+  });
+  return job ? { job } : null;
+}
 
 export interface ActiveClaimExecution {
   readonly identity: string;
@@ -167,6 +201,7 @@ async function handleJob(
   processGroup: ObservabilityProcessGroup,
   signal?: AbortSignal,
   onReviewPublicationStarted?: () => void,
+  publicationControllerClaim?: PublicationControllerClaimAuthority,
 ): Promise<JobAction | void> {
   switch (job.kind) {
     case "webhook-dispatch": {
@@ -196,6 +231,7 @@ async function handleJob(
         processGroup,
         signal,
         onReviewPublicationStarted,
+        publicationControllerClaim,
       );
     case "respond":
       await runRespondJob(job.payload as RespondJobPayload, job);
@@ -280,6 +316,7 @@ export async function runClaimedJob(
   processGroup: ObservabilityProcessGroup = "worker",
   signal?: AbortSignal,
   onReviewPublicationStarted?: () => void,
+  publicationControllerClaim?: PublicationControllerClaimAuthority,
 ): Promise<void> {
   const started = Date.now();
   console.log(`[${label}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
@@ -289,6 +326,7 @@ export async function runClaimedJob(
       processGroup,
       signal,
       onReviewPublicationStarted,
+      publicationControllerClaim,
     );
     if (action?.kind === "continue") {
       await continueClaimedJob(getPool(), job, action.payload, {
@@ -457,6 +495,7 @@ export async function drainQueueOnce(
   while (drained < maxJobs && Date.now() < deadlineAt) {
     const job = await claimJob(getPool(), workerId, WEB_PROCESSABLE_JOB_KINDS, {
       excludePrivateWorkerRehearsals: true,
+      excludePublicationControllerFencedJobs: true,
     });
     if (!job) break;
     await runClaimedJob(job, label, "web");

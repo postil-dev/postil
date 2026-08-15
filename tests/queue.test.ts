@@ -139,9 +139,27 @@ describe("queue transition structure", () => {
     expect(claimSource).toContain(
       "active review claim was suppressed by queue identity enforcement",
     );
+    expect(claimSource).toContain(
+      "excludePublicationControllerFencedJobs",
+    );
+    expect(claimSource).toContain(
+      "_postilPublicationControllerFence' IS DISTINCT FROM 'true'",
+    );
     expect(controllerClaimSource).toContain("job.kind = 'review'");
     expect(controllerClaimSource).toContain(
       "PUBLICATION_CONTROLLER_CLAIM_LOCK_TIMEOUT_MS",
+    );
+    expect(controllerClaimSource).toContain(
+      "FROM review_publication_generations generation",
+    );
+    expect(controllerClaimSource).toContain(
+      "pg_input_is_valid(job.payload->>$9, 'timestamptz')",
+    );
+    expect(controllerClaimSource).toContain(
+      "reconciliation budget exhausted before claim",
+    );
+    expect(controllerClaimSource).toContain(
+      "WHEN job.payload->>'recoveryReviewId' ~ '^[1-9][0-9]*$'",
     );
     expect(controllerClaimSource.indexOf("set_config('lock_timeout'")).toBeLessThan(
       controllerClaimSource.indexOf("pg_advisory_xact_lock"),

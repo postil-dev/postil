@@ -38,6 +38,7 @@ const describeDb = TEST_URL ? describe : describe.skip;
 const DRIZZLE_DIRECTORY = join(import.meta.dir, "..", "drizzle");
 const RELEASE_A = "a".repeat(40);
 const RELEASE_B = "b".repeat(40);
+type TestMutatorKind = "review" | "gate-state-sync" | "check-run-cleanup";
 
 test("migration replay follows the Drizzle journal order", async () => {
   const files = await migrationFilesInJournalOrder();
@@ -79,7 +80,7 @@ describeDb("publication-controller release rollout", () => {
     await database?.drop();
   }, 30_000);
 
-  test("dark readiness never fences direct mutator jobs", async () => {
+  test("dark readiness never fences controller-owned reviews", async () => {
     expect(await deactivatePublicationControllerRelease(pool, RELEASE_A)).toEqual({
       routingRemoved: false,
       state: "dark",
@@ -227,12 +228,12 @@ describeDb("publication-controller release rollout", () => {
     }
   });
 
-  test("activation waits for direct mutator claims and rechecks under lock", async () => {
+  test("activation waits for review claims and rechecks under lock", async () => {
     await prepareRelease(pool, RELEASE_A);
     const running = await insertRunningMutator(
       pool,
-      "gate-state-sync",
-      "draining-gate-worker",
+      "review",
+      "draining-review-worker",
     );
     let signalWait!: () => void;
     const waiting = new Promise<void>((resolve) => {
@@ -258,7 +259,7 @@ describeDb("publication-controller release rollout", () => {
     });
   });
 
-  test("activation atomically adopts all direct mutators with exact schedules", async () => {
+  test("activation atomically adopts controller-owned reviews with exact schedules", async () => {
     await prepareRelease(pool, RELEASE_A);
     const jobs = await Promise.all(
       PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS.map((kind, index) =>
@@ -272,7 +273,7 @@ describeDb("publication-controller release rollout", () => {
 
     expect(await activatePublicationControllerRelease(pool, RELEASE_A)).toEqual({
       activated: true,
-      adopted: 3,
+      adopted: jobs.length,
     });
     expect(await publicationControllerReleaseActivated(pool, RELEASE_A)).toBe(true);
     expect(await activePublicationControllerRelease(pool)).toBe(RELEASE_A);
@@ -299,6 +300,108 @@ describeDb("publication-controller release rollout", () => {
         held: true,
       });
     }
+  });
+
+  test("forward ownership migration releases non-review jobs held by the old trigger", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    await activatePublicationControllerRelease(pool, RELEASE_A);
+    await activateQueueLockGeneration(pool);
+    await applyMigrationFile(pool, "0056_publication_controller_queue_fence.sql");
+
+    const gateRunAfter = "2040-03-11T05:06:07.000Z";
+    const cleanupRunAfter = "infinity";
+    const gate = await insertQueuedMutator(pool, "gate-state-sync", gateRunAfter);
+    const cleanup = await insertQueuedMutator(
+      pool,
+      "check-run-cleanup",
+      cleanupRunAfter,
+    );
+    expect(await queuedJobState(pool, gate)).toEqual({
+      held: true,
+      releaseSha: RELEASE_A,
+      scheduledFor: gateRunAfter,
+    });
+    const heldCleanup = await pool.query<{
+      held: boolean;
+      stored_run_after: string | null;
+    }>(
+      `SELECT run_after = 'infinity'::timestamptz AS held,
+              payload->>'_postilPublicationControllerRunAfter' AS stored_run_after
+         FROM jobs WHERE id = $1`,
+      [cleanup],
+    );
+    expect(heldCleanup.rows[0]).toEqual({
+      held: true,
+      stored_run_after: "infinity",
+    });
+
+    await applyMigrationFile(
+      pool,
+      "0058_publication_controller_review_ownership.sql",
+    );
+    expect(await queuedJobState(pool, gate)).toEqual({
+      held: false,
+      releaseSha: null,
+      scheduledFor: gateRunAfter,
+    });
+    expect(await queuedJobState(pool, cleanup)).toMatchObject({
+      held: false,
+      releaseSha: null,
+    });
+    await pool.query(
+      `UPDATE jobs
+          SET payload = payload || jsonb_build_object(
+                '_postilPublicationControllerFence', true,
+                '_postilPublicationControllerRunAfter', to_jsonb(run_after),
+                '_postilPublicationControllerReleaseSha', $2::text
+              ),
+              run_after = 'infinity'::timestamptz
+        WHERE id = $1`,
+      [gate, RELEASE_A],
+    );
+    expect(await queuedJobState(pool, gate)).toEqual({
+      held: false,
+      releaseSha: null,
+      scheduledFor: gateRunAfter,
+    });
+    expect(await claimAsLegacyWorker(pool, gate, "released-gate")).toEqual({
+      status: "running",
+      attempts: 1,
+      held: false,
+    });
+    expect(await claimAsLegacyWorker(pool, cleanup, "released-cleanup")).toEqual({
+      status: "running",
+      attempts: 1,
+      held: false,
+    });
+  });
+
+  test("ownership migration fails bounded when queue authority is busy", async () => {
+    const blocker = await pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        ["postil:queue-lock-generation-v1"],
+      );
+      await expect(
+        applyMigrationFile(
+          pool,
+          "0058_publication_controller_review_ownership.sql",
+        ),
+      ).rejects.toThrow("could not acquire queue lock");
+      await blocker.query("ROLLBACK");
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+    }
+
+    await expect(
+      applyMigrationFile(
+        pool,
+        "0058_publication_controller_review_ownership.sql",
+      ),
+    ).resolves.toBeUndefined();
   });
 
   test("controller claim admits only due exact-release reviews", async () => {
@@ -335,13 +438,7 @@ describeDb("publication-controller release rollout", () => {
     await activateQueueLockGeneration(pool);
     const payloadBeforeClaim = await storedJobPayload(pool, dueReview);
 
-    expect(
-      await claimJob(pool, "legacy-worker", [
-        "review",
-        "gate-state-sync",
-        "check-run-cleanup",
-      ]),
-    ).toBeNull();
+    expect(await claimJob(pool, "legacy-worker", ["review"])).toBeNull();
     expect(
       await claimAsLegacyWorker(pool, dueReview, "direct-legacy-worker"),
     ).toEqual({
@@ -349,6 +446,18 @@ describeDb("publication-controller release rollout", () => {
       attempts: 0,
       held: true,
     });
+    expect(await claimAsLegacyWorker(pool, gate, "legacy-gate")).toEqual({
+      status: "running",
+      attempts: 1,
+      held: false,
+    });
+    expect(await claimAsLegacyWorker(pool, cleanup, "legacy-cleanup")).toEqual({
+      status: "running",
+      attempts: 1,
+      held: false,
+    });
+    await markJobDone(pool, gate);
+    await markJobDone(pool, cleanup);
     expect(
       await claimPublicationControllerReviewJob(
         pool,
@@ -393,8 +502,97 @@ describeDb("publication-controller release rollout", () => {
       ),
     ).toBeNull();
     expect((await queuedJobState(pool, futureReview)).held).toBe(true);
-    expect((await jobLeaseState(pool, gate)).attempts).toBe(0);
-    expect((await jobLeaseState(pool, cleanup)).attempts).toBe(0);
+    expect(await jobLeaseState(pool, gate)).toMatchObject({
+      status: "done",
+      attempts: 1,
+    });
+    expect(await jobLeaseState(pool, cleanup)).toMatchObject({
+      status: "done",
+      attempts: 1,
+    });
+  });
+
+  test("controller claim terminalizes expired reviews and promotes retained input", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    const expired = await insertQueuedReview(
+      pool,
+      {
+        marker: "expired-review",
+        [COALESCED_REVIEW_PAYLOAD_KEY]: {
+          marker: "retained-review",
+        },
+      },
+      "2020-03-05T05:06:07.000Z",
+    );
+    await pool.query(
+      `UPDATE jobs
+          SET reconciliation_deadline_at = '2020-03-05T05:07:07.000Z'
+        WHERE id = $1`,
+      [expired],
+    );
+    await activatePublicationControllerRelease(pool, RELEASE_A);
+    await activateQueueLockGeneration(pool);
+
+    const claimed = await claimPublicationControllerReviewJob(
+      pool,
+      "deadline-controller",
+      RELEASE_A,
+    );
+    expect(claimed).toMatchObject({
+      kind: "review",
+      payload: { marker: "retained-review" },
+      attempts: 1,
+      lockGeneration: 1n,
+    });
+    expect(claimed?.id).not.toBe(expired);
+    const expiredState = await pool.query<{
+      status: string;
+      last_error: string | null;
+    }>("SELECT status, last_error FROM jobs WHERE id = $1", [expired]);
+    expect(expiredState.rows[0]).toEqual({
+      status: "failed",
+      last_error: "reconciliation budget exhausted before claim",
+    });
+  });
+
+  test("controller claim safely skips malformed durable routing fields", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    const malformedSchedule = await insertQueuedReview(
+      pool,
+      { _postilPublicationControllerRunAfter: "not-a-time" },
+      "2020-03-05T05:06:07.000Z",
+    );
+    await activatePublicationControllerRelease(pool, RELEASE_A);
+    await activateQueueLockGeneration(pool);
+    expect(
+      await claimPublicationControllerReviewJob(
+        pool,
+        "malformed-schedule-controller",
+        RELEASE_A,
+      ),
+    ).toBeNull();
+    const malformedScheduleState = await pool.query<{ status: string }>(
+      "SELECT status FROM jobs WHERE id = $1",
+      [malformedSchedule],
+    );
+    expect(malformedScheduleState.rows[0]?.status).toBe("queued");
+
+    const malformedRecovery = await insertQueuedReview(
+      pool,
+      {
+        recoveryReviewId: "not-an-id",
+        reviewInputSequence: "also-not-an-id",
+      },
+      "2020-03-05T05:08:07.000Z",
+    );
+    expect(
+      await claimPublicationControllerReviewJob(
+        pool,
+        "malformed-recovery-controller",
+        RELEASE_A,
+      ),
+    ).toBeNull();
+    expect((await jobLeaseState(pool, malformedRecovery)).status).toBe("queued");
   });
 
   test("controller claim rejects stale and ambiguous release authority", async () => {
@@ -443,6 +641,33 @@ describeDb("publication-controller release rollout", () => {
       lockGeneration: 0n,
       releaseSha: RELEASE_A,
     });
+  });
+
+  test("activation waits for legacy staged review recovery to drain", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    const recovery = await insertQueuedReview(
+      pool,
+      {
+        marker: "legacy-staged-recovery",
+        recoveryReviewId: 987654,
+        reviewInputSequence: "987654",
+      },
+      "2020-03-06T06:06:07.000Z",
+    );
+
+    await expect(
+      activatePublicationControllerRelease(pool, RELEASE_A),
+    ).rejects.toThrow("legacy staged review recovery job(s) must drain");
+    expect(await queuedJobState(pool, recovery)).toMatchObject({
+      releaseSha: null,
+    });
+    expect(
+      await claimPublicationControllerReviewJob(
+        pool,
+        "legacy-recovery-controller",
+        RELEASE_A,
+      ),
+    ).toBeNull();
   });
 
   test("concurrent controller claims advance one lease generation once", async () => {
@@ -647,8 +872,8 @@ describeDb("publication-controller release rollout", () => {
     await activateQueueLockGeneration(pool);
     expect((await queuedJobState(pool, review)).held).toBe(false);
     expect((await queuedJobState(pool, plannedReview)).held).toBe(true);
-    expect((await queuedJobState(pool, gate)).held).toBe(true);
-    expect((await queuedJobState(pool, cleanup)).held).toBe(true);
+    expect((await queuedJobState(pool, gate)).held).toBe(false);
+    expect((await queuedJobState(pool, cleanup)).held).toBe(false);
     expect(await claimAsLegacyWorker(pool, review, "rollback-review")).toEqual({
       status: "running",
       attempts: 1,
@@ -659,14 +884,14 @@ describeDb("publication-controller release rollout", () => {
       await claimAsLegacyWorker(pool, plannedReview, "planned-review"),
     ).toEqual({ status: "queued", attempts: 0, held: true });
     expect(await claimAsLegacyWorker(pool, gate, "legacy-gate")).toEqual({
-      status: "queued",
-      attempts: 0,
-      held: true,
+      status: "running",
+      attempts: 1,
+      held: false,
     });
     expect(await claimAsLegacyWorker(pool, cleanup, "legacy-cleanup")).toEqual({
-      status: "queued",
-      attempts: 0,
-      held: true,
+      status: "running",
+      attempts: 1,
+      held: false,
     });
     const newReview = await insertQueuedMutator(
       pool,
@@ -700,16 +925,16 @@ describeDb("publication-controller release rollout", () => {
     });
   });
 
-  test("recovery retains readiness and mutator fences until state is terminal", async () => {
+  test("recovery retains readiness and review fences until state is terminal", async () => {
     await prepareRelease(pool, RELEASE_A);
-    const gate = await insertQueuedMutator(
+    const unplannedReview = await insertQueuedMutator(
       pool,
-      "gate-state-sync",
+      "review",
       "2040-05-04T03:04:05.000Z",
     );
-    const cleanup = await insertQueuedMutator(
+    const plannedReview = await insertQueuedMutator(
       pool,
-      "check-run-cleanup",
+      "review",
       "2040-05-05T03:04:05.000Z",
     );
     await activatePublicationControllerRelease(pool, RELEASE_A);
@@ -722,15 +947,15 @@ describeDb("publication-controller release rollout", () => {
         staged: 2,
         nonterminal: 2,
         leases: 1,
-        unplannedQueuedJobIds: [String(gate)],
+        unplannedQueuedJobIds: [String(unplannedReview)],
       }),
     );
     expect(withLease.state).toBe("recovery");
     expect(withLease.activeMutationLeases).toBe(1);
     expect(withLease.restoredLegacyJobs).toBe(0);
     await activateQueueLockGeneration(pool);
-    expect((await queuedJobState(pool, gate)).held).toBe(true);
-    expect((await queuedJobState(pool, cleanup)).held).toBe(true);
+    expect((await queuedJobState(pool, unplannedReview)).held).toBe(true);
+    expect((await queuedJobState(pool, plannedReview)).held).toBe(true);
     expect(await publicationControllerConsumerReady(pool, RELEASE_A)).toBe(true);
 
     const withoutLease = await deactivatePublicationControllerRelease(
@@ -740,14 +965,14 @@ describeDb("publication-controller release rollout", () => {
         staged: 2,
         nonterminal: 1,
         leases: 0,
-        unplannedQueuedJobIds: [String(gate)],
+        unplannedQueuedJobIds: [String(unplannedReview)],
       }),
     );
     expect(withoutLease.state).toBe("recovery");
     expect(withoutLease.restoredLegacyJobs).toBe(1);
     expect(withoutLease.remainingNonterminalGenerations).toBe(1);
-    expect((await queuedJobState(pool, gate)).held).toBe(false);
-    expect((await queuedJobState(pool, cleanup)).held).toBe(true);
+    expect((await queuedJobState(pool, unplannedReview)).held).toBe(false);
+    expect((await queuedJobState(pool, plannedReview)).held).toBe(true);
     expect(await hasCapability(pool, `publication-controller-recovery:${RELEASE_A}`)).toBe(true);
     expect(await publicationControllerConsumerReady(pool, RELEASE_A)).toBe(true);
 
@@ -758,7 +983,7 @@ describeDb("publication-controller release rollout", () => {
         staged: 2,
         nonterminal: 0,
         leases: 0,
-        unplannedQueuedJobIds: [String(cleanup)],
+        unplannedQueuedJobIds: [String(plannedReview)],
       }),
     );
     expect(completed).toEqual({
@@ -769,8 +994,8 @@ describeDb("publication-controller release rollout", () => {
       remainingNonterminalGenerations: 0,
       activeMutationLeases: 0,
     });
-    expect((await queuedJobState(pool, gate)).held).toBe(false);
-    expect((await queuedJobState(pool, cleanup)).held).toBe(false);
+    expect((await queuedJobState(pool, unplannedReview)).held).toBe(false);
+    expect((await queuedJobState(pool, plannedReview)).held).toBe(false);
     expect(await hasCapability(pool, `publication-controller-recovery:${RELEASE_A}`)).toBe(false);
     expect(await publicationControllerConsumerReady(pool, RELEASE_A)).toBe(false);
     expect(await jobCount(pool)).toBe(before);
@@ -804,7 +1029,7 @@ describeDb("publication-controller release rollout", () => {
       routingRemoved: true,
       state: "dark",
       releaseSha: RELEASE_A,
-      restoredLegacyJobs: 3,
+      restoredLegacyJobs: 1,
       remainingNonterminalGenerations: 0,
       activeMutationLeases: 0,
     });
@@ -902,6 +1127,23 @@ async function prepareRelease(pool: Pool, releaseSha: string): Promise<void> {
   );
 }
 
+async function applyMigrationFile(pool: Pool, file: string): Promise<void> {
+  const source = await readFile(join(DRIZZLE_DIRECTORY, file), "utf8");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const statement of source.split("--> statement-breakpoint")) {
+      if (statement.trim()) await client.query(statement);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function recoveryState(input: {
   staged: number;
   nonterminal: number;
@@ -922,7 +1164,7 @@ function recoveryState(input: {
 
 async function insertQueuedMutator(
   pool: Pool,
-  kind: (typeof PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS)[number],
+  kind: TestMutatorKind,
   runAfter: string,
 ): Promise<number> {
   const inserted = await pool.query<{ id: string }>(
@@ -950,7 +1192,7 @@ async function insertQueuedReview(
 
 async function insertRunningMutator(
   pool: Pool,
-  kind: (typeof PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS)[number],
+  kind: TestMutatorKind,
   worker: string,
 ) {
   const inserted = await pool.query<{ id: string; lock_generation: string }>(

@@ -11,7 +11,6 @@ import {
 } from "@/lib/env";
 import { runWebhookRedeliveryPass } from "@/lib/github/webhook-redelivery";
 import {
-  claimJob,
   enqueueGateEnforcementSweepOnce,
   pruneCompletedWebhookDeliveries,
   requeueClaimedJobs,
@@ -32,7 +31,8 @@ import {
 } from "@/lib/server-observability";
 import {
   ActiveClaimExecutionRegistry,
-  PROCESSABLE_JOB_KINDS,
+  claimPrivateWorkerJob,
+  type PrivateWorkerClaim,
   readPositiveIntEnv,
   runClaimedJob,
 } from "./runner";
@@ -134,10 +134,16 @@ function sleepUntilHeartbeat(ms: number): Promise<void> {
 async function claimLoop(slot: number): Promise<void> {
   let idleDelayMs = POLL_INTERVAL_MS;
   while (!shuttingDown) {
+    let claim: PrivateWorkerClaim | null = null;
     let job;
     pendingClaims += 1;
     try {
-      job = await claimJob(getPool(), `${workerId}#${slot}`, PROCESSABLE_JOB_KINDS);
+      claim = await claimPrivateWorkerJob({
+        pool: getPool(),
+        workerId: `${workerId}#${slot}`,
+        releaseSha: optionalEnv("POSTIL_RELEASE_SHA"),
+      });
+      job = claim?.job;
       if (shuttingDown && job) {
         await requeueClaimedJobs(
           getPool(),
@@ -172,6 +178,8 @@ async function claimLoop(slot: number): Promise<void> {
       `worker ${slot}`,
       "worker",
       controller.signal,
+      undefined,
+      claim?.publicationControllerClaim,
     );
     activeRuns.add(run);
     try {

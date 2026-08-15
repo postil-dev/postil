@@ -1229,6 +1229,7 @@ export async function claimJob(
   options: {
     exactWebhookDispatchDeliveryId?: string;
     excludePrivateWorkerRehearsals?: boolean;
+    excludePublicationControllerFencedJobs?: boolean;
   } = {},
 ): Promise<ClaimedJob | null> {
   const capabilities = [...new Set(allowedKinds.filter(Boolean))];
@@ -1244,6 +1245,10 @@ export async function claimJob(
            FROM jobs
           WHERE status = 'queued'
             AND kind = ANY($1::text[])
+            AND (
+              NOT $2::boolean
+              OR payload->>'_postilPublicationControllerFence' IS DISTINCT FROM 'true'
+            )
             AND reconciliation_deadline_at IS NOT NULL
             AND reconciliation_deadline_at <= clock_timestamp()
           ORDER BY id
@@ -1265,7 +1270,7 @@ export async function claimJob(
         FROM expired
        WHERE job.id = expired.id
        RETURNING job.id, job.kind, job.payload,
-                 job.payload -> $2 AS pending, job.max_attempts
+                 job.payload -> $3 AS pending, job.max_attempts
        ), promoted AS (
          INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
          SELECT 'review', jsonb_set(
@@ -1282,7 +1287,11 @@ export async function claimJob(
          RETURNING id
        )
        SELECT count(*) FROM transitioned`,
-      [capabilities, COALESCED_REVIEW_PAYLOAD_KEY],
+      [
+        capabilities,
+        options.excludePublicationControllerFencedJobs === true,
+        COALESCED_REVIEW_PAYLOAD_KEY,
+      ],
     );
     while (true) {
       const result = await client.query<{
@@ -1310,6 +1319,10 @@ export async function claimJob(
               NOT $3::boolean
               OR NOT payload ? 'privateWorkerRehearsalNonce'
             )
+            AND (
+              NOT $4::boolean
+              OR payload->>'_postilPublicationControllerFence' IS DISTINCT FROM 'true'
+            )
           ORDER BY CASE WHEN kind = 'github-reaction' THEN 0 ELSE 1 END, id
           FOR UPDATE SKIP LOCKED
           LIMIT 1
@@ -1319,7 +1332,7 @@ export async function claimJob(
        ), claimed AS (
          UPDATE jobs job
             SET status = 'running', attempts = job.attempts + 1,
-                locked_at = admission.admitted_at, locked_by = $4,
+                locked_at = admission.admitted_at, locked_by = $5,
                 lock_generation = job.lock_generation + 1
            FROM admission
           WHERE job.id = admission.id
@@ -1351,7 +1364,7 @@ export async function claimJob(
             AND job.reconciliation_deadline_at IS NOT NULL
             AND job.reconciliation_deadline_at <= admission.admitted_at
         RETURNING job.id, job.kind, job.payload,
-                  job.payload -> $5 AS pending, job.max_attempts
+                  job.payload -> $6 AS pending, job.max_attempts
        ), promoted AS (
          INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
          SELECT 'review', jsonb_set(
@@ -1396,6 +1409,7 @@ export async function claimJob(
           capabilities,
           options.exactWebhookDispatchDeliveryId ?? null,
           options.excludePrivateWorkerRehearsals === true,
+          options.excludePublicationControllerFencedJobs === true,
           workerId,
           COALESCED_REVIEW_PAYLOAD_KEY,
         ],
@@ -1481,6 +1495,88 @@ export async function claimPublicationControllerReviewJob(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       [PUBLICATION_CONTROLLER_LOCK],
     );
+    await client.query(
+      `WITH authority AS MATERIALIZED (
+         SELECT count(*)::integer AS active_count,
+                count(*) FILTER (
+                  WHERE active.name = $1 AND ready.name = $2
+                )::integer AS exact_count
+           FROM deployment_capabilities active
+           LEFT JOIN deployment_capabilities ready
+             ON ready.name = $3 || substring(
+               active.name FROM char_length($4) + 1
+             )
+          WHERE active.name LIKE $4 || '%'
+       ), admission AS MATERIALIZED (
+         SELECT clock_timestamp() AS admitted_at
+       ), expired_candidate AS MATERIALIZED (
+         SELECT job.id
+           FROM jobs job
+           CROSS JOIN authority
+           CROSS JOIN admission
+          WHERE authority.active_count = 1
+            AND authority.exact_count = 1
+            AND EXISTS (
+              SELECT 1 FROM deployment_capabilities WHERE name = $5
+            )
+            AND job.kind = 'review'
+            AND job.status = 'queued'
+            AND job.payload->>$6 = 'true'
+            AND job.payload->>$7 = $8
+            AND job.reconciliation_deadline_at IS NOT NULL
+            AND job.reconciliation_deadline_at <= admission.admitted_at
+          ORDER BY job.id
+          FOR UPDATE OF job SKIP LOCKED
+          LIMIT 100
+       ), transitioned AS (
+         UPDATE jobs job
+            SET status = 'failed', locked_at = NULL, locked_by = NULL,
+                last_error = CASE
+                  WHEN job.last_error IS NULL
+                    THEN 'reconciliation budget exhausted before claim'
+                  ELSE left(
+                    job.last_error ||
+                      ' (reconciliation budget exhausted before claim; failing permanently)',
+                    2000
+                  )
+                END,
+                run_after = admission.admitted_at
+           FROM expired_candidate
+           CROSS JOIN admission
+          WHERE job.id = expired_candidate.id
+            AND job.status = 'queued'
+        RETURNING job.id, job.payload,
+                  job.payload -> $9 AS pending, job.max_attempts
+       ), promoted AS (
+         INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+         SELECT 'review', jsonb_set(
+                  transitioned.pending, '{providerRetryLineage}',
+                  to_jsonb(COALESCE(
+                    NULLIF(transitioned.pending->>'providerRetryLineage', ''),
+                    NULLIF(transitioned.payload->>'providerRetryLineage', ''),
+                    'review-job:' || transitioned.id::text
+                  )),
+                  true
+                ), 'queued', admission.admitted_at,
+                transitioned.max_attempts
+           FROM transitioned
+           CROSS JOIN admission
+          WHERE jsonb_typeof(transitioned.pending) = 'object'
+         RETURNING id
+       )
+       SELECT count(*) FROM transitioned`,
+      [
+        `${PUBLICATION_CONTROLLER_ACTIVE_PREFIX}${releaseSha}`,
+        `${PUBLICATION_CONTROLLER_READY_PREFIX}${releaseSha}`,
+        PUBLICATION_CONTROLLER_READY_PREFIX,
+        PUBLICATION_CONTROLLER_ACTIVE_PREFIX,
+        QUEUE_LOCK_GENERATION_CAPABILITY,
+        PUBLICATION_CONTROLLER_FENCE_KEY,
+        PUBLICATION_CONTROLLER_RELEASE_KEY,
+        releaseSha,
+        COALESCED_REVIEW_PAYLOAD_KEY,
+      ],
+    );
     const result = await client.query<{
       id: string;
       kind: string;
@@ -1509,6 +1605,14 @@ export async function claimPublicationControllerReviewJob(
            FROM jobs job
            CROSS JOIN authority
            CROSS JOIN admission
+           CROSS JOIN LATERAL (
+             SELECT CASE
+               WHEN jsonb_typeof(job.payload->$9) = 'string'
+                 AND pg_input_is_valid(job.payload->>$9, 'timestamptz')
+                 THEN (job.payload->>$9)::timestamptz
+               ELSE NULL
+             END AS controller_run_after
+           ) schedule
           WHERE authority.active_count = 1
             AND authority.exact_count = 1
             AND EXISTS (
@@ -1518,9 +1622,36 @@ export async function claimPublicationControllerReviewJob(
             AND job.status = 'queued'
             AND job.payload->>$6 = 'true'
             AND job.payload->>$7 = $8
-            AND jsonb_typeof(job.payload->$9) = 'string'
-            AND (job.payload->>$9)::timestamptz <= admission.admitted_at
-          ORDER BY (job.payload->>$9)::timestamptz, job.id
+            AND schedule.controller_run_after <= admission.admitted_at
+            AND (
+              job.reconciliation_deadline_at IS NULL
+              OR job.reconciliation_deadline_at > admission.admitted_at
+            )
+            AND (
+              NOT job.payload ? 'recoveryReviewId'
+              OR (
+                job.payload->>'recoveryReviewId' ~ '^[1-9][0-9]*$'
+                AND job.payload->>'reviewInputSequence' ~ '^[1-9][0-9]*$'
+                AND EXISTS (
+                  SELECT 1
+                  FROM review_publication_generations generation
+                  WHERE generation.review_id =
+                    CASE
+                      WHEN job.payload->>'recoveryReviewId' ~ '^[1-9][0-9]*$'
+                        THEN (job.payload->>'recoveryReviewId')::bigint
+                      ELSE NULL
+                    END
+                    AND generation.review_input_sequence =
+                      CASE
+                        WHEN job.payload->>'reviewInputSequence' ~ '^[1-9][0-9]*$'
+                          THEN (job.payload->>'reviewInputSequence')::bigint
+                        ELSE NULL
+                      END
+                    AND generation.sealed_at IS NOT NULL
+                )
+              )
+            )
+          ORDER BY schedule.controller_run_after, job.id
           FOR UPDATE OF job SKIP LOCKED
           LIMIT 1
        ), claimed AS (
@@ -1537,6 +1668,10 @@ export async function claimPublicationControllerReviewJob(
            FROM candidate
            CROSS JOIN admission
           WHERE job.id = candidate.id AND job.status = 'queued'
+            AND (
+              job.reconciliation_deadline_at IS NULL
+              OR job.reconciliation_deadline_at > admission.admitted_at
+            )
         RETURNING job.id, job.status, job.kind, job.payload, job.attempts,
                   job.max_attempts, job.created_at, job.locked_at,
                   job.lock_generation

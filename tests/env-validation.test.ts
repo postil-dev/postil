@@ -169,6 +169,9 @@ describe("worker startup environment validation", () => {
       .toBeLessThan(
         releaseActivation.indexOf("await activateQueueLockGeneration"),
       );
+    expect(releaseActivation).toContain(
+      "probePublicationControllerProductionConsumerNoMutation",
+    );
     expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
     expect(deployWorkflow).toMatch(
       /- name: Deploy managed fleet\n\s+id: deploy\n\s+timeout-minutes: 10/,
