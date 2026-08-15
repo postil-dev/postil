@@ -151,16 +151,23 @@ function activeClaimExecutionIdentity(
 }
 
 interface JobContinuation {
+  kind: "continue";
   payload: Record<string, unknown>;
   runAfter?: Date;
 }
+
+interface JobSettled {
+  kind: "settled";
+}
+
+type JobAction = JobContinuation | JobSettled;
 
 async function handleJob(
   job: ClaimedJob,
   processGroup: ObservabilityProcessGroup,
   signal?: AbortSignal,
   onReviewPublicationStarted?: () => void,
-): Promise<JobContinuation | void> {
+): Promise<JobAction | void> {
   switch (job.kind) {
     case "webhook-dispatch": {
       const payload = job.payload as WebhookDispatchJobPayload;
@@ -179,7 +186,7 @@ async function handleJob(
       break;
     }
     case "review":
-      await runReviewJob(
+      return await runReviewJob(
         job.payload as ReviewJobPayload,
         {
           queuedAt: job.createdAt,
@@ -190,7 +197,6 @@ async function handleJob(
         signal,
         onReviewPublicationStarted,
       );
-      break;
     case "respond":
       await runRespondJob(job.payload as RespondJobPayload, job);
       break;
@@ -231,9 +237,14 @@ async function handleJob(
       await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
       break;
     case "gate-enforcement-sweep":
-      return runGateEnforcementSweepJob(
+      {
+        const continuation = await runGateEnforcementSweepJob(
         job.payload as GateEnforcementSweepJobPayload,
-      );
+        );
+        return continuation
+          ? { kind: "continue", ...continuation }
+          : undefined;
+      }
     case "check-run-cleanup":
       validateCheckRunCleanupPayload(
         job.payload as CheckRunCleanupJobPayload,
@@ -273,17 +284,21 @@ export async function runClaimedJob(
   const started = Date.now();
   console.log(`[${label}] job ${job.id} (${job.kind}) attempt ${job.attempts}`);
   try {
-    const continuation = await handleJob(
+    const action = await handleJob(
       job,
       processGroup,
       signal,
       onReviewPublicationStarted,
     );
-    if (continuation) {
-      await continueClaimedJob(getPool(), job, continuation.payload, {
-        runAfter: continuation.runAfter,
+    if (action?.kind === "continue") {
+      await continueClaimedJob(getPool(), job, action.payload, {
+        runAfter: action.runAfter,
       });
       console.log(`[${label}] job ${job.id} continued in ${Date.now() - started}ms`);
+      return;
+    }
+    if (action?.kind === "settled") {
+      console.log(`[${label}] job ${job.id} settled atomically in ${Date.now() - started}ms`);
       return;
     }
     await completeJob(getPool(), job);

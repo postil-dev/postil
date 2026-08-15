@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
 import { buildGitHubPublicationControllerManifest } from "@/lib/github-publication-controller-manifest";
@@ -18,6 +19,10 @@ import {
   type PublicationTerminalEvidence,
 } from "@/lib/github-publication-operation-executor";
 import { PostgresGitHubPublicationOperationStore } from "@/lib/github-publication-operation-store";
+import { schema } from "@/lib/db";
+import { finalizePublicationControllerReview } from "@/lib/review-completion";
+import { claimPublicationControllerReviewJob } from "@/lib/queue";
+import { publicationControllerRemoteCheckRunId } from "@/worker/review";
 import {
   parseGitHubPublicationPlanBytes,
   type ExpectedGitHubPublicationPlan,
@@ -386,6 +391,33 @@ describe("GitHub publication operation executor", () => {
     });
   });
 
+  test("reconciles an unknown superseded generation before dispatch authorization", async () => {
+    const fixture = fixtureFor("advisoryCheckCreate");
+    const store = new MemoryStore([], [ambiguousFrom(fixture.claim)]);
+    const adapters = fakeAdapters({ existingCheckId: "81" });
+
+    await expect(run(store, adapters, async () => false)).resolves.toMatchObject({
+      status: "applied",
+      shouldContinue: true,
+    });
+    expect(adapters.calls).toEqual(["observeCheck"]);
+    expect(mutationCalls(adapters.calls)).toEqual([]);
+    expect(store.reconciled).toHaveLength(1);
+  });
+
+  test("returns an expired applying claim to recovery without stale dispatch", async () => {
+    const fixture = fixtureFor("advisoryCheckCreate");
+    const store = new MemoryStore([fixture.claim]);
+    const adapters = fakeAdapters();
+
+    await expect(run(store, adapters, async () => false)).resolves.toMatchObject({
+      status: "unknown",
+      shouldContinue: false,
+    });
+    expect(adapters.calls).toEqual([]);
+    expect(store.notDispatched).toHaveLength(1);
+  });
+
   test("authorizes a retry only after an ambiguous create is observed exactly absent", async () => {
     const fixture = fixtureFor("advisoryCheckCreate");
     const store = new MemoryStore([], [ambiguousFrom(fixture.claim)]);
@@ -584,6 +616,20 @@ describeDb("PostgreSQL publication operation store", () => {
   });
 
   afterEach(async () => {
+    await pool.query(
+      `DELETE FROM jobs
+       WHERE locked_by = 'supersession-authority'
+          OR payload->>'_postilPublicationControllerReleaseSha' = $1`,
+      ["e".repeat(40)],
+    );
+    await pool.query(
+      `DELETE FROM deployment_capabilities
+       WHERE name IN ($1, $2)`,
+      [
+        `publication-controller-release:${"e".repeat(40)}`,
+        `publication-controller-consumer-ready:${"e".repeat(40)}`,
+      ],
+    );
     await pool.query(`DELETE FROM repositories WHERE full_name LIKE 'publication-executor-%'`);
   });
 
@@ -606,6 +652,269 @@ describeDb("PostgreSQL publication operation store", () => {
     expect(claim?.databaseRepositoryId).not.toBe(
       unrelated.databaseRepositoryId,
     );
+  });
+
+  test("records each pending supersession as one immutable no-write attempt", async () => {
+    const scope = await stageDatabaseFixture(pool, 501);
+    await claimControllerSupersessionAuthority(pool, scope);
+    const first = new PostgresGitHubPublicationOperationStore(pool, scope);
+    const second = new PostgresGitHubPublicationOperationStore(pool, scope);
+    const selected = await pool.query<{ operation_key: string }>(
+      `SELECT operation_key
+         FROM review_publication_operations
+        WHERE repository_id = $1::bigint AND pr_number = $2
+          AND publication_generation = $3::bigint
+        ORDER BY operation_ordinal
+        LIMIT 1`,
+      [scope.databaseRepositoryId, scope.pullRequestNumber, scope.publicationGeneration],
+    );
+    const operationKey = selected.rows[0]!.operation_key;
+
+    const raced = await Promise.all([
+      first.supersedeOnePending(operationKey),
+      second.supersedeOnePending(operationKey),
+    ]);
+    expect(raced.sort()).toEqual([false, true]);
+    expect(await first.supersedeOnePending(operationKey)).toBe(false);
+
+    const stored = await pool.query<{
+      operation_key: string;
+      state: string;
+      attempt_count: number;
+      attempt_rows: number;
+      distinct_attempt_rows: number;
+      phases: string[];
+    }>(
+      `SELECT operation.operation_key, operation.state,
+              operation.attempt_count,
+              count(attempt.id)::integer AS attempt_rows,
+              count(DISTINCT (
+                attempt.attempt_number,
+                attempt.lease_generation,
+                attempt.phase
+              ))::integer AS distinct_attempt_rows,
+              array_agg(attempt.phase ORDER BY attempt.id) AS phases
+         FROM review_publication_operations operation
+         JOIN review_publication_operation_attempts attempt
+           ON attempt.repository_id = operation.repository_id
+          AND attempt.pr_number = operation.pr_number
+          AND attempt.publication_generation = operation.publication_generation
+          AND attempt.operation_key = operation.operation_key
+        WHERE operation.repository_id = $1::bigint
+          AND operation.pr_number = $2
+          AND operation.publication_generation = $3::bigint
+          AND operation.operation_key = $4
+          AND operation.state = 'superseded'
+        GROUP BY operation.operation_key, operation.operation_ordinal,
+                 operation.state, operation.attempt_count
+        ORDER BY operation.operation_ordinal`,
+      [
+        scope.databaseRepositoryId,
+        scope.pullRequestNumber,
+        scope.publicationGeneration,
+        operationKey,
+      ],
+    );
+    expect(stored.rows).toHaveLength(1);
+    for (const row of stored.rows) {
+      expect(row.attempt_count).toBe(1);
+      expect(row.attempt_rows).toBe(1);
+      expect(row.distinct_attempt_rows).toBe(1);
+      expect(row.phases).toEqual(["not_dispatched"]);
+    }
+  });
+
+  test("rejects supersession without exact controller authority", async () => {
+    const scope = await stageDatabaseFixture(pool, 519);
+    const store = new PostgresGitHubPublicationOperationStore(pool, scope);
+
+    await expect(store.supersedeOnePending()).rejects.toThrow(
+      "attempt evidence must match the active publication lease",
+    );
+  });
+
+  test("loads a reconciled-existing check identity from skipped terminal evidence", async () => {
+    const scope = await stageDatabaseFixture(pool, 502);
+    await pool.query(
+      `UPDATE review_publication_operations
+          SET state = 'skipped',
+              terminal_evidence =
+                '{"outcome":"reconciledExisting","remoteId":"811","remoteOperationId":"811","result":{"checkRunId":"811"}}'::jsonb,
+              updated_at = clock_timestamp()
+        WHERE repository_id = $1::bigint AND pr_number = $2
+          AND publication_generation = $3::bigint
+          AND kind = 'advisoryCheckCreate'`,
+      [scope.databaseRepositoryId, scope.pullRequestNumber, scope.publicationGeneration],
+    );
+
+    await expect(publicationControllerRemoteCheckRunId(
+      {
+        ...scope,
+        reviewId: 1,
+        acceptedInputIdentity: `sha256:${"0".repeat(64)}`,
+      },
+      "advisoryCheckCreate",
+      pool,
+    )).resolves.toBe(811);
+  });
+
+  test("atomically settles an exact receipt, accounting, review, and job", async () => {
+    const fixture = await stageFinalizationFixture(pool, 503);
+    await terminalizeFinalizationOperations(pool, fixture.scope, "success");
+
+    const result = await finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      fixture.input,
+      fixture.orgId,
+    );
+
+    expect(result.completed).toBe(true);
+    expect(result.superseded).toBeUndefined();
+    expect(await finalizationSnapshot(pool, fixture)).toMatchObject({
+      reviewStatus: "completed",
+      jobStatus: "done",
+      receipts: 1,
+      usageEvents: 1,
+    });
+  });
+
+  test("settles required publication failure without inventing a receipt", async () => {
+    const fixture = await stageFinalizationFixture(pool, 504);
+    await terminalizeFinalizationOperations(pool, fixture.scope, "required-failure");
+
+    const result = await finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      { ...fixture.input, outcome: "definitive-failure", publicationReceipt: undefined },
+      fixture.orgId,
+    );
+
+    expect(result.completed).toBe(true);
+    expect(await finalizationSnapshot(pool, fixture)).toMatchObject({
+      reviewStatus: "failed",
+      jobStatus: "done",
+      receipts: 0,
+      usageEvents: 1,
+    });
+  });
+
+  test("keeps policy failure as a receipt-backed reviewer verdict", async () => {
+    const fixture = await stageFinalizationFixture(pool, 505, { gateFailing: true });
+    await terminalizeFinalizationOperations(pool, fixture.scope, "success");
+
+    const result = await finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      fixture.input,
+      fixture.orgId,
+    );
+
+    expect(result).toMatchObject({ completed: true, gateFailing: true });
+    expect(await finalizationSnapshot(pool, fixture)).toMatchObject({
+      reviewStatus: "completed",
+      jobStatus: "done",
+      receipts: 1,
+    });
+  });
+
+  test("accepts a failed placement predecessor when its fallback is terminal", async () => {
+    const fixture = await stageFinalizationFixture(pool, 506, {
+      placementFallback: true,
+    });
+    await terminalizeFinalizationOperations(pool, fixture.scope, "placement-fallback");
+
+    const result = await finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      fixture.input,
+      fixture.orgId,
+    );
+
+    expect(result.completed).toBe(true);
+    expect(await finalizationSnapshot(pool, fixture)).toMatchObject({
+      reviewStatus: "completed",
+      receipts: 1,
+    });
+  });
+
+  test("refuses active operations and a missing terminal gate", async () => {
+    const active = await stageFinalizationFixture(pool, 507);
+    await expect(finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      active.input,
+      active.orgId,
+    )).rejects.toThrow("terminal gate evidence");
+
+    const missingGate = await stageFinalizationFixture(pool, 508);
+    await terminalizeFinalizationOperations(pool, missingGate.scope, "missing-gate");
+    await expect(finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      missingGate.input,
+      missingGate.orgId,
+    )).rejects.toThrow("terminal gate evidence");
+  });
+
+  test("settles coalesced supersession and promotes exactly one successor", async () => {
+    const fixture = await stageFinalizationFixture(pool, 509, { coalesced: true });
+    await claimControllerSupersessionAuthority(pool, fixture.scope);
+    await terminalizeAllAsSuperseded(pool, fixture.scope);
+
+    const result = await finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      { ...fixture.input, outcome: "superseded", publicationReceipt: undefined },
+      fixture.orgId,
+    );
+
+    expect(result).toMatchObject({ completed: false, superseded: true, promoted: true });
+    expect(await finalizationSnapshot(pool, fixture)).toMatchObject({
+      reviewStatus: "stale",
+      jobStatus: "done",
+      receipts: 0,
+      promotedJobs: 1,
+    });
+  });
+
+  test("does not claim settlement after losing the exact queue lease", async () => {
+    const fixture = await stageFinalizationFixture(pool, 510);
+    await terminalizeFinalizationOperations(pool, fixture.scope, "success");
+    const result = await finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      {
+        ...fixture.input,
+        reviewJobLease: { ...fixture.input.reviewJobLease, lockGeneration: 2n },
+      },
+      fixture.orgId,
+    );
+
+    expect(result.completed).toBe(false);
+    expect(await finalizationSnapshot(pool, fixture)).toMatchObject({
+      reviewStatus: "running",
+      jobStatus: "running",
+      receipts: 0,
+      usageEvents: 0,
+    });
+  });
+
+  test("rejects caller-invented stale and definitive terminal classes", async () => {
+    const stale = await stageFinalizationFixture(pool, 511);
+    await terminalizeFinalizationOperations(pool, stale.scope, "success");
+    await expect(finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      { ...stale.input, outcome: "superseded", publicationReceipt: undefined },
+      stale.orgId,
+    )).rejects.toThrow("does not match durable evidence");
+
+    const failed = await stageFinalizationFixture(pool, 512);
+    await terminalizeFinalizationOperations(pool, failed.scope, "success");
+    await expect(finalizePublicationControllerReview(
+      drizzle(pool, { schema }),
+      {
+        ...failed.input,
+        outcome: "definitive-failure",
+        publicationReceipt: undefined,
+      },
+      failed.orgId,
+    )).rejects.toThrow("does not match durable evidence");
+
+    expect((await finalizationSnapshot(pool, stale)).reviewStatus).toBe("running");
+    expect((await finalizationSnapshot(pool, failed)).reviewStatus).toBe("running");
   });
 
   for (const [index, snapshotCase] of SNAPSHOT_DRIFT_CASES.entries()) {
@@ -972,6 +1281,9 @@ describeDb("PostgreSQL publication operation store", () => {
         ? POLICY_FAILURE_OUTPUT
         : undefined;
       const scope = await stageDatabaseFixture(pool, scenario.seed, { gateOutput });
+      if (scenario.state === "superseded") {
+        await claimControllerSupersessionAuthority(pool, scope);
+      }
       await terminalizeGateDependencies(pool, scope, scenario.state);
       const store = new PostgresGitHubPublicationOperationStore(pool, scope);
       const adapters = fakeAdapters();
@@ -1008,7 +1320,11 @@ describeDb("PostgreSQL publication operation store", () => {
   });
 });
 
-function run(store: GitHubPublicationOperationStore, adapters: GitHubPublicationAdapters & { calls: string[] }) {
+function run(
+  store: GitHubPublicationOperationStore,
+  adapters: GitHubPublicationAdapters & { calls: string[] },
+  dispatchAuthorized?: () => Promise<boolean>,
+) {
   return executeOneGitHubPublicationOperation({
     store,
     token: "test-token",
@@ -1018,6 +1334,7 @@ function run(store: GitHubPublicationOperationStore, adapters: GitHubPublication
     adapters,
     now: () => NOW,
     leaseId: () => "11111111-1111-4111-8111-111111111111",
+    ...(dispatchAuthorized ? { dispatchAuthorized } : {}),
   });
 }
 
@@ -1815,6 +2132,7 @@ async function stageDatabaseFixture(
   pool: Pool,
   seed: number,
   options: {
+    operationKind?: "advisoryCheckCreate" | "relocatedReviewCreate";
     gateOutput?: {
       conclusion: "success" | "failure" | "neutral";
       title: string;
@@ -1853,7 +2171,7 @@ async function stageDatabaseFixture(
      RETURNING id`,
     [repositoryId, HEAD, TARGET, JSON.stringify(stagedEnvelope)],
   );
-  const fixture = fixtureFor("advisoryCheckCreate", {
+  const fixture = fixtureFor(options.operationKind ?? "advisoryCheckCreate", {
     databaseRepositoryId: repositoryId,
     repositoryId: githubRepositoryId,
     repositoryFullName,
@@ -1881,6 +2199,308 @@ async function stageDatabaseFixture(
     databaseRepositoryId: repositoryId,
     pullRequestNumber: 7,
     publicationGeneration: "17",
+    reviewId: review.rows[0]!.id,
+  };
+}
+
+async function claimControllerSupersessionAuthority(
+  pool: Pool,
+  scope: {
+    databaseRepositoryId: string;
+    pullRequestNumber: number;
+    publicationGeneration: string;
+    reviewId: string;
+  },
+): Promise<void> {
+  const releaseSha = "e".repeat(40);
+  await pool.query(
+    `INSERT INTO deployment_capabilities (name)
+     VALUES ($1), ($2), ('queue-lock-generation-v1')
+     ON CONFLICT (name) DO NOTHING`,
+    [
+      `publication-controller-release:${releaseSha}`,
+      `publication-controller-consumer-ready:${releaseSha}`,
+    ],
+  );
+  await pool.query(
+    `INSERT INTO jobs
+       (kind, payload, status, run_after, attempts, max_attempts)
+     VALUES (
+       'review',
+       jsonb_build_object(
+         'recoveryReviewId', $1::bigint,
+         'reviewInputSequence', $2::text,
+         '_postilCoalescedReviewPayload',
+           jsonb_build_object('reviewInputSequence', '18')
+       ),
+       'queued', clock_timestamp(), 0, 5
+     )`,
+    [scope.reviewId, scope.publicationGeneration],
+  );
+  const claimed = await claimPublicationControllerReviewJob(
+    pool,
+    "supersession-authority",
+    releaseSha,
+  );
+  expect(claimed).not.toBeNull();
+}
+
+const finalizationEnvelope = (gateFailing: boolean) => ({
+  version: 1,
+  summary: "",
+  silent: !gateFailing,
+  findings: gateFailing
+    ? [{
+        id: "policy-finding",
+        path: "src/policy.ts",
+        line: 1,
+        severity: "error" as const,
+        kind: "risk" as const,
+        confidence: 0.9,
+        title: "Policy finding",
+        body: "A reviewer finding blocks the configured gate.",
+      }]
+    : [],
+  resolved: [],
+  counts: { info: 0, warn: 0, error: gateFailing ? 1 : 0, suppressed: 0, ungrounded: 0 },
+  confidenceBuckets: [0, 0, 0, 0, gateFailing ? 1 : 0],
+  gate: { failOn: "error", failing: gateFailing },
+  modelUsed: "test/model",
+  usage: { promptTokens: 1, completionTokens: 1 },
+  durationMs: 1,
+  baseSha: TARGET,
+  headSha: HEAD,
+  sinceSha: null,
+});
+
+async function stageFinalizationFixture(
+  pool: Pool,
+  seed: number,
+  options: {
+    gateFailing?: boolean;
+    coalesced?: boolean;
+    placementFallback?: boolean;
+  } = {},
+) {
+  const scope = await stageDatabaseFixture(pool, seed, {
+    operationKind: options.placementFallback
+      ? "relocatedReviewCreate"
+      : "advisoryCheckCreate",
+  });
+  const generation = await pool.query<{
+    review_id: string;
+    accepted_input_digest: string;
+    installation_id: string;
+    org_id: string;
+    github_repo_id: string;
+    repository_full_name: string;
+  }>(
+    `SELECT generation.review_id::text, generation.accepted_input_digest,
+            installation.id::text AS installation_id,
+            installation.org_id::text,
+            repository.github_repo_id::text, repository.full_name AS repository_full_name
+       FROM review_publication_generations generation
+       JOIN repositories repository ON repository.id = generation.repository_id
+       JOIN installations installation ON installation.id = repository.installation_id
+      WHERE generation.repository_id = $1::bigint
+        AND generation.pr_number = $2
+        AND generation.publication_generation = $3::bigint`,
+    [scope.databaseRepositoryId, scope.pullRequestNumber, scope.publicationGeneration],
+  );
+  const row = generation.rows[0]!;
+  const expectedReviewInput = {
+    installationId: 800_000 + seed,
+    sourceInstallationId: Number(row.installation_id),
+    sourceOrgId: Number(row.org_id),
+    githubRepoId: Number(row.github_repo_id),
+    repoFullName: row.repository_full_name,
+    prNumber: scope.pullRequestNumber,
+    headSha: HEAD,
+    baseSha: TARGET,
+    expectedPullRequestUpdatedAt: "2026-08-15T00:00:00.000Z",
+    reviewInputSequence: scope.publicationGeneration,
+    sourceDeliveryId: `finalization-${seed}`,
+    recoveryReviewId: Number(row.review_id),
+  };
+  const coalesced = {
+    ...expectedReviewInput,
+    headSha: "d".repeat(40),
+    reviewInputSequence: String(Number(scope.publicationGeneration) + 1),
+    sourceDeliveryId: `finalization-successor-${seed}`,
+    recoveryReviewId: undefined,
+    providerRetryLineage: `coalesced-finalization-${seed}`,
+  };
+  const payload = options.coalesced
+    ? { ...expectedReviewInput, _postilCoalescedReviewPayload: coalesced }
+    : expectedReviewInput;
+  const job = await pool.query<{ id: string }>(
+    `INSERT INTO jobs
+       (kind, payload, status, attempts, max_attempts, locked_at, locked_by,
+        lock_generation)
+     VALUES ('review', $1::jsonb, 'running', 1, 5, clock_timestamp(),
+             'finalization-worker', 1)
+     RETURNING id`,
+    [JSON.stringify(payload)],
+  );
+  await pool.query(
+    `UPDATE reviews SET envelope = $2::jsonb
+      WHERE id = $1::bigint`,
+    [row.review_id, JSON.stringify(finalizationEnvelope(options.gateFailing ?? false))],
+  );
+  await pool.query(
+    `INSERT INTO org_settings (org_id, gate_enabled)
+     VALUES ($1::bigint, true)
+     ON CONFLICT (org_id) DO UPDATE SET gate_enabled = EXCLUDED.gate_enabled`,
+    [row.org_id],
+  );
+  const input = {
+    reviewId: Number(row.review_id),
+    reviewJobLease: {
+      id: Number(job.rows[0]!.id),
+      lockedBy: "finalization-worker",
+      lockGeneration: 1n,
+    },
+    expectedReviewInput,
+    databaseRepositoryId: Number(scope.databaseRepositoryId),
+    pullRequestNumber: scope.pullRequestNumber,
+    publicationGeneration: scope.publicationGeneration,
+    acceptedInputIdentity: `sha256:${row.accepted_input_digest}`,
+    outcome: "success" as const,
+    publicationReceipt: {
+      version: 1 as const,
+      receiptId: `finalization-${seed}`,
+      findings: options.gateFailing
+        ? [{
+            findingId: "policy-finding",
+            stableIdentity: true,
+            initialOutcome: "summaryOnly" as const,
+            inlineRejected: false,
+          }]
+        : [],
+    },
+    usage: [{
+      orgId: Number(row.org_id),
+      repositoryId: Number(scope.databaseRepositoryId),
+      promptTokens: 1,
+      completionTokens: 1,
+      modelUsed: "test/model",
+      costMicros: 1,
+      billingScope: "analytics" as const,
+    }],
+    usageAccountingComplete: true,
+  };
+  return {
+    scope,
+    input,
+    orgId: Number(row.org_id),
+    reviewId: Number(row.review_id),
+    jobId: Number(job.rows[0]!.id),
+    sourceDeliveryId: `finalization-${seed}`,
+    successorLineage: `coalesced-finalization-${seed}`,
+    successorSequence: String(Number(scope.publicationGeneration) + 1),
+  };
+}
+
+async function terminalizeFinalizationOperations(
+  pool: Pool,
+  scope: Awaited<ReturnType<typeof stageDatabaseFixture>>,
+  mode: "success" | "required-failure" | "placement-fallback" | "missing-gate",
+): Promise<void> {
+  await pool.query(
+    `UPDATE review_publication_operations operation
+        SET state = CASE
+              WHEN $4 = 'missing-gate' AND operation.kind = 'gateCheckComplete'
+                THEN operation.state
+              WHEN $4 = 'required-failure'
+                AND operation.operation_key IN (
+                  SELECT jsonb_array_elements_text(
+                    gate.operation_record #> '{payload,selection,requiredOperationKeys}'
+                  )
+                ) THEN 'failed'
+              WHEN $4 = 'placement-fallback' AND operation.kind = 'reviewCreate'
+                AND operation.operation_record->>'attempt' = 'initial'
+                THEN 'failed'
+              ELSE 'skipped'
+            END,
+            terminal_evidence = CASE
+              WHEN $4 = 'missing-gate' AND operation.kind = 'gateCheckComplete'
+                THEN operation.terminal_evidence
+              WHEN $4 = 'placement-fallback' AND operation.kind = 'reviewCreate'
+                AND operation.operation_record->>'attempt' = 'initial'
+                THEN '{"outcome":"rejected","httpStatus":422,"classification":"invalidReviewCommentPlacement","result":{"dispatched":true,"httpStatus":422,"classification":"invalidReviewCommentPlacement"}}'::jsonb
+              WHEN $4 = 'required-failure'
+                AND operation.operation_key IN (
+                  SELECT jsonb_array_elements_text(
+                    gate.operation_record #> '{payload,selection,requiredOperationKeys}'
+                  )
+                ) THEN '{"outcome":"rejected","result":{"reason":"required publication failed"}}'::jsonb
+              ELSE '{"outcome":"notRequiredMarkerPresent","result":{"dispatched":false}}'::jsonb
+            END,
+            last_error = CASE
+              WHEN $4 IN ('required-failure', 'placement-fallback') THEN 'fixture rejection'
+              ELSE NULL
+            END,
+            updated_at = clock_timestamp()
+       FROM review_publication_operations gate
+      WHERE operation.repository_id = $1::bigint
+        AND operation.pr_number = $2
+        AND operation.publication_generation = $3::bigint
+        AND gate.repository_id = operation.repository_id
+        AND gate.pr_number = operation.pr_number
+        AND gate.publication_generation = operation.publication_generation
+        AND gate.kind = 'gateCheckComplete'`,
+    [scope.databaseRepositoryId, scope.pullRequestNumber, scope.publicationGeneration, mode],
+  );
+}
+
+async function terminalizeAllAsSuperseded(
+  pool: Pool,
+  scope: Awaited<ReturnType<typeof stageDatabaseFixture>>,
+): Promise<void> {
+  const store = new PostgresGitHubPublicationOperationStore(pool, scope);
+  while (await store.supersedeOnePending()) {
+    // One transaction and one immutable no-write attempt per operation.
+  }
+}
+
+async function finalizationSnapshot(
+  pool: Pool,
+  fixture: Awaited<ReturnType<typeof stageFinalizationFixture>>,
+) {
+  const result = await pool.query<{
+    review_status: string;
+    job_status: string;
+    receipts: number;
+    usage_events: number;
+    promoted_jobs: number;
+  }>(
+    `SELECT review.status AS review_status, job.status AS job_status,
+            (SELECT count(*)::integer FROM review_publication_receipts receipt
+              WHERE receipt.review_id = review.id) AS receipts,
+            (SELECT count(*)::integer FROM usage_events usage
+              WHERE usage.review_id = review.id) AS usage_events,
+            (SELECT count(*)::integer FROM jobs successor
+              WHERE successor.id <> $2 AND successor.kind = 'review'
+                AND successor.status = 'queued'
+                AND successor.payload->>'providerRetryLineage' = $3
+                AND successor.payload->>'reviewInputSequence' = $4) AS promoted_jobs
+       FROM reviews review
+       JOIN jobs job ON job.id = $2
+      WHERE review.id = $1`,
+    [
+      fixture.reviewId,
+      fixture.jobId,
+      fixture.successorLineage,
+      fixture.successorSequence,
+    ],
+  );
+  const row = result.rows[0]!;
+  return {
+    reviewStatus: row.review_status,
+    jobStatus: row.job_status,
+    receipts: row.receipts,
+    usageEvents: row.usage_events,
+    promotedJobs: row.promoted_jobs,
   };
 }
 
@@ -1916,6 +2536,8 @@ async function terminalizeGateDependencies(
   await pool.query(
     `UPDATE review_publication_operations
      SET state = CASE
+           WHEN kind = 'advisoryCheckComplete' AND $4 = 'superseded'
+             THEN state
            WHEN kind = 'advisoryCheckComplete' THEN $4
            ELSE 'skipped'
          END,
@@ -1926,6 +2548,8 @@ async function terminalizeGateDependencies(
          END,
          terminal_evidence = CASE
            WHEN kind = 'gateCheckCreate' THEN $5::jsonb
+           WHEN kind = 'advisoryCheckComplete' AND $4 = 'superseded'
+             THEN terminal_evidence
            WHEN kind = 'advisoryCheckComplete' THEN $6::jsonb
            ELSE $7::jsonb
          END,
@@ -1944,4 +2568,16 @@ async function terminalizeGateDependencies(
       JSON.stringify(incidentalEvidence),
     ],
   );
+  if (requiredState === "superseded") {
+    const required = await pool.query<{ operation_key: string }>(
+      `SELECT operation_key
+         FROM review_publication_operations
+        WHERE repository_id = $1::bigint AND pr_number = $2
+          AND publication_generation = $3::bigint
+          AND kind = 'advisoryCheckComplete'`,
+      [scope.databaseRepositoryId, scope.pullRequestNumber, scope.publicationGeneration],
+    );
+    const store = new PostgresGitHubPublicationOperationStore(pool, scope);
+    expect(await store.supersedeOnePending(required.rows[0]!.operation_key)).toBe(true);
+  }
 }

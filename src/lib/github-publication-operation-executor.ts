@@ -340,6 +340,8 @@ export interface ExecuteGitHubPublicationOperationInput {
   readonly signal?: AbortSignal;
   readonly now?: () => Date;
   readonly leaseId?: () => string;
+  /** Exact queue-lease authorization checked after claim and before dispatch. */
+  readonly dispatchAuthorized?: () => Promise<boolean>;
 }
 
 export type GitHubPublicationContinuation =
@@ -392,6 +394,14 @@ export async function executeOneGitHubPublicationOperation(
     leaseDurationMs,
   });
   if (claim === null) return { status: "idle", shouldContinue: false };
+
+  if (input.dispatchAuthorized && !await input.dispatchAuthorized()) {
+    await input.store.finishNotDispatched(claim, {
+      ...dispatchEvidence(claim, "queue-lease-authorization", now()),
+      errorReason: "publication queue lease is no longer active",
+    });
+    return continuation("unknown", claim, false);
+  }
 
   let validated: ValidatedClaim;
   try {
@@ -508,6 +518,14 @@ export async function executeOneGitHubPublicationOperation(
     now,
   );
   if (dispatchSnapshotGuard !== null) return dispatchSnapshotGuard;
+
+  if (input.dispatchAuthorized && !await input.dispatchAuthorized()) {
+    await input.store.finishNotDispatched(claim, {
+      ...dispatchEvidence(claim, "queue-lease-authorization", now()),
+      errorReason: "publication queue lease is no longer active",
+    });
+    return continuation("unknown", claim, false);
+  }
 
   const dispatched = dispatchEvidence(claim, activation.variant, now());
   if (!await input.store.recordDispatched(claim, dispatched)) {

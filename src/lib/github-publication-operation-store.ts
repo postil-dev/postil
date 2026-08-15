@@ -108,6 +108,94 @@ export class PostgresGitHubPublicationOperationStore
     this.scope = normalizeOperationScope(scope);
   }
 
+  /** Terminalize one pending operation with durable proof that no write ran. */
+  async supersedeOnePending(operationKey?: string): Promise<boolean> {
+    return this.transaction(async (client) => {
+      await advisoryLock(
+        client,
+        this.scope.databaseRepositoryId,
+        this.scope.pullRequestNumber,
+      );
+      const selected = await client.query<{
+        operation_key: string;
+        attempt_count: number;
+        lease_generation: string;
+        desired_payload_digest: string;
+      }>(
+        `SELECT operation_key, attempt_count,
+                lease_generation::text AS lease_generation,
+                desired_payload_digest
+           FROM review_publication_operations
+          WHERE repository_id = $1::bigint AND pr_number = $2
+            AND publication_generation = $3::bigint AND state = 'pending'
+            AND ($4::text IS NULL OR operation_key = $4)
+          ORDER BY operation_ordinal
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1`,
+        [...scopeValues(this.scope), operationKey ?? null],
+      );
+      const row = selected.rows[0];
+      if (!row) return false;
+      const attemptNumber = row.attempt_count + 1;
+      const leaseGeneration = safeInteger(row.lease_generation, "lease generation") + 1;
+      const selectedVariant = "controller-supersession";
+      const result = {
+        dispatched: false,
+        reason: "publication generation was superseded before dispatch",
+      };
+      const evidence = evidencePayload({
+        operationKey: row.operation_key,
+        selectedVariant,
+        activationVariant: selectedVariant,
+        requestDigest: row.desired_payload_digest,
+        outcome: "superseded",
+        result,
+        resultDigest: prefixedDigest(canonicalJson(result)),
+      });
+      const inserted = await client.query(
+        `INSERT INTO review_publication_operation_attempts
+           (repository_id, pr_number, publication_generation, operation_key,
+            attempt_number, lease_generation, phase, selected_variant,
+            evidence_payload, observed_at, created_at)
+         VALUES ($1::bigint, $2, $3::bigint, $4, $5, $6::bigint,
+                 'not_dispatched', $7, $8::jsonb,
+                 clock_timestamp(), clock_timestamp())`,
+        [
+          ...scopeValues(this.scope),
+          row.operation_key,
+          attemptNumber,
+          leaseGeneration,
+          selectedVariant,
+          evidence,
+        ],
+      );
+      if (inserted.rowCount !== 1) return false;
+      const updated = await client.query(
+        `UPDATE review_publication_operations
+            SET state = 'superseded', attempt_count = $5,
+                lease_generation = $6::bigint, selected_variant = $7,
+                terminal_evidence = $8::jsonb, retry_after = NULL,
+                last_error = NULL, updated_at = clock_timestamp()
+          WHERE repository_id = $1::bigint AND pr_number = $2
+            AND publication_generation = $3::bigint AND operation_key = $4
+            AND state = 'pending' AND attempt_count = $5 - 1
+            AND lease_generation = $6::bigint - 1`,
+        [
+          ...scopeValues(this.scope),
+          row.operation_key,
+          attemptNumber,
+          leaseGeneration,
+          selectedVariant,
+          evidence,
+        ],
+      );
+      if (updated.rowCount !== 1) {
+        throw new Error("publication supersession lost its exact pending operation");
+      }
+      return true;
+    });
+  }
+
   async loadOneAmbiguous(): Promise<AmbiguousGitHubPublicationOperation | null> {
     return this.transaction(async (client) => {
       const selected = await client.query<OperationRow>(

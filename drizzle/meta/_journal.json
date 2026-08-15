@@ -400,6 +400,13 @@
       "when": 1786705696742,
       "tag": "0056_publication_controller_queue_fence",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1786767457851,
+      "tag": "0057_publication_controller_supersession_authority",
+      "breakpoints": true
     }
   ]
 }

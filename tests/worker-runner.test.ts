@@ -9,6 +9,7 @@ const OLD_ENV = { ...process.env };
 
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
+const continued: Array<{ id: number; payload: Record<string, unknown> }> = [];
 const failed: Array<{ id: number; error: string }> = [];
 const failureFollowups: Array<Record<string, unknown>> = [];
 const permanentFailures: number[] = [];
@@ -17,7 +18,7 @@ const shutdownRequeues: number[] = [];
 let claimCalls = 0;
 const claimCapabilities: string[][] = [];
 const claimOptions: Array<Record<string, unknown> | undefined> = [];
-let reviewRun: (() => Promise<void>) | undefined;
+let reviewRun: (() => Promise<unknown>) | undefined;
 let respondRun: (() => Promise<void>) | undefined;
 let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
@@ -112,7 +113,13 @@ mock.module("@/lib/queue", () => ({
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
     completed.push(job.id);
   },
-  continueClaimedJob: async () => undefined,
+  continueClaimedJob: async (
+    _pool: unknown,
+    job: ClaimedJob,
+    payload: Record<string, unknown>,
+  ) => {
+    continued.push({ id: job.id, payload });
+  },
   completeWebhookDelivery: async () => undefined,
   loadWebhookDelivery: async () => {
     if (webhookDeliveryLoadError) throw webhookDeliveryLoadError;
@@ -183,7 +190,7 @@ mock.module("@/worker/review", () => ({
     reviewProcessGroup = processGroup;
     reviewSignal = signal;
     reviewPublicationStartedCallback = onPublicationStarted;
-    await reviewRun?.();
+    return await reviewRun?.();
   },
 }));
 
@@ -267,6 +274,7 @@ beforeEach(() => {
   Object.assign(process.env, OLD_ENV);
   jobs.length = 0;
   completed.length = 0;
+  continued.length = 0;
   failed.length = 0;
   failureFollowups.length = 0;
   permanentFailures.length = 0;
@@ -348,6 +356,29 @@ describe("drainQueueOnce", () => {
     expect(reviewPublicationStartedCallback).toBe(onPublicationStarted);
   });
 
+  test("does not complete an atomically settled controller review twice", async () => {
+    reviewRun = async () => ({ kind: "settled" });
+
+    await runClaimedJob(reviewJob(2), "worker 0", "worker");
+
+    expect(completed).toEqual([]);
+    expect(continued).toEqual([]);
+  });
+
+  test("preserves controller review continuation payloads", async () => {
+    const payload = {
+      ...reviewJob(3).payload,
+      recoveryReviewId: 31,
+      _postilCoalescedReviewPayload: { prNumber: 8 },
+    };
+    reviewRun = async () => ({ kind: "continue", payload });
+
+    await runClaimedJob(reviewJob(3), "worker 0", "worker");
+
+    expect(completed).toEqual([]);
+    expect(continued).toEqual([{ id: 3, payload }]);
+  });
+
   test("requeues an interrupted review without consuming an attempt", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -381,16 +412,22 @@ describe("drainQueueOnce", () => {
   });
 
   test("retries staged publication reconciliation without exhausting attempts", async () => {
+    const job = reviewJob(9);
+    job.payload.recoveryReviewId = 91;
+    job.payload.reviewInputSequence = "7";
     reviewRun = async () => {
       throw new MockReviewPublicationReconciliationError(
-        "exact terminal checks are not observable yet",
+        "publication-controller recovery could not advance: token mint failed",
       );
     };
 
-    await runClaimedJob(reviewJob(9), "worker 0", "worker");
+    await runClaimedJob(job, "worker 0", "worker");
 
     expect(retriedIndefinitely).toEqual([
-      { id: 9, error: "exact terminal checks are not observable yet" },
+      {
+        id: 9,
+        error: "publication-controller recovery could not advance: token mint failed",
+      },
     ]);
     expect(failed).toEqual([]);
     expect(completed).toEqual([]);

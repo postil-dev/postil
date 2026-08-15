@@ -74,6 +74,20 @@ export interface StagedReviewFinalizationInput
   staleCleanup: StaleReviewCleanupIdentity;
 }
 
+export interface PublicationControllerReviewFinalizationInput
+  extends ReviewCompletionAccountingInput {
+  reviewJobLease: JobLease;
+  expectedReviewInput: ReviewJobPayload;
+  databaseRepositoryId: number;
+  pullRequestNumber: number;
+  publicationGeneration: string;
+  acceptedInputIdentity: string;
+  outcome: "success" | "definitive-failure" | "superseded";
+  publicationReceipt?: PublicationReceipt;
+  advisoryCheckRunId?: number | null;
+  gateCheckRunId?: number | null;
+}
+
 export interface StagedReviewCompletionInput extends Pick<
   ReviewCompletionInput,
   | "reviewId"
@@ -483,9 +497,10 @@ export async function finalizeStagedReviewCompletionWithGateMode(
     const pending = (
       currentPayload as ReviewJobPayload & Record<string, unknown>
     )[COALESCED_REVIEW_PAYLOAD_KEY];
-    const pendingInput = pending && typeof pending === "object" && !Array.isArray(pending)
-      ? pending as ReviewJobPayload
-      : null;
+    const pendingInput =
+      pending && typeof pending === "object" && !Array.isArray(pending)
+        ? pending as ReviewJobPayload
+        : null;
     const currentInputIsExact = exactReviewInputMatches(
       currentPayload,
       input.expectedReviewInput,
@@ -594,6 +609,322 @@ export async function finalizeStagedReviewCompletionWithGateMode(
 
     await persistReviewCompletionAccounting(tx as Database, input, rows[0]!);
     return { completed: true, gateEnabled, gateFailing: effectiveGateFailing };
+  });
+}
+
+/**
+ * Commit one controller generation's receipt, terminal review, accounting,
+ * and queue ownership in the same transaction. Controller generations never
+ * enqueue legacy gate synchronization or check cleanup jobs.
+ */
+export async function finalizePublicationControllerReview(
+  db: Database,
+  input: PublicationControllerReviewFinalizationInput,
+  orgId: number | null,
+): Promise<ReviewCompletionWithGateModeResult> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(
+          ${String(input.databaseRepositoryId)} || ':' ||
+          ${String(input.pullRequestNumber)},
+          0
+        )
+      )
+    `);
+    const jobResult = await tx.execute(sql<{
+      payload: ReviewJobPayload;
+      maxAttempts: number;
+    }>`
+      SELECT ${schema.jobs.payload} AS payload,
+             ${schema.jobs.maxAttempts} AS "maxAttempts"
+        FROM ${schema.jobs}
+       WHERE ${schema.jobs.id} = ${input.reviewJobLease.id}
+         AND ${schema.jobs.kind} = 'review'
+         AND ${schema.jobs.status} = 'running'
+         AND ${schema.jobs.lockedBy} = ${input.reviewJobLease.lockedBy}
+         AND ${schema.jobs.lockGeneration} = ${input.reviewJobLease.lockGeneration}
+       FOR UPDATE
+    `);
+    const jobRow = jobResult.rows[0] as
+      | { payload: ReviewJobPayload; maxAttempts: number }
+      | undefined;
+    if (!jobRow) {
+      return { completed: false, gateEnabled: false, gateFailing: false };
+    }
+
+    await lockReviewDecisionScopeById(tx as Database, input.reviewId);
+    const review = (
+      await (tx as Database)
+        .select({
+          status: schema.reviews.status,
+          envelope: schema.reviews.envelope,
+          publicId: schema.reviews.publicId,
+          triggerSource: schema.reviews.triggerSource,
+        })
+        .from(schema.reviews)
+        .where(eq(schema.reviews.id, input.reviewId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!review || review.status !== "running" || review.envelope === null) {
+      return { completed: false, gateEnabled: false, gateFailing: false };
+    }
+
+    const generation = await tx.execute(sql<{
+      acceptedInputDigest: string;
+      highWaterGeneration: string | null;
+      highWaterReviewId: string | null;
+      highWaterInputDigest: string | null;
+      activeOperations: number;
+      supersededOperations: number;
+      terminalGateOperations: number;
+      requiredFailureOperations: number;
+      gateState: string;
+      gateActivationVariant: string | null;
+    }>`
+      SELECT generation.accepted_input_digest AS "acceptedInputDigest",
+             high_water.publication_generation::text AS "highWaterGeneration",
+             high_water.accepted_review_id::text AS "highWaterReviewId",
+             high_water.accepted_input_digest AS "highWaterInputDigest",
+             count(*) FILTER (
+               WHERE operation.state IN ('pending', 'applying', 'unknown')
+             )::integer AS "activeOperations",
+             count(*) FILTER (
+               WHERE operation.state = 'superseded'
+             )::integer AS "supersededOperations",
+             count(*) FILTER (
+               WHERE operation.kind = 'gateCheckComplete'
+                 AND operation.state IN ('applied', 'skipped', 'failed', 'superseded')
+             )::integer AS "terminalGateOperations",
+             count(*) FILTER (
+               WHERE operation.operation_key IN (
+                 SELECT jsonb_array_elements_text(
+                   gate.operation_record #> '{payload,selection,requiredOperationKeys}'
+                 )
+               )
+                 AND operation.state IN ('failed', 'superseded')
+             )::integer AS "requiredFailureOperations",
+             gate.state AS "gateState",
+             (
+               SELECT attempt.evidence_payload->>'activationVariant'
+                 FROM review_publication_operation_attempts attempt
+                WHERE attempt.repository_id = gate.repository_id
+                  AND attempt.pr_number = gate.pr_number
+                  AND attempt.publication_generation = gate.publication_generation
+                  AND attempt.operation_key = gate.operation_key
+                  AND attempt.phase IN ('dispatched', 'applied')
+                ORDER BY attempt.observed_at DESC, attempt.id DESC
+                LIMIT 1
+             ) AS "gateActivationVariant"
+        FROM ${schema.reviewPublicationGenerations} generation
+        LEFT JOIN ${schema.pullRequestPublicationHighWaters} high_water
+          ON high_water.repository_id = generation.repository_id
+         AND high_water.pr_number = generation.pr_number
+        JOIN ${schema.reviewPublicationOperations} operation
+          ON operation.repository_id = generation.repository_id
+         AND operation.pr_number = generation.pr_number
+         AND operation.publication_generation = generation.publication_generation
+        JOIN ${schema.reviewPublicationOperations} gate
+          ON gate.repository_id = generation.repository_id
+         AND gate.pr_number = generation.pr_number
+         AND gate.publication_generation = generation.publication_generation
+         AND gate.kind = 'gateCheckComplete'
+       WHERE generation.repository_id = ${input.databaseRepositoryId}
+         AND generation.pr_number = ${input.pullRequestNumber}
+         AND generation.publication_generation = ${input.publicationGeneration}::bigint
+         AND generation.review_id = ${input.reviewId}
+         AND generation.sealed_at IS NOT NULL
+       GROUP BY generation.accepted_input_digest,
+                high_water.publication_generation,
+                high_water.accepted_review_id,
+                high_water.accepted_input_digest,
+                gate.repository_id, gate.pr_number,
+                gate.publication_generation, gate.operation_key,
+                gate.operation_record, gate.state
+    `);
+    const generationRow = generation.rows[0] as
+      | {
+          acceptedInputDigest: string;
+          highWaterGeneration: string | null;
+          highWaterReviewId: string | null;
+          highWaterInputDigest: string | null;
+          activeOperations: number;
+          supersededOperations: number;
+          terminalGateOperations: number;
+          requiredFailureOperations: number;
+          gateState: string;
+          gateActivationVariant: string | null;
+        }
+      | undefined;
+    if (!generationRow) {
+      throw new Error("publication-controller finalization generation is missing");
+    }
+    const acceptedDigest = input.acceptedInputIdentity.replace(/^sha256:/u, "");
+    if (generationRow.acceptedInputDigest !== acceptedDigest) {
+      throw new Error("publication-controller finalization input identity changed");
+    }
+
+    const currentPayload = jobRow.payload;
+    const pending = (currentPayload as ReviewJobPayload & Record<string, unknown>)[
+      COALESCED_REVIEW_PAYLOAD_KEY
+    ];
+    const pendingInput = pending && typeof pending === "object" && !Array.isArray(pending)
+      ? pending as ReviewJobPayload
+      : null;
+    const exactInput = exactReviewInputMatches(
+      currentPayload,
+      input.expectedReviewInput,
+    );
+    const highWaterExact =
+      generationRow.highWaterGeneration === input.publicationGeneration &&
+      generationRow.highWaterReviewId === String(input.reviewId) &&
+      generationRow.highWaterInputDigest === acceptedDigest;
+    if (
+      generationRow.activeOperations !== 0 ||
+      generationRow.terminalGateOperations !== 1
+    ) {
+      throw new Error("publication-controller finalization lacks terminal gate evidence");
+    }
+    const superseded =
+      pendingInput !== null ||
+      !exactInput ||
+      !highWaterExact ||
+      generationRow.supersededOperations > 0;
+    const definitiveFailure = !superseded && (
+      generationRow.gateState === "failed" ||
+      generationRow.requiredFailureOperations > 0 ||
+      generationRow.gateActivationVariant ===
+        "all-dependencies-terminal:publication-failure"
+    );
+    const derivedOutcome = superseded
+      ? "superseded"
+      : definitiveFailure
+        ? "definitive-failure"
+        : "success";
+    if (input.outcome !== derivedOutcome) {
+      throw new Error(
+        "publication-controller finalization outcome does not match durable evidence",
+      );
+    }
+
+    const gateEnabled = orgId === null
+      ? false
+      : await lockOrganizationGateMode(tx as Database, orgId);
+    let gateFailing = false;
+    if (superseded) {
+      await (tx as Database)
+        .update(schema.reviews)
+        .set({
+          status: "stale",
+          errorMessage: "superseded by newer pull request input",
+          finishedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.reviews.id, input.reviewId),
+            eq(schema.reviews.status, "running"),
+          ),
+        );
+    } else {
+      if (definitiveFailure && input.publicationReceipt !== undefined) {
+        throw new Error("failed publication-controller finalization cannot invent a receipt");
+      }
+      if (!definitiveFailure && input.outcome !== "success") {
+        throw new Error("publication-controller finalization outcome is inconsistent");
+      }
+      if (!definitiveFailure && input.publicationReceipt === undefined) {
+        throw new Error("successful publication-controller finalization requires a receipt");
+      }
+
+      const gateTruth = requireEnvelopeGateTruth(review.envelope);
+      const terminal = terminalReviewState(
+        definitiveFailure
+          ? {
+              terminalStatus: "failed",
+              errorMessage: "GitHub publication did not produce a complete reviewer verdict.",
+            }
+          : input,
+        gateTruth.envelope,
+      );
+      gateFailing = gateEnabled &&
+        (terminal.status === "failed" || gateTruth.gateFailing);
+      if (input.publicationReceipt !== undefined) {
+        await persistPublicationReceipt(tx as Database, {
+          reviewId: input.reviewId,
+          envelope: gateTruth.envelope,
+          receipt: input.publicationReceipt,
+        });
+      }
+      const terminalRows = await (tx as Database)
+        .update(schema.reviews)
+        .set({
+          status: terminal.status,
+          gateFailing,
+          advisoryCheckRunId: input.advisoryCheckRunId ?? null,
+          gateCheckRunId: input.gateCheckRunId ?? null,
+          errorMessage: terminal.errorMessage,
+          finishedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.reviews.id, input.reviewId),
+            eq(schema.reviews.status, "running"),
+            isNotNull(schema.reviews.envelope),
+          ),
+        )
+        .returning({ id: schema.reviews.id });
+      if (terminalRows.length !== 1) {
+        throw new Error("publication-controller review lost its terminal transition");
+      }
+    }
+
+    await persistReviewCompletionAccounting(
+      tx as Database,
+      input,
+      { publicId: review.publicId, triggerSource: review.triggerSource },
+      { enqueueGateStateSync: false },
+    );
+
+    const settled = await (tx as Database)
+      .update(schema.jobs)
+      .set({
+        status: "done",
+        lockedAt: null,
+        lockedBy: null,
+        lastError: null,
+      })
+      .where(
+        and(
+          eq(schema.jobs.id, input.reviewJobLease.id),
+          eq(schema.jobs.status, "running"),
+          eq(schema.jobs.lockedBy, input.reviewJobLease.lockedBy),
+          eq(schema.jobs.lockGeneration, input.reviewJobLease.lockGeneration),
+        ),
+      )
+      .returning({ id: schema.jobs.id });
+    if (settled.length !== 1) {
+      throw new Error("publication-controller finalization lost its queue lease");
+    }
+    if (pendingInput !== null) {
+      await (tx as Database).insert(schema.jobs).values({
+        kind: "review",
+        payload: promotedReviewInput(
+          currentPayload,
+          pendingInput,
+          input.reviewJobLease.id,
+        ),
+        status: "queued",
+        runAfter: new Date(),
+        maxAttempts: jobRow.maxAttempts,
+      });
+    }
+    return {
+      completed: !superseded,
+      gateEnabled,
+      gateFailing,
+      ...(superseded ? { superseded: true, promoted: pendingInput !== null } : {}),
+    };
   });
 }
 

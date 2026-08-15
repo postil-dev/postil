@@ -22,6 +22,7 @@ import {
   hostedInferenceAvailable,
   hostedInferenceEnabled,
   optionalEnv,
+  requireEnv,
 } from "@/lib/env";
 import {
   classifyOperationalModelIncidents,
@@ -43,9 +44,22 @@ import {
   createCheckRun,
   findCheckRunByExternalId,
   getPullRequestReviewContext,
+  getPullRequestPublicationContext,
   verifyCompletedCheckRun,
   type ExpectedCheckRunIdentity,
 } from "@/lib/github/checks";
+import release from "@/data/public-cli-release.json";
+import {
+  buildGitHubPublicationInputIdentity,
+  runGitHubPublicationCliPlanning,
+} from "@/lib/github-publication-cli-planner";
+import { buildGitHubPublicationControllerManifest } from "@/lib/github-publication-controller-manifest";
+import { PostgresGitHubPublicationOperationStore } from "@/lib/github-publication-operation-store";
+import {
+  githubPublicationEnvelopeDigest,
+  stageGitHubPublicationCandidateAtomically,
+} from "@/lib/github-publication-atomic-stage";
+import { loadAndDeriveGitHubPublicationReceipt } from "@/lib/github-publication-receipt-deriver";
 import {
   materializeOrgConfig,
   materializeRepoConfig,
@@ -98,6 +112,7 @@ import {
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
   finalizeStagedReviewCompletionWithGateMode,
+  finalizePublicationControllerReview,
   markReviewStaleWithDurableCleanup,
   OPERATIONAL_NO_VERDICT_MESSAGE,
   stageReviewCompletionCandidate,
@@ -130,6 +145,16 @@ import {
   reportOperationalModelIncident,
   type ObservabilityProcessGroup,
 } from "@/lib/server-observability";
+import {
+  type PublicationControllerClaimAuthority,
+  type PublicationControllerReviewAction,
+  type PublicationControllerReviewIdentity,
+  buildPublicationControllerOperationExecutor,
+  buildPublicationControllerReviewStateMachineDependencies,
+  runExactPublicationControllerRecovery,
+  runPublicationControllerRecoveryIfAuthorized,
+  runPublicationControllerReviewStateMachine,
+} from "@/worker/publication-controller-review";
 
 export const REVIEW_DEADLINE_MS = 10 * 60 * 1000;
 // Match postil-cli's hosted profile: a normal slow review gets up to seven
@@ -1197,6 +1222,467 @@ async function resumeStagedReviewCompletion(input: {
   }
 }
 
+async function loadPublicationControllerReviewIdentity(input: {
+  payload: ReviewJobPayload;
+  lease: JobLease;
+}): Promise<PublicationControllerReviewIdentity | null> {
+  if (!Number.isSafeInteger(input.payload.recoveryReviewId)) return null;
+  const result = await getPool().query<{
+    repository_id: string;
+    pr_number: number;
+    publication_generation: string;
+    review_id: string;
+    accepted_input_digest: string;
+  }>(
+    `SELECT generation.repository_id::text AS repository_id,
+            generation.pr_number,
+            generation.publication_generation::text AS publication_generation,
+            generation.review_id::text AS review_id,
+            generation.accepted_input_digest
+       FROM jobs job
+       JOIN review_publication_generations generation
+         ON generation.review_id = (job.payload->>'recoveryReviewId')::bigint
+        AND generation.review_input_sequence =
+          (job.payload->>'reviewInputSequence')::bigint
+      WHERE job.id = $1 AND job.kind = 'review' AND job.status = 'running'
+        AND job.locked_by = $2 AND job.lock_generation = $3
+        AND job.payload->>'recoveryReviewId' = $4
+        AND generation.sealed_at IS NOT NULL
+      LIMIT 2`,
+    [
+      input.lease.id,
+      input.lease.lockedBy,
+      input.lease.lockGeneration,
+      String(input.payload.recoveryReviewId),
+    ],
+  );
+  if (result.rows.length === 0) return null;
+  if (result.rows.length !== 1) {
+    throw new PermanentJobError(
+      "review recovery matches more than one publication-controller generation",
+    );
+  }
+  const row = result.rows[0]!;
+  return {
+    databaseRepositoryId: row.repository_id,
+    pullRequestNumber: row.pr_number,
+    publicationGeneration: row.publication_generation,
+    reviewId: Number(row.review_id),
+    acceptedInputIdentity: `sha256:${row.accepted_input_digest}`,
+  };
+}
+
+async function publicationControllerSupersessionRequested(
+  identity: PublicationControllerReviewIdentity,
+  lease: JobLease,
+): Promise<boolean> {
+  const result = await getPool().query<{ superseded: boolean }>(
+    `SELECT (
+       jsonb_typeof(job.payload->'_postilCoalescedReviewPayload') = 'object'
+       OR high_water.publication_generation IS DISTINCT FROM $4::bigint
+       OR high_water.accepted_review_id IS DISTINCT FROM $5::bigint
+       OR high_water.accepted_input_digest IS DISTINCT FROM $6
+     ) AS superseded
+       FROM jobs job
+       LEFT JOIN pull_request_publication_high_waters high_water
+         ON high_water.repository_id = $7::bigint
+        AND high_water.pr_number = $8
+      WHERE job.id = $1 AND job.kind = 'review' AND job.status = 'running'
+        AND job.locked_by = $2 AND job.lock_generation = $3`,
+    [
+      lease.id,
+      lease.lockedBy,
+      lease.lockGeneration,
+      identity.publicationGeneration,
+      identity.reviewId,
+      identity.acceptedInputIdentity.slice("sha256:".length),
+      identity.databaseRepositoryId,
+      identity.pullRequestNumber,
+    ],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new ReviewPublicationReconciliationError(
+      "publication-controller queue lease is inactive",
+    );
+  }
+  return row.superseded;
+}
+
+async function inspectPublicationControllerGeneration(input: {
+  identity: PublicationControllerReviewIdentity;
+  lease: JobLease;
+}): Promise<"work" | "success" | "definitive-failure" | "superseded"> {
+  const result = await getPool().query<{
+    operation_count: number;
+    active_operations: number;
+    superseded_operations: number;
+    terminal_gate_operations: number;
+    required_failure_operations: number;
+    gate_state: string;
+    gate_activation_variant: string | null;
+  }>(
+    `SELECT count(*)::integer AS operation_count,
+            count(*) FILTER (
+              WHERE operation.state IN ('pending', 'applying', 'unknown')
+            )::integer AS active_operations,
+            count(*) FILTER (WHERE operation.state = 'superseded')::integer
+              AS superseded_operations,
+            count(*) FILTER (
+              WHERE operation.kind = 'gateCheckComplete'
+                AND operation.state IN ('applied', 'skipped', 'failed', 'superseded')
+            )::integer AS terminal_gate_operations,
+            count(*) FILTER (
+              WHERE operation.operation_key IN (
+                SELECT jsonb_array_elements_text(
+                  gate.operation_record #> '{payload,selection,requiredOperationKeys}'
+                )
+              )
+                AND operation.state IN ('failed', 'superseded')
+            )::integer AS required_failure_operations,
+            gate.state AS gate_state,
+            (
+              SELECT attempt.evidence_payload->>'activationVariant'
+                FROM review_publication_operation_attempts attempt
+               WHERE attempt.repository_id = gate.repository_id
+                 AND attempt.pr_number = gate.pr_number
+                 AND attempt.publication_generation = gate.publication_generation
+                 AND attempt.operation_key = gate.operation_key
+                 AND attempt.phase IN ('dispatched', 'applied')
+               ORDER BY attempt.observed_at DESC, attempt.id DESC
+               LIMIT 1
+            ) AS gate_activation_variant
+       FROM review_publication_operations operation
+       JOIN review_publication_operations gate
+         ON gate.repository_id = operation.repository_id
+        AND gate.pr_number = operation.pr_number
+        AND gate.publication_generation = operation.publication_generation
+        AND gate.kind = 'gateCheckComplete'
+      WHERE operation.repository_id = $1::bigint
+        AND operation.pr_number = $2
+        AND operation.publication_generation = $3::bigint
+      GROUP BY gate.repository_id, gate.pr_number,
+               gate.publication_generation, gate.operation_key,
+               gate.operation_record, gate.state`,
+    [
+      input.identity.databaseRepositoryId,
+      input.identity.pullRequestNumber,
+      input.identity.publicationGeneration,
+    ],
+  );
+  const row = result.rows[0];
+  if (!row || row.operation_count < 2) {
+    throw new PermanentJobError("publication-controller generation has no operation manifest");
+  }
+  const supersessionRequested = await publicationControllerSupersessionRequested(
+    input.identity,
+    input.lease,
+  );
+  if (row.active_operations > 0) return "work";
+  if (row.terminal_gate_operations !== 1) {
+    throw new ReviewPublicationReconciliationError(
+      "publication-controller generation lacks terminal gate evidence",
+    );
+  }
+  if (supersessionRequested || row.superseded_operations > 0) return "superseded";
+  if (
+    row.gate_state === "failed" ||
+    row.required_failure_operations > 0 ||
+    row.gate_activation_variant ===
+      "all-dependencies-terminal:publication-failure"
+  ) return "definitive-failure";
+  return "success";
+}
+
+async function supersedeOnePendingPublicationOperation(
+  identity: PublicationControllerReviewIdentity,
+): Promise<boolean> {
+  return new PostgresGitHubPublicationOperationStore(getPool(), {
+    databaseRepositoryId: identity.databaseRepositoryId,
+    pullRequestNumber: identity.pullRequestNumber,
+    publicationGeneration: identity.publicationGeneration,
+  }).supersedeOnePending();
+}
+
+async function publicationControllerMutationAuthorized(input: {
+  identity: PublicationControllerReviewIdentity;
+  lease: JobLease;
+}): Promise<boolean> {
+  if (!(await externalSideEffectLeaseActive(getPool(), input.lease))) return false;
+  return !(await publicationControllerSupersessionRequested(
+    input.identity,
+    input.lease,
+  ));
+}
+
+async function executeOnePublicationControllerOperation(input: {
+  identity: PublicationControllerReviewIdentity;
+  payload: ReviewJobPayload;
+  lease: JobLease;
+  signal?: AbortSignal;
+}) {
+  if (await publicationControllerSupersessionRequested(input.identity, input.lease)) {
+    if (await supersedeOnePendingPublicationOperation(input.identity)) {
+      return { status: "superseded" as const };
+    }
+  }
+  const token = await translateWorkerAbort(
+    getInstallationToken(input.payload.installationId, input.signal),
+    input.signal,
+  );
+  return buildPublicationControllerOperationExecutor({
+    pool: getPool(),
+    scope: {
+      databaseRepositoryId: input.identity.databaseRepositoryId,
+      pullRequestNumber: input.identity.pullRequestNumber,
+      publicationGeneration: input.identity.publicationGeneration,
+    },
+    token,
+    appId: publicationControllerGitHubAppId(),
+    claimOwner: `${input.lease.lockedBy}:review:${input.lease.id}:${input.lease.lockGeneration}`,
+    signal: input.signal,
+    dispatchAuthorized: () => publicationControllerMutationAuthorized(input),
+  })();
+}
+
+function publicationControllerGitHubAppId(): number {
+  const appId = Number(requireEnv("GITHUB_APP_ID"));
+  if (!Number.isSafeInteger(appId) || appId <= 0) {
+    throw new PermanentJobError("GITHUB_APP_ID must be a positive integer");
+  }
+  return appId;
+}
+
+async function loadPublicationControllerContinuationPayload(input: {
+  identity: PublicationControllerReviewIdentity;
+  lease: JobLease;
+}): Promise<ReviewJobPayload> {
+  const result = await getPool().query<{ payload: ReviewJobPayload }>(
+    `SELECT payload
+       FROM jobs
+      WHERE id = $1 AND kind = 'review' AND status = 'running'
+        AND locked_by = $2 AND lock_generation = $3
+        AND payload->>'recoveryReviewId' = $4
+        AND payload->>'reviewInputSequence' = $5`,
+    [
+      input.lease.id,
+      input.lease.lockedBy,
+      input.lease.lockGeneration,
+      String(input.identity.reviewId),
+      input.identity.publicationGeneration,
+    ],
+  );
+  const payload = result.rows[0]?.payload;
+  if (!payload) {
+    throw new ReviewPublicationReconciliationError(
+      "publication-controller continuation lost its exact queue lease",
+    );
+  }
+  return payload;
+}
+
+export async function publicationControllerRemoteCheckRunId(
+  identity: PublicationControllerReviewIdentity,
+  kind: "advisoryCheckCreate" | "gateCheckCreate",
+  database = getPool(),
+): Promise<number | null> {
+  const result = await database.query<{ remote_id: string | null }>(
+    `SELECT COALESCE(
+              applied.remote_operation_id,
+              applied.remote_identity,
+              reconciled.remote_operation_id,
+              reconciled.remote_identity,
+              NULLIF(operation.terminal_evidence->>'remoteOperationId', ''),
+              NULLIF(operation.terminal_evidence->>'remoteId', ''),
+              NULLIF(operation.terminal_evidence->'result'->>'checkRunId', '')
+            ) AS remote_id
+       FROM review_publication_operations operation
+       LEFT JOIN LATERAL (
+         SELECT attempt.remote_operation_id, attempt.remote_identity
+           FROM review_publication_operation_attempts attempt
+          WHERE attempt.repository_id = operation.repository_id
+            AND attempt.pr_number = operation.pr_number
+            AND attempt.publication_generation = operation.publication_generation
+            AND attempt.operation_key = operation.operation_key
+            AND attempt.phase = 'applied'
+          ORDER BY attempt.observed_at DESC, attempt.id DESC
+          LIMIT 1
+       ) applied ON true
+       LEFT JOIN LATERAL (
+         SELECT reconciliation.remote_operation_id,
+                reconciliation.remote_identity
+           FROM review_publication_operation_reconciliations reconciliation
+          WHERE reconciliation.repository_id = operation.repository_id
+            AND reconciliation.pr_number = operation.pr_number
+            AND reconciliation.publication_generation = operation.publication_generation
+            AND reconciliation.operation_key = operation.operation_key
+            AND reconciliation.outcome = 'applied'
+          ORDER BY reconciliation.observed_at DESC, reconciliation.id DESC
+          LIMIT 1
+       ) reconciled ON true
+      WHERE operation.repository_id = $1::bigint
+        AND operation.pr_number = $2
+        AND operation.publication_generation = $3::bigint
+        AND operation.kind = $4
+      LIMIT 1`,
+    [
+      identity.databaseRepositoryId,
+      identity.pullRequestNumber,
+      identity.publicationGeneration,
+      kind,
+    ],
+  );
+  const value = result.rows[0]?.remote_id;
+  if (!value || !/^[1-9][0-9]{0,18}$/u.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+async function finalizePublicationControllerGeneration(input: {
+  identity: PublicationControllerReviewIdentity;
+  payload: ReviewJobPayload;
+  lease: JobLease;
+  outcome: "success" | "definitive-failure" | "superseded";
+  receipt?: PublicationReceipt;
+}): Promise<void> {
+  const context = await getDb()
+    .select({
+      envelope: schema.reviews.envelope,
+      orgId: schema.installations.orgId,
+      repositoryId: schema.repositories.id,
+      reservationId: schema.hostedUsageReservations.id,
+    })
+    .from(schema.reviews)
+    .innerJoin(
+      schema.repositories,
+      eq(schema.repositories.id, schema.reviews.repositoryId),
+    )
+    .innerJoin(
+      schema.installations,
+      eq(schema.installations.id, schema.repositories.installationId),
+    )
+    .leftJoin(
+      schema.hostedUsageReservations,
+      eq(schema.hostedUsageReservations.reviewId, schema.reviews.id),
+    )
+    .where(eq(schema.reviews.id, input.identity.reviewId))
+    .limit(1);
+  const row = context[0];
+  if (!row?.envelope) {
+    throw new ReviewPublicationReconciliationError(
+      "publication-controller review has no staged envelope",
+    );
+  }
+  const envelope = ingestEnvelope(JSON.stringify(row.envelope));
+  const result = await finalizePublicationControllerReview(
+    getDb(),
+    {
+      reviewId: input.identity.reviewId,
+      reviewJobLease: input.lease,
+      expectedReviewInput: input.payload,
+      databaseRepositoryId: Number(input.identity.databaseRepositoryId),
+      pullRequestNumber: input.identity.pullRequestNumber,
+      publicationGeneration: input.identity.publicationGeneration,
+      acceptedInputIdentity: input.identity.acceptedInputIdentity,
+      outcome: input.outcome,
+      ...(input.receipt === undefined ? {} : { publicationReceipt: input.receipt }),
+      usage: reviewUsageFromEnvelope(envelope.envelope, {
+        orgId: row.orgId,
+        repositoryId: row.repositoryId,
+        byok: row.reservationId === null,
+      }),
+      hostedUsageReservationId: row.reservationId,
+      usageAccountingComplete: envelope.usageAccountingComplete,
+      advisoryCheckRunId: await publicationControllerRemoteCheckRunId(
+        input.identity,
+        "advisoryCheckCreate",
+      ),
+      gateCheckRunId: await publicationControllerRemoteCheckRunId(
+        input.identity,
+        "gateCheckCreate",
+      ),
+    },
+    row.orgId,
+  );
+  if (!result.completed && !result.superseded) {
+    throw new ReviewPublicationReconciliationError(
+      "publication-controller finalization did not settle the exact review lease",
+    );
+  }
+}
+
+async function runPublicationControllerRecovery(input: {
+  payload: ReviewJobPayload;
+  lease: JobLease;
+  signal?: AbortSignal;
+}, detectedIdentity?: PublicationControllerReviewIdentity): Promise<
+  PublicationControllerReviewAction | null
+> {
+  return runPublicationControllerReviewStateMachine(
+    input,
+    buildPublicationControllerReviewStateMachineDependencies({
+      loadIdentity: detectedIdentity
+        ? async () => detectedIdentity
+        : loadPublicationControllerReviewIdentity,
+      inspectGeneration: ({ identity, lease }) =>
+        inspectPublicationControllerGeneration({ identity, lease }),
+      executeOne: executeOnePublicationControllerOperation,
+      deriveReceipt: ({ identity }) =>
+        loadAndDeriveGitHubPublicationReceipt({
+          database: getPool(),
+          repositoryId: identity.databaseRepositoryId,
+          pullRequestNumber: identity.pullRequestNumber,
+          publicationGeneration: identity.publicationGeneration,
+          reviewId: identity.reviewId,
+          acceptedInputIdentity: identity.acceptedInputIdentity,
+        }),
+      finalize: finalizePublicationControllerGeneration,
+      loadContinuationPayload: loadPublicationControllerContinuationPayload,
+      throwIfStopping: throwIfWorkerStopping,
+    }),
+  );
+}
+
+function publicationControllerGateOutput(input: {
+  gateEnabled: boolean;
+  gateFailing: boolean;
+  unavailable: boolean;
+  detailsUrl: string;
+}) {
+  if (!input.gateEnabled) {
+    return {
+      conclusion: "neutral" as const,
+      title: "Postil gate is advisory",
+      summary: input.unavailable
+        ? "Merge blocking is disabled. The incomplete review remains advisory."
+        : "Merge blocking is disabled. Review findings remain advisory.",
+      detailsUrl: input.detailsUrl,
+    };
+  }
+  if (input.unavailable) {
+    return {
+      conclusion: "failure" as const,
+      title: "Review unavailable",
+      summary: "Postil could not complete this review. The merge check remains blocked.",
+      detailsUrl: input.detailsUrl,
+    };
+  }
+  if (input.gateFailing) {
+    return {
+      conclusion: "failure" as const,
+      title: "Postil gate blocked",
+      summary: "One or more blocking findings remain.",
+      detailsUrl: input.detailsUrl,
+    };
+  }
+  return {
+    conclusion: "success" as const,
+    title: "Postil gate passed",
+    summary: "No blocking findings remain for this commit.",
+    detailsUrl: input.detailsUrl,
+  };
+}
+
 /**
  * Run one hosted review end to end.
  *
@@ -1211,7 +1697,8 @@ export async function runReviewJob(
   observabilityProcessGroup: ObservabilityProcessGroup = "worker",
   signal?: AbortSignal,
   onPublicationStarted?: () => void,
-): Promise<void> {
+  publicationControllerClaim?: PublicationControllerClaimAuthority,
+): Promise<PublicationControllerReviewAction | void> {
   throwIfWorkerStopping(signal);
   if (
     typeof payload.sourceInstallationId !== "number" ||
@@ -1223,8 +1710,43 @@ export async function runReviewJob(
   const db = getDb();
   const leaseActive = () => externalSideEffectLeaseActive(getPool(), timing.lease);
   if (!(await leaseActive())) return;
+  const controllerOwned = publicationControllerClaim !== undefined;
   const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+  const recovery = await runPublicationControllerRecoveryIfAuthorized({
+    payload,
+    claim: publicationControllerClaim,
+    localReleaseSha: releaseSha,
+    authorityError: (message) => new PermanentJobError(message),
+    recover: () => runExactPublicationControllerRecovery({
+      payload,
+      loadIdentity: () => loadPublicationControllerReviewIdentity({
+        payload,
+        lease: timing.lease,
+      }),
+      recover: async (recoveryIdentity) => {
+        const action = await runPublicationControllerRecovery({
+          payload,
+          lease: timing.lease,
+          signal,
+        }, recoveryIdentity);
+        if (action === null) {
+          throw new ReviewPublicationReconciliationError(
+            "publication-controller staged identity was lost during recovery",
+          );
+        }
+        return action;
+      },
+      isShutdownError: (error) => error instanceof WorkerShutdownError,
+      isReconciliationError: (error) =>
+        error instanceof ReviewPublicationReconciliationError,
+      reconciliationError: (message) =>
+        new ReviewPublicationReconciliationError(message),
+      errorMessage: redactSecrets,
+    }),
+  });
+  if (recovery !== null) return recovery;
   if (
+    !controllerOwned &&
     releaseSha &&
     await publicationControllerLegacyReviewFenced(getPool(), releaseSha)
   ) {
@@ -1277,6 +1799,7 @@ export async function runReviewJob(
     );
   }
   if (
+    !controllerOwned &&
     await resumeStagedReviewCompletion({
       db,
       payload,
@@ -1624,52 +2147,54 @@ export async function runReviewJob(
       );
     }
     onPublicationStarted?.();
-    const superseded = await supersedeActiveReviews({
-      repositoryId: repository.id,
-      prNumber: payload.prNumber,
-      newHeadSha: payload.headSha,
-      repoFullName: payload.repoFullName,
-      githubInstallationId: payload.installationId,
-      excludeReviewId: reviewId,
-      orgSlug: installation.orgSlug,
-    });
-    if (superseded > 0)
-      reviewLog.line(`superseded ${superseded} earlier active review(s)`);
+    if (!controllerOwned) {
+      const superseded = await supersedeActiveReviews({
+        repositoryId: repository.id,
+        prNumber: payload.prNumber,
+        newHeadSha: payload.headSha,
+        repoFullName: payload.repoFullName,
+        githubInstallationId: payload.installationId,
+        excludeReviewId: reviewId,
+        orgSlug: installation.orgSlug,
+      });
+      if (superseded > 0)
+        reviewLog.line(`superseded ${superseded} earlier active review(s)`);
 
-    advisoryCheckRunId = await createCheckRun(
-      token,
-      payload.repoFullName,
-      ADVISORY_CHECK_NAME,
-      payload.headSha,
-      { signal: reviewSignal, externalId: advisoryCheckExternalId },
-    ).catch((error) => {
-      advisoryCheckRunMayExist =
-        error instanceof AmbiguousCheckRunCreationError;
-      throw error;
-    });
-    await db
-      .update(schema.reviews)
-      .set({ advisoryCheckRunId })
-      .where(eq(schema.reviews.id, reviewId));
-    gateCheckRunId = await createCheckRun(
-      token,
-      payload.repoFullName,
-      GATE_CHECK_NAME,
-      payload.headSha,
-      {
-        signal: reviewSignal,
-        externalId: gateCheckExternalId,
-        detailsUrl,
-      },
-    ).catch((error) => {
-      gateCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
-      throw error;
-    });
-    await db
-      .update(schema.reviews)
-      .set({ gateCheckRunId })
-      .where(eq(schema.reviews.id, reviewId));
-    reviewLog.line("forge check-runs created");
+      advisoryCheckRunId = await createCheckRun(
+        token,
+        payload.repoFullName,
+        ADVISORY_CHECK_NAME,
+        payload.headSha,
+        { signal: reviewSignal, externalId: advisoryCheckExternalId },
+      ).catch((error) => {
+        advisoryCheckRunMayExist =
+          error instanceof AmbiguousCheckRunCreationError;
+        throw error;
+      });
+      await db
+        .update(schema.reviews)
+        .set({ advisoryCheckRunId })
+        .where(eq(schema.reviews.id, reviewId));
+      gateCheckRunId = await createCheckRun(
+        token,
+        payload.repoFullName,
+        GATE_CHECK_NAME,
+        payload.headSha,
+        {
+          signal: reviewSignal,
+          externalId: gateCheckExternalId,
+          detailsUrl,
+        },
+      ).catch((error) => {
+        gateCheckRunMayExist = error instanceof AmbiguousCheckRunCreationError;
+        throw error;
+      });
+      await db
+        .update(schema.reviews)
+        .set({ gateCheckRunId })
+        .where(eq(schema.reviews.id, reviewId));
+      reviewLog.line("forge check-runs created");
+    }
 
     if (!providerModeMatches) {
       throw new TerminalReviewError(
@@ -1682,7 +2207,7 @@ export async function runReviewJob(
     cliVersion = cliVersionLine.replace(/^postil CLI version /, "");
     reviewLog.line(cliVersionLine);
 
-    const args = [
+    const args = controllerOwned ? [] : [
       "review",
       "--forge",
       "github",
@@ -1705,7 +2230,7 @@ export async function runReviewJob(
       "--gate-check-run-id",
       String(gateCheckRunId),
     ];
-    if (optionalEnv("POSTIL_LOCAL_REVIEW_BOUNDED") === "1") {
+    if (!controllerOwned && optionalEnv("POSTIL_LOCAL_REVIEW_BOUNDED") === "1") {
       args.push("--bounded");
     }
     if (baseline?.envelope) {
@@ -1714,10 +2239,12 @@ export async function runReviewJob(
       await writeFile(baselinePath, JSON.stringify(baseline.envelope));
       // Absolute: the CLI resolves --baseline against its own cwd, which is
       // the per-review work dir below, not the worker's.
-      if (!forceFullReview) args.push("--since-sha", baseline.headSha);
-      args.push("--baseline", resolve(baselinePath));
+      if (!controllerOwned) {
+        if (!forceFullReview) args.push("--since-sha", baseline.headSha);
+        args.push("--baseline", resolve(baselinePath));
+      }
     }
-    args.push("--output", "json");
+    if (!controllerOwned) args.push("--output", "json");
 
     // Materialize the repo's .postil config (default branch) into a fresh
     // per-review directory and run the CLI there, so repo-level config works
@@ -1861,27 +2388,29 @@ export async function runReviewJob(
               )
               .returning({ id: schema.reviews.id });
             if (failedRows.length === 0) return false;
-            await tx.insert(schema.jobs).values({
-              kind: "check-run-cleanup",
-              payload: {
-                installationId: payload.installationId,
-                repoFullName: payload.repoFullName,
-                advisoryCheckRunId,
-                gateCheckRunId,
-                headSha: payload.headSha,
-                advisoryCheckExternalId,
-                gateCheckExternalId,
-                advisoryCheckRunMayExist,
-                gateCheckRunMayExist,
-                message,
-                detailsUrl,
-                intent: "fail",
-              },
-              maxAttempts: 5,
-            });
+            if (!controllerOwned) {
+              await tx.insert(schema.jobs).values({
+                kind: "check-run-cleanup",
+                payload: {
+                  installationId: payload.installationId,
+                  repoFullName: payload.repoFullName,
+                  advisoryCheckRunId,
+                  gateCheckRunId,
+                  headSha: payload.headSha,
+                  advisoryCheckExternalId,
+                  gateCheckExternalId,
+                  advisoryCheckRunMayExist,
+                  gateCheckRunMayExist,
+                  message,
+                  detailsUrl,
+                  intent: "fail",
+                },
+                maxAttempts: 5,
+              });
+            }
             return true;
           });
-          if (settled) {
+          if (settled && !controllerOwned) {
             await failCheckRuns(
               token,
               payload.repoFullName,
@@ -1950,11 +2479,192 @@ export async function runReviewJob(
             ? await discoverPreventionCommands(token, payload.repoFullName)
             : [],
         ),
-        // The path is optional. A CLI without receipt support ignores it, and
-        // absence is persisted as legacy unknown.
-        POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
+        ...(!controllerOwned
+          ? {
+              // The path is optional. A CLI without receipt support ignores it,
+              // and absence is persisted as legacy unknown.
+              POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
+            }
+          : {}),
       },
     );
+
+    if (controllerOwned) {
+      if (!detailsUrl) {
+        throw new PermanentJobError(
+          "publication-controller review has no public details URL",
+        );
+      }
+      const publicationContext = await translateWorkerAbort(
+        getPullRequestPublicationContext(
+          token,
+          payload.repoFullName,
+          payload.prNumber,
+          reviewSignal,
+        ),
+        reviewSignal,
+      );
+      const exactUpdatedAt = new Date(expectedPullRequestUpdatedAt).toISOString();
+      if (
+        !publicationContext.open ||
+        publicationContext.merged ||
+        publicationContext.draft ||
+        publicationContext.headSha !== payload.headSha ||
+        publicationContext.baseSha !== payload.baseSha ||
+        publicationContext.updatedAt !== exactUpdatedAt
+      ) {
+        throw new ReviewInputSupersededError();
+      }
+      if (
+        !payload.reviewInputSequence ||
+        !/^[1-9][0-9]*$/u.test(payload.reviewInputSequence)
+      ) {
+        throw new PermanentJobError(
+          "publication-controller review lacks an exact input generation",
+        );
+      }
+      const bounded = optionalEnv("POSTIL_LOCAL_REVIEW_BOUNDED") === "1";
+      const acceptedInput = buildGitHubPublicationInputIdentity({
+        databaseRepositoryId: String(repository.id),
+        githubRepositoryId: String(repository.githubRepoId),
+        repositoryFullName: payload.repoFullName,
+        pullRequestNumber: String(payload.prNumber),
+        controllerGeneration: payload.reviewInputSequence,
+        reviewId: String(reviewId),
+        headSha: publicationContext.headSha,
+        mergeBaseSha: publicationContext.mergeBaseSha,
+        targetSha: publicationContext.baseSha,
+        targetBranch: publicationContext.targetBranch,
+        pullRequestTitle: publicationContext.title,
+        pullRequestBody: publicationContext.body,
+        expectedPullRequestUpdatedAt: publicationContext.updatedAt,
+        cliVersion,
+        cliCommitSha: release.hostedCliCommit,
+        cliArtifactSha256: `sha256:${release.hostedCliLinuxX86_64Sha256}`,
+        configurationSha256: `sha256:${configurationSha256}`,
+        providerIdentity: durableRunIdentity.providerIdentity,
+        retryLineage: durableRunIdentity.retryLineage,
+        ...(baseline?.envelope && !forceFullReview
+          ? {
+              baselineReviewId: String(baseline.id),
+              baselineHeadSha: baseline.headSha,
+              baselineEnvelopeSha256:
+                `sha256:${githubPublicationEnvelopeDigest(baseline.envelope)}`,
+            }
+          : {}),
+        bounded,
+        forceFullReview,
+        detailsUrl,
+      });
+      if (!(await publicationAuthorized())) {
+        throw new ReviewInputSupersededError();
+      }
+      cliStarted = true;
+      const planned = await runGitHubPublicationCliPlanning({
+        execute: runCli,
+        environment: cliEnv,
+        workingDirectory: workDir,
+        expected: {
+          controllerGeneration: payload.reviewInputSequence,
+          inputIdentity: acceptedInput.digest,
+          repositoryId: String(repository.githubRepoId),
+          repositoryFullName: payload.repoFullName,
+          pullRequestNumber: String(payload.prNumber),
+          headSha: publicationContext.headSha,
+          mergeBaseSha: publicationContext.mergeBaseSha,
+          targetSha: publicationContext.baseSha,
+          pullRequestTitle: publicationContext.title,
+          pullRequestBody: publicationContext.body,
+        },
+        bounded,
+        ...(!forceFullReview && baselinePath
+          ? { baselinePath: resolve(baselinePath), sinceSha: baseline?.headSha }
+          : {}),
+        signal: reviewSignal,
+        onStderrLine: (line) => reviewLog.line(`[stderr] ${line}`),
+      });
+      for (const incident of classifyOperationalModelIncidents(
+        planned.ingestedEnvelope.envelope,
+      )) {
+        reportOperationalModelIncident(observabilityProcessGroup, incident);
+      }
+      receiptUsageForRace = reviewUsageFromEnvelope(
+        planned.ingestedEnvelope.envelope,
+        { orgId: installation.orgId, repositoryId: repository.id, byok: llm.byok },
+      );
+      usageAccountingCompleteForRace =
+        planned.ingestedEnvelope.usageAccountingComplete;
+      const gateOutput = publicationControllerGateOutput({
+        gateEnabled,
+        gateFailing: planned.ingestedEnvelope.gateFailing,
+        unavailable: isEnvelopeOperationallyUnavailable(
+          planned.ingestedEnvelope.envelope,
+        ),
+        detailsUrl,
+      });
+      const requiredOperationKey = planned.acceptedPlan.value.operations.at(-1)
+        ?.operationKey;
+      if (!requiredOperationKey) {
+        throw new PermanentJobError(
+          "publication-controller plan has no terminal advisory operation",
+        );
+      }
+      const controllerManifest = buildGitHubPublicationControllerManifest({
+        acceptedPlan: planned.acceptedPlan.value,
+        acceptedPlanBytesDigest: `sha256:${planned.acceptedPlan.digest}`,
+        requiredTerminalOperationKeys: [requiredOperationKey],
+        gateOutput,
+      });
+      await stageGitHubPublicationCandidateAtomically({
+        database: getPool(),
+        organizationId: installation.orgId,
+        envelopeArtifact: planned.envelopeArtifact,
+        completion: {
+          reviewId,
+          reviewJobLease: timing.lease,
+          envelope: planned.ingestedEnvelope.envelope,
+          configFiles,
+          configProvenance,
+          silent: planned.ingestedEnvelope.silent,
+          gateFailing: planned.ingestedEnvelope.gateFailing,
+          deferPublicationReceipt: true,
+        },
+        generation: {
+          acceptedInput,
+          acceptedPlan: planned.acceptedPlan,
+          controllerManifest,
+          snapshot: {
+            repositoryId: repository.id,
+            githubRepositoryId: repository.githubRepoId,
+            reviewId,
+            reviewInputSequence: payload.reviewInputSequence,
+            expectedPullRequestUpdatedAt: publicationContext.updatedAt,
+            envelopeDigest: githubPublicationEnvelopeDigest(
+              planned.ingestedEnvelope.envelope,
+            ),
+            targetBranch: publicationContext.targetBranch,
+            pullRequestTitle: publicationContext.title,
+            pullRequestBody: publicationContext.body,
+          },
+        },
+      });
+      completionStaged = true;
+      await activeLargeReviewProxy.discardCompletedRun();
+      reviewLog.line("review result and publication generation staged durably");
+      return {
+        kind: "continue",
+        payload: await loadPublicationControllerContinuationPayload({
+          identity: {
+            databaseRepositoryId: String(repository.id),
+            pullRequestNumber: payload.prNumber,
+            publicationGeneration: payload.reviewInputSequence,
+            reviewId,
+            acceptedInputIdentity: acceptedInput.digest,
+          },
+          lease: timing.lease,
+        }),
+      };
+    }
 
     const result = await withReviewPublicationFence(
       getPool(),
@@ -2141,7 +2851,7 @@ export async function runReviewJob(
         token,
         payload.repoFullName,
         {
-          id: advisoryCheckRunId,
+          id: advisoryCheckRunId!,
           name: ADVISORY_CHECK_NAME,
           externalId: advisoryCheckExternalId,
           headSha: payload.headSha,
@@ -2348,6 +3058,47 @@ export async function runReviewJob(
       }
       await releaseHostedReviewSpend(db, hostedUsageReservationId);
     };
+    if (controllerOwned) {
+      if (completionStaged) {
+        if (err instanceof WorkerShutdownError) throw err;
+        throw new ReviewPublicationReconciliationError(
+          `publication-controller recovery deferred: ${redactSecrets(err, sensitiveValues)}`,
+        );
+      }
+      if (err instanceof WorkerShutdownError) throw err;
+      await reconcileInterruptedSpend();
+      if (err instanceof ReviewInputConvergenceError) {
+        await db
+          .update(schema.reviews)
+          .set({
+            status: "stale",
+            errorMessage: "superseded by newer pull request input",
+            finishedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.reviews.id, reviewId),
+              eq(schema.reviews.status, "running"),
+            ),
+          );
+        reviewLog.line("review superseded before controller generation staging");
+        return;
+      }
+      await db
+        .update(schema.reviews)
+        .set({
+          status: "failed",
+          errorMessage: redactSecrets(err, sensitiveValues),
+          finishedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.reviews.id, reviewId),
+            eq(schema.reviews.status, "running"),
+          ),
+        );
+      throw err;
+    }
     if (err instanceof ReviewInputConvergenceError) {
       const retainedRerun = err instanceof ReviewInputSupersededError;
       const message = retainedRerun
