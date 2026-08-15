@@ -413,7 +413,7 @@ BEGIN
       AND repository_id = NEW.repository_id
       AND pr_number = NEW.pr_number
       AND head_sha = NEW.head_sha
-      AND base_sha = NEW.base_sha
+      AND base_sha = NEW.target_sha
   ) THEN
     RAISE EXCEPTION 'review publication generation does not match its review identity'
       USING ERRCODE = 'foreign_key_violation';
@@ -439,10 +439,17 @@ BEGIN
       NEW.accepted_plan->'reviewedSnapshot',
       ARRAY['headSha', 'mergeBaseSha', 'targetSha', 'pullRequestTitleSha256', 'pullRequestBodySha256']
     )
-    AND public.postil_has_exact_json_keys(
-      NEW.accepted_plan->'gateAnalysis',
-      ARRAY['ownership', 'authoritative', 'organizationGateModeRequired', 'name', 'headSha',
-            'analyzedConclusion', 'title', 'summary', 'detailsUrl']
+    AND (
+      public.postil_has_exact_json_keys(
+        NEW.accepted_plan->'gateAnalysis',
+        ARRAY['ownership', 'authoritative', 'organizationGateModeRequired', 'name', 'headSha',
+              'analyzedConclusion', 'title', 'summary']
+      )
+      OR public.postil_has_exact_json_keys(
+        NEW.accepted_plan->'gateAnalysis',
+        ARRAY['ownership', 'authoritative', 'organizationGateModeRequired', 'name', 'headSha',
+              'analyzedConclusion', 'title', 'summary', 'detailsUrl']
+      )
     )
     AND jsonb_typeof(NEW.accepted_plan->'version') = 'number'
     AND NEW.accepted_plan->>'version' ~ '^[1-9][0-9]{0,8}$'

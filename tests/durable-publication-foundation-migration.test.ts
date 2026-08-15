@@ -327,7 +327,7 @@ describeDb("durable publication foundation migration", () => {
     repositoryId?: number;
     prNumber: number;
     headSha: string;
-    baseSha?: string;
+    targetSha?: string;
     queryable?: Queryable;
   }) {
     const result = await (input.queryable ?? pool).query<{ id: string }>(
@@ -335,7 +335,7 @@ describeDb("durable publication foundation migration", () => {
          (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at)
        VALUES ($1, $2, $3, $4, 'queued', 'unknown', now())
        RETURNING id`,
-      [input.repositoryId ?? repositoryId, input.prNumber, input.headSha, input.baseSha ?? BASE_SHA],
+      [input.repositoryId ?? repositoryId, input.prNumber, input.headSha, input.targetSha ?? TARGET_SHA],
     );
     return Number(result.rows[0]!.id);
   }
