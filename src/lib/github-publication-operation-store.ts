@@ -332,6 +332,9 @@ export class PostgresGitHubPublicationOperationStore
     const errorReason = boundedError(typeof evidence.result.reason === "string"
       ? evidence.result.reason
       : `GitHub publication rejected with outcome ${evidence.outcome}`);
+    if (evidence.result.dispatched === false) {
+      return this.finishWithoutDispatch(claim, evidence, "failed", errorReason);
+    }
     const payload = evidencePayload(evidence);
     return this.transaction(async (client) => {
       if (!await lockClaim(client, claim, false)) return false;
@@ -502,7 +505,7 @@ export class PostgresGitHubPublicationOperationStore
   private async finishWithoutDispatch(
     claim: ClaimedGitHubPublicationOperation,
     evidence: PublicationTerminalEvidence,
-    state: "skipped",
+    state: "skipped" | "failed",
     errorReason: string | null,
   ): Promise<boolean> {
     return this.transaction(async (client) => {

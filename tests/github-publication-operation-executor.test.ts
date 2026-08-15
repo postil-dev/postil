@@ -445,6 +445,45 @@ describeDb("PostgreSQL publication operation store", () => {
     });
   });
 
+  test("terminalizes pre-dispatch validation rejection without dispatch evidence", async () => {
+    await stageDatabaseFixture(pool, 105);
+    const store = new PostgresGitHubPublicationOperationStore(pool);
+    const claim = (await store.claimOneEligible({
+      claimOwner: "validation-worker",
+      leaseId: randomUUID(),
+      leaseDurationMs: 60_000,
+    }))!;
+    const result = { reason: "immutable operation validation failed", dispatched: false };
+    expect(await store.finishRejected(claim, {
+      ...dispatchFixture(claim),
+      outcome: "rejected",
+      result,
+      resultDigest: digestJson(result),
+    })).toBe(true);
+
+    const stored = await pool.query<{ state: string; phases: string[] }>(
+      `SELECT operation.state,
+              ARRAY(
+                SELECT phase FROM review_publication_operation_attempts attempt
+                WHERE attempt.repository_id = operation.repository_id
+                  AND attempt.pr_number = operation.pr_number
+                  AND attempt.publication_generation = operation.publication_generation
+                  AND attempt.operation_key = operation.operation_key
+                ORDER BY attempt.id
+              ) AS phases
+       FROM review_publication_operations operation
+       WHERE operation.repository_id = $1::bigint
+         AND operation.pr_number = $2
+         AND operation.publication_generation = $3::bigint
+         AND operation.operation_key = $4`,
+      [claim.databaseRepositoryId, claim.pullRequestNumber, claim.publicationGeneration, claim.operationKey],
+    );
+    expect(stored.rows[0]).toEqual({
+      state: "failed",
+      phases: ["claimed", "not_dispatched"],
+    });
+  });
+
   test("retries only from exact append-only not-dispatched lineage", async () => {
     await stageDatabaseFixture(pool, 102);
     const store = new PostgresGitHubPublicationOperationStore(pool);
