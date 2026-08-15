@@ -19,6 +19,18 @@ const PREFIXED_SHA256 = /^sha256:[0-9a-f]{64}$/;
 
 type JsonObject = Record<string, unknown>;
 
+export interface GitHubPublicationOperationScope {
+  databaseRepositoryId: bigint | number | string;
+  pullRequestNumber: number;
+  publicationGeneration: bigint | number | string;
+}
+
+interface NormalizedGitHubPublicationOperationScope {
+  databaseRepositoryId: string;
+  pullRequestNumber: number;
+  publicationGeneration: string;
+}
+
 interface OperationRow extends QueryResultRow {
   database_repository_id: string;
   github_repository_id: string;
@@ -85,18 +97,29 @@ interface DependencyRow extends QueryResultRow {
 /** PostgreSQL implementation of the append-only publication operation boundary. */
 export class PostgresGitHubPublicationOperationStore
   implements GitHubPublicationOperationStore {
-  constructor(private readonly pool: Pool) {}
+  private readonly scope: NormalizedGitHubPublicationOperationScope;
+
+  constructor(
+    private readonly pool: Pool,
+    scope: GitHubPublicationOperationScope,
+  ) {
+    this.scope = normalizeOperationScope(scope);
+  }
 
   async loadOneAmbiguous(): Promise<AmbiguousGitHubPublicationOperation | null> {
     return this.transaction(async (client) => {
       const selected = await client.query<OperationRow>(
         `${operationSelect()}
          WHERE operation.state = 'unknown'
+           AND operation.repository_id = $1::bigint
+           AND operation.pr_number = $2
+           AND operation.publication_generation = $3::bigint
            AND high_water.publication_generation = operation.publication_generation
            AND generation.sealed_at IS NOT NULL
          ORDER BY operation.updated_at, operation.operation_ordinal
          FOR SHARE OF operation SKIP LOCKED
          LIMIT 1`,
+        scopeValues(this.scope),
       );
       const row = selected.rows[0];
       if (row === undefined) return null;
@@ -141,6 +164,9 @@ export class PostgresGitHubPublicationOperationStore
           AND generation.pr_number = operation.pr_number
           AND generation.publication_generation = operation.publication_generation
          WHERE generation.sealed_at IS NOT NULL
+           AND operation.repository_id = $1::bigint
+           AND operation.pr_number = $2
+           AND operation.publication_generation = $3::bigint
            AND (
              (operation.state = 'pending'
                AND (operation.retry_after IS NULL OR operation.retry_after <= clock_timestamp()))
@@ -176,6 +202,7 @@ export class PostgresGitHubPublicationOperationStore
          ORDER BY operation.updated_at, operation.operation_ordinal
          FOR UPDATE OF operation SKIP LOCKED
          LIMIT 1`,
+        scopeValues(this.scope),
       );
       let candidate = selected.rows[0];
       if (candidate === undefined) return null;
@@ -1278,6 +1305,40 @@ function requiredDecimal(value: unknown, name: string): string {
     throw new Error(`${name} is invalid`);
   }
   return text;
+}
+
+function normalizeOperationScope(
+  scope: GitHubPublicationOperationScope,
+): NormalizedGitHubPublicationOperationScope {
+  const databaseRepositoryId = requiredDecimal(
+    String(scope.databaseRepositoryId),
+    "publication operation repository identity",
+  );
+  const publicationGeneration = requiredDecimal(
+    String(scope.publicationGeneration),
+    "publication operation generation",
+  );
+  if (
+    !Number.isSafeInteger(scope.pullRequestNumber) ||
+    scope.pullRequestNumber <= 0
+  ) {
+    throw new Error("publication operation pull request number is invalid");
+  }
+  return {
+    databaseRepositoryId,
+    pullRequestNumber: scope.pullRequestNumber,
+    publicationGeneration,
+  };
+}
+
+function scopeValues(
+  scope: NormalizedGitHubPublicationOperationScope,
+): [string, number, string] {
+  return [
+    scope.databaseRepositoryId,
+    scope.pullRequestNumber,
+    scope.publicationGeneration,
+  ];
 }
 
 function requiredText(value: unknown, name: string): string {

@@ -326,10 +326,31 @@ describeDb("PostgreSQL publication operation store", () => {
     await pool.query(`DELETE FROM repositories WHERE full_name LIKE 'publication-executor-%'`);
   });
 
+  test("claims only the exact repository and generation assigned to the worker", async () => {
+    const unrelated = await stageDatabaseFixture(pool, 106);
+    const assigned = await stageDatabaseFixture(pool, 107);
+    const store = new PostgresGitHubPublicationOperationStore(pool, assigned);
+
+    const claim = await store.claimOneEligible({
+      claimOwner: "scoped-worker",
+      leaseId: randomUUID(),
+      leaseDurationMs: 60_000,
+    });
+
+    expect(claim).toMatchObject({
+      databaseRepositoryId: assigned.databaseRepositoryId,
+      pullRequestNumber: assigned.pullRequestNumber,
+      publicationGeneration: assigned.publicationGeneration,
+    });
+    expect(claim?.databaseRepositoryId).not.toBe(
+      unrelated.databaseRepositoryId,
+    );
+  });
+
   test("claims one current sealed operation under concurrent workers and appends each phase once", async () => {
-    await stageDatabaseFixture(pool, 101);
-    const first = new PostgresGitHubPublicationOperationStore(pool);
-    const second = new PostgresGitHubPublicationOperationStore(pool);
+    const scope = await stageDatabaseFixture(pool, 101);
+    const first = new PostgresGitHubPublicationOperationStore(pool, scope);
+    const second = new PostgresGitHubPublicationOperationStore(pool, scope);
     const [left, right] = await Promise.all([
       first.claimOneEligible({ claimOwner: "worker-left", leaseId: randomUUID(), leaseDurationMs: 60_000 }),
       second.claimOneEligible({ claimOwner: "worker-right", leaseId: randomUUID(), leaseDurationMs: 60_000 }),
@@ -392,8 +413,8 @@ describeDb("PostgreSQL publication operation store", () => {
   });
 
   test("records definitive remote rejection as terminal append-only evidence", async () => {
-    await stageDatabaseFixture(pool, 104);
-    const store = new PostgresGitHubPublicationOperationStore(pool);
+    const scope = await stageDatabaseFixture(pool, 104);
+    const store = new PostgresGitHubPublicationOperationStore(pool, scope);
     const claim = (await store.claimOneEligible({
       claimOwner: "rejection-worker",
       leaseId: randomUUID(),
@@ -446,8 +467,8 @@ describeDb("PostgreSQL publication operation store", () => {
   });
 
   test("terminalizes pre-dispatch validation rejection without dispatch evidence", async () => {
-    await stageDatabaseFixture(pool, 105);
-    const store = new PostgresGitHubPublicationOperationStore(pool);
+    const scope = await stageDatabaseFixture(pool, 105);
+    const store = new PostgresGitHubPublicationOperationStore(pool, scope);
     const claim = (await store.claimOneEligible({
       claimOwner: "validation-worker",
       leaseId: randomUUID(),
@@ -485,8 +506,8 @@ describeDb("PostgreSQL publication operation store", () => {
   });
 
   test("retries only from exact append-only not-dispatched lineage", async () => {
-    await stageDatabaseFixture(pool, 102);
-    const store = new PostgresGitHubPublicationOperationStore(pool);
+    const scope = await stageDatabaseFixture(pool, 102);
+    const store = new PostgresGitHubPublicationOperationStore(pool, scope);
     const first = await store.claimOneEligible({
       claimOwner: "retry-worker-one",
       leaseId: randomUUID(),
@@ -517,8 +538,8 @@ describeDb("PostgreSQL publication operation store", () => {
   });
 
   test("serializes ambiguity reconciliation before allowing a retry", async () => {
-    await stageDatabaseFixture(pool, 103);
-    const store = new PostgresGitHubPublicationOperationStore(pool);
+    const scope = await stageDatabaseFixture(pool, 103);
+    const store = new PostgresGitHubPublicationOperationStore(pool, scope);
     const claim = (await store.claimOneEligible({
       claimOwner: "ambiguity-worker",
       leaseId: randomUUID(),
@@ -1304,7 +1325,7 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
       repositoryId,
       githubRepositoryId,
       reviewId: review.rows[0]!.id,
-      reviewInputSequence: "1",
+      reviewInputSequence: "17",
       expectedPullRequestUpdatedAt: "2026-08-15T00:00:00.000Z",
       envelopeDigest: hex(`envelope-${seed}`),
       targetBranch: "main",
@@ -1312,5 +1333,9 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
       pullRequestBody: BODY,
     },
   });
-  return fixture;
+  return {
+    databaseRepositoryId: repositoryId,
+    pullRequestNumber: 7,
+    publicationGeneration: "17",
+  };
 }
