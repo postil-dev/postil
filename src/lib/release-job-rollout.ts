@@ -24,12 +24,19 @@ const PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX =
   "publication-controller-cli-verified:";
 const PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX =
   "publication-controller-consumer-ready:";
+const PUBLICATION_CONTROLLER_RECOVERY_PREFIX =
+  "publication-controller-recovery:";
 const PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER =
   "_postilPublicationControllerReleaseSha";
 const PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER =
   "_postilPublicationControllerFence";
 const PUBLICATION_CONTROLLER_QUEUE_FENCE_RUN_AFTER =
   "_postilPublicationControllerRunAfter";
+export const PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS = [
+  "review",
+  "gate-state-sync",
+  "check-run-cleanup",
+] as const;
 export const PUBLICATION_CONTROLLER_LOCK =
   "postil:publication-controller-release";
 export const QUEUE_LOCK_GENERATION_CAPABILITY = "queue-lock-generation-v1";
@@ -44,6 +51,52 @@ interface QueueQuiesceOptions {
   timeoutMs?: number;
   pollMs?: number;
   batchSize?: number;
+  onWait?: (running: number) => void;
+}
+
+export interface PublicationControllerNoMutationProbeResult {
+  releaseSha: string;
+  mode: "no-mutation";
+  observedMutationCount: 0;
+  checkedJobKinds: readonly string[];
+}
+
+export type PublicationControllerNoMutationProbe = (input: {
+  client: Pick<PoolClient, "query">;
+  releaseSha: string;
+  jobKinds: typeof PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS;
+}) => Promise<PublicationControllerNoMutationProbeResult>;
+
+export interface PublicationControllerRecoveryState {
+  releaseSha: string;
+  stagedGenerations: number;
+  nonterminalGenerations: number;
+  activeMutationLeases: number;
+  /** Decimal queue IDs proven not to have a staged controller generation. */
+  unplannedQueuedJobIds: readonly string[];
+}
+
+/**
+ * Read one transactionally consistent executor snapshot through the supplied
+ * client while the publication authority lock is held.
+ */
+export type PublicationControllerRecoveryStateReader = (input: {
+  client: Pick<PoolClient, "query">;
+  releaseSha: string;
+}) => Promise<PublicationControllerRecoveryState>;
+
+export interface PublicationControllerDeactivationResult {
+  routingRemoved: boolean;
+  state: "dark" | "recovery";
+  releaseSha: string | null;
+  restoredLegacyJobs: number;
+  remainingNonterminalGenerations: number | null;
+  activeMutationLeases: number | null;
+}
+
+export interface PublicationControllerActivationOptions {
+  timeoutMs?: number;
+  pollMs?: number;
   onWait?: (running: number) => void;
 }
 
@@ -464,7 +517,7 @@ async function runningQueueJobCount(
 function normalizedReleaseSha(releaseSha: string): string {
   const normalized = releaseSha.trim().toLowerCase();
   if (!/^[0-9a-f]{7,40}$/.test(normalized)) {
-    throw new Error("hosted inference activation requires a release SHA");
+    throw new Error("release operations require a hexadecimal release SHA");
   }
   return normalized;
 }
@@ -492,6 +545,10 @@ function publicationControllerCliVerifiedCapability(releaseSha: string): string 
 
 function publicationControllerConsumerReadyCapability(releaseSha: string): string {
   return `${PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX}${normalizedReleaseSha(releaseSha)}`;
+}
+
+function publicationControllerRecoveryCapability(releaseSha: string): string {
+  return `${PUBLICATION_CONTROLLER_RECOVERY_PREFIX}${normalizedReleaseSha(releaseSha)}`;
 }
 
 /** A legacy review claimed while publication ownership is fenced. */
@@ -569,10 +626,7 @@ export async function activePublicationControllerRelease(
   );
 }
 
-/**
- * A release-scoped dark or active controller capability prevents the legacy
- * review runner from becoming an independent publication authority.
- */
+/** True only while one exact, self-tested controller release owns routing. */
 export async function publicationControllerLegacyReviewFenced(
   pool: Pool,
   releaseSha: string,
@@ -581,12 +635,20 @@ export async function publicationControllerLegacyReviewFenced(
   const result = await pool.query<{ fenced: boolean }>(
     `SELECT EXISTS (
        SELECT 1
-         FROM deployment_capabilities
-        WHERE name LIKE $1 OR name LIKE $2
+         FROM deployment_capabilities active
+        WHERE active.name LIKE $1
+          AND EXISTS (
+            SELECT 1
+              FROM deployment_capabilities ready
+             WHERE ready.name = $2 || substring(
+               active.name FROM char_length($3) + 1
+             )
+          )
      ) AS fenced`,
     [
-      `${PUBLICATION_CONTROLLER_DARK_PREFIX}%`,
       `${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`,
+      PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX,
+      PUBLICATION_CONTROLLER_CAPABILITY_PREFIX,
     ],
   );
   return result.rows[0]?.fenced === true;
@@ -630,17 +692,18 @@ export async function recordPublicationControllerCliPreflight(
   }
 }
 
-/** Record that an exact dark release's controller consumer passes self-test. */
+/** Exercise and record the exact release's real no-mutation consumer probe. */
 export async function recordPublicationControllerConsumerReady(
   pool: Pool,
   releaseSha: string,
+  probe: PublicationControllerNoMutationProbe,
 ): Promise<boolean> {
   const normalized = normalizedReleaseSha(releaseSha);
   const darkCapability = publicationControllerDarkCapability(normalized);
   const readyCapability = publicationControllerConsumerReadyCapability(normalized);
   const client = await pool.connect();
   try {
-    await beginPublicationControllerAuthorityTransition(client);
+    await beginPublicationControllerReadOnlyProbe(client);
     const dark = await client.query<{ dark: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM deployment_capabilities WHERE name = $1
@@ -650,6 +713,26 @@ export async function recordPublicationControllerConsumerReady(
     if (!dark.rows[0]?.dark) {
       throw new Error(
         "publication-controller consumer readiness requires a dark exact release",
+      );
+    }
+    const result = await probe({
+      client,
+      releaseSha: normalized,
+      jobKinds: PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
+    });
+    validatePublicationControllerNoMutationProbe(result, normalized);
+    await client.query("COMMIT");
+
+    await beginPublicationControllerAuthorityTransition(client);
+    const stillDark = await client.query<{ dark: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $1
+       ) AS dark`,
+      [darkCapability],
+    );
+    if (!stillDark.rows[0]?.dark) {
+      throw new Error(
+        "publication-controller consumer readiness lost its dark exact release",
       );
     }
     const recorded = await client.query(
@@ -669,12 +752,14 @@ export async function recordPublicationControllerConsumerReady(
 }
 
 /**
- * Activate one exact controller release after the managed-fleet and CLI
- * preflights. Existing review jobs remain durably held for the controller.
+ * Activate one exact controller release after the managed-fleet, CLI, and
+ * no-mutation consumer preflights. Queued direct mutation work becomes owned
+ * by that release in the same transaction as the authority switch.
  */
 export async function activatePublicationControllerRelease(
   pool: Pool,
   releaseSha: string,
+  options: PublicationControllerActivationOptions = {},
 ): Promise<{ activated: boolean; adopted: number }> {
   const normalized = normalizedReleaseSha(releaseSha);
   const capability = publicationControllerCapability(normalized);
@@ -682,6 +767,27 @@ export async function activatePublicationControllerRelease(
   const verifiedCapability = publicationControllerCliVerifiedCapability(normalized);
   const consumerReadyCapability =
     publicationControllerConsumerReadyCapability(normalized);
+  const existing = await pool.query<{
+    active: boolean;
+    consumerReady: boolean;
+  }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM deployment_capabilities WHERE name = $1
+     ) AS active,
+     EXISTS (
+       SELECT 1 FROM deployment_capabilities WHERE name = $2
+     ) AS "consumerReady"`,
+    [capability, consumerReadyCapability],
+  );
+  if (existing.rows[0]?.active) {
+    if (!existing.rows[0].consumerReady) {
+      throw new Error(
+        "active publication-controller release lacks exact consumer readiness",
+      );
+    }
+    return { activated: false, adopted: 0 };
+  }
+  await waitForPublicationControllerMutatorsToDrain(pool, options);
   const client = await pool.connect();
   try {
     await beginPublicationControllerAuthorityTransition(client);
@@ -754,6 +860,7 @@ export async function activatePublicationControllerRelease(
         "publication-controller activation requires prior release deactivation",
       );
     }
+    await assertNoRunningPublicationControllerMutators(client);
     await client.query(
       `INSERT INTO deployment_capabilities (name)
        VALUES ($1)
@@ -762,22 +869,36 @@ export async function activatePublicationControllerRelease(
     );
     const adopted = await client.query(
       `UPDATE jobs
-          SET payload = payload - $1 || jsonb_build_object($1::text, $3::text)
-        WHERE kind = 'review'
+          SET payload = payload - $1 - $2 - $3 || jsonb_build_object(
+                $1::text, $5::text,
+                $2::text, true,
+                $3::text, CASE
+                  WHEN jsonb_typeof(payload->$3) = 'string' THEN payload->$3
+                  WHEN jsonb_typeof(payload->$6) = 'string' THEN payload->$6
+                  ELSE to_jsonb(run_after)
+                END
+              ),
+              run_after = 'infinity'::timestamptz
+        WHERE kind = ANY($4::text[])
           AND status = 'queued'
           AND (
-            payload ? $1
-            OR payload->>$2 = 'true'
+            payload->>$1 IS DISTINCT FROM $5
+            OR payload->>$2 IS DISTINCT FROM 'true'
+            OR jsonb_typeof(payload->$3) IS DISTINCT FROM 'string'
+            OR run_after IS DISTINCT FROM 'infinity'::timestamptz
           )`,
       [
         PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER,
         PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER,
+        PUBLICATION_CONTROLLER_QUEUE_FENCE_RUN_AFTER,
+        PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
         normalized,
+        QUEUE_LOCK_GENERATION_RUN_AFTER,
       ],
     );
     await client.query(
-      "DELETE FROM deployment_capabilities WHERE name LIKE $1",
-      [`${PUBLICATION_CONTROLLER_DARK_PREFIX}%`],
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [darkCapability],
     );
     await client.query("COMMIT");
     return { activated: true, adopted: adopted.rowCount ?? 0 };
@@ -789,51 +910,146 @@ export async function activatePublicationControllerRelease(
   }
 }
 
-/** Prepare deploy and rollback by removing every controller activation first. */
+/**
+ * Remove new controller routing before recovering staged work. Recovery state
+ * is retained until the executor proves every mutation lease and generation
+ * terminal. Missing executor state access leaves the release fail-closed.
+ */
 export async function deactivatePublicationControllerRelease(
   pool: Pool,
   releaseSha: string,
-): Promise<boolean> {
+  recoveryStateReader?: PublicationControllerRecoveryStateReader,
+): Promise<PublicationControllerDeactivationResult> {
   const normalized = normalizedReleaseSha(releaseSha);
   const darkCapability = publicationControllerDarkCapability(normalized);
   const client = await pool.connect();
+  let routingRemoved = false;
+  let recoveryReleaseSha: string | null = null;
+  let restoredLegacyJobs = 0;
   try {
-    await beginPublicationControllerAuthorityTransition(client);
+    await beginPublicationControllerAuthorityTransition(client, {
+      requireQueueQuiescence: false,
+    });
+    const ownership = await publicationControllerOwnershipState(client);
+    recoveryReleaseSha = ownership.active ?? ownership.recovery ?? ownership.held;
     const removed = await client.query(
       "DELETE FROM deployment_capabilities WHERE name LIKE $1",
       [`${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`],
     );
-    await client.query(
-      "DELETE FROM deployment_capabilities WHERE name LIKE $1",
-      [`${PUBLICATION_CONTROLLER_CLI_VERIFIED_PREFIX}%`],
-    );
-    await client.query(
-      "DELETE FROM deployment_capabilities WHERE name LIKE $1",
-      [`${PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX}%`],
-    );
+    routingRemoved = (removed.rowCount ?? 0) > 0;
     await client.query(
       `INSERT INTO deployment_capabilities (name)
        VALUES ($1)
        ON CONFLICT (name) DO NOTHING`,
       [darkCapability],
     );
-    await client.query(
-      `UPDATE jobs
-          SET payload = payload
-        WHERE kind = 'review'
-          AND status = 'queued'
-          AND (
-            payload->>$1 IS DISTINCT FROM 'true'
-            OR jsonb_typeof(payload->$2) IS DISTINCT FROM 'string'
-            OR run_after IS DISTINCT FROM 'infinity'::timestamptz
-          )`,
-      [
-        PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER,
-        PUBLICATION_CONTROLLER_QUEUE_FENCE_RUN_AFTER,
-      ],
-    );
+    if (recoveryReleaseSha) {
+      await client.query(
+        `INSERT INTO deployment_capabilities (name)
+         VALUES ($1)
+         ON CONFLICT (name) DO NOTHING`,
+        [publicationControllerRecoveryCapability(recoveryReleaseSha)],
+      );
+    } else {
+      await removePublicationControllerReadiness(client, normalized);
+    }
     await client.query("COMMIT");
-    return (removed.rowCount ?? 0) > 0;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    client.release();
+    throw error;
+  }
+
+  if (!recoveryReleaseSha) {
+    client.release();
+    return {
+      routingRemoved,
+      state: "dark",
+      releaseSha: null,
+      restoredLegacyJobs,
+      remainingNonterminalGenerations: 0,
+      activeMutationLeases: 0,
+    };
+  }
+
+  if (!recoveryStateReader) {
+    client.release();
+    return {
+      routingRemoved,
+      state: "recovery",
+      releaseSha: recoveryReleaseSha,
+      restoredLegacyJobs,
+      remainingNonterminalGenerations: null,
+      activeMutationLeases: null,
+    };
+  }
+
+  try {
+    await beginPublicationControllerAuthorityTransition(client, {
+      requireQueueQuiescence: false,
+    });
+    const recoveryState = await recoveryStateReader({
+      client,
+      releaseSha: recoveryReleaseSha,
+    });
+    validatePublicationControllerRecoveryState(
+      recoveryState,
+      recoveryReleaseSha,
+    );
+    const heldJobIds = await publicationControllerHeldJobIds(
+      client,
+      recoveryReleaseSha,
+    );
+    validatePublicationControllerRecoveryClassification(
+      recoveryState,
+      heldJobIds,
+    );
+    if (recoveryState.activeMutationLeases > 0) {
+      await client.query("COMMIT");
+      return {
+        routingRemoved,
+        state: "recovery",
+        releaseSha: recoveryReleaseSha,
+        restoredLegacyJobs,
+        remainingNonterminalGenerations:
+          recoveryState.nonterminalGenerations,
+        activeMutationLeases: recoveryState.activeMutationLeases,
+      };
+    }
+
+    restoredLegacyJobs += await restoreUnplannedPublicationControllerJobs(
+      client,
+      recoveryReleaseSha,
+      PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
+      recoveryState.unplannedQueuedJobIds,
+    );
+    if (recoveryState.nonterminalGenerations > 0) {
+      await client.query("COMMIT");
+      return {
+        routingRemoved,
+        state: "recovery",
+        releaseSha: recoveryReleaseSha,
+        restoredLegacyJobs,
+        remainingNonterminalGenerations:
+          recoveryState.nonterminalGenerations,
+        activeMutationLeases: 0,
+      };
+    }
+
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [publicationControllerRecoveryCapability(recoveryReleaseSha)],
+    );
+    await removePublicationControllerReadiness(client, recoveryReleaseSha);
+    await client.query("COMMIT");
+    return {
+      routingRemoved,
+      state: "dark",
+      releaseSha: recoveryReleaseSha,
+      restoredLegacyJobs,
+      remainingNonterminalGenerations: 0,
+      activeMutationLeases: 0,
+    };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -848,7 +1064,7 @@ export async function deferLegacyReviewForPublicationController(
   job: { id: number; lockedBy: string; lockGeneration: bigint },
   releaseSha: string,
 ): Promise<void> {
-  const normalized = normalizedReleaseSha(releaseSha);
+  normalizedReleaseSha(releaseSha);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -860,19 +1076,11 @@ export async function deferLegacyReviewForPublicationController(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       [PUBLICATION_CONTROLLER_LOCK],
     );
-    const fenced = await client.query<{ fenced: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1
-           FROM deployment_capabilities
-          WHERE name LIKE $1 OR name LIKE $2
-       ) AS fenced`,
-      [
-        `${PUBLICATION_CONTROLLER_DARK_PREFIX}%`,
-        `${PUBLICATION_CONTROLLER_CAPABILITY_PREFIX}%`,
-      ],
-    );
-    if (!fenced.rows[0]?.fenced) {
-      throw new Error("publication-controller legacy review fence is no longer active");
+    const active = await activePublicationControllerReleaseForUpdate(client);
+    if (!active) {
+      throw new Error(
+        "publication-controller legacy review fence is no longer active",
+      );
     }
     const deferred = await client.query(
       `UPDATE jobs
@@ -888,7 +1096,7 @@ export async function deferLegacyReviewForPublicationController(
         job.lockedBy,
         job.lockGeneration,
         PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER,
-        normalized,
+        active,
       ],
     );
     if ((deferred.rowCount ?? 0) !== 1) {
@@ -905,6 +1113,7 @@ export async function deferLegacyReviewForPublicationController(
 
 async function beginPublicationControllerAuthorityTransition(
   client: PoolClient,
+  options: { requireQueueQuiescence?: boolean } = {},
 ): Promise<void> {
   await client.query("BEGIN");
   await client.query(
@@ -919,30 +1128,348 @@ async function beginPublicationControllerAuthorityTransition(
     "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
     [PUBLICATION_CONTROLLER_LOCK],
   );
-  const quiesce = await client.query<{ queue_locked: boolean; running: string }>(
+  const quiesce = await client.query<{ queue_locked: boolean }>(
     `SELECT EXISTS (
        SELECT 1
          FROM deployment_capabilities
         WHERE name = $1
-     ) AS queue_locked,
-     (
-       SELECT count(*)::text
-         FROM jobs
-        WHERE kind = 'review' AND status = 'running'
-     ) AS running`,
+     ) AS queue_locked`,
     [QUEUE_LOCK_GENERATION_CAPABILITY],
   );
-  if (quiesce.rows[0]?.queue_locked) {
+  if (
+    options.requireQueueQuiescence !== false &&
+    quiesce.rows[0]?.queue_locked
+  ) {
     throw new Error(
       "publication-controller authority transition requires queue-lock-generation quiescence",
     );
   }
-  const running = Number(quiesce.rows[0]?.running ?? 0);
-  if (running > 0) {
+}
+
+async function beginPublicationControllerReadOnlyProbe(
+  client: PoolClient,
+): Promise<void> {
+  await client.query("BEGIN TRANSACTION READ ONLY");
+  await client.query(
+    "SELECT set_config('lock_timeout', $1, true)",
+    [`${QUEUE_ROLLOUT_LOCK_TIMEOUT_MS}ms`],
+  );
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    [QUEUE_LOCK_GENERATION_LOCK],
+  );
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    [PUBLICATION_CONTROLLER_LOCK],
+  );
+  const quiesce = await client.query<{ queue_locked: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM deployment_capabilities
+        WHERE name = $1
+     ) AS queue_locked`,
+    [QUEUE_LOCK_GENERATION_CAPABILITY],
+  );
+  if (quiesce.rows[0]?.queue_locked) {
     throw new Error(
-      `${running} legacy review claim(s) are running before publication-controller authority transition`,
+      "publication-controller consumer probe requires queue-lock-generation quiescence",
     );
   }
+}
+
+async function assertNoRunningPublicationControllerMutators(
+  client: Pick<PoolClient, "query">,
+): Promise<void> {
+  const result = await client.query<{ count: string }>(
+    `SELECT count(*)::text AS count
+       FROM jobs
+      WHERE kind = ANY($1::text[])
+        AND status = 'running'`,
+    [PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS],
+  );
+  const running = Number(result.rows[0]?.count ?? 0);
+  if (running > 0) {
+    throw new Error(
+      `${running} direct GitHub mutator job claim(s) are running before ` +
+        "publication-controller activation",
+    );
+  }
+}
+
+async function waitForPublicationControllerMutatorsToDrain(
+  pool: Pick<Pool, "query">,
+  options: PublicationControllerActivationOptions,
+): Promise<void> {
+  const timeoutMs = Math.max(0, options.timeoutMs ?? QUEUE_ROLLOUT_TIMEOUT_MS);
+  const pollMs = Math.max(10, options.pollMs ?? 250);
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const state = await pool.query<{
+      queueLocked: boolean;
+      running: string;
+    }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM deployment_capabilities
+          WHERE name = $1
+       ) AS "queueLocked",
+       (
+         SELECT count(*)::text
+           FROM jobs
+          WHERE kind = ANY($2::text[])
+            AND status = 'running'
+       ) AS running`,
+      [
+        QUEUE_LOCK_GENERATION_CAPABILITY,
+        PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
+      ],
+    );
+    if (state.rows[0]?.queueLocked) {
+      throw new Error(
+        "publication-controller activation requires queue-lock-generation quiescence",
+      );
+    }
+    const running = Number(state.rows[0]?.running ?? 0);
+    if (running === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${running} direct GitHub mutator job claim(s) are still running ` +
+          "before publication-controller activation",
+      );
+    }
+    options.onWait?.(running);
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+function validatePublicationControllerNoMutationProbe(
+  result: PublicationControllerNoMutationProbeResult,
+  releaseSha: string,
+): void {
+  if (
+    result.releaseSha !== releaseSha ||
+    result.mode !== "no-mutation" ||
+    result.observedMutationCount !== 0 ||
+    result.checkedJobKinds.length !==
+      PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS.length ||
+    !PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS.every(
+      (kind, index) => result.checkedJobKinds[index] === kind,
+    )
+  ) {
+    throw new Error(
+      "publication-controller consumer readiness probe returned an invalid " +
+        "exact no-mutation result",
+    );
+  }
+}
+
+function validatePublicationControllerRecoveryState(
+  state: PublicationControllerRecoveryState,
+  releaseSha: string,
+): void {
+  if (
+    state.releaseSha !== releaseSha ||
+    !isNonnegativeInteger(state.stagedGenerations) ||
+    !isNonnegativeInteger(state.nonterminalGenerations) ||
+    !isNonnegativeInteger(state.activeMutationLeases) ||
+    state.nonterminalGenerations > state.stagedGenerations ||
+    !Array.isArray(state.unplannedQueuedJobIds) ||
+    state.unplannedQueuedJobIds.some((id) => !/^[1-9][0-9]*$/.test(id)) ||
+    new Set(state.unplannedQueuedJobIds).size !==
+      state.unplannedQueuedJobIds.length
+  ) {
+    throw new Error(
+      "publication-controller recovery reader returned invalid exact release state",
+    );
+  }
+}
+
+function validatePublicationControllerRecoveryClassification(
+  state: PublicationControllerRecoveryState,
+  heldJobIds: readonly string[],
+): void {
+  const held = new Set(heldJobIds);
+  if (state.unplannedQueuedJobIds.some((id) => !held.has(id))) {
+    throw new Error(
+      "publication-controller recovery reader classified a job outside the " +
+        "exact held release",
+    );
+  }
+  if (
+    state.nonterminalGenerations === 0 &&
+    (state.unplannedQueuedJobIds.length !== heldJobIds.length ||
+      heldJobIds.some((id) => !state.unplannedQueuedJobIds.includes(id)))
+  ) {
+    throw new Error(
+      "publication-controller terminal recovery does not classify every " +
+        "held controller job as unplanned",
+    );
+  }
+}
+
+function isNonnegativeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+async function publicationControllerOwnershipState(
+  client: Pick<PoolClient, "query">,
+): Promise<{
+  active: string | null;
+  recovery: string | null;
+  held: string | null;
+}> {
+  const result = await client.query<{
+    active: string[];
+    recovery: string[];
+    held: string[];
+  }>(
+    `SELECT ARRAY(
+              SELECT substring(name FROM char_length($1) + 1)
+                FROM deployment_capabilities
+               WHERE name LIKE $1 || '%'
+               ORDER BY name
+               LIMIT 2
+            ) AS active,
+            ARRAY(
+              SELECT substring(name FROM char_length($2) + 1)
+                FROM deployment_capabilities
+               WHERE name LIKE $2 || '%'
+               ORDER BY name
+               LIMIT 2
+            ) AS recovery,
+            ARRAY(
+              SELECT DISTINCT payload->>$3
+                FROM jobs
+               WHERE status = 'queued'
+                 AND kind = ANY($4::text[])
+                 AND payload->>$5 = 'true'
+                 AND jsonb_typeof(payload->$3) = 'string'
+               ORDER BY payload->>$3
+               LIMIT 2
+            ) AS held`,
+    [
+      PUBLICATION_CONTROLLER_CAPABILITY_PREFIX,
+      PUBLICATION_CONTROLLER_RECOVERY_PREFIX,
+      PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER,
+      PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
+      PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER,
+    ],
+  );
+  const row = result.rows[0] ?? { active: [], recovery: [], held: [] };
+  for (const values of [row.active, row.recovery, row.held]) {
+    if (values.length > 1) {
+      throw new Error("multiple publication-controller releases own durable work");
+    }
+  }
+  const releases = [row.active[0], row.recovery[0], row.held[0]].filter(
+    (value): value is string => Boolean(value),
+  );
+  if (new Set(releases).size > 1) {
+    throw new Error("publication-controller routing and recovery releases disagree");
+  }
+  return {
+    active: row.active[0] ?? null,
+    recovery: row.recovery[0] ?? null,
+    held: row.held[0] ?? null,
+  };
+}
+
+async function activePublicationControllerReleaseForUpdate(
+  client: Pick<PoolClient, "query">,
+): Promise<string | null> {
+  const result = await client.query<{ name: string }>(
+    `SELECT active.name
+       FROM deployment_capabilities active
+      WHERE active.name LIKE $1 || '%'
+        AND EXISTS (
+          SELECT 1
+            FROM deployment_capabilities ready
+           WHERE ready.name = $2 || substring(
+             active.name FROM char_length($1) + 1
+           )
+        )
+      ORDER BY active.name
+      LIMIT 2`,
+    [
+      PUBLICATION_CONTROLLER_CAPABILITY_PREFIX,
+      PUBLICATION_CONTROLLER_CONSUMER_READY_PREFIX,
+    ],
+  );
+  if (result.rows.length > 1) {
+    throw new Error("multiple publication-controller releases are active");
+  }
+  const name = result.rows[0]?.name;
+  return name
+    ? normalizedReleaseSha(
+        name.slice(PUBLICATION_CONTROLLER_CAPABILITY_PREFIX.length),
+      )
+    : null;
+}
+
+async function restoreUnplannedPublicationControllerJobs(
+  client: Pick<PoolClient, "query">,
+  releaseSha: string,
+  jobKinds: readonly string[],
+  unplannedQueuedJobIds: readonly string[],
+): Promise<number> {
+  const restored = await client.query(
+    `UPDATE jobs
+        SET run_after = COALESCE(
+              (payload->>$1)::timestamptz,
+              clock_timestamp()
+            ),
+            payload = payload - $1 - $2 - $3
+      WHERE status = 'queued'
+        AND kind = ANY($4::text[])
+        AND payload->>$3 = $5
+        AND payload->>$2 = 'true'
+        AND id::text = ANY($6::text[])`,
+    [
+      PUBLICATION_CONTROLLER_QUEUE_FENCE_RUN_AFTER,
+      PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER,
+      PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER,
+      jobKinds,
+      releaseSha,
+      unplannedQueuedJobIds,
+    ],
+  );
+  return restored.rowCount ?? 0;
+}
+
+async function publicationControllerHeldJobIds(
+  client: Pick<PoolClient, "query">,
+  releaseSha: string,
+): Promise<string[]> {
+  const result = await client.query<{ id: string }>(
+    `SELECT id::text AS id
+       FROM jobs
+      WHERE status = 'queued'
+        AND kind = ANY($1::text[])
+        AND payload->>$2 = $3
+        AND payload->>$4 = 'true'
+      ORDER BY id`,
+    [
+      PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
+      PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER,
+      releaseSha,
+      PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER,
+    ],
+  );
+  return result.rows.map((row) => row.id);
+}
+
+async function removePublicationControllerReadiness(
+  client: Pick<PoolClient, "query">,
+  releaseSha: string,
+): Promise<void> {
+  await client.query(
+    `DELETE FROM deployment_capabilities
+      WHERE name = ANY($1::text[])`,
+    [[
+      publicationControllerCliVerifiedCapability(releaseSha),
+      publicationControllerConsumerReadyCapability(releaseSha),
+    ]],
+  );
 }
 
 /** A managed worker claimed hosted work before its exact release was activated. */

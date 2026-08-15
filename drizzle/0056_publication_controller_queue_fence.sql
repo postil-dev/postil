@@ -5,6 +5,8 @@ DECLARE
   fenced_run_after jsonb;
   release_v1_run_after jsonb;
   publication_controller_run_after jsonb;
+  publication_controller_release text;
+  publication_controller_release_count integer;
 BEGIN
   -- Pre-rollout workers and the bounded release backfill both cross this
   -- boundary. Assign arrival-order authority here so neither path can bypass
@@ -104,16 +106,96 @@ BEGIN
       NEW."run_after" := 'infinity'::timestamptz;
     END IF;
 
-    IF NEW."kind" = 'review' THEN
+    IF NEW."kind" IN ('review', 'gate-state-sync', 'check-run-cleanup') THEN
       PERFORM pg_advisory_xact_lock(
         hashtextextended('postil:publication-controller-release', 0)
       );
-      IF EXISTS (
-        SELECT 1
-          FROM "deployment_capabilities"
-         WHERE "name" LIKE 'publication-controller-dark:%'
-            OR "name" LIKE 'publication-controller-release:%'
-      ) THEN
+      publication_controller_release := NULL;
+      SELECT count(*)::integer
+        INTO publication_controller_release_count
+        FROM "deployment_capabilities" active
+       WHERE active."name" LIKE 'publication-controller-release:%'
+         AND EXISTS (
+           SELECT 1
+             FROM "deployment_capabilities" ready
+            WHERE ready."name" =
+              'publication-controller-consumer-ready:' || substring(
+                active."name"
+                FROM char_length('publication-controller-release:') + 1
+              )
+         );
+      IF publication_controller_release_count > 1 THEN
+        RAISE EXCEPTION
+          'multiple publication-controller releases are active'
+          USING ERRCODE = 'check_violation';
+      END IF;
+      SELECT substring(
+               active."name"
+               FROM char_length('publication-controller-release:') + 1
+             )
+        INTO publication_controller_release
+        FROM "deployment_capabilities" active
+       WHERE active."name" LIKE 'publication-controller-release:%'
+         AND EXISTS (
+           SELECT 1
+             FROM "deployment_capabilities" ready
+            WHERE ready."name" =
+              'publication-controller-consumer-ready:' || substring(
+                active."name"
+                FROM char_length('publication-controller-release:') + 1
+              )
+         )
+       ORDER BY active."name"
+       LIMIT 1;
+      IF publication_controller_release IS NOT NULL
+        AND publication_controller_release !~ '^[0-9a-f]{7,40}$' THEN
+        RAISE EXCEPTION
+          'publication-controller active release identity is malformed'
+          USING ERRCODE = 'check_violation';
+      END IF;
+
+      IF publication_controller_release IS NULL
+        AND NEW."payload"->>'_postilPublicationControllerFence' = 'true'
+        AND jsonb_typeof(
+          NEW."payload"->'_postilPublicationControllerReleaseSha'
+        ) = 'string' THEN
+        SELECT count(*)::integer
+          INTO publication_controller_release_count
+          FROM "deployment_capabilities" recovery
+         WHERE recovery."name" LIKE 'publication-controller-recovery:%'
+           AND NEW."payload"->>'_postilPublicationControllerReleaseSha' =
+             substring(
+               recovery."name"
+               FROM char_length('publication-controller-recovery:') + 1
+             );
+        IF publication_controller_release_count > 1 THEN
+          RAISE EXCEPTION
+            'multiple publication-controller releases own recovery'
+            USING ERRCODE = 'check_violation';
+        END IF;
+        SELECT substring(
+                 recovery."name"
+                 FROM char_length('publication-controller-recovery:') + 1
+               )
+          INTO publication_controller_release
+          FROM "deployment_capabilities" recovery
+         WHERE recovery."name" LIKE 'publication-controller-recovery:%'
+           AND NEW."payload"->>'_postilPublicationControllerReleaseSha' =
+             substring(
+               recovery."name"
+               FROM char_length('publication-controller-recovery:') + 1
+             )
+         ORDER BY recovery."name"
+         LIMIT 1;
+        IF publication_controller_release IS NOT NULL
+          AND publication_controller_release !~ '^[0-9a-f]{7,40}$' THEN
+          RAISE EXCEPTION
+            'publication-controller recovery release identity is malformed'
+            USING ERRCODE = 'check_violation';
+        END IF;
+      END IF;
+
+      IF publication_controller_release IS NOT NULL THEN
         publication_controller_run_after := NULL;
         IF TG_OP = 'UPDATE'
           AND jsonb_typeof(
@@ -134,11 +216,14 @@ BEGIN
         END IF;
         NEW."payload" := (
           NEW."payload" - '_postilPublicationControllerFence' -
-            '_postilPublicationControllerRunAfter'
+            '_postilPublicationControllerRunAfter' -
+            '_postilPublicationControllerReleaseSha'
         ) || jsonb_build_object(
           '_postilPublicationControllerFence', true,
           '_postilPublicationControllerRunAfter',
-          publication_controller_run_after
+          publication_controller_run_after,
+          '_postilPublicationControllerReleaseSha',
+          publication_controller_release
         );
         NEW."run_after" := 'infinity'::timestamptz;
       END IF;
@@ -184,16 +269,96 @@ BEGIN
       RETURN NEW;
     END IF;
 
-    IF NEW."kind" = 'review' THEN
+    IF NEW."kind" IN ('review', 'gate-state-sync', 'check-run-cleanup') THEN
       PERFORM pg_advisory_xact_lock(
         hashtextextended('postil:publication-controller-release', 0)
       );
-      IF EXISTS (
-        SELECT 1
-          FROM "deployment_capabilities"
-         WHERE "name" LIKE 'publication-controller-dark:%'
-            OR "name" LIKE 'publication-controller-release:%'
-      ) THEN
+      publication_controller_release := NULL;
+      SELECT count(*)::integer
+        INTO publication_controller_release_count
+        FROM "deployment_capabilities" active
+       WHERE active."name" LIKE 'publication-controller-release:%'
+         AND EXISTS (
+           SELECT 1
+             FROM "deployment_capabilities" ready
+            WHERE ready."name" =
+              'publication-controller-consumer-ready:' || substring(
+                active."name"
+                FROM char_length('publication-controller-release:') + 1
+              )
+         );
+      IF publication_controller_release_count > 1 THEN
+        RAISE EXCEPTION
+          'multiple publication-controller releases are active'
+          USING ERRCODE = 'check_violation';
+      END IF;
+      SELECT substring(
+               active."name"
+               FROM char_length('publication-controller-release:') + 1
+             )
+        INTO publication_controller_release
+        FROM "deployment_capabilities" active
+       WHERE active."name" LIKE 'publication-controller-release:%'
+         AND EXISTS (
+           SELECT 1
+             FROM "deployment_capabilities" ready
+            WHERE ready."name" =
+              'publication-controller-consumer-ready:' || substring(
+                active."name"
+                FROM char_length('publication-controller-release:') + 1
+              )
+         )
+       ORDER BY active."name"
+       LIMIT 1;
+      IF publication_controller_release IS NOT NULL
+        AND publication_controller_release !~ '^[0-9a-f]{7,40}$' THEN
+        RAISE EXCEPTION
+          'publication-controller active release identity is malformed'
+          USING ERRCODE = 'check_violation';
+      END IF;
+
+      IF publication_controller_release IS NULL
+        AND OLD."payload"->>'_postilPublicationControllerFence' = 'true'
+        AND jsonb_typeof(
+          OLD."payload"->'_postilPublicationControllerReleaseSha'
+        ) = 'string' THEN
+        SELECT count(*)::integer
+          INTO publication_controller_release_count
+          FROM "deployment_capabilities" recovery
+         WHERE recovery."name" LIKE 'publication-controller-recovery:%'
+           AND OLD."payload"->>'_postilPublicationControllerReleaseSha' =
+             substring(
+               recovery."name"
+               FROM char_length('publication-controller-recovery:') + 1
+             );
+        IF publication_controller_release_count > 1 THEN
+          RAISE EXCEPTION
+            'multiple publication-controller releases own recovery'
+            USING ERRCODE = 'check_violation';
+        END IF;
+        SELECT substring(
+                 recovery."name"
+                 FROM char_length('publication-controller-recovery:') + 1
+               )
+          INTO publication_controller_release
+          FROM "deployment_capabilities" recovery
+         WHERE recovery."name" LIKE 'publication-controller-recovery:%'
+           AND OLD."payload"->>'_postilPublicationControllerReleaseSha' =
+             substring(
+               recovery."name"
+               FROM char_length('publication-controller-recovery:') + 1
+             )
+         ORDER BY recovery."name"
+         LIMIT 1;
+        IF publication_controller_release IS NOT NULL
+          AND publication_controller_release !~ '^[0-9a-f]{7,40}$' THEN
+          RAISE EXCEPTION
+            'publication-controller recovery release identity is malformed'
+            USING ERRCODE = 'check_violation';
+        END IF;
+      END IF;
+
+      IF publication_controller_release IS NOT NULL THEN
         NEW."status" := 'queued';
         NEW."attempts" := OLD."attempts";
         NEW."locked_at" := OLD."locked_at";
@@ -218,11 +383,14 @@ BEGIN
         END IF;
         NEW."payload" := (
           NEW."payload" - '_postilPublicationControllerFence' -
-            '_postilPublicationControllerRunAfter'
+            '_postilPublicationControllerRunAfter' -
+            '_postilPublicationControllerReleaseSha'
         ) || jsonb_build_object(
           '_postilPublicationControllerFence', true,
           '_postilPublicationControllerRunAfter',
-          publication_controller_run_after
+          publication_controller_run_after,
+          '_postilPublicationControllerReleaseSha',
+          publication_controller_release
         );
         NEW."run_after" := 'infinity'::timestamptz;
         RETURN NEW;

@@ -404,7 +404,6 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "drizzle", "0050_queue_lock_generation.sql"),
       "utf8",
     );
-
     expect(migration).toContain(
       'ALTER TABLE "jobs" ADD COLUMN "lock_generation" bigint DEFAULT 0 NOT NULL;',
     );
@@ -454,7 +453,7 @@ describe("migration lint", () => {
     expect(guard).toContain("USING ERRCODE = 'check_violation'");
   });
 
-  test("fences legacy review claims at the database boundary", async () => {
+  test("fences direct mutator claims only under active controller ownership", async () => {
     const migration = await readFile(
       join(
         import.meta.dir,
@@ -473,15 +472,18 @@ describe("migration lint", () => {
     expect(migration).toContain(
       'CREATE OR REPLACE FUNCTION "stage_unactivated_release_job"()',
     );
-    expect(migration).toContain("publication-controller-dark:%");
+    expect(migration).not.toContain("publication-controller-dark:%");
     expect(migration).toContain("publication-controller-release:%");
+    expect(migration).toContain("publication-controller-recovery:%");
     expect(migration).toContain("_postilPublicationControllerFence");
     expect(migration).toContain("_postilPublicationControllerRunAfter");
     expect(migration).toContain(
       "hashtextextended('postil:publication-controller-release', 0)",
     );
     expect(claimStart).toBeGreaterThanOrEqual(0);
-    expect(claim).toContain('IF NEW."kind" = \'review\' THEN');
+    expect(claim).toContain(
+      'IF NEW."kind" IN (\'review\', \'gate-state-sync\', \'check-run-cleanup\') THEN',
+    );
     expect(claim).toContain('NEW."status" := \'queued\';');
     expect(claim).toContain("NEW.\"attempts\" := OLD.\"attempts\"");
     expect(claim).toContain("NEW.\"run_after\" := 'infinity'::timestamptz");
@@ -770,6 +772,15 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "drizzle", "0050_queue_lock_generation.sql"),
       "utf8",
     );
+    const publicationControllerMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0056_publication_controller_queue_fence.sql",
+      ),
+      "utf8",
+    );
     const rollout = await readFile(
       join(import.meta.dir, "..", "src", "lib", "release-job-rollout.ts"),
       "utf8",
@@ -784,6 +795,15 @@ describe("migration lint", () => {
         "..",
         "scripts",
         "activate-queue-lock-generation.ts",
+      ),
+      "utf8",
+    );
+    const publicationControllerDeactivation = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "scripts",
+        "deactivate-publication-controller.ts",
       ),
       "utf8",
     );
@@ -851,8 +871,33 @@ describe("migration lint", () => {
     );
     expect(quiesceSession).toContain("QUEUE_LOCK_GENERATION_CAPABILITY");
     expect(rollout).toContain("publication-controller-consumer-ready:");
+    expect(rollout).toContain("publication-controller-recovery:");
+    expect(rollout).toContain("BEGIN TRANSACTION READ ONLY");
+    expect(rollout).toContain("unplannedQueuedJobIds");
+    expect(rollout).not.toContain(
+      "_postilPublicationControllerGenerationId",
+    );
     expect(rollout).toContain("recordPublicationControllerConsumerReady");
-    expect(activation).not.toContain("recordPublicationControllerConsumerReady");
+    expect(activation).toContain("recordPublicationControllerConsumerReady");
+    expect(activation).toContain("consumerProbe");
+    expect(activation).toContain(
+      "production executor no-mutation probe",
+    );
+    expect(publicationControllerDeactivation).toContain(
+      "production executor state reader",
+    );
+    expect(publicationControllerMigration).toContain(
+      "'review', 'gate-state-sync', 'check-run-cleanup'",
+    );
+    expect(publicationControllerMigration).toContain(
+      "publication-controller-recovery:",
+    );
+    expect(publicationControllerMigration).not.toContain(
+      "_postilPublicationControllerGenerationId",
+    );
+    expect(publicationControllerMigration).not.toContain(
+      "publication-controller-dark:%",
+    );
     expect(packageJson.scripts["release:prepare"]).toContain(
       "queue:quiesce-lock-generation",
     );
@@ -866,9 +911,11 @@ describe("migration lint", () => {
     expect(deploy.indexOf("verify-managed-fleet.jq")).toBeLessThan(
       deploy.indexOf('bun run jobs:activate-release'),
     );
-    expect(ci).toContain("Verify publication-controller rollout on PostgreSQL");
     expect(ci).toContain(
-      "bun test --isolate --timeout 30000 tests/publication-controller-release-rollout.test.ts",
+      "Verify publication-controller authority and recovery on PostgreSQL",
+    );
+    expect(ci).toContain(
+      "bun test --isolate --timeout 60000 tests/publication-controller-release-rollout.test.ts",
     );
   });
 

@@ -7,7 +7,9 @@ import {
   activateQueueLockGeneration,
   publicationControllerReleaseActivated,
   activateReleaseJobs,
+  type PublicationControllerNoMutationProbe,
   recordPublicationControllerCliPreflight,
+  recordPublicationControllerConsumerReady,
 } from "@/lib/release-job-rollout";
 import { hostedInferenceEnabled, optionalEnv } from "@/lib/env";
 import { backfillSelfServiceTrials } from "@/lib/self-service-trial";
@@ -59,15 +61,26 @@ async function main(): Promise<void> {
   }
 }
 
-async function activatePublicationControllerAfterCliPreflight(
+export async function activatePublicationControllerAfterCliPreflight(
   releaseSha: string,
+  consumerProbe?: PublicationControllerNoMutationProbe,
 ): Promise<{ activated: boolean; adopted: number }> {
   if (await publicationControllerReleaseActivated(getPool(), releaseSha)) {
     return { activated: false, adopted: 0 };
   }
+  if (!consumerProbe) {
+    throw new Error(
+      "publication-controller activation requires the production executor no-mutation probe",
+    );
+  }
   const binary = optionalEnv("POSTIL_BIN", "/usr/local/bin/postil") as string;
   await verifyPublicationControllerCliCapability(binary);
   await recordPublicationControllerCliPreflight(getPool(), releaseSha);
+  await recordPublicationControllerConsumerReady(
+    getPool(),
+    releaseSha,
+    consumerProbe,
+  );
   return activatePublicationControllerRelease(getPool(), releaseSha);
 }
 
