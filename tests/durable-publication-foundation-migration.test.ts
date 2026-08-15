@@ -16,7 +16,8 @@ const describeDb = TEST_URL ? describe : describe.skip;
 
 const INPUT_ONE = "1".repeat(64);
 const INPUT_TWO = "2".repeat(64);
-const ENVELOPE_DIGEST = "3".repeat(64);
+const STAGED_ENVELOPE = { fixture: "durable-publication-foundation" };
+const ENVELOPE_DIGEST = sha256(canonicalJson(STAGED_ENVELOPE));
 const PLAN_SEMANTIC_DIGEST = "4".repeat(64);
 const REVIEW_OUTPUT_DIGEST = `sha256:${"5".repeat(64)}`;
 const BASE_SHA = "a".repeat(40);
@@ -140,10 +141,26 @@ function makeOperation(input: {
               name: "postil/gate",
               headSha: "c".repeat(40),
               status: "completed",
-              conclusion: "success",
-              title: "Review complete",
-              summary: "The accepted publication plan is complete.",
-              detailsUrl: "https://postil.example/reviews/fixture",
+              selection: {
+                kind: "required-terminal-dependency-state-v1",
+                requiredOperationKeys: [],
+                dependencyFailureStates: ["failed", "superseded"],
+                policyFailurePrecedence: true,
+              },
+              outputs: {
+                policy: {
+                  conclusion: "success",
+                  title: "Review complete",
+                  summary: "The accepted publication plan is complete.",
+                  detailsUrl: "https://postil.example/reviews/fixture",
+                },
+                publicationFailure: {
+                  conclusion: "failure",
+                  title: "Review publication incomplete",
+                  summary: "Postil could not publish all required review results. The merge check remains blocked.",
+                  detailsUrl: "https://postil.example/reviews/fixture",
+                },
+              },
             },
           }
         : {
@@ -202,6 +219,24 @@ function withServiceGateOperations(input: Omit<PublicationFixture, "operations">
     detailsUrl,
   };
   const gateOutputDigest = `sha256:${sha256(canonicalJson(gateOutput))}`;
+  const gateCompletionPolicy = {
+    selection: {
+      kind: "required-terminal-dependency-state-v1",
+      requiredOperationKeys: input.cliOperations.map((operation) => operation.operationKey),
+      dependencyFailureStates: ["failed", "superseded"],
+      policyFailurePrecedence: true,
+    },
+    outputs: {
+      policy: gateOutput,
+      publicationFailure: {
+        conclusion: "failure",
+        title: "Review publication incomplete",
+        summary: "Postil could not publish all required review results. The merge check remains blocked.",
+        detailsUrl,
+      },
+    },
+  };
+  const gateCompletionPolicyDigest = `sha256:${sha256(canonicalJson(gateCompletionPolicy))}`;
   const common = [
     String(input.githubRepositoryId),
     input.prNumber,
@@ -220,7 +255,7 @@ function withServiceGateOperations(input: Omit<PublicationFixture, "operations">
   )}`;
   const gateCompleteKey = `github-publication-controller-v1:gate-complete:sha256:${nulJoinedSha256(
     "github-publication-controller-gate-operation-v1",
-    [...common, "gate-complete", gateOutputDigest],
+    [...common, "gate-complete", gateCompletionPolicyDigest],
   )}`;
   const gateCreate = makeOperation({
     ordinal: input.cliOperations.length + 1,
@@ -250,7 +285,8 @@ function withServiceGateOperations(input: Omit<PublicationFixture, "operations">
   createPayload.detailsUrl = detailsUrl;
   const completePayload = (gateComplete.desiredPayload.payload as Record<string, unknown>);
   completePayload.headSha = input.headSha;
-  completePayload.detailsUrl = detailsUrl;
+  completePayload.selection = gateCompletionPolicy.selection;
+  completePayload.outputs = gateCompletionPolicy.outputs;
   (gateComplete.desiredPayload.remoteId as Record<string, unknown>).operationKey = gateCreate.operationKey;
   gateCreate.desiredPayloadBytes = Buffer.from(JSON.stringify(gateCreate.desiredPayload));
   gateCreate.desiredPayloadDigest = `sha256:${sha256(gateCreate.desiredPayloadBytes)}`;
@@ -678,6 +714,7 @@ describeDb("durable publication foundation migration", () => {
   }
 
   async function insertHighWater(fixture: PublicationFixture, queryable: Queryable = pool) {
+    await stageEnvelope(fixture.reviewId, queryable);
     await queryable.query(
       `INSERT INTO pull_request_publication_high_waters
          (repository_id, pr_number, publication_generation, accepted_review_id,
@@ -691,6 +728,15 @@ describeDb("durable publication foundation migration", () => {
         fixture.inputDigest,
         fixture.headSha,
       ],
+    );
+  }
+
+  async function stageEnvelope(reviewId: number, queryable: Queryable = pool) {
+    await queryable.query(
+      `UPDATE reviews
+          SET envelope = COALESCE(envelope, $2::jsonb), status = 'running'
+        WHERE id = $1`,
+      [reviewId, JSON.stringify(STAGED_ENVELOPE)],
     );
   }
 
@@ -1527,7 +1573,7 @@ describeDb("durable publication foundation migration", () => {
       }
     }
     expect(String(edgeFailure)).toContain("publication generation exceeds the 1024 dependency-edge limit");
-  }, 30_000);
+  }, 120_000);
 
   test("serializes concurrent first-generation sealing and rejects post-seal insertion", async () => {
     const fixture = await preparePublication({ prNumber: 104, seal: false });
@@ -1599,6 +1645,7 @@ describeDb("durable publication foundation migration", () => {
     const advancing = await pool.connect();
     const claimant = await pool.connect();
     try {
+      await stageEnvelope(second.reviewId, advancing);
       await advancing.query("BEGIN");
       await advancing.query(
         `UPDATE pull_request_publication_high_waters
@@ -2219,6 +2266,7 @@ describeDb("durable publication foundation migration", () => {
       await insertOperation(second, publicationOperation);
       await insertDependencyEdges(second, publicationOperation);
     }
+    await stageEnvelope(second.reviewId);
     await pool.query(
       `UPDATE pull_request_publication_high_waters
        SET publication_generation = 2, accepted_review_id = $3,

@@ -29,6 +29,7 @@ import {
   finalizeStagedReviewCompletionWithGateMode,
   persistReviewCompletionWithGateMode,
   stageReviewCompletionCandidate,
+  type StagedReviewCompletionInput,
 } from "@/lib/review-completion";
 import { QUEUE_LOCK_GENERATION_CAPABILITY } from "@/lib/release-job-rollout";
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
@@ -211,6 +212,17 @@ describeDb("publication receipt migration and lifecycle", () => {
   afterAll(async () => {
     await database?.drop();
   }, 30_000);
+
+  test("rejects receipt deferral through ordinary review staging", async () => {
+    const controllerOnlyInput = {
+      deferPublicationReceipt: true,
+    } as unknown as StagedReviewCompletionInput;
+    await expect(
+      stageReviewCompletionCandidate(db, controllerOnlyInput, orgId),
+    ).rejects.toThrow(
+      "publication receipt deferral requires atomic controller staging",
+    );
+  });
 
   test("resumes a staged terminal publication after worker interruption without duplicates", async () => {
     const reviewEnvelope = envelope({ head: "9".repeat(40) });

@@ -16,6 +16,7 @@ import {
   type GitHubPublicationReceiptOperationSnapshot,
   type GitHubPublicationReceiptReconciliationSnapshot,
 } from "@/lib/github-publication-receipt-deriver";
+import { buildGitHubPublicationInputIdentity } from "@/lib/github-publication-cli-planner";
 import {
   executeOneGitHubPublicationOperation,
   type GitHubPublicationAdapters,
@@ -414,7 +415,6 @@ describeDb("GitHub publication receipt PostgreSQL loader", () => {
   });
 
   test("loads one locked current generation and derives from executor evidence", async () => {
-    const fixture = checkFixture();
     const organization = await pool.query<{ id: string }>(
       `INSERT INTO organizations (slug, name, github_org_id)
        VALUES ('receipt-deriver', 'Receipt Deriver', 810001) RETURNING id`,
@@ -431,14 +431,23 @@ describeDb("GitHub publication receipt PostgreSQL loader", () => {
        VALUES (42, $1, 'octo/service', false, true) RETURNING id`,
       [installation.rows[0]!.id],
     );
+    const stagedEnvelope = { fixture: "receipt-deriver-17" };
     const review = await pool.query<{ id: string }>(
       `INSERT INTO reviews
          (repository_id, pr_number, head_sha, base_sha, status,
-          trigger_source, queued_at)
-       VALUES ($1, 7, $2, $3, 'running', 'unknown', now()) RETURNING id`,
-      [repository.rows[0]!.id, HEAD, TARGET],
+          trigger_source, envelope, queued_at)
+       VALUES ($1, 7, $2, $3, 'running', 'unknown', $4::jsonb, now()) RETURNING id`,
+      [repository.rows[0]!.id, HEAD, TARGET, JSON.stringify(stagedEnvelope)],
     );
+    const acceptedInput = databaseAcceptedInput({
+      databaseRepositoryId: repository.rows[0]!.id,
+      reviewId: review.rows[0]!.id,
+      generation: "17",
+      expectedPullRequestUpdatedAt: "2026-08-15T02:00:00.000Z",
+    });
+    const fixture = checkFixture("17", acceptedInput.digest);
     await stageGitHubPublicationControllerGeneration({
+      acceptedInput,
       acceptedPlan: fixture.acceptedPlan,
       controllerManifest: fixture.controllerManifest,
       snapshot: {
@@ -447,7 +456,7 @@ describeDb("GitHub publication receipt PostgreSQL loader", () => {
         reviewId: review.rows[0]!.id,
         reviewInputSequence: "17",
         expectedPullRequestUpdatedAt: "2026-08-15T02:00:00.000Z",
-        envelopeDigest: "e".repeat(64),
+        envelopeDigest: hex(canonicalJson(stagedEnvelope)),
         targetBranch: "main",
         pullRequestTitle: TITLE,
         pullRequestBody: BODY,
@@ -455,7 +464,11 @@ describeDb("GitHub publication receipt PostgreSQL loader", () => {
       database: pool,
     });
 
-    const store = new PostgresGitHubPublicationOperationStore(pool);
+    const store = new PostgresGitHubPublicationOperationStore(pool, {
+      databaseRepositoryId: repository.rows[0]!.id,
+      pullRequestNumber: 7,
+      publicationGeneration: "17",
+    });
     for (let index = 0; index < 2; index += 1) {
       const continuation = await executeOneGitHubPublicationOperation({
         store,
@@ -516,15 +529,23 @@ describeDb("GitHub publication receipt PostgreSQL loader", () => {
       acceptedInputIdentity: digest("wrong-continuation-input"),
     })).rejects.toThrow("no longer owns the current publication generation");
 
+    const supersedingEnvelope = { fixture: "receipt-deriver-18" };
     const supersedingReview = await pool.query<{ id: string }>(
       `INSERT INTO reviews
          (repository_id, pr_number, head_sha, base_sha, status,
-          trigger_source, queued_at)
-       VALUES ($1, 7, $2, $3, 'running', 'unknown', now()) RETURNING id`,
-      [repository.rows[0]!.id, HEAD, TARGET],
+          trigger_source, envelope, queued_at)
+       VALUES ($1, 7, $2, $3, 'running', 'unknown', $4::jsonb, now()) RETURNING id`,
+      [repository.rows[0]!.id, HEAD, TARGET, JSON.stringify(supersedingEnvelope)],
     );
-    const superseding = checkFixture("18");
+    const supersedingInput = databaseAcceptedInput({
+      databaseRepositoryId: repository.rows[0]!.id,
+      reviewId: supersedingReview.rows[0]!.id,
+      generation: "18",
+      expectedPullRequestUpdatedAt: "2026-08-15T02:00:01.000Z",
+    });
+    const superseding = checkFixture("18", supersedingInput.digest);
     await stageGitHubPublicationControllerGeneration({
+      acceptedInput: supersedingInput,
       acceptedPlan: superseding.acceptedPlan,
       controllerManifest: superseding.controllerManifest,
       snapshot: {
@@ -533,7 +554,7 @@ describeDb("GitHub publication receipt PostgreSQL loader", () => {
         reviewId: supersedingReview.rows[0]!.id,
         reviewInputSequence: "18",
         expectedPullRequestUpdatedAt: "2026-08-15T02:00:01.000Z",
-        envelopeDigest: "f".repeat(64),
+        envelopeDigest: hex(canonicalJson(supersedingEnvelope)),
         targetBranch: "main",
         pullRequestTitle: TITLE,
         pullRequestBody: BODY,
@@ -650,8 +671,8 @@ function reviewFixture(generation = "17"): Fixture {
   return fixture;
 }
 
-function checkFixture(generation = "17"): Fixture {
-  const expected = expectedPlan(`check-${generation}`, generation);
+function checkFixture(generation = "17", inputIdentity?: string): Fixture {
+  const expected = expectedPlan(`check-${generation}`, generation, inputIdentity);
   const markers = {
     annotation: marker("finding", "annotation-1"),
     resolved: marker("finding", "resolved-check"),
@@ -1276,10 +1297,45 @@ function terminalPayload(
   };
 }
 
-function expectedPlan(seed = "review", generation = "17"): ExpectedGitHubPublicationPlan {
+function databaseAcceptedInput(input: {
+  databaseRepositoryId: string;
+  reviewId: string;
+  generation: string;
+  expectedPullRequestUpdatedAt: string;
+}) {
+  return buildGitHubPublicationInputIdentity({
+    databaseRepositoryId: input.databaseRepositoryId,
+    githubRepositoryId: "42",
+    repositoryFullName: "octo/service",
+    pullRequestNumber: "7",
+    controllerGeneration: input.generation,
+    reviewId: input.reviewId,
+    headSha: HEAD,
+    mergeBaseSha: BASE,
+    targetSha: TARGET,
+    targetBranch: "main",
+    pullRequestTitle: TITLE,
+    pullRequestBody: BODY,
+    expectedPullRequestUpdatedAt: input.expectedPullRequestUpdatedAt,
+    cliVersion: "0.8.17",
+    cliCommitSha: "d".repeat(40),
+    cliArtifactSha256: digest("CLI artifact"),
+    configurationSha256: digest("configuration"),
+    providerIdentity: "receipt-deriver-test-provider",
+    retryLineage: `receipt-deriver:${input.reviewId}:${input.generation}`,
+    bounded: false,
+    forceFullReview: false,
+  });
+}
+
+function expectedPlan(
+  seed = "review",
+  generation = "17",
+  inputIdentity = digest(`input:${seed}`),
+): ExpectedGitHubPublicationPlan {
   return {
     controllerGeneration: generation,
-    inputIdentity: digest(`input:${seed}`),
+    inputIdentity,
     reviewOutputDigest: digest(`output:${seed}`),
     repositoryId: "42",
     repositoryFullName: "octo/service",
@@ -1520,6 +1576,18 @@ function hex(value: string): string {
 
 function databaseAdapters(fixture: Fixture): GitHubPublicationAdapters {
   return {
+    getPullRequestPublicationContext: async () => ({
+      headSha: HEAD,
+      baseSha: TARGET,
+      open: true,
+      merged: false,
+      draft: false,
+      updatedAt: "2026-08-15T02:00:00.000Z",
+      mergeBaseSha: BASE,
+      targetBranch: "main",
+      title: TITLE,
+      body: BODY,
+    }),
     observeReview: async () => null,
     publishReview: async (_token, _repo, _pr, intent) => ({
       reviewId: "901",

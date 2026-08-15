@@ -743,7 +743,7 @@ async function observeAmbiguousRemoteState(
       return { state: "conflict", result: { reason: "check identity is unavailable" } };
     }
     const intent = checkCompletionIntent(
-      validated.operation,
+      validated,
       appId,
       create.remoteId,
       immutableCheckCreationExternalId(validated, createKey, appId),
@@ -887,18 +887,23 @@ function validateSnapshot(
   const completeOperation = requireObject(complete.operation, "gate completion operation");
   if (completeOperation.kind !== "gateCheckComplete") reject("controller manifest has no terminal gate completion");
   const gatePayload = requireObject(completeOperation.payload, "gate completion payload");
-  const dependencies = requireStringArray(completeOperation.dependencies, "gate completion dependencies");
+  const selection = requireObject(gatePayload.selection, "gate completion selection");
+  const outputs = requireObject(gatePayload.outputs, "gate completion outputs");
+  const policyOutput = requireObject(outputs.policy, "policy gate output");
   const createReference = requireObject(completeOperation.remoteId, "gate completion remote identity");
-  const createOperationKey = requireString(createReference.operationKey, "gate creation reference");
+  requireString(createReference.operationKey, "gate creation reference");
   const rebuilt = buildGitHubPublicationControllerManifest({
     acceptedPlan: accepted.value,
     acceptedPlanBytesDigest: `sha256:${accepted.digest}`,
-    requiredTerminalOperationKeys: dependencies.filter((key) => key !== createOperationKey),
+    requiredTerminalOperationKeys: requireStringArray(
+      selection.requiredOperationKeys,
+      "required gate completion operation keys",
+    ),
     gateOutput: {
-      conclusion: requireConclusion(gatePayload.conclusion),
-      title: requireString(gatePayload.title, "gate title"),
-      summary: requireString(gatePayload.summary, "gate summary"),
-      detailsUrl: requireString(gatePayload.detailsUrl, "gate details URL"),
+      conclusion: requireConclusion(policyOutput.conclusion),
+      title: requireString(policyOutput.title, "policy gate title"),
+      summary: requireString(policyOutput.summary, "policy gate summary"),
+      detailsUrl: requireString(policyOutput.detailsUrl, "policy gate details URL"),
     },
   });
   if (!SHA256.test(claim.controllerManifestDigest) || rebuilt.digest !== claim.controllerManifestDigest) {
@@ -1112,7 +1117,9 @@ async function evaluateCondition(
       if ([...validated.dependencies.values()].some((entry) => !["applied", "skipped", "failed", "superseded"].includes(entry.state))) {
         reject("gate completion dependency is not terminal");
       }
-      return executeDecision("all-dependencies-terminal");
+      return executeDecision(validated.kind === "gateCheckComplete"
+        ? `all-dependencies-terminal:${selectedGateCompletionOutput(validated).variant}`
+        : "all-dependencies-terminal");
     default:
       reject("activation condition is unsupported");
   }
@@ -1232,7 +1239,7 @@ async function executeMutation(
       const create = dependency(validated, createKey);
       if (create.remoteId === undefined) reject("check completion dependency has no exact remote identity");
       const externalId = immutableCheckCreationExternalId(validated, createKey, appId);
-      const intent = checkCompletionIntent(validated.operation, appId, create.remoteId, externalId);
+      const intent = checkCompletionIntent(validated, appId, create.remoteId, externalId);
       await adapters.completeCheck(token, repo, intent, signal);
       return { outcome: "applied", remoteId: create.remoteId, result: { checkRunId: create.remoteId, conclusion: intent.conclusion } };
     }
@@ -1304,16 +1311,22 @@ function checkStartIntent(operation: JsonObject, appId: number): GitHubCheckRunS
 }
 
 function checkCompletionIntent(
-  operation: JsonObject,
+  validated: ValidatedClaim,
   appId: number,
   checkRunId: string,
   externalId: string,
 ): GitHubCheckRunCompletionIntent {
-  const value = operation.kind === "gateCheckComplete" ? requireObject(operation.payload, "gate completion payload") : operation;
+  const operation = validated.operation;
+  const value = operation.kind === "gateCheckComplete"
+    ? selectedGateCompletionOutput(validated).output
+    : operation;
+  const identity = operation.kind === "gateCheckComplete"
+    ? requireObject(operation.payload, "gate completion payload")
+    : operation;
   return {
     appId,
-    name: requireCheckName(value.name),
-    headSha: requireString(value.headSha, "check head SHA"),
+    name: requireCheckName(identity.name),
+    headSha: requireString(identity.headSha, "check head SHA"),
     externalId,
     checkRunId,
     conclusion: requireConclusion(value.conclusion),
@@ -1334,6 +1347,48 @@ function checkCompletionIntent(
       }),
     }),
   };
+}
+
+function selectedGateCompletionOutput(validated: ValidatedClaim): {
+  variant: "policy" | "publication-failure";
+  output: JsonObject;
+} {
+  if (validated.kind !== "gateCheckComplete") reject("gate output selection requires a gate completion operation");
+  const payload = requireObject(validated.operation.payload, "gate completion payload");
+  const selection = requireObject(payload.selection, "gate completion selection");
+  const outputs = requireObject(payload.outputs, "gate completion outputs");
+  if (
+    selection.kind !== "required-terminal-dependency-state-v1" ||
+    selection.policyFailurePrecedence !== true
+  ) reject("gate completion selection policy is unsupported");
+  const failureStates = requireStringArray(
+    selection.dependencyFailureStates,
+    "gate dependency failure states",
+  );
+  if (failureStates.length !== 2 || failureStates[0] !== "failed" || failureStates[1] !== "superseded") {
+    reject("gate dependency failure states are unsupported");
+  }
+  const requiredOperationKeys = requireStringArray(
+    selection.requiredOperationKeys,
+    "required gate completion operation keys",
+  );
+  const policy = requireObject(outputs.policy, "policy gate output");
+  const publicationFailure = requireObject(
+    outputs.publicationFailure,
+    "publication failure gate output",
+  );
+  const policyConclusion = requireConclusion(policy.conclusion);
+  if (requireConclusion(publicationFailure.conclusion) !== "failure") {
+    reject("publication failure gate output is not failing");
+  }
+  const dependencyFailed = requiredOperationKeys.some((operationKey) => {
+    const state = dependency(validated, operationKey).state;
+    return state === "failed" || state === "superseded";
+  });
+  if (policyConclusion !== "failure" && dependencyFailed) {
+    return { variant: "publication-failure", output: publicationFailure };
+  }
+  return { variant: "policy", output: policy };
 }
 
 function immutableCheckCreationExternalId(

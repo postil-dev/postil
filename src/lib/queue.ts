@@ -55,7 +55,7 @@ export interface ReviewJobPayload extends Record<string, unknown> {
   trigger?: ReviewTriggerContext;
   /** Use the complete base-to-head diff even when a completed baseline exists. */
   forceFullReview?: boolean;
-  /** Durable pointer written after the CLI result and publication receipt are staged. */
+  /** Durable pointer written after the review result is staged for recovery. */
   recoveryReviewId?: number;
   /** Stable provider-attempt lineage retained when queue rows are promoted. */
   providerRetryLineage?: string;

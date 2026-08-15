@@ -105,11 +105,41 @@ describe("GitHub publication controller manifest", () => {
       name: "postil/gate",
       headSha: HEAD,
       status: "completed",
-      conclusion: gateOutput.conclusion,
-      title: gateOutput.title,
-      summary: gateOutput.summary,
-      detailsUrl: gateOutput.detailsUrl,
+      selection: {
+        kind: "required-terminal-dependency-state-v1",
+        requiredOperationKeys: [plan.operations[1]!.operationKey],
+        dependencyFailureStates: ["failed", "superseded"],
+        policyFailurePrecedence: true,
+      },
+      outputs: {
+        policy: gateOutput,
+        publicationFailure: {
+          conclusion: "failure",
+          title: "Review publication incomplete",
+          summary: "Postil could not publish all required review results. The merge check remains blocked.",
+          detailsUrl: gateOutput.detailsUrl,
+        },
+      },
     });
+    expect(complete.desiredDigest).toBe(digestJson({
+      kind: complete.kind,
+      remoteId: complete.remoteId,
+      payload: complete.payload,
+    }));
+  });
+
+  test("binds terminal dependency selection into the immutable completion identity", () => {
+    const plan = validPlan();
+    const terminalOnly = build(plan);
+    const allRequired = buildGitHubPublicationControllerManifest({
+      acceptedPlan: plan,
+      acceptedPlanBytesDigest: digestJson(plan),
+      requiredTerminalOperationKeys: plan.operations.map((operation: any) => operation.operationKey),
+      gateOutput,
+    });
+
+    expect(gateKeys(allRequired).at(-1)).not.toBe(gateKeys(terminalOnly).at(-1));
+    expect(allRequired.digest).not.toBe(terminalOnly.digest);
   });
 
   test("ignores non-authoritative CLI gate prose and binds service output into gate keys", () => {

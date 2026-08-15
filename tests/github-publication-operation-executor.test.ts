@@ -26,6 +26,7 @@ import {
   GitHubPublicationAmbiguousError,
   GitHubPublicationRejectedError,
   GitHubReviewPlacementRejectedError,
+  type GitHubCheckRunCompletionIntent,
 } from "@/lib/github/review-publication";
 import {
   createEphemeralDatabase,
@@ -38,6 +39,25 @@ const TARGET = "c".repeat(40);
 const TITLE = "Durable publication executor";
 const BODY = "Each forge write is represented by one immutable operation.";
 const NOW = new Date();
+const DETAILS_URL = "https://postil.dev/orgs/acme/runs/fixture";
+const POLICY_SUCCESS_OUTPUT = {
+  conclusion: "success" as const,
+  title: "Publication complete",
+  summary: "Every immutable operation reached a terminal result.",
+  detailsUrl: DETAILS_URL,
+};
+const POLICY_FAILURE_OUTPUT = {
+  conclusion: "failure" as const,
+  title: "Policy rejected the review",
+  summary: "A required policy condition did not pass.",
+  detailsUrl: DETAILS_URL,
+};
+const PUBLICATION_FAILURE_OUTPUT = {
+  conclusion: "failure" as const,
+  title: "Review publication incomplete",
+  summary: "Postil could not publish all required review results. The merge check remains blocked.",
+  detailsUrl: DETAILS_URL,
+};
 const SNAPSHOT_DRIFT_CASES = [
   { name: "head SHA drift", liveSnapshot: { headSha: "d".repeat(40) }, mismatch: "headSha" },
   { name: "target SHA drift", liveSnapshot: { baseSha: "d".repeat(40) }, mismatch: "targetSha" },
@@ -176,7 +196,50 @@ describe("GitHub publication operation executor", () => {
       "getPullRequestPublicationContext",
       "completeCheck:901",
     ]);
+    expect(selectedOutput(adapters.completedCheckIntents.at(-1))).toEqual(POLICY_SUCCESS_OUTPUT);
     expect(store.terminal.at(-1)).toMatchObject({ outcome: "applied", remoteId: "901" });
+  });
+
+  test("preserves an authoritative policy failure after required publication fails", async () => {
+    const fixture = fixtureFor("gateCheckComplete", {
+      requiredDependencyState: "failed",
+      gateOutput: POLICY_FAILURE_OUTPUT,
+    });
+    const store = new MemoryStore([fixture.claim]);
+    const adapters = fakeAdapters();
+
+    await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
+    expect(selectedOutput(adapters.completedCheckIntents.at(-1))).toEqual(POLICY_FAILURE_OUTPUT);
+  });
+
+  test("fails the gate when a required publication dependency definitively fails", async () => {
+    const fixture = fixtureFor("gateCheckComplete", { requiredDependencyState: "failed" });
+    const store = new MemoryStore([fixture.claim]);
+    const adapters = fakeAdapters();
+
+    await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
+    expect(selectedOutput(adapters.completedCheckIntents.at(-1))).toEqual(PUBLICATION_FAILURE_OUTPUT);
+    expect(store.terminal.at(-1)?.activationVariant).toBe(
+      "all-dependencies-terminal:publication-failure",
+    );
+  });
+
+  test("fails the gate when a required publication dependency is superseded", async () => {
+    const fixture = fixtureFor("gateCheckComplete", { requiredDependencyState: "superseded" });
+    const store = new MemoryStore([fixture.claim]);
+    const adapters = fakeAdapters();
+
+    await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
+    expect(selectedOutput(adapters.completedCheckIntents.at(-1))).toEqual(PUBLICATION_FAILURE_OUTPUT);
+  });
+
+  test("keeps the policy output when a required publication dependency was legitimately skipped", async () => {
+    const fixture = fixtureFor("gateCheckComplete", { requiredDependencyState: "skipped" });
+    const store = new MemoryStore([fixture.claim]);
+    const adapters = fakeAdapters();
+
+    await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
+    expect(selectedOutput(adapters.completedCheckIntents.at(-1))).toEqual(POLICY_SUCCESS_OUTPUT);
   });
 
   test("executes advisory completion and service gate creation as separate immutable mutations", async () => {
@@ -437,6 +500,49 @@ describe("GitHub publication operation executor", () => {
     expect(adapters.calls).toEqual(["observeCheckCompletion"]);
     expect(store.reconciled).toHaveLength(0);
     expect(store.reconciledRetries).toHaveLength(0);
+  });
+
+  test("reconciles an ambiguous gate completion against the selected failure output", async () => {
+    const fixture = fixtureFor("gateCheckComplete", { requiredDependencyState: "failed" });
+    const store = new MemoryStore([], [ambiguousFrom(fixture.claim)]);
+    const adapters = fakeAdapters({ checkCompletionState: "applied" });
+
+    await expect(run(store, adapters)).resolves.toMatchObject({
+      status: "applied",
+      shouldContinue: true,
+    });
+    expect(selectedOutput(adapters.observedCheckCompletionIntents.at(-1))).toEqual(
+      PUBLICATION_FAILURE_OUTPUT,
+    );
+    expect(store.reconciled.at(-1)?.activationVariant).toBe("ambiguity-reconciliation");
+  });
+
+  test("uses the selected failure output for retry observation and dispatch", async () => {
+    const fixture = fixtureFor("gateCheckComplete", { requiredDependencyState: "failed" });
+    const claim = fixture.claim as ClaimedGitHubPublicationOperation & {
+      attemptNumber: number;
+      leaseGeneration: number;
+      retryAuthorization: ClaimedGitHubPublicationOperation["retryAuthorization"];
+    };
+    claim.attemptNumber = 2;
+    claim.leaseGeneration = 2;
+    claim.retryAuthorization = {
+      kind: "exactAbsence",
+      priorAttemptNumber: 1,
+      priorLeaseGeneration: 1,
+      observedAt: NOW,
+      evidenceDigest: digest("gate absence evidence"),
+    };
+    const store = new MemoryStore([claim]);
+    const adapters = fakeAdapters({ checkCompletionState: "retryable" });
+
+    await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
+    expect(selectedOutput(adapters.observedCheckCompletionIntents.at(-1))).toEqual(
+      PUBLICATION_FAILURE_OUTPUT,
+    );
+    expect(selectedOutput(adapters.completedCheckIntents.at(-1))).toEqual(
+      PUBLICATION_FAILURE_OUTPUT,
+    );
   });
 
   test("never retries a definitively rejected mutation through ambiguity recovery", async () => {
@@ -852,6 +958,54 @@ describeDb("PostgreSQL publication operation store", () => {
     );
     expect(evidence.rows[0]).toEqual({ attempts: "4", reconciliations: "1" });
   });
+
+  test("selects terminal gate output from PostgreSQL dependency evidence", async () => {
+    const cases = [
+      { seed: 108, state: "skipped" as const, policyConclusion: "success" as const, expectedOutput: POLICY_SUCCESS_OUTPUT },
+      { seed: 109, state: "skipped" as const, policyConclusion: "failure" as const, expectedOutput: POLICY_FAILURE_OUTPUT },
+      { seed: 110, state: "failed" as const, policyConclusion: "success" as const, expectedOutput: PUBLICATION_FAILURE_OUTPUT },
+      { seed: 111, state: "superseded" as const, policyConclusion: "success" as const, expectedOutput: PUBLICATION_FAILURE_OUTPUT },
+    ];
+
+    for (const scenario of cases) {
+      const gateOutput = scenario.policyConclusion === "failure"
+        ? POLICY_FAILURE_OUTPUT
+        : undefined;
+      const scope = await stageDatabaseFixture(pool, scenario.seed, { gateOutput });
+      await terminalizeGateDependencies(pool, scope, scenario.state);
+      const store = new PostgresGitHubPublicationOperationStore(pool, scope);
+      const adapters = fakeAdapters();
+
+      await expect(run(store, adapters)).resolves.toMatchObject({ status: "applied" });
+      expect(selectedOutput(adapters.completedCheckIntents.at(-1))).toEqual(
+        scenario.expectedOutput,
+      );
+    }
+  });
+
+  test("reconciles an ambiguous PostgreSQL gate completion against the selected output", async () => {
+    const scope = await stageDatabaseFixture(pool, 112);
+    await terminalizeGateDependencies(pool, scope, "failed");
+    const store = new PostgresGitHubPublicationOperationStore(pool, scope);
+    const ambiguousAdapters = fakeAdapters({ ambiguousCompletion: true });
+
+    await expect(run(store, ambiguousAdapters)).resolves.toMatchObject({
+      status: "unknown",
+      shouldContinue: false,
+    });
+    expect(selectedOutput(ambiguousAdapters.completedCheckIntents.at(-1))).toEqual(
+      PUBLICATION_FAILURE_OUTPUT,
+    );
+
+    const reconciliationAdapters = fakeAdapters({ checkCompletionState: "applied" });
+    await expect(run(store, reconciliationAdapters)).resolves.toMatchObject({
+      status: "applied",
+      shouldContinue: true,
+    });
+    expect(selectedOutput(reconciliationAdapters.observedCheckCompletionIntents.at(-1))).toEqual(
+      PUBLICATION_FAILURE_OUTPUT,
+    );
+  });
 });
 
 function run(store: GitHubPublicationOperationStore, adapters: GitHubPublicationAdapters & { calls: string[] }) {
@@ -876,6 +1030,16 @@ function mutationCalls(calls: readonly string[]): string[] {
     call === "createCheck" ||
     call.startsWith("completeCheck:")
   );
+}
+
+function selectedOutput(intent: GitHubCheckRunCompletionIntent | undefined) {
+  if (intent === undefined) throw new Error("expected a check completion intent");
+  return {
+    conclusion: intent.conclusion,
+    title: intent.title,
+    summary: intent.summary,
+    detailsUrl: intent.detailsUrl,
+  };
 }
 
 class MemoryStore implements GitHubPublicationOperationStore {
@@ -999,11 +1163,20 @@ function fakeAdapters(options: {
   checkCompletionState?: "applied" | "retryable" | "conflict";
   liveSnapshot?: LiveSnapshotOverride;
   liveSnapshots?: readonly LiveSnapshotOverride[];
-} = {}): GitHubPublicationAdapters & { calls: string[] } {
+  ambiguousCompletion?: boolean;
+} = {}): GitHubPublicationAdapters & {
+  calls: string[];
+  completedCheckIntents: GitHubCheckRunCompletionIntent[];
+  observedCheckCompletionIntents: GitHubCheckRunCompletionIntent[];
+} {
   const calls: string[] = [];
   const liveSnapshots = [...(options.liveSnapshots ?? [])];
+  const completedCheckIntents: GitHubCheckRunCompletionIntent[] = [];
+  const observedCheckCompletionIntents: GitHubCheckRunCompletionIntent[] = [];
   return {
     calls,
+    completedCheckIntents,
+    observedCheckCompletionIntents,
     async getPullRequestPublicationContext() {
       calls.push("getPullRequestPublicationContext");
       if (options.failSnapshotObservation) {
@@ -1092,9 +1265,14 @@ function fakeAdapters(options: {
       if (options.expectedCompletionExternalId !== undefined) {
         expect(intent.externalId).toBe(options.expectedCompletionExternalId);
       }
+      completedCheckIntents.push(intent);
       calls.push(`completeCheck:${intent.checkRunId}`);
+      if (options.ambiguousCompletion) {
+        throw new GitHubPublicationAmbiguousError("check-run completion");
+      }
     },
     async observeCheckCompletion(_token, _repo, intent) {
+      observedCheckCompletionIntents.push(intent);
       calls.push("observeCheckCompletion");
       return {
         checkRunId: intent.checkRunId,
@@ -1123,6 +1301,13 @@ function fixtureFor(kind:
     pullRequestNumber: string;
     controllerGeneration: string;
     reviewId: string;
+    requiredDependencyState: DurablePublicationDependencyEvidence["state"];
+    gateOutput: {
+      conclusion: "success" | "failure" | "neutral";
+      title: string;
+      summary: string;
+      detailsUrl: string;
+    };
   }> = {},
 ) {
   const inputIdentity = buildGitHubPublicationInputIdentity({
@@ -1177,7 +1362,7 @@ function fixtureFor(kind:
     acceptedPlan: accepted.value,
     acceptedPlanBytesDigest: `sha256:${accepted.digest}`,
     requiredTerminalOperationKeys: required,
-    gateOutput: {
+    gateOutput: identity.gateOutput ?? {
       conclusion: "success",
       title: "Publication complete",
       summary: "Every immutable operation reached a terminal result.",
@@ -1198,13 +1383,16 @@ function fixtureFor(kind:
     : record.operation) as Record<string, any>;
   const dependencies = operation.dependencies.map((key: string) => {
     const rejectedPlacement = kind === "relocatedReviewCreate" && key.includes("initial-review-create");
-    return dependencyEvidence(
+    const evidence = dependencyEvidence(
       key,
       key.includes("gate-create") ? "gateCheckCreate" : key.includes("review-create") ? "reviewCreate" : "advisoryCheckCreate",
       key.includes("gate-create") ? "901" : key.includes("review-create") ? "501" : "801",
       rejectedPlacement ? "rejected" : key.includes("review-create") ? "partialObserved" : "created",
       rejectedPlacement,
     );
+    return kind === "gateCheckComplete" && !key.includes("gate-create") && identity.requiredDependencyState !== undefined
+      ? { ...evidence, state: identity.requiredDependencyState }
+      : evidence;
   });
   const desired = desiredPayload(operation);
   const claim: ClaimedGitHubPublicationOperation = {
@@ -1623,7 +1811,18 @@ function terminalFixture(
   };
 }
 
-async function stageDatabaseFixture(pool: Pool, seed: number) {
+async function stageDatabaseFixture(
+  pool: Pool,
+  seed: number,
+  options: {
+    gateOutput?: {
+      conclusion: "success" | "failure" | "neutral";
+      title: string;
+      summary: string;
+      detailsUrl: string;
+    };
+  } = {},
+) {
   const organization = await pool.query<{ id: string }>(
     `INSERT INTO organizations (slug, name, github_org_id)
      VALUES ($1, $2, $3) RETURNING id`,
@@ -1644,18 +1843,22 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
   );
   const repositoryId = repository.rows[0]!.id;
   const githubRepositoryId = String(900_000 + seed);
+  const stagedEnvelope = { fixture: `publication-executor-${seed}` };
   const review = await pool.query<{ id: string }>(
     `INSERT INTO reviews
-       (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at)
-     VALUES ($1::bigint, 7, $2, $3, 'running', 'unknown', clock_timestamp())
+       (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+        envelope, queued_at)
+     VALUES ($1::bigint, 7, $2, $3, 'running', 'unknown', $4::jsonb,
+             clock_timestamp())
      RETURNING id`,
-    [repositoryId, HEAD, TARGET],
+    [repositoryId, HEAD, TARGET, JSON.stringify(stagedEnvelope)],
   );
   const fixture = fixtureFor("advisoryCheckCreate", {
     databaseRepositoryId: repositoryId,
     repositoryId: githubRepositoryId,
     repositoryFullName,
     reviewId: review.rows[0]!.id,
+    ...(options.gateOutput === undefined ? {} : { gateOutput: options.gateOutput }),
   });
   await stageGitHubPublicationControllerGeneration({
     database: pool,
@@ -1668,7 +1871,7 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
       reviewId: review.rows[0]!.id,
       reviewInputSequence: "17",
       expectedPullRequestUpdatedAt: "2026-08-15T00:00:00.000Z",
-      envelopeDigest: hex(`envelope-${seed}`),
+      envelopeDigest: hex(JSON.stringify(stagedEnvelope)),
       targetBranch: "main",
       pullRequestTitle: TITLE,
       pullRequestBody: BODY,
@@ -1679,4 +1882,66 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
     pullRequestNumber: 7,
     publicationGeneration: "17",
   };
+}
+
+async function terminalizeGateDependencies(
+  pool: Pool,
+  scope: {
+    databaseRepositoryId: string;
+    pullRequestNumber: number;
+    publicationGeneration: string;
+  },
+  requiredState: "skipped" | "failed" | "superseded",
+): Promise<void> {
+  const gateIdentity = {
+    outcome: "reconciledExisting",
+    result: { checkRunId: "901" },
+    remoteId: "901",
+    remoteOperationId: "901",
+  };
+  const requiredEvidence = requiredState === "failed"
+    ? { outcome: "rejected", result: { reason: "required publication failed" } }
+    : {
+        outcome: "notRequiredMarkerPresent",
+        result: {
+          reason: requiredState === "superseded"
+            ? "required publication was superseded"
+            : "required publication was already satisfied",
+        },
+      };
+  const incidentalEvidence = {
+    outcome: "notRequiredMarkerPresent",
+    result: { reason: "operation is not required for this gate test" },
+  };
+  await pool.query(
+    `UPDATE review_publication_operations
+     SET state = CASE
+           WHEN kind = 'advisoryCheckComplete' THEN $4
+           ELSE 'skipped'
+         END,
+         last_error = CASE
+           WHEN kind = 'advisoryCheckComplete' AND $4 = 'failed'
+             THEN 'required publication failed'
+           ELSE NULL
+         END,
+         terminal_evidence = CASE
+           WHEN kind = 'gateCheckCreate' THEN $5::jsonb
+           WHEN kind = 'advisoryCheckComplete' THEN $6::jsonb
+           ELSE $7::jsonb
+         END,
+         updated_at = clock_timestamp()
+     WHERE repository_id = $1::bigint
+       AND pr_number = $2
+       AND publication_generation = $3::bigint
+       AND kind <> 'gateCheckComplete'`,
+    [
+      scope.databaseRepositoryId,
+      scope.pullRequestNumber,
+      scope.publicationGeneration,
+      requiredState,
+      JSON.stringify(gateIdentity),
+      JSON.stringify(requiredEvidence),
+      JSON.stringify(incidentalEvidence),
+    ],
+  );
 }

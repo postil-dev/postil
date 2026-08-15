@@ -3,6 +3,12 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Pool } from "pg";
 
+import { envelopeSchema, type Envelope } from "@/lib/envelope";
+import {
+  GitHubPublicationAtomicStageRejectedError,
+  githubPublicationEnvelopeDigest,
+  stageGitHubPublicationCandidateAtomically,
+} from "@/lib/github-publication-atomic-stage";
 import {
   buildGitHubPublicationControllerManifest,
 } from "@/lib/github-publication-controller-manifest";
@@ -37,10 +43,12 @@ describeDb("GitHub publication controller store", () => {
   beforeAll(async () => {
     database = await createEphemeralDatabase("publication_controller_store");
     pool = database.pool;
+    currentPool = pool;
   }, 60_000);
 
   afterAll(async () => {
     await database.drop();
+    currentPool = undefined;
   });
 
   test("stages, seals, exactly replays, and serializes a complete controller generation", async () => {
@@ -257,7 +265,127 @@ describeDb("GitHub publication controller store", () => {
     expect(partial.rows[0]!.count).toBe("0");
   });
 
-  async function createContext(seed: number, prNumber: number, generation: string) {
+  test("atomically stages the completion candidate and exact controller generation", async () => {
+    const context = await createContext(5, 75, "21", false);
+    const generation = buildStageInput(context);
+    const envelope = testEnvelope();
+    generation.snapshot.envelopeDigest = githubPublicationEnvelopeDigest(envelope);
+    const job = await createReviewJob(context);
+    const input = atomicInput(context, generation, envelope, job);
+
+    const first = await stageGitHubPublicationCandidateAtomically(input);
+    expect(first).toMatchObject({
+      completion: { staged: true, completed: false },
+      generation: { idempotent: false, status: "sealed" },
+    });
+    const replay = await stageGitHubPublicationCandidateAtomically(input);
+    expect(replay.generation).toMatchObject({
+      generationId: first.generation.generationId,
+      idempotent: true,
+      status: "sealed",
+    });
+
+    const stored = await publicationStageCounts(context, job.id);
+    expect(stored).toEqual({
+      has_envelope: true,
+      receipts: "0",
+      generations: "1",
+      sealed_generations: "1",
+      recovery_review_id: String(context.reviewId),
+    });
+  });
+
+  test("rolls back completion staging when controller validation rejects", async () => {
+    const context = await createContext(6, 76, "22", false);
+    const generation = buildStageInput(context);
+    const envelope = testEnvelope();
+    generation.snapshot.envelopeDigest = githubPublicationEnvelopeDigest(envelope);
+    const job = await createReviewJob(context);
+    const invalidManifest = structuredClone(generation.controllerManifest);
+    invalidManifest.operationBytes[0] = Buffer.from("{}", "utf8");
+
+    await expect(stageGitHubPublicationCandidateAtomically(
+      atomicInput(
+        context,
+        { ...generation, controllerManifest: invalidManifest },
+        envelope,
+        job,
+      ),
+    )).rejects.toBeInstanceOf(GitHubPublicationAtomicStageRejectedError);
+    expect(await publicationStageCounts(context, job.id)).toEqual({
+      has_envelope: false,
+      receipts: "0",
+      generations: "0",
+      sealed_generations: "0",
+      recovery_review_id: null,
+    });
+  });
+
+  test("does not seal a generation before its matching staged envelope exists", async () => {
+    const context = await createContext(7, 77, "23", false);
+    const generation = buildStageInput(context);
+    generation.snapshot.envelopeDigest = githubPublicationEnvelopeDigest(testEnvelope());
+
+    await expect(stageGitHubPublicationControllerGeneration({
+      ...generation,
+      database: pool,
+    })).rejects.toBeInstanceOf(GitHubPublicationControllerStoreRejectedError);
+    const rows = await pool.query<{ generations: string; high_waters: string }>(
+      `SELECT
+         (SELECT count(*)::text FROM review_publication_generations
+           WHERE repository_id = $1 AND pr_number = $2) AS generations,
+         (SELECT count(*)::text FROM pull_request_publication_high_waters
+           WHERE repository_id = $1 AND pr_number = $2) AS high_waters`,
+      [context.databaseRepositoryId, context.prNumber],
+    );
+    expect(rows.rows[0]).toEqual({ generations: "0", high_waters: "0" });
+  });
+
+  test("rejects mismatched envelope, review, and claimed-job identities without writes", async () => {
+    const context = await createContext(8, 78, "24", false);
+    const generation = buildStageInput(context);
+    const envelope = testEnvelope();
+    generation.snapshot.envelopeDigest = githubPublicationEnvelopeDigest(envelope);
+    const job = await createReviewJob(context);
+    const mismatches = [
+      {
+        ...atomicInput(context, generation, envelope, job),
+        generation: {
+          ...generation,
+          snapshot: { ...generation.snapshot, envelopeDigest: "f".repeat(64) },
+        },
+      },
+      {
+        ...atomicInput(context, generation, envelope, job),
+        completion: {
+          ...atomicInput(context, generation, envelope, job).completion,
+          reviewId: context.reviewId + 1,
+        },
+      },
+    ];
+    for (const mismatch of mismatches) {
+      await expect(stageGitHubPublicationCandidateAtomically(mismatch))
+        .rejects.toBeInstanceOf(GitHubPublicationAtomicStageRejectedError);
+    }
+    const mismatchedJob = await createReviewJob(context, { headSha: "f".repeat(40) });
+    await expect(stageGitHubPublicationCandidateAtomically(
+      atomicInput(context, generation, envelope, mismatchedJob),
+    )).rejects.toBeInstanceOf(GitHubPublicationAtomicStageRejectedError);
+    expect(await publicationStageCounts(context, job.id)).toEqual({
+      has_envelope: false,
+      receipts: "0",
+      generations: "0",
+      sealed_generations: "0",
+      recovery_review_id: null,
+    });
+  });
+
+  async function createContext(
+    seed: number,
+    prNumber: number,
+    generation: string,
+    stageCompletion = true,
+  ) {
     const organization = await pool.query<{ id: string }>(
       `INSERT INTO organizations (slug, name, github_org_id)
        VALUES ($1, $2, $3) RETURNING id`,
@@ -279,7 +407,14 @@ describeDb("GitHub publication controller store", () => {
        VALUES ($1, $2, $3, $4, 'running', 'unknown', now()) RETURNING id`,
       [repository.rows[0]!.id, prNumber, HEAD, TARGET],
     );
+    if (stageCompletion) {
+      await pool.query(
+        "UPDATE reviews SET envelope = $2::jsonb WHERE id = $1",
+        [review.rows[0]!.id, JSON.stringify(testEnvelope())],
+      );
+    }
     return {
+      organizationId: Number(organization.rows[0]!.id),
       databaseRepositoryId: Number(repository.rows[0]!.id),
       githubRepositoryId: 720_000 + seed,
       repositoryFullName: `controller-store-${seed}/service`,
@@ -288,9 +423,67 @@ describeDb("GitHub publication controller store", () => {
       generation,
     };
   }
+
+  async function createReviewJob(
+    context: StoreContext,
+    overrides: { headSha?: string } = {},
+  ) {
+    const payload = {
+      installationId: 710_000,
+      githubRepoId: context.githubRepositoryId,
+      repoFullName: context.repositoryFullName,
+      prNumber: context.prNumber,
+      headSha: overrides.headSha ?? HEAD,
+      baseSha: TARGET,
+      expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000Z",
+      reviewInputSequence: context.generation,
+    };
+    const result = await pool.query<{
+      id: string;
+      locked_by: string;
+      lock_generation: string;
+    }>(
+      `INSERT INTO jobs
+         (kind, payload, status, locked_at, locked_by, lock_generation)
+       VALUES ('review', $1, 'running', now(), 'atomic-stage-worker', 1)
+       RETURNING id, locked_by, lock_generation::text`,
+      [JSON.stringify(payload)],
+    );
+    return {
+      id: Number(result.rows[0]!.id),
+      lockedBy: result.rows[0]!.locked_by,
+      lockGeneration: BigInt(result.rows[0]!.lock_generation),
+    };
+  }
+
+  async function publicationStageCounts(context: StoreContext, jobId: number) {
+    const result = await pool.query<{
+      has_envelope: boolean;
+      receipts: string;
+      generations: string;
+      sealed_generations: string;
+      recovery_review_id: string | null;
+    }>(
+      `SELECT review.envelope IS NOT NULL AS has_envelope,
+              (SELECT count(*)::text FROM review_publication_receipts receipt
+                WHERE receipt.review_id = review.id) AS receipts,
+              (SELECT count(*)::text FROM review_publication_generations generation
+                WHERE generation.review_id = review.id) AS generations,
+              (SELECT count(*)::text FROM review_publication_generations generation
+                WHERE generation.review_id = review.id AND generation.sealed_at IS NOT NULL)
+                AS sealed_generations,
+              job.payload->>'recoveryReviewId' AS recovery_review_id
+         FROM reviews review
+         JOIN jobs job ON job.id = $2
+        WHERE review.id = $1`,
+      [context.reviewId, jobId],
+    );
+    return result.rows[0]!;
+  }
 });
 
 type StoreContext = {
+  organizationId: number;
   databaseRepositoryId: number;
   githubRepositoryId: number;
   repositoryFullName: string;
@@ -340,12 +533,66 @@ function buildStageInput(context: StoreContext, includeOptionalFields = true) {
       reviewId: context.reviewId,
       reviewInputSequence: context.generation,
       expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000Z",
-      envelopeDigest: digestRaw(`envelope:${context.generation}`),
+      envelopeDigest: githubPublicationEnvelopeDigest(testEnvelope()),
       targetBranch: "main",
       pullRequestTitle: TITLE,
       pullRequestBody: BODY,
     },
   };
+}
+
+function atomicInput(
+  context: StoreContext,
+  generation: ReturnType<typeof buildStageInput>,
+  envelope: Envelope,
+  reviewJobLease: { id: number; lockedBy: string; lockGeneration: bigint },
+) {
+  return {
+    database: activePool(),
+    organizationId: context.organizationId,
+    envelopeArtifact: {
+      bytes: Buffer.from(JSON.stringify(envelope), "utf8"),
+      value: envelope,
+    },
+    completion: {
+      reviewId: context.reviewId,
+      reviewJobLease,
+      envelope,
+      configFiles: [],
+      silent: envelope.silent,
+      gateFailing: envelope.gate.failing,
+      deferPublicationReceipt: true as const,
+    },
+    generation,
+  };
+}
+
+let currentPool: Pool | undefined;
+
+function activePool(): Pool {
+  if (!currentPool) throw new Error("test database pool is unavailable");
+  return currentPool;
+}
+
+function testEnvelope(): Envelope {
+  return envelopeSchema.parse({
+    version: 1,
+    summary: "No advisory findings remain open.",
+    silent: true,
+    findings: [],
+    resolved: [],
+    suppressedFindings: [],
+    counts: { info: 0, warn: 0, error: 0, suppressed: 0, ungrounded: 0 },
+    confidenceBuckets: [0, 0, 0, 0, 0],
+    gate: { failOn: "error", failing: false },
+    modelUsed: "test/model",
+    usage: { promptTokens: 1, completionTokens: 1 },
+    usageAccountingComplete: true,
+    durationMs: 1,
+    baseSha: BASE,
+    headSha: HEAD,
+    sinceSha: null,
+  });
 }
 
 function buildAcceptedInput(

@@ -85,6 +85,15 @@ export interface StagedReviewCompletionInput extends Pick<
   | "publicationReceipt"
 > {
   reviewJobLease: JobLease;
+  deferPublicationReceipt?: false;
+}
+
+export interface ControllerStagedReviewCompletionInput extends Omit<
+  StagedReviewCompletionInput,
+  "publicationReceipt" | "deferPublicationReceipt"
+> {
+  publicationReceipt?: never;
+  deferPublicationReceipt: true;
 }
 
 class ReviewCompletionJobLeaseLostError extends Error {
@@ -329,80 +338,19 @@ export async function stageReviewCompletionCandidate(
   input: StagedReviewCompletionInput,
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult & { staged: boolean }> {
+  if ((input as { deferPublicationReceipt?: boolean }).deferPublicationReceipt === true) {
+    throw new Error(
+      "publication receipt deferral requires atomic controller staging",
+    );
+  }
   try {
-    return await db.transaction(async (tx) => {
-      await lockReviewDecisionScopeById(tx, input.reviewId);
-      const gateTruth = requireEnvelopeGateTruth(
-        input.envelope,
-        input.gateFailing,
-      );
-      const gateEnabled =
-        orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
-      const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
-      const rows = await tx
-        .update(schema.reviews)
-        .set({
-          envelope: gateTruth.envelope,
-          configFiles: input.configFiles,
-          configProvenance: input.configProvenance ?? {
-            entries: [],
-            degraded: false,
-          },
-          silent: input.silent,
-          engineGateFailing: gateTruth.gateFailing,
-          gateFailing: effectiveGateFailing,
-        })
-        .where(
-          and(
-            eq(schema.reviews.id, input.reviewId),
-            eq(schema.reviews.status, "running"),
-          ),
-        )
-        .returning({ id: schema.reviews.id });
-      if (rows.length === 0) {
-        return {
-          staged: false,
-          completed: false,
-          gateEnabled,
-          gateFailing: effectiveGateFailing,
-        };
-      }
-
-      await persistPublicationReceipt(tx as Database, {
-        reviewId: input.reviewId,
-        envelope: gateTruth.envelope,
-        receipt: input.publicationReceipt,
-      });
-      const recoveryPointer = await tx
-        .update(schema.jobs)
-        .set({
-          payload: sql`${schema.jobs.payload} || jsonb_build_object(
-            'recoveryReviewId', ${input.reviewId}::bigint
-          )`,
-        })
-        .where(
-          and(
-            eq(schema.jobs.id, input.reviewJobLease.id),
-            eq(schema.jobs.status, "running"),
-            eq(schema.jobs.lockedBy, input.reviewJobLease.lockedBy),
-            eq(schema.jobs.lockGeneration, input.reviewJobLease.lockGeneration),
-          ),
-        )
-        .returning({ id: schema.jobs.id });
-      if (recoveryPointer.length !== 1) {
-        throw new ReviewCompletionJobLeaseLostError(
-          gateEnabled,
-          effectiveGateFailing,
-        );
-      }
-
-      return {
-        staged: true,
-        completed: false,
-        gateEnabled,
-        gateFailing: effectiveGateFailing,
-      };
-    });
+    return await db.transaction((tx) =>
+      stageReviewCompletionCandidateInTransaction(
+        tx as Database,
+        input,
+        orgId,
+      )
+    );
   } catch (error) {
     if (error instanceof ReviewCompletionJobLeaseLostError) {
       return {
@@ -414,6 +362,91 @@ export async function stageReviewCompletionCandidate(
     }
     throw error;
   }
+}
+
+/** Stage one review completion candidate inside an existing transaction. */
+export async function stageReviewCompletionCandidateInTransaction(
+  tx: Database,
+  input: StagedReviewCompletionInput | ControllerStagedReviewCompletionInput,
+  orgId: number | null,
+): Promise<ReviewCompletionWithGateModeResult & { staged: boolean }> {
+  await lockReviewDecisionScopeById(tx, input.reviewId);
+  const gateTruth = requireEnvelopeGateTruth(
+    input.envelope,
+    input.gateFailing,
+  );
+  const gateEnabled =
+    orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
+  const effectiveGateFailing = gateEnabled && gateTruth.gateFailing;
+  const rows = await tx
+    .update(schema.reviews)
+    .set({
+      envelope: gateTruth.envelope,
+      configFiles: input.configFiles,
+      configProvenance: input.configProvenance ?? {
+        entries: [],
+        degraded: false,
+      },
+      silent: input.silent,
+      engineGateFailing: gateTruth.gateFailing,
+      gateFailing: effectiveGateFailing,
+    })
+    .where(
+      and(
+        eq(schema.reviews.id, input.reviewId),
+        eq(schema.reviews.status, "running"),
+      ),
+    )
+    .returning({ id: schema.reviews.id });
+  if (rows.length === 0) {
+    return {
+      staged: false,
+      completed: false,
+      gateEnabled,
+      gateFailing: effectiveGateFailing,
+    };
+  }
+
+  if (input.deferPublicationReceipt === true) {
+    if (input.publicationReceipt !== undefined) {
+      throw new Error("deferred publication staging cannot include a receipt");
+    }
+  } else {
+    await persistPublicationReceipt(tx, {
+      reviewId: input.reviewId,
+      envelope: gateTruth.envelope,
+      receipt: input.publicationReceipt,
+    });
+  }
+  const recoveryPointer = await tx
+    .update(schema.jobs)
+    .set({
+      payload: sql`${schema.jobs.payload} || jsonb_build_object(
+        'recoveryReviewId', ${input.reviewId}::bigint
+      )`,
+    })
+    .where(
+      and(
+        eq(schema.jobs.id, input.reviewJobLease.id),
+        eq(schema.jobs.status, "running"),
+        eq(schema.jobs.lockedBy, input.reviewJobLease.lockedBy),
+        eq(schema.jobs.lockGeneration, input.reviewJobLease.lockGeneration),
+      ),
+    )
+    .returning({ id: schema.jobs.id });
+  if (recoveryPointer.length !== 1) {
+    throw new ReviewCompletionJobLeaseLostError(
+      gateEnabled,
+      effectiveGateFailing,
+    );
+  }
+
+  return {
+    staged: true,
+    completed: false,
+    gateEnabled,
+    gateFailing: effectiveGateFailing,
+  };
 }
 
 /** Finalize an already-staged review without repeating any GitHub write. */
