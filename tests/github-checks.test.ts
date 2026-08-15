@@ -7,6 +7,7 @@ import {
   findCheckRunByExternalId,
   findIssueCommentByMarker,
   findPullRequestReviewCommentByMarker,
+  getPullRequestPublicationContext,
   getPullRequestReviewComment,
   getPullRequestReviewContext,
   RESPOND_MARKER_MAX_PAGES,
@@ -278,6 +279,79 @@ describe("pull-request review context", () => {
     await expect(
       getPullRequestReviewContext("token", "octo/repo", 7),
     ).rejects.toThrow("incomplete refs");
+  });
+
+  test("loads the exact immutable pure-planner publication snapshot", async () => {
+    const headSha = "a".repeat(40);
+    const targetSha = "b".repeat(40);
+    const mergeBaseSha = "c".repeat(40);
+    const requests: string[] = [];
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.includes("/compare/")) {
+        return Response.json({ merge_base_commit: { sha: mergeBaseSha } });
+      }
+      return Response.json({
+        state: "open",
+        merged: false,
+        draft: false,
+        updated_at: "2026-08-15T01:02:03Z",
+        title: "Keep publication durable",
+        body: null,
+        head: { sha: headSha },
+        base: { sha: targetSha, ref: "main" },
+        user: { id: 42, login: "octocat" },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      getPullRequestPublicationContext("token", "octo/repo", 7),
+    ).resolves.toEqual({
+      open: true,
+      merged: false,
+      draft: false,
+      updatedAt: "2026-08-15T01:02:03.000Z",
+      headSha,
+      baseSha: targetSha,
+      mergeBaseSha,
+      targetBranch: "main",
+      title: "Keep publication durable",
+      body: "",
+      authorGithubId: 42,
+      authorLogin: "octocat",
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toContain(`/compare/${targetSha}...${headSha}`);
+  });
+
+  test("rejects incomplete publication inputs and malformed merge bases", async () => {
+    const headSha = "a".repeat(40);
+    const targetSha = "b".repeat(40);
+    let malformedInput = true;
+    globalThis.fetch = (async (input) => {
+      if (String(input).includes("/compare/")) {
+        return Response.json({ merge_base_commit: { sha: "not-a-sha" } });
+      }
+      return Response.json({
+        state: "open",
+        merged: false,
+        draft: false,
+        updated_at: "2026-08-15T01:02:03.000Z",
+        title: malformedInput ? "" : "Title",
+        body: "Body",
+        head: { sha: headSha },
+        base: { sha: targetSha, ref: "main" },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      getPullRequestPublicationContext("token", "octo/repo", 7),
+    ).rejects.toThrow("incomplete publication inputs");
+    malformedInput = false;
+    await expect(
+      getPullRequestPublicationContext("token", "octo/repo", 7),
+    ).rejects.toThrow("no exact merge base");
   });
 });
 
