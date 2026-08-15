@@ -91,6 +91,14 @@ describe("GitHub publication plan", () => {
     expectRejected(plan, "lifecycle receipt digest");
   });
 
+  test("bounds receipt identities to the durable receipt schema", () => {
+    const plan = validPlan();
+    plan.lifecycleReceipt.receiptId = "r".repeat(201);
+    resign(plan);
+
+    expectRejected(plan, "200 UTF-8 bytes");
+  });
+
   test("binds lifecycle state to the service-supplied input identity", () => {
     const plan = validPlan();
     plan.lifecycleReceipt.inputIdentity = digest("different input");
