@@ -329,14 +329,21 @@ export class PostgresGitHubPublicationOperationStore
     claim: ClaimedGitHubPublicationOperation,
     evidence: PublicationTerminalEvidence,
   ): Promise<boolean> {
-    return this.finishWithoutDispatch(
-      claim,
-      evidence,
-      "failed",
-      boundedError(typeof evidence.result.reason === "string"
-        ? evidence.result.reason
-        : `GitHub publication rejected with outcome ${evidence.outcome}`),
-    );
+    const errorReason = boundedError(typeof evidence.result.reason === "string"
+      ? evidence.result.reason
+      : `GitHub publication rejected with outcome ${evidence.outcome}`);
+    const payload = evidencePayload(evidence);
+    return this.transaction(async (client) => {
+      if (!await lockClaim(client, claim, false)) return false;
+      if (!await hasAttemptPhase(client, claim, "dispatched")) return false;
+      if (!await insertAttempt(client, claim, "rejected", payload, errorReason, null, null)) return false;
+      const updated = await client.query(
+        `${terminalClaimUpdate("failed")}, last_error = $10, terminal_evidence = $11::jsonb
+         WHERE ${claimIdentityWhere(false)}`,
+        [...claimIdentityValues(claim), errorReason, payload],
+      );
+      return updated.rowCount === 1;
+    });
   }
 
   async finishAmbiguous(
@@ -495,7 +502,7 @@ export class PostgresGitHubPublicationOperationStore
   private async finishWithoutDispatch(
     claim: ClaimedGitHubPublicationOperation,
     evidence: PublicationTerminalEvidence,
-    state: "skipped" | "failed",
+    state: "skipped",
     errorReason: string | null,
   ): Promise<boolean> {
     return this.transaction(async (client) => {
@@ -991,7 +998,7 @@ async function insertAttempt(
     "databaseRepositoryId" | "pullRequestNumber" | "publicationGeneration" |
     "operationKey" | "attemptNumber" | "leaseGeneration" | "selectedVariant"
   >,
-  phase: "dispatched" | "not_dispatched" | "ambiguous" | "applied",
+  phase: "dispatched" | "not_dispatched" | "ambiguous" | "applied" | "rejected",
   payload: string,
   errorReason: string | null,
   remoteIdentity: string | null,
@@ -1131,7 +1138,7 @@ async function hasAttemptPhaseByRow(
   return hasAttemptPhase(client, rowToClaimIdentity(row), phase);
 }
 
-function terminalClaimUpdate(state: "applied" | "unknown"): string {
+function terminalClaimUpdate(state: "applied" | "unknown" | "failed"): string {
   return `UPDATE review_publication_operations
           SET state = '${state}', claim_owner = NULL, lease_id = NULL,
               lease_expires_at = NULL, updated_at = clock_timestamp()`;

@@ -859,7 +859,7 @@ export const reviewPublicationOperationAttempts = pgTable(
     ),
     check(
       "review_publication_operation_attempts_phase_check",
-      sql`${t.phase} IN ('claimed', 'dispatched', 'not_dispatched', 'ambiguous', 'applied')`,
+      sql`${t.phase} IN ('claimed', 'dispatched', 'not_dispatched', 'ambiguous', 'applied', 'rejected')`,
     ),
     check(
       "review_publication_operation_attempts_variant_check",
@@ -883,7 +883,7 @@ export const reviewPublicationOperationAttempts = pgTable(
     ),
     check(
       "review_publication_operation_attempts_phase_evidence_check",
-      sql`(${t.phase} = 'claimed' AND ${t.evidencePayload} IS NULL AND ${t.errorReason} IS NULL AND ${t.remoteIdentity} IS NULL AND ${t.remoteOperationId} IS NULL) OR (${t.phase} IN ('dispatched', 'not_dispatched') AND ${t.evidencePayload} IS NOT NULL AND ${t.errorReason} IS NULL AND ${t.remoteIdentity} IS NULL AND ${t.remoteOperationId} IS NULL) OR (${t.phase} = 'ambiguous' AND ${t.evidencePayload} IS NOT NULL AND ${t.errorReason} IS NOT NULL AND ${t.remoteIdentity} IS NULL AND ${t.remoteOperationId} IS NULL) OR (${t.phase} = 'applied' AND ${t.evidencePayload} IS NOT NULL AND ${t.errorReason} IS NULL AND ${t.remoteIdentity} IS NOT NULL AND ${t.remoteOperationId} IS NOT NULL)`,
+      sql`(${t.phase} = 'claimed' AND ${t.evidencePayload} IS NULL AND ${t.errorReason} IS NULL AND ${t.remoteIdentity} IS NULL AND ${t.remoteOperationId} IS NULL) OR (${t.phase} IN ('dispatched', 'not_dispatched') AND ${t.evidencePayload} IS NOT NULL AND ${t.errorReason} IS NULL AND ${t.remoteIdentity} IS NULL AND ${t.remoteOperationId} IS NULL) OR (${t.phase} IN ('ambiguous', 'rejected') AND ${t.evidencePayload} IS NOT NULL AND ${t.errorReason} IS NOT NULL AND ${t.remoteIdentity} IS NULL AND ${t.remoteOperationId} IS NULL) OR (${t.phase} = 'applied' AND ${t.evidencePayload} IS NOT NULL AND ${t.errorReason} IS NULL AND ${t.remoteIdentity} IS NOT NULL AND ${t.remoteOperationId} IS NOT NULL)`,
     ),
     check(
       "review_publication_operation_attempts_timestamps_check",

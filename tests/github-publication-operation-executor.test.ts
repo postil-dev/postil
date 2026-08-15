@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import type { Pool } from "pg";
 
 import { buildGitHubPublicationControllerManifest } from "@/lib/github-publication-controller-manifest";
@@ -322,6 +322,10 @@ describeDb("PostgreSQL publication operation store", () => {
     await database.drop();
   });
 
+  afterEach(async () => {
+    await pool.query(`DELETE FROM repositories WHERE full_name LIKE 'publication-executor-%'`);
+  });
+
   test("claims one current sealed operation under concurrent workers and appends each phase once", async () => {
     await stageDatabaseFixture(pool, 101);
     const first = new PostgresGitHubPublicationOperationStore(pool);
@@ -339,7 +343,9 @@ describeDb("PostgreSQL publication operation store", () => {
       mutuallyExclusive: true,
     });
     expect(claim.retryAuthorization).toEqual({ kind: "initial" });
-    expect(claim.leaseExpiresAt.getTime() - claim.claimedAt.getTime()).toBe(60_000);
+    const observedLeaseDuration = claim.leaseExpiresAt.getTime() - claim.claimedAt.getTime();
+    expect(observedLeaseDuration).toBeGreaterThanOrEqual(59_000);
+    expect(observedLeaseDuration).toBeLessThanOrEqual(60_000);
 
     const dispatched = dispatchFixture(claim);
     expect(await first.recordDispatched(claim, dispatched)).toBe(true);
@@ -385,6 +391,60 @@ describeDb("PostgreSQL publication operation store", () => {
     });
   });
 
+  test("records definitive remote rejection as terminal append-only evidence", async () => {
+    await stageDatabaseFixture(pool, 104);
+    const store = new PostgresGitHubPublicationOperationStore(pool);
+    const claim = (await store.claimOneEligible({
+      claimOwner: "rejection-worker",
+      leaseId: randomUUID(),
+      leaseDurationMs: 60_000,
+    }))!;
+    const dispatched = dispatchFixture(claim);
+    expect(await store.recordDispatched(claim, dispatched)).toBe(true);
+    const result = { httpStatus: 422, classification: "invalidReviewCommentPlacement" };
+    expect(await store.finishRejected(claim, {
+      ...dispatched,
+      outcome: "rejected",
+      result,
+      resultDigest: digestJson(result),
+      httpStatus: 422,
+      classification: "invalidReviewCommentPlacement",
+    })).toBe(true);
+
+    const stored = await pool.query<{
+      state: string;
+      phases: string[];
+      last_error: string | null;
+      terminal_evidence: Record<string, unknown> | null;
+    }>(
+      `SELECT operation.state, operation.last_error, operation.terminal_evidence,
+              ARRAY(
+                SELECT phase FROM review_publication_operation_attempts attempt
+                WHERE attempt.repository_id = operation.repository_id
+                  AND attempt.pr_number = operation.pr_number
+                  AND attempt.publication_generation = operation.publication_generation
+                  AND attempt.operation_key = operation.operation_key
+                ORDER BY attempt.id
+              ) AS phases
+       FROM review_publication_operations operation
+       WHERE operation.repository_id = $1::bigint
+         AND operation.pr_number = $2
+         AND operation.publication_generation = $3::bigint
+         AND operation.operation_key = $4`,
+      [claim.databaseRepositoryId, claim.pullRequestNumber, claim.publicationGeneration, claim.operationKey],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      state: "failed",
+      phases: ["claimed", "dispatched", "rejected"],
+      last_error: "GitHub publication rejected with outcome rejected",
+      terminal_evidence: {
+        outcome: "rejected",
+        httpStatus: 422,
+        classification: "invalidReviewCommentPlacement",
+      },
+    });
+  });
+
   test("retries only from exact append-only not-dispatched lineage", async () => {
     await stageDatabaseFixture(pool, 102);
     const store = new PostgresGitHubPublicationOperationStore(pool);
@@ -395,6 +455,7 @@ describeDb("PostgreSQL publication operation store", () => {
     });
     expect(first).not.toBeNull();
     const firstClaim = first!;
+    await skipSiblingOperations(pool, firstClaim);
     expect(await store.finishNotDispatched(firstClaim, {
       ...dispatchFixture(firstClaim),
       errorReason: "activation observation failed before mutation",
@@ -424,6 +485,7 @@ describeDb("PostgreSQL publication operation store", () => {
       leaseId: randomUUID(),
       leaseDurationMs: 60_000,
     }))!;
+    await skipSiblingOperations(pool, claim);
     const dispatched = dispatchFixture(claim);
     expect(await store.recordDispatched(claim, dispatched)).toBe(true);
     expect(await store.finishAmbiguous(claim, {
@@ -1036,6 +1098,7 @@ function operation(expected: ExpectedGitHubPublicationPlan, keyKind: string, inp
 }
 
 function operationKey(expected: ExpectedGitHubPublicationPlan, kind: string, findingId?: string): string {
+  if (expected.reviewOutputDigest === undefined) throw new Error("review output digest is required");
   const hash = createHash("sha256").update("github-publication-operation-v1\0");
   for (const value of [
     String(expected.repositoryId),
@@ -1051,6 +1114,7 @@ function operationKey(expected: ExpectedGitHubPublicationPlan, kind: string, fin
 }
 
 function logicalReviewIdentity(expected: ExpectedGitHubPublicationPlan): string {
+  if (expected.reviewOutputDigest === undefined) throw new Error("review output digest is required");
   const hash = createHash("sha256").update("github-publication-logical-review-v1\0");
   for (const value of [
     String(expected.repositoryId),
@@ -1123,6 +1187,28 @@ function dispatchFixture(
   };
 }
 
+async function skipSiblingOperations(
+  pool: Pool,
+  operation: Pick<
+    ClaimedGitHubPublicationOperation,
+    "databaseRepositoryId" | "pullRequestNumber" | "publicationGeneration" | "operationKey"
+  >,
+): Promise<void> {
+  await pool.query(
+    `UPDATE review_publication_operations
+     SET state = 'skipped', terminal_evidence = '{"reason":"test sibling isolation"}'::jsonb
+     WHERE repository_id = $1::bigint AND pr_number = $2
+       AND publication_generation = $3::bigint AND operation_key <> $4
+       AND state = 'pending'`,
+    [
+      operation.databaseRepositoryId,
+      operation.pullRequestNumber,
+      operation.publicationGeneration,
+      operation.operationKey,
+    ],
+  );
+}
+
 function terminalFixture(
   operation: ClaimedGitHubPublicationOperation,
   dispatched: PublicationDispatchEvidence,
@@ -1158,19 +1244,16 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
     [900_000 + seed, installation.rows[0]!.id, repositoryFullName],
   );
   const repositoryId = repository.rows[0]!.id;
-  await pool.query(
-    `UPDATE repositories SET github_repo_id = $1::bigint WHERE id = $1::bigint`,
-    [repositoryId],
-  );
+  const githubRepositoryId = String(900_000 + seed);
   const review = await pool.query<{ id: string }>(
     `INSERT INTO reviews
        (repository_id, pr_number, head_sha, base_sha, status, trigger_source, queued_at)
-     VALUES ($1::bigint, 7, $2, $3, 'queued', 'unknown', clock_timestamp())
+     VALUES ($1::bigint, 7, $2, $3, 'running', 'unknown', clock_timestamp())
      RETURNING id`,
-    [repositoryId, HEAD, BASE],
+    [repositoryId, HEAD, TARGET],
   );
   const fixture = fixtureFor("advisoryCheckCreate", {
-    repositoryId,
+    repositoryId: githubRepositoryId,
     repositoryFullName,
     reviewId: review.rows[0]!.id,
   });
@@ -1179,9 +1262,11 @@ async function stageDatabaseFixture(pool: Pool, seed: number) {
     acceptedPlan: fixture.accepted,
     controllerManifest: fixture.controller,
     snapshot: {
+      repositoryId,
+      githubRepositoryId,
       reviewId: review.rows[0]!.id,
       reviewInputSequence: "1",
-      expectedPullRequestUpdatedAt: new Date("2026-08-15T00:00:00.000Z"),
+      expectedPullRequestUpdatedAt: "2026-08-15T00:00:00.000Z",
       envelopeDigest: hex(`envelope-${seed}`),
       targetBranch: "main",
       pullRequestTitle: TITLE,

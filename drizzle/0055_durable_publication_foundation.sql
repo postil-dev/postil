@@ -183,13 +183,13 @@ CREATE TABLE "review_publication_operation_attempts" (
 	CONSTRAINT "review_publication_operation_attempts_pr_number_check" CHECK ("review_publication_operation_attempts"."pr_number" > 0),
 	CONSTRAINT "review_publication_operation_attempts_generation_check" CHECK ("review_publication_operation_attempts"."publication_generation" > 0),
 	CONSTRAINT "review_publication_operation_attempts_sequence_check" CHECK ("review_publication_operation_attempts"."attempt_number" BETWEEN 1 AND 1000000 AND "review_publication_operation_attempts"."lease_generation" > 0),
-	CONSTRAINT "review_publication_operation_attempts_phase_check" CHECK ("review_publication_operation_attempts"."phase" IN ('claimed', 'dispatched', 'not_dispatched', 'ambiguous', 'applied')),
+	CONSTRAINT "review_publication_operation_attempts_phase_check" CHECK ("review_publication_operation_attempts"."phase" IN ('claimed', 'dispatched', 'not_dispatched', 'ambiguous', 'applied', 'rejected')),
 	CONSTRAINT "review_publication_operation_attempts_variant_check" CHECK (length(btrim("review_publication_operation_attempts"."selected_variant")) BETWEEN 1 AND 200),
 	CONSTRAINT "review_publication_operation_attempts_payload_check" CHECK ("review_publication_operation_attempts"."evidence_payload" IS NULL OR (jsonb_typeof("review_publication_operation_attempts"."evidence_payload") = 'object' AND "review_publication_operation_attempts"."evidence_payload" <> '{}'::jsonb AND pg_column_size("review_publication_operation_attempts"."evidence_payload") <= 1048576)),
 	CONSTRAINT "review_publication_operation_attempts_error_check" CHECK ("review_publication_operation_attempts"."error_reason" IS NULL OR length(btrim("review_publication_operation_attempts"."error_reason")) BETWEEN 1 AND 4000),
 	CONSTRAINT "review_publication_operation_attempts_remote_identity_check" CHECK ("review_publication_operation_attempts"."remote_identity" IS NULL OR length(btrim("review_publication_operation_attempts"."remote_identity")) BETWEEN 1 AND 500),
 	CONSTRAINT "review_publication_operation_attempts_remote_operation_id_check" CHECK ("review_publication_operation_attempts"."remote_operation_id" IS NULL OR length(btrim("review_publication_operation_attempts"."remote_operation_id")) BETWEEN 1 AND 500),
-	CONSTRAINT "review_publication_operation_attempts_phase_evidence_check" CHECK (("review_publication_operation_attempts"."phase" = 'claimed' AND "review_publication_operation_attempts"."evidence_payload" IS NULL AND "review_publication_operation_attempts"."error_reason" IS NULL AND "review_publication_operation_attempts"."remote_identity" IS NULL AND "review_publication_operation_attempts"."remote_operation_id" IS NULL) OR ("review_publication_operation_attempts"."phase" IN ('dispatched', 'not_dispatched') AND "review_publication_operation_attempts"."evidence_payload" IS NOT NULL AND "review_publication_operation_attempts"."error_reason" IS NULL AND "review_publication_operation_attempts"."remote_identity" IS NULL AND "review_publication_operation_attempts"."remote_operation_id" IS NULL) OR ("review_publication_operation_attempts"."phase" = 'ambiguous' AND "review_publication_operation_attempts"."evidence_payload" IS NOT NULL AND "review_publication_operation_attempts"."error_reason" IS NOT NULL AND "review_publication_operation_attempts"."remote_identity" IS NULL AND "review_publication_operation_attempts"."remote_operation_id" IS NULL) OR ("review_publication_operation_attempts"."phase" = 'applied' AND "review_publication_operation_attempts"."evidence_payload" IS NOT NULL AND "review_publication_operation_attempts"."error_reason" IS NULL AND "review_publication_operation_attempts"."remote_identity" IS NOT NULL AND "review_publication_operation_attempts"."remote_operation_id" IS NOT NULL)),
+	CONSTRAINT "review_publication_operation_attempts_phase_evidence_check" CHECK (("review_publication_operation_attempts"."phase" = 'claimed' AND "review_publication_operation_attempts"."evidence_payload" IS NULL AND "review_publication_operation_attempts"."error_reason" IS NULL AND "review_publication_operation_attempts"."remote_identity" IS NULL AND "review_publication_operation_attempts"."remote_operation_id" IS NULL) OR ("review_publication_operation_attempts"."phase" IN ('dispatched', 'not_dispatched') AND "review_publication_operation_attempts"."evidence_payload" IS NOT NULL AND "review_publication_operation_attempts"."error_reason" IS NULL AND "review_publication_operation_attempts"."remote_identity" IS NULL AND "review_publication_operation_attempts"."remote_operation_id" IS NULL) OR ("review_publication_operation_attempts"."phase" IN ('ambiguous', 'rejected') AND "review_publication_operation_attempts"."evidence_payload" IS NOT NULL AND "review_publication_operation_attempts"."error_reason" IS NOT NULL AND "review_publication_operation_attempts"."remote_identity" IS NULL AND "review_publication_operation_attempts"."remote_operation_id" IS NULL) OR ("review_publication_operation_attempts"."phase" = 'applied' AND "review_publication_operation_attempts"."evidence_payload" IS NOT NULL AND "review_publication_operation_attempts"."error_reason" IS NULL AND "review_publication_operation_attempts"."remote_identity" IS NOT NULL AND "review_publication_operation_attempts"."remote_operation_id" IS NOT NULL)),
 	CONSTRAINT "review_publication_operation_attempts_timestamps_check" CHECK (isfinite("review_publication_operation_attempts"."observed_at") AND isfinite("review_publication_operation_attempts"."created_at"))
 );
 --> statement-breakpoint
@@ -604,6 +604,7 @@ DECLARE
   database_now timestamp with time zone := pg_catalog.clock_timestamp();
   has_not_dispatched boolean;
   has_applied boolean;
+  has_rejected boolean;
   has_ambiguous boolean;
   has_retry_absence boolean;
   has_terminal_absence boolean;
@@ -737,6 +738,16 @@ BEGIN
         AND operation_key = OLD.operation_key
         AND attempt_number = OLD.attempt_count
         AND lease_generation = OLD.lease_generation
+        AND phase = 'rejected'
+    ),
+    EXISTS (
+      SELECT 1 FROM public.review_publication_operation_attempts
+      WHERE repository_id = OLD.repository_id
+        AND pr_number = OLD.pr_number
+        AND publication_generation = OLD.publication_generation
+        AND operation_key = OLD.operation_key
+        AND attempt_number = OLD.attempt_count
+        AND lease_generation = OLD.lease_generation
         AND phase = 'ambiguous'
     ),
     EXISTS (
@@ -771,7 +782,7 @@ BEGIN
         AND lease_generation = OLD.lease_generation
         AND phase = 'terminal' AND outcome = 'applied'
     )
-  INTO has_not_dispatched, has_applied, has_ambiguous,
+  INTO has_not_dispatched, has_applied, has_rejected, has_ambiguous,
        has_retry_absence, has_terminal_absence, has_terminal_applied;
 
   IF NEW.state = OLD.state THEN
@@ -977,7 +988,46 @@ BEGIN
     END IF;
     RETURN NEW;
   END IF;
-  IF OLD.state = 'applying' AND NEW.state IN ('superseded', 'failed') THEN
+  IF OLD.state = 'applying' AND NEW.state = 'superseded' THEN
+    IF NOT has_not_dispatched
+       OR NEW.attempt_count <> OLD.attempt_count
+       OR NEW.lease_generation <> OLD.lease_generation
+       OR NEW.selected_variant IS DISTINCT FROM OLD.selected_variant THEN
+      RAISE EXCEPTION 'terminating an applying operation requires proof no mutation was dispatched';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF OLD.state = 'applying' AND NEW.state = 'failed' THEN
+    IF has_rejected THEN
+      IF NEW.attempt_count <> OLD.attempt_count
+         OR NEW.lease_generation <> OLD.lease_generation
+         OR NEW.selected_variant IS DISTINCT FROM OLD.selected_variant
+         OR NEW.last_error IS DISTINCT FROM (
+           SELECT error_reason
+           FROM public.review_publication_operation_attempts
+           WHERE repository_id = OLD.repository_id
+             AND pr_number = OLD.pr_number
+             AND publication_generation = OLD.publication_generation
+             AND operation_key = OLD.operation_key
+             AND attempt_number = OLD.attempt_count
+             AND lease_generation = OLD.lease_generation
+             AND phase = 'rejected'
+         )
+         OR NEW.terminal_evidence IS DISTINCT FROM (
+           SELECT evidence_payload
+           FROM public.review_publication_operation_attempts
+           WHERE repository_id = OLD.repository_id
+             AND pr_number = OLD.pr_number
+             AND publication_generation = OLD.publication_generation
+             AND operation_key = OLD.operation_key
+             AND attempt_number = OLD.attempt_count
+             AND lease_generation = OLD.lease_generation
+             AND phase = 'rejected'
+         ) THEN
+        RAISE EXCEPTION 'rejected publication state requires exact rejection evidence';
+      END IF;
+      RETURN NEW;
+    END IF;
     IF NOT has_not_dispatched
        OR NEW.attempt_count <> OLD.attempt_count
        OR NEW.lease_generation <> OLD.lease_generation
@@ -1154,7 +1204,7 @@ BEGIN
         AND operation_key = NEW.operation_key
         AND attempt_number = NEW.attempt_number
         AND lease_generation = NEW.lease_generation
-        AND phase IN ('dispatched', 'ambiguous', 'applied')
+        AND phase IN ('dispatched', 'ambiguous', 'applied', 'rejected')
     ) THEN
       RAISE EXCEPTION 'dispatched attempts require remote outcome evidence';
     END IF;
@@ -1178,9 +1228,33 @@ BEGIN
         AND operation_key = NEW.operation_key
         AND attempt_number = NEW.attempt_number
         AND lease_generation = NEW.lease_generation
-        AND phase = 'applied'
+        AND phase IN ('applied', 'rejected')
     ) THEN
-      RAISE EXCEPTION 'ambiguous evidence requires a dispatched attempt without applied proof';
+      RAISE EXCEPTION 'ambiguous evidence requires a dispatched attempt without terminal proof';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.phase = 'rejected' THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM public.review_publication_operation_attempts
+      WHERE repository_id = NEW.repository_id
+        AND pr_number = NEW.pr_number
+        AND publication_generation = NEW.publication_generation
+        AND operation_key = NEW.operation_key
+        AND attempt_number = NEW.attempt_number
+        AND lease_generation = NEW.lease_generation
+        AND phase = 'dispatched' AND observed_at <= NEW.observed_at
+    ) OR EXISTS (
+      SELECT 1 FROM public.review_publication_operation_attempts
+      WHERE repository_id = NEW.repository_id
+        AND pr_number = NEW.pr_number
+        AND publication_generation = NEW.publication_generation
+        AND operation_key = NEW.operation_key
+        AND attempt_number = NEW.attempt_number
+        AND lease_generation = NEW.lease_generation
+        AND phase IN ('ambiguous', 'applied')
+    ) THEN
+      RAISE EXCEPTION 'rejected attempt evidence requires an unambiguous dispatch';
     END IF;
     RETURN NEW;
   END IF;
@@ -1202,7 +1276,7 @@ BEGIN
         AND operation_key = NEW.operation_key
         AND attempt_number = NEW.attempt_number
         AND lease_generation = NEW.lease_generation
-        AND phase = 'ambiguous'
+        AND phase IN ('ambiguous', 'rejected')
     ) THEN
       RAISE EXCEPTION 'applied attempt evidence requires an unambiguous dispatch';
     END IF;
