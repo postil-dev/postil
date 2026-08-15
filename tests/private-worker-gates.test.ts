@@ -206,7 +206,7 @@ describe("private repository worker defense in depth", () => {
     expect(denialBody).toContain("detailsUrl");
     expect(denialBody).toContain("returning({ id: schema.reviews.id })");
     expect(denialBody).toContain("if (failedRows.length === 0) return false");
-    expect(denialBody).toContain("if (settled)");
+    expect(denialBody).toContain("if (settled && !controllerOwned)");
     expect(denialBody).toContain("await failCheckRuns");
     expect(denialBody.indexOf("db.transaction")).toBeLessThan(
       denialBody.indexOf("await failCheckRuns"),
@@ -219,7 +219,7 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const reviewStart = source.indexOf("export async function runReviewJob");
     const argsStart = source.indexOf(
-      'const args = [\n      "review"',
+      'const args = controllerOwned ? [] : [\n      "review"',
       reviewStart,
     );
     const argsEnd = source.indexOf("];", argsStart);
@@ -298,7 +298,7 @@ describe("private repository worker defense in depth", () => {
     expect(finalization).toBeGreaterThan(verification);
     expect(gatePublication).toBeGreaterThan(finalization);
     expect(source.slice(staging, finalization)).toContain(
-      'reviewLog.line("review result and publication receipt staged durably")',
+      'reviewLog.line("review result staged durably")',
     );
     expect(source.slice(verification, finalization)).toContain(
       'reviewLog.line("forge advisory check-run verified completed by the CLI")',

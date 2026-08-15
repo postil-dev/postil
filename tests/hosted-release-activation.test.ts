@@ -122,7 +122,7 @@ describeDb("managed hosted inference release activation", () => {
 
     await expect(
       activateHostedInferenceRelease(pool, "invalid release"),
-    ).rejects.toThrow("requires a release SHA");
+    ).rejects.toThrow("release operations require a hexadecimal release SHA");
     expect(
       (
         await pool.query<{ subscription_mode: string }>(
