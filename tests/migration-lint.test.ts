@@ -38,7 +38,7 @@ describe("migration lint", () => {
 
   test("keeps the active Drizzle snapshot lineage cumulative", async () => {
     const snapshots = await Promise.all(
-      ["0048", "0049", "0050", "0051", "0052", "0053", "0054"].map(async (index) =>
+      ["0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055"].map(async (index) =>
         JSON.parse(
           await readFile(
             join(import.meta.dir, "..", "drizzle", "meta", `${index}_snapshot.json`),
@@ -50,6 +50,8 @@ describe("migration lint", () => {
           tables: Record<string, {
             columns?: Record<string, unknown>;
             checkConstraints?: Record<string, { value?: string }>;
+            foreignKeys?: Record<string, { onDelete?: string }>;
+            indexes?: Record<string, { isUnique?: boolean; where?: string }>;
           }>;
         }
       ),
@@ -96,6 +98,157 @@ describe("migration lint", () => {
       latest.tables["public.finding_publications"]?.checkConstraints
         ?.finding_publications_file_comment_identity_check?.value,
     ).toContain("current_state");
+    expect(latest.tables["public.review_publication_generations"]?.columns).toMatchObject({
+      repository_id: expect.any(Object),
+      pr_number: expect.any(Object),
+      publication_generation: expect.any(Object),
+      review_id: expect.any(Object),
+      plan_version: expect.any(Object),
+      accepted_plan: expect.any(Object),
+      accepted_plan_bytes: expect.any(Object),
+      accepted_plan_digest: expect.any(Object),
+      plan_semantic_digest: expect.any(Object),
+      review_input_sequence: expect.any(Object),
+      expected_pull_request_updated_at: expect.any(Object),
+      accepted_input_digest: expect.any(Object),
+      envelope_digest: expect.any(Object),
+      repository_full_name: expect.any(Object),
+      head_sha: expect.any(Object),
+      base_sha: expect.any(Object),
+      target_sha: expect.any(Object),
+      target_branch: expect.any(Object),
+      pull_request_title: expect.any(Object),
+      pull_request_body: expect.any(Object),
+      operation_count: expect.any(Object),
+      operation_manifest_digest: expect.any(Object),
+      controller_operation_count: expect.any(Object),
+      controller_operation_manifest_digest: expect.any(Object),
+      controller_manifest: expect.any(Object),
+      controller_manifest_bytes: expect.any(Object),
+      controller_manifest_digest: expect.any(Object),
+      sealed_at: expect.any(Object),
+    });
+    expect(latest.tables["public.pull_request_publication_high_waters"]?.columns)
+      .toMatchObject({
+        repository_id: expect.any(Object),
+        pr_number: expect.any(Object),
+        publication_generation: expect.any(Object),
+        accepted_review_id: expect.any(Object),
+        accepted_input_digest: expect.any(Object),
+        accepted_head_sha: expect.any(Object),
+      });
+    expect(latest.tables["public.review_publication_operations"]?.columns).toMatchObject({
+      repository_id: expect.any(Object),
+      pr_number: expect.any(Object),
+      publication_generation: expect.any(Object),
+      review_id: expect.any(Object),
+      operation_key: expect.any(Object),
+      operation_ordinal: expect.any(Object),
+      operation_source: expect.any(Object),
+      controller_record: expect.any(Object),
+      controller_record_bytes: expect.any(Object),
+      operation_record: expect.any(Object),
+      operation_record_bytes: expect.any(Object),
+      activation: expect.any(Object),
+      activation_bytes: expect.any(Object),
+      desired_payload: expect.any(Object),
+      desired_payload_bytes: expect.any(Object),
+      desired_payload_digest: expect.any(Object),
+      selected_variant: expect.any(Object),
+      terminal_evidence: expect.any(Object),
+      state: expect.any(Object),
+    });
+    expect(
+      latest.tables["public.review_publication_operation_dependencies"]?.columns,
+    ).toMatchObject({
+      operation_key: expect.any(Object),
+      dependency_position: expect.any(Object),
+      dependency_operation_key: expect.any(Object),
+    });
+    expect(
+      latest.tables["public.review_publication_operation_attempts"]?.columns,
+    ).toMatchObject({
+      attempt_number: expect.any(Object),
+      lease_generation: expect.any(Object),
+      phase: expect.any(Object),
+      selected_variant: expect.any(Object),
+      evidence_payload: expect.any(Object),
+    });
+    expect(
+      latest.tables["public.review_publication_operation_reconciliations"]?.columns,
+    ).toMatchObject({
+      attempt_number: expect.any(Object),
+      lease_generation: expect.any(Object),
+      phase: expect.any(Object),
+      selected_variant: expect.any(Object),
+      outcome: expect.any(Object),
+      evidence_payload: expect.any(Object),
+    });
+    expect(
+      latest.tables["public.review_publication_generations"]?.foreignKeys
+        ?.review_publication_generations_review_id_reviews_id_fk?.onDelete,
+    ).toBeUndefined();
+    expect(
+      latest.tables["public.pull_request_publication_high_waters"]?.foreignKeys
+        ?.pull_request_publication_high_waters_generation_fk?.onDelete,
+    ).toBe("cascade");
+    expect(
+      latest.tables["public.review_publication_operations"]?.foreignKeys
+        ?.review_publication_operations_generation_fk?.onDelete,
+    ).toBe("cascade");
+    expect(
+      latest.tables["public.review_publication_operation_dependencies"]?.foreignKeys
+        ?.review_publication_operation_dependencies_operation_fk?.onDelete,
+    ).toBe("cascade");
+    expect(
+      latest.tables["public.review_publication_operation_attempts"]?.foreignKeys
+        ?.review_publication_operation_attempts_operation_fk?.onDelete,
+    ).toBe("cascade");
+    expect(
+      latest.tables["public.review_publication_operation_reconciliations"]?.foreignKeys
+        ?.review_publication_operation_reconciliations_operation_fk?.onDelete,
+    ).toBe("cascade");
+    expect(
+      latest.tables["public.review_publication_operations"]?.indexes
+        ?.review_publication_operations_single_active_idx,
+    ).toMatchObject({
+      isUnique: true,
+      where: expect.stringContaining("'applying', 'unknown'"),
+    });
+    expect(
+      latest.tables["public.review_publication_generations"]?.checkConstraints
+        ?.review_publication_generations_controller_manifest_check?.value,
+    ).toContain("8388608");
+    expect(
+      latest.tables["public.review_publication_generations"]?.checkConstraints
+        ?.review_publication_generations_controller_manifest_check?.value,
+    ).toContain("BETWEEN 2 AND 128");
+    expect(
+      latest.tables["public.review_publication_operations"]?.checkConstraints
+        ?.review_publication_operations_ordinal_check?.value,
+    ).toContain("BETWEEN 1 AND 128");
+    const publicationMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0055_durable_publication_foundation.sql",
+      ),
+      "utf8",
+    );
+    const cliManifestDigestFunction = publicationMigration.slice(
+      publicationMigration.indexOf(
+        'CREATE FUNCTION "postil_review_publication_cli_manifest_digest"',
+      ),
+      publicationMigration.indexOf(
+        'CREATE FUNCTION "postil_guard_review_publication_generation"',
+      ),
+    );
+    expect(
+      cliManifestDigestFunction.match(
+        /AND publication_generation = generation_number/g,
+      ),
+    ).toHaveLength(1);
     const creationMigration = await readFile(
       join(
         import.meta.dir,
@@ -884,7 +1037,10 @@ describe("migration lint", () => {
       "production executor no-mutation probe",
     );
     expect(publicationControllerDeactivation).toContain(
-      "production executor state reader",
+      "durable generations are not bound to an exact",
+    );
+    expect(publicationControllerDeactivation).toContain(
+      "readProductionPublicationControllerRecoveryState",
     );
     expect(publicationControllerMigration).toContain(
       "'review', 'gate-state-sync', 'check-run-cleanup'",

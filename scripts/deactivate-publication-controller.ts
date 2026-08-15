@@ -3,6 +3,7 @@ import { optionalEnv } from "@/lib/env";
 import {
   deactivatePublicationControllerRelease,
   type PublicationControllerRecoveryStateReader,
+  readProductionPublicationControllerRecoveryState,
 } from "@/lib/release-job-rollout";
 
 async function main(): Promise<void> {
@@ -14,11 +15,13 @@ async function main(): Promise<void> {
     }
     const deactivated = await preparePublicationControllerDarkRelease(
       releaseSha,
+      readProductionPublicationControllerRecoveryState,
     );
     if (deactivated.state === "recovery") {
       throw new Error(
         "publication-controller routing is disabled, but recovery remains " +
-          "fail-closed until the production executor state reader is wired",
+          "fail-closed because durable generations are not bound to an exact " +
+          "controller release and source queue job",
       );
     }
     const routing = deactivated.routingRemoved
@@ -35,7 +38,8 @@ async function main(): Promise<void> {
 
 export async function preparePublicationControllerDarkRelease(
   releaseSha: string,
-  recoveryStateReader?: PublicationControllerRecoveryStateReader,
+  recoveryStateReader: PublicationControllerRecoveryStateReader =
+    readProductionPublicationControllerRecoveryState,
 ) {
   return deactivatePublicationControllerRelease(
     getPool(),

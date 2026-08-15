@@ -85,6 +85,70 @@ export type PublicationControllerRecoveryStateReader = (input: {
   releaseSha: string;
 }) => Promise<PublicationControllerRecoveryState>;
 
+/**
+ * Read durable executor recovery state without guessing which held jobs have a
+ * controller generation. The foundation schema does not bind generations to
+ * a controller release or source queue job, so any staged generation keeps
+ * every held job fail-closed. A release with no generations can restore all of
+ * its exact held jobs as unplanned legacy work.
+ */
+export const readProductionPublicationControllerRecoveryState:
+  PublicationControllerRecoveryStateReader = async ({ client, releaseSha }) => {
+    const normalized = normalizedReleaseSha(releaseSha);
+    const result = await client.query<{
+      staged: string;
+      nonterminal: string;
+      leases: string;
+      held_job_ids: string[];
+    }>(
+      `SELECT (
+          SELECT count(*)::text
+            FROM review_publication_generations
+           WHERE sealed_at IS NOT NULL
+        ) AS staged,
+        (
+          SELECT count(DISTINCT (repository_id, pr_number, publication_generation))::text
+            FROM review_publication_operations
+           WHERE state IN ('pending', 'applying', 'unknown')
+        ) AS nonterminal,
+        (
+          SELECT count(*)::text
+            FROM review_publication_operations
+           WHERE state = 'applying'
+        ) AS leases,
+        ARRAY(
+          SELECT id::text
+            FROM jobs
+           WHERE status = 'queued'
+             AND kind = ANY($1::text[])
+             AND payload->>$2 = $3
+             AND payload->>$4 = 'true'
+           ORDER BY id
+        ) AS held_job_ids`,
+      [
+        PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
+        PUBLICATION_CONTROLLER_LEGACY_REVIEW_MARKER,
+        normalized,
+        PUBLICATION_CONTROLLER_QUEUE_FENCE_MARKER,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error("publication-controller recovery state query returned no row");
+    }
+    const stagedGenerations = Number(row.staged);
+    const nonterminalGenerations = Number(row.nonterminal);
+    const activeMutationLeases = Number(row.leases);
+    return {
+      releaseSha: normalized,
+      stagedGenerations,
+      nonterminalGenerations,
+      activeMutationLeases,
+      unplannedQueuedJobIds:
+        stagedGenerations === 0 ? row.held_job_ids : [],
+    };
+  };
+
 export interface PublicationControllerDeactivationResult {
   routingRemoved: boolean;
   state: "dark" | "recovery";

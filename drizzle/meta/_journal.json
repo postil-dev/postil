@@ -390,7 +390,14 @@
     {
       "idx": 55,
       "version": "7",
-      "when": 1786701161312,
+      "when": 1786705696741,
+      "tag": "0055_durable_publication_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1786705696742,
       "tag": "0056_publication_controller_queue_fence",
       "breakpoints": true
     }

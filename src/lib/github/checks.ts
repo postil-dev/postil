@@ -22,6 +22,7 @@ const CHECK_RUN_VERIFY_TIMEOUT_MS = 10_000;
 const CHECK_RUN_RECONCILE_TIMEOUT_MS = 5_000;
 const CHECK_RUNS_PAGE_SIZE = 100;
 const CHECK_RUNS_MAX_PAGES = 10;
+const GIT_OBJECT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 type Conclusion = "success" | "failure" | "neutral";
 
@@ -669,6 +670,25 @@ export interface PullRequestReviewContext {
   authorLogin?: string;
 }
 
+export interface PullRequestPublicationContext extends PullRequestReviewContext {
+  mergeBaseSha: string;
+  targetBranch: string;
+  title: string;
+  body: string;
+}
+
+interface PullRequestApiResponse {
+  state?: string;
+  merged?: boolean;
+  draft?: boolean;
+  updated_at?: string;
+  title?: string;
+  body?: string | null;
+  head?: { sha?: string };
+  base?: { sha?: string; ref?: string };
+  user?: { id?: number; login?: string };
+}
+
 /** Load the immutable refs required by the existing review-job payload. */
 export async function getPullRequestReviewContext(
   token: string,
@@ -676,6 +696,73 @@ export async function getPullRequestReviewContext(
   number: number,
   signal?: AbortSignal,
 ): Promise<PullRequestReviewContext> {
+  return parsePullRequestReviewContext(
+    await loadPullRequest(token, repoFullName, number, signal),
+    repoFullName,
+    number,
+  );
+}
+
+/** Load every immutable pull-request input required by the pure CLI planner. */
+export async function getPullRequestPublicationContext(
+  token: string,
+  repoFullName: string,
+  number: number,
+  signal?: AbortSignal,
+): Promise<PullRequestPublicationContext> {
+  const data = await loadPullRequest(token, repoFullName, number, signal);
+  const review = parsePullRequestReviewContext(data, repoFullName, number);
+  const title = data.title;
+  const body = data.body ?? "";
+  const targetBranch = data.base?.ref;
+  if (
+    typeof title !== "string" ||
+    title.length === 0 ||
+    Buffer.byteLength(title, "utf8") > 512 ||
+    typeof body !== "string" ||
+    Buffer.byteLength(body, "utf8") > 65_536 ||
+    typeof targetBranch !== "string" ||
+    targetBranch.length === 0 ||
+    Buffer.byteLength(targetBranch, "utf8") > 255 ||
+    !GIT_OBJECT_SHA.test(review.headSha) ||
+    !GIT_OBJECT_SHA.test(review.baseSha)
+  ) {
+    throw new Error(
+      `GitHub pull request ${repoFullName}#${number} has incomplete publication inputs`,
+    );
+  }
+  const comparison = await githubFetch(
+    token,
+    "GET",
+    `/repos/${repoFullName}/compare/${review.baseSha}...${review.headSha}`,
+    undefined,
+    signal,
+  );
+  const comparisonData = (await comparison.json()) as {
+    merge_base_commit?: { sha?: string };
+  };
+  const mergeBaseSha = comparisonData.merge_base_commit?.sha;
+  if (typeof mergeBaseSha !== "string" || !GIT_OBJECT_SHA.test(mergeBaseSha)) {
+    throw new Error(
+      `GitHub pull request ${repoFullName}#${number} has no exact merge base`,
+    );
+  }
+  return {
+    ...review,
+    updatedAt: new Date(review.updatedAt).toISOString(),
+    mergeBaseSha,
+    targetBranch,
+    title,
+    body,
+  };
+}
+
+async function loadPullRequest(
+  token: string,
+  repoFullName: string,
+  number: number,
+  signal?: AbortSignal,
+): Promise<PullRequestApiResponse> {
   const res = await githubFetch(
     token,
     "GET",
@@ -683,15 +770,14 @@ export async function getPullRequestReviewContext(
     undefined,
     signal,
   );
-  const data = (await res.json()) as {
-    state?: string;
-    merged?: boolean;
-    draft?: boolean;
-    updated_at?: string;
-    head?: { sha?: string };
-    base?: { sha?: string };
-    user?: { id?: number; login?: string };
-  };
+  return (await res.json()) as PullRequestApiResponse;
+}
+
+function parsePullRequestReviewContext(
+  data: PullRequestApiResponse,
+  repoFullName: string,
+  number: number,
+): PullRequestReviewContext {
   const headSha = data.head?.sha;
   const baseSha = data.base?.sha;
   const updatedAt = data.updated_at;

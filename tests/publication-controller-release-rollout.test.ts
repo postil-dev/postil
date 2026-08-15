@@ -21,6 +21,7 @@ import {
   publicationControllerConsumerReady,
   publicationControllerLegacyReviewFenced,
   publicationControllerReleaseActivated,
+  readProductionPublicationControllerRecoveryState,
   recordPublicationControllerCliPreflight,
   recordPublicationControllerConsumerReady,
 } from "@/lib/release-job-rollout";
@@ -494,6 +495,44 @@ describeDb("publication-controller release rollout", () => {
     expect(await hasCapability(pool, `publication-controller-recovery:${RELEASE_A}`)).toBe(false);
     expect(await publicationControllerConsumerReady(pool, RELEASE_A)).toBe(false);
     expect(await jobCount(pool)).toBe(before);
+  });
+
+  test("production recovery reader restores exact held work when no generation exists", async () => {
+    await prepareRelease(pool, RELEASE_A);
+    const review = await insertQueuedMutator(
+      pool,
+      "review",
+      "2040-05-12T03:04:05.000Z",
+    );
+    const gate = await insertQueuedMutator(
+      pool,
+      "gate-state-sync",
+      "2040-05-13T03:04:05.000Z",
+    );
+    const cleanup = await insertQueuedMutator(
+      pool,
+      "check-run-cleanup",
+      "2040-05-14T03:04:05.000Z",
+    );
+    await activatePublicationControllerRelease(pool, RELEASE_A);
+
+    const result = await deactivatePublicationControllerRelease(
+      pool,
+      RELEASE_B,
+      readProductionPublicationControllerRecoveryState,
+    );
+    expect(result).toEqual({
+      routingRemoved: true,
+      state: "dark",
+      releaseSha: RELEASE_A,
+      restoredLegacyJobs: 3,
+      remainingNonterminalGenerations: 0,
+      activeMutationLeases: 0,
+    });
+    await activateQueueLockGeneration(pool);
+    expect((await queuedJobState(pool, review)).held).toBe(false);
+    expect((await queuedJobState(pool, gate)).held).toBe(false);
+    expect((await queuedJobState(pool, cleanup)).held).toBe(false);
   });
 
   test("recovery reader mismatch fails closed without removing readiness", async () => {
