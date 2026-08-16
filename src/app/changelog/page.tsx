@@ -35,10 +35,10 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.8.13",
-    date: "August 13, 2026",
+    version: "0.8.13, 0.8.15–0.8.16",
+    date: "August 13–14, 2026",
     summary:
-      "Large reviews bind every credited hunk to exact model-visible evidence and stop before inference when the bounded request budget cannot cover the complete change.",
+      "Review findings are adjudicated against candidate-bound direct evidence and a complete repository receipt before publication, while large changes remain bounded without silently skipping required source.",
     changes: [
       {
         label: "Fixed",
@@ -46,7 +46,15 @@ const RELEASES: Release[] = [
       },
       {
         label: "Changed",
-        text: "A review that cannot inspect every required hunk returns an explicit incomplete result instead of silently clearing findings from unseen evidence.",
+        text: "Absence, removal, conditional, and delegated-verification claims use the same complete-corpus adjudication regardless of generated kind; refuted and unresolved delegated checks are not published.",
+      },
+      {
+        label: "Fixed",
+        text: "Repository-wide claims are bound to immutable search receipts, and time-sensitive claims use the trusted UTC request date instead of model memory.",
+      },
+      {
+        label: "Fixed",
+        text: "Inline code in GitHub review findings preserves comparison operators while surrounding prose remains HTML-safe.",
       },
     ],
   },
