@@ -75,12 +75,14 @@ describe("crawler routing", () => {
 
   test("preserves a protected query in the post-login return target", async () => {
     const response = await middleware(
-      request("https://postil.dev/reports?status=failed&gate=failing"),
+      request(
+        "https://postil.dev/orgs/example-org/runs/11111111-2222-4333-8444-555555555555?tab=findings",
+      ),
       event,
     );
 
     expect(response.headers.get("location")).toBe(
-      "https://postil.dev/login?next=%2Freports%3Fstatus%3Dfailed%26gate%3Dfailing",
+      "https://postil.dev/login?next=%2Forgs%2Fexample-org%2Fruns%2F11111111-2222-4333-8444-555555555555%3Ftab%3Dfindings",
     );
   });
 

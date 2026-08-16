@@ -24,6 +24,7 @@ const {
   createSession,
   getVerifiedSessionUser,
   MEMBERSHIP_RECHECK_INTERVAL_MS,
+  SESSION_TTL_SECONDS,
 } = await import("@/lib/session");
 
 describeDb("session organization membership revalidation", () => {
@@ -61,6 +62,24 @@ describeDb("session organization membership revalidation", () => {
     await closeDb();
     await ephemeralDb?.drop();
   }, 30_000);
+
+  test("stores a seven-day session expiry", async () => {
+    const userId = await makeUser(1001, "octocat");
+    const before = Date.now();
+
+    await createSession(userId, "github-oauth-token", new Date());
+
+    const [session] = await db
+      .select({ expiresAt: schema.sessions.expiresAt })
+      .from(schema.sessions);
+    expect(SESSION_TTL_SECONDS).toBe(7 * 24 * 60 * 60);
+    expect(session?.expiresAt.getTime()).toBeGreaterThanOrEqual(
+      before + SESSION_TTL_SECONDS * 1_000,
+    );
+    expect(session?.expiresAt.getTime()).toBeLessThanOrEqual(
+      Date.now() + SESSION_TTL_SECONDS * 1_000,
+    );
+  });
 
   test("seals the OAuth token and refreshes roles and revocations", async () => {
     const userId = await makeUser(1001, "octocat");

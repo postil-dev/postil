@@ -34,7 +34,12 @@ function getCookie(request: Request, name: string): string | undefined {
   const header = request.headers.get("cookie") ?? "";
   for (const part of header.split(";")) {
     const [k, ...rest] = part.trim().split("=");
-    if (k === name) return decodeURIComponent(rest.join("="));
+    if (k !== name) continue;
+    try {
+      return decodeURIComponent(rest.join("="));
+    } catch {
+      return undefined;
+    }
   }
   return undefined;
 }
@@ -160,17 +165,17 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
   await reconcileOrgMemberships(db, userId, accounts);
 
-  const setupOrgSlug = await findAccessibleInstallationOrgSlug(
-    userId,
-    getCookie(request, GITHUB_SETUP_INSTALLATION_COOKIE),
-  );
   const returnTo = safeReturnTarget(getCookie(request, OAUTH_RETURN_TO_COOKIE));
+  const setupOrgSlug = returnTo
+    ? undefined
+    : await findAccessibleInstallationOrgSlug(
+        userId,
+        getCookie(request, GITHUB_SETUP_INSTALLATION_COOKIE),
+      );
   const sessionToken = await createSession(userId, accessToken, new Date());
   const response = NextResponse.redirect(
     new URL(
-      setupOrgSlug
-        ? `/orgs/${encodeURIComponent(setupOrgSlug)}`
-        : (returnTo ?? "/reports"),
+      returnTo ?? (setupOrgSlug ? `/orgs/${encodeURIComponent(setupOrgSlug)}` : "/reports"),
       origin,
     ),
   );
