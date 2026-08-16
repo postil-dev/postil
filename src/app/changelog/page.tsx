@@ -35,7 +35,7 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.8.13–0.8.16",
+    version: "0.8.13, 0.8.15–0.8.16",
     date: "August 13–14, 2026",
     summary:
       "Review findings are adjudicated against candidate-bound direct evidence and a complete repository receipt before publication, while large changes remain bounded without silently skipping required source.",
