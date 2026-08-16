@@ -36,21 +36,21 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 const RELEASES: Release[] = [
   {
     version: "0.8.13-0.8.16",
-    date: "August 13, 2026",
+    date: "August 16, 2026",
     summary:
-      "Review findings are adjudicated against candidate-bound direct evidence and a complete repository receipt before publication, while large changes remain bounded without silently skipping required source.",
+      "Findings are published only when the changed code or repository state supports them, while large changes remain covered without silently skipping required source.",
     changes: [
       {
         label: "Fixed",
-        text: "Repetitive source is encoded losslessly within the review budget, reconstructed only for exact citations, and cannot impersonate the evidence transport format.",
+        text: "Reviews cover repetitive source without dropping repeated sections or letting source text imitate Postil's request format.",
       },
       {
         label: "Changed",
-        text: "Absence, removal, conditional, and delegated-verification claims use the same complete-corpus adjudication regardless of generated kind; refuted and unresolved delegated checks are not published.",
+        text: "Claims about missing, removed, or inconsistent behavior are checked across the repository; claims contradicted by the code or lacking enough evidence are not published.",
       },
       {
         label: "Fixed",
-        text: "Repository-wide claims are bound to immutable search receipts, and time-sensitive claims use the trusted UTC request date instead of model memory.",
+        text: "Repository-wide checks are tied to the exact reviewed commit, and date-sensitive findings use the current UTC request date.",
       },
       {
         label: "Fixed",

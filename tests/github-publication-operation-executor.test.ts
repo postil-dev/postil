@@ -5,7 +5,10 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
 import { buildGitHubPublicationControllerManifest } from "@/lib/github-publication-controller-manifest";
-import { stageGitHubPublicationControllerGeneration } from "@/lib/github-publication-controller-store";
+import {
+  stageGitHubPublicationControllerGeneration,
+  stageGitHubPublicationControllerGenerationInTransaction,
+} from "@/lib/github-publication-controller-store";
 import { buildGitHubPublicationInputIdentity } from "@/lib/github-publication-cli-planner";
 import {
   type AmbiguousGitHubPublicationOperation,
@@ -20,9 +23,27 @@ import {
 } from "@/lib/github-publication-operation-executor";
 import { PostgresGitHubPublicationOperationStore } from "@/lib/github-publication-operation-store";
 import { schema } from "@/lib/db";
+import { lockReviewDecisionScopeById } from "@/lib/finding-approvals";
+import { loadAndDeriveGitHubPublicationReceipt } from "@/lib/github-publication-receipt-deriver";
+import {
+  activatePublicationControllerRelease,
+  activateQueueLockGeneration,
+  deactivatePublicationControllerRelease,
+  type PublicationControllerNoMutationProbe,
+  quiesceQueueForLockGeneration,
+  readProductionPublicationControllerRecoveryState,
+  recordPublicationControllerCliPreflight,
+  recordPublicationControllerConsumerReady,
+} from "@/lib/release-job-rollout";
 import { finalizePublicationControllerReview } from "@/lib/review-completion";
-import { claimPublicationControllerReviewJob } from "@/lib/queue";
+import {
+  claimPublicationControllerReviewJob,
+  continueClaimedJob,
+  type ReviewJobPayload,
+} from "@/lib/queue";
 import { publicationControllerRemoteCheckRunId } from "@/worker/review";
+import { runPublicationControllerReviewStateMachine } from "@/worker/publication-controller-review";
+import { watchdogPass } from "@/worker/watchdog";
 import {
   parseGitHubPublicationPlanBytes,
   type ExpectedGitHubPublicationPlan,
@@ -45,6 +66,8 @@ const TITLE = "Durable publication executor";
 const BODY = "Each forge write is represented by one immutable operation.";
 const NOW = new Date();
 const DETAILS_URL = "https://postil.dev/orgs/acme/runs/fixture";
+const RECOVERY_RELEASE = "f".repeat(40);
+const REPLACEMENT_RELEASE = "9".repeat(40);
 const POLICY_SUCCESS_OUTPUT = {
   conclusion: "success" as const,
   title: "Publication complete",
@@ -624,10 +647,12 @@ describeDb("PostgreSQL publication operation store", () => {
     );
     await pool.query(
       `DELETE FROM deployment_capabilities
-       WHERE name IN ($1, $2)`,
+       WHERE name IN ($1, $2)
+          OR name = ANY($3::text[])`,
       [
         `publication-controller-release:${"e".repeat(40)}`,
         `publication-controller-consumer-ready:${"e".repeat(40)}`,
+        publicationControllerTestCapabilities(),
       ],
     );
     await pool.query(`DELETE FROM repositories WHERE full_name LIKE 'publication-executor-%'`);
@@ -776,6 +801,211 @@ describeDb("PostgreSQL publication operation store", () => {
       receipts: 1,
       usageEvents: 1,
     });
+  });
+
+  test("restarts bound recovery through durable finalization without repeating forge mutations", async () => {
+    const fixture = await stageFinalizationFixture(pool, 520, { queued: true });
+    await preparePublicationControllerRelease(pool, RECOVERY_RELEASE);
+    await activatePublicationControllerRelease(pool, RECOVERY_RELEASE);
+    await activateQueueLockGeneration(pool);
+
+    const adapters = fakeAdapters({ createdCheckIds: ["81", "91"] });
+    const initialClaim = await claimPublicationControllerReviewJob(
+      pool,
+      "active-controller-worker",
+      RECOVERY_RELEASE,
+    );
+    expect(initialClaim).toMatchObject({ id: fixture.jobId });
+    const initialAction = await runFinalizationFixtureWorker(
+      pool,
+      fixture,
+      initialClaim!,
+      adapters,
+    );
+    expect(initialAction?.kind).toBe("continue");
+    if (initialAction?.kind !== "continue") {
+      throw new Error("active controller worker did not retain staged work");
+    }
+    await continueClaimedJob(
+      pool,
+      initialClaim!,
+      initialAction.payload,
+      { runAfter: initialAction.runAfter },
+    );
+    expect(mutationCalls(adapters.calls)).toEqual(["createCheck"]);
+
+    await quiesceQueueForLockGeneration(pool, { timeoutMs: 0 });
+    const interrupted = await deactivatePublicationControllerRelease(
+      pool,
+      REPLACEMENT_RELEASE,
+      readProductionPublicationControllerRecoveryState,
+    );
+    expect(interrupted).toMatchObject({
+      state: "recovery",
+      releaseSha: RECOVERY_RELEASE,
+      remainingNonterminalGenerations: 1,
+      activeMutationLeases: 0,
+    });
+
+    while (await activePublicationOperationCount(pool, fixture.scope)) {
+      const recoveryClaim = await claimPublicationControllerReviewJob(
+        pool,
+        "recovery-controller-worker",
+        RECOVERY_RELEASE,
+      );
+      expect(recoveryClaim).toMatchObject({ id: fixture.jobId });
+      const action = await runFinalizationFixtureWorker(
+        pool,
+        fixture,
+        recoveryClaim!,
+        adapters,
+      );
+      expect(action?.kind).toBe("continue");
+      if (action?.kind !== "continue") {
+        throw new Error("recovery worker settled before every operation was terminal");
+      }
+      await continueClaimedJob(
+        pool,
+        recoveryClaim!,
+        action.payload,
+        { runAfter: action.runAfter },
+      );
+    }
+
+    const mutationsBeforeRestart = mutationCalls(adapters.calls);
+    expect(mutationsBeforeRestart).toEqual([
+      "createCheck",
+      "publishReview",
+      "completeCheck:81",
+      "createCheck",
+      "completeCheck:91",
+    ]);
+    const awaitingFinalizer = await deactivatePublicationControllerRelease(
+      pool,
+      REPLACEMENT_RELEASE,
+      readProductionPublicationControllerRecoveryState,
+    );
+    expect(awaitingFinalizer).toMatchObject({
+      state: "recovery",
+      remainingNonterminalGenerations: 1,
+      activeMutationLeases: 0,
+    });
+
+    await pool.query(
+      `UPDATE reviews
+          SET started_at = '2026-08-15T00:00:00Z'
+        WHERE id = $1`,
+      [fixture.reviewId],
+    );
+    const watchdog = await watchdogPass(
+      new Date("2026-08-15T02:00:00Z"),
+      { db: drizzle(pool, { schema }), pool },
+    );
+    expect(watchdog.killed).toBe(0);
+    expect(await finalizationSnapshot(pool, fixture)).toMatchObject({
+      reviewStatus: "running",
+      jobStatus: "queued",
+      receipts: 0,
+    });
+    const legacyCleanup = await pool.query(
+      "SELECT id FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(legacyCleanup.rows).toHaveLength(0);
+
+    const restartedClaim = await claimPublicationControllerReviewJob(
+      pool,
+      "restarted-finalizer-worker",
+      RECOVERY_RELEASE,
+    );
+    expect(restartedClaim).toMatchObject({ id: fixture.jobId });
+    const settled = await runFinalizationFixtureWorker(
+      pool,
+      fixture,
+      restartedClaim!,
+      adapters,
+    );
+    expect(settled).toEqual({ kind: "settled" });
+    expect(mutationCalls(adapters.calls)).toEqual(mutationsBeforeRestart);
+
+    const store = new PostgresGitHubPublicationOperationStore(pool, fixture.scope);
+    await expect(run(store, adapters)).resolves.toEqual({
+      status: "idle",
+      shouldContinue: false,
+    });
+    expect(mutationCalls(adapters.calls)).toEqual(mutationsBeforeRestart);
+    expect(await finalizationSnapshot(pool, fixture)).toMatchObject({
+      reviewStatus: "completed",
+      jobStatus: "done",
+      receipts: 1,
+      usageEvents: 1,
+    });
+
+    const completed = await deactivatePublicationControllerRelease(
+      pool,
+      REPLACEMENT_RELEASE,
+      readProductionPublicationControllerRecoveryState,
+    );
+    expect(completed).toMatchObject({
+      state: "dark",
+      releaseSha: RECOVERY_RELEASE,
+      restoredLegacyJobs: 0,
+      remainingNonterminalGenerations: 0,
+      activeMutationLeases: 0,
+    });
+  });
+
+  test("rechecks sealed ownership after waiting for atomic staging", async () => {
+    const fixture = await stageDatabaseFixture(pool, 521, {
+      deferStage: true,
+    });
+    const targetReviewId = Number(fixture.reviewId);
+    await pool.query(
+      `UPDATE reviews
+          SET started_at = '2026-08-15T00:00:00Z'
+        WHERE id = $1`,
+      [targetReviewId],
+    );
+    const stagingClient = await pool.connect();
+    let transactionOpen = false;
+    try {
+      await stagingClient.query("BEGIN");
+      transactionOpen = true;
+      await lockReviewDecisionScopeById(
+        drizzle(stagingClient, { schema }),
+        targetReviewId,
+      );
+      const stagingPid = await stagingClient.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      await stageGitHubPublicationControllerGenerationInTransaction(
+        stagingClient,
+        fixture.stageInput,
+      );
+
+      const watchdog = watchdogPass(
+        new Date("2026-08-15T02:00:00Z"),
+        { db: drizzle(pool, { schema }), pool },
+      );
+      await waitForBackendBlocker(pool, stagingPid.rows[0]!.pid);
+      await stagingClient.query("COMMIT");
+      transactionOpen = false;
+
+      await expect(watchdog).resolves.toEqual({ killed: 0 });
+      const review = await pool.query<{ status: string }>(
+        "SELECT status FROM reviews WHERE id = $1",
+        [targetReviewId],
+      );
+      expect(review.rows[0]?.status).toBe("running");
+      const cleanup = await pool.query(
+        "SELECT id FROM jobs WHERE kind = 'check-run-cleanup'",
+      );
+      expect(cleanup.rows).toHaveLength(0);
+    } finally {
+      if (transactionOpen) {
+        await stagingClient.query("ROLLBACK").catch(() => undefined);
+      }
+      stagingClient.release();
+    }
   });
 
   test("settles required publication failure without inventing a receipt", async () => {
@@ -1468,6 +1698,7 @@ type LiveSnapshotOverride = Partial<{
 function fakeAdapters(options: {
   existingCheckId?: string;
   createdCheckId?: string;
+  createdCheckIds?: readonly string[];
   ambiguousCreate?: boolean;
   rejectPlacement?: boolean;
   partialReviewId?: string;
@@ -1488,6 +1719,7 @@ function fakeAdapters(options: {
 } {
   const calls: string[] = [];
   const liveSnapshots = [...(options.liveSnapshots ?? [])];
+  const createdCheckIds = [...(options.createdCheckIds ?? [])];
   const completedCheckIntents: GitHubCheckRunCompletionIntent[] = [];
   const observedCheckCompletionIntents: GitHubCheckRunCompletionIntent[] = [];
   return {
@@ -1576,7 +1808,7 @@ function fakeAdapters(options: {
     async createCheck() {
       calls.push("createCheck");
       if (options.ambiguousCreate) throw new GitHubPublicationAmbiguousError("check-run creation");
-      return options.createdCheckId ?? "81";
+      return createdCheckIds.shift() ?? options.createdCheckId ?? "81";
     },
     async completeCheck(_token, _repo, intent) {
       if (options.expectedCompletionExternalId !== undefined) {
@@ -2133,6 +2365,7 @@ async function stageDatabaseFixture(
   seed: number,
   options: {
     operationKind?: "advisoryCheckCreate" | "relocatedReviewCreate";
+    deferStage?: boolean;
     gateOutput?: {
       conclusion: "success" | "failure" | "neutral";
       title: string;
@@ -2178,8 +2411,7 @@ async function stageDatabaseFixture(
     reviewId: review.rows[0]!.id,
     ...(options.gateOutput === undefined ? {} : { gateOutput: options.gateOutput }),
   });
-  await stageGitHubPublicationControllerGeneration({
-    database: pool,
+  const stageInput = {
     acceptedInput: fixture.inputIdentity,
     acceptedPlan: fixture.accepted,
     controllerManifest: fixture.controller,
@@ -2194,12 +2426,19 @@ async function stageDatabaseFixture(
       pullRequestTitle: TITLE,
       pullRequestBody: BODY,
     },
-  });
+  };
+  if (options.deferStage !== true) {
+    await stageGitHubPublicationControllerGeneration({
+      database: pool,
+      ...stageInput,
+    });
+  }
   return {
     databaseRepositoryId: repositoryId,
     pullRequestNumber: 7,
     publicationGeneration: "17",
     reviewId: review.rows[0]!.id,
+    stageInput,
   };
 }
 
@@ -2280,6 +2519,7 @@ async function stageFinalizationFixture(
     gateFailing?: boolean;
     coalesced?: boolean;
     placementFallback?: boolean;
+    queued?: boolean;
   } = {},
 ) {
   const scope = await stageDatabaseFixture(pool, seed, {
@@ -2333,15 +2573,23 @@ async function stageFinalizationFixture(
   const payload = options.coalesced
     ? { ...expectedReviewInput, _postilCoalescedReviewPayload: coalesced }
     : expectedReviewInput;
-  const job = await pool.query<{ id: string }>(
-    `INSERT INTO jobs
-       (kind, payload, status, attempts, max_attempts, locked_at, locked_by,
-        lock_generation)
-     VALUES ('review', $1::jsonb, 'running', 1, 5, clock_timestamp(),
-             'finalization-worker', 1)
-     RETURNING id`,
-    [JSON.stringify(payload)],
-  );
+  const job = options.queued
+    ? await pool.query<{ id: string }>(
+        `INSERT INTO jobs
+           (kind, payload, status, run_after, attempts, max_attempts)
+         VALUES ('review', $1::jsonb, 'queued', clock_timestamp(), 0, 5)
+         RETURNING id`,
+        [JSON.stringify(payload)],
+      )
+    : await pool.query<{ id: string }>(
+        `INSERT INTO jobs
+           (kind, payload, status, attempts, max_attempts, locked_at, locked_by,
+            lock_generation)
+         VALUES ('review', $1::jsonb, 'running', 1, 5, clock_timestamp(),
+                 'finalization-worker', 1)
+         RETURNING id`,
+        [JSON.stringify(payload)],
+      );
   await pool.query(
     `UPDATE reviews SET envelope = $2::jsonb
       WHERE id = $1::bigint`,
@@ -2399,6 +2647,155 @@ async function stageFinalizationFixture(
     successorLineage: `coalesced-finalization-${seed}`,
     successorSequence: String(Number(scope.publicationGeneration) + 1),
   };
+}
+
+async function runFinalizationFixtureWorker(
+  pool: Pool,
+  fixture: Awaited<ReturnType<typeof stageFinalizationFixture>>,
+  claim: NonNullable<Awaited<ReturnType<typeof claimPublicationControllerReviewJob>>>,
+  adapters: ReturnType<typeof fakeAdapters>,
+) {
+  const identity = {
+    databaseRepositoryId: fixture.scope.databaseRepositoryId,
+    pullRequestNumber: fixture.scope.pullRequestNumber,
+    publicationGeneration: fixture.scope.publicationGeneration,
+    reviewId: fixture.reviewId,
+    acceptedInputIdentity: fixture.input.acceptedInputIdentity,
+  };
+  return runPublicationControllerReviewStateMachine(
+    { payload: claim.payload as ReviewJobPayload, lease: claim },
+    {
+      loadIdentity: async () => identity,
+      inspectGeneration: async () =>
+        await activePublicationOperationCount(pool, fixture.scope) > 0
+          ? "work"
+          : "success",
+      executeOne: async () => run(
+        new PostgresGitHubPublicationOperationStore(pool, fixture.scope),
+        adapters,
+      ),
+      deriveReceipt: async () => loadAndDeriveGitHubPublicationReceipt({
+        database: pool,
+        repositoryId: identity.databaseRepositoryId,
+        pullRequestNumber: identity.pullRequestNumber,
+        publicationGeneration: identity.publicationGeneration,
+        reviewId: identity.reviewId,
+        acceptedInputIdentity: identity.acceptedInputIdentity,
+      }),
+      finalize: async ({ payload, lease, receipt }) => {
+        if (receipt === undefined) {
+          throw new Error("successful recovery requires a durable receipt");
+        }
+        const result = await finalizePublicationControllerReview(
+          drizzle(pool, { schema }),
+          {
+            ...fixture.input,
+            expectedReviewInput: payload,
+            reviewJobLease: lease,
+            publicationReceipt: receipt,
+            advisoryCheckRunId: await publicationControllerRemoteCheckRunId(
+              identity,
+              "advisoryCheckCreate",
+              pool,
+            ),
+            gateCheckRunId: await publicationControllerRemoteCheckRunId(
+              identity,
+              "gateCheckCreate",
+              pool,
+            ),
+          },
+          fixture.orgId,
+        );
+        if (!result.completed) {
+          throw new Error("durable finalization did not settle the exact queue lease");
+        }
+      },
+      loadContinuationPayload: async ({ lease }) => {
+        const result = await pool.query<{ payload: ReviewJobPayload }>(
+          `SELECT payload FROM jobs
+            WHERE id = $1 AND status = 'running'
+              AND locked_by = $2 AND lock_generation = $3`,
+          [lease.id, lease.lockedBy, lease.lockGeneration],
+        );
+        const payload = result.rows[0]?.payload;
+        if (payload === undefined) {
+          throw new Error("controller continuation lost its exact queue lease");
+        }
+        return payload;
+      },
+      retryDelayMs: 0,
+    },
+  );
+}
+
+async function activePublicationOperationCount(
+  pool: Pool,
+  scope: Awaited<ReturnType<typeof stageDatabaseFixture>>,
+): Promise<number> {
+  const result = await pool.query<{ count: number }>(
+    `SELECT count(*)::integer AS count
+       FROM review_publication_operations
+      WHERE repository_id = $1::bigint AND pr_number = $2
+        AND publication_generation = $3::bigint
+        AND state IN ('pending', 'applying', 'unknown')`,
+    [scope.databaseRepositoryId, scope.pullRequestNumber, scope.publicationGeneration],
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+const publicationControllerNoMutationProbe: PublicationControllerNoMutationProbe =
+  async (input) => {
+    await input.client.query("SELECT 1");
+    return {
+      releaseSha: input.releaseSha,
+      mode: "no-mutation",
+      observedMutationCount: 0,
+      checkedJobKinds: input.jobKinds,
+    };
+  };
+
+async function preparePublicationControllerRelease(
+  pool: Pool,
+  releaseSha: string,
+): Promise<void> {
+  await quiesceQueueForLockGeneration(pool, { timeoutMs: 0 });
+  const dark = await deactivatePublicationControllerRelease(pool, releaseSha);
+  expect(dark.state).toBe("dark");
+  await recordPublicationControllerCliPreflight(pool, releaseSha);
+  await recordPublicationControllerConsumerReady(
+    pool,
+    releaseSha,
+    publicationControllerNoMutationProbe,
+  );
+}
+
+function publicationControllerTestCapabilities(): string[] {
+  return [RECOVERY_RELEASE, REPLACEMENT_RELEASE].flatMap((releaseSha) => [
+    `publication-controller-release:${releaseSha}`,
+    `publication-controller-dark:${releaseSha}`,
+    `publication-controller-cli-verified:${releaseSha}`,
+    `publication-controller-consumer-ready:${releaseSha}`,
+    `publication-controller-recovery:${releaseSha}`,
+  ]);
+}
+
+async function waitForBackendBlocker(
+  pool: Pool,
+  blockerPid: number,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_stat_activity activity
+          WHERE $1 = ANY(pg_blocking_pids(activity.pid))
+       ) AS waiting`,
+      [blockerPid],
+    );
+    if (result.rows[0]?.waiting === true) return;
+    await Bun.sleep(5);
+  }
+  throw new Error("watchdog did not wait for publication staging ownership");
 }
 
 async function terminalizeFinalizationOperations(

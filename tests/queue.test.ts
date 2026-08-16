@@ -153,7 +153,7 @@ describe("queue transition structure", () => {
       "FROM review_publication_generations generation",
     );
     expect(controllerClaimSource).toContain(
-      "pg_input_is_valid(job.payload->>$9, 'timestamptz')",
+      "pg_input_is_valid(job.payload->>$10, 'timestamptz')",
     );
     expect(controllerClaimSource).toContain(
       "reconciliation budget exhausted before claim",

@@ -74,6 +74,8 @@ const PUBLICATION_CONTROLLER_ACTIVE_PREFIX =
   "publication-controller-release:";
 const PUBLICATION_CONTROLLER_READY_PREFIX =
   "publication-controller-consumer-ready:";
+const PUBLICATION_CONTROLLER_RECOVERY_PREFIX =
+  "publication-controller-recovery:";
 const PUBLICATION_CONTROLLER_FENCE_KEY =
   "_postilPublicationControllerFence";
 const PUBLICATION_CONTROLLER_RELEASE_KEY =
@@ -1464,7 +1466,7 @@ export async function claimJob(
   }
 }
 
-/** Claim one due review owned by the sole active exact controller release. */
+/** Claim one due review owned by the sole active or exact recovery release. */
 export async function claimPublicationControllerReviewJob(
   pool: Pool,
   workerId: string,
@@ -1496,17 +1498,39 @@ export async function claimPublicationControllerReviewJob(
       [PUBLICATION_CONTROLLER_LOCK],
     );
     await client.query(
-      `WITH authority AS MATERIALIZED (
-         SELECT count(*)::integer AS active_count,
-                count(*) FILTER (
-                  WHERE active.name = $1 AND ready.name = $2
-                )::integer AS exact_count
-           FROM deployment_capabilities active
-           LEFT JOIN deployment_capabilities ready
-             ON ready.name = $3 || substring(
-               active.name FROM char_length($4) + 1
-             )
-          WHERE active.name LIKE $4 || '%'
+      `WITH authority_counts AS MATERIALIZED (
+         SELECT (
+                  SELECT count(*)::integer
+                    FROM deployment_capabilities
+                   WHERE name LIKE $3 || '%'
+                ) AS active_count,
+                EXISTS (
+                  SELECT 1 FROM deployment_capabilities active
+                  JOIN deployment_capabilities ready ON ready.name = $2
+                 WHERE active.name = $1
+                ) AS active_exact,
+                (
+                  SELECT count(*)::integer
+                    FROM deployment_capabilities
+                   WHERE name LIKE $5 || '%'
+                ) AS recovery_count,
+                EXISTS (
+                  SELECT 1 FROM deployment_capabilities recovery
+                  JOIN deployment_capabilities ready ON ready.name = $2
+                 WHERE recovery.name = $4
+                ) AS recovery_exact,
+                EXISTS (
+                  SELECT 1 FROM deployment_capabilities WHERE name = $6
+                ) AS queue_active
+       ), authority AS MATERIALIZED (
+         SELECT CASE
+                  WHEN active_count = 1 AND active_exact
+                    AND recovery_count = 0 AND queue_active THEN 'active'
+                  WHEN active_count = 0 AND recovery_count = 1
+                    AND recovery_exact THEN 'recovery'
+                  ELSE NULL
+                END AS mode
+           FROM authority_counts
        ), admission AS MATERIALIZED (
          SELECT clock_timestamp() AS admitted_at
        ), expired_candidate AS MATERIALIZED (
@@ -1514,15 +1538,11 @@ export async function claimPublicationControllerReviewJob(
            FROM jobs job
            CROSS JOIN authority
            CROSS JOIN admission
-          WHERE authority.active_count = 1
-            AND authority.exact_count = 1
-            AND EXISTS (
-              SELECT 1 FROM deployment_capabilities WHERE name = $5
-            )
+          WHERE authority.mode = 'active'
             AND job.kind = 'review'
             AND job.status = 'queued'
-            AND job.payload->>$6 = 'true'
-            AND job.payload->>$7 = $8
+            AND job.payload->>$7 = 'true'
+            AND job.payload->>$8 = $9
             AND job.reconciliation_deadline_at IS NOT NULL
             AND job.reconciliation_deadline_at <= admission.admitted_at
           ORDER BY job.id
@@ -1546,7 +1566,7 @@ export async function claimPublicationControllerReviewJob(
           WHERE job.id = expired_candidate.id
             AND job.status = 'queued'
         RETURNING job.id, job.payload,
-                  job.payload -> $9 AS pending, job.max_attempts
+                  job.payload -> $10 AS pending, job.max_attempts
        ), promoted AS (
          INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
          SELECT 'review', jsonb_set(
@@ -1568,8 +1588,9 @@ export async function claimPublicationControllerReviewJob(
       [
         `${PUBLICATION_CONTROLLER_ACTIVE_PREFIX}${releaseSha}`,
         `${PUBLICATION_CONTROLLER_READY_PREFIX}${releaseSha}`,
-        PUBLICATION_CONTROLLER_READY_PREFIX,
         PUBLICATION_CONTROLLER_ACTIVE_PREFIX,
+        `${PUBLICATION_CONTROLLER_RECOVERY_PREFIX}${releaseSha}`,
+        PUBLICATION_CONTROLLER_RECOVERY_PREFIX,
         QUEUE_LOCK_GENERATION_CAPABILITY,
         PUBLICATION_CONTROLLER_FENCE_KEY,
         PUBLICATION_CONTROLLER_RELEASE_KEY,
@@ -1587,17 +1608,39 @@ export async function claimPublicationControllerReviewJob(
       locked_at: Date;
       lock_generation: string;
     }>(
-      `WITH authority AS MATERIALIZED (
-         SELECT count(*)::integer AS active_count,
-                count(*) FILTER (
-                  WHERE active.name = $1 AND ready.name = $2
-                )::integer AS exact_count
-           FROM deployment_capabilities active
-           LEFT JOIN deployment_capabilities ready
-             ON ready.name = $3 || substring(
-               active.name FROM char_length($4) + 1
-             )
-          WHERE active.name LIKE $4 || '%'
+      `WITH authority_counts AS MATERIALIZED (
+         SELECT (
+                  SELECT count(*)::integer
+                    FROM deployment_capabilities
+                   WHERE name LIKE $3 || '%'
+                ) AS active_count,
+                EXISTS (
+                  SELECT 1 FROM deployment_capabilities active
+                  JOIN deployment_capabilities ready ON ready.name = $2
+                 WHERE active.name = $1
+                ) AS active_exact,
+                (
+                  SELECT count(*)::integer
+                    FROM deployment_capabilities
+                   WHERE name LIKE $5 || '%'
+                ) AS recovery_count,
+                EXISTS (
+                  SELECT 1 FROM deployment_capabilities recovery
+                  JOIN deployment_capabilities ready ON ready.name = $2
+                 WHERE recovery.name = $4
+                ) AS recovery_exact,
+                EXISTS (
+                  SELECT 1 FROM deployment_capabilities WHERE name = $6
+                ) AS queue_active
+       ), authority AS MATERIALIZED (
+         SELECT CASE
+                  WHEN active_count = 1 AND active_exact
+                    AND recovery_count = 0 AND queue_active THEN 'active'
+                  WHEN active_count = 0 AND recovery_count = 1
+                    AND recovery_exact THEN 'recovery'
+                  ELSE NULL
+                END AS mode
+           FROM authority_counts
        ), admission AS MATERIALIZED (
          SELECT clock_timestamp() AS admitted_at
        ), candidate AS MATERIALIZED (
@@ -1607,28 +1650,31 @@ export async function claimPublicationControllerReviewJob(
            CROSS JOIN admission
            CROSS JOIN LATERAL (
              SELECT CASE
-               WHEN jsonb_typeof(job.payload->$9) = 'string'
-                 AND pg_input_is_valid(job.payload->>$9, 'timestamptz')
-                 THEN (job.payload->>$9)::timestamptz
+               WHEN jsonb_typeof(job.payload->$10) = 'string'
+                 AND pg_input_is_valid(job.payload->>$10, 'timestamptz')
+                 THEN (job.payload->>$10)::timestamptz
                ELSE NULL
              END AS controller_run_after
            ) schedule
-          WHERE authority.active_count = 1
-            AND authority.exact_count = 1
-            AND EXISTS (
-              SELECT 1 FROM deployment_capabilities WHERE name = $5
-            )
+          WHERE authority.mode IS NOT NULL
             AND job.kind = 'review'
             AND job.status = 'queued'
-            AND job.payload->>$6 = 'true'
-            AND job.payload->>$7 = $8
-            AND schedule.controller_run_after <= admission.admitted_at
+            AND job.payload->>$7 = 'true'
+            AND job.payload->>$8 = $9
             AND (
-              job.reconciliation_deadline_at IS NULL
+              authority.mode = 'recovery'
+              OR schedule.controller_run_after <= admission.admitted_at
+            )
+            AND (
+              authority.mode = 'recovery'
+              OR job.reconciliation_deadline_at IS NULL
               OR job.reconciliation_deadline_at > admission.admitted_at
             )
             AND (
-              NOT job.payload ? 'recoveryReviewId'
+              (
+                authority.mode = 'active'
+                AND NOT job.payload ? 'recoveryReviewId'
+              )
               OR (
                 job.payload->>'recoveryReviewId' ~ '^[1-9][0-9]*$'
                 AND job.payload->>'reviewInputSequence' ~ '^[1-9][0-9]*$'
@@ -1657,19 +1703,21 @@ export async function claimPublicationControllerReviewJob(
        ), claimed AS (
          UPDATE jobs job
             SET status = 'running', attempts = job.attempts + 1,
-                locked_at = admission.admitted_at, locked_by = $10,
+                locked_at = admission.admitted_at, locked_by = $11,
                 lock_generation = job.lock_generation + 1,
                 payload = jsonb_set(
                   job.payload,
-                  ARRAY[$11]::text[],
-                  to_jsonb($8::text),
+                  ARRAY[$12]::text[],
+                  to_jsonb($9::text),
                   true
                 )
            FROM candidate
            CROSS JOIN admission
+           CROSS JOIN authority
           WHERE job.id = candidate.id AND job.status = 'queued'
             AND (
-              job.reconciliation_deadline_at IS NULL
+              authority.mode = 'recovery'
+              OR job.reconciliation_deadline_at IS NULL
               OR job.reconciliation_deadline_at > admission.admitted_at
             )
         RETURNING job.id, job.status, job.kind, job.payload, job.attempts,
@@ -1683,8 +1731,9 @@ export async function claimPublicationControllerReviewJob(
       [
         `${PUBLICATION_CONTROLLER_ACTIVE_PREFIX}${releaseSha}`,
         `${PUBLICATION_CONTROLLER_READY_PREFIX}${releaseSha}`,
-        PUBLICATION_CONTROLLER_READY_PREFIX,
         PUBLICATION_CONTROLLER_ACTIVE_PREFIX,
+        `${PUBLICATION_CONTROLLER_RECOVERY_PREFIX}${releaseSha}`,
+        PUBLICATION_CONTROLLER_RECOVERY_PREFIX,
         QUEUE_LOCK_GENERATION_CAPABILITY,
         PUBLICATION_CONTROLLER_FENCE_KEY,
         PUBLICATION_CONTROLLER_RELEASE_KEY,

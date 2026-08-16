@@ -20,8 +20,8 @@ async function main(): Promise<void> {
     if (deactivated.state === "recovery") {
       throw new Error(
         "publication-controller routing is disabled, but recovery remains " +
-          "fail-closed because durable generations are not bound to an exact " +
-          "controller release and source queue job",
+          "fail-closed while exact held generations retain nonterminal " +
+          "operations or active mutation leases",
       );
     }
     const routing = deactivated.routingRemoved

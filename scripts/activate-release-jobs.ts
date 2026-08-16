@@ -48,7 +48,7 @@ async function main(): Promise<void> {
       : null;
     console.log(
         `release job kinds activated: released=${released} ` +
-        `publication_controller=${publicationController === null ? "unmanaged" : publicationController.activated ? "activated" : "already_active"} ` +
+        `publication_controller=${releaseSha === undefined ? "unmanaged" : publicationController === null ? "cli_incompatible" : publicationController.activated ? "activated" : "already_active"} ` +
         `publication_controller_adopted=${publicationController?.adopted ?? 0} ` +
         `lock_generation_released=${lockGenerationReleased} ` +
         `private_review_author=${privateReviewAuthorActivated ? "activated" : "already_active"} ` +
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
 export async function activatePublicationControllerAfterCliPreflight(
   releaseSha: string,
   consumerProbe?: PublicationControllerNoMutationProbe,
-): Promise<{ activated: boolean; adopted: number }> {
+): Promise<{ activated: boolean; adopted: number } | null> {
   if (await publicationControllerReleaseActivated(getPool(), releaseSha)) {
     return { activated: false, adopted: 0 };
   }
@@ -78,7 +78,10 @@ export async function activatePublicationControllerAfterCliPreflight(
     );
   }
   const binary = optionalEnv("POSTIL_BIN", "/usr/local/bin/postil") as string;
-  await verifyPublicationControllerCliCapability(binary);
+  const compatible = await verifyPublicationControllerCliCapability(binary, {
+    allowUnavailable: true,
+  });
+  if (!compatible) return null;
   await recordPublicationControllerCliPreflight(getPool(), releaseSha);
   await recordPublicationControllerConsumerReady(
     getPool(),

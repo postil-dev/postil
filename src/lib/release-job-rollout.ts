@@ -70,7 +70,7 @@ export interface PublicationControllerRecoveryState {
   stagedGenerations: number;
   nonterminalGenerations: number;
   activeMutationLeases: number;
-  /** Decimal queue IDs proven not to have a staged controller generation. */
+  /** Decimal queued job IDs with no sealed controller generation to recover. */
   unplannedQueuedJobIds: readonly string[];
 }
 
@@ -84,11 +84,10 @@ export type PublicationControllerRecoveryStateReader = (input: {
 }) => Promise<PublicationControllerRecoveryState>;
 
 /**
- * Read durable executor recovery state without guessing which held jobs have a
- * controller generation. The foundation schema does not bind generations to
- * a controller release or source queue job, so any staged generation keeps
- * every held job fail-closed. A release with no generations can restore all of
- * its exact held jobs as unplanned legacy work.
+ * Bind each retained source job to its sealed generation through the durable
+ * recovery review and input sequence stored in the queue payload. A bound job
+ * remains nonterminal until controller finalization atomically marks it done.
+ * Historical generations outside the exact recovery release do not participate.
  */
 export const readProductionPublicationControllerRecoveryState:
   PublicationControllerRecoveryStateReader = async ({ client, releaseSha }) => {
@@ -99,29 +98,70 @@ export const readProductionPublicationControllerRecoveryState:
       leases: string;
       held_job_ids: string[];
     }>(
-      `SELECT (
-          SELECT count(*)::text
-            FROM review_publication_generations
-           WHERE sealed_at IS NOT NULL
+      `WITH recovery_jobs AS MATERIALIZED (
+         SELECT id, status,
+                CASE
+                  WHEN payload->>'recoveryReviewId' ~ '^[1-9][0-9]*$'
+                    AND pg_input_is_valid(
+                      payload->>'recoveryReviewId',
+                      'bigint'
+                    )
+                    THEN (payload->>'recoveryReviewId')::bigint
+                  ELSE NULL
+                END AS review_id,
+                CASE
+                  WHEN payload->>'reviewInputSequence' ~ '^[1-9][0-9]*$'
+                    AND pg_input_is_valid(
+                      payload->>'reviewInputSequence',
+                      'bigint'
+                    )
+                    THEN (payload->>'reviewInputSequence')::bigint
+                  ELSE NULL
+                END AS review_input_sequence
+           FROM jobs
+          WHERE status IN ('queued', 'running', 'failed')
+            AND kind = ANY($1::text[])
+            AND payload->>$2 = $3
+            AND payload->>$4 = 'true'
+       ), bound_generations AS MATERIALIZED (
+         SELECT DISTINCT recovery.id AS job_id, generation.repository_id,
+                generation.pr_number, generation.publication_generation
+           FROM recovery_jobs recovery
+           JOIN review_publication_generations generation
+             ON generation.review_id = recovery.review_id
+            AND generation.review_input_sequence = recovery.review_input_sequence
+            AND generation.sealed_at IS NOT NULL
+       ), nonterminal_generations AS MATERIALIZED (
+         SELECT job_id, repository_id, pr_number, publication_generation
+           FROM bound_generations
+       )
+       SELECT (
+          SELECT count(DISTINCT (repository_id, pr_number, publication_generation))::text
+            FROM bound_generations
         ) AS staged,
         (
           SELECT count(DISTINCT (repository_id, pr_number, publication_generation))::text
-            FROM review_publication_operations
-           WHERE state IN ('pending', 'applying', 'unknown')
+            FROM nonterminal_generations
         ) AS nonterminal,
         (
-          SELECT count(*)::text
-            FROM review_publication_operations
-           WHERE state = 'applying'
+          SELECT count(DISTINCT operation.id)::text
+            FROM bound_generations bound
+            JOIN review_publication_operations operation
+              ON operation.repository_id = bound.repository_id
+             AND operation.pr_number = bound.pr_number
+             AND operation.publication_generation = bound.publication_generation
+           WHERE operation.state = 'applying'
         ) AS leases,
         ARRAY(
-          SELECT id::text
-            FROM jobs
-           WHERE status = 'queued'
-             AND kind = ANY($1::text[])
-             AND payload->>$2 = $3
-             AND payload->>$4 = 'true'
-           ORDER BY id
+          SELECT recovery.id::text
+            FROM recovery_jobs recovery
+           WHERE recovery.status = 'queued'
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM bound_generations bound
+                WHERE bound.job_id = recovery.id
+             )
+           ORDER BY recovery.id
         ) AS held_job_ids`,
       [
         PUBLICATION_CONTROLLER_DIRECT_MUTATOR_JOB_KINDS,
@@ -142,8 +182,7 @@ export const readProductionPublicationControllerRecoveryState:
       stagedGenerations,
       nonterminalGenerations,
       activeMutationLeases,
-      unplannedQueuedJobIds:
-        stagedGenerations === 0 ? row.held_job_ids : [],
+      unplannedQueuedJobIds: row.held_job_ids,
     };
   };
 

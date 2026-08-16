@@ -1039,6 +1039,109 @@ describeDb("publication-controller release rollout", () => {
     expect((await queuedJobState(pool, cleanup)).held).toBe(false);
   });
 
+  test("production recovery binds held work without counting historical generations", async () => {
+    const recoveryPool = new Pool({ connectionString: database.url, max: 1 });
+    try {
+      const client = await recoveryPool.connect();
+      try {
+        await client.query(
+          `CREATE TEMP TABLE jobs (LIKE public.jobs INCLUDING ALL);
+           CREATE TEMP TABLE review_publication_generations (
+             repository_id bigint NOT NULL,
+             pr_number integer NOT NULL,
+             publication_generation bigint NOT NULL,
+             review_id bigint NOT NULL,
+             review_input_sequence bigint NOT NULL,
+             sealed_at timestamptz
+           );
+           CREATE TEMP TABLE review_publication_operations (
+             id bigint PRIMARY KEY,
+             repository_id bigint NOT NULL,
+             pr_number integer NOT NULL,
+             publication_generation bigint NOT NULL,
+             state text NOT NULL
+           )`,
+        );
+        await client.query(
+          `INSERT INTO review_publication_generations
+             (repository_id, pr_number, publication_generation, review_id,
+              review_input_sequence, sealed_at)
+           VALUES (1, 11, 1, 701, 1, now()),
+                  (2, 22, 2, 702, 2, now());
+           INSERT INTO review_publication_operations
+             (id, repository_id, pr_number, publication_generation, state)
+           VALUES (1, 1, 11, 1, 'applied'),
+                  (2, 2, 22, 2, 'pending')`,
+        );
+      } finally {
+        client.release();
+      }
+
+      await prepareRelease(recoveryPool, RELEASE_A);
+      const unplannedReview = await insertQueuedReview(
+        recoveryPool,
+        { marker: "queued-after-prior-publication" },
+        "2040-05-15T03:04:05.000Z",
+      );
+      const plannedReview = await insertQueuedReview(
+        recoveryPool,
+        { recoveryReviewId: 702, reviewInputSequence: "2" },
+        "2040-05-16T03:04:05.000Z",
+      );
+      await activatePublicationControllerRelease(recoveryPool, RELEASE_A);
+
+      const interrupted = await deactivatePublicationControllerRelease(
+        recoveryPool,
+        RELEASE_B,
+      );
+      expect(interrupted.state).toBe("recovery");
+
+      const resumed = await deactivatePublicationControllerRelease(
+        recoveryPool,
+        RELEASE_B,
+        readProductionPublicationControllerRecoveryState,
+      );
+      expect(resumed).toMatchObject({
+        state: "recovery",
+        restoredLegacyJobs: 1,
+        remainingNonterminalGenerations: 1,
+        activeMutationLeases: 0,
+      });
+      expect((await queuedJobState(recoveryPool, unplannedReview)).held).toBe(false);
+      expect((await queuedJobState(recoveryPool, plannedReview)).held).toBe(true);
+
+      expect(
+        await claimPublicationControllerReviewJob(
+          recoveryPool,
+          "wrong-recovery-release",
+          RELEASE_B,
+        ),
+      ).toBeNull();
+      const claimed = await claimPublicationControllerReviewJob(
+        recoveryPool,
+        "exact-recovery-release",
+        RELEASE_A,
+      );
+      expect(claimed).toMatchObject({
+        id: plannedReview,
+        lockedBy: "exact-recovery-release",
+      });
+
+      const stillRecovering = await deactivatePublicationControllerRelease(
+        recoveryPool,
+        RELEASE_B,
+        readProductionPublicationControllerRecoveryState,
+      );
+      expect(stillRecovering).toMatchObject({
+        state: "recovery",
+        remainingNonterminalGenerations: 1,
+        activeMutationLeases: 0,
+      });
+    } finally {
+      await recoveryPool.end();
+    }
+  });
+
   test("recovery reader mismatch fails closed without removing readiness", async () => {
     await prepareRelease(pool, RELEASE_A);
     await insertQueuedMutator(

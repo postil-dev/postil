@@ -149,7 +149,8 @@ jobs:
           fi
           install -m 0755 "${tmp}/postil" vendor/postil.tmp
           mv -f vendor/postil.tmp vendor/postil
-          bun run scripts/verify-postil-cli-contract.ts --binary vendor/postil
+          bun run scripts/verify-postil-cli-contract.ts --binary vendor/postil \
+            --allow-publication-controller-unavailable
       - name: Install checksum-pinned flyctl
         env:
           FLYCTL_VERSION: 0.4.71

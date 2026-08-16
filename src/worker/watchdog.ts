@@ -1,10 +1,12 @@
 import { and, eq, lt, sql } from "drizzle-orm";
+import type { Pool } from "pg";
 
 import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { scheduleCustomerNotificationEmailJobs } from "@/lib/customer-notification-email";
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
 import { checkRunExternalId } from "@/lib/github/checks";
 import { parseStoredEnvelope } from "@/lib/envelope";
+import { lockReviewDecisionScopeById } from "@/lib/finding-approvals";
 import { reviewDetailsUrl } from "@/lib/oauth";
 import {
   COALESCED_REVIEW_PAYLOAD_KEY,
@@ -70,6 +72,15 @@ function stuckReviewQuery(db: Database) {
     );
 }
 
+function hasNoSealedPublicationControllerGeneration() {
+  return sql`NOT EXISTS (
+    SELECT 1
+      FROM ${schema.reviewPublicationGenerations} generation
+     WHERE generation.review_id = ${schema.reviews.id}
+       AND generation.sealed_at IS NOT NULL
+  )`;
+}
+
 /**
  * Terminalize one `running` review without a verdict and durably queue its
  * check-run completion (gate: policy outcome, review: neutral). `returning()`
@@ -85,6 +96,7 @@ async function failStuckReview(
   opts: { publicationIncomplete?: boolean } = {},
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
+    await lockReviewDecisionScopeById(tx as Database, review.id);
     const rows = await tx
       .update(schema.reviews)
       .set({ status: "failed", errorMessage: message, finishedAt: now })
@@ -92,6 +104,7 @@ async function failStuckReview(
         and(
           eq(schema.reviews.id, review.id),
           eq(schema.reviews.status, "running"),
+          hasNoSealedPublicationControllerGeneration(),
         ),
       )
       .returning({ id: schema.reviews.id });
@@ -175,8 +188,9 @@ async function failStuckReview(
  */
 export async function watchdogPass(
   now = new Date(),
+  dependencies: { db?: Database; pool?: Pool } = {},
 ): Promise<{ killed: number }> {
-  const db = getDb();
+  const db = dependencies.db ?? getDb();
   const cutoff = new Date(now.getTime() - REVIEW_DEADLINE_MS);
   const reconciliationCutoff = new Date(
     now.getTime() - PUBLICATION_RECONCILIATION_BUDGET_MS,
@@ -187,6 +201,7 @@ export async function watchdogPass(
       eq(schema.reviews.status, "running"),
       sql`${schema.reviews.envelope} IS NULL`,
       lt(schema.reviews.startedAt, cutoff),
+      hasNoSealedPublicationControllerGeneration(),
     ),
   );
 
@@ -204,6 +219,7 @@ export async function watchdogPass(
       eq(schema.reviews.status, "running"),
       sql`${schema.reviews.envelope} IS NOT NULL`,
       lt(schema.reviews.startedAt, reconciliationCutoff),
+      hasNoSealedPublicationControllerGeneration(),
     ),
   );
 
@@ -234,7 +250,7 @@ export async function watchdogPass(
   // worker is not a handled attempt. Check-run cleanup is deliberately absent:
   // an ambiguous check-run can remain absent forever, so cleanup honors its
   // declared retry budget in both the runner and watchdog recovery paths.
-  const pool = getPool();
+  const pool = dependencies.pool ?? getPool();
   await pool.query(
     `WITH updated AS (
        UPDATE jobs

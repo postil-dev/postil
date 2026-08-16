@@ -1086,7 +1086,7 @@ describe("migration lint", () => {
       "production executor no-mutation probe",
     );
     expect(publicationControllerDeactivation).toContain(
-      "durable generations are not bound to an exact",
+      "exact held generations retain nonterminal",
     );
     expect(publicationControllerDeactivation).toContain(
       "readProductionPublicationControllerRecoveryState",

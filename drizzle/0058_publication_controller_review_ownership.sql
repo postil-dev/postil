@@ -27,6 +27,7 @@ DECLARE
   publication_controller_release_count integer;
   publication_controller_claim_release text;
   publication_controller_claim_authorized boolean := false;
+  publication_controller_recovery_claim_authorized boolean := false;
   publication_controller_restored_run_after timestamptz;
 BEGIN
   IF jsonb_typeof(
@@ -328,10 +329,68 @@ BEGIN
     PERFORM pg_advisory_xact_lock(
       hashtextextended('postil:queue-lock-generation-v1', 0)
     );
+    IF NEW."kind" = 'review'
+      AND publication_controller_claim_release ~ '^[0-9a-f]{40}$'
+      AND OLD."payload"->>'_postilPublicationControllerFence' = 'true'
+      AND OLD."payload"->>'_postilPublicationControllerReleaseSha' =
+        publication_controller_claim_release
+      AND OLD."payload"->>'recoveryReviewId' ~ '^[1-9][0-9]*$'
+      AND OLD."payload"->>'reviewInputSequence' ~ '^[1-9][0-9]*$'
+      AND pg_input_is_valid(
+        OLD."payload"->>'recoveryReviewId',
+        'bigint'
+      )
+      AND pg_input_is_valid(
+        OLD."payload"->>'reviewInputSequence',
+        'bigint'
+      )
+      AND NEW."payload" = OLD."payload"
+      AND NEW."run_after" IS NOT DISTINCT FROM OLD."run_after"
+      AND NEW."attempts" = OLD."attempts" + 1
+      AND NEW."locked_at" IS NOT NULL
+      AND NEW."locked_by" IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM "deployment_capabilities" active
+         WHERE active."name" LIKE 'publication-controller-release:%'
+      )
+      AND 1 = (
+        SELECT count(*)::integer FROM "deployment_capabilities" recovery
+         WHERE recovery."name" LIKE 'publication-controller-recovery:%'
+      )
+      AND EXISTS (
+        SELECT 1 FROM "deployment_capabilities" recovery
+         WHERE recovery."name" = 'publication-controller-recovery:' ||
+           publication_controller_claim_release
+           AND EXISTS (
+             SELECT 1 FROM "deployment_capabilities" ready
+              WHERE ready."name" = 'publication-controller-consumer-ready:' ||
+                publication_controller_claim_release
+           )
+      )
+      AND EXISTS (
+        SELECT 1 FROM "review_publication_generations" generation
+         WHERE generation."review_id" = CASE
+                 WHEN pg_input_is_valid(
+                   OLD."payload"->>'recoveryReviewId',
+                   'bigint'
+                 ) THEN (OLD."payload"->>'recoveryReviewId')::bigint
+                 ELSE NULL
+               END
+           AND generation."review_input_sequence" = CASE
+                 WHEN pg_input_is_valid(
+                   OLD."payload"->>'reviewInputSequence',
+                   'bigint'
+                 ) THEN (OLD."payload"->>'reviewInputSequence')::bigint
+                 ELSE NULL
+               END
+           AND generation."sealed_at" IS NOT NULL
+      ) THEN
+      publication_controller_recovery_claim_authorized := true;
+    END IF;
     IF NOT EXISTS (
       SELECT 1 FROM "deployment_capabilities"
       WHERE "name" = 'queue-lock-generation-v1'
-    ) THEN
+    ) AND NOT publication_controller_recovery_claim_authorized THEN
       NEW."status" := 'queued';
       NEW."attempts" := OLD."attempts";
       NEW."locked_at" := OLD."locked_at";
@@ -462,6 +521,12 @@ BEGIN
             'publication-controller recovery release identity is malformed'
             USING ERRCODE = 'check_violation';
         END IF;
+      END IF;
+
+      IF publication_controller_recovery_claim_authorized
+        AND publication_controller_release =
+          publication_controller_claim_release THEN
+        publication_controller_claim_authorized := true;
       END IF;
 
       IF publication_controller_release IS NOT NULL

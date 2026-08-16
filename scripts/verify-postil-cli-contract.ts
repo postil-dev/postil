@@ -18,6 +18,10 @@ const PUBLICATION_CONTROLLER_CAPABILITY_PROBE = [
   "--publication-plan-contract",
   "github-publication-v1",
 ] as const;
+const LEGACY_PUBLICATION_CONTROLLER_UNAVAILABLE =
+  "error: unrecognized subcommand 'capabilities'\n\n" +
+  "Usage: postil <COMMAND>\n\n" +
+  "For more information, try '--help'.\n";
 const HEAD_SHA = "1".repeat(40);
 const BASE_SHA = "2".repeat(40);
 const ADVANCED_BASE_SHA = "3".repeat(40);
@@ -28,13 +32,28 @@ interface CommandResult {
   stdout: string;
 }
 
-function parseBinaryArgument(argv: string[]): string {
-  const index = argv.indexOf("--binary");
-  const value = index >= 0 ? argv[index + 1] : undefined;
-  if (!value || argv.length !== 2) {
-    throw new Error("usage: verify-postil-cli-contract.ts --binary <path>");
+function parseArguments(argv: string[]): {
+  allowPublicationControllerUnavailable: boolean;
+  binary: string;
+} {
+  const allowPublicationControllerUnavailable = argv.includes(
+    "--allow-publication-controller-unavailable",
+  );
+  const filtered = argv.filter(
+    (argument) => argument !== "--allow-publication-controller-unavailable",
+  );
+  const index = filtered.indexOf("--binary");
+  const value = index >= 0 ? filtered[index + 1] : undefined;
+  if (!value || filtered.length !== 2) {
+    throw new Error(
+      "usage: verify-postil-cli-contract.ts --binary <path> " +
+        "[--allow-publication-controller-unavailable]",
+    );
   }
-  return resolve(value);
+  return {
+    allowPublicationControllerUnavailable,
+    binary: resolve(value),
+  };
 }
 
 async function run(
@@ -95,13 +114,42 @@ export function assertPublicationControllerCapabilityProbe(
   }
 }
 
+export function classifyPublicationControllerCapabilityProbe(
+  result: CommandResult,
+): "supported" | "unavailable" {
+  if (
+    result.exitCode === 0 &&
+    result.stderr === "" &&
+    result.stdout.trim() === "github-publication-v1"
+  ) {
+    return "supported";
+  }
+  if (
+    result.exitCode === 2 &&
+    result.stdout === "" &&
+    result.stderr === LEGACY_PUBLICATION_CONTROLLER_UNAVAILABLE
+  ) {
+    return "unavailable";
+  }
+  assertPublicationControllerCapabilityProbe(result);
+  throw new Error("unreachable publication-controller capability state");
+}
+
 /** Verify the exact pure publication-plan capability in a managed image. */
 export async function verifyPublicationControllerCliCapability(
   binary: string,
-): Promise<void> {
-  assertPublicationControllerCapabilityProbe(
+  options: { allowUnavailable?: boolean } = {},
+): Promise<boolean> {
+  const capability = classifyPublicationControllerCapabilityProbe(
     await run(binary, [...PUBLICATION_CONTROLLER_CAPABILITY_PROBE]),
   );
+  if (capability === "unavailable") {
+    if (options.allowUnavailable === true) return false;
+    throw new Error(
+      "postil does not provide the exact github-publication-v1 capability",
+    );
+  }
+  return true;
 }
 
 export function assertEnvelopeContract(
@@ -166,7 +214,10 @@ function modelResponse(): Response {
   });
 }
 
-export async function verifyPostilCliContract(binary: string): Promise<void> {
+export async function verifyPostilCliContract(
+  binary: string,
+  options: { allowPublicationControllerUnavailable?: boolean } = {},
+): Promise<void> {
   const version = await run(binary, ["--version"]);
   if (
     version.exitCode !== 0 ||
@@ -182,7 +233,9 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
     throw new Error(`postil review --help failed: ${help.stderr.trim()}`);
   }
   assertReviewHelp(help.stdout);
-  await verifyPublicationControllerCliCapability(binary);
+  await verifyPublicationControllerCliCapability(binary, {
+    allowUnavailable: options.allowPublicationControllerUnavailable === true,
+  });
 
   let rejectCheckCompletion = false;
   let rejectFileFetch = false;
@@ -364,8 +417,11 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const binary = parseBinaryArgument(process.argv.slice(2));
-  await verifyPostilCliContract(binary);
+  const args = parseArguments(process.argv.slice(2));
+  await verifyPostilCliContract(args.binary, {
+    allowPublicationControllerUnavailable:
+      args.allowPublicationControllerUnavailable,
+  });
   console.log(`postil CLI contract verified at ${release.hostedCliRelease}`);
 }
 

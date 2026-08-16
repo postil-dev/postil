@@ -5,6 +5,7 @@ import {
   assertPublicationControllerCapabilityProbe,
   assertEnvelopeContract,
   assertReviewHelp,
+  classifyPublicationControllerCapabilityProbe,
 } from "../scripts/verify-postil-cli-contract";
 
 describe("postil CLI release contract", () => {
@@ -22,6 +23,34 @@ describe("postil CLI release contract", () => {
     expect(() => assertPublicationControllerCapabilityProbe({
       exitCode: 2,
       stderr: "unknown argument",
+      stdout: "",
+    })).toThrow("github-publication-v1 capability");
+  });
+
+  test("recognizes only the exact legacy missing-subcommand response", () => {
+    expect(classifyPublicationControllerCapabilityProbe({
+      exitCode: 0,
+      stderr: "",
+      stdout: "github-publication-v1\n",
+    })).toBe("supported");
+    expect(classifyPublicationControllerCapabilityProbe({
+      exitCode: 2,
+      stderr:
+        "error: unrecognized subcommand 'capabilities'\n\n" +
+        "Usage: postil <COMMAND>\n\n" +
+        "For more information, try '--help'.\n",
+      stdout: "",
+    })).toBe("unavailable");
+    expect(() => classifyPublicationControllerCapabilityProbe({
+      exitCode: 2,
+      stderr:
+        "error: unrecognized subcommand 'capabilities'\n\n" +
+        "Usage: postil <COMMAND>\n",
+      stdout: "",
+    })).toThrow("github-publication-v1 capability");
+    expect(() => classifyPublicationControllerCapabilityProbe({
+      exitCode: 2,
+      stderr: "postil failed to start",
       stdout: "",
     })).toThrow("github-publication-v1 capability");
   });

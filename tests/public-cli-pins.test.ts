@@ -126,7 +126,10 @@ describe("public CLI pins", () => {
       '--certificate-identity "https://github.com/postil-dev/postil-cli/.github/workflows/release.yml@refs/tags/${TAG}"',
     );
     expect(deploy).toContain(
-      "bun run scripts/verify-postil-cli-contract.ts --binary vendor/postil",
+      "bun run scripts/verify-postil-cli-contract.ts --binary vendor/postil \\",
+    );
+    expect(deploy).toContain(
+      "--allow-publication-controller-unavailable",
     );
     expect(deploy).toContain("FLYCTL_VERSION: 0.4.71");
     expect(deploy).toContain(

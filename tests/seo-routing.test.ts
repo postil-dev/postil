@@ -40,7 +40,16 @@ describe("crawler routing", () => {
     expect(landingSource).not.toContain("not your repository");
     expect(landingSource).not.toContain("outside the diff");
     expect(changelogSource).toContain("withholds repository-dependent claims");
-    expect(changelogSource).not.toContain("exact diff evidence");
+    for (const internalPhrase of [
+      "candidate-bound",
+      "complete-corpus",
+      "diff-local",
+      "exact diff evidence",
+      "evidence transport",
+      "immutable search receipts",
+    ]) {
+      expect(changelogSource).not.toContain(internalPhrase);
+    }
   });
 
   test("robots.txt keeps public crawl access open", () => {
