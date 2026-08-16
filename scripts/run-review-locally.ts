@@ -501,8 +501,13 @@ function createLocalGitHubServer(input: {
         request.method === "GET" &&
         suffix.startsWith(`pulls/${input.prNumber}/files`)
       ) {
-        const page = Number(url.searchParams.get("page") ?? "1");
-        return json(page === 1 ? pullFiles : []);
+        return json(
+          paginateLocalPullFiles(
+            pullFiles,
+            url.searchParams.get("per_page"),
+            url.searchParams.get("page"),
+          ),
+        );
       }
 
       if (request.method === "GET" && suffix.startsWith("contents/")) {
@@ -668,6 +673,23 @@ export function pullFilesFromDiff(diffText: string): LocalPullFile[] {
       },
     ];
   });
+}
+
+export function paginateLocalPullFiles(
+  pullFiles: readonly LocalPullFile[],
+  requestedPerPage: string | null,
+  requestedPage: string | null,
+): LocalPullFile[] {
+  const parsedPerPage = Number(requestedPerPage ?? "30");
+  const parsedPage = Number(requestedPage ?? "1");
+  const perPage =
+    Number.isSafeInteger(parsedPerPage) && parsedPerPage > 0
+      ? Math.min(parsedPerPage, 100)
+      : 30;
+  const page =
+    Number.isSafeInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const start = (page - 1) * perPage;
+  return pullFiles.slice(start, start + perPage);
 }
 
 function repositoryPathFromMarker(marker: string | undefined): string | undefined {

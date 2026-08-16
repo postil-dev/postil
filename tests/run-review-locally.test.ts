@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import release from "@/data/public-cli-release.json";
 import {
   downloadHostedPostilExecutable,
+  paginateLocalPullFiles,
   pullFilesFromDiff,
 } from "../scripts/run-review-locally";
 
@@ -55,6 +56,30 @@ deleted file mode 100644
     { filename: "added.ts", status: "added", changes: 1 },
     { filename: "removed.ts", status: "removed", changes: 1 },
   ]);
+});
+
+test("paginates the local GitHub file manifest at the requested page size", () => {
+  const pullFiles = Array.from({ length: 205 }, (_, index) => ({
+    filename: `file-${index}.ts`,
+    status: "modified" as const,
+    changes: 1,
+  }));
+
+  expect(paginateLocalPullFiles(pullFiles, "100", "1")).toHaveLength(100);
+  expect(paginateLocalPullFiles(pullFiles, "100", "2")).toHaveLength(100);
+  expect(paginateLocalPullFiles(pullFiles, "100", "3")).toEqual(
+    pullFiles.slice(200),
+  );
+  expect(paginateLocalPullFiles(pullFiles, "100", "4")).toEqual([]);
+  expect(paginateLocalPullFiles(pullFiles, null, null)).toEqual(
+    pullFiles.slice(0, 30),
+  );
+  expect(paginateLocalPullFiles(pullFiles, "500", "1")).toEqual(
+    pullFiles.slice(0, 100),
+  );
+  expect(paginateLocalPullFiles(pullFiles, "invalid", "invalid")).toEqual(
+    pullFiles.slice(0, 30),
+  );
 });
 
 test("downloads, verifies, and cleans up the authoritative local-review CLI", async () => {
@@ -453,6 +478,23 @@ console.log("fixture-key");
     expect(result.stdout).toContain("served_content=working-tree-context");
   }, 120_000);
 
+  test("serves every pull-request file across bounded GitHub pages", async () => {
+    const repo = await createFixtureRepo("pull-file-pagination");
+    await Promise.all(
+      Array.from({ length: 204 }, (_, index) =>
+        writeFile(join(repo, `file-${index.toString().padStart(3, "0")}.txt`), "changed\n"),
+      ),
+    );
+    await run(["git", "add", "."], repo);
+
+    const result = await runLocalReview(repo, "0", 0, {
+      env: { POSTIL_FAKE_READ_PR_FILES: "1" },
+    });
+
+    expect(result.stdout).toContain("served_pr_files=205");
+    expect(result.stdout).toContain("served_pr_file_pages=4");
+  }, 120_000);
+
   test("diff-file mode does not serve a working-tree symlink outside the repository", async () => {
     const repo = await createFixtureRepo("diff-file-outside-symlink");
     const outside = join(dir, "outside-secret.txt");
@@ -680,6 +722,22 @@ if (process.env.POSTIL_FAKE_READ_PR_TITLE === "1") {
   const response = await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}\`);
   servedPrTitle = (await response.json()).title;
 }
+let servedPrFiles;
+let servedPrFilePages;
+if (process.env.POSTIL_FAKE_READ_PR_FILES === "1") {
+  servedPrFiles = 0;
+  servedPrFilePages = 0;
+  while (true) {
+    servedPrFilePages += 1;
+    const response = await fetch(
+      \`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}/files?per_page=100&page=\${servedPrFilePages}\`,
+    );
+    const files = await response.json();
+    if (!Array.isArray(files)) throw new Error("pull-request files response is not an array");
+    servedPrFiles += files.length;
+    if (files.length === 0) break;
+  }
+}
 const finding = {
   id: "local-finding-1",
   path: operational ? operationalPath : "app.txt",
@@ -701,6 +759,8 @@ const findings = hasFinding ? [finding] : [];
 const observations = [];
 if (servedContent !== undefined) observations.push(\`served_content=\${servedContent}\`);
 if (servedPrTitle !== undefined) observations.push(\`served_pr_title=\${servedPrTitle}\`);
+if (servedPrFiles !== undefined) observations.push(\`served_pr_files=\${servedPrFiles}\`);
+if (servedPrFilePages !== undefined) observations.push(\`served_pr_file_pages=\${servedPrFilePages}\`);
 const summary = observations.length > 0
   ? observations.join("\\n")
   : (hasFinding ? "Local fixture found an issue." : "Local fixture passed.");
