@@ -73,7 +73,7 @@ describeDb("self-service billing", () => {
        VALUES ($1, 'byok', 'trialing', '2026-07-15T00:00:00Z', 'test')`,
       [orgId],
     );
-  });
+  }, 30_000);
 
   afterAll(async () => {
     delete process.env.PADDLE_ACTIVE_AUTHOR_PRICE_ID;
@@ -84,7 +84,7 @@ describeDb("self-service billing", () => {
     delete process.env.POSTIL_PUBLIC_URL;
     delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
     await pool.end();
-  });
+  }, 30_000);
 
   test("projects a verified subscription event once and rejects stale state", async () => {
     const created = subscriptionEvent({
