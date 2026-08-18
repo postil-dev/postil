@@ -6,6 +6,7 @@ import {
   gateCheckConclusionForEnvelope,
   hasLegacyCombinedModelUsage,
   ingestEnvelope,
+  reviewAdmissionSchema,
   type Envelope,
 } from "@/lib/envelope";
 
@@ -738,5 +739,29 @@ describe("effective gate recomputation", () => {
     const state = computeEffectiveGate(env, new Set(["kind-only"]));
     expect(state.failing).toBe(true);
     expect(state.blockers.map((blocker) => blocker.findingId)).toEqual(["severity-only"]);
+  });
+});
+
+describe("review admission bounds", () => {
+  test("accepts the worst-case plan the CLI is willing to run", () => {
+    const parsed = reviewAdmissionSchema.safeParse({
+      providerAttempts: 84,
+      serializedInputBytes: 9_684_902,
+      outputTokens: 472_640,
+      // The shipped hosted profile projects about this much; a bound at the
+      // per-review spend limit rejected every hosted review.
+      projectedCostMicros: 15_638_530,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  test("still rejects a projection beyond the admission ceiling", () => {
+    const parsed = reviewAdmissionSchema.safeParse({
+      providerAttempts: 84,
+      serializedInputBytes: 9_684_902,
+      outputTokens: 472_640,
+      projectedCostMicros: 25_000_001,
+    });
+    expect(parsed.success).toBe(false);
   });
 });
