@@ -283,13 +283,22 @@ describe("migration lint", () => {
       await readFile(join(import.meta.dir, "..", "package.json"), "utf8"),
     ) as { scripts: Record<string, string> };
 
+    const organizationConcurrencyMigration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0049_worker_org_concurrency.sql"),
+      "utf8",
+    );
+
     expect(migration).toContain('CREATE TABLE "release_steps"');
     expect(migration).not.toContain("CREATE INDEX");
+    expect(organizationConcurrencyMigration).not.toContain("CREATE INDEX");
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_running_started_at_idx"',
     );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_locked_at_idx"',
+    );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_org_concurrency_idx"',
     );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "webhook_deliveries_completed_at_idx"',

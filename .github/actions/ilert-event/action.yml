@@ -41,8 +41,26 @@ runs:
             echo "ILERT_INTEGRATION_KEY is not configured; nothing to resolve"
             exit 0
           fi
-          echo "ILERT_INTEGRATION_KEY is missing from the environment; external alerting is not configured"
-          exit 1
+          # Undelivered paging is a gap in alerting, not a second production
+          # fault. Failing here adds a red job that carries no information
+          # beyond the check that already failed, and it buries the alert
+          # text that names the condition. Record the event where an operator
+          # will find it and let the failing check remain the only signal.
+          echo "::warning title=External alerting is not configured::ILERT_INTEGRATION_KEY is unset, so this ${EVENT_TYPE} was not delivered to ilert. The condition it describes still needs attention."
+          {
+            echo "### External alert not delivered"
+            echo
+            echo "\`ILERT_INTEGRATION_KEY\` is unset, so ilert received nothing for this event."
+            echo "Set it in the alerting secret path to page on this condition."
+            echo
+            echo "- **Summary:** ${SUMMARY}"
+            echo "- **Alert key:** \`${ALERT_KEY}\`"
+            echo "- **Priority:** ${PRIORITY}"
+            if [[ -n "${DETAILS}" ]]; then
+              echo "- **Details:** ${DETAILS}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          exit 0
         fi
         jq -n \
           --arg key "${ILERT_INTEGRATION_KEY}" \

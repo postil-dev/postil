@@ -81,6 +81,11 @@ Every queue consumer supplies its explicit supported job kinds to the claim quer
 The bounded web drain uses the latency-sensitive capability list. The long-running
 worker adds maintenance jobs such as repository-rule discovery, keeping those jobs
 away from request-serving processes.
+The claim query also caps how many `review` and `respond` jobs one organization
+runs at once, so a single organization opening many pull requests cannot occupy
+every slot. Cheap kinds carry no cap, and the limit is best-effort: concurrent
+claim loops read the running count independently, so an organization can exceed
+it by up to the number of loops.
 Release job kinds are also staged in PostgreSQL with an infinite `run_after` until
 the deploy workflow confirms that every managed web and worker Machine is running
 one image. Activation and inserts share a transaction advisory lock, so no job can

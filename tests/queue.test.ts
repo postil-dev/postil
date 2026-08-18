@@ -42,6 +42,16 @@ function claimJob(pool: Pool, workerId: string) {
   return claimJobWithCapabilities(pool, workerId, TEST_JOB_KINDS);
 }
 
+function claimBudgetedJob(
+  pool: Pool,
+  workerId: string,
+  perOrganizationConcurrency: number,
+) {
+  return claimJobWithCapabilities(pool, workerId, TEST_JOB_KINDS, {
+    perOrganizationConcurrency,
+  });
+}
+
 describeDb("postgres job queue", () => {
   let db: EphemeralDatabase;
   let pool: Pool;
@@ -401,6 +411,76 @@ describeDb("postgres job queue", () => {
     expect(a).not.toBeNull();
     expect(b).not.toBeNull();
     expect(a?.id).not.toBe(b?.id);
+  });
+
+  test("one organization at its cap yields the next claim to another", async () => {
+    const busy: number[] = [];
+    for (let n = 1; n <= 5; n += 1) {
+      busy.push(await enqueueJob(pool, "review", { sourceOrgId: 11, n }));
+    }
+    const waiting = await enqueueJob(pool, "review", { sourceOrgId: 22, n: 6 });
+
+    expect((await claimBudgetedJob(pool, "w1", 2))?.id).toBe(busy[0]);
+    expect((await claimBudgetedJob(pool, "w2", 2))?.id).toBe(busy[1]);
+    expect((await claimBudgetedJob(pool, "w3", 2))?.id).toBe(waiting);
+    expect(await claimBudgetedJob(pool, "w4", 2)).toBeNull();
+  });
+
+  test("respond jobs draw on the same organization budget as reviews", async () => {
+    const firstRespond = await enqueueJob(pool, "respond", { sourceOrgId: 11, n: 1 });
+    const secondRespond = await enqueueJob(pool, "respond", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+    const otherOrg = await enqueueJob(pool, "review", { sourceOrgId: 22, n: 4 });
+
+    expect((await claimBudgetedJob(pool, "w1", 2))?.id).toBe(firstRespond);
+    expect((await claimBudgetedJob(pool, "w2", 2))?.id).toBe(secondRespond);
+    expect((await claimBudgetedJob(pool, "w3", 2))?.id).toBe(otherOrg);
+  });
+
+  test("work without an organization stays claimable past the cap", async () => {
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+    const unattributed = await enqueueJob(pool, "review", { n: 4 });
+    const acknowledgement = await enqueueJob(pool, "github-reaction", {
+      sourceOrgId: 11,
+      sourceDeliveryId: "capped-org-reaction",
+    });
+
+    await claimBudgetedJob(pool, "w1", 2);
+    await claimBudgetedJob(pool, "w2", 2);
+
+    // Acknowledgement work is cheap and ordered ahead of reviews, so it is
+    // claimed first even though its organization already holds the budget.
+    const reaction = await claimJobWithCapabilities(
+      pool,
+      "w3",
+      [...TEST_JOB_KINDS, "github-reaction"],
+      { perOrganizationConcurrency: 2 },
+    );
+    expect(reaction?.id).toBe(acknowledgement);
+    expect((await claimBudgetedJob(pool, "w4", 2))?.id).toBe(unattributed);
+  });
+
+  test("a cap of zero removes the per-organization limit", async () => {
+    const first = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    const second = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    const third = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+
+    expect((await claimBudgetedJob(pool, "w1", 0))?.id).toBe(first);
+    expect((await claimBudgetedJob(pool, "w2", 0))?.id).toBe(second);
+    expect((await claimBudgetedJob(pool, "w3", 0))?.id).toBe(third);
+  });
+
+  test("the configured default admits two running jobs per organization", async () => {
+    const first = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    const second = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+    const otherOrg = await enqueueJob(pool, "review", { sourceOrgId: 22, n: 4 });
+
+    expect((await claimJob(pool, "w1"))?.id).toBe(first);
+    expect((await claimJob(pool, "w2"))?.id).toBe(second);
+    expect((await claimJob(pool, "w3"))?.id).toBe(otherOrg);
   });
 
   test("worker shutdown requeues only its claims without consuming attempts", async () => {

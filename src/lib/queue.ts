@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 
-import { readPositiveIntEnv } from "@/lib/env";
+import { readNonNegativeIntEnv, readPositiveIntEnv } from "@/lib/env";
 import { redactAndTruncate } from "@/lib/redact";
 import type { ReviewTriggerContext } from "@/lib/review-trigger";
 
@@ -11,6 +11,14 @@ import type { ReviewTriggerContext } from "@/lib/review-trigger";
  * transaction, flipping the row to `running` before commit. Two workers can
  * never claim the same job; a crashed worker's lock dies with its
  * connection and the row stays `running` until the watchdog reschedules it.
+ *
+ * Fairness: a claim skips a `review` or `respond` job whose organization
+ * already runs `WORKER_PER_ORG_CONCURRENCY` such jobs, so one organization
+ * opening many pull requests at once cannot occupy every worker slot. The cap
+ * is best-effort: concurrent claim loops read the running count before any of
+ * them commits, so an organization can exceed the cap by up to the number of
+ * claim loops. Jobs of other kinds and jobs without an organization carry no
+ * cap. A cap of 0 disables the limit.
  *
  * Retry: exponential backoff (30s * 2^attempts, capped at 15 min). A job
  * that exhausts maxAttempts is marked `failed` permanently.
@@ -807,6 +815,18 @@ function mergeReviewJobPayload(
   };
 }
 
+/**
+ * Spend-bearing kinds. Only these carry the per-organization cap, both as the
+ * candidate being claimed and as the running work counted against the budget;
+ * every other kind is cheap and stays claimable at any depth.
+ */
+const ORGANIZATION_BUDGETED_JOB_KINDS = ["review", "respond"] as const;
+
+const PER_ORGANIZATION_CONCURRENCY = readNonNegativeIntEnv(
+  "WORKER_PER_ORG_CONCURRENCY",
+  2,
+);
+
 export async function claimJob(
   pool: Pool,
   workerId: string,
@@ -814,12 +834,16 @@ export async function claimJob(
   options: {
     exactWebhookDispatchDeliveryId?: string;
     excludePrivateWorkerRehearsals?: boolean;
+    /** Per-organization running-job cap; 0 disables it. Defaults to WORKER_PER_ORG_CONCURRENCY. */
+    perOrganizationConcurrency?: number;
   } = {},
 ): Promise<ClaimedJob | null> {
   const capabilities = [...new Set(allowedKinds.filter(Boolean))];
   if (capabilities.length === 0) {
     throw new Error("claimJob requires at least one allowed job kind");
   }
+  const perOrganizationConcurrency =
+    options.perOrganizationConcurrency ?? PER_ORGANIZATION_CONCURRENCY;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -832,7 +856,7 @@ export async function claimJob(
       created_at: Date;
     }>(
       `SELECT id, kind, payload, attempts, max_attempts, created_at
-       FROM jobs
+       FROM jobs candidate
        WHERE status = 'queued'
          AND run_after <= now()
          AND kind = ANY($1::text[])
@@ -844,6 +868,19 @@ export async function claimJob(
            NOT $3::boolean
            OR NOT payload ? 'privateWorkerRehearsalNonce'
          )
+         AND (
+           $4::int <= 0
+           OR NOT (kind = ANY($5::text[]))
+           OR candidate.payload->>'sourceOrgId' IS NULL
+           OR (
+             SELECT count(*)
+               FROM jobs running
+              WHERE running.status = 'running'
+                AND running.kind = ANY($5::text[])
+                AND running.payload->>'sourceOrgId'
+                    = candidate.payload->>'sourceOrgId'
+           ) < $4::int
+         )
        ORDER BY CASE WHEN kind = 'github-reaction' THEN 0 ELSE 1 END, id
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
@@ -851,6 +888,8 @@ export async function claimJob(
         capabilities,
         options.exactWebhookDispatchDeliveryId ?? null,
         options.excludePrivateWorkerRehearsals === true,
+        perOrganizationConcurrency,
+        [...ORGANIZATION_BUDGETED_JOB_KINDS],
       ],
     );
     const row = selected.rows[0];
