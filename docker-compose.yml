@@ -34,7 +34,7 @@ services:
         # whatever binary is at vendor/postil (see the header comment).
         # Override alongside a new vendor/postil binary to upgrade the
         # reviewer version.
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.16}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.23}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     env_file: .env
     environment:
@@ -55,7 +55,7 @@ services:
     build:
       context: .
       args:
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.16}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.23}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     command: ["bun", "scripts/start-managed-process.ts", "worker"]
     env_file: .env
@@ -71,7 +71,7 @@ services:
     build:
       context: .
       args:
-        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.16}
+        POSTIL_CLI_REV: ${POSTIL_CLI_REV:-v0.8.23}
         NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}
     command: ["bun", "scripts/start-managed-process.ts", "monitor"]
     env_file: .env
