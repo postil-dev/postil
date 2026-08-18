@@ -588,7 +588,11 @@ export default async function RunDetailPage({
     : prUrl;
   const MAX_RENDERED_FINDINGS = 200;
   const configProvenance = review.configProvenance?.entries ?? [];
-  const displayStatus = reviewDisplayStatus(review.status, review.errorMessage);
+  const displayStatus = reviewDisplayStatus(
+    review.status,
+    review.errorMessage,
+    review.envelope,
+  );
   const hostedReviewUnavailable = isHostedReviewUnavailable(
     review.status,
     review.errorMessage,

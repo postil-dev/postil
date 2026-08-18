@@ -18,6 +18,7 @@ mock.module("next/headers", () => ({
     get: (name: string) =>
       name === "postil_session" && cookieToken ? { value: cookieToken } : undefined,
   }),
+  headers: async () => new Headers(),
 }));
 
 const {

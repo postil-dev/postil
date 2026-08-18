@@ -46,6 +46,7 @@ export async function GET(
         id: schema.reviews.id,
         status: schema.reviews.status,
         errorMessage: schema.reviews.errorMessage,
+        envelope: schema.reviews.envelope,
         finishedAt: schema.reviews.finishedAt,
         gateFailing: schema.reviews.gateFailing,
       })
@@ -87,7 +88,7 @@ export async function GET(
 
   return NextResponse.json({
     lines,
-    status: reviewDisplayStatus(review.status, review.errorMessage),
+    status: reviewDisplayStatus(review.status, review.errorMessage, review.envelope),
     finishedAt: review.finishedAt,
     gateFailing: review.gateFailing,
     gateSyncStatus: gateSync?.status ?? null,

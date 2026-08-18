@@ -128,4 +128,51 @@ describe("GET run logs", () => {
     const response = await invoke();
     expect(response.status).toBe(404);
   });
+
+  // The run page renders a first status server-side and this poller replaces
+  // it, so a review that never reached a verdict has to report the same
+  // failure here or the page reverts to a clean pass on the first poll.
+  test("reports a review that ended in an operational failure as failed", async () => {
+    reviewRows = [
+      {
+        id: 18,
+        status: "completed",
+        errorMessage: null,
+        envelope: {
+          findings: [
+            {
+              path: ".postil/model-output",
+              severity: "error",
+              kind: "uncertainty",
+              title: "Model output could not be validated",
+            },
+          ],
+        },
+        finishedAt: null,
+        gateFailing: false,
+        gateSyncStatus: null,
+      },
+    ];
+
+    const body = (await (await invoke()).json()) as { status: string; gateFailing: boolean };
+    expect(body.status).toBe("failed");
+    // The gate is reported separately and keeps its own state.
+    expect(body.gateFailing).toBe(false);
+  });
+
+  test("still reports a clean completed review as completed", async () => {
+    reviewRows = [
+      {
+        id: 18,
+        status: "completed",
+        errorMessage: null,
+        envelope: { findings: [] },
+        finishedAt: null,
+        gateFailing: false,
+        gateSyncStatus: null,
+      },
+    ];
+
+    expect(((await (await invoke()).json()) as { status: string }).status).toBe("completed");
+  });
 });

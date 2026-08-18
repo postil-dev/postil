@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 
 import { getDb } from "@/lib/db";
-import { getSessionUser, type SessionUser } from "@/lib/session";
+import { getSessionUser, loginRedirectPath, type SessionUser } from "@/lib/session";
 
 function operatorGithubIds(): Set<number> {
   const raw = process.env.POSTIL_OPERATOR_GITHUB_IDS ?? "";
@@ -26,7 +26,7 @@ export function isOperatorUser(user: Pick<SessionUser, "githubId">): boolean {
  */
 export async function requireOperatorAccess() {
   const user = await getSessionUser();
-  if (!user) redirect("/login");
+  if (!user) redirect(await loginRedirectPath());
   if (!isOperatorUser(user)) notFound();
   return { db: getDb(), user };
 }

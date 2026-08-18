@@ -3,6 +3,16 @@ export const OAUTH_RETURN_TO_COOKIE = "postil_oauth_return_to";
 export const GITHUB_SETUP_INSTALLATION_COOKIE = "postil_setup_installation";
 export const OAUTH_CALLBACK_PATH = "/api/auth/callback";
 
+/**
+ * Requested path and query, forwarded by the middleware to the page beneath
+ * it. The middleware verifies only the session cookie signature; the page
+ * re-checks the session row and redirects when it is expired or revoked, and
+ * needs this header to send the visitor back after sign-in. The middleware
+ * overwrites any inbound value on every protected route, and readers pass it
+ * through `safeReturnTarget`, so a forged header cannot widen the redirect.
+ */
+export const REQUESTED_PATH_HEADER = "x-postil-requested-path";
+
 const RETURN_TARGET_BASE = "https://postil.invalid";
 
 /**

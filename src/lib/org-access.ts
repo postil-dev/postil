@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { notFound, redirect } from "next/navigation";
 
 import { getDb, schema } from "@/lib/db";
-import { getVerifiedSessionUser, type SessionUser } from "@/lib/session";
+import { getVerifiedSessionUser, loginRedirectPath, type SessionUser } from "@/lib/session";
 
 export type OrgAccessResult =
   | {
@@ -53,9 +53,9 @@ export async function getOrgMembership(slug: string): Promise<OrgAccessResult> {
 export async function requireOrgMembership(slug: string) {
   const access = await getOrgMembership(slug);
   if (!access.ok) {
-    if (access.reason === "unauthenticated") redirect("/login");
+    if (access.reason === "unauthenticated") redirect(await loginRedirectPath());
     if (access.reason === "verification_unavailable") {
-      redirect("/login?error=membership_verification");
+      redirect(await loginRedirectPath("membership_verification"));
     }
     notFound();
   }
