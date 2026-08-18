@@ -15,7 +15,7 @@ import { getDb, schema } from "@/lib/db";
 import { githubAppInstallUrl } from "@/lib/github-app";
 import { githubPrUrl } from "@/lib/github-links";
 import { reviewDisplayStatus } from "@/lib/review-outcome";
-import { getVerifiedSessionUser } from "@/lib/session";
+import { getVerifiedSessionUser, loginRedirectPath } from "@/lib/session";
 import type { ReviewTriggerSource } from "@/lib/review-trigger";
 
 export const metadata: Metadata = {
@@ -28,9 +28,9 @@ export default async function ReportsPage() {
   const verification = await getVerifiedSessionUser();
   if (!verification.ok) {
     redirect(
-      verification.reason === "unauthenticated"
-        ? "/login"
-        : "/login?error=membership_verification",
+      await loginRedirectPath(
+        verification.reason === "unauthenticated" ? undefined : "membership_verification",
+      ),
     );
   }
   const user = verification.user;

@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 
 import { and, eq, gt, isNull, lt, or } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import { getDb, schema } from "@/lib/db";
 import { getSealingKey, seal, unseal } from "@/lib/crypto/seal";
 import { requireEnv } from "@/lib/env";
 import { fetchAllActiveOrgMemberships } from "@/lib/github/user-memberships";
+import { REQUESTED_PATH_HEADER, safeReturnTarget } from "@/lib/oauth";
 import { reconcileOrgMemberships } from "@/lib/org-sync";
 import {
   SESSION_COOKIE,
@@ -67,6 +68,25 @@ export async function destroySessionByToken(token: string | undefined): Promise<
   const sessionId = await verifySessionToken(token, requireEnv("POSTIL_SESSION_SECRET"));
   if (!sessionId) return;
   await getDb().delete(schema.sessions).where(eq(schema.sessions.id, sessionId));
+}
+
+/**
+ * Sign-in URL that returns the visitor to the page this request asked for.
+ *
+ * The middleware admits any request whose session cookie signature verifies;
+ * an expired or revoked session row is only caught here, in the page, so this
+ * is the redirect that has to carry the destination. `safeReturnTarget`
+ * re-validates the forwarded path as a same-origin protected path, which keeps
+ * a forged header from becoming an open redirect.
+ */
+export async function loginRedirectPath(error?: string): Promise<string> {
+  const requestHeaders = await headers();
+  const returnTo = safeReturnTarget(requestHeaders.get(REQUESTED_PATH_HEADER));
+  const params = new URLSearchParams();
+  if (error) params.set("error", error);
+  if (returnTo) params.set("next", returnTo);
+  const query = params.toString();
+  return query ? `/login?${query}` : "/login";
 }
 
 /** Resolve the current request's user, or null when not signed in. */
