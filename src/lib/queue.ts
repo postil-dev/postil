@@ -13,12 +13,12 @@ import type { ReviewTriggerContext } from "@/lib/review-trigger";
  * connection and the row stays `running` until the watchdog reschedules it.
  *
  * Fairness: a claim skips a `review` or `respond` job whose organization
- * already runs `WORKER_PER_ORG_CONCURRENCY` such jobs, so one organization
- * opening many pull requests at once cannot occupy every worker slot. The cap
- * is best-effort: concurrent claim loops read the running count before any of
- * them commits, so an organization can exceed the cap by up to the number of
- * claim loops. Jobs of other kinds and jobs without an organization carry no
- * cap. A cap of 0 disables the limit.
+ * already runs `WORKER_PER_ORG_CONCURRENCY` such jobs, which reduces how much
+ * of the worker fleet one organization opening many pull requests at once
+ * occupies. The cap is best-effort: concurrent claim loops read the running
+ * count before any of them commits, so an organization can exceed the cap by up
+ * to the number of claim loops. Jobs of other kinds and jobs without an
+ * organization carry no cap. A cap of 0 disables the limit.
  *
  * Retry: exponential backoff (30s * 2^attempts, capped at 15 min). A job
  * that exhausts maxAttempts is marked `failed` permanently.
@@ -827,23 +827,83 @@ const PER_ORGANIZATION_CONCURRENCY = readNonNegativeIntEnv(
   2,
 );
 
-export async function claimJob(
+/** Rows a claim may consider, before the per-organization cap is applied. */
+const CLAIM_CANDIDATE_PREDICATE = `status = 'queued'
+         AND run_after <= now()
+         AND kind = ANY($1::text[])
+         AND (
+           $2::text IS NULL
+           OR (kind = 'webhook-dispatch' AND payload->>'deliveryId' = $2)
+         )
+         AND (
+           NOT $3::boolean
+           OR NOT payload ? 'privateWorkerRehearsalNonce'
+         )`;
+
+/**
+ * Organizations already running the cap's worth of budgeted work.
+ *
+ * Uncorrelated on purpose: the planner evaluates it once as a hashed InitPlan.
+ * A correlated aggregate over the candidate row cannot be pulled up, so it is
+ * re-executed per row surviving the earlier filters and before the ORDER BY,
+ * across the whole queued backlog, which is the flood the cap exists to absorb.
+ *
+ * `payload->>'sourceOrgId' IS NOT NULL` is load-bearing. A single NULL in the
+ * subselect makes `NOT IN` evaluate to NULL for every candidate row, which
+ * silently blocks every claim.
+ */
+const OVER_CAP_ORGANIZATIONS = `SELECT payload->>'sourceOrgId'
+              FROM jobs
+             WHERE status = 'running'
+               AND kind = ANY($5::text[])
+               AND payload->>'sourceOrgId' IS NOT NULL
+             GROUP BY 1
+            HAVING count(*) >= $4::int`;
+
+/**
+ * Result of one claim attempt.
+ *
+ * `deferred` separates "nothing is ready" from "ready work exists, and only the
+ * per-organization cap held it back". The two need different poll behavior: a
+ * deferred claim becomes claimable the moment a running job of that
+ * organization finishes, so a caller that backs off on an empty queue must not
+ * back off on this.
+ */
+export type ClaimOutcome =
+  | { status: "claimed"; job: ClaimedJob }
+  | { status: "empty" }
+  | { status: "deferred" };
+
+export interface ClaimJobOptions {
+  exactWebhookDispatchDeliveryId?: string;
+  excludePrivateWorkerRehearsals?: boolean;
+  /** Per-organization running-job cap; 0 disables it. Defaults to WORKER_PER_ORG_CONCURRENCY. */
+  perOrganizationConcurrency?: number;
+}
+
+/**
+ * Claim one job, reporting whether an empty result was an empty queue or work
+ * deferred by the per-organization cap.
+ */
+export async function claimNextJob(
   pool: Pool,
   workerId: string,
   allowedKinds: readonly string[],
-  options: {
-    exactWebhookDispatchDeliveryId?: string;
-    excludePrivateWorkerRehearsals?: boolean;
-    /** Per-organization running-job cap; 0 disables it. Defaults to WORKER_PER_ORG_CONCURRENCY. */
-    perOrganizationConcurrency?: number;
-  } = {},
-): Promise<ClaimedJob | null> {
+  options: ClaimJobOptions = {},
+): Promise<ClaimOutcome> {
   const capabilities = [...new Set(allowedKinds.filter(Boolean))];
   if (capabilities.length === 0) {
     throw new Error("claimJob requires at least one allowed job kind");
   }
   const perOrganizationConcurrency =
     options.perOrganizationConcurrency ?? PER_ORGANIZATION_CONCURRENCY;
+  const parameters = [
+    capabilities,
+    options.exactWebhookDispatchDeliveryId ?? null,
+    options.excludePrivateWorkerRehearsals === true,
+    perOrganizationConcurrency,
+    [...ORGANIZATION_BUDGETED_JOB_KINDS],
+  ];
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -857,45 +917,40 @@ export async function claimJob(
     }>(
       `SELECT id, kind, payload, attempts, max_attempts, created_at
        FROM jobs candidate
-       WHERE status = 'queued'
-         AND run_after <= now()
-         AND kind = ANY($1::text[])
-         AND (
-           $2::text IS NULL
-           OR (kind = 'webhook-dispatch' AND payload->>'deliveryId' = $2)
-         )
-         AND (
-           NOT $3::boolean
-           OR NOT payload ? 'privateWorkerRehearsalNonce'
-         )
+       WHERE ${CLAIM_CANDIDATE_PREDICATE}
          AND (
            $4::int <= 0
            OR NOT (kind = ANY($5::text[]))
            OR candidate.payload->>'sourceOrgId' IS NULL
-           OR (
-             SELECT count(*)
-               FROM jobs running
-              WHERE running.status = 'running'
-                AND running.kind = ANY($5::text[])
-                AND running.payload->>'sourceOrgId'
-                    = candidate.payload->>'sourceOrgId'
-           ) < $4::int
+           OR candidate.payload->>'sourceOrgId' NOT IN (
+             ${OVER_CAP_ORGANIZATIONS}
+           )
          )
        ORDER BY CASE WHEN kind = 'github-reaction' THEN 0 ELSE 1 END, id
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
-      [
-        capabilities,
-        options.exactWebhookDispatchDeliveryId ?? null,
-        options.excludePrivateWorkerRehearsals === true,
-        perOrganizationConcurrency,
-        [...ORGANIZATION_BUDGETED_JOB_KINDS],
-      ],
+      parameters,
     );
     const row = selected.rows[0];
     if (!row) {
+      // Only the cap can hide a ready row, so the probe is skipped when it is
+      // disabled and otherwise runs only on the empty path.
+      const deferred =
+        perOrganizationConcurrency > 0
+          ? await client.query(
+              `SELECT 1
+                 FROM jobs candidate
+                WHERE ${CLAIM_CANDIDATE_PREDICATE}
+                  AND kind = ANY($5::text[])
+                  AND candidate.payload->>'sourceOrgId' IN (
+                    ${OVER_CAP_ORGANIZATIONS}
+                  )
+                LIMIT 1`,
+              parameters,
+            )
+          : undefined;
       await client.query("COMMIT");
-      return null;
+      return (deferred?.rowCount ?? 0) > 0 ? { status: "deferred" } : { status: "empty" };
     }
     const claimed = await client.query<{ locked_at: Date }>(
       `UPDATE jobs
@@ -909,14 +964,17 @@ export async function claimJob(
     if (!lockedAt) throw new Error("claimed job returned no lock timestamp");
     await client.query("COMMIT");
     return {
-      id: Number(row.id),
-      kind: row.kind,
-      payload: row.payload,
-      attempts: row.attempts + 1,
-      maxAttempts: row.max_attempts,
-      createdAt: row.created_at,
-      lockedAt,
-      lockedBy: workerId,
+      status: "claimed",
+      job: {
+        id: Number(row.id),
+        kind: row.kind,
+        payload: row.payload,
+        attempts: row.attempts + 1,
+        maxAttempts: row.max_attempts,
+        createdAt: row.created_at,
+        lockedAt,
+        lockedBy: workerId,
+      },
     };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => undefined);
@@ -924,6 +982,51 @@ export async function claimJob(
   } finally {
     client.release();
   }
+}
+
+/**
+ * Claim one job, collapsing "empty queue" and "deferred by the cap" into null.
+ *
+ * Callers that only drain what is claimable right now (the bounded web drain,
+ * the exact webhook dispatch) treat both the same way. A polling loop wants
+ * `claimNextJob` instead: backing off on a deferred claim leaves a ready
+ * backlog waiting for the idle ceiling after slots free.
+ */
+export async function claimJob(
+  pool: Pool,
+  workerId: string,
+  allowedKinds: readonly string[],
+  options: ClaimJobOptions = {},
+): Promise<ClaimedJob | null> {
+  const outcome = await claimNextJob(pool, workerId, allowedKinds, options);
+  return outcome.status === "claimed" ? outcome.job : null;
+}
+
+/**
+ * Poll delay for a claim loop that received no job.
+ *
+ * A deferred claim means ready work exists and only the per-organization cap
+ * held it back, so the loop yields its slot for one base interval and leaves
+ * the idle delay untouched: growing it would leave a full backlog idle until
+ * the idle ceiling elapses after slots free. Only an empty queue and a claim
+ * error back off toward that ceiling.
+ */
+export function nextClaimPollDelay(
+  outcome: "empty" | "deferred" | "error",
+  current: {
+    idleDelayMs: number;
+    pollIntervalMs: number;
+    idlePollMaxMs: number;
+  },
+): { sleepMs: number; idleDelayMs: number } {
+  if (outcome === "deferred") {
+    return { sleepMs: current.pollIntervalMs, idleDelayMs: current.idleDelayMs };
+  }
+  const grown = Math.min(current.idleDelayMs * 2, current.idlePollMaxMs);
+  return {
+    sleepMs: outcome === "error" ? grown : current.idleDelayMs,
+    idleDelayMs: grown,
+  };
 }
 
 /**

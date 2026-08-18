@@ -142,7 +142,7 @@ export async function getOperatorReviewRows(
     .limit(limit);
   return rows.map((row) => ({
     ...row,
-    status: reviewDisplayStatus(row.status, row.errorMessage),
+    status: reviewDisplayStatus(row.status, row.errorMessage, row.envelope),
   }));
 }
 

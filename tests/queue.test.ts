@@ -7,12 +7,14 @@ import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-dat
 import {
   backoffMs,
   claimJob as claimJobWithCapabilities,
+  claimNextJob,
   completeJob,
   enqueueGithubReactionJobOnce,
   enqueueJob,
   enqueueRespondJobWithinHourlyCap,
   enqueueReviewJobOnce,
   failJob,
+  nextClaimPollDelay,
   queueDepth,
   requeueJobsOwnedBy,
   retryJobIndefinitely,
@@ -42,6 +44,8 @@ function claimJob(pool: Pool, workerId: string) {
   return claimJobWithCapabilities(pool, workerId, TEST_JOB_KINDS);
 }
 
+const capped = { perOrganizationConcurrency: 2 } as const;
+
 function claimBudgetedJob(
   pool: Pool,
   workerId: string,
@@ -51,6 +55,42 @@ function claimBudgetedJob(
     perOrganizationConcurrency,
   });
 }
+
+/**
+ * Poll pacing after a claim returns nothing. Pure, so it runs without a
+ * database: the distinction it encodes is what keeps a capped backlog from
+ * waiting out the idle ceiling.
+ */
+describe("claim poll pacing", () => {
+  const state = { idleDelayMs: 4_000, pollIntervalMs: 1_000, idlePollMaxMs: 900_000 };
+
+  test("a deferred claim holds the base interval and leaves the idle delay alone", () => {
+    expect(nextClaimPollDelay("deferred", state)).toEqual({
+      sleepMs: 1_000,
+      idleDelayMs: 4_000,
+    });
+  });
+
+  test("an empty queue backs off toward the idle ceiling", () => {
+    expect(nextClaimPollDelay("empty", state)).toEqual({
+      sleepMs: 4_000,
+      idleDelayMs: 8_000,
+    });
+  });
+
+  test("the idle delay never passes its ceiling", () => {
+    expect(
+      nextClaimPollDelay("empty", { ...state, idleDelayMs: 800_000 }).idleDelayMs,
+    ).toBe(900_000);
+  });
+
+  test("a claim error sleeps for the grown delay rather than the old one", () => {
+    expect(nextClaimPollDelay("error", state)).toEqual({
+      sleepMs: 8_000,
+      idleDelayMs: 8_000,
+    });
+  });
+});
 
 describeDb("postgres job queue", () => {
   let db: EphemeralDatabase;
@@ -460,6 +500,53 @@ describeDb("postgres job queue", () => {
     );
     expect(reaction?.id).toBe(acknowledgement);
     expect((await claimBudgetedJob(pool, "w4", 2))?.id).toBe(unattributed);
+  });
+
+  test("a claim held back only by the cap reports itself as deferred", async () => {
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+
+    expect((await claimNextJob(pool, "w1", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+    expect((await claimNextJob(pool, "w2", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+
+    // Ready work exists; only the cap is holding it. A caller that reads this
+    // as an empty queue backs off toward the idle ceiling and leaves the
+    // backlog sitting there after a slot frees.
+    expect((await claimNextJob(pool, "w3", TEST_JOB_KINDS, capped)).status).toBe("deferred");
+  });
+
+  test("an empty queue is reported as empty, not deferred", async () => {
+    expect((await claimNextJob(pool, "w1", TEST_JOB_KINDS, capped)).status).toBe("empty");
+
+    await enqueueJob(pool, "review", { sourceOrgId: 22, n: 1 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 4 });
+    for (const worker of ["w1", "w2", "w3"]) {
+      expect((await claimNextJob(pool, worker, TEST_JOB_KINDS, capped)).status).toBe("claimed");
+    }
+    // Organization 11 now holds its two, so its last job is capped rather than
+    // absent, even though another organization's work drained cleanly.
+    expect((await claimNextJob(pool, "w4", TEST_JOB_KINDS, capped)).status).toBe("deferred");
+  });
+
+  test("a null organization in the running set does not block every claim", async () => {
+    // `NOT IN` over a subselect containing NULL is NULL for every row, which
+    // would silently stop the queue. The subselect excludes them for that
+    // reason, and this is the shape that catches it if the guard is dropped.
+    // The NULL group only reaches the subselect once it satisfies HAVING, so
+    // the cap's worth of unattributed work has to be running for the guard to
+    // be under test at all.
+    await enqueueJob(pool, "review", { n: 1 });
+    await enqueueJob(pool, "review", { n: 2 });
+    expect((await claimNextJob(pool, "w1", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+    expect((await claimNextJob(pool, "w2", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+
+    const attributed = await enqueueJob(pool, "review", { sourceOrgId: 33, n: 3 });
+    const claimed = await claimNextJob(pool, "w3", TEST_JOB_KINDS, capped);
+    expect(claimed.status).toBe("claimed");
+    expect(claimed.status === "claimed" ? claimed.job.id : null).toBe(attributed);
   });
 
   test("a cap of zero removes the per-organization limit", async () => {

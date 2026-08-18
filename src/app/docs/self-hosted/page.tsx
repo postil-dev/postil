@@ -103,6 +103,13 @@ docker compose exec web bun run db:migrate`}</code>
         Leave <code>WORKER_HEARTBEAT_INTERVAL_MS</code> unset unless the private
         monitor is enabled.
       </p>
+      <p>
+        <code>WORKER_PER_ORG_CONCURRENCY</code> caps how many review and respond
+        jobs one organization runs at once, defaulting to 2, which reduces how
+        much of the fleet a single busy organization occupies. A single-tenant
+        deployment can set it to 0 to remove the limit; raise it instead of
+        removing it where several organizations share the fleet.
+      </p>
 
       <h3>Required configuration</h3>
       <p>

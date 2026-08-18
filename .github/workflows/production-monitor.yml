@@ -361,6 +361,11 @@ jobs:
                 && 'Production checks failed. Run log:'
                 || 'Operator-requested test alert; production checks passed. Run log:' }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          # A production failure pages if it can and records the gap if it
+          # cannot, because the failing check is already the signal. A test
+          # alert exists only to prove delivery works, so an undelivered one is
+          # the failure it was run to detect.
+          require-delivery: ${{ inputs.test_alert == true }}
 
   resolve:
     name: Resolve external alert
