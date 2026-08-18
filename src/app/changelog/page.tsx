@@ -35,6 +35,34 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.8.17–0.8.23",
+    date: "August 18, 2026",
+    summary:
+      "Hosted reviews admit the plans they are meant to run, a review that stops early reports the reason it stopped, and findings keep the direct evidence they were established from.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Hosted reviews measure their planned worst-case cost against a ceiling for plans rather than against the limit on what a review may spend. The two differ by orders of magnitude, and holding the plan to the spending limit refused every hosted review before it reached a model, whatever the size of the change.",
+      },
+      {
+        label: "Fixed",
+        text: "A review that stops before reaching a verdict reports the cause it stopped for. Failures unrelated to scoring were previously published as unvalidated model output, which named a stage that had not run and dropped the text identifying the fault.",
+      },
+      {
+        label: "Fixed",
+        text: "Findings keep the direct evidence they were established from, repository-dependent findings are distinguished from ones grounded in the change alone, and publication evidence stays direct.",
+      },
+      {
+        label: "Added",
+        text: "GitHub publication plans are emitted immutably, so what a review intends to post is fixed before it posts.",
+      },
+      {
+        label: "Security",
+        text: "The HTTP/2 dependency moves to the release that rejects unbounded empty data frames.",
+      },
+    ],
+  },
+  {
     version: "0.8.13, 0.8.15–0.8.16",
     date: "August 13–14, 2026",
     summary:
