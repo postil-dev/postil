@@ -77,7 +77,12 @@ export const reviewAdmissionSchema = z.object({
   providerAttempts: z.number().int().nonnegative(),
   serializedInputBytes: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
-  projectedCostMicros: z.number().int().nonnegative().max(1_000_000),
+  // Mirrors the CLI's admission projection ceiling
+  // (HOSTED_ADMISSION_PROJECTION_CAP_MICROS). Admission reports a worst-case
+  // plan, not a spend estimate, and the two differ by orders of magnitude; a
+  // bound set to the spend limit rejects the envelope of every hosted review
+  // the CLI is willing to run. Raise this with that constant, never below it.
+  projectedCostMicros: z.number().int().nonnegative().max(25_000_000),
 });
 export const envelopeSchema = z
   .object({
