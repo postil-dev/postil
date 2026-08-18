@@ -7,6 +7,16 @@ const PAGE_ENGAGEMENT_PROPERTIES = new Set([
   "$prev_pageview_max_scroll",
   "$prev_pageview_max_scroll_percentage",
 ]);
+const SDK_LIBRARY = "web";
+const SDK_VERSION = /^\d+\.\d+\.\d+$/;
+const INSERT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const PAGEVIEW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Bare hostname only: the character class admits no scheme, port, path, or whitespace.
+const REFERRING_DOMAIN = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+const DIRECT_REFERRING_DOMAIN = "$direct";
+const DEVICE_TYPES = new Set(["Desktop", "Mobile", "Tablet"]);
+const CLIENT_LABEL = /^[A-Za-z0-9 ._-]{1,32}$/;
+const CLIENT_VERSION = /^\d+(\.\d+){0,3}$/;
 const WEB_VITAL_EVENT_KEY = /^\$web_vitals_(?:LCP|CLS|FCP|INP)_event$/;
 const WEB_VITAL_RATINGS = new Set(["good", "needs-improvement", "poor"]);
 const WEB_VITAL_NAVIGATION_TYPES = new Set([
@@ -131,7 +141,10 @@ export function sanitizePostHogEventProperties(
   projectToken: string,
   sessionId: string,
 ): boolean {
-  const technical = cookielessTransportProperties(properties, projectToken, sessionId);
+  const technical = {
+    ...cookielessTransportProperties(properties, projectToken, sessionId),
+    ...browserContextProperties(properties),
+  };
   if (eventName === "$web_vitals") {
     const vitals = sanitizeWebVitals(properties, currentOrigin);
     if (!vitals) return false;
@@ -289,6 +302,56 @@ function cookielessTransportProperties(
       properties.$process_person_profile === false ? false : undefined,
     $session_id: sessionId,
   });
+}
+
+/**
+ * The automatic SDK properties Web Analytics breakdowns need, each validated
+ * against its expected shape. Fingerprinting surface (raw user agent, screen and
+ * viewport geometry, timezone, language, device identifiers) stays dropped.
+ */
+function browserContextProperties(
+  properties: Record<string, unknown>,
+): Record<string, string | number | boolean> {
+  return removeEmpty({
+    $lib: properties.$lib === SDK_LIBRARY ? SDK_LIBRARY : undefined,
+    $lib_version: matchedString(properties.$lib_version, SDK_VERSION),
+    $insert_id: matchedString(properties.$insert_id, INSERT_ID),
+    $time: positiveNumber(properties.$time),
+    $pageview_id: matchedString(properties.$pageview_id, PAGEVIEW_ID),
+    $referring_domain: sanitizedReferringDomain(properties.$referring_domain),
+    $device_type: matchedMember(properties.$device_type, DEVICE_TYPES),
+    $browser: matchedString(properties.$browser, CLIENT_LABEL),
+    $browser_version: sanitizedClientVersion(properties.$browser_version),
+    $os: matchedString(properties.$os, CLIENT_LABEL),
+    $os_version: matchedString(properties.$os_version, CLIENT_LABEL),
+    $prev_pageview_pathname: sanitizedPublicPathname(properties.$prev_pageview_pathname),
+  });
+}
+
+function sanitizedReferringDomain(value: unknown): string | undefined {
+  if (value === DIRECT_REFERRING_DOMAIN) return DIRECT_REFERRING_DOMAIN;
+  return matchedString(value, REFERRING_DOMAIN);
+}
+
+function sanitizedClientVersion(value: unknown): string | number | undefined {
+  return finiteNumber(value) ?? matchedString(value, CLIENT_VERSION);
+}
+
+function sanitizedPublicPathname(value: unknown): string | undefined {
+  return typeof value === "string" && isPublicTelemetryPath(value) ? value : undefined;
+}
+
+function matchedString(value: unknown, pattern: RegExp): string | undefined {
+  return typeof value === "string" && pattern.test(value) ? value : undefined;
+}
+
+function matchedMember(value: unknown, allowed: Set<string>): string | undefined {
+  return typeof value === "string" && allowed.has(value) ? value : undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  const numeric = finiteNumber(value);
+  return numeric !== undefined && numeric > 0 ? numeric : undefined;
 }
 
 function replaceProperties(

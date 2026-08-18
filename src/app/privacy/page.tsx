@@ -164,13 +164,15 @@ export default function PrivacyPage() {
           public marketing, documentation, blog, install, pricing, and
           comparison pages. Browser analytics use PostHog&apos;s cookieless mode
           to record pageviews, pageleave engagement, scroll depth, Core Web
-          Vitals, referrer origins, and bounded campaign labels. Postil relays
-          these requests through its own domain, but PostHog remains the data
-          processor. Analytics set no cookies and write no local or session
-          storage; daily anonymous aggregation is not linked to an account or
-          retained as a durable browser identity. PostHog forms that rotating
-          daily identifier from the project, hostname, IP address, and user
-          agent, then discards the raw IP address. DNT and Global Privacy
+          Vitals, referrer origins, bounded campaign labels, and a coarse device
+          class of device type, browser name and version, and operating system
+          name and version. Postil relays these requests through its own domain,
+          but PostHog remains the data processor. Analytics set no cookies and
+          write no local or session storage; daily anonymous aggregation is not
+          linked to an account or retained as a durable browser identity.
+          PostHog forms that rotating daily identifier from the project,
+          hostname, IP address, and user agent, then discards the raw IP
+          address. DNT and Global Privacy
           Control disable browser and request analytics. Session replay, person
           profiles, surveys, heatmaps, and autocaptured clicks are disabled.
           Browser event payloads discard query strings and persistent device or
