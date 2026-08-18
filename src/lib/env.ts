@@ -349,6 +349,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "WORKER_PER_ORG_CONCURRENCY",
+    purpose:
+      "Maximum review and respond jobs one organization may run at once; 0 removes the limit",
+    example: "2",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
     name: "WORKER_POLL_INTERVAL_MS",
     purpose: "Initial worker queue poll interval",
     example: "1000",
@@ -870,6 +878,21 @@ export function readPositiveIntEnv(name: string, fallback: number): number {
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     console.warn(`${name} must be a positive integer; using ${fallback}`);
+    return fallback;
+  }
+  return parsed;
+}
+
+/**
+ * Read a non-negative integer env var, falling back (with a warning) on an unset or
+ * invalid value. Zero is a meaningful setting for the limits that use this helper.
+ */
+export function readNonNegativeIntEnv(name: string, fallback: number): number {
+  const raw = optionalEnv(name);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.warn(`${name} must be a non-negative integer; using ${fallback}`);
     return fallback;
   }
   return parsed;

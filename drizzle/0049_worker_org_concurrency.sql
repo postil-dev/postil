@@ -1,0 +1,4 @@
+-- The per-organization claim budget reads a running-job count keyed by kind and
+-- payload->>'sourceOrgId'. Its supporting partial index on the existing "jobs"
+-- table is built concurrently by the operational index release step, outside
+-- this transactional stream; see README.md.

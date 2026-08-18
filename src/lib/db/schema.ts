@@ -1604,6 +1604,9 @@ export const jobs = pgTable(
     index("jobs_running_locked_at_idx")
       .on(t.lockedAt)
       .where(sql`${t.status} = 'running'`),
+    index("jobs_running_org_concurrency_idx")
+      .on(t.kind, sql`(${t.payload}->>'sourceOrgId')`)
+      .where(sql`${t.status} = 'running'`),
   ],
 );
 

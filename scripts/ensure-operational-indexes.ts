@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { closeDb, getPool } from "@/lib/db";
 
-const RELEASE_STEP = "operational-indexes-v3";
+const RELEASE_STEP = "operational-indexes-v4";
 const RELEASE_LOCK_NAMESPACE = 1_349_481_332;
 const RELEASE_LOCK_OPERATION = 1_768_704_356;
 const RELEASE_LOCK_WAIT_MS = 15 * 60 * 1_000;
@@ -26,6 +26,19 @@ const OPERATIONAL_INDEXES: OperationalIndex[] = [
     createSql:
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_locked_at_idx" ON "jobs" ("locked_at") WHERE "status" = \'running\'',
     definitionFragments: ["public.jobs", "(locked_at)", "where", "status", "running"],
+  },
+  {
+    name: "jobs_running_org_concurrency_idx",
+    createSql:
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_org_concurrency_idx" ON "jobs" ("kind", ("payload"->>\'sourceOrgId\')) WHERE "status" = \'running\'',
+    definitionFragments: [
+      "public.jobs",
+      "kind",
+      "payload ->> 'sourceOrgId'",
+      "where",
+      "status",
+      "running",
+    ],
   },
   {
     name: "webhook_deliveries_completed_at_idx",
