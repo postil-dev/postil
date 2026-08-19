@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
-import { BenchResultsSection } from "@/components/bench-results";
 import { ModelCatalog } from "@/components/model-catalog";
 
 export const metadata: Metadata = {
@@ -41,6 +41,16 @@ export default function ModelsPage() {
           . The list spans cost and locally-runnable open-weights options.
           Bench-tested badges refer to the checked-in results below. Re-check
           live provider pricing before committing to a procurement number.
+        </p>
+        <p className="prose-postil mt-2">
+          Hosted reviews route only to endpoints that deny data collection and
+          hold no copy of the request, so a model whose providers offer no
+          such endpoint cannot serve a hosted review at any price. That
+          constraint is ours to enforce, not yours to configure. It also means
+          the price a hosted review pays is the price of the qualifying route,
+          which is not always the headline price for the model. Self-hosted
+          and bring-your-own-key deployments choose their own provider and
+          their own policy.
         </p>
         <div className="mt-4">
           <ModelCatalog />
@@ -100,18 +110,17 @@ postil review --staged --output-json`}</code>
         </h2>
         <p className="prose-postil mt-2">
           Method: seeded-defect fixtures run through a mock forge against the
-          real model, scored against ground truth. Mean cost per review is the
-          headline column; total cost shows aggregate spend for the checked-in
-          run.
+          real model, scored against ground truth. The suite is 70 fixtures,
+          57 with a seeded defect and 13 clean pull requests where the correct
+          review is silence.
         </p>
         <p className="prose-postil mt-2">
-          Detection rate here is a floor for what a model catches on seeded,
-          unambiguous defects; it is not a ranking across models. The
-          checked-in live report below uses 40 fixtures, with 33 seeded
-          defects and 7 clean PRs where the correct review is silence.
-          Capable models can saturate this suite, which shows only that a
-          model handles the review pipeline and obvious bugs at the stated
-          cost.
+          Every model we have scored, with detection, gate correctness,
+          silence on clean pull requests, cost and latency, is on the{" "}
+          <Link href="/bench" className="text-rust underline">
+            model bench page
+          </Link>
+          , along with the raw report and the command to reproduce it.
         </p>
         <p className="prose-postil mt-2">
           These public model-bench fixtures are separate from the private
@@ -119,9 +128,6 @@ postil review --staged --output-json`}</code>
           aggregate silence-rate methodology and figures, not the raw
           measurement dataset, envelopes, or run logs.
         </p>
-        <div className="mt-4">
-          <BenchResultsSection />
-        </div>
       </div>
 
       <div className="prose-postil mt-14">
@@ -133,12 +139,19 @@ postil review --staged --output-json`}</code>
           prints the API key.
         </p>
         <pre tabIndex={0} aria-label="Code sample">
-          <code>{`cd postil-cli/bench
+          <code>{`cargo build --release
+cd postil-cli/bench
+bun install --frozen-lockfile
 export MODEL_API_KEY=...
-export POSTIL_API_KEY="$MODEL_API_KEY"
-export POSTIL_BENCH_MODELS=deepseek/deepseek-v4-pro,mistralai/mistral-small-3.2-24b-instruct,google/gemma-3-27b-it
-bun run bench:live-models -- --json-out .runs/live-models.json`}</code>
+REVIEW_MODEL=deepseek/deepseek-v4-pro-0813 \\
+  bun run bench:live -- --json-out .runs/v4-pro.json`}</code>
         </pre>
+        <p>
+          One model per run. The report records the fixture corpus and
+          evaluator digests alongside the metrics, so a run is only comparable
+          to another run that scored the identical corpus with the identical
+          evaluator.
+        </p>
         <p>
           Promote the cheapest model that preserves detection rate and
           silence on clean PRs for your own codebase. The numbers above are

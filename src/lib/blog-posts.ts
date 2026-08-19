@@ -121,6 +121,17 @@ export const BLOG_POSTS = [
     excerpt:
       "Public AI review examples should resolve to the source repository, the reviewed pull request state, and the check-run records behind the claim.",
   },
+  {
+    slug: "the-least-useful-number",
+    publishedOn: "2026-08-19",
+    title: "The least useful number on our own benchmark",
+    description:
+      "We scored eighteen models on one fixture set in one afternoon. Detection rate moved nine points between runs of a single unchanged model, which is wider than the gap between most models. Silence and gate correctness separate them; the headline metric does not.",
+    socialDescription:
+      "Eighteen models, one fixture set. Detection rate moved nine points between runs of the same model. The headline metric is the least useful one on the table.",
+    excerpt:
+      "We scored eighteen models on one fixture set. Detection rate moved nine points between runs of a single unchanged model, wider than the gap between most models on the table. Here is what separates them instead, and what it cost us to find out.",
+  },
 ] as const satisfies readonly BlogPost[];
 
 export type BlogPostSlug = (typeof BLOG_POSTS)[number]["slug"];
