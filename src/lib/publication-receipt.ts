@@ -123,11 +123,19 @@ const publicationReceiptSchema = z
           message: "rejected inline placement must use summaryOnly outcome",
         });
       }
-      if (finding.commentId && finding.initialOutcome !== "inline") {
+      // A carried finding is one an earlier review already published, so it
+      // names that review's comment rather than one this run created. The
+      // identity is what the lifecycle pass observes the thread by, so
+      // withholding it here would leave those threads unobserved.
+      if (
+        finding.commentId &&
+        finding.initialOutcome !== "inline" &&
+        finding.initialOutcome !== "carried"
+      ) {
         context.addIssue({
           code: "custom",
           path: ["findings", index, "commentId"],
-          message: "only inline findings can carry a comment identity",
+          message: "only a published finding can carry a comment identity",
         });
       }
     }
