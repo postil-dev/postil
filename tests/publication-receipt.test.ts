@@ -248,6 +248,45 @@ describe("publication receipt contract", () => {
     expect(receipt.findings[0]?.commentId).toBe("8003");
   });
 
+  test("accepts a carried finding naming the comment an earlier review left", async () => {
+    const receipt = await readPublicationReceipt(
+      await receiptFile({
+        version: 1,
+        receiptId: "github-review-v1:carried",
+        reviewId: "9004",
+        findings: [
+          {
+            findingId: "carried-id",
+            initialOutcome: "carried",
+            commentId: "8005",
+          },
+        ],
+      }),
+    );
+    // The lifecycle pass observes threads by this identity, so a carried
+    // finding without it leaves its live thread unobserved.
+    expect(receipt.findings[0]?.commentId).toBe("8005");
+  });
+
+  test("rejects a comment identity on a finding that was never published", async () => {
+    await expect(
+      readPublicationReceipt(
+        await receiptFile({
+          version: 1,
+          receiptId: "github-review-v1:unpublished",
+          reviewId: "9005",
+          findings: [
+            {
+              findingId: "summary-id",
+              initialOutcome: "summaryOnly",
+              commentId: "8006",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow("only a published finding can carry a comment identity");
+  });
+
   test("rejects public receipt permissions and cross-envelope identities", async () => {
     const path = await receiptFile({
       version: 1,
