@@ -1,17 +1,26 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { BENCH, BenchTable, formatBenchDate } from "@/components/bench-table";
+import {
+  BENCH,
+  BenchTable,
+  benchModel,
+  formatBenchDate,
+  secondsLabel,
+  SCORED_MODELS,
+  UNREACHABLE_MODELS,
+} from "@/components/bench-table";
+
+const LUNA = benchModel("openai/gpt-5.6-luna");
+const K27 = benchModel("moonshotai/kimi-k2.7-code");
 
 export const metadata: Metadata = {
   title: "Model bench — every model we tested, on one fixture set",
-  description:
-    "Eighteen models scored on the same 70 review fixtures with the same binary on one afternoon: detection, gate correctness, silence on clean pull requests, cost and latency. Raw report included.",
+  description: `${SCORED_MODELS.length} models scored on the same ${BENCH.defectCases + BENCH.cleanCases} review fixtures with the same binary on one afternoon: detection, gate correctness, silence on clean pull requests, cost and latency. Raw report included.`,
   alternates: { canonical: "/bench" },
   openGraph: {
     title: "Model bench — every model we tested",
-    description:
-      "Eighteen models, one fixture set, one binary, one afternoon. Including the ones that did badly.",
+    description: `${SCORED_MODELS.length} models, one fixture set, one binary, one afternoon. Including the ones that did badly.`,
     url: "/bench",
     images: ["/opengraph-image"],
   },
@@ -25,10 +34,10 @@ export default function BenchPage() {
       <p className="eyebrow">Resources</p>
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">Model bench.</h1>
       <p className="mt-6 text-lg text-ink-soft">
-        Every model we have scored against the current fixture set, including
-        the ones that did badly and the one that could not be reached at all.
-        One corpus, one binary, one afternoon, so the rows are comparable to
-        each other.
+        {SCORED_MODELS.length} models scored against the current fixture set,
+        including the ones that did badly, plus {UNREACHABLE_MODELS.length} that
+        could not be reached at all. One corpus, one binary, one afternoon, so
+        the rows are comparable to each other.
       </p>
 
       <div className="prose-postil mt-10">
@@ -117,15 +126,15 @@ export default function BenchPage() {
               <td><code>openai/gpt-5.6-luna</code> on Azure</td>
               <td>89.5%</td>
               <td>85.5%</td>
-              <td>16.8s</td>
-              <td>17.6s</td>
+              <td>{secondsLabel(LUNA.latencyMsP95)}</td>
+              <td>{secondsLabel(LUNA.pinnedProviderContract?.latencyMsP95)}</td>
             </tr>
             <tr>
               <td><code>moonshotai/kimi-k2.7-code</code> on CoreWeave</td>
               <td>94.7%</td>
               <td>85.5%</td>
-              <td>18.5s</td>
-              <td>58.2s</td>
+              <td>{secondsLabel(K27.latencyMsP95)}</td>
+              <td>{secondsLabel(K27.pinnedProviderContract?.latencyMsP95)}</td>
             </tr>
           </tbody>
         </table>

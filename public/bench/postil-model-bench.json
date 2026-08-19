@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-19T13:56:01.944Z",
+  "generatedAt": "2026-08-19T16:21:48.868Z",
   "cliVersion": "postil 0.8.26",
   "fixtureCorpusSha256": "8e4c2cb9ad5a7efdfe6a875566d20133e905155b6f693a873595adf6c069e065",
   "evaluatorSha256": "ebc72a8d7d60c08bf79759a0dfc5dbf821a9e6f79f4503c08ea9660dddece4d7",
@@ -29,6 +29,20 @@
         "totalCostUsd": 0.0555,
         "latencyMsP95": 17559
       }
+    },
+    {
+      "id": "openai/gpt-5.6-terra",
+      "detectionRate": 0.9473684210526315,
+      "gateVerdictCorrectness": 0.8571428571428571,
+      "falsePositives": 0,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 0,
+      "casesRun": 70,
+      "totalCostUsd": 0.64024169,
+      "meanCostUsdPerReview": 0.009146309857142857,
+      "latencyMsP50": 8230,
+      "latencyMsP95": 17603
     },
     {
       "id": "moonshotai/kimi-k2.7-code",
@@ -66,6 +80,20 @@
       "meanCostUsdPerReview": 0.009041023714285714,
       "latencyMsP50": 10272,
       "latencyMsP95": 62096
+    },
+    {
+      "id": "openai/gpt-5.6-luna-pro",
+      "detectionRate": 0.9298245614035088,
+      "gateVerdictCorrectness": 0.8571428571428571,
+      "falsePositives": 0,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 0,
+      "casesRun": 70,
+      "totalCostUsd": 0.30326815,
+      "meanCostUsdPerReview": 0.004332402142857143,
+      "latencyMsP50": 27396,
+      "latencyMsP95": 38836
     },
     {
       "id": "moonshotai/kimi-k2.6",

@@ -14,6 +14,15 @@ export interface BenchModelResult {
   meanCostUsdPerReview?: number;
   latencyMsP50?: number;
   latencyMsP95?: number;
+  pinnedProviderContract?: {
+    provider: string;
+    runs: number;
+    detectionRate: number;
+    gateVerdictCorrectness: number;
+    falsePositives: number;
+    totalCostUsd: number;
+    latencyMsP95: number;
+  };
 }
 
 export interface BenchResults {
@@ -28,6 +37,21 @@ export interface BenchResults {
 }
 
 export const BENCH: BenchResults = benchData as BenchResults;
+
+/** Counts and figures quoted in prose are derived here rather than typed, so a
+ * refreshed report cannot leave the surrounding sentences stating old numbers. */
+export const SCORED_MODELS = BENCH.models.filter((model) => !model.unreachable);
+export const UNREACHABLE_MODELS = BENCH.models.filter((model) => model.unreachable);
+
+export function benchModel(id: string): BenchModelResult {
+  const model = BENCH.models.find((candidate) => candidate.id === id);
+  if (!model) throw new Error(`no bench row for ${id}`);
+  return model;
+}
+
+export function secondsLabel(ms: number | undefined): string {
+  return ms === undefined ? "\u2014" : `${(ms / 1000).toFixed(1)}s`;
+}
 
 export function formatBenchDate(iso: string): string {
   return new Date(iso).toISOString().slice(0, 10);
