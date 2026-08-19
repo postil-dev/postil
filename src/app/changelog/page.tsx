@@ -35,11 +35,15 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.8.24–0.8.25",
+    version: "0.8.24–0.8.26",
     date: "August 18, 2026",
     summary:
       "A hosted review gets the share of its time budget that its own plan reserved, instead of the share a much larger review would have been given.",
     changes: [
+      {
+        label: "Fixed",
+        text: "A review split across several batches sends them together rather than one after another, so each batch gets the review's whole time budget instead of a fraction of it. Sending them in sequence divided the budget by the number of batches, and larger changes lost a batch to the deadline.",
+      },
       {
         label: "Fixed",
         text: "Hosted reviews divide their time budget by the work they actually scheduled. Every review was held to the slice sized for a review split across many batches, so a review that needed only one model request was cut off partway through and reported as a provider outage. Reviews of ordinary changes were the ones affected, because they are the ones that finish in a single request.",
