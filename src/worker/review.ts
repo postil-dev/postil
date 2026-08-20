@@ -1258,7 +1258,11 @@ export async function runReviewJob(
       payload.repoFullName,
       ADVISORY_CHECK_NAME,
       payload.headSha,
-      { signal: reviewSignal, externalId: advisoryCheckExternalId },
+      // Both check runs point at the same review page. Without this the
+      // advisory run falls back to GitHub's default target, which is the
+      // App's homepage, so "View more details" leaves the reader to find
+      // the run themselves.
+      { signal: reviewSignal, externalId: advisoryCheckExternalId, detailsUrl },
     ).catch((error) => {
       advisoryCheckRunMayExist =
         error instanceof AmbiguousCheckRunCreationError;
