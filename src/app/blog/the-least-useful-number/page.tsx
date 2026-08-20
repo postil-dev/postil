@@ -1,6 +1,12 @@
 import Link from "next/link";
 
 import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { CostAgainstGateChart, DetectionSpreadChart } from "@/components/bench-charts";
+import {
+  DETECTION_BAND_POINTS,
+  MODELS_IN_DETECTION_BAND,
+  SCORED_MODELS,
+} from "@/components/bench-table";
 import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
 const post = getBlogPost("the-least-useful-number");
@@ -18,45 +24,32 @@ export default function LeastUsefulNumberArticle() {
 
       <div className="prose-postil blog-prose mt-10">
         <p>
-          We publish a table of model benchmark results. It was measured against
-          a fixture set that no longer exists, on a build from February, and it
-          flattered every small model on it. So we re-ran everything: eighteen
-          models, one corpus, one binary, one afternoon. The results changed
-          which model we run, and they changed what we think the table is for.
+          We publish a{" "}
+          <Link href="/bench" className="text-rust underline">
+            table of model benchmark results
+          </Link>
+          . It was measured
+          against a fixture set that no longer exists, on a build seven minor
+          versions old, and it flattered every small model on it. So we re-ran
+          everything: {SCORED_MODELS.length} models, one corpus, one binary,
+          one afternoon. The results changed which model we run, and they
+          changed what we think the table is for.
         </p>
 
         <h2>Detection rate barely separates anything</h2>
         <p>
           The column everyone leads with is how many seeded defects a model
-          finds. We ran two models four times each to see how stable it is.
+          finds. We ran three models four times each, against the same fixtures
+          with the same binary, to see how stable that number is.
         </p>
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Model</th>
-              <th scope="col">Four runs</th>
-              <th scope="col">Spread</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><code>z-ai/glm-5.2</code></td>
-              <td>94.7, 89.5, 87.7, 89.5</td>
-              <td>7.0 points</td>
-            </tr>
-            <tr>
-              <td><code>moonshotai/kimi-k2.7-code</code></td>
-              <td>94.7, 89.5, 98.2, 94.7</td>
-              <td>8.7 points</td>
-            </tr>
-          </tbody>
-        </table>
+        <DetectionSpreadChart />
         <p>
           One unchanged model, one unchanged fixture set, nine points of
-          movement. On our full table, thirteen of eighteen models sit inside a
-          nine-point band. The headline metric cannot tell most of them apart,
-          and any single-run comparison between two of them is measuring the
-          weather.
+          movement. On our full table, {MODELS_IN_DETECTION_BAND} of{" "}
+          {SCORED_MODELS.length} models sit within {DETECTION_BAND_POINTS}{" "}
+          points of the best one. The headline metric cannot tell most of them
+          apart, and any single-run comparison between two of them is measuring
+          the weather.
         </p>
         <p>
           This is not a claim that detection does not matter. It is a claim
@@ -150,6 +143,7 @@ export default function LeastUsefulNumberArticle() {
           How much a model thinks before answering tells you nearly everything,
           and it is not on any pricing page. You have to run it.
         </p>
+        <CostAgainstGateChart />
 
         <h2>We were measuring a route we cannot use</h2>
         <p>
@@ -175,13 +169,37 @@ export default function LeastUsefulNumberArticle() {
 
         <h2>What we changed</h2>
         <p>
-          We moved off the model we were running. The replacement was one we
-          had already rejected: in July, a preflight guard refused it because
-          projected qualification spend exceeded its cap, so it made zero
-          calls. The price has since fallen fivefold. The rejection was filed
-          in the same shape as a quality failure, so nobody revisited it. A
-          rejection on cost is perishable evidence and ours was not marked as
-          such.
+          Hosted reviews now run on{" "}
+          <a
+            href="https://openrouter.ai/openai/gpt-5.6-luna"
+            rel="noopener noreferrer"
+            className="text-rust underline"
+          >
+            <code>openai/gpt-5.6-luna</code>
+          </a>
+          , pinned to a zero-retention endpoint, replacing{" "}
+          <a
+            href="https://openrouter.ai/z-ai/glm-5.2"
+            rel="noopener noreferrer"
+            className="text-rust underline"
+          >
+            <code>z-ai/glm-5.2</code>
+          </a>
+          . It decides the merge gate correctly 86% of the time against the
+          previous model&apos;s 74%, raised no false finding in any run, stayed
+          silent on every clean fixture, and costs about a seventh as much. The{" "}
+          <Link href="/changelog" className="text-rust underline">
+            changelog
+          </Link>{" "}
+          records the release.
+        </p>
+        <p>
+          It was a model we had already rejected. In July a preflight guard
+          refused it because projected qualification spend exceeded its cap, so
+          it made zero calls. The price has since fallen fivefold. The rejection
+          was filed in the same shape as a quality failure, so nobody revisited
+          it. A rejection on cost is perishable evidence and ours was not marked
+          as such.
         </p>
         <p>
           We also re-recorded our release baseline from the median of four runs
@@ -196,7 +214,23 @@ export default function LeastUsefulNumberArticle() {
             model bench page
           </Link>
           , including the ones that did badly and the one that could not be
-          reached at all, with the raw report and the command to reproduce it.
+          reached at all, with the{" "}
+          <a href="/bench/postil-model-bench.json" className="text-rust underline">
+            raw report
+          </a>{" "}
+          and the command to reproduce it. The harness is in the{" "}
+          <a
+            href="https://github.com/postil-dev/postil-cli/tree/main/bench"
+            rel="noopener noreferrer"
+            className="text-rust underline"
+          >
+            CLI repository
+          </a>
+          , and{" "}
+          <Link href="/docs/models" className="text-rust underline">
+            the model catalogue
+          </Link>{" "}
+          lists what each option costs.
           These are our fixtures and we build the product they score, so apply
           our own{" "}
           <Link href="/blog/ai-code-review-benchmarks" className="text-rust underline">
