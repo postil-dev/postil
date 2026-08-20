@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.8.27",
+    date: "August 20, 2026",
+    summary:
+      "Hosted reviews run on a different model, chosen because it decides the merge gate correctly more often and interrupts clean pull requests less.",
+    changes: [
+      {
+        label: "Changed",
+        text: "Hosted reviews now use a model that gets the block-or-pass decision right 86% of the time against the previous model's 74%, measured across repeated runs of the same 70-fixture suite. It raised no false finding in any run and stayed silent on every clean fixture. Reviews also return faster: the slowest one in twenty finishes in 18 seconds rather than 29.",
+      },
+      {
+        label: "Changed",
+        text: "The benchmark that gates a release now measures the model the release ships, read from the configuration the binary is built with. It previously named a model separately, so a release that changed the model still measured the old one.",
+      },
+    ],
+  },
+  {
     version: "0.8.24–0.8.26",
     date: "August 18, 2026",
     summary:
