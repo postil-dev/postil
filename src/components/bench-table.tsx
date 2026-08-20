@@ -25,6 +25,11 @@ export interface BenchModelResult {
   };
 }
 
+export interface BenchRepeatRuns {
+  note: string;
+  models: { id: string; detectionRates: number[]; degradedRunIndexes?: number[] }[];
+}
+
 export interface BenchResults {
   generatedAt: string;
   cliVersion: string;
@@ -34,6 +39,7 @@ export interface BenchResults {
   defectCases: number;
   cleanCases: number;
   models: BenchModelResult[];
+  repeatRuns?: BenchRepeatRuns;
 }
 
 export const BENCH: BenchResults = benchData as BenchResults;
