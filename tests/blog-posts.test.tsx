@@ -17,6 +17,7 @@ import {
 describe("blog publication metadata", () => {
   test("orders newest articles first with a deterministic slug tie-break", () => {
     expect(orderedBlogPosts().map((post) => post.slug)).toEqual([
+      "the-least-useful-number",
       "evidence-has-to-link-back",
       "the-gate-is-separate-from-the-review",
       "ai-code-review-benchmarks",

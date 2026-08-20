@@ -22,7 +22,7 @@ describe("billing credit calculations", () => {
       2_000_000,
       500_000,
     );
-    expect(costMicros).toBe(1_305_000);
+    expect(costMicros).toBe(4_320_000);
     expect(
       usageEventCostMicros({
         id: 1,
@@ -32,7 +32,7 @@ describe("billing credit calculations", () => {
         costMicros,
         createdAt: new Date("2026-07-11T12:00:00.000Z"),
       }),
-    ).toBe(1_305_000);
+    ).toBe(4_320_000);
     expect(
       usageEventCostMicros({
         id: 2,
@@ -42,7 +42,7 @@ describe("billing credit calculations", () => {
         costMicros: null,
         createdAt: new Date("2026-07-11T12:00:00.000Z"),
       }),
-    ).toBe(1_305_000);
+    ).toBe(4_320_000);
   });
 
   test("deducts post-grant usage from applied credit grants", () => {

@@ -31,6 +31,7 @@ const WEB_VITAL_NAVIGATION_TYPES = new Set([
 
 const PUBLIC_EXACT_PATHS = new Set([
   "/",
+  "/bench",
   "/blog",
   "/blog/ai-code-review-benchmarks",
   "/blog/ai-code-review-pricing-2026",
@@ -39,6 +40,7 @@ const PUBLIC_EXACT_PATHS = new Set([
   "/blog/self-hosted-ai-code-review",
   "/blog/silence-rate",
   "/blog/the-gate-is-separate-from-the-review",
+  "/blog/the-least-useful-number",
   "/blog/where-does-your-code-go",
   "/blog/why-copilot-cant-block-your-merge",
   "/changelog",
