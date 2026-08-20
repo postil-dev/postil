@@ -49,6 +49,16 @@ export function benchModel(id: string): BenchModelResult {
   return model;
 }
 
+/** How many scored models sit within nine points of the best one: the spread a
+ * single unchanged model shows across repeated runs. Derived so the claim in
+ * prose cannot outlive the data it describes. */
+export const DETECTION_BAND_POINTS = 9;
+export const MODELS_IN_DETECTION_BAND = (() => {
+  const rates = SCORED_MODELS.map((model) => model.detectionRate ?? 0);
+  const best = Math.max(...rates);
+  return rates.filter((rate) => rate * 100 >= best * 100 - DETECTION_BAND_POINTS).length;
+})();
+
 export function secondsLabel(ms: number | undefined): string {
   return ms === undefined ? "\u2014" : `${(ms / 1000).toFixed(1)}s`;
 }

@@ -1,6 +1,11 @@
 import Link from "next/link";
 
 import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import {
+  DETECTION_BAND_POINTS,
+  MODELS_IN_DETECTION_BAND,
+  SCORED_MODELS,
+} from "@/components/bench-table";
 import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
 const post = getBlogPost("the-least-useful-number");
@@ -18,11 +23,12 @@ export default function LeastUsefulNumberArticle() {
 
       <div className="prose-postil blog-prose mt-10">
         <p>
-          We publish a table of model benchmark results. It was measured against
-          a fixture set that no longer exists, on a build from February, and it
-          flattered every small model on it. So we re-ran everything: eighteen
-          models, one corpus, one binary, one afternoon. The results changed
-          which model we run, and they changed what we think the table is for.
+          We publish a table of model benchmark results. It was measured
+          against a fixture set that no longer exists, on a build seven minor
+          versions old, and it flattered every small model on it. So we re-ran
+          everything: {SCORED_MODELS.length} models, one corpus, one binary,
+          one afternoon. The results changed which model we run, and they
+          changed what we think the table is for.
         </p>
 
         <h2>Detection rate barely separates anything</h2>
@@ -53,10 +59,11 @@ export default function LeastUsefulNumberArticle() {
         </table>
         <p>
           One unchanged model, one unchanged fixture set, nine points of
-          movement. On our full table, thirteen of eighteen models sit inside a
-          nine-point band. The headline metric cannot tell most of them apart,
-          and any single-run comparison between two of them is measuring the
-          weather.
+          movement. On our full table, {MODELS_IN_DETECTION_BAND} of{" "}
+          {SCORED_MODELS.length} models sit within {DETECTION_BAND_POINTS}{" "}
+          points of the best one. The headline metric cannot tell most of them
+          apart, and any single-run comparison between two of them is measuring
+          the weather.
         </p>
         <p>
           This is not a claim that detection does not matter. It is a claim
