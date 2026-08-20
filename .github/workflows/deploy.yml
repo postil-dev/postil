@@ -32,8 +32,12 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       # Bake the pinned CLI into the image so the worker can spawn it.
-      # POSTIL_CLI_TAG is a required repo variable naming a compatible
-      # postil-cli release tag; this step always runs on deploy so
+      # `src/data/public-cli-release.json` is the only place the pinned release
+      # is named. It used to be restated in a `POSTIL_CLI_TAG` repository
+      # variable that this step compared against the file, which meant every
+      # pin bump needed two edits in two systems and a deploy failed whenever
+      # someone made only the one visible in the diff. This step always runs on
+      # deploy so
       # vendor/postil is always populated with a cosign-verified binary
       # before the image is built. The Dockerfile has no fetch fallback of
       # its own and fails the build if vendor/postil is absent, so this step
@@ -49,34 +53,29 @@ jobs:
         # (1 initial attempt + 5 retries) * 60s max-time + 5 * 2s retry-delay
         # = 370s, so 4 * 370s = 1480s worst case before verification/install.
         timeout-minutes: 30
-        env:
-          TAG: ${{ vars.POSTIL_CLI_TAG }}
         run: |
           set -euo pipefail
+          TAG="$(node -e 'process.stdout.write(require("./src/data/public-cli-release.json").hostedCliRelease)')"
+          expected_commit="$(node -e 'process.stdout.write(require("./src/data/public-cli-release.json").hostedCliCommit)')"
+          expected_sha256="$(node -e 'process.stdout.write(require("./src/data/public-cli-release.json").hostedCliLinuxX86_64Sha256)')"
           if [[ -z "${TAG}" ]]; then
-            echo "::error::POSTIL_CLI_TAG must name a compatible postil-cli release."
+            echo "::error::public-cli-release.json must name a compatible postil-cli release in hostedCliRelease."
             exit 1
           fi
           if [[ ! "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::POSTIL_CLI_TAG must be a stable vMAJOR.MINOR.PATCH release."
+            echo "::error::hostedCliRelease ${TAG} must be a stable vMAJOR.MINOR.PATCH release."
             exit 1
           fi
-          expected_tag="$(node -e 'process.stdout.write(require("./src/data/public-cli-release.json").hostedCliRelease)')"
-          expected_commit="$(node -e 'process.stdout.write(require("./src/data/public-cli-release.json").hostedCliCommit)')"
-          expected_sha256="$(node -e 'process.stdout.write(require("./src/data/public-cli-release.json").hostedCliLinuxX86_64Sha256)')"
-          if [[ "${TAG}" != "${expected_tag}" ]]; then
-            echo "::error::POSTIL_CLI_TAG ${TAG} differs from the repository release authority ${expected_tag}."
-            exit 1
-          fi
+          echo "POSTIL_CLI_TAG=${TAG}" >> "$GITHUB_ENV"
           major="${BASH_REMATCH[1]}"
           minor="${BASH_REMATCH[2]}"
           if (( major == 0 && minor < 5 )); then
-            echo "::error::POSTIL_CLI_TAG ${TAG} is incompatible; v0.5.0 or newer is required."
+            echo "::error::hostedCliRelease ${TAG} is incompatible; v0.5.0 or newer is required."
             exit 1
           fi
           if grep -q '^POSTIL_PROVISIONAL_HOSTED_ROSTER = "1"$' fly.toml \
             && (( major == 0 && minor < 7 )); then
-            echo "::error::The provisional hosted roster requires postil-cli v0.7.0 or newer. Update public-cli-release.json and POSTIL_CLI_TAG to the exact published release."
+            echo "::error::The provisional hosted roster requires postil-cli v0.7.0 or newer. Update hostedCliRelease in public-cli-release.json to the exact published release."
             exit 1
           fi
           base="https://github.com/postil-dev/postil-cli/releases/download/${TAG}"
@@ -264,7 +263,6 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
-          POSTIL_CLI_TAG: ${{ vars.POSTIL_CLI_TAG }}
       - name: Restart any machines left stopped by the deploy
         id: recover
         # Runtime diagnostics stay in private Fly logs and the operator

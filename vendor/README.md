@@ -7,9 +7,11 @@ Dockerfile itself never fetches a release: it fails the build if
 `vendor/postil` is missing, so an unverified binary can never end up in the
 image.
 
-In deploy.yml, `vendor/postil` is populated by fetching a `postil-dev/postil-cli`
-release tag named by the required `POSTIL_CLI_TAG` repository variable
-and verifying its Sigstore signature before the Docker build runs. The
+In deploy.yml, `vendor/postil` is populated by fetching the
+`postil-dev/postil-cli` release named by `hostedCliRelease` in
+`src/data/public-cli-release.json` and verifying its Sigstore signature before
+the Docker build runs. That file is the only place the pinned release is
+named. The
 `POSTIL_CLI_REV` build arg only records which release the binary should match,
 for provenance/labels. For local/dev builds, build `postil` from source
 yourself and place the binary here. Keeping the pin in one place, the image,
