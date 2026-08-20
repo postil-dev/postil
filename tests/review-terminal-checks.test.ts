@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 const realDb = await import("@/lib/db");
 const realChecks = await import("@/lib/github/checks");
@@ -467,5 +468,22 @@ describe("review terminal check-runs", () => {
     expect(
       completions.map(({ id, conclusion }) => ({ id, conclusion })),
     ).toEqual([{ id: 11, conclusion: "failure" }]);
+  });
+});
+
+describe("check run details link", () => {
+  test("both check runs are created pointing at the review page", () => {
+    // The advisory run is created before the review finishes, so a reader who
+    // opens "View more details" while it is still running gets whatever target
+    // it was created with. Created without one, GitHub falls back to the App's
+    // homepage, which is where the reader lands for the whole run.
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const creations = [
+      ...source.matchAll(/createCheckRun\([\s\S]{0,400}?\n\s*\{([\s\S]{0,300}?)\},\n\s*\)/gu),
+    ].map((match) => match[1]!);
+    expect(creations.length).toBeGreaterThanOrEqual(2);
+    for (const options of creations) {
+      expect(options).toContain("detailsUrl");
+    }
   });
 });
