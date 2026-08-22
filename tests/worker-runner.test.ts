@@ -25,6 +25,7 @@ let webhookCommentRun: (() => Promise<void>) | undefined;
 let githubReactionRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
 let billingSettlementRun: (() => Promise<void>) | undefined;
+let hostedKeyProvisionRun: ((orgId: number) => Promise<void>) | undefined;
 let operatorAlertRun: (() => Promise<void>) | undefined;
 let customerNotificationEmailRun: (() => Promise<void>) | undefined;
 const customerNotificationEmailFailures: Array<{
@@ -62,7 +63,24 @@ mock.module("@/lib/server-observability", () => ({
 mock.module("@/lib/db", () => ({
   getDb: () => ({}),
   getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
-  schema: {},
+  schema: {
+    hostedProviderKeys: {
+      orgId: "hosted_org_id",
+      keyCiphertext: "hosted_key_ciphertext",
+      disabledAt: "hosted_disabled_at",
+    },
+    organizationEntitlements: {
+      orgId: "entitlement_org_id",
+      includedUsageMicros: "included_usage_micros",
+      overageHardCapMicros: "overage_hard_cap_micros",
+    },
+    jobs: {
+      id: "job_id",
+      kind: "job_kind",
+      status: "job_status",
+      payload: "job_payload",
+    },
+  },
 }));
 
 mock.module("@/lib/operator-alerts", () => ({
@@ -76,6 +94,13 @@ mock.module("@/lib/operator-alerts", () => ({
 mock.module("@/lib/paddle-billing", () => ({
   runBillingSettlement: async () => {
     await billingSettlementRun?.();
+  },
+}));
+
+mock.module("@/worker/hosted-key-provision", () => ({
+  runHostedKeyProvisionJob: async (payload: { orgId: number }) => {
+    const { orgId } = payload;
+    await hostedKeyProvisionRun?.(orgId);
   },
 }));
 
@@ -235,8 +260,12 @@ mock.module("@/worker/gate-enforcement-sweep", () => ({
   runGateEnforcementSweepJob: async () => null,
 }));
 
-const { drainQueueOnce, runClaimedJob, triggerQueueDrain } =
-  await import("@/worker/runner");
+const {
+  PROCESSABLE_JOB_KINDS,
+  drainQueueOnce,
+  runClaimedJob,
+  triggerQueueDrain,
+} = await import("@/worker/runner");
 
 function reviewJob(id: number): ClaimedJob {
   return {
@@ -277,6 +306,7 @@ beforeEach(() => {
   githubReactionRun = async () => undefined;
   billingContactVerificationRun = async () => undefined;
   billingSettlementRun = async () => undefined;
+  hostedKeyProvisionRun = async () => undefined;
   operatorAlertRun = async () => undefined;
   customerNotificationEmailRun = async () => undefined;
   customerNotificationEmailFailures.length = 0;
@@ -654,6 +684,37 @@ describe("drainQueueOnce", () => {
     expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
     expect(called).toBe(true);
     expect(completed).toEqual([1]);
+  });
+
+  test("dispatches hosted key provisioning through a durable job", async () => {
+    const job = reviewJob(15);
+    job.kind = "hosted-key-provision";
+    job.payload = { orgId: 42 };
+    const provisioned: number[] = [];
+    hostedKeyProvisionRun = async (orgId) => {
+      provisioned.push(orgId);
+    };
+    expect(PROCESSABLE_JOB_KINDS).toContain("hosted-key-provision");
+    await runClaimedJob(job, "hosted-key-worker", "worker");
+    expect(provisioned).toEqual([42]);
+    expect(completed).toEqual([15]);
+  });
+
+  test("uses normal bounded retries for provider provisioning outages", async () => {
+    const job = reviewJob(16);
+    job.kind = "hosted-key-provision";
+    job.payload = { orgId: 42 };
+    hostedKeyProvisionRun = async () => {
+      throw new Error("OpenRouter management request returned HTTP 503");
+    };
+
+    await runClaimedJob(job, "hosted-key-worker", "worker");
+
+    expect(failed).toEqual([
+      { id: 16, error: "OpenRouter management request returned HTTP 503" },
+    ]);
+    expect(permanentFailures).toEqual([]);
+    expect(retriedIndefinitely).toEqual([]);
   });
 
   test("dispatches durable operator alert jobs", async () => {

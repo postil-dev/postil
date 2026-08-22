@@ -20,6 +20,8 @@
 
 ## Later
 
+- Complete hosted provider-key lifecycle management with suspension-time
+  disablement and rotation.
 - Generalize GitHub identities into provider-linked identities, then add OIDC or
   SAML sign-in, verified domains, SCIM provisioning, enterprise account grouping,
   consolidated invoicing, and tenant audit logs. Product pages do not claim these

@@ -22,6 +22,7 @@ import {
   type ClaimedJob,
   type GateEnforcementSweepJobPayload,
   type GithubReactionJobPayload,
+  type HostedKeyProvisionJobPayload,
   type RespondDeliveryJobPayload,
   type RespondFailureCommentJobPayload,
   type RespondJobPayload,
@@ -59,6 +60,7 @@ import { isPermanentFailure } from "./failure-classifier";
 import { runGithubReactionJob } from "./github-reaction";
 import { runGateStateSyncJob } from "./gate-state-sync";
 import { runGateEnforcementSweepJob } from "./gate-enforcement-sweep";
+import { runHostedKeyProvisionJob } from "./hosted-key-provision";
 import {
   runOperatorAlertJob,
   type OperatorAlertJobPayload,
@@ -110,6 +112,7 @@ export const WEB_PROCESSABLE_JOB_KINDS = [
 export const PROCESSABLE_JOB_KINDS = [
   ...WEB_PROCESSABLE_JOB_KINDS,
   "gate-enforcement-sweep",
+  "hosted-key-provision",
 ] as const;
 
 interface JobContinuation {
@@ -138,6 +141,11 @@ async function handleJob(
         triggerFollowupDrain: processGroup === "web",
       });
       await completeWebhookDelivery(getPool(), delivery.deliveryId);
+      break;
+    }
+    case "hosted-key-provision": {
+      const payload = job.payload as HostedKeyProvisionJobPayload;
+      await runHostedKeyProvisionJob(payload);
       break;
     }
     case "review":
@@ -286,6 +294,9 @@ export async function runClaimedJob(
     const malformedWebhookDispatch =
       job.kind === "webhook-dispatch" &&
       message.includes("webhook dispatch job payload is malformed");
+    const malformedHostedKeyProvision =
+      job.kind === "hosted-key-provision" &&
+      message.includes("hosted key provision job payload is malformed");
     const invalidWebhookDelivery = err instanceof WebhookDeliveryStateError;
     const malformedWebhookComment =
       job.kind === "webhook-comment" &&
@@ -301,6 +312,7 @@ export async function runClaimedJob(
       malformedGateSync ||
       malformedGateEnforcement ||
       malformedWebhookDispatch ||
+      malformedHostedKeyProvision ||
       invalidWebhookDelivery ||
       malformedWebhookComment ||
       malformedGithubReaction ||

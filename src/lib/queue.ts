@@ -334,6 +334,10 @@ export interface WebhookDispatchJobPayload extends Record<string, unknown> {
   deliveryId: string;
 }
 
+export interface HostedKeyProvisionJobPayload extends Record<string, unknown> {
+  orgId: number;
+}
+
 export interface StoredWebhookDelivery {
   deliveryId: string;
   event: string;

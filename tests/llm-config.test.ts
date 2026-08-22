@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
+import { seal } from "@/lib/crypto/seal";
+
+const TEST_SEALING_KEY = Buffer.alloc(32, 7);
+
+function sealed(value: string): Buffer {
+  return seal(value, TEST_SEALING_KEY);
+}
+
 const schema = {
   orgSettings: {
     orgId: "org_id",
@@ -7,22 +15,45 @@ const schema = {
     guardrailsMd: "guardrails_md",
     contentPolicyMd: "content_policy_md",
   },
+  hostedProviderKeys: {
+    orgId: "hosted_org_id",
+    keyCiphertext: "hosted_key_ciphertext",
+    disabledAt: "hosted_disabled_at",
+  },
+  organizationEntitlements: {
+    orgId: "entitlement_org_id",
+    includedUsageMicros: "included_usage_micros",
+    overageHardCapMicros: "overage_hard_cap_micros",
+  },
+  jobs: {
+    id: "job_id",
+    kind: "job_kind",
+    status: "job_status",
+    payload: "job_payload",
+  },
 };
 let orgSettingsRows: unknown[] = [];
+let hostedProviderKeyRows: unknown[] = [];
 
 function fakeDb() {
+  let selectedTable: unknown;
   const chain = {
     select() {
       return chain;
     },
-    from() {
+    from(table: unknown) {
+      selectedTable = table;
       return chain;
     },
     where() {
       return chain;
     },
     limit() {
-      return Promise.resolve(orgSettingsRows);
+      return Promise.resolve(
+        selectedTable === schema.hostedProviderKeys
+          ? hostedProviderKeyRows
+          : orgSettingsRows,
+      );
     },
   };
   return chain;
@@ -35,11 +66,6 @@ mock.module("@/lib/db", () => ({
   },
   closeDb: async () => undefined,
   schema,
-}));
-
-mock.module("@/lib/crypto/seal", () => ({
-  getSealingKey: () => Buffer.alloc(32),
-  unseal: (sealed: Buffer) => sealed.toString("utf8"),
 }));
 
 const { REVIEW_DEADLINE_MS, buildCliEnv, resolveLlmConfig, resolveOrgReviewConfig } =
@@ -58,6 +84,7 @@ const KEY_NAMES = [
   "POSTIL_LLM_REQUEST_TIMEOUT_SECS",
   "POSTIL_LLM_TOTAL_TIMEOUT_SECS",
   "POSTIL_PROVISIONAL_HOSTED_ROSTER",
+  "POSTIL_SEALING_KEY",
 ] as const;
 
 const originalValues = new Map(
@@ -83,12 +110,15 @@ function clearEnv(): void {
 
 beforeEach(() => {
   clearEnv();
+  process.env.POSTIL_SEALING_KEY = TEST_SEALING_KEY.toString("hex");
   orgSettingsRows = [];
+  hostedProviderKeyRows = [];
 });
 
 afterEach(() => {
   restoreEnv();
   orgSettingsRows = [];
+  hostedProviderKeyRows = [];
 });
 
 describe("resolveLlmConfig", () => {
@@ -146,16 +176,60 @@ describe("resolveLlmConfig", () => {
     });
   });
 
+  test("uses an active organization hosted key with deployment defaults", async () => {
+    process.env.MODEL_API_KEY = "shared-hosted-key";
+    process.env.REVIEW_MODEL = "hosted-default-model";
+    process.env.REVIEW_MODEL_CASCADE = "hosted-default-cascade";
+    hostedProviderKeyRows = [
+      {
+        keyCiphertext: sealed("organization-hosted-key"),
+        disabledAt: null,
+      },
+    ];
+
+    await expect(resolveLlmConfig(123)).resolves.toEqual({
+      byok: false,
+      apiBase: "https://openrouter.ai/api/v1",
+      apiFormat: "openai-compatible",
+      apiKey: "organization-hosted-key",
+      apiAuthHeader: undefined,
+      apiAuthValue: undefined,
+      model: "hosted-default-model",
+      modelCascade: "hosted-default-cascade",
+    });
+  });
+
+  test("falls back to the shared hosted key when the organization key is disabled", async () => {
+    process.env.MODEL_API_KEY = "shared-hosted-key";
+    hostedProviderKeyRows = [
+      {
+        keyCiphertext: sealed("disabled-organization-key"),
+        disabledAt: new Date("2026-08-22T00:00:00.000Z"),
+      },
+    ];
+
+    await expect(resolveLlmConfig(123)).resolves.toMatchObject({
+      byok: false,
+      apiKey: "shared-hosted-key",
+    });
+  });
+
   test("uses org provider overrides atomically with the org stored key", async () => {
     process.env.MODEL_API_KEY = "hosted-default-key";
     process.env.REVIEW_MODEL = "hosted-default-model";
+    hostedProviderKeyRows = [
+      {
+        keyCiphertext: sealed("organization-hosted-key"),
+        disabledAt: null,
+      },
+    ];
     orgSettingsRows = [
       {
         apiBase: "https://11.0.0.1/v1",
         apiFormat: "anthropic",
-        apiKeyCiphertext: Buffer.from("org-key"),
-        apiAuthHeaderCiphertext: Buffer.from("CF-Access-Client-Secret"),
-        apiAuthValueCiphertext: Buffer.from("gateway-key"),
+        apiKeyCiphertext: sealed("org-key"),
+        apiAuthHeaderCiphertext: sealed("CF-Access-Client-Secret"),
+        apiAuthValueCiphertext: sealed("gateway-key"),
         model: "org-model",
         modelCascade: "org-cascade",
       },
@@ -177,7 +251,7 @@ describe("resolveLlmConfig", () => {
     orgSettingsRows = [
       {
         apiBase: "https://11.0.0.1/v1",
-        apiKeyCiphertext: Buffer.from("legacy-key"),
+        apiKeyCiphertext: sealed("legacy-key"),
         model: "legacy-model",
         modelCascade: null,
       },
@@ -196,9 +270,9 @@ describe("resolveLlmConfig", () => {
       {
         apiBase: "https://11.0.0.1/v1",
         apiFormat: "anthropic",
-        apiKeyCiphertext: Buffer.from("provider-key"),
-        apiAuthHeaderCiphertext: Buffer.from("Authorization"),
-        apiAuthValueCiphertext: Buffer.from("Bearer gateway-key"),
+        apiKeyCiphertext: sealed("provider-key"),
+        apiAuthHeaderCiphertext: sealed("Authorization"),
+        apiAuthValueCiphertext: sealed("Bearer gateway-key"),
         model: "claude-model",
         modelCascade: null,
       },

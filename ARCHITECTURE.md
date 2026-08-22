@@ -155,6 +155,11 @@ contacts, and the current-period included usage plus overage hard cap.
 The first active GitHub App installation for an owner atomically inserts one
 30-day trial and, when operator email is configured, a durable alert job. The
 trial uses hosted inference when hosted service is enabled and BYOK otherwise.
+Entitlement creation enqueues a durable job that mints a dedicated OpenRouter
+runtime key when management provisioning is configured. The runtime value is
+sealed at rest in `hosted_provider_keys`; BYOK credentials retain precedence,
+and the shared hosted key remains the fallback when no active organization key
+is available.
 The organization GitHub ID is the trial identity, and the entitlement survives
 uninstall, so reinstalling cannot restart the trial. Alert delivery uses a
 provider idempotency key and contains account and installation metadata without

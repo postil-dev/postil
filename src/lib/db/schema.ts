@@ -819,6 +819,20 @@ export const organizationEntitlements = pgTable(
   ],
 );
 
+/** Sealed OpenRouter runtime credential dedicated to one organization. */
+export const hostedProviderKeys = pgTable("hosted_provider_keys", {
+  orgId: bigint("org_id", { mode: "number" })
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  keyCiphertext: bytea("key_ciphertext").notNull(),
+  openRouterKeyHash: text("openrouter_key_hash").notNull(),
+  keyName: text("key_name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
+});
+
 /** Optional organization email choices. Transactional safety notices bypass these flags. */
 export const organizationNotificationPreferences = pgTable(
   "organization_notification_preferences",

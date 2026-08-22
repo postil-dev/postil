@@ -232,7 +232,7 @@ export function buildCliEnv(
   return cliEnv;
 }
 
-/** Resolve LLM config: org BYO settings win, env defaults otherwise. */
+/** Resolve LLM config: org BYO settings, dedicated hosted key, then env defaults. */
 export async function resolveLlmConfig(
   orgId: number | null,
 ): Promise<CliEnvConfig> {
@@ -277,39 +277,54 @@ export async function resolveLlmConfig(
     .where(eq(schema.orgSettings.orgId, orgId))
     .limit(1);
   const settings = rows[0];
-  if (!settings) return defaults;
-  if (!settings.apiKeyCiphertext) return defaults;
-  const apiKey = unseal(
-    Buffer.from(settings.apiKeyCiphertext),
-    getSealingKey(),
-  );
-  // Internal-network guard at the worker boundary: rows predating write-time
-  // validation must not reach the spawned CLI as POSTIL_API_BASE.
-  if (settings.apiBase) await validateApiBase(settings.apiBase);
-  const apiFormat = parseApiFormat(settings.apiFormat ?? "openai-compatible");
-  if (!apiFormat) throw new Error("stored BYOK API interface is invalid");
-  const hasAuthHeader = Boolean(settings.apiAuthHeaderCiphertext);
-  const hasAuthValue = Boolean(settings.apiAuthValueCiphertext);
-  if (hasAuthHeader !== hasAuthValue) {
-    throw new Error("stored BYOK additional authentication is incomplete");
+  if (settings?.apiKeyCiphertext) {
+    const apiKey = unseal(
+      Buffer.from(settings.apiKeyCiphertext),
+      getSealingKey(),
+    );
+    // Internal-network guard at the worker boundary: rows predating write-time
+    // validation must not reach the spawned CLI as POSTIL_API_BASE.
+    if (settings.apiBase) await validateApiBase(settings.apiBase);
+    const apiFormat = parseApiFormat(settings.apiFormat ?? "openai-compatible");
+    if (!apiFormat) throw new Error("stored BYOK API interface is invalid");
+    const hasAuthHeader = Boolean(settings.apiAuthHeaderCiphertext);
+    const hasAuthValue = Boolean(settings.apiAuthValueCiphertext);
+    if (hasAuthHeader !== hasAuthValue) {
+      throw new Error("stored BYOK additional authentication is incomplete");
+    }
+    const apiAuthHeader = settings.apiAuthHeaderCiphertext
+      ? unseal(Buffer.from(settings.apiAuthHeaderCiphertext), getSealingKey())
+      : undefined;
+    const apiAuthValue = settings.apiAuthValueCiphertext
+      ? unseal(Buffer.from(settings.apiAuthValueCiphertext), getSealingKey())
+      : undefined;
+    if (apiAuthHeader) validateAdditionalAuthHeader(apiAuthHeader, apiFormat);
+    if (apiAuthValue) validateAdditionalAuthValue(apiAuthValue);
+    return {
+      byok: true,
+      apiBase: settings.apiBase ?? defaults.apiBase,
+      apiFormat,
+      apiKey,
+      apiAuthHeader,
+      apiAuthValue,
+      model: settings.model ?? defaults.model,
+      modelCascade: settings.modelCascade ?? defaults.modelCascade,
+    };
   }
-  const apiAuthHeader = settings.apiAuthHeaderCiphertext
-    ? unseal(Buffer.from(settings.apiAuthHeaderCiphertext), getSealingKey())
-    : undefined;
-  const apiAuthValue = settings.apiAuthValueCiphertext
-    ? unseal(Buffer.from(settings.apiAuthValueCiphertext), getSealingKey())
-    : undefined;
-  if (apiAuthHeader) validateAdditionalAuthHeader(apiAuthHeader, apiFormat);
-  if (apiAuthValue) validateAdditionalAuthValue(apiAuthValue);
+
+  const hostedRows = await db
+    .select({
+      keyCiphertext: schema.hostedProviderKeys.keyCiphertext,
+      disabledAt: schema.hostedProviderKeys.disabledAt,
+    })
+    .from(schema.hostedProviderKeys)
+    .where(eq(schema.hostedProviderKeys.orgId, orgId))
+    .limit(1);
+  const hostedKey = hostedRows[0];
+  if (!hostedKey || hostedKey.disabledAt !== null) return defaults;
   return {
-    byok: true,
-    apiBase: settings.apiBase ?? defaults.apiBase,
-    apiFormat,
-    apiKey,
-    apiAuthHeader,
-    apiAuthValue,
-    model: settings.model ?? defaults.model,
-    modelCascade: settings.modelCascade ?? defaults.modelCascade,
+    ...defaults,
+    apiKey: unseal(Buffer.from(hostedKey.keyCiphertext), getSealingKey()),
   };
 }
 

@@ -451,6 +451,28 @@ describeDb("managed hosted inference release activation", () => {
     ).toEqual({ eligible: 3, granted: 3 });
     expect(
       (
+        await pool.query<{ count: string }>(
+          `SELECT count(*) FROM jobs
+           WHERE kind = 'hosted-key-provision'
+             AND status IN ('queued', 'running')
+             AND payload->>'orgId' = $1`,
+          [String(personalOrgId)],
+        )
+      ).rows[0]!.count,
+    ).toBe("1");
+    expect(
+      (
+        await pool.query<{ count: string }>(
+          `SELECT count(*) FROM jobs
+           WHERE kind = 'hosted-key-provision'
+             AND status IN ('queued', 'running')
+             AND payload->>'orgId' = $1`,
+          [String(configuredByokOrgId)],
+        )
+      ).rows[0]!.count,
+    ).toBe("1");
+    expect(
+      (
         await pool.query<{
           subscription_mode: string;
           requested_mode: string;
@@ -596,6 +618,17 @@ describeDb("managed hosted inference release activation", () => {
         releaseSha: releaseC,
       }),
     ).toEqual({ eligible: 0, granted: 0 });
+    expect(
+      (
+        await pool.query<{ count: string }>(
+          `SELECT count(*) FROM jobs
+           WHERE kind = 'hosted-key-provision'
+             AND status IN ('queued', 'running')
+             AND payload->>'orgId' = $1`,
+          [String(personalOrgId)],
+        )
+      ).rows[0]!.count,
+    ).toBe("1");
     expect(
       (
         await pool.query<{ count: string }>(

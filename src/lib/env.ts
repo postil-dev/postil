@@ -442,9 +442,9 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "OPENROUTER_MANAGEMENT_API_KEY",
     purpose:
-      "Read-only polling of OpenRouter account credit and per-key cap metadata",
-    example: "OpenRouter management key; it cannot run inference",
-    scope: ["monitor"],
+      "Provision per-organization OpenRouter runtime keys and poll account credit and per-key cap metadata",
+    example: "OpenRouter management credential",
+    scope: ["monitor", "worker"],
     optional: true,
   },
   {

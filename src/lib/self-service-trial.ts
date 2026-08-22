@@ -14,6 +14,7 @@ import {
   HOSTED_INFERENCE_LOCK,
   hostedInferenceCapability,
 } from "@/lib/release-job-rollout";
+import { enqueueHostedProviderKeyProvision } from "@/lib/hosted-provider-keys";
 
 export const SELF_SERVICE_TRIAL_DAYS = 30;
 const SELF_SERVICE_TRIAL_DURATION_MS =
@@ -115,6 +116,7 @@ export async function grantSelfServiceTrial(
       grantedMode,
       createdAt: now,
     });
+    await enqueueHostedProviderKeyProvision(tx, input.orgId);
     if (grantedMode !== input.subscriptionMode) {
       console.warn(
         `self-service hosted trial deferred until managed inference activation for organization ${input.orgId}`,
@@ -265,6 +267,20 @@ export async function backfillSelfServiceTrials(
       return true;
     });
     if (created) granted += 1;
+  }
+
+  const missingHostedKeys = await db
+    .select({ orgId: schema.organizationEntitlements.orgId })
+    .from(schema.organizationEntitlements)
+    .leftJoin(
+      schema.hostedProviderKeys,
+      eq(schema.hostedProviderKeys.orgId, schema.organizationEntitlements.orgId),
+    )
+    .where(isNull(schema.hostedProviderKeys.orgId));
+  for (const entitlement of missingHostedKeys) {
+    await db.transaction((tx) =>
+      enqueueHostedProviderKeyProvision(tx, entitlement.orgId),
+    );
   }
 
   return {
