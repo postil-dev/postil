@@ -511,8 +511,9 @@ export async function runDatabaseMonitoringChecks(
          WHERE entitlement.org_id IS NULL) AS trial_entitlement_gaps,
       (SELECT count(*)::text
          FROM self_service_trial_grants AS grant_row
+         JOIN organizations AS grant_org ON grant_org.id = grant_row.org_id
          LEFT JOIN operator_alert_deliveries AS delivery
-           ON delivery.event_key = 'trial-started:' || grant_row.initiated_by_github_id::text
+           ON delivery.event_key = 'trial-started:' || grant_org.github_org_id::text
          WHERE delivery.status IS DISTINCT FROM 'delivered') AS trial_alert_gaps,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(received_at)), 0)::int::text
          FROM webhook_deliveries WHERE completed_at IS NULL) AS webhook_pending_age,
