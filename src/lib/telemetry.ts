@@ -17,6 +17,9 @@ const DIRECT_REFERRING_DOMAIN = "$direct";
 const DEVICE_TYPES = new Set(["Desktop", "Mobile", "Tablet"]);
 const CLIENT_LABEL = /^[A-Za-z0-9 ._-]{1,32}$/;
 const CLIENT_VERSION = /^\d+(\.\d+){0,3}$/;
+// Printable ASCII, the character set a User-Agent header is defined over. The
+// SDK already truncates at 1000 characters; the bound rejects anything longer.
+const RAW_USER_AGENT = /^[ -~]{1,1024}$/;
 const WEB_VITAL_EVENT_KEY = /^\$web_vitals_(?:LCP|CLS|FCP|INP)_event$/;
 const WEB_VITAL_RATINGS = new Set(["good", "needs-improvement", "poor"]);
 const WEB_VITAL_NAVIGATION_TYPES = new Set([
@@ -303,13 +306,20 @@ function cookielessTransportProperties(
     $process_person_profile:
       properties.$process_person_profile === false ? false : undefined,
     $session_id: sessionId,
+    // Cookieless ingestion builds the rotating daily anonymous identifier by
+    // hashing the calendar day with the project, host, IP address, and user
+    // agent, and discards any cookieless event whose user agent is missing.
+    // Without this property no browser event is countable at all. The value is
+    // a hash input rather than a stored identity, and server-side request
+    // telemetry already reports the same string.
+    $raw_user_agent: matchedString(properties.$raw_user_agent, RAW_USER_AGENT),
   });
 }
 
 /**
  * The automatic SDK properties Web Analytics breakdowns need, each validated
- * against its expected shape. Fingerprinting surface (raw user agent, screen and
- * viewport geometry, timezone, language, device identifiers) stays dropped.
+ * against its expected shape. Fingerprinting surface (screen and viewport
+ * geometry, timezone, language, device identifiers) stays dropped.
  */
 function browserContextProperties(
   properties: Record<string, unknown>,

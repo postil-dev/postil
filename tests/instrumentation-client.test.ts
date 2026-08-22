@@ -244,6 +244,7 @@ describe("browser PostHog instrumentation", () => {
         $cookieless_mode: true,
         $process_person_profile: false,
         $session_id: sessionId,
+        $raw_user_agent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/139.0.0.0",
         $current_url: "https://postil.dev/docs",
         $host: "postil.dev",
         $pathname: "/docs",
