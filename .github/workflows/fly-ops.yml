@@ -82,6 +82,9 @@ jobs:
                 'heartbeat ping failed' 'ILERT_INTEGRATION_KEY unset'; do
                 printf '%s count: %s\n' "$pattern" "$(grep -cE "$pattern" out/logs.txt || true)"
               done
+              grep -oE 'heartbeat ping failed: .*' out/logs.txt \
+                | sed -E 's#(pings|heartbeats)/[A-Za-z0-9_-]+#\1/<key>#g' \
+                | sort -u | head -5 || true
               ;;
           esac
           ls -la out
