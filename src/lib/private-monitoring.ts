@@ -12,6 +12,7 @@ import {
   type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 import { redactSecrets } from "@/lib/redact";
+import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
 import type { TransactionalEmailContent } from "@/lib/transactional-email";
 
 export type PrivateMonitoringGroup =
@@ -535,9 +536,7 @@ export async function runDatabaseMonitoringChecks(
          FROM reviews
          WHERE finished_at >= now() - interval '30 minutes'
            AND (
-             (status = 'failed'
-              AND error_message IS DISTINCT FROM 'Hosted inference allowance is unavailable or fully reserved.'
-             AND error_message IS DISTINCT FROM 'Hosted review service is temporarily unavailable.')
+             (${OPERATIONAL_REVIEW_FAILURE_SQL})
              OR (status = 'completed' AND EXISTS (
                SELECT 1 FROM jsonb_array_elements(
                  CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
@@ -576,6 +575,9 @@ export async function runDatabaseMonitoringChecks(
              ) AS incident
              WHERE incident ->> 'phase' = 'review' AND incident ->> 'recovery' = 'fallback'
            )) AS model_fallbacks,
+      -- Only output the run could not repair or fall back from. A recovered
+      -- incident is the review pipeline working as designed, and the metrics
+      -- endpoint still counts every observation for trend reporting.
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
            AND EXISTS (
@@ -584,6 +586,7 @@ export async function runDatabaseMonitoringChecks(
                  THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
              ) AS incident
              WHERE incident ->> 'category' = 'invalidOutput'
+               AND incident ->> 'recovered' = 'false'
            )) AS invalid_outputs,
       (SELECT count(*)::text FROM jobs
          WHERE status = 'failed'

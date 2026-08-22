@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
 import { bearerMatches } from "@/lib/metrics-auth";
+import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -470,9 +471,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
          FROM reviews
          WHERE finished_at >= now() - interval '30 minutes'
            AND (
-             (status = 'failed'
-              AND error_message IS DISTINCT FROM 'Hosted inference allowance is unavailable or fully reserved.'
-              AND error_message IS DISTINCT FROM 'Hosted review service is temporarily unavailable.')
+             (${OPERATIONAL_REVIEW_FAILURE_SQL})
              OR (
                status = 'completed'
                AND EXISTS (

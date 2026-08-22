@@ -3,6 +3,39 @@ import { isOperationalFinding } from "@/lib/envelope";
 export const HOSTED_REVIEW_UNAVAILABLE_MESSAGE =
   "Hosted review service is temporarily unavailable.";
 
+export const HOSTED_ALLOWANCE_UNAVAILABLE_MESSAGE =
+  "Hosted inference allowance is unavailable or fully reserved.";
+
+export const PUBLICATION_INELIGIBLE_MESSAGE =
+  "pull request is no longer eligible for publication";
+
+/**
+ * Terminal review failures that are not service faults.
+ *
+ * Each names an outcome the service reached correctly: allowance it declined to
+ * oversell, a dependency it reported as unavailable, or a pull request that was
+ * closed, merged, drafted, or moved to another head while its review was in
+ * flight. Counting these as operational failures pages an operator about a
+ * working system, so monitoring excludes them.
+ */
+export const NON_OPERATIONAL_REVIEW_FAILURE_MESSAGES = [
+  HOSTED_ALLOWANCE_UNAVAILABLE_MESSAGE,
+  HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+  PUBLICATION_INELIGIBLE_MESSAGE,
+] as const;
+
+/**
+ * SQL predicate matching a failed review that is a genuine service fault.
+ *
+ * Monitoring reads reviews with raw SQL in more than one place, and a message
+ * list that drifts between them reports different fleet health depending on
+ * which query answered. A missing `error_message` stays operational: an
+ * unattributed failure is the kind worth waking someone for.
+ */
+export const OPERATIONAL_REVIEW_FAILURE_SQL = `status = 'failed' AND COALESCE(error_message, '') <> ALL (ARRAY[${NON_OPERATIONAL_REVIEW_FAILURE_MESSAGES.map(
+  (message) => `'${message.replaceAll("'", "''")}'`,
+).join(", ")}])`;
+
 export type StoredReviewStatus =
   | "queued"
   | "running"
