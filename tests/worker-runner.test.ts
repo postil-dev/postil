@@ -613,10 +613,11 @@ describe("drainQueueOnce", () => {
     expect(operationalWarnings).toEqual(["job_retrying"]);
   });
 
-  test("completes a webhook delivery whose forge target is gone", async () => {
+  test("completes a webhook delivery whose forge target stays gone", async () => {
     const job = reviewJob(21);
     job.kind = "webhook-dispatch";
     job.payload = { deliveryId: "delivery-21" };
+    job.attempts = 2;
     webhookDeliveryToLoad = {
       deliveryId: "delivery-21",
       event: "pull_request",
@@ -633,6 +634,31 @@ describe("drainQueueOnce", () => {
     expect(webhookDeliveriesCompleted).toEqual(["delivery-21"]);
     expect(failed).toEqual([]);
     expect(retriedIndefinitely).toEqual([]);
+  });
+
+  test("retries a first-attempt 404 before treating the target as gone", async () => {
+    const job = reviewJob(23);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-23" };
+    job.attempts = 1;
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-23",
+      event: "pull_request",
+      action: "opened",
+      payload: {},
+    };
+    webhookDispatchError = new MockGitHubHttpError(
+      404,
+      "GitHub GET /repos/acme/fresh/pulls/1 failed: HTTP 404",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDeliveriesCompleted).toEqual([]);
+    expect(retriedIndefinitely).toEqual([
+      { id: 23, error: "GitHub GET /repos/acme/fresh/pulls/1 failed: HTTP 404" },
+    ]);
+    expect(failed).toEqual([]);
   });
 
   test("keeps retrying a webhook dispatch on a transient forge error", async () => {

@@ -139,11 +139,13 @@ async function handleJob(
           triggerFollowupDrain: processGroup === "web",
         });
       } catch (error) {
-        if (!isForgeTargetGoneError(error)) throw error;
-        // The webhook's subject no longer exists on the forge (or the
-        // installation lost access to it), so no retry or GitHub redelivery
-        // can ever dispatch it. Reaching a terminal state here keeps the
-        // pending-age monitor scoped to deliveries that can still complete.
+        // A single 404 can be an installation-token propagation blip right
+        // after install, so the first attempt always retries; a repeat 404
+        // after backoff means the webhook's subject no longer exists on the
+        // forge (or access to it was revoked), and no retry or GitHub
+        // redelivery can ever dispatch it. Reaching a terminal state keeps
+        // the pending-age monitor scoped to deliveries that can complete.
+        if (!isForgeTargetGoneError(error) || job.attempts <= 1) throw error;
         console.warn(
           `[worker] webhook delivery ${delivery.deliveryId} target is gone; completing without dispatch: ${redactSecrets(error)}`,
         );
