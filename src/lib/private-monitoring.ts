@@ -575,6 +575,9 @@ export async function runDatabaseMonitoringChecks(
              ) AS incident
              WHERE incident ->> 'phase' = 'review' AND incident ->> 'recovery' = 'fallback'
            )) AS model_fallbacks,
+      -- Only output the run could not repair or fall back from. A recovered
+      -- incident is the review pipeline working as designed, and the metrics
+      -- endpoint still counts every observation for trend reporting.
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
            AND EXISTS (
@@ -583,6 +586,7 @@ export async function runDatabaseMonitoringChecks(
                  THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
              ) AS incident
              WHERE incident ->> 'category' = 'invalidOutput'
+               AND incident ->> 'recovered' = 'false'
            )) AS invalid_outputs,
       (SELECT count(*)::text FROM jobs
          WHERE status = 'failed'

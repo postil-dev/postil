@@ -1137,6 +1137,59 @@ describeDb("private monitoring durability", () => {
       );
     }
   });
+
+  test("pages for invalid model output only when the run could not recover", async () => {
+    const installation = await pool.query<{ id: string }>(
+      `INSERT INTO installations
+         (github_installation_id, account_login, account_type, suspended)
+       VALUES (900037, 'monitor-incident', 'Organization', false) RETURNING id`,
+    );
+    const repository = await pool.query<{ id: string }>(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name, enabled)
+       VALUES ($1, 900037001, 'monitor-incident/service', true) RETURNING id`,
+      [installation.rows[0]!.id],
+    );
+    const insertCompleted = async (prNumber: number, incident: unknown) => {
+      await pool.query(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+            envelope, queued_at, finished_at)
+         VALUES ($1, $2, $3, $4, 'completed', 'unknown', $5,
+                 now() - interval '5 minutes', now() - interval '5 minutes')`,
+        [
+          repository.rows[0]!.id,
+          prNumber,
+          "c".repeat(40),
+          "d".repeat(40),
+          JSON.stringify({ modelIncidents: [incident] }),
+        ],
+      );
+    };
+    const invalidOutputCheck = async () =>
+      (await runDatabaseMonitoringChecks(pool)).find(
+        (check) => check.key === "invalid-model-output",
+      );
+    try {
+      await insertCompleted(800, {
+        phase: "review",
+        category: "invalidOutput",
+        recovered: true,
+        recovery: "repair",
+      });
+      expect(await invalidOutputCheck()).toMatchObject({ healthy: true });
+
+      await insertCompleted(801, {
+        phase: "review",
+        category: "invalidOutput",
+        recovered: false,
+      });
+      expect(await invalidOutputCheck()).toMatchObject({ healthy: false });
+    } finally {
+      await pool.query(
+        "DELETE FROM installations WHERE github_installation_id = 900037",
+      );
+    }
+  });
 });
 
 async function customerServiceNotifications(pool: Pool, orgId: number): Promise<Array<{
