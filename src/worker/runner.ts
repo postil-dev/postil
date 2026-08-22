@@ -55,7 +55,7 @@ import {
   runBillingContactVerificationJob,
   type BillingContactVerificationJobPayload,
 } from "./billing-contact-verification";
-import { isPermanentFailure } from "./failure-classifier";
+import { isForgeTargetGoneError, isPermanentFailure } from "./failure-classifier";
 import { runGithubReactionJob } from "./github-reaction";
 import { runGateStateSyncJob } from "./gate-state-sync";
 import { runGateEnforcementSweepJob } from "./gate-enforcement-sweep";
@@ -133,10 +133,21 @@ async function handleJob(
       if (!delivery) break;
       const { dispatchWebhookDelivery } =
         await import("@/lib/github/webhook-handler");
-      await dispatchWebhookDelivery(delivery.event, delivery.payload, {
-        deliveryId: delivery.deliveryId,
-        triggerFollowupDrain: processGroup === "web",
-      });
+      try {
+        await dispatchWebhookDelivery(delivery.event, delivery.payload, {
+          deliveryId: delivery.deliveryId,
+          triggerFollowupDrain: processGroup === "web",
+        });
+      } catch (error) {
+        if (!isForgeTargetGoneError(error)) throw error;
+        // The webhook's subject no longer exists on the forge (or the
+        // installation lost access to it), so no retry or GitHub redelivery
+        // can ever dispatch it. Reaching a terminal state here keeps the
+        // pending-age monitor scoped to deliveries that can still complete.
+        console.warn(
+          `[worker] webhook delivery ${delivery.deliveryId} target is gone; completing without dispatch: ${redactSecrets(error)}`,
+        );
+      }
       await completeWebhookDelivery(getPool(), delivery.deliveryId);
       break;
     }
