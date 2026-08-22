@@ -56,7 +56,7 @@ import {
   runBillingContactVerificationJob,
   type BillingContactVerificationJobPayload,
 } from "./billing-contact-verification";
-import { isPermanentFailure } from "./failure-classifier";
+import { isForgeTargetGoneError, isPermanentFailure } from "./failure-classifier";
 import { runGithubReactionJob } from "./github-reaction";
 import { runGateStateSyncJob } from "./gate-state-sync";
 import { runGateEnforcementSweepJob } from "./gate-enforcement-sweep";
@@ -136,10 +136,23 @@ async function handleJob(
       if (!delivery) break;
       const { dispatchWebhookDelivery } =
         await import("@/lib/github/webhook-handler");
-      await dispatchWebhookDelivery(delivery.event, delivery.payload, {
-        deliveryId: delivery.deliveryId,
-        triggerFollowupDrain: processGroup === "web",
-      });
+      try {
+        await dispatchWebhookDelivery(delivery.event, delivery.payload, {
+          deliveryId: delivery.deliveryId,
+          triggerFollowupDrain: processGroup === "web",
+        });
+      } catch (error) {
+        // A single 404 can be an installation-token propagation blip right
+        // after install, so the first attempt always retries; a repeat 404
+        // after backoff means the webhook's subject no longer exists on the
+        // forge (or access to it was revoked), and no retry or GitHub
+        // redelivery can ever dispatch it. Reaching a terminal state keeps
+        // the pending-age monitor scoped to deliveries that can complete.
+        if (!isForgeTargetGoneError(error) || job.attempts <= 1) throw error;
+        console.warn(
+          `[worker] webhook delivery ${delivery.deliveryId} target is gone; completing without dispatch: ${redactSecrets(error)}`,
+        );
+      }
       await completeWebhookDelivery(getPool(), delivery.deliveryId);
       break;
     }

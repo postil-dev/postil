@@ -951,11 +951,15 @@ describeDb("private monitoring durability", () => {
   });
 
   test("requires a delivered operator alert for every trial grant", async () => {
+    // The alert event key carries the organization's GitHub id, which differs
+    // from the initiating user's id for real (non-personal) organizations.
     const githubActorId = 998877;
-    const eventKey = `trial-started:${githubActorId}`;
+    const githubOrgId = 556677;
+    const eventKey = `trial-started:${githubOrgId}`;
     const organization = await pool.query<{ id: string }>(
-      `INSERT INTO organizations (slug, name)
-       VALUES ('monitor-trial-alert', 'Monitor Trial Alert') RETURNING id`,
+      `INSERT INTO organizations (slug, name, github_org_id)
+       VALUES ('monitor-trial-alert', 'Monitor Trial Alert', $1) RETURNING id`,
+      [githubOrgId],
     );
     const orgId = organization.rows[0]!.id;
     try {
