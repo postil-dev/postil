@@ -398,7 +398,10 @@ describe("public telemetry sanitization", () => {
       $pathname: "/pricing",
       $prev_pageview_duration: 500,
       $prev_pageview_max_scroll_percentage: 74,
+      $prev_pageview_max_content_percentage: 62,
+      $prev_pageview_max_content: 1840,
       $prev_pageview_last_scroll_percentage: 101,
+      $prev_pageview_last_content_percentage: 101,
       $prev_pageview_max_scroll: Number.POSITIVE_INFINITY,
       arbitrary: "drop",
     };
@@ -419,6 +422,8 @@ describe("public telemetry sanitization", () => {
       $pathname: "/pricing",
       $prev_pageview_duration: 500,
       $prev_pageview_max_scroll_percentage: 74,
+      $prev_pageview_max_content_percentage: 62,
+      $prev_pageview_max_content: 1840,
     });
   });
 

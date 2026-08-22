@@ -1,9 +1,16 @@
 const CAMPAIGN_KEYS = ["utm_source", "utm_medium", "utm_campaign"] as const;
 const CAMPAIGN_VALUE = /^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$/;
+// Bounded numeric engagement metrics. The content pair measures how far down
+// the article body a reader reached, which is the depth web analytics reports;
+// the scroll pair measures the viewport alone and cannot stand in for it.
 const PAGE_ENGAGEMENT_PROPERTIES = new Set([
   "$prev_pageview_duration",
+  "$prev_pageview_last_content",
+  "$prev_pageview_last_content_percentage",
   "$prev_pageview_last_scroll",
   "$prev_pageview_last_scroll_percentage",
+  "$prev_pageview_max_content",
+  "$prev_pageview_max_content_percentage",
   "$prev_pageview_max_scroll",
   "$prev_pageview_max_scroll_percentage",
 ]);
