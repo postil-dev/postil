@@ -20,6 +20,7 @@ on:
           - scale-worker-2
           - review-ledger
           - set-monitoring-secrets
+          - monitor-health
 
 permissions:
   contents: read
@@ -71,6 +72,16 @@ jobs:
               echo "secrets import exit status: $import_status"
               flyctl secrets list -a postil-web > out/secrets-list.txt 2>&1 || true
               awk 'NR == 1 || /ILERT|HEARTBEAT/ { print $1 }' out/secrets-list.txt
+              ;;
+            monitor-health)
+              flyctl machine list -a postil-web --json > out/machines.json 2>&1 || true
+              jq -r '.[] | "\(.config.env.FLY_PROCESS_GROUP // "?") \(.state) updated=\(.updated_at)"' \
+                out/machines.json 2>/dev/null || echo "machine list unavailable"
+              timeout 75 flyctl logs -a postil-web > out/logs.txt 2>&1 || true
+              for pattern in 'monitor_started' 'pass .* completed' 'pass failed' \
+                'heartbeat ping failed' 'ILERT_INTEGRATION_KEY unset'; do
+                printf '%s count: %s\n' "$pattern" "$(grep -cE "$pattern" out/logs.txt || true)"
+              done
               ;;
           esac
           ls -la out
