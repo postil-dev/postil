@@ -64,10 +64,13 @@ jobs:
               flyctl machine list -a postil-web --json > out/machines.json 2>&1 || true
               ;;
             set-monitoring-secrets)
+              import_status=0
               printf 'ILERT_INTEGRATION_KEY=%s\nPOSTIL_MONITOR_HEARTBEAT_URL=%s\n' \
                 "$ILERT_INTEGRATION_KEY" "$POSTIL_MONITOR_HEARTBEAT_URL" \
-                | flyctl secrets import -a postil-web > out/secrets-import.txt 2>&1 || true
+                | flyctl secrets import -a postil-web > out/secrets-import.txt 2>&1 || import_status=$?
+              echo "secrets import exit status: $import_status"
               flyctl secrets list -a postil-web > out/secrets-list.txt 2>&1 || true
+              awk 'NR == 1 || /ILERT|HEARTBEAT/ { print $1 }' out/secrets-list.txt
               ;;
           esac
           ls -la out
