@@ -288,16 +288,44 @@ describeDb("large-review durable resume migration", () => {
         expectedRunKey: runKey,
       }),
     ).rejects.toThrow("context ownership collision");
+    // Retiring a stale run stays gated on ownership: a replan presented by a
+    // review that does not hold the run leaves it in place.
     await expect(
       store.bindRun(
-        { ...identity, planSha256: "d".repeat(64) },
+        { ...identity, planSha256: "e".repeat(64) },
         {
-          currentReviewId: replacementReviewId,
+          currentReviewId: reviewId,
           hostedReservationId: reservationId,
           expectedRunKey: runKey,
         },
       ),
-    ).rejects.toThrow("plan changed across retry");
+    ).rejects.toThrow("context ownership collision");
+    expect(
+      (
+        await pool.query("SELECT run_key FROM large_review_runs WHERE run_key = $1", [
+          runKey,
+        ])
+      ).rows,
+    ).toEqual([{ run_key: runKey }]);
+    // The retry replans, so the plan hash moves. The inherited reservation
+    // still funds the work, so the stale run retires and the new plan binds
+    // under it rather than failing the review.
+    const replanned: LargeReviewRunIdentity = {
+      ...identity,
+      planSha256: "d".repeat(64),
+    };
+    const replannedRunKey = await store.bindRun(replanned, {
+      currentReviewId: replacementReviewId,
+      hostedReservationId: reservationId,
+      expectedRunKey: runKey,
+    });
+    expect(replannedRunKey).toBe(largeReviewRunKey(replanned));
+    expect(replannedRunKey).not.toBe(runKey);
+    const retired = await pool.query(
+      "SELECT run_key FROM large_review_runs WHERE run_key = $1",
+      [runKey],
+    );
+    expect(retired.rows).toEqual([]);
     const transferred = await pool.query<{
       review_id: string;
       status: string;
@@ -309,7 +337,7 @@ describeDb("large-review durable resume migration", () => {
          JOIN large_review_runs run
            ON run.hosted_reservation_id = reservation.id
         WHERE run.run_key = $1`,
-      [runKey],
+      [replannedRunKey],
     );
     expect(transferred.rows).toEqual([
       {
@@ -318,7 +346,7 @@ describeDb("large-review durable resume migration", () => {
         run_review_id: String(replacementReviewId),
       },
     ]);
-    await store.deleteRun(runKey);
+    await store.deleteRun(replannedRunKey);
     await pool.query("DELETE FROM hosted_usage_reservations WHERE id = $1", [reservationId]);
   });
 

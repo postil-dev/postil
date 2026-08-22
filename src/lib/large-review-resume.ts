@@ -177,69 +177,85 @@ export class PostgresLargeReviewAttemptStore implements LargeReviewAttemptStore 
   ): Promise<string> {
     const now = new Date();
     const runKey = largeReviewRunKey(identity);
-    if (context.expectedRunKey && context.expectedRunKey !== runKey) {
-      throw new Error("large-review plan changed across retry");
-    }
     const storedContext = {
       currentReviewId: context.currentReviewId,
       hostedReservationId: context.hostedReservationId,
     };
-    await this.db
-      .delete(schema.largeReviewRuns)
-      .where(lte(schema.largeReviewRuns.expiresAt, now));
-    await this.db
-      .insert(schema.largeReviewRuns)
-      .values({
-        runKey,
-        ...identity,
-        ...storedContext,
-        expiresAt: new Date(now.getTime() + RUN_TTL_MS),
-      })
-      .onConflictDoNothing();
-    const stored = (
-      await this.db
-        .select()
-        .from(schema.largeReviewRuns)
-        .where(eq(schema.largeReviewRuns.runKey, runKey))
-        .limit(1)
-    )[0];
-    if (
-      !stored ||
-      stored.repositoryId !== identity.repositoryId ||
-      stored.prNumber !== identity.prNumber ||
-      stored.cliVersion !== identity.cliVersion ||
-      stored.configurationSha256 !== identity.configurationSha256 ||
-      stored.providerIdentity !== identity.providerIdentity ||
-      stored.headSha !== identity.headSha ||
-      stored.baseSha !== identity.baseSha ||
-      stored.retryLineage !== identity.retryLineage ||
-      stored.planSha256 !== identity.planSha256
-    ) {
-      throw new Error("large-review run identity collision");
-    }
-    const rebound = await this.db
-      .update(schema.largeReviewRuns)
-      .set({
-        expiresAt: new Date(now.getTime() + RUN_TTL_MS),
-      })
-      .where(
-        and(
-          eq(schema.largeReviewRuns.runKey, runKey),
-          eq(schema.largeReviewRuns.currentReviewId, context.currentReviewId),
-          context.hostedReservationId === null
-            ? isNull(schema.largeReviewRuns.hostedReservationId)
-            : eq(
-                schema.largeReviewRuns.hostedReservationId,
-                context.hostedReservationId,
-              ),
-          eq(schema.largeReviewRuns.billingState, "active"),
-        ),
-      )
-      .returning({ runKey: schema.largeReviewRuns.runKey });
-    if (rebound.length !== 1) {
-      throw new Error("large-review run context ownership collision");
-    }
-    return runKey;
+    const ownsRun = (key: string) =>
+      and(
+        eq(schema.largeReviewRuns.runKey, key),
+        eq(schema.largeReviewRuns.currentReviewId, context.currentReviewId),
+        context.hostedReservationId === null
+          ? isNull(schema.largeReviewRuns.hostedReservationId)
+          : eq(
+              schema.largeReviewRuns.hostedReservationId,
+              context.hostedReservationId,
+            ),
+        eq(schema.largeReviewRuns.billingState, "active"),
+      );
+    return this.db.transaction(async (tx) => {
+      if (context.expectedRunKey && context.expectedRunKey !== runKey) {
+        // A retry replans from scratch and the planner is model-driven, so the
+        // new plan rarely hashes to the one the previous attempt registered.
+        // The attempts cached under the old key answer provider requests this
+        // plan will never make. Retire that run and bind the new plan under the
+        // reservation the retry already inherited: refusing instead spends the
+        // retry and reports an operational failure for work that can still be
+        // done. Ownership still gates the retirement, so a run held by another
+        // review or already settled conservatively is never discarded here.
+        const retired = await tx
+          .delete(schema.largeReviewRuns)
+          .where(ownsRun(context.expectedRunKey))
+          .returning({ runKey: schema.largeReviewRuns.runKey });
+        if (retired.length !== 1) {
+          throw new Error("large-review run context ownership collision");
+        }
+      }
+      await tx
+        .delete(schema.largeReviewRuns)
+        .where(lte(schema.largeReviewRuns.expiresAt, now));
+      await tx
+        .insert(schema.largeReviewRuns)
+        .values({
+          runKey,
+          ...identity,
+          ...storedContext,
+          expiresAt: new Date(now.getTime() + RUN_TTL_MS),
+        })
+        .onConflictDoNothing();
+      const stored = (
+        await tx
+          .select()
+          .from(schema.largeReviewRuns)
+          .where(eq(schema.largeReviewRuns.runKey, runKey))
+          .limit(1)
+      )[0];
+      if (
+        !stored ||
+        stored.repositoryId !== identity.repositoryId ||
+        stored.prNumber !== identity.prNumber ||
+        stored.cliVersion !== identity.cliVersion ||
+        stored.configurationSha256 !== identity.configurationSha256 ||
+        stored.providerIdentity !== identity.providerIdentity ||
+        stored.headSha !== identity.headSha ||
+        stored.baseSha !== identity.baseSha ||
+        stored.retryLineage !== identity.retryLineage ||
+        stored.planSha256 !== identity.planSha256
+      ) {
+        throw new Error("large-review run identity collision");
+      }
+      const rebound = await tx
+        .update(schema.largeReviewRuns)
+        .set({
+          expiresAt: new Date(now.getTime() + RUN_TTL_MS),
+        })
+        .where(ownsRun(runKey))
+        .returning({ runKey: schema.largeReviewRuns.runKey });
+      if (rebound.length !== 1) {
+        throw new Error("large-review run context ownership collision");
+      }
+      return runKey;
+    });
   }
 
   async claimAttempt(input: {
