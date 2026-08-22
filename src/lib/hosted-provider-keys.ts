@@ -11,7 +11,10 @@ export type HostedProviderKeyProvisionResult =
   | { status: "existing" }
   | {
       status: "skipped";
-      reason: "missing-entitlement" | "missing-management-key";
+      reason:
+        | "missing-entitlement"
+        | "zero-entitlement"
+        | "missing-management-key";
     }
   | { status: "provisioned"; keyName: string; openRouterKeyHash: string };
 
@@ -87,6 +90,14 @@ export async function provisionHostedProviderKey(
     return { status: "skipped", reason: "missing-entitlement" };
   }
 
+  const limit = entitlementLimitDollars(
+    entitlement.includedUsageMicros,
+    entitlement.overageHardCapMicros,
+  );
+  if (limit === 0) {
+    return { status: "skipped", reason: "zero-entitlement" };
+  }
+
   const managementKey = openRouterManagementKey();
   if (!managementKey) {
     console.log(
@@ -105,10 +116,6 @@ export async function provisionHostedProviderKey(
     await deleteOpenRouterKey(managementKey, orphaned.hash, fetchImpl);
   }
 
-  const limit = entitlementLimitDollars(
-    entitlement.includedUsageMicros,
-    entitlement.overageHardCapMicros,
-  );
   const created = await createOpenRouterKey(
     managementKey,
     keyName,
@@ -129,6 +136,10 @@ export async function provisionHostedProviderKey(
   };
 }
 
+/**
+ * The provider cap in dollars, preserving sub-dollar entitlements exactly so
+ * the provider-side limit never exceeds the configured allowance.
+ */
 function entitlementLimitDollars(
   includedUsageMicros: number,
   overageHardCapMicros: number | null,
@@ -137,7 +148,7 @@ function entitlementLimitDollars(
   if (!Number.isSafeInteger(totalMicros) || totalMicros < 0) {
     throw new Error("organization entitlement usage limit is invalid");
   }
-  return Math.max(1, Math.ceil(totalMicros / 1_000_000));
+  return totalMicros / 1_000_000;
 }
 
 async function listOpenRouterKeysByName(

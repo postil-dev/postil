@@ -180,10 +180,10 @@ describe("provisionHostedProviderKey", () => {
     expect(databaseState.inserted).toEqual([]);
   });
 
-  test("enforces a one-dollar minimum provider limit", async () => {
+  test("preserves a sub-dollar entitlement in the provider limit", async () => {
     const databaseState = state({
       entitlementRows: [
-        { includedUsageMicros: 0, overageHardCapMicros: null },
+        { includedUsageMicros: 300_000, overageHardCapMicros: null },
       ],
     });
     let createBody: unknown;
@@ -194,14 +194,30 @@ describe("provisionHostedProviderKey", () => {
       if (init?.method === "GET") return jsonResponse({ data: [] });
       createBody = init?.body ? JSON.parse(String(init.body)) : undefined;
       return jsonResponse({
-        key: "minimum-limit-runtime-value",
-        data: { hash: "minimum-limit-hash", name: "postil-org-42" },
+        key: "sub-dollar-runtime-value",
+        data: { hash: "sub-dollar-hash", name: "postil-org-42" },
       });
     };
 
     await provisionHostedProviderKey(fakeDb(databaseState), 42, fetchImpl);
 
-    expect(createBody).toEqual({ name: "postil-org-42", limit: 1 });
+    expect(createBody).toEqual({ name: "postil-org-42", limit: 0.3 });
+  });
+
+  test("skips provisioning for a zero entitlement", async () => {
+    const databaseState = state({
+      entitlementRows: [
+        { includedUsageMicros: 0, overageHardCapMicros: null },
+      ],
+    });
+    const fetchImpl = async (): Promise<Response> => {
+      throw new Error("provider must not be called for a zero entitlement");
+    };
+
+    await expect(
+      provisionHostedProviderKey(fakeDb(databaseState), 42, fetchImpl),
+    ).resolves.toEqual({ status: "skipped", reason: "zero-entitlement" });
+    expect(databaseState.inserted).toEqual([]);
   });
 
   test("deletes an orphaned provider key before recreating it", async () => {
