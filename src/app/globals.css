@@ -412,3 +412,22 @@ pre[data-copy-enhanced="bare"]:focus-within > .code-copy-button,
   padding: 0.45rem 0.75rem 0.45rem 0;
   vertical-align: top;
 }
+
+/* Detail card for a chart mark. On a phone the plot is shorter than the card,
+   so the card sits under the plot where it can cover neither the mark nor the
+   reading; from the small breakpoint up it floats beside the mark, clamped to
+   the plot so neither edge runs off the screen. */
+.bench-hover-card {
+  position: static;
+  margin-top: 0.5rem;
+}
+@media (min-width: 640px) {
+  .bench-hover-card {
+    position: absolute;
+    left: clamp(7rem, var(--mark-x), 100% - 7rem);
+    top: calc(var(--mark-y) + var(--card-gap));
+    width: 14rem;
+    margin-top: 0;
+    transform: translate(-50%, var(--card-shift));
+  }
+}
