@@ -42,6 +42,10 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           ILERT_INTEGRATION_KEY: ${{ secrets.ILERT_INTEGRATION_KEY }}
           POSTIL_MONITOR_HEARTBEAT_URL: ${{ secrets.POSTIL_MONITOR_HEARTBEAT_URL }}
+          OPENROUTER_MANAGEMENT_API_KEY: ${{ secrets.OPENROUTER_MANAGEMENT_API_KEY }}
+          POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME: ${{ secrets.POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME }}
+          POSTIL_OPENROUTER_PRODUCTION_KEY_NAME: ${{ secrets.POSTIL_OPENROUTER_PRODUCTION_KEY_NAME }}
+          POSTIL_OPENROUTER_EMERGENCY_KEY_NAME: ${{ secrets.POSTIL_OPENROUTER_EMERGENCY_KEY_NAME }}
         run: |
           set -euo pipefail
           mkdir -p out
@@ -66,12 +70,17 @@ jobs:
               ;;
             set-monitoring-secrets)
               import_status=0
-              printf 'ILERT_INTEGRATION_KEY=%s\nPOSTIL_MONITOR_HEARTBEAT_URL=%s\n' \
-                "$ILERT_INTEGRATION_KEY" "$POSTIL_MONITOR_HEARTBEAT_URL" \
-                | flyctl secrets import -a postil-web > out/secrets-import.txt 2>&1 || import_status=$?
+              {
+                printf 'ILERT_INTEGRATION_KEY=%s\n' "$ILERT_INTEGRATION_KEY"
+                printf 'POSTIL_MONITOR_HEARTBEAT_URL=%s\n' "$POSTIL_MONITOR_HEARTBEAT_URL"
+                printf 'OPENROUTER_MANAGEMENT_API_KEY=%s\n' "$OPENROUTER_MANAGEMENT_API_KEY"
+                printf 'POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME=%s\n' "$POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME"
+                printf 'POSTIL_OPENROUTER_PRODUCTION_KEY_NAME=%s\n' "$POSTIL_OPENROUTER_PRODUCTION_KEY_NAME"
+                printf 'POSTIL_OPENROUTER_EMERGENCY_KEY_NAME=%s\n' "$POSTIL_OPENROUTER_EMERGENCY_KEY_NAME"
+              } | flyctl secrets import -a postil-web > out/secrets-import.txt 2>&1 || import_status=$?
               echo "secrets import exit status: $import_status"
               flyctl secrets list -a postil-web > out/secrets-list.txt 2>&1 || true
-              awk 'NR == 1 || /ILERT|HEARTBEAT/ { print $1 }' out/secrets-list.txt
+              awk 'NR == 1 || /ILERT|HEARTBEAT|OPENROUTER/ { print $1 }' out/secrets-list.txt
               ;;
             monitor-health)
               flyctl machine list -a postil-web --json > out/machines.json 2>&1 || true
