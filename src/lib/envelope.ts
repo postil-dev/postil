@@ -49,11 +49,17 @@ export const suppressionReasonSchema = z.enum([
   "anchorMismatch",
   "duplicateRootCause",
   "derivedFromSuppressed",
+  "repositoryClaimUnsupported",
 ]);
 
 export const suppressedFindingSchema = z.object({
   finding: findingSchema,
-  reason: suppressionReasonSchema,
+  // A suppression reason labels a finding the CLI already withheld: it is not
+  // published, and the gate reads counts.suppressed rather than this value. The
+  // CLI extends the reason set as its suppression rules grow, so constraining
+  // ingestion to the known set discards an entire otherwise-valid review over a
+  // caption. Unrecognized values are stored verbatim and rendered generically.
+  reason: z.string().min(1),
 });
 
 export const MODEL_INCIDENT_PHASES = ["planner", "review", "scorer", "respond"] as const;

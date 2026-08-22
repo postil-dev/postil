@@ -7,6 +7,7 @@ import {
   hasLegacyCombinedModelUsage,
   ingestEnvelope,
   reviewAdmissionSchema,
+  suppressionReasonSchema,
   type Envelope,
 } from "@/lib/envelope";
 
@@ -135,13 +136,13 @@ describe("envelope ingestion", () => {
     expect(ingested.envelope.suppressedFindings).toEqual([suppressedFinding]);
   });
 
-  test("accepts the CLI review-precision suppression reasons", () => {
-    // Ingestion validates the envelope strictly, so a reason the CLI emits and
-    // this schema does not list fails the whole review rather than one finding.
+  test("accepts every suppression reason the CLI emits, and one it does not", () => {
+    // A suppression reason is a caption on a finding that was already withheld.
+    // Constraining it to a known set fails the whole review the first time the
+    // CLI grows a rule, so an unrecognized value is kept rather than rejected.
     const reasons = [
-      "anchorMismatch",
-      "duplicateRootCause",
-      "derivedFromSuppressed",
+      ...suppressionReasonSchema.options,
+      "aReasonAddedAfterThisRelease",
     ] as const;
     const suppressedFindings = reasons.map((reason, index) => ({
       finding: {

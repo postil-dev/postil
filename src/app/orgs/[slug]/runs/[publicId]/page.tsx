@@ -189,7 +189,14 @@ const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
   anchorMismatch: "Cited a line its named construct does not sit on",
   duplicateRootCause: "Restates a published finding about another location",
   derivedFromSuppressed: "Built on a finding suppressed as mis-anchored",
+  repositoryClaimUnsupported: "Repository-wide claim lacks a complete receipt",
 };
+
+function suppressionReasonLabel(reason: string): string {
+  return (
+    SUPPRESSION_REASON_LABELS[reason as SuppressionReason] ?? "Withheld by review policy"
+  );
+}
 
 const PUBLICATION_STATE_LABELS: Record<PublicationState, string> = {
   inline: "inline",
@@ -860,7 +867,7 @@ export default async function RunDetailPage({
                       .map((entry, index) => (
                         <div key={`${entry.finding.path}:${entry.finding.line}:${index}`}>
                           <p className="bg-stone/20 px-5 py-2 font-mono text-[10px] uppercase tracking-wide text-charcoal/70 sm:px-6">
-                            {SUPPRESSION_REASON_LABELS[entry.reason]}
+                            {suppressionReasonLabel(entry.reason)}
                           </p>
                           <FindingCard
                             finding={entry.finding}
