@@ -12,6 +12,7 @@ import {
   type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 import { redactSecrets } from "@/lib/redact";
+import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
 import type { TransactionalEmailContent } from "@/lib/transactional-email";
 
 export type PrivateMonitoringGroup =
@@ -535,9 +536,7 @@ export async function runDatabaseMonitoringChecks(
          FROM reviews
          WHERE finished_at >= now() - interval '30 minutes'
            AND (
-             (status = 'failed'
-              AND error_message IS DISTINCT FROM 'Hosted inference allowance is unavailable or fully reserved.'
-             AND error_message IS DISTINCT FROM 'Hosted review service is temporarily unavailable.')
+             (${OPERATIONAL_REVIEW_FAILURE_SQL})
              OR (status = 'completed' AND EXISTS (
                SELECT 1 FROM jsonb_array_elements(
                  CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'

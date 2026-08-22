@@ -100,7 +100,11 @@ import {
   getOrganizationGateEnabled,
 } from "@/lib/gate-mode";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
-import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
+import {
+  HOSTED_ALLOWANCE_UNAVAILABLE_MESSAGE,
+  HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+  PUBLICATION_INELIGIBLE_MESSAGE,
+} from "@/lib/review-outcome";
 import { HostedInferenceReleaseDarkError } from "@/lib/release-job-rollout";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
@@ -1238,7 +1242,7 @@ export async function runReviewJob(
     reviewLog.setSensitiveValues(sensitiveValues);
     if (!(await publicationAuthorized())) {
       reviewLog.line("publication cancelled before forge writes");
-      throw new TerminalReviewError("pull request is no longer eligible for publication");
+      throw new TerminalReviewError(PUBLICATION_INELIGIBLE_MESSAGE);
     }
     onPublicationStarted?.();
     const superseded = await supersedeActiveReviews({
@@ -1464,8 +1468,7 @@ export async function runReviewJob(
           usesByok: llm.byok,
         });
         if (spendReservation && !spendReservation.allowed) {
-          const message =
-            "Hosted inference allowance is unavailable or fully reserved.";
+          const message = HOSTED_ALLOWANCE_UNAVAILABLE_MESSAGE;
           const settled = await db.transaction(async (tx) => {
             const failedRows = await tx
               .update(schema.reviews)
@@ -1579,7 +1582,7 @@ export async function runReviewJob(
 
     if (!(await publicationAuthorized())) {
       reviewLog.line("publication cancelled before CLI start");
-      throw new TerminalReviewError("pull request is no longer eligible for publication");
+      throw new TerminalReviewError(PUBLICATION_INELIGIBLE_MESSAGE);
     }
     reviewLog.line("postil CLI spawned");
     cliStarted = true;
