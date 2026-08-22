@@ -171,8 +171,8 @@ export default function PrivacyPage() {
           write no local or session storage; daily anonymous aggregation is not
           linked to an account or retained as a durable browser identity.
           PostHog forms that rotating daily identifier from the project,
-          hostname, IP address, and user agent, then discards the raw IP
-          address. DNT and Global Privacy
+          hostname, IP address, and the browser user agent each event reports,
+          then discards the raw IP address. DNT and Global Privacy
           Control disable browser and request analytics. Session replay, person
           profiles, surveys, heatmaps, and autocaptured clicks are disabled.
           Browser event payloads discard query strings and persistent device or
