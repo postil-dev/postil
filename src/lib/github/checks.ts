@@ -713,3 +713,32 @@ export async function getPullRequestReviewContext(
     ...(authorLogin && authorLogin.length <= 100 ? { authorLogin } : {}),
   };
 }
+
+/**
+ * Whether a previously reviewed head can still anchor an incremental diff.
+ *
+ * The compare's merge base equals the ancestor exactly when that commit is
+ * still in the head's history. A rebase or force-push replaces the reviewed
+ * commits, the merge base moves, and an incremental diff from the old head
+ * would describe changes the pull request no longer contains, so the CLI
+ * refuses it and the review fails with no verdict. Checking here lets the
+ * worker request a full review instead. `per_page=1` bounds the response
+ * size; the merge base is reported regardless of file pagination.
+ */
+export async function incrementalBaselineUsable(
+  token: string,
+  repoFullName: string,
+  baselineHeadSha: string,
+  headSha: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const res = await githubFetch(
+    token,
+    "GET",
+    `/repos/${repoFullName}/compare/${baselineHeadSha}...${headSha}?per_page=1`,
+    undefined,
+    signal,
+  );
+  const data = (await res.json()) as { merge_base_commit?: { sha?: string } };
+  return data.merge_base_commit?.sha === baselineHeadSha;
+}
