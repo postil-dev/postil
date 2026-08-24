@@ -91,7 +91,7 @@ describe("dashboard metric details", () => {
     expect(source).toContain("Finding snapshot");
     expect(source).toContain("Review model");
     expect(source).toContain("Scorer model");
-    expect(source).toContain(
+    expect(source.replace(/\s+/g, " ")).toContain(
       "@postil dismiss {state.findingId} -- false-positive: rationale",
     );
   });
