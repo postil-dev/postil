@@ -33,7 +33,6 @@ import {
   getReviewApprovalState,
   hasInFlightReviewForPr,
   hasNewerCompletedReviewForHead,
-  hasNewerReviewForPr,
   insertFindingApproval,
   lockActiveReviewState,
   lockReviewApprovalState,
@@ -44,7 +43,10 @@ import {
 } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
-import { getPullRequestHeadSha, getPullRequestReviewContext } from "@/lib/github/checks";
+import {
+  getPullRequestHeadSha,
+  getPullRequestReviewContext,
+} from "@/lib/github/checks";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import {
   enqueueGateEnforcementSweepOnce,
@@ -77,7 +79,12 @@ export type ConfigProbeRefreshState =
 
 export type GateEnforcementRefreshState =
   | { status: "idle"; pollGeneration: number }
-  | { status: "queued" | "active"; message: string; jobId: number; pollGeneration: number }
+  | {
+      status: "queued" | "active";
+      message: string;
+      jobId: number;
+      pollGeneration: number;
+    }
   | { status: "error"; message: string; pollGeneration: number };
 
 export type GateEnforcementRefreshProgress =
@@ -98,7 +105,9 @@ async function requireMembership(
   const access = await getOrgMembership(slug);
   if (!access.ok) {
     if (access.reason === "verification_unavailable") {
-      throw new Error("GitHub membership verification is temporarily unavailable");
+      throw new Error(
+        "GitHub membership verification is temporarily unavailable",
+      );
     }
     if (access.reason === "unauthenticated") throw new Error("not signed in");
     throw new Error("organization not found");
@@ -118,7 +127,9 @@ async function requireMembership(
  * verification supplies organization roles; personal accounts are always
  * admin.
  */
-async function requireAdmin(slug: string): Promise<{ orgId: number; userId: number }> {
+async function requireAdmin(
+  slug: string,
+): Promise<{ orgId: number; userId: number }> {
   const { orgId, role, userId } = await requireMembership(slug);
   if (role !== "admin") {
     throw new Error("this action requires an organization admin");
@@ -134,11 +145,14 @@ export async function saveBillingContact(
   const { orgId, userId } = await requireAdmin(slug);
   let requestedEmail: string | null;
   try {
-    requestedEmail = normalizeBillingContact(String(formData.get("billingContact") ?? ""));
+    requestedEmail = normalizeBillingContact(
+      String(formData.get("billingContact") ?? ""),
+    );
   } catch (error) {
     return {
       status: "error",
-      message: error instanceof Error ? error.message : "Enter a valid billing email.",
+      message:
+        error instanceof Error ? error.message : "Enter a valid billing email.",
     };
   }
   const db = getDb();
@@ -153,7 +167,11 @@ export async function saveBillingContact(
       .where(eq(schema.organizationEntitlements.orgId, orgId))
       .limit(1)
   )[0];
-  if (!existing) return { status: "error", message: "Activate billing before setting a contact." };
+  if (!existing)
+    return {
+      status: "error",
+      message: "Activate billing before setting a contact.",
+    };
 
   const now = new Date();
   const clearPending = {
@@ -181,7 +199,11 @@ export async function saveBillingContact(
     update = {};
     message = "Check your email to verify the billing contact.";
   } else {
-    const verification = createBillingContactVerification(orgId, requestedEmail, now);
+    const verification = createBillingContactVerification(
+      orgId,
+      requestedEmail,
+      now,
+    );
     const pending = {
       billingContactPending: requestedEmail,
       billingContactVerificationTokenDigest: verification.tokenDigest,
@@ -193,8 +215,15 @@ export async function saveBillingContact(
     };
     update = existing.verifiedAt
       ? pending
-      : { billingContactEmail: null, billingContactVerifiedAt: null, ...pending };
-    verificationJob = billingContactVerificationJobPayload(orgId, verification.tokenDigest);
+      : {
+          billingContactEmail: null,
+          billingContactVerifiedAt: null,
+          ...pending,
+        };
+    verificationJob = billingContactVerificationJobPayload(
+      orgId,
+      verification.tokenDigest,
+    );
     message = existing.verifiedAt
       ? "Check your email to verify the replacement. The verified contact remains active."
       : "Check your email to verify the billing contact.";
@@ -205,7 +234,8 @@ export async function saveBillingContact(
       .set({ ...update, updatedBy: `billing-admin:${userId}`, updatedAt: now })
       .where(eq(schema.organizationEntitlements.orgId, orgId))
       .returning({ orgId: schema.organizationEntitlements.orgId });
-    if (changed.length !== 1) throw new Error("billing entitlement changed; retry");
+    if (changed.length !== 1)
+      throw new Error("billing entitlement changed; retry");
     if (verificationJob) {
       await tx.insert(schema.jobs).values({
         kind: "billing-contact-verification",
@@ -230,24 +260,39 @@ export async function resendBillingContactVerification(
     await db
       .select({
         pendingEmail: schema.organizationEntitlements.billingContactPending,
-        requestedAt: schema.organizationEntitlements.billingContactVerificationRequestedAt,
+        requestedAt:
+          schema.organizationEntitlements.billingContactVerificationRequestedAt,
       })
       .from(schema.organizationEntitlements)
       .where(eq(schema.organizationEntitlements.orgId, orgId))
       .limit(1)
   )[0];
   if (!row?.pendingEmail) {
-    return { status: "error", message: "No billing contact is waiting for verification." };
+    return {
+      status: "error",
+      message: "No billing contact is waiting for verification.",
+    };
   }
   if (
     row.requestedAt &&
-    now.getTime() - row.requestedAt.getTime() < BILLING_CONTACT_RESEND_COOLDOWN_MS
+    now.getTime() - row.requestedAt.getTime() <
+      BILLING_CONTACT_RESEND_COOLDOWN_MS
   ) {
-    return { status: "error", message: "Wait a minute before sending another email." };
+    return {
+      status: "error",
+      message: "Wait a minute before sending another email.",
+    };
   }
   const pendingEmail = row.pendingEmail;
-  const verification = createBillingContactVerification(orgId, pendingEmail, now);
-  const payload = billingContactVerificationJobPayload(orgId, verification.tokenDigest);
+  const verification = createBillingContactVerification(
+    orgId,
+    pendingEmail,
+    now,
+  );
+  const payload = billingContactVerificationJobPayload(
+    orgId,
+    verification.tokenDigest,
+  );
   await db.transaction(async (tx) => {
     const updated = await tx
       .update(schema.organizationEntitlements)
@@ -264,7 +309,10 @@ export async function resendBillingContactVerification(
       .where(
         and(
           eq(schema.organizationEntitlements.orgId, orgId),
-          eq(schema.organizationEntitlements.billingContactPending, pendingEmail),
+          eq(
+            schema.organizationEntitlements.billingContactPending,
+            pendingEmail,
+          ),
         ),
       )
       .returning({ orgId: schema.organizationEntitlements.orgId });
@@ -293,18 +341,19 @@ export async function saveNotificationPreferences(
   const now = new Date();
 
   await db.transaction(async (tx) => {
-    const existing = (
-      await tx
-        .select({
-          billingSummaryEmail:
-            schema.organizationNotificationPreferences.billingSummaryEmail,
-          serviceSummaryEmail:
-            schema.organizationNotificationPreferences.serviceSummaryEmail,
-        })
-        .from(schema.organizationNotificationPreferences)
-        .where(eq(schema.organizationNotificationPreferences.orgId, orgId))
-        .limit(1)
-    )[0] ?? DEFAULT_ORGANIZATION_NOTIFICATION_PREFERENCES;
+    const existing =
+      (
+        await tx
+          .select({
+            billingSummaryEmail:
+              schema.organizationNotificationPreferences.billingSummaryEmail,
+            serviceSummaryEmail:
+              schema.organizationNotificationPreferences.serviceSummaryEmail,
+          })
+          .from(schema.organizationNotificationPreferences)
+          .where(eq(schema.organizationNotificationPreferences.orgId, orgId))
+          .limit(1)
+      )[0] ?? DEFAULT_ORGANIZATION_NOTIFICATION_PREFERENCES;
 
     await tx
       .insert(schema.organizationNotificationPreferences)
@@ -367,7 +416,12 @@ export async function toggleRepository(formData: FormData): Promise<void> {
         schema.installations,
         eq(schema.installations.id, schema.repositories.installationId),
       )
-      .where(and(eq(schema.repositories.id, repositoryId), eq(schema.installations.orgId, orgId)))
+      .where(
+        and(
+          eq(schema.repositories.id, repositoryId),
+          eq(schema.installations.orgId, orgId),
+        ),
+      )
       .limit(1)
   )[0];
   if (!repo) throw new Error("repository not found in this organization");
@@ -383,7 +437,8 @@ export async function toggleRepository(formData: FormData): Promise<void> {
         ),
       )
       .returning({ id: schema.repositories.id });
-    if (!updated[0]) throw new Error("repository changed organizations; retry the toggle");
+    if (!updated[0])
+      throw new Error("repository changed organizations; retry the toggle");
     if (repo.enabled !== enable) {
       await recordRepositoryEnablementEvent(tx, {
         orgId,
@@ -443,9 +498,15 @@ export async function refreshOrgConfigProbes(
         eq(schema.installations.id, schema.repositories.installationId),
       )
       .where(
-        and(eq(schema.installations.orgId, orgId), eq(schema.repositories.enabled, true)),
+        and(
+          eq(schema.installations.orgId, orgId),
+          eq(schema.repositories.enabled, true),
+        ),
       );
-    const probes = await getRepoConfigProbes(db, repos, { force: true, now: refreshedAt });
+    const probes = await getRepoConfigProbes(db, repos, {
+      force: true,
+      now: refreshedAt,
+    });
     const successfulCount = probes.filter((probe) => probe.ok).length;
     const failedCount = repos.length - successfulCount;
     const configFileCount = probes.reduce(
@@ -521,7 +582,10 @@ export async function getGateEnforcementRefreshProgress(
   jobId: number,
 ): Promise<GateEnforcementRefreshProgress> {
   const { orgId } = await requireAdmin(slug);
-  const status = await getGateEnforcementSweepStatus(getPool(), { jobId, orgId });
+  const status = await getGateEnforcementSweepStatus(getPool(), {
+    jobId,
+    orgId,
+  });
   if (status === "queued" || status === "running") return { status: "pending" };
   if (status === "done") {
     revalidatePath(`/orgs/${slug}/settings`);
@@ -610,7 +674,8 @@ export async function setOrgSharedConfigEnabled(
 ): Promise<OrgSettingsActionState> {
   const slug = String(formData.get("slug") ?? "");
   const { orgId, userId } = await requireAdmin(slug);
-  const sharedConfigEnabled = String(formData.get("sharedConfigEnabled") ?? "") === "on";
+  const sharedConfigEnabled =
+    String(formData.get("sharedConfigEnabled") ?? "") === "on";
   const db = getDb();
   const now = new Date();
   await db.transaction(async (tx) => {
@@ -627,7 +692,8 @@ export async function setOrgSharedConfigEnabled(
         .where(eq(schema.orgSettings.orgId, orgId))
         .limit(1)
     )[0];
-    const changed = (current?.sharedConfigEnabled ?? true) !== sharedConfigEnabled;
+    const changed =
+      (current?.sharedConfigEnabled ?? true) !== sharedConfigEnabled;
     await tx
       .insert(schema.orgSettings)
       .values({ orgId, sharedConfigEnabled, updatedAt: now })
@@ -678,7 +744,8 @@ export async function saveOrgConfigFallbacks(
     } catch (error) {
       return {
         status: "error",
-        message: error instanceof Error ? error.message : "Config YAML is invalid.",
+        message:
+          error instanceof Error ? error.message : "Config YAML is invalid.",
       };
     }
   }
@@ -703,13 +770,19 @@ export async function saveOrgInferenceSettings(
 
   const providerMode = String(formData.get("providerMode") ?? "hosted").trim();
   if (providerMode !== "hosted" && providerMode !== "byok") {
-    return { status: "error", message: "Choose hosted inference or bring your own key." };
+    return {
+      status: "error",
+      message: "Choose hosted inference or bring your own key.",
+    };
   }
   const apiBase = String(formData.get("apiBase") ?? "").trim() || null;
-  const apiFormatInput = String(formData.get("apiFormat") ?? "openai-compatible").trim();
+  const apiFormatInput = String(
+    formData.get("apiFormat") ?? "openai-compatible",
+  ).trim();
   const apiFormat = parseApiFormat(apiFormatInput);
   const model = String(formData.get("model") ?? "").trim() || null;
-  const modelCascade = String(formData.get("modelCascade") ?? "").trim() || null;
+  const modelCascade =
+    String(formData.get("modelCascade") ?? "").trim() || null;
   const apiKey = String(formData.get("apiKey") ?? "").trim();
   const apiKeyAction = String(formData.get("apiKeyAction") ?? "keep").trim();
   const apiAuthHeader = String(formData.get("apiAuthHeader") ?? "").trim();
@@ -745,7 +818,8 @@ export async function saveOrgInferenceSettings(
 
   // The key is write-only: set when provided, cleared when requested,
   // otherwise left untouched. It is never read back to the form.
-  let keyUpdate: { apiKeyCiphertext: Buffer | null } | Record<string, never> = {};
+  let keyUpdate: { apiKeyCiphertext: Buffer | null } | Record<string, never> =
+    {};
   if (removingByok) {
     keyUpdate = { apiKeyCiphertext: null };
   } else if (apiKeyAction === "replace") {
@@ -764,10 +838,16 @@ export async function saveOrgInferenceSettings(
   }
 
   let authUpdate:
-    | { apiAuthHeaderCiphertext: Buffer | null; apiAuthValueCiphertext: Buffer | null }
+    | {
+        apiAuthHeaderCiphertext: Buffer | null;
+        apiAuthValueCiphertext: Buffer | null;
+      }
     | Record<string, never> = {};
   if (removingByok || apiAuthAction === "remove") {
-    authUpdate = { apiAuthHeaderCiphertext: null, apiAuthValueCiphertext: null };
+    authUpdate = {
+      apiAuthHeaderCiphertext: null,
+      apiAuthValueCiphertext: null,
+    };
   } else if (apiAuthAction === "replace") {
     if (!apiAuthHeader || !apiAuthValue) {
       return {
@@ -783,10 +863,14 @@ export async function saveOrgInferenceSettings(
       apiAuthValueCiphertext: seal(apiAuthValue, sealingKey),
     };
   } else if (apiAuthAction !== "keep") {
-    return { status: "error", message: "Choose how to update additional authentication." };
+    return {
+      status: "error",
+      message: "Choose how to update additional authentication.",
+    };
   }
 
-  const managedHostedInferenceAvailable = await hostedInferenceAvailable(getPool());
+  const managedHostedInferenceAvailable =
+    await hostedInferenceAvailable(getPool());
   const modeError = await db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:gate-mode:${orgId}`}, 0))`,
@@ -826,8 +910,8 @@ export async function saveOrgInferenceSettings(
     )[0];
     const activeTrial = Boolean(
       entitlement?.status === "trialing" &&
-        entitlement.trialEndsAt &&
-        entitlement.trialEndsAt > now,
+      entitlement.trialEndsAt &&
+      entitlement.trialEndsAt > now,
     );
     if (
       requestedMode === "hosted" &&
@@ -850,8 +934,15 @@ export async function saveOrgInferenceSettings(
         message: `Your plan uses ${entitlement.subscriptionMode === "byok" ? "BYOK" : "hosted inference"}. Change the plan before switching inference mode.`,
       };
     }
-    if (!removingByok && apiKeyAction === "keep" && !currentSettings?.apiKeyCiphertext) {
-      return { status: "error" as const, message: "Enter a provider key to enable BYOK." };
+    if (
+      !removingByok &&
+      apiKeyAction === "keep" &&
+      !currentSettings?.apiKeyCiphertext
+    ) {
+      return {
+        status: "error" as const,
+        message: "Enter a provider key to enable BYOK.",
+      };
     }
     if (
       !removingByok &&
@@ -870,11 +961,16 @@ export async function saveOrgInferenceSettings(
       .values({
         orgId,
         ...base,
-        apiKeyCiphertext: "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
+        apiKeyCiphertext:
+          "apiKeyCiphertext" in keyUpdate ? keyUpdate.apiKeyCiphertext : null,
         apiAuthHeaderCiphertext:
-          "apiAuthHeaderCiphertext" in authUpdate ? authUpdate.apiAuthHeaderCiphertext : null,
+          "apiAuthHeaderCiphertext" in authUpdate
+            ? authUpdate.apiAuthHeaderCiphertext
+            : null,
         apiAuthValueCiphertext:
-          "apiAuthValueCiphertext" in authUpdate ? authUpdate.apiAuthValueCiphertext : null,
+          "apiAuthValueCiphertext" in authUpdate
+            ? authUpdate.apiAuthValueCiphertext
+            : null,
       })
       .onConflictDoUpdate({
         target: schema.orgSettings.orgId,
@@ -897,7 +993,9 @@ export async function saveOrgInferenceSettings(
         )
         .returning({ orgId: schema.organizationEntitlements.orgId });
       if (switched.length !== 1) {
-        throw new Error("The free trial ended before the provider change was saved.");
+        throw new Error(
+          "The free trial ended before the provider change was saved.",
+        );
       }
     }
     return null;
@@ -908,13 +1006,18 @@ export async function saveOrgInferenceSettings(
   return { status: "success", message: "Inference settings saved." };
 }
 
-async function assertDashboardReviewApprovable(review: ReviewForApproval): Promise<void> {
-  if (review.status !== "completed") throw new Error("review must be completed");
+async function assertDashboardReviewApprovable(
+  review: ReviewForApproval,
+): Promise<void> {
+  if (review.status !== "completed")
+    throw new Error("review must be completed");
   if (!review.envelope) throw new Error("review must have an envelope");
   if (!review.gateCheckRunId) throw new Error("review has no gate check-run");
 }
 
-async function requireCurrentReviewHead(review: ReviewForApproval): Promise<string> {
+async function requireCurrentReviewHead(
+  review: ReviewForApproval,
+): Promise<string> {
   const signal = AbortSignal.timeout(10_000);
   const token = await getInstallationToken(review.githubInstallationId, signal);
   const currentHeadSha = await getPullRequestHeadSha(
@@ -924,7 +1027,9 @@ async function requireCurrentReviewHead(review: ReviewForApproval): Promise<stri
     signal,
   );
   if (currentHeadSha !== review.headSha) {
-    throw new Error("the pull request changed after this review; use the latest review");
+    throw new Error(
+      "the pull request changed after this review; use the latest review",
+    );
   }
   if (await hasNewerCompletedReviewForHead(getDb(), review)) {
     throw new Error("a newer completed review exists for this commit");
@@ -951,16 +1056,25 @@ export async function approveFinding(formData: FormData): Promise<void> {
     if (await hasInFlightReviewForPr(tx, review)) {
       throw new Error("a review is in progress; re-issue after it completes");
     }
-    if (await hasNewerReviewForPr(tx, review)) {
-      throw new Error("a newer review exists for this pull request");
+    if (await hasNewerCompletedReviewForHead(tx, review)) {
+      throw new Error("a newer completed review exists for this commit");
     }
     const state = await getReviewApprovalState(tx, review);
     const finding = findKindBlockingState(state, findingId);
-    if (!finding || !finding.blocking || finding.activeApproval || finding.activeDismissal || finding.latestApproval?.revokedAt) {
-      throw new Error("that finding is absent, already approved, revoked, or no longer kind-blocking");
+    if (
+      !finding ||
+      !finding.blocking ||
+      finding.activeApproval ||
+      finding.activeDismissal
+    ) {
+      throw new Error(
+        "that finding is absent, already approved, or no longer kind-blocking",
+      );
     }
     if (finding.severityBlocking) {
-      throw new Error("this finding is also severity-blocking, and approvals only clear kind-based blocks");
+      throw new Error(
+        "this finding is also severity-blocking, and approvals only clear kind-based blocks",
+      );
     }
     await insertFindingApproval(tx, {
       reviewId: review.id,
@@ -1015,14 +1129,21 @@ export async function revokeFinding(formData: FormData): Promise<void> {
     if (await hasInFlightReviewForPr(tx, review)) {
       throw new Error("a review is in progress; re-issue after it completes");
     }
-    if (await hasNewerReviewForPr(tx, review)) {
-      throw new Error("a newer review exists for this pull request");
+    if (await hasNewerCompletedReviewForHead(tx, review)) {
+      throw new Error("a newer completed review exists for this commit");
     }
     const state = await getReviewApprovalState(tx, review);
     const finding = findKindBlockingState(state, findingId);
-    if (!finding?.activeApproval) throw new Error("that finding has no active approval");
-    const revokedApprovalId = await revokeFindingApproval(tx, review.id, findingId, userId);
-    if (!revokedApprovalId) throw new Error("that finding has no active approval");
+    if (!finding?.activeApproval)
+      throw new Error("that finding has no active approval");
+    const revokedApprovalId = await revokeFindingApproval(
+      tx,
+      review.id,
+      findingId,
+      userId,
+    );
+    if (!revokedApprovalId)
+      throw new Error("that finding has no active approval");
     const nextState = await getReviewApprovalState(tx, review);
     const gateEnabled = await lockOrganizationGateMode(tx, orgId);
     await updateStoredEffectiveGate(
@@ -1046,7 +1167,11 @@ export async function dismissFinding(formData: FormData): Promise<void> {
   const findingId = String(formData.get("findingId") ?? "").trim();
   const reasonTag = String(formData.get("reasonTag") ?? "");
   const rationale = String(formData.get("rationale") ?? "");
-  if (!(["false-positive", "accepted-risk", "out-of-scope"] as const).includes(reasonTag as never)) {
+  if (
+    !(["false-positive", "accepted-risk", "out-of-scope"] as const).includes(
+      reasonTag as never,
+    )
+  ) {
     throw new Error("dismissal requires a valid reason tag");
   }
   const { orgId } = await requireAdmin(slug);
@@ -1067,16 +1192,25 @@ export async function dismissFinding(formData: FormData): Promise<void> {
     token,
   );
   if (!actor || actor.role !== "admin") {
-    throw new Error("GitHub could not verify this account as an active organization admin");
+    throw new Error(
+      "GitHub could not verify this account as an active organization admin",
+    );
   }
-  const authorGithubId = review.authorGithubId ?? (
-    await getPullRequestReviewContext(token, review.repoFullName, review.prNumber)
-  ).authorGithubId ?? null;
+  const authorGithubId =
+    review.authorGithubId ??
+    (
+      await getPullRequestReviewContext(
+        token,
+        review.repoFullName,
+        review.prNumber,
+      )
+    ).authorGithubId ??
+    null;
   await db.transaction(async (tx) => {
     await lockActiveReviewState(tx, review);
     await lockReviewApprovalState(tx, review.id);
-    if (await hasNewerReviewForPr(tx, review)) {
-      throw new Error("a newer review exists for this pull request");
+    if (await hasNewerCompletedReviewForHead(tx, review)) {
+      throw new Error("a newer completed review exists for this commit");
     }
     if (await hasInFlightReviewForPr(tx, review)) {
       throw new Error("a review is in progress; re-issue after it completes");
@@ -1084,7 +1218,9 @@ export async function dismissFinding(formData: FormData): Promise<void> {
     const state = await getReviewApprovalState(tx, review);
     const finding = findDismissibleFindingState(state, findingId);
     if (!finding || finding.activeDismissal || finding.activeApproval) {
-      throw new Error("that finding is absent, operational, already dismissed, or has an active approval");
+      throw new Error(
+        "that finding is absent, operational, already dismissed, or has an active approval",
+      );
     }
     await insertFindingApproval(tx, {
       reviewId: review.id,
@@ -1092,10 +1228,12 @@ export async function dismissFinding(formData: FormData): Promise<void> {
       actor,
       rationale,
       verb: "dismiss",
-      reasonTag: reasonTag as "false-positive" | "accepted-risk" | "out-of-scope",
+      reasonTag: reasonTag as
+        "false-positive" | "accepted-risk" | "out-of-scope",
       authorSelfDismissal: authorGithubId === Number(actor.githubId),
       finding: finding.finding,
-      findingModel: review.envelope!.modelUsed,
+      findingGeneratorModel: review.envelope!.modelUsed,
+      findingScorerModel: review.envelope!.scorerModel,
       source: "dashboard",
       binding: {
         orgId: review.orgId,
@@ -1108,10 +1246,17 @@ export async function dismissFinding(formData: FormData): Promise<void> {
     });
     const nextState = await getReviewApprovalState(tx, review);
     const gateEnabled = await lockOrganizationGateMode(tx, orgId);
-    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing, gateEnabled);
+    await updateStoredEffectiveGate(
+      tx,
+      review.id,
+      nextState.effectiveGate.failing,
+      gateEnabled,
+    );
     await enqueueGateStateSync(tx, review);
   });
-  void import("@/worker/runner").then(({ triggerQueueDrain }) => triggerQueueDrain("gate-state-sync"));
+  void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+    triggerQueueDrain("gate-state-sync"),
+  );
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/runs/${publicId}`);
 }
@@ -1129,7 +1274,6 @@ const DISMISSAL_ACTION_ERRORS = new Set([
   "review has no gate check-run",
   "the pull request changed after this review; use the latest review",
   "a newer completed review exists for this commit",
-  "a newer review exists for this pull request",
   "a review is in progress; re-issue after it completes",
   "approval rationale is required",
   "user has no github id",
@@ -1143,16 +1287,22 @@ export async function dismissFindingWithState(
 ): Promise<DismissFindingActionState> {
   try {
     await dismissFinding(formData);
-    return { status: "success", message: "Dismissal recorded. The gate update is queued." };
+    return {
+      status: "success",
+      message: "Dismissal recorded. The gate update is queued.",
+    };
   } catch (error) {
-    const message = error instanceof Error && DISMISSAL_ACTION_ERRORS.has(error.message)
-      ? error.message
-      : "Dismissal could not be recorded. Refresh the run and try again.";
+    const message =
+      error instanceof Error && DISMISSAL_ACTION_ERRORS.has(error.message)
+        ? error.message
+        : "Dismissal could not be recorded. Refresh the run and try again.";
     return { status: "error", message };
   }
 }
 
-export async function revokeFindingDismissal(formData: FormData): Promise<void> {
+export async function revokeFindingDismissal(
+  formData: FormData,
+): Promise<void> {
   const slug = String(formData.get("slug") ?? "");
   const publicId = String(formData.get("publicId") ?? "");
   const findingId = String(formData.get("findingId") ?? "").trim();
@@ -1171,7 +1321,9 @@ export async function revokeFindingDismissal(formData: FormData): Promise<void> 
     token,
   );
   if (!actor || actor.role !== "admin") {
-    throw new Error("GitHub could not verify this account as an active organization admin");
+    throw new Error(
+      "GitHub could not verify this account as an active organization admin",
+    );
   }
   await db.transaction(async (tx) => {
     await lockActiveReviewState(tx, review);
@@ -1179,22 +1331,37 @@ export async function revokeFindingDismissal(formData: FormData): Promise<void> 
     if (await hasInFlightReviewForPr(tx, review)) {
       throw new Error("a review is in progress; re-issue after it completes");
     }
-    if (await hasNewerReviewForPr(tx, review)) {
-      throw new Error("a newer review exists for this pull request");
+    if (await hasNewerCompletedReviewForHead(tx, review)) {
+      throw new Error("a newer completed review exists for this commit");
     }
     const state = await getReviewApprovalState(tx, review);
     if (!findDismissibleFindingState(state, findingId)?.activeDismissal) {
       throw new Error("that finding has no active dismissal");
     }
-    if (!await revokeFindingApproval(tx, review.id, findingId, actor.userId, "dismiss")) {
+    if (
+      !(await revokeFindingApproval(
+        tx,
+        review.id,
+        findingId,
+        actor.userId,
+        "dismiss",
+      ))
+    ) {
       throw new Error("that finding has no active dismissal");
     }
     const nextState = await getReviewApprovalState(tx, review);
     const gateEnabled = await lockOrganizationGateMode(tx, orgId);
-    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing, gateEnabled);
+    await updateStoredEffectiveGate(
+      tx,
+      review.id,
+      nextState.effectiveGate.failing,
+      gateEnabled,
+    );
     await enqueueGateStateSync(tx, review);
   });
-  void import("@/worker/runner").then(({ triggerQueueDrain }) => triggerQueueDrain("gate-state-sync"));
+  void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+    triggerQueueDrain("gate-state-sync"),
+  );
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/runs/${publicId}`);
 }
@@ -1205,24 +1372,27 @@ export async function revokeFindingDismissalWithState(
 ): Promise<DismissFindingActionState> {
   try {
     await revokeFindingDismissal(formData);
-    return { status: "success", message: "Dismissal revoked. The gate update is queued." };
+    return {
+      status: "success",
+      message: "Dismissal revoked. The gate update is queued.",
+    };
   } catch (error) {
     const known = new Set([
       "review not found in this organization",
       "user has no github id",
       "GitHub could not verify this account as an active organization admin",
-      "a newer review exists for this pull request",
+      "a newer completed review exists for this commit",
       "a review is in progress; re-issue after it completes",
       "the pull request changed after this review; use the latest review",
-      "a newer completed review exists for this commit",
       "review must be completed",
       "review must have an envelope",
       "review has no gate check-run",
       "that finding has no active dismissal",
     ]);
-    const message = error instanceof Error && known.has(error.message)
-      ? error.message
-      : "Dismissal could not be revoked. Refresh the run and try again.";
+    const message =
+      error instanceof Error && known.has(error.message)
+        ? error.message
+        : "Dismissal could not be revoked. Refresh the run and try again.";
     return { status: "error", message };
   }
 }

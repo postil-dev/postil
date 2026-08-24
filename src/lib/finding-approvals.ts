@@ -28,7 +28,8 @@ export interface ApprovalRow {
   findingKind: string | null;
   findingSeverity: string | null;
   findingConfidence: number | null;
-  findingModel: string | null;
+  findingGeneratorModel: string | null;
+  findingScorerModel: string | null;
   rationale: string;
   source: "github" | "dashboard";
   sourceCommentId: string | null;
@@ -103,7 +104,8 @@ export interface ApprovalInsert {
   reasonTag?: DismissalReasonTag | null;
   authorSelfDismissal?: boolean;
   finding?: Finding;
-  findingModel?: string;
+  findingGeneratorModel?: string;
+  findingScorerModel?: string | null;
   source: "github" | "dashboard";
   sourceCommentId?: string | null;
   sourceUrl?: string | null;
@@ -169,10 +171,20 @@ export async function getActiveApprovalIds(
   return new Set(rows.map((row) => row.findingId));
 }
 
-export async function getActiveDismissalIds(db: Database, reviewId: number): Promise<Set<string>> {
-  const rows = await db.select({ findingId: schema.findingApprovals.findingId })
+export async function getActiveDismissalIds(
+  db: Database,
+  reviewId: number,
+): Promise<Set<string>> {
+  const rows = await db
+    .select({ findingId: schema.findingApprovals.findingId })
     .from(schema.findingApprovals)
-    .where(and(eq(schema.findingApprovals.reviewId, reviewId), eq(schema.findingApprovals.verb, "dismiss"), isNull(schema.findingApprovals.revokedAt)));
+    .where(
+      and(
+        eq(schema.findingApprovals.reviewId, reviewId),
+        eq(schema.findingApprovals.verb, "dismiss"),
+        isNull(schema.findingApprovals.revokedAt),
+      ),
+    );
   return new Set(rows.map((row) => row.findingId));
 }
 
@@ -185,9 +197,18 @@ export async function getReviewApprovalState(
     .select()
     .from(schema.findingApprovals)
     .where(eq(schema.findingApprovals.reviewId, review.id))
-    .orderBy(desc(schema.findingApprovals.createdAt), desc(schema.findingApprovals.id));
-  const activeByFinding = new Map<string, Map<ApprovalRow["verb"], ApprovalRow>>();
-  const latestByFinding = new Map<string, Map<ApprovalRow["verb"], ApprovalRow>>();
+    .orderBy(
+      desc(schema.findingApprovals.createdAt),
+      desc(schema.findingApprovals.id),
+    );
+  const activeByFinding = new Map<
+    string,
+    Map<ApprovalRow["verb"], ApprovalRow>
+  >();
+  const latestByFinding = new Map<
+    string,
+    Map<ApprovalRow["verb"], ApprovalRow>
+  >();
   for (const approval of approvals) {
     const latest = latestByFinding.get(approval.findingId) ?? new Map();
     if (!latest.has(approval.verb)) latest.set(approval.verb, approval);
@@ -215,7 +236,11 @@ export async function getReviewApprovalState(
     ),
   );
   const effectiveGate = computeEffectiveGate(envelope, activeIds, dismissedIds);
-  const undispositionedGate = computeEffectiveGate(envelope, new Set(), new Set());
+  const undispositionedGate = computeEffectiveGate(
+    envelope,
+    new Set(),
+    new Set(),
+  );
   const blockById = new Map(
     [...undispositionedGate.blockers, ...undispositionedGate.kindBlockers]
       .filter((state) => state.findingId)
@@ -226,7 +251,11 @@ export async function getReviewApprovalState(
       const findingId = findingStableId(finding);
       if (!findingId) return null;
       const blockState = blockById.get(findingId);
-      if (!blockState || (!blockState.kindBlocking && !blockState.severityBlocking)) return null;
+      if (
+        !blockState ||
+        (!blockState.kindBlocking && !blockState.severityBlocking)
+      )
+        return null;
       if (isOperationalFinding(finding)) return null;
       const active = activeByFinding.get(findingId);
       const latest = latestByFinding.get(findingId);
@@ -239,14 +268,16 @@ export async function getReviewApprovalState(
         latestDismissal: latest?.get("dismiss") ?? null,
         kindBlocking: blockState.kindBlocking,
         severityBlocking: blockState.severityBlocking,
-        blocking: effectiveGate.blockers.some((blocker) => blocker.findingId === findingId),
+        blocking: effectiveGate.blockers.some(
+          (blocker) => blocker.findingId === findingId,
+        ),
         dismissible: true,
       };
       return state;
     })
     .filter((state): state is FindingApprovalState => state !== null);
-  const findingStates = dismissalFindingStates.filter((state) =>
-    state.kindBlocking && qualifiesHumanEscalation(state.finding),
+  const findingStates = dismissalFindingStates.filter(
+    (state) => state.kindBlocking && qualifiesHumanEscalation(state.finding),
   );
   return { review, effectiveGate, findingStates, dismissalFindingStates };
 }
@@ -274,7 +305,10 @@ export async function enqueueLatestGateStateSyncsForOrganization(
 ): Promise<void> {
   await db.insert(schema.jobs).values({
     kind: "gate-state-sync",
-    payload: { orgId, modeVersion } satisfies OrganizationGateStateSyncJobPayload,
+    payload: {
+      orgId,
+      modeVersion,
+    } satisfies OrganizationGateStateSyncJobPayload,
     maxAttempts: 5,
   });
 }
@@ -291,7 +325,9 @@ export async function lockActiveReviewState(
   db: Database,
   review: Pick<ReviewForApproval, "githubRepoId" | "prNumber">,
 ): Promise<void> {
-  const identity = [String(review.githubRepoId), String(review.prNumber)].join("\u001f");
+  const identity = [String(review.githubRepoId), String(review.prNumber)].join(
+    "\u001f",
+  );
   await db.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:review-pr:${identity}`}, 0))`,
   );
@@ -301,13 +337,22 @@ export async function lockReviewDecisionScopeById(
   db: Database,
   reviewId: number,
 ): Promise<void> {
-  const review = (await db.select({
-    githubRepoId: schema.repositories.githubRepoId,
-    prNumber: schema.reviews.prNumber,
-  }).from(schema.reviews)
-    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
-    .where(eq(schema.reviews.id, reviewId)).limit(1))[0];
-  if (!review?.githubRepoId) throw new Error("review decision scope is unavailable");
+  const review = (
+    await db
+      .select({
+        githubRepoId: schema.repositories.githubRepoId,
+        prNumber: schema.reviews.prNumber,
+      })
+      .from(schema.reviews)
+      .innerJoin(
+        schema.repositories,
+        eq(schema.repositories.id, schema.reviews.repositoryId),
+      )
+      .where(eq(schema.reviews.id, reviewId))
+      .limit(1)
+  )[0];
+  if (!review?.githubRepoId)
+    throw new Error("review decision scope is unavailable");
   await lockActiveReviewState(db, {
     githubRepoId: review.githubRepoId,
     prNumber: review.prNumber,
@@ -333,7 +378,12 @@ export async function insertFindingApproval(
 ): Promise<string> {
   const rationale = validateApprovalRationale(input.rationale);
   const verb = input.verb ?? "approve";
-  if (verb === "dismiss" && (!input.reasonTag || !input.finding || !input.findingModel)) {
+  const findingGeneratorModel = input.findingGeneratorModel?.trim() || null;
+  const findingScorerModel = input.findingScorerModel?.trim() || null;
+  if (
+    verb === "dismiss" &&
+    (!input.reasonTag || !input.finding || !findingGeneratorModel)
+  ) {
     throw new Error("dismissal audit fields are required");
   }
   const rows = await db
@@ -351,7 +401,8 @@ export async function insertFindingApproval(
       findingKind: input.finding?.kind ?? null,
       findingSeverity: input.finding?.severity ?? null,
       findingConfidence: input.finding?.confidence ?? null,
-      findingModel: input.findingModel ?? null,
+      findingGeneratorModel,
+      findingScorerModel,
       rationale,
       source: input.source,
       sourceCommentId: input.sourceCommentId ?? null,
@@ -420,7 +471,10 @@ export async function loadLatestCompletedReviewForPr(
         installationAccountType: schema.installations.accountType,
       })
       .from(schema.reviews)
-      .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+      .innerJoin(
+        schema.repositories,
+        eq(schema.repositories.id, schema.reviews.repositoryId),
+      )
       .innerJoin(
         schema.installations,
         eq(schema.installations.id, schema.repositories.installationId),
@@ -445,7 +499,8 @@ export async function loadLatestCompletedReviewForPr(
     row.githubInstallationId == null ||
     row.githubRepoId == null ||
     !row.repoFullName
-  ) return null;
+  )
+    return null;
   return {
     ...row,
     repoFullName: row.repoFullName,
@@ -482,7 +537,10 @@ export async function loadReviewForApprovalByPublicId(
         installationAccountType: schema.installations.accountType,
       })
       .from(schema.reviews)
-      .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+      .innerJoin(
+        schema.repositories,
+        eq(schema.repositories.id, schema.reviews.repositoryId),
+      )
       .innerJoin(
         schema.installations,
         eq(schema.installations.id, schema.repositories.installationId),
@@ -504,7 +562,8 @@ export async function loadReviewForApprovalByPublicId(
     row.githubInstallationId == null ||
     row.githubRepoId == null ||
     !row.repoFullName
-  ) return null;
+  )
+    return null;
   return {
     ...row,
     repoFullName: row.repoFullName,
@@ -538,33 +597,37 @@ export async function hasNewerCompletedReviewForHead(
   return Boolean(latestForHead && latestForHead.id !== review.id);
 }
 
-export async function hasNewerReviewForPr(
-  db: Database,
-  review: Pick<ReviewForApproval, "id" | "repositoryId" | "prNumber">,
-): Promise<boolean> {
-  const row = (await db.select({ id: schema.reviews.id }).from(schema.reviews).where(and(
-    eq(schema.reviews.repositoryId, review.repositoryId),
-    eq(schema.reviews.prNumber, review.prNumber),
-    sql`${schema.reviews.id} > ${review.id}`,
-    sql`${schema.reviews.status} <> 'stale'`,
-  )).limit(1))[0];
-  return Boolean(row);
-}
-
 export async function hasInFlightReviewForPr(
   db: Database,
-  review: Pick<ReviewForApproval, "repositoryId" | "githubRepoId" | "prNumber">,
+  review: Pick<
+    ReviewForApproval,
+    "repositoryId" | "githubRepoId" | "prNumber" | "headSha"
+  >,
 ): Promise<boolean> {
-  const reviewRow = (await db.select({ id: schema.reviews.id }).from(schema.reviews).where(and(
-    eq(schema.reviews.repositoryId, review.repositoryId),
-    eq(schema.reviews.prNumber, review.prNumber),
-    sql`${schema.reviews.status} IN ('queued', 'running')`,
-  )).limit(1))[0];
+  const reviewRow = (
+    await db
+      .select({ id: schema.reviews.id })
+      .from(schema.reviews)
+      .where(
+        and(
+          eq(schema.reviews.repositoryId, review.repositoryId),
+          eq(schema.reviews.prNumber, review.prNumber),
+          eq(schema.reviews.headSha, review.headSha),
+          sql`${schema.reviews.status} IN ('queued', 'running')`,
+        ),
+      )
+      .limit(1)
+  )[0];
   if (reviewRow) return true;
-  const jobRow = (await db.select({ id: schema.jobs.id }).from(schema.jobs).where(and(
-    eq(schema.jobs.kind, "review"),
-    sql`${schema.jobs.status} IN ('queued', 'running')`,
-    sql`(
+  const jobRow = (
+    await db
+      .select({ id: schema.jobs.id })
+      .from(schema.jobs)
+      .where(
+        and(
+          eq(schema.jobs.kind, "review"),
+          sql`${schema.jobs.status} IN ('queued', 'running')`,
+          sql`(
       ${schema.jobs.payload}->>'githubRepoId' = ${String(review.githubRepoId)}
       OR (
         NOT ${schema.jobs.payload} ? 'githubRepoId'
@@ -575,8 +638,12 @@ export async function hasInFlightReviewForPr(
         )
       )
     )`,
-    sql`${schema.jobs.payload}->>'prNumber' = ${String(review.prNumber)}`,
-  )).limit(1))[0];
+          sql`${schema.jobs.payload}->>'prNumber' = ${String(review.prNumber)}`,
+          sql`${schema.jobs.payload}->>'headSha' = ${review.headSha}`,
+        ),
+      )
+      .limit(1)
+  )[0];
   return Boolean(jobRow);
 }
 
@@ -584,14 +651,21 @@ export function findKindBlockingState(
   state: ReviewApprovalState,
   findingId: string,
 ): FindingApprovalState | null {
-  return state.findingStates.find((finding) => finding.findingId === findingId) ?? null;
+  return (
+    state.findingStates.find((finding) => finding.findingId === findingId) ??
+    null
+  );
 }
 
 export function findDismissibleFindingState(
   state: ReviewApprovalState,
   findingId: string,
 ): FindingApprovalState | null {
-  return state.dismissalFindingStates.find((finding) => finding.findingId === findingId) ?? null;
+  return (
+    state.dismissalFindingStates.find(
+      (finding) => finding.findingId === findingId,
+    ) ?? null
+  );
 }
 
 /** Shortest finding-id prefix the approval command accepts. */
@@ -639,10 +713,13 @@ function resolveFindingIdCandidates(
   input: string,
 ): ApprovableFindingIdResolution {
   if (candidates.includes(input)) return { ok: true, findingId: input };
-  if (input.length < FINDING_ID_PREFIX_MIN_LENGTH) return { ok: false, reason: "unknown" };
+  if (input.length < FINDING_ID_PREFIX_MIN_LENGTH)
+    return { ok: false, reason: "unknown" };
   const matches = candidates.filter((findingId) => findingId.startsWith(input));
   if (matches.length === 1) return { ok: true, findingId: matches[0]! };
-  return matches.length > 1 ? { ok: false, reason: "ambiguous", matches } : { ok: false, reason: "unknown" };
+  return matches.length > 1
+    ? { ok: false, reason: "ambiguous", matches }
+    : { ok: false, reason: "unknown" };
 }
 
 export function formatRemainingGateBlockers(
@@ -667,21 +744,24 @@ export function formatRemainingGateBlockers(
       // A truncated id must stay a usable `@postil approve` prefix, so ids
       // whose truncated forms collide are shown in full.
       const prefix = blocker.findingId?.slice(0, FINDING_ID_DISPLAY_LENGTH);
-      const id = blocker.findingId && prefix
-        ? ` ${(truncatedCounts.get(prefix) ?? 0) > 1 ? blocker.findingId : prefix}`
-        : "";
+      const id =
+        blocker.findingId && prefix
+          ? ` ${(truncatedCounts.get(prefix) ?? 0) > 1 ? blocker.findingId : prefix}`
+          : "";
       const reason = [
-        blocker.severityBlocking ? `severity ${blocker.finding.severity}` : null,
-        blocker.kindBlocking && !blocker.approved ? `kind ${blocker.finding.kind}` : null,
+        blocker.severityBlocking
+          ? `severity ${blocker.finding.severity}`
+          : null,
+        blocker.kindBlocking && !blocker.approved
+          ? `kind ${blocker.finding.kind}`
+          : null,
       ]
         .filter(Boolean)
         .join(", ");
       return `- ${blocker.finding.title}${id} (${reason})`;
     })
     .join("\n");
-  return [blockers, dismissed || null]
-    .filter(Boolean)
-    .join("\n\n");
+  return [blockers, dismissed || null].filter(Boolean).join("\n\n");
 }
 
 export function formatDismissedGateFindings(
@@ -693,5 +773,7 @@ export function formatDismissedGateFindings(
       const dismissal = finding.activeDismissal!;
       return `- ${finding.finding.title} ${finding.findingId.slice(0, FINDING_ID_DISPLAY_LENGTH)} (Dismissed by @${dismissal.actorLoginSnapshot}: ${dismissal.reasonTag}${dismissal.authorSelfDismissal ? "; pull request author" : ""})`;
     });
-  return dismissed.length > 0 ? `Dismissed findings:\n${dismissed.join("\n")}` : "";
+  return dismissed.length > 0
+    ? `Dismissed findings:\n${dismissed.join("\n")}`
+    : "";
 }

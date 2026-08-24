@@ -172,14 +172,19 @@ mock.module("@/lib/finding-approvals", () => ({
 
 mock.module("@/lib/github/app-auth", () => ({
   apiBase: () => "https://api.github.test",
-  getInstallationToken: async (_installationId: number, signal?: AbortSignal) => {
+  getInstallationToken: async (
+    _installationId: number,
+    signal?: AbortSignal,
+  ) => {
     if (blockToken) {
       tokenEnteredResolve?.();
       await tokenRelease;
     }
     if (!tokenWaitForAbort) return "installation-token";
     return new Promise<string>((_resolve, reject) => {
-      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      signal?.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
     });
   },
 }));
@@ -250,6 +255,7 @@ describe("durable gate state synchronization", () => {
           "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
       },
     ]);
+    expect(checkSummaries[0]).not.toContain("@postil dismiss");
     expect(checkSummaries).toEqual([
       "No blocking findings remain for this commit.\n\n" +
         "Dismissed findings:\n- retained audit",
@@ -268,7 +274,10 @@ describe("durable gate state synchronization", () => {
 
     expect(lockCalls).toBe(3);
     expect(storedStates).toEqual([true]);
-    expect(checkCalls.map((call) => call.conclusion)).toEqual(["success", "failure"]);
+    expect(checkCalls.map((call) => call.conclusion)).toEqual([
+      "success",
+      "failure",
+    ]);
     expect(checkCalls[1]?.detailsUrl).toBe(
       "https://postil.dev/orgs/acme/runs/00000000-0000-4000-8000-000000000007",
     );
@@ -282,7 +291,10 @@ describe("durable gate state synchronization", () => {
 
   test("allows only one publisher for a review at a time", async () => {
     blockToken = true;
-    const first = runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+    const first = runGateStateSyncJob({
+      reviewId: 7,
+      reviewPublicId: row.publicId,
+    });
     await tokenEntered;
 
     await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });

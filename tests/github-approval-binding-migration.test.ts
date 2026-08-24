@@ -7,6 +7,7 @@ import { Client, Pool } from "pg";
 import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
+const KEEP_TEST_DATABASE = process.env.POSTIL_KEEP_TEST_DATABASE === "1";
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("GitHub approval binding migration", () => {
@@ -39,31 +40,51 @@ describeDb("GitHub approval binding migration", () => {
       await applyMigration(client, join(migrationsDirectory, migration));
     }
 
-    orgId = Number((await client.query<{ id: string }>(
-      "INSERT INTO organizations (slug, name, github_org_id) VALUES ('approval-binding', 'Approval Binding', 101) RETURNING id",
-    )).rows[0]!.id);
-    installationId = Number((await client.query<{ id: string }>(
-      `INSERT INTO installations (github_installation_id, org_id, account_login, account_type)
+    orgId = Number(
+      (
+        await client.query<{ id: string }>(
+          "INSERT INTO organizations (slug, name, github_org_id) VALUES ('approval-binding', 'Approval Binding', 101) RETURNING id",
+        )
+      ).rows[0]!.id,
+    );
+    installationId = Number(
+      (
+        await client.query<{ id: string }>(
+          `INSERT INTO installations (github_installation_id, org_id, account_login, account_type)
        VALUES (202, $1, 'approval-binding', 'Organization') RETURNING id`,
-      [orgId],
-    )).rows[0]!.id);
-    repositoryId = Number((await client.query<{ id: string }>(
-      `INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
+          [orgId],
+        )
+      ).rows[0]!.id,
+    );
+    repositoryId = Number(
+      (
+        await client.query<{ id: string }>(
+          `INSERT INTO repositories (installation_id, github_repo_id, full_name, private, enabled)
        VALUES ($1, 303, 'approval-binding/repo', false, true) RETURNING id`,
-      [installationId],
-    )).rows[0]!.id);
-    actorUserId = Number((await client.query<{ id: string }>(
-      "INSERT INTO users (github_id, login) VALUES (404, 'admin') RETURNING id",
-    )).rows[0]!.id);
-    reviewId = Number((await client.query<{ id: string }>(
-      `INSERT INTO reviews (
+          [installationId],
+        )
+      ).rows[0]!.id,
+    );
+    actorUserId = Number(
+      (
+        await client.query<{ id: string }>(
+          "INSERT INTO users (github_id, login) VALUES (404, 'admin') RETURNING id",
+        )
+      ).rows[0]!.id,
+    );
+    reviewId = Number(
+      (
+        await client.query<{ id: string }>(
+          `INSERT INTO reviews (
          repository_id, source_org_id, source_installation_id,
          source_github_installation_id, source_github_repo_id, source_repo_full_name,
          pr_number, head_sha, base_sha, status
        ) VALUES ($1, $2, $3, 202, 303, 'approval-binding/repo', 5, 'head-sha', 'base-sha', 'completed')
        RETURNING id`,
-      [repositoryId, orgId, installationId],
-    )).rows[0]!.id);
+          [repositoryId, orgId, installationId],
+        )
+      ).rows[0]!.id,
+    );
     await client.query(
       `INSERT INTO finding_approvals (
          review_id, finding_id, actor_user_id, actor_github_id,
@@ -71,22 +92,42 @@ describeDb("GitHub approval binding migration", () => {
        ) VALUES ($1, 'legacy-finding', $2, '404', 'admin', 'admin', 'accepted risk', 'dashboard')`,
       [reviewId, actorUserId],
     );
-    const incompleteReviewId = Number((await client.query<{ id: string }>(
-      `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status)
+    const incompleteReviewId = Number(
+      (
+        await client.query<{ id: string }>(
+          `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status)
        VALUES ($1, 6, 'legacy-head', 'base-sha', 'completed') RETURNING id`,
-      [repositoryId],
-    )).rows[0]!.id);
-    incompleteApprovalId = (await client.query<{ id: string }>(
-      `INSERT INTO finding_approvals (
+          [repositoryId],
+        )
+      ).rows[0]!.id,
+    );
+    incompleteApprovalId = (
+      await client.query<{ id: string }>(
+        `INSERT INTO finding_approvals (
          review_id, finding_id, actor_user_id, actor_github_id,
          actor_login_snapshot, actor_role_snapshot, rationale, source
        ) VALUES ($1, 'incomplete-legacy', $2, '404', 'admin', 'admin',
          'accepted risk', 'dashboard') RETURNING id`,
-      [incompleteReviewId, actorUserId],
-    )).rows[0]!.id;
+        [incompleteReviewId, actorUserId],
+      )
+    ).rows[0]!.id;
 
-    await applyMigration(client, join(migrationsDirectory, "0037_github_approval_bindings.sql"));
-    const operationalPool = new Pool({ connectionString: isolatedDatabaseUrl, max: 1 });
+    await applyMigration(
+      client,
+      join(migrationsDirectory, "0037_github_approval_bindings.sql"),
+    );
+    await applyMigration(
+      client,
+      join(migrationsDirectory, "0048_woozy_tigra.sql"),
+    );
+    await applyMigration(
+      client,
+      join(migrationsDirectory, "0051_audited_finding_dismissal.sql"),
+    );
+    const operationalPool = new Pool({
+      connectionString: isolatedDatabaseUrl,
+      max: 1,
+    });
     try {
       await ensureOperationalIndexes(operationalPool);
     } finally {
@@ -97,21 +138,27 @@ describeDb("GitHub approval binding migration", () => {
   afterAll(async () => {
     await client?.end();
     if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      if (KEEP_TEST_DATABASE) {
+        console.error(`Preserved test database ${databaseName}`);
+      } else {
+        await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      }
       await adminClient.end();
     }
   });
 
   test("backfills the immutable review identity onto existing approvals", async () => {
-    const row = (await client!.query<{
-      source_org_id: string;
-      source_repository_id: string;
-      source_github_installation_id: string;
-      source_github_repo_id: string;
-      source_pr_number: number;
-      source_head_sha: string;
-      source_binding_state: string;
-    }>("SELECT * FROM finding_approvals WHERE finding_id = 'legacy-finding'" )).rows[0]!;
+    const row = (
+      await client!.query<{
+        source_org_id: string;
+        source_repository_id: string;
+        source_github_installation_id: string;
+        source_github_repo_id: string;
+        source_pr_number: number;
+        source_head_sha: string;
+        source_binding_state: string;
+      }>("SELECT * FROM finding_approvals WHERE finding_id = 'legacy-finding'")
+    ).rows[0]!;
 
     expect(row).toMatchObject({
       source_org_id: String(orgId),
@@ -125,7 +172,10 @@ describeDb("GitHub approval binding migration", () => {
   });
 
   test("accepts an exact GitHub event binding and permits only revocation changes", async () => {
-    const result = await client!.query<{ id: string; source_binding_state: string }>(
+    const result = await client!.query<{
+      id: string;
+      source_binding_state: string;
+    }>(
       `INSERT INTO finding_approvals (
          review_id, finding_id, actor_user_id, actor_github_id,
          actor_login_snapshot, actor_role_snapshot, rationale, source,
@@ -162,8 +212,9 @@ describeDb("GitHub approval binding migration", () => {
   });
 
   test("records a new dashboard approval with exact binding", async () => {
-    const row = (await client!.query<{ source_binding_state: string }>(
-      `INSERT INTO finding_approvals (
+    const row = (
+      await client!.query<{ source_binding_state: string }>(
+        `INSERT INTO finding_approvals (
          review_id, finding_id, actor_user_id, actor_github_id,
          actor_login_snapshot, actor_role_snapshot, rationale, source,
          source_org_id, source_repository_id, source_github_installation_id,
@@ -171,9 +222,141 @@ describeDb("GitHub approval binding migration", () => {
        ) VALUES ($1, 'dashboard-exact', $2, '404', 'admin', 'admin',
          'accepted risk', 'dashboard', $3, $4, 202, 303, 5, 'head-sha')
        RETURNING source_binding_state`,
-      [reviewId, actorUserId, orgId, repositoryId],
-    )).rows[0]!;
+        [reviewId, actorUserId, orgId, repositoryId],
+      )
+    ).rows[0]!;
     expect(row.source_binding_state).toBe("exact");
+  });
+
+  test("stores immutable dismissal quality snapshots and permits revoke then reissue", async () => {
+    const first = (
+      await client!.query<{
+        id: string;
+        finding_model: string;
+        finding_scorer_model: string;
+      }>(
+        `INSERT INTO finding_approvals (
+         review_id, finding_id, actor_user_id, actor_github_id,
+         actor_login_snapshot, actor_role_snapshot, verb, reason_tag,
+         author_self_dismissal, finding_kind, finding_severity,
+         finding_confidence, finding_model, finding_scorer_model,
+         rationale, source, source_org_id, source_repository_id,
+         source_github_installation_id, source_github_repo_id,
+         source_pr_number, source_head_sha
+       ) VALUES (
+         $1, 'dismiss-and-reissue', $2, '404', 'admin', 'admin', 'dismiss',
+         'false-positive', true, 'humanEscalation', 'error', 0.9,
+         'review/model', 'scorer/model', 'The finding contradicts the tested branch.',
+         'dashboard', $3, $4, 202, 303, 5, 'head-sha'
+       ) RETURNING id, finding_model, finding_scorer_model`,
+        [reviewId, actorUserId, orgId, repositoryId],
+      )
+    ).rows[0]!;
+    expect(first).toMatchObject({
+      finding_model: "review/model",
+      finding_scorer_model: "scorer/model",
+    });
+
+    await expect(
+      client!.query(
+        "UPDATE finding_approvals SET finding_scorer_model = 'other/model' WHERE id = $1",
+        [first.id],
+      ),
+    ).rejects.toThrow("immutable");
+    await client!.query(
+      "UPDATE finding_approvals SET revoked_at = now(), revoked_by_user_id = $2 WHERE id = $1",
+      [first.id, actorUserId],
+    );
+    await client!.query(
+      `INSERT INTO finding_approvals (
+         review_id, finding_id, actor_user_id, actor_github_id,
+         actor_login_snapshot, actor_role_snapshot, verb, reason_tag,
+         author_self_dismissal, finding_kind, finding_severity,
+         finding_confidence, finding_model, rationale, source,
+         source_org_id, source_repository_id, source_github_installation_id,
+         source_github_repo_id, source_pr_number, source_head_sha
+       ) VALUES (
+         $1, 'dismiss-and-reissue', $2, '404', 'admin', 'admin', 'dismiss',
+         'accepted-risk', true, 'humanEscalation', 'error', 0.9,
+         'review/model', 'The organization accepts this exact risk.', 'dashboard',
+         $3, $4, 202, 303, 5, 'head-sha'
+       )`,
+      [reviewId, actorUserId, orgId, repositoryId],
+    );
+
+    const history = await client!.query<{
+      active: boolean;
+      reason_tag: string;
+    }>(
+      `SELECT revoked_at IS NULL AS active, reason_tag
+         FROM finding_approvals
+        WHERE review_id = $1 AND finding_id = 'dismiss-and-reissue'
+        ORDER BY revoked_at NULLS LAST, created_at, id`,
+      [reviewId],
+    );
+    expect(history.rows).toEqual([
+      { active: false, reason_tag: "false-positive" },
+      { active: true, reason_tag: "accepted-risk" },
+    ]);
+  });
+
+  test("rejects GitHub comment provenance on dashboard decisions", async () => {
+    await expect(
+      client!.query(
+        `INSERT INTO finding_approvals (
+           review_id, finding_id, actor_user_id, actor_github_id,
+           actor_login_snapshot, actor_role_snapshot, rationale, source,
+           source_org_id, source_repository_id, source_github_installation_id,
+           source_github_repo_id, source_pr_number, source_head_sha,
+           source_webhook_delivery_id, source_github_comment_id, source_comment_kind
+         ) VALUES (
+           $1, 'dashboard-with-comment', $2, '404', 'admin', 'admin',
+           'Reviewed in the dashboard.', 'dashboard', $3, $4, 202, 303, 5,
+           'head-sha', 'dashboard-delivery', 606, 'pull_request_review_comment'
+         )`,
+        [reviewId, actorUserId, orgId, repositoryId],
+      ),
+    ).rejects.toThrow("finding_approvals_github_source_check");
+  });
+
+  test("rejects a blank generator-model snapshot on dismissals", async () => {
+    await expect(
+      client!.query(
+        `INSERT INTO finding_approvals (
+           review_id, finding_id, actor_user_id, actor_github_id,
+           actor_login_snapshot, actor_role_snapshot, verb, reason_tag,
+           finding_kind, finding_severity, finding_confidence, finding_model,
+           rationale, source, source_org_id, source_repository_id,
+           source_github_installation_id, source_github_repo_id,
+           source_pr_number, source_head_sha
+         ) VALUES (
+           $1, 'blank-generator-model', $2, '404', 'admin', 'admin', 'dismiss',
+           'false-positive', 'risk', 'error', 0.9, '   ',
+           'The generator identity is required.', 'dashboard', $3, $4,
+           202, 303, 5, 'head-sha'
+         )`,
+        [reviewId, actorUserId, orgId, repositoryId],
+      ),
+    ).rejects.toThrow("finding dismissal audit is incomplete");
+
+    await expect(
+      client!.query(
+        `INSERT INTO finding_approvals (
+           review_id, finding_id, actor_user_id, actor_github_id,
+           actor_login_snapshot, actor_role_snapshot, verb, reason_tag,
+           finding_kind, finding_severity, finding_confidence, finding_model,
+           rationale, source, source_org_id, source_repository_id,
+           source_github_installation_id, source_github_repo_id,
+           source_pr_number, source_head_sha
+         ) VALUES (
+           $1, 'null-generator-model', $2, '404', 'admin', 'admin', 'dismiss',
+           'false-positive', 'risk', 'error', 0.9, NULL,
+           'The generator identity is required.', 'dashboard', $3, $4,
+           202, 303, 5, 'head-sha'
+         )`,
+        [reviewId, actorUserId, orgId, repositoryId],
+      ),
+    ).rejects.toThrow("finding dismissal audit is incomplete");
   });
 
   test("keeps an approval with unavailable legacy identity revocable", async () => {
@@ -181,14 +364,16 @@ describeDb("GitHub approval binding migration", () => {
       "UPDATE finding_approvals SET revoked_at = now(), revoked_by_user_id = $2 WHERE id = $1",
       [incompleteApprovalId, actorUserId],
     );
-    const row = (await client!.query<{
-      revoked: boolean;
-      source_binding_state: string;
-      source_org_id: string | null;
-    }>(
-      "SELECT revoked_at IS NOT NULL AS revoked, source_binding_state, source_org_id FROM finding_approvals WHERE id = $1",
-      [incompleteApprovalId],
-    )).rows[0]!;
+    const row = (
+      await client!.query<{
+        revoked: boolean;
+        source_binding_state: string;
+        source_org_id: string | null;
+      }>(
+        "SELECT revoked_at IS NOT NULL AS revoked, source_binding_state, source_org_id FROM finding_approvals WHERE id = $1",
+        [incompleteApprovalId],
+      )
+    ).rows[0]!;
     expect(row).toEqual({
       revoked: true,
       source_binding_state: "legacy",

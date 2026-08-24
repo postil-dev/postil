@@ -314,8 +314,9 @@ noindexed:
   detail, suppressed/ungrounded counts, gate verdict,
   model, token usage, timing, immutable trigger provenance, and commit-scoped
   approval or dismissal state. Dismissals show their structured reason,
-  rationale, actor, and author-self-dismissal audit flag. The recent-review table exposes the same trigger class and
-  includes it in text filtering.
+  rationale, actor, finding quality snapshot, review and scorer model identities,
+  and author-self-dismissal audit flag. The recent-review table exposes the same
+  trigger class and includes it in text filtering.
 
 Authorization is uniform: every page and server action re-derives access from
 the session. A sealed GitHub OAuth credential refreshes the complete active

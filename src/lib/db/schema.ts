@@ -50,7 +50,10 @@ export const findingApprovalSource = pgEnum("finding_approval_source", [
   "github",
   "dashboard",
 ]);
-export const findingApprovalVerb = pgEnum("finding_approval_verb", ["approve", "dismiss"]);
+export const findingApprovalVerb = pgEnum("finding_approval_verb", [
+  "approve",
+  "dismiss",
+]);
 
 export const users = pgTable("users", {
   id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
@@ -155,13 +158,15 @@ export type GateEnforcementEvidence = {
     available: boolean;
     requiredStatusChecksPresent: boolean;
     exactMatch: boolean;
-    match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+    match?:
+      "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
   };
   activeRules: {
     available: boolean;
     pagesRead: number;
     exactMatch: boolean;
-    match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+    match?:
+      "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
   };
 };
 
@@ -179,10 +184,15 @@ export const repositoryGateEnforcement = pgTable(
     checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
     lastSuccessfulAt: timestamp("last_successful_at", { withTimezone: true }),
     lastError: text("last_error"),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
-    index("repository_gate_enforcement_status_checked_idx").on(t.status, t.checkedAt),
+    index("repository_gate_enforcement_status_checked_idx").on(
+      t.status,
+      t.checkedAt,
+    ),
     check(
       "repository_gate_enforcement_status_check",
       sql`${t.status} IN ('required', 'not_required', 'unknown')`,
@@ -272,7 +282,9 @@ export const reviews = pgTable(
       .references(() => repositories.id, { onDelete: "cascade" }),
     sourceOrgId: bigint("source_org_id", { mode: "number" }),
     sourceInstallationId: bigint("source_installation_id", { mode: "number" }),
-    sourceGithubInstallationId: bigint("source_github_installation_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", {
+      mode: "number",
+    }),
     sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
     sourceRepoFullName: text("source_repo_full_name"),
     prNumber: integer("pr_number").notNull(),
@@ -431,7 +443,9 @@ export const largeReviewAttempts = pgTable(
     model: text("model").notNull(),
     state: text("state").notNull(),
     leaseId: uuid("lease_id").notNull(),
-    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      withTimezone: true,
+    }).notNull(),
     responseStatus: integer("response_status"),
     responseHeaders: jsonb("response_headers").$type<Record<string, string>>(),
     responseBody: text("response_body"),
@@ -458,7 +472,10 @@ export const largeReviewAttempts = pgTable(
       "large_review_attempts_request_check",
       sql`${t.requestSha256} ~ '^[0-9a-f]{64}$' AND ${t.batchIdentity} ~ '^[0-9a-f]{64}$'`,
     ),
-    check("large_review_attempts_attempt_check", sql`${t.attempt} BETWEEN 1 AND 10`),
+    check(
+      "large_review_attempts_attempt_check",
+      sql`${t.attempt} BETWEEN 1 AND 10`,
+    ),
     check(
       "large_review_attempts_state_check",
       sql`${t.state} IN ('pending', 'completed')`,
@@ -489,14 +506,22 @@ export const findingPublications = pgTable(
     initialState: text("initial_state").notNull(),
     currentState: text("current_state").notNull(),
     githubCommentId: text("github_comment_id"),
-    lifecycleObservedAt: timestamp("lifecycle_observed_at", { withTimezone: true })
+    lifecycleObservedAt: timestamp("lifecycle_observed_at", {
+      withTimezone: true,
+    })
       .notNull()
       .defaultNow(),
   },
   (t) => [
-    uniqueIndex("finding_publications_review_finding_idx").on(t.reviewId, t.findingId),
+    uniqueIndex("finding_publications_review_finding_idx").on(
+      t.reviewId,
+      t.findingId,
+    ),
     index("finding_publications_comment_idx").on(t.githubCommentId),
-    index("finding_publications_stable_finding_idx").on(t.findingId, t.stableIdentity),
+    index("finding_publications_stable_finding_idx").on(
+      t.findingId,
+      t.stableIdentity,
+    ),
     check(
       "finding_publications_finding_id_check",
       sql`length(btrim(${t.findingId})) BETWEEN 1 AND 500`,
@@ -527,12 +552,18 @@ export const findingFeedback = pgTable(
       .notNull()
       .references(() => findingPublications.id, { onDelete: "cascade" }),
     source: text("source", { enum: ["reply", "reaction"] }).notNull(),
-    sourceGithubCommentId: bigint("source_github_comment_id", { mode: "number" }),
-    sourceGithubReactionId: bigint("source_github_reaction_id", { mode: "number" }),
+    sourceGithubCommentId: bigint("source_github_comment_id", {
+      mode: "number",
+    }),
+    sourceGithubReactionId: bigint("source_github_reaction_id", {
+      mode: "number",
+    }),
     body: text("body"),
     actorGithubId: bigint("actor_github_id", { mode: "number" }).notNull(),
     actorLoginSnapshot: text("actor_login_snapshot").notNull(),
-    prAuthorGithubId: bigint("pr_author_github_id", { mode: "number" }).notNull(),
+    prAuthorGithubId: bigint("pr_author_github_id", {
+      mode: "number",
+    }).notNull(),
     prAuthorLoginSnapshot: text("pr_author_login_snapshot").notNull(),
     actorIsPrAuthor: boolean("actor_is_pr_author").notNull(),
     observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
@@ -588,11 +619,14 @@ export const findingApprovals = pgTable(
     actorRoleSnapshot: findingApprovalRole("actor_role_snapshot").notNull(),
     verb: findingApprovalVerb("verb").notNull().default("approve"),
     reasonTag: text("reason_tag"),
-    authorSelfDismissal: boolean("author_self_dismissal").notNull().default(false),
+    authorSelfDismissal: boolean("author_self_dismissal")
+      .notNull()
+      .default(false),
     findingKind: text("finding_kind"),
     findingSeverity: text("finding_severity"),
     findingConfidence: real("finding_confidence"),
-    findingModel: text("finding_model"),
+    findingGeneratorModel: text("finding_model"),
+    findingScorerModel: text("finding_scorer_model"),
     rationale: text("rationale").notNull(),
     source: findingApprovalSource("source").notNull(),
     sourceCommentId: uuid("source_comment_id"),
@@ -606,11 +640,15 @@ export const findingApprovals = pgTable(
     sourcePrNumber: integer("source_pr_number"),
     sourceHeadSha: text("source_head_sha"),
     sourceWebhookDeliveryId: text("source_webhook_delivery_id"),
-    sourceGithubCommentId: bigint("source_github_comment_id", { mode: "number" }),
+    sourceGithubCommentId: bigint("source_github_comment_id", {
+      mode: "number",
+    }),
     sourceCommentKind: text("source_comment_kind"),
     sourceBindingState: text("source_binding_state", {
       enum: ["exact", "legacy"],
-    }).notNull().default("exact"),
+    })
+      .notNull()
+      .default("exact"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -641,7 +679,7 @@ export const findingApprovals = pgTable(
     ),
     check(
       "finding_approvals_dismissal_check",
-      sql`(${t.verb} = 'approve' AND ${t.reasonTag} IS NULL AND ${t.authorSelfDismissal} = false AND ${t.findingKind} IS NULL AND ${t.findingSeverity} IS NULL AND ${t.findingConfidence} IS NULL AND ${t.findingModel} IS NULL) OR (${t.verb} = 'dismiss' AND ${t.reasonTag} IS NOT NULL AND ${t.reasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope') AND ${t.findingKind} IS NOT NULL AND ${t.findingSeverity} IS NOT NULL AND ${t.findingConfidence} IS NOT NULL AND ${t.findingConfidence} BETWEEN 0 AND 1 AND ${t.findingModel} IS NOT NULL)`,
+      sql`(${t.verb} = 'approve' AND ${t.reasonTag} IS NULL AND ${t.authorSelfDismissal} = false AND ${t.findingKind} IS NULL AND ${t.findingSeverity} IS NULL AND ${t.findingConfidence} IS NULL AND ${t.findingGeneratorModel} IS NULL AND ${t.findingScorerModel} IS NULL) OR (${t.verb} = 'dismiss' AND ${t.reasonTag} IS NOT NULL AND ${t.reasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope') AND ${t.findingKind} IS NOT NULL AND length(btrim(${t.findingKind})) > 0 AND ${t.findingSeverity} IS NOT NULL AND length(btrim(${t.findingSeverity})) > 0 AND ${t.findingConfidence} IS NOT NULL AND ${t.findingConfidence} BETWEEN 0 AND 1 AND ${t.findingGeneratorModel} IS NOT NULL AND length(btrim(${t.findingGeneratorModel})) > 0 AND (${t.findingScorerModel} IS NULL OR length(btrim(${t.findingScorerModel})) > 0))`,
     ),
     check(
       "finding_approvals_binding_check",
@@ -649,7 +687,7 @@ export const findingApprovals = pgTable(
     ),
     check(
       "finding_approvals_github_source_check",
-      sql`${t.source} <> 'github' OR (${t.sourceWebhookDeliveryId} IS NULL AND ${t.sourceGithubCommentId} IS NULL AND ${t.sourceCommentKind} IS NULL) OR (length(btrim(${t.sourceWebhookDeliveryId})) BETWEEN 1 AND 200 AND ${t.sourceGithubCommentId} > 0 AND ${t.sourceCommentKind} IN ('issue_comment', 'pull_request_review_comment'))`,
+      sql`(${t.source} = 'github' AND ((${t.sourceWebhookDeliveryId} IS NULL AND ${t.sourceGithubCommentId} IS NULL AND ${t.sourceCommentKind} IS NULL) OR (length(btrim(${t.sourceWebhookDeliveryId})) BETWEEN 1 AND 200 AND ${t.sourceGithubCommentId} > 0 AND ${t.sourceCommentKind} IN ('issue_comment', 'pull_request_review_comment')))) OR (${t.source} = 'dashboard' AND ${t.sourceWebhookDeliveryId} IS NULL AND ${t.sourceGithubCommentId} IS NULL AND ${t.sourceCommentKind} IS NULL)`,
     ),
   ],
 );
@@ -968,9 +1006,7 @@ export const customerNotificationReads = pgTable(
     userId: bigint("user_id", { mode: "number" })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    readAt: timestamp("read_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    readAt: timestamp("read_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex("customer_notification_reads_event_user_idx").on(
@@ -1053,12 +1089,15 @@ export const customerNotificationEmailDeliveryEvents = pgTable(
 export const selfServiceTrialGrants = pgTable(
   "self_service_trial_grants",
   {
-    orgId: bigint("org_id", { mode: "number" })
-      .primaryKey(),
-    initiatedByGithubId: bigint("initiated_by_github_id", { mode: "number" }).notNull(),
+    orgId: bigint("org_id", { mode: "number" }).primaryKey(),
+    initiatedByGithubId: bigint("initiated_by_github_id", {
+      mode: "number",
+    }).notNull(),
     requestedMode: text("requested_mode").notNull(),
     grantedMode: text("granted_mode").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     index("self_service_trial_grants_actor_created_idx").on(
@@ -1578,10 +1617,12 @@ export const privateMonitorIncidents = pgTable(
     detail: text("detail").notNull(),
     state: text("state").notNull().default("open"),
     occurrenceCount: integer("occurrence_count").notNull().default(1),
-    firstDetectedAt: timestamp("first_detected_at", { withTimezone: true })
-      .notNull(),
-    lastDetectedAt: timestamp("last_detected_at", { withTimezone: true })
-      .notNull(),
+    firstDetectedAt: timestamp("first_detected_at", {
+      withTimezone: true,
+    }).notNull(),
+    lastDetectedAt: timestamp("last_detected_at", {
+      withTimezone: true,
+    }).notNull(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     pendingNotificationKey: text("pending_notification_key"),
     pendingNotificationKind: text("pending_notification_kind"),
@@ -1600,7 +1641,10 @@ export const privateMonitorIncidents = pgTable(
       .defaultNow(),
   },
   (t) => [
-    index("private_monitor_incidents_state_updated_idx").on(t.state, t.updatedAt),
+    index("private_monitor_incidents_state_updated_idx").on(
+      t.state,
+      t.updatedAt,
+    ),
     index("private_monitor_incidents_notification_idx")
       .on(t.notificationAvailableAt, t.notificationLeaseExpiresAt)
       .where(sql`${t.pendingNotificationKey} IS NOT NULL`),
@@ -1672,7 +1716,9 @@ export const privateWorkerRehearsals = pgTable(
   {
     nonce: uuid("nonce").primaryKey(),
     state: text("state").notNull().default("armed"),
-    operatorGithubId: bigint("operator_github_id", { mode: "number" }).notNull(),
+    operatorGithubId: bigint("operator_github_id", {
+      mode: "number",
+    }).notNull(),
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
@@ -1773,7 +1819,9 @@ export const respondDeliveries = pgTable(
     ),
     sourceOrgId: bigint("source_org_id", { mode: "number" }),
     sourceInstallationId: bigint("source_installation_id", { mode: "number" }),
-    sourceGithubInstallationId: bigint("source_github_installation_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", {
+      mode: "number",
+    }),
     sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
     repoFullName: text("repo_full_name").notNull(),
     issueNumber: integer("issue_number").notNull(),
@@ -1874,7 +1922,9 @@ export const sessions = pgTable("sessions", {
 export const cliTokens = pgTable(
   "cli_tokens",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     tokenSha256: bytea("token_sha256").notNull(),
     userId: bigint("user_id", { mode: "number" })
       .notNull()
@@ -1909,7 +1959,9 @@ export const cliTokens = pgTable(
 export const cliDeviceAuthorizations = pgTable(
   "cli_device_authorizations",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     deviceCodeSha256: bytea("device_code_sha256").notNull(),
     userCode: text("user_code").notNull(),
     status: text("status").notNull().default("pending"),
@@ -1995,7 +2047,9 @@ export const orgSettings = pgTable("org_settings", {
 export const organizationSettingEvents = pgTable(
   "organization_setting_events",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),

@@ -40,7 +40,9 @@ describe("dashboard metric details", () => {
   test("labels confidence as percentages and does not draw empty buckets", () => {
     const source = readFileSync("src/app/orgs/[slug]/page.tsx", "utf8");
 
-    expect(source).toContain('"0–20%", "20–40%", "40–60%", "60–80%", "80–100%"');
+    expect(source).toContain(
+      '"0–20%", "20–40%", "40–60%", "60–80%", "80–100%"',
+    );
     expect(source).toContain("share of shipped findings on a linear scale");
     expect(source).toContain("v > 0");
     expect(source).toContain(': "0"');
@@ -54,14 +56,24 @@ describe("dashboard metric details", () => {
   });
 
   test("keeps suppressed details and admin overrides behind native disclosure controls", () => {
-    const source = readFileSync("src/app/orgs/[slug]/runs/[publicId]/page.tsx", "utf8");
-    expect(source).toContain("Suppressed findings ({envelope.counts.suppressed})");
-    expect(source).toContain("This review predates retained suppression details");
+    const source = readFileSync(
+      "src/app/orgs/[slug]/runs/[publicId]/page.tsx",
+      "utf8",
+    );
+    expect(source).toContain(
+      "Suppressed findings ({envelope.counts.suppressed})",
+    );
+    expect(source).toContain(
+      "This review predates retained suppression details",
+    );
     expect(source).toContain("Record a commit-scoped override");
   });
 
   test("exposes dismissal and revocation actions with their visible state", () => {
-    const source = readFileSync("src/app/orgs/[slug]/runs/[publicId]/page.tsx", "utf8");
+    const source = readFileSync(
+      "src/app/orgs/[slug]/runs/[publicId]/page.tsx",
+      "utf8",
+    );
     const form = readFileSync(
       "src/app/orgs/[slug]/runs/[publicId]/dismiss-finding-form.tsx",
       "utf8",
@@ -76,7 +88,12 @@ describe("dashboard metric details", () => {
     expect(revokeForm).toContain("revokeFindingDismissalWithState");
     expect(source).toContain('"Dismissed"');
     expect(source).toContain("Pull request author dismissed this finding");
-    expect(source).toContain("@postil dismiss {state.findingId} -- false-positive: rationale");
+    expect(source).toContain("Finding snapshot");
+    expect(source).toContain("Review model");
+    expect(source).toContain("Scorer model");
+    expect(source).toContain(
+      "@postil dismiss {state.findingId} -- false-positive: rationale",
+    );
   });
 
   test("keeps dashboard and run metadata above the AA contrast floor", () => {

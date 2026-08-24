@@ -38,10 +38,7 @@ import {
 } from "@/lib/review-trigger";
 import type { PublicationState } from "@/lib/publication-receipt";
 
-import {
-  approveFinding,
-  revokeFinding,
-} from "../../actions";
+import { approveFinding, revokeFinding } from "../../actions";
 import { DismissFindingForm } from "./dismiss-finding-form";
 import { RevokeDismissalForm } from "./revoke-dismissal-form";
 import {
@@ -65,7 +62,9 @@ const SEVERITY_STYLES: Record<Finding["severity"], string> = {
   info: "border-stone bg-stone/30 text-charcoal/70",
 };
 
-const MODEL_PRICES = new Map(MODELS.map((model) => [model.id, model.pricePerToken]));
+const MODEL_PRICES = new Map(
+  MODELS.map((model) => [model.id, model.pricePerToken]),
+);
 
 interface UsageEvent {
   promptTokens: number;
@@ -80,7 +79,8 @@ function estimateUsageCost(events: UsageEvent[]): number | null {
     if (!event.modelUsed) return null;
     const price = MODEL_PRICES.get(event.modelUsed);
     if (!price) return null;
-    total += event.promptTokens * price.input + event.completionTokens * price.output;
+    total +=
+      event.promptTokens * price.input + event.completionTokens * price.output;
   }
   return total;
 }
@@ -96,7 +96,10 @@ function formatEstimatedCost(cost: number): string {
 
 function formatTimestamp(value: Date | null): string {
   if (!value) return "Not recorded";
-  return value.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+  return value
+    .toISOString()
+    .replace("T", " ")
+    .replace(/\.\d{3}Z$/, " UTC");
 }
 
 function configSourceLabel(entry: ConfigProvenanceEntry): string {
@@ -109,19 +112,29 @@ function configSourceLabel(entry: ConfigProvenanceEntry): string {
 function configFallbackLabel(entry: ConfigProvenanceEntry): string | null {
   if (!entry.fallback) return null;
   const source = entry.fallback.repository ?? "owner .github";
-  const state = entry.fallback.status === "transient"
-    ? "temporarily unavailable"
-    : "unavailable";
+  const state =
+    entry.fallback.status === "transient"
+      ? "temporarily unavailable"
+      : "unavailable";
   return `${source} ${state}; ${configSourceLabel(entry)} used`;
 }
 
-function RunFact({ label, children }: { label: string; children: React.ReactNode }) {
+function RunFact({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="min-w-0 border-l border-stone/70 pl-3">
       <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/70">
         {label}
       </dt>
-      <dd className="mt-1 min-w-0 truncate text-xs text-charcoal" title={typeof children === "string" ? children : undefined}>
+      <dd
+        className="mt-1 min-w-0 truncate text-xs text-charcoal"
+        title={typeof children === "string" ? children : undefined}
+      >
         {children}
       </dd>
     </div>
@@ -133,7 +146,9 @@ function FindingMarkdown({ children }: { children: string }) {
     <ReactMarkdown
       skipHtml
       components={{
-        p: ({ children: content }) => <p className="my-2 first:mt-0 last:mb-0">{content}</p>,
+        p: ({ children: content }) => (
+          <p className="my-2 first:mt-0 last:mb-0">{content}</p>
+        ),
         ul: ({ children: content }) => (
           <ul className="my-2 ml-5 list-disc space-y-1">{content}</ul>
         ),
@@ -194,7 +209,8 @@ const SUPPRESSION_REASON_LABELS: Record<SuppressionReason, string> = {
 
 function suppressionReasonLabel(reason: string): string {
   return (
-    SUPPRESSION_REASON_LABELS[reason as SuppressionReason] ?? "Withheld by review policy"
+    SUPPRESSION_REASON_LABELS[reason as SuppressionReason] ??
+    "Withheld by review policy"
   );
 }
 
@@ -225,7 +241,9 @@ function FindingCard({
   publicationState?: PublicationState;
 }) {
   const location = `${finding.path}:${finding.line}${
-    finding.endLine && finding.endLine > finding.line ? `-${finding.endLine}` : ""
+    finding.endLine && finding.endLine > finding.line
+      ? `-${finding.endLine}`
+      : ""
   }`;
   const locationUrl = githubFindingLocationUrl(
     repoFullName,
@@ -260,11 +278,17 @@ function FindingCard({
             {location}
           </a>
         ) : (
-          <span className="font-mono text-[11px] text-charcoal/70">{location}</span>
+          <span className="font-mono text-[11px] text-charcoal/70">
+            {location}
+          </span>
         )}
       </div>
       <h2 className="mt-3 text-base font-semibold leading-snug">
-        <a href={reviewUrl} rel="noopener" className="hover:text-rust hover:underline">
+        <a
+          href={reviewUrl}
+          rel="noopener"
+          className="hover:text-rust hover:underline"
+        >
           {finding.title}
         </a>
       </h2>
@@ -280,17 +304,20 @@ function ApprovalStatusBadge({ state }: { state: FindingApprovalState }) {
   const label = state.activeDismissal
     ? "Dismissed"
     : state.activeApproval
-    ? "Decision recorded"
-    : state.latestDismissal?.revokedAt || state.latestApproval?.revokedAt
-      ? "Decision revoked"
-      : "Needs maintainer decision";
-  const classes = state.activeDismissal || state.activeApproval
-    ? "border-brand-secondary/40 bg-brand-secondary/10 text-[#166657]"
-    : state.latestDismissal?.revokedAt || state.latestApproval?.revokedAt
-      ? "border-charcoal/20 bg-stone/40 text-charcoal/70"
-      : "border-rust/35 bg-rust/5 text-rust";
+      ? "Decision recorded"
+      : state.latestDismissal?.revokedAt || state.latestApproval?.revokedAt
+        ? "Decision revoked"
+        : "Needs maintainer decision";
+  const classes =
+    state.activeDismissal || state.activeApproval
+      ? "border-brand-secondary/40 bg-brand-secondary/10 text-[#166657]"
+      : state.latestDismissal?.revokedAt || state.latestApproval?.revokedAt
+        ? "border-charcoal/20 bg-stone/40 text-charcoal/70"
+        : "border-rust/35 bg-rust/5 text-rust";
   return (
-    <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${classes}`}>
+    <span
+      className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${classes}`}
+    >
       {label}
     </span>
   );
@@ -318,23 +345,36 @@ function ApprovalPanel({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="eyebrow">
-            {hasPendingDecision ? "Maintainer decision needed" : "Maintainer decisions"}
+            {hasPendingDecision
+              ? "Maintainer decision needed"
+              : "Maintainer decisions"}
           </p>
           <p className="mt-1 text-sm text-ink-soft">
             {hasPendingDecision
               ? "Encode the intended behavior in code, tests, configuration, or the pull request, then push again. For an irreducible finding, an organization admin can record a commit-scoped dismissal with a required classification and rationale."
               : "These findings have recorded maintainer decisions."}{" "}
             Decisions apply only to commit{" "}
-            <span className="font-mono text-charcoal">{headSha.slice(0, 12)}</span>.
+            <span className="font-mono text-charcoal">
+              {headSha.slice(0, 12)}
+            </span>
+            .
           </p>
         </div>
       </div>
       <div className="card mt-3 divide-y divide-stone/60">
         {states.map((state) => {
-          const latestDecision = [state.latestDismissal, state.latestApproval]
-            .filter((decision): decision is NonNullable<typeof decision> => decision !== null)
-            .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ?? null;
-          const approval = state.activeDismissal ?? state.activeApproval ?? latestDecision;
+          const latestDecision =
+            [state.latestDismissal, state.latestApproval]
+              .filter(
+                (decision): decision is NonNullable<typeof decision> =>
+                  decision !== null,
+              )
+              .sort(
+                (left, right) =>
+                  right.createdAt.getTime() - left.createdAt.getTime(),
+              )[0] ?? null;
+          const approval =
+            state.activeDismissal ?? state.activeApproval ?? latestDecision;
           return (
             <article key={state.findingId} className="px-5 py-5 sm:px-6">
               <div className="flex flex-wrap items-center gap-3">
@@ -351,14 +391,16 @@ function ApprovalPanel({
                   </span>
                 )}
               </div>
-              <h2 className="mt-3 text-base font-semibold leading-snug">{state.finding.title}</h2>
+              <h2 className="mt-3 text-base font-semibold leading-snug">
+                {state.finding.title}
+              </h2>
               <p className="mt-2 font-mono text-[11px] text-charcoal/70">
                 {state.finding.path}:{state.finding.line}
               </p>
               <div className="mt-2 text-sm leading-relaxed text-ink-soft">
                 <FindingMarkdown>{state.finding.body}</FindingMarkdown>
               </div>
-              {!state.activeDismissal && !state.latestDismissal?.revokedAt && !state.activeApproval && !state.latestApproval?.revokedAt && (
+              {!state.activeDismissal && !state.activeApproval && (
                 <p className="mt-3 rounded-card border border-stone/70 bg-stone/20 px-3 py-2 text-xs text-charcoal/75">
                   {isAdmin
                     ? "Fix or encode the intended behavior and push again. Use dismissal to document a false positive, an accepted risk, or work owned outside this commit."
@@ -368,44 +410,96 @@ function ApprovalPanel({
               {approval && (
                 <dl className="mt-3 grid gap-2 text-xs text-charcoal/70 sm:grid-cols-2">
                   <div>
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Actor</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                      Actor
+                    </dt>
                     <dd>@{approval.actorLoginSnapshot}</dd>
                   </div>
                   <div>
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Source</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                      Source
+                    </dt>
                     <dd>{approval.source}</dd>
                   </div>
                   {approval.verb === "dismiss" && (
-                    <div>
-                      <dt className="font-mono uppercase tracking-wide text-charcoal/70">Reason</dt>
-                      <dd>{approval.reasonTag}</dd>
-                    </div>
+                    <>
+                      <div>
+                        <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                          Reason
+                        </dt>
+                        <dd>{approval.reasonTag}</dd>
+                      </div>
+                      <div>
+                        <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                          Finding snapshot
+                        </dt>
+                        <dd>
+                          {approval.findingKind} · {approval.findingSeverity} ·{" "}
+                          {Math.round((approval.findingConfidence ?? 0) * 100)}%
+                          confidence
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                          Review model
+                        </dt>
+                        <dd className="break-all font-mono">
+                          {approval.findingGeneratorModel}
+                        </dd>
+                      </div>
+                      {approval.findingScorerModel && (
+                        <div>
+                          <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                            Scorer model
+                          </dt>
+                          <dd className="break-all font-mono">
+                            {approval.findingScorerModel}
+                          </dd>
+                        </div>
+                      )}
+                    </>
                   )}
                   {approval.authorSelfDismissal && (
                     <div>
-                      <dt className="font-mono uppercase tracking-wide text-charcoal/70">Author action</dt>
+                      <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                        Author action
+                      </dt>
                       <dd>Pull request author dismissed this finding</dd>
                     </div>
                   )}
                   <div>
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Recorded</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                      Recorded
+                    </dt>
                     <dd>{formatTimestamp(approval.createdAt)}</dd>
                   </div>
                   <div>
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Head SHA</dt>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                      Head SHA
+                    </dt>
                     <dd className="font-mono">{headSha.slice(0, 12)}</dd>
                   </div>
                   <div className="sm:col-span-2">
-                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">Rationale</dt>
-                    <dd className="mt-1 whitespace-pre-wrap">{approval.rationale}</dd>
+                    <dt className="font-mono uppercase tracking-wide text-charcoal/70">
+                      Rationale
+                    </dt>
+                    <dd className="mt-1 whitespace-pre-wrap">
+                      {approval.rationale}
+                    </dd>
                   </div>
                 </dl>
               )}
               {isAdmin && !state.activeDismissal && !state.activeApproval && (
-                <details name={`finding-decision-${state.findingId}`} className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm">
-                  <summary className="cursor-pointer font-medium text-charcoal/75">Dismiss this finding</summary>
+                <details
+                  name={`finding-decision-${state.findingId}`}
+                  className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm"
+                >
+                  <summary className="cursor-pointer font-medium text-charcoal/75">
+                    Dismiss this finding
+                  </summary>
                   <p className="mt-2 font-mono text-xs text-charcoal/70">
-                    @postil dismiss {state.findingId} -- false-positive: rationale
+                    @postil dismiss {state.findingId} -- false-positive:
+                    rationale
                   </p>
                   <DismissFindingForm
                     slug={slug}
@@ -414,37 +508,55 @@ function ApprovalPanel({
                   />
                 </details>
               )}
-              {isAdmin && approvableFindingIds.has(state.findingId) && !state.activeApproval && !state.activeDismissal && !state.latestApproval?.revokedAt && !state.severityBlocking && (
-                <details name={`finding-decision-${state.findingId}`} className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm">
-                  <summary className="cursor-pointer font-medium text-charcoal/75">
-                    Record a commit-scoped override
-                  </summary>
-                  <form action={approveFinding} className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
-                    <input type="hidden" name="slug" value={slug} />
-                    <input type="hidden" name="publicId" value={publicId} />
-                    <input type="hidden" name="findingId" value={state.findingId} />
-                    <label className="grid gap-1 text-xs font-medium text-charcoal/75">
-                      Rationale
-                    <textarea
-                      name="rationale"
-                      required
-                      minLength={1}
-                      rows={2}
-                      className="min-h-16 rounded-md border border-stone bg-ivory px-3 py-2 text-sm text-charcoal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rust"
-                      placeholder="Why no code or configuration change can resolve this decision"
-                    />
-                    </label>
-                    <button className="rounded-md bg-charcoal px-4 py-2 text-sm font-semibold text-ivory hover:bg-rust">
-                      Record override
-                    </button>
-                  </form>
-                </details>
-              )}
+              {isAdmin &&
+                approvableFindingIds.has(state.findingId) &&
+                !state.activeApproval &&
+                !state.activeDismissal &&
+                !state.severityBlocking && (
+                  <details
+                    name={`finding-decision-${state.findingId}`}
+                    className="mt-4 rounded-card border border-stone/70 px-3 py-2 text-sm"
+                  >
+                    <summary className="cursor-pointer font-medium text-charcoal/75">
+                      Record a commit-scoped override
+                    </summary>
+                    <form
+                      action={approveFinding}
+                      className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]"
+                    >
+                      <input type="hidden" name="slug" value={slug} />
+                      <input type="hidden" name="publicId" value={publicId} />
+                      <input
+                        type="hidden"
+                        name="findingId"
+                        value={state.findingId}
+                      />
+                      <label className="grid gap-1 text-xs font-medium text-charcoal/75">
+                        Rationale
+                        <textarea
+                          name="rationale"
+                          required
+                          minLength={1}
+                          rows={2}
+                          className="min-h-16 rounded-md border border-stone bg-ivory px-3 py-2 text-sm text-charcoal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rust"
+                          placeholder="Why no code or configuration change can resolve this decision"
+                        />
+                      </label>
+                      <button className="rounded-md bg-charcoal px-4 py-2 text-sm font-semibold text-ivory hover:bg-rust">
+                        Record override
+                      </button>
+                    </form>
+                  </details>
+                )}
               {isAdmin && state.activeApproval && (
                 <form action={revokeFinding} className="mt-4">
                   <input type="hidden" name="slug" value={slug} />
                   <input type="hidden" name="publicId" value={publicId} />
-                  <input type="hidden" name="findingId" value={state.findingId} />
+                  <input
+                    type="hidden"
+                    name="findingId"
+                    value={state.findingId}
+                  />
                   <button className="rounded-md border border-rust/40 px-4 py-2 text-sm font-semibold text-rust hover:bg-rust/5">
                     Withdraw override
                   </button>
@@ -505,17 +617,31 @@ export default async function RunDetailPage({
         installationAccountType: schema.installations.accountType,
       })
       .from(schema.reviews)
-      .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+      .innerJoin(
+        schema.repositories,
+        eq(schema.repositories.id, schema.reviews.repositoryId),
+      )
       .innerJoin(
         schema.installations,
         eq(schema.installations.id, schema.repositories.installationId),
       )
-      .where(and(eq(schema.reviews.publicId, publicId), eq(schema.installations.orgId, org.id)))
+      .where(
+        and(
+          eq(schema.reviews.publicId, publicId),
+          eq(schema.installations.orgId, org.id),
+        ),
+      )
       .limit(1)
   )[0];
   if (!review || review.orgId === null) notFound();
 
-  const [usageEvents, byokSettings, gateSyncJobs, publicationRows, publicationReceiptRows] = await Promise.all([
+  const [
+    usageEvents,
+    byokSettings,
+    gateSyncJobs,
+    publicationRows,
+    publicationReceiptRows,
+  ] = await Promise.all([
     db
       .select({
         id: schema.usageEvents.id,
@@ -540,10 +666,12 @@ export default async function RunDetailPage({
     db
       .select({ id: schema.jobs.id, status: schema.jobs.status })
       .from(schema.jobs)
-      .where(and(
-        eq(schema.jobs.kind, "gate-state-sync"),
-        sql`${schema.jobs.payload}->>'reviewId' = ${String(review.id)}`,
-      ))
+      .where(
+        and(
+          eq(schema.jobs.kind, "gate-state-sync"),
+          sql`${schema.jobs.payload}->>'reviewId' = ${String(review.id)}`,
+        ),
+      )
       .orderBy(desc(schema.jobs.id))
       .limit(1),
     db
@@ -554,7 +682,9 @@ export default async function RunDetailPage({
       .from(schema.findingPublications)
       .where(eq(schema.findingPublications.reviewId, review.id)),
     db
-      .select({ receiptVersion: schema.reviewPublicationReceipts.receiptVersion })
+      .select({
+        receiptVersion: schema.reviewPublicationReceipts.receiptVersion,
+      })
       .from(schema.reviewPublicationReceipts)
       .where(eq(schema.reviewPublicationReceipts.reviewId, review.id))
       .limit(1),
@@ -564,7 +694,9 @@ export default async function RunDetailPage({
   // The jsonb column's type is a compile-time cast; re-validate before deep
   // rendering so a legacy or malformed envelope degrades to a notice instead
   // of throwing mid-render.
-  const parsedEnvelope = review.envelope ? envelopeSchema.safeParse(review.envelope) : null;
+  const parsedEnvelope = review.envelope
+    ? envelopeSchema.safeParse(review.envelope)
+    : null;
   const envelope = parsedEnvelope?.success ? parsedEnvelope.data : null;
   const reviewForApproval: ReviewForApproval = {
     id: review.id,
@@ -583,7 +715,9 @@ export default async function RunDetailPage({
     githubRepoId: review.githubRepoId,
     installationAccountType: review.installationAccountType,
   };
-  const approvalState = envelope ? await getReviewApprovalState(db, reviewForApproval) : null;
+  const approvalState = envelope
+    ? await getReviewApprovalState(db, reviewForApproval)
+    : null;
   const envelopeInvalid = parsedEnvelope !== null && !parsedEnvelope.success;
   const findings = envelope ? sortFindingsForDisplay(envelope.findings) : [];
   const resolved = envelope ? sortFindingsForDisplay(envelope.resolved) : [];
@@ -607,9 +741,14 @@ export default async function RunDetailPage({
   const triggerSource = review.triggerSource as ReviewTriggerSource;
   const triggerContext = normalizeReviewTriggerContext(review.triggerContext);
   const publicationByFindingId = new Map(
-    publicationRows.map((row) => [row.findingId, row.currentState as PublicationState]),
+    publicationRows.map((row) => [
+      row.findingId,
+      row.currentState as PublicationState,
+    ]),
   );
-  const publicationCounts = publicationRows.reduce<Record<PublicationState, number>>(
+  const publicationCounts = publicationRows.reduce<
+    Record<PublicationState, number>
+  >(
     (counts, row) => {
       const state = row.currentState as PublicationState;
       counts[state] += 1;
@@ -664,7 +803,11 @@ export default async function RunDetailPage({
         <div className="mt-2 flex flex-wrap items-center gap-4">
           <h1 className="serif-display text-3xl">
             {review.repoFullName}{" "}
-            <a href={prUrl} rel="noopener" className="text-rust hover:underline">
+            <a
+              href={prUrl}
+              rel="noopener"
+              className="text-rust hover:underline"
+            >
               #{review.prNumber}
             </a>
           </h1>
@@ -674,12 +817,20 @@ export default async function RunDetailPage({
 
         <dl className="card mt-5 grid grid-cols-2 gap-x-3 gap-y-4 p-4 sm:grid-cols-3 lg:grid-cols-4">
           <RunFact label="Repository">
-            <a href={`https://github.com/${review.repoFullName}`} rel="noopener" className="text-rust hover:underline">
+            <a
+              href={`https://github.com/${review.repoFullName}`}
+              rel="noopener"
+              className="text-rust hover:underline"
+            >
               {review.repoFullName}
             </a>
           </RunFact>
           <RunFact label="Pull request">
-            <a href={prUrl} rel="noopener" className="text-rust hover:underline">
+            <a
+              href={prUrl}
+              rel="noopener"
+              className="text-rust hover:underline"
+            >
               #{review.prNumber}
             </a>
           </RunFact>
@@ -694,7 +845,8 @@ export default async function RunDetailPage({
             </a>
           </RunFact>
           <RunFact label="Trigger">
-            {triggerContext?.source === "requested_review" && triggerContext.sourceUrl ? (
+            {triggerContext?.source === "requested_review" &&
+            triggerContext.sourceUrl ? (
               <a
                 href={triggerContext.sourceUrl}
                 rel="noopener"
@@ -709,11 +861,15 @@ export default async function RunDetailPage({
               reviewTriggerLabel(triggerSource)
             )}
           </RunFact>
-          <RunFact label="Model">{envelope?.modelUsed ?? "Not recorded"}</RunFact>
+          <RunFact label="Model">
+            {envelope?.modelUsed ?? "Not recorded"}
+          </RunFact>
           {(envelope?.scorerModel || envelope?.scorerError) && (
             <RunFact label="Independent check">
-              {envelope.scorerModel ?? "Unavailable; reviewer confidence retained"}
-              {envelope.scorerModel && envelope.scorerDisagreements !== undefined
+              {envelope.scorerModel ??
+                "Unavailable; reviewer confidence retained"}
+              {envelope.scorerModel &&
+              envelope.scorerDisagreements !== undefined
                 ? ` · ${envelope.scorerDisagreements} disagreement${envelope.scorerDisagreements === 1 ? "" : "s"}`
                 : ""}
             </RunFact>
@@ -731,7 +887,11 @@ export default async function RunDetailPage({
           </RunFact>
           <RunFact label="Advisory check">
             {review.advisoryCheckRunId ? (
-              <a href={reviewUrl} rel="noopener" className="text-rust hover:underline">
+              <a
+                href={reviewUrl}
+                rel="noopener"
+                className="text-rust hover:underline"
+              >
                 view on GitHub
               </a>
             ) : (
@@ -759,8 +919,12 @@ export default async function RunDetailPage({
         </dl>
 
         {review.errorMessage && (
-          <div className={`card mt-6 p-5 ${hostedReviewUnavailable ? "" : "border-rust"}`}>
-            <p className={`eyebrow ${hostedReviewUnavailable ? "" : "text-rust"}`}>
+          <div
+            className={`card mt-6 p-5 ${hostedReviewUnavailable ? "" : "border-rust"}`}
+          >
+            <p
+              className={`eyebrow ${hostedReviewUnavailable ? "" : "text-rust"}`}
+            >
               {hostedReviewUnavailable ? "Review unavailable" : "Run error"}
             </p>
             <p className="mt-2 text-sm text-ink-soft">
@@ -785,14 +949,22 @@ export default async function RunDetailPage({
                   key={entry.slot}
                   className="grid gap-1 px-5 py-3 text-xs sm:grid-cols-[9rem_9rem_1fr]"
                 >
-                  <span className="font-mono text-charcoal/70">{entry.slot}</span>
+                  <span className="font-mono text-charcoal/70">
+                    {entry.slot}
+                  </span>
                   <span>{configSourceLabel(entry)}</span>
                   <span className="break-all font-mono text-charcoal/70">
-                    {entry.repository ? `${entry.repository}${entry.commitSha ? `@${entry.commitSha.slice(0, 12)}` : ""}:` : ""}
+                    {entry.repository
+                      ? `${entry.repository}${entry.commitSha ? `@${entry.commitSha.slice(0, 12)}` : ""}:`
+                      : ""}
                     {entry.path ?? "default"}
                     {entry.stale ? " · last known good" : ""}
-                    {entry.status && entry.status !== "present" ? ` · ${entry.status}` : ""}
-                    {configFallbackLabel(entry) ? ` · ${configFallbackLabel(entry)}` : ""}
+                    {entry.status && entry.status !== "present"
+                      ? ` · ${entry.status}`
+                      : ""}
+                    {configFallbackLabel(entry)
+                      ? ` · ${configFallbackLabel(entry)}`
+                      : ""}
                   </span>
                 </div>
               ))}
@@ -815,9 +987,11 @@ export default async function RunDetailPage({
             publicId={review.publicId}
             headSha={review.headSha}
             states={approvalState.dismissalFindingStates}
-            approvableFindingIds={new Set(
-              approvalState.findingStates.map((state) => state.findingId),
-            )}
+            approvableFindingIds={
+              new Set(
+                approvalState.findingStates.map((state) => state.findingId),
+              )
+            }
             isAdmin={membership.role === "admin"}
           />
         )}
@@ -828,23 +1002,32 @@ export default async function RunDetailPage({
               <p className="eyebrow">
                 {!publicationObserved || publicationCounts.unknown > 0
                   ? "Publication not recorded"
-                  : `Published findings (${publishedFindingCount})`} · {publicationCounts.suppressed} suppressed by policy ·{" "}
+                  : `Published findings (${publishedFindingCount})`}{" "}
+                · {publicationCounts.suppressed} suppressed by policy ·{" "}
                 {envelope.counts.ungrounded} dropped ungrounded
               </p>
               <div className="card mt-3 divide-y divide-stone/60">
-                {findings.slice(0, MAX_RENDERED_FINDINGS).map((finding, index) => (
-                  <FindingCard
-                    key={`${finding.path}:${finding.line}:${index}`}
-                    finding={finding}
-                    repoFullName={review.repoFullName}
-                    headSha={review.headSha}
-                    reviewUrl={reviewUrl}
-                    publicationState={finding.id ? (publicationByFindingId.get(finding.id) ?? "unknown") : "unknown"}
-                  />
-                ))}
+                {findings
+                  .slice(0, MAX_RENDERED_FINDINGS)
+                  .map((finding, index) => (
+                    <FindingCard
+                      key={`${finding.path}:${finding.line}:${index}`}
+                      finding={finding}
+                      repoFullName={review.repoFullName}
+                      headSha={review.headSha}
+                      reviewUrl={reviewUrl}
+                      publicationState={
+                        finding.id
+                          ? (publicationByFindingId.get(finding.id) ??
+                            "unknown")
+                          : "unknown"
+                      }
+                    />
+                  ))}
                 {findings.length > MAX_RENDERED_FINDINGS && (
                   <p className="px-5 py-4 text-center text-sm text-charcoal/70">
-                    {findings.length - MAX_RENDERED_FINDINGS} more findings not shown
+                    {findings.length - MAX_RENDERED_FINDINGS} more findings not
+                    shown
                   </p>
                 )}
                 {findings.length === 0 && (
@@ -865,7 +1048,9 @@ export default async function RunDetailPage({
                     {envelope.suppressedFindings
                       .slice(0, MAX_RENDERED_FINDINGS)
                       .map((entry, index) => (
-                        <div key={`${entry.finding.path}:${entry.finding.line}:${index}`}>
+                        <div
+                          key={`${entry.finding.path}:${entry.finding.line}:${index}`}
+                        >
                           <p className="bg-stone/20 px-5 py-2 font-mono text-[10px] uppercase tracking-wide text-charcoal/70 sm:px-6">
                             {suppressionReasonLabel(entry.reason)}
                           </p>
@@ -874,19 +1059,29 @@ export default async function RunDetailPage({
                             repoFullName={review.repoFullName}
                             headSha={review.headSha}
                             reviewUrl={reviewUrl}
-                            publicationState={entry.finding.id ? (publicationByFindingId.get(entry.finding.id) ?? "unknown") : "unknown"}
+                            publicationState={
+                              entry.finding.id
+                                ? (publicationByFindingId.get(
+                                    entry.finding.id,
+                                  ) ?? "unknown")
+                                : "unknown"
+                            }
                           />
                         </div>
                       ))}
-                    {envelope.suppressedFindings.length > MAX_RENDERED_FINDINGS && (
+                    {envelope.suppressedFindings.length >
+                      MAX_RENDERED_FINDINGS && (
                       <p className="border-t border-stone/60 px-5 py-4 text-center text-sm text-charcoal/70">
-                        {envelope.suppressedFindings.length - MAX_RENDERED_FINDINGS} more suppressed findings not shown
+                        {envelope.suppressedFindings.length -
+                          MAX_RENDERED_FINDINGS}{" "}
+                        more suppressed findings not shown
                       </p>
                     )}
                   </div>
                 ) : (
                   <p className="border-t border-stone/60 px-5 py-4 text-sm text-charcoal/70 sm:px-6">
-                    This review predates retained suppression details. Only the count is available.
+                    This review predates retained suppression details. Only the
+                    count is available.
                   </p>
                 )}
               </details>
@@ -894,21 +1089,31 @@ export default async function RunDetailPage({
 
             {resolved.length > 0 && (
               <section className="mt-8">
-                <p className="eyebrow">Resolved since the previous review ({resolved.length})</p>
+                <p className="eyebrow">
+                  Resolved since the previous review ({resolved.length})
+                </p>
                 <div className="card mt-3 divide-y divide-stone/60">
-                  {resolved.slice(0, MAX_RENDERED_FINDINGS).map((finding, index) => (
-                    <FindingCard
-                      key={`${finding.path}:${finding.line}:${index}`}
-                      finding={finding}
-                      repoFullName={review.repoFullName}
-                      headSha={review.headSha}
-                      reviewUrl={reviewUrl}
-                      publicationState={finding.id ? (publicationByFindingId.get(finding.id) ?? "unknown") : "unknown"}
-                    />
-                  ))}
+                  {resolved
+                    .slice(0, MAX_RENDERED_FINDINGS)
+                    .map((finding, index) => (
+                      <FindingCard
+                        key={`${finding.path}:${finding.line}:${index}`}
+                        finding={finding}
+                        repoFullName={review.repoFullName}
+                        headSha={review.headSha}
+                        reviewUrl={reviewUrl}
+                        publicationState={
+                          finding.id
+                            ? (publicationByFindingId.get(finding.id) ??
+                              "unknown")
+                            : "unknown"
+                        }
+                      />
+                    ))}
                   {resolved.length > MAX_RENDERED_FINDINGS && (
                     <p className="px-5 py-4 text-center text-sm text-charcoal/70">
-                      {resolved.length - MAX_RENDERED_FINDINGS} more findings not shown
+                      {resolved.length - MAX_RENDERED_FINDINGS} more findings
+                      not shown
                     </p>
                   )}
                 </div>
@@ -933,7 +1138,10 @@ export default async function RunDetailPage({
                 </thead>
                 <tbody>
                   {usageEvents.map((event) => (
-                    <tr key={event.id} className="border-b border-stone/60 last:border-0">
+                    <tr
+                      key={event.id}
+                      className="border-b border-stone/60 last:border-0"
+                    >
                       <td className="px-4 py-2.5 font-mono text-xs">
                         {event.modelUsed ?? "Not recorded"}
                       </td>
@@ -944,7 +1152,9 @@ export default async function RunDetailPage({
                         {event.completionTokens.toLocaleString()}
                       </td>
                       <td className="px-4 py-2.5 font-mono text-xs">
-                        {(event.promptTokens + event.completionTokens).toLocaleString()}
+                        {(
+                          event.promptTokens + event.completionTokens
+                        ).toLocaleString()}
                       </td>
                       <td className="px-4 py-2.5 font-mono text-xs">
                         {formatTimestamp(event.createdAt)}
@@ -972,8 +1182,8 @@ export default async function RunDetailPage({
 
         {envelopeInvalid && (
           <p className="card mt-8 p-8 text-center text-sm text-charcoal/70">
-            The stored envelope does not match the current envelope contract and cannot be
-            displayed.
+            The stored envelope does not match the current envelope contract and
+            cannot be displayed.
           </p>
         )}
 
@@ -989,4 +1199,5 @@ export default async function RunDetailPage({
   );
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

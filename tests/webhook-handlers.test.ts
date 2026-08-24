@@ -1,8 +1,19 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
 
 import type { Pool } from "pg";
 
-import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
+import {
+  createEphemeralDatabase,
+  type EphemeralDatabase,
+} from "./ephemeral-database";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
@@ -48,8 +59,16 @@ const completedCheckRuns: Array<{
   conclusion: string;
   detailsUrl?: string;
 }> = [];
-const postedComments: Array<{ repoFullName: string; number: number; body: string }> = [];
-const addedReactions: Array<{ repoFullName: string; commentId: number; kind: string }> = [];
+const postedComments: Array<{
+  repoFullName: string;
+  number: number;
+  body: string;
+}> = [];
+const addedReactions: Array<{
+  repoFullName: string;
+  commentId: number;
+  kind: string;
+}> = [];
 let pullRequestHeadSha = "head-sha";
 let liveMembershipStatus = 200;
 let liveMembershipRole: "admin" | "member" = "admin";
@@ -117,7 +136,12 @@ mock.module("@/lib/github/checks", () => ({
   },
   getPullRequestReviewComment: async () => reviewCommentRoot,
   findIssueCommentByMarker: async () => null,
-  postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
+  postIssueComment: async (
+    _token: string,
+    repoFullName: string,
+    number: number,
+    body: string,
+  ) => {
     postedComments.push({ repoFullName, number, body });
     return 123;
   },
@@ -126,15 +150,18 @@ mock.module("@/lib/github/checks", () => ({
 // Imported after the mocks are registered so the route picks up the stubs.
 const { POST } = await import("@/app/api/webhooks/github/route");
 const { getDb, getPool, closeDb } = await import("@/lib/db");
-const { hasNewerCompletedReviewForHead } = await import("@/lib/finding-approvals");
-const {
-  reconcileOperatorAlertDeliveries,
-  sweepExpiredSelfServiceTrials,
-} = await import("@/lib/operator-alerts");
+const { hasNewerCompletedReviewForHead } =
+  await import("@/lib/finding-approvals");
+const { reconcileOperatorAlertDeliveries, sweepExpiredSelfServiceTrials } =
+  await import("@/lib/operator-alerts");
 const { claimJob } = await import("@/lib/queue");
 const { runClaimedJob } = await import("@/worker/runner");
 
-async function post(event: string, body: object, deliveryId: string): Promise<Response> {
+async function post(
+  event: string,
+  body: object,
+  deliveryId: string,
+): Promise<Response> {
   const raw = JSON.stringify(body);
   const response = await POST(
     new Request("https://postil.dev/api/webhooks/github", {
@@ -150,7 +177,9 @@ async function post(event: string, body: object, deliveryId: string): Promise<Re
   );
   const result = (await response.clone().json()) as { queued?: boolean };
   if (result.queued) {
-    const job = await claimJob(getPool(), "webhook-handler-test", ["webhook-dispatch"]);
+    const job = await claimJob(getPool(), "webhook-handler-test", [
+      "webhook-dispatch",
+    ]);
     expect(job?.kind).toBe("webhook-dispatch");
     await runClaimedJob(job!, "webhook-handler-test", "web");
   }
@@ -203,7 +232,11 @@ describeDb("webhook handler behaviour", () => {
     globalThis.fetch = Object.assign(
       async (input: string | URL | Request) => {
         const url =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
         if (url.includes("/repos/octo/approvals")) {
           return Response.json({
             id: 7000,
@@ -229,8 +262,14 @@ describeDb("webhook handler behaviour", () => {
             ? JSON.stringify({
                 state: liveMembershipState,
                 role: liveMembershipRole,
-                user: { id: liveMembershipUserId, login: liveMembershipUserLogin },
-                organization: { id: liveMembershipOrgId, login: liveMembershipOrgLogin },
+                user: {
+                  id: liveMembershipUserId,
+                  login: liveMembershipUserLogin,
+                },
+                organization: {
+                  id: liveMembershipOrgId,
+                  login: liveMembershipOrgLogin,
+                },
               })
             : "unavailable",
           {
@@ -337,7 +376,14 @@ describeDb("webhook handler behaviour", () => {
          (org_id, source_repository_id, source_github_repo_id, source_full_name,
           visibility, default_branch, commit_sha, files, loaded_files, fetched_at)
        VALUES ($1, $2, $3, $4, 'private', 'main', $5, $6, $6, now())`,
-      [orgId, repositoryId, githubRepoId, fullName, "a".repeat(40), [".postil.yaml"]],
+      [
+        orgId,
+        repositoryId,
+        githubRepoId,
+        fullName,
+        "a".repeat(40),
+        [".postil.yaml"],
+      ],
     );
   }
 
@@ -395,7 +441,11 @@ describeDb("webhook handler behaviour", () => {
       resolved: [],
       counts: { info: 0, warn: 1, error: 0, suppressed: 0, ungrounded: 0 },
       confidenceBuckets: [0, 0, 0, 0, 1],
-      gate: { failOn: "error", failing: true, block_on_kinds: ["humanEscalation"] },
+      gate: {
+        failOn: "error",
+        failing: true,
+        block_on_kinds: ["humanEscalation"],
+      },
       modelUsed: "deepseek/deepseek-v4-pro",
       usage: { promptTokens: 1, completionTokens: 1 },
       durationMs: 1,
@@ -433,17 +483,22 @@ describeDb("webhook handler behaviour", () => {
     body = "@postil approve kind-blocker -- reviewed",
     privateRepository = false,
     repoFullName = "octo/approvals",
+    githubCommentId = 123456,
   ): Promise<Response> {
     return post(
       "issue_comment",
       {
         action: "created",
         installation: { id: 700 },
-        repository: { id: 7000, full_name: repoFullName, private: privateRepository },
+        repository: {
+          id: 7000,
+          full_name: repoFullName,
+          private: privateRepository,
+        },
         sender: { id: 501, login: "admin", type: "User" },
         comment: {
-          id: 123456,
-          html_url: `https://github.com/${repoFullName}/pull/9#issuecomment-123456`,
+          id: githubCommentId,
+          html_url: `https://github.com/${repoFullName}/pull/9#issuecomment-${githubCommentId}`,
           body,
           user: { id: 501, login: "admin", type: "User" },
           author_association: "MEMBER",
@@ -457,8 +512,15 @@ describeDb("webhook handler behaviour", () => {
   function dismissalComment(
     deliveryId: string,
     body = "@postil dismiss kind-blocker -- false-positive: the guard is unreachable",
+    githubCommentId = 123456,
   ): Promise<Response> {
-    return approvalComment(deliveryId, body);
+    return approvalComment(
+      deliveryId,
+      body,
+      false,
+      "octo/approvals",
+      githubCommentId,
+    );
   }
 
   test("pull_request upsert re-pins a repo transferred between installations", async () => {
@@ -505,9 +567,7 @@ describeDb("webhook handler behaviour", () => {
         authorLogin: string;
         trigger: Record<string, unknown>;
       };
-    }>(
-      "SELECT payload FROM jobs WHERE kind = 'review'",
-    );
+    }>("SELECT payload FROM jobs WHERE kind = 'review'");
     expect(jobs.rows).toHaveLength(1);
     expect(jobs.rows[0]!.payload).toMatchObject({
       authorGithubId: 4242,
@@ -530,7 +590,9 @@ describeDb("webhook handler behaviour", () => {
       sender: { id: 7001, login: "installer", type: "User" },
     };
 
-    expect((await post("installation", created, "trial-created-1")).status).toBe(200);
+    expect(
+      (await post("installation", created, "trial-created-1")).status,
+    ).toBe(200);
 
     const first = await pool.query<{
       org_id: string;
@@ -551,8 +613,10 @@ describeDb("webhook handler behaviour", () => {
       subscription_mode: "hosted",
       included_usage_micros: "100000000",
     });
-    expect(first.rows[0]!.trial_ends_at.getTime() - first.rows[0]!.period_starts_at.getTime())
-      .toBe(30 * 24 * 60 * 60 * 1_000);
+    expect(
+      first.rows[0]!.trial_ends_at.getTime() -
+        first.rows[0]!.period_starts_at.getTime(),
+    ).toBe(30 * 24 * 60 * 60 * 1_000);
     expect(first.rows[0]!.period_ends_at).toEqual(first.rows[0]!.trial_ends_at);
 
     const alerts = await pool.query<{ payload: Record<string, unknown> }>(
@@ -567,14 +631,30 @@ describeDb("webhook handler behaviour", () => {
       githubInstallationId: 8080,
     });
 
-    expect((await post("installation", {
-      action: "deleted",
-      installation: { id: 8080, account },
-    }, "trial-deleted-1")).status).toBe(200);
-    expect((await post("installation", {
-      ...created,
-      installation: { id: 8081, account, suspended_at: null },
-    }, "trial-created-2")).status).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "deleted",
+            installation: { id: 8080, account },
+          },
+          "trial-deleted-1",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            ...created,
+            installation: { id: 8081, account, suspended_at: null },
+          },
+          "trial-created-2",
+        )
+      ).status,
+    ).toBe(200);
 
     const afterReinstall = await pool.query<{
       trial_ends_at: Date;
@@ -589,7 +669,9 @@ describeDb("webhook handler behaviour", () => {
          FROM organization_entitlements entitlement`,
     );
     expect(afterReinstall.rows).toHaveLength(1);
-    expect(afterReinstall.rows[0]!.trial_ends_at).toEqual(first.rows[0]!.trial_ends_at);
+    expect(afterReinstall.rows[0]!.trial_ends_at).toEqual(
+      first.rows[0]!.trial_ends_at,
+    );
     expect(afterReinstall.rows[0]!.alert_count).toBe(1);
     expect(afterReinstall.rows[0]!.removal_alert_count).toBe(1);
   });
@@ -602,15 +684,21 @@ describeDb("webhook handler behaviour", () => {
           login: `TrialOwner${index}`,
           type: "Organization",
         };
-        return post("installation", {
-          action: "created",
-          installation: { id: 8200 + index, account, suspended_at: null },
-          repositories: [],
-          sender: { id: 777, login: "installer", type: "User" },
-        }, `trial-cross-owner-${index}`);
+        return post(
+          "installation",
+          {
+            action: "created",
+            installation: { id: 8200 + index, account, suspended_at: null },
+            repositories: [],
+            sender: { id: 777, login: "installer", type: "User" },
+          },
+          `trial-cross-owner-${index}`,
+        );
       }),
     );
-    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
+    expect(responses.map((response) => response.status)).toEqual([
+      200, 200, 200, 200,
+    ]);
 
     const grants = await pool.query<{
       requested_mode: string;
@@ -624,10 +712,16 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(grants.rows).toHaveLength(4);
     expect(grants.rows.map((row) => row.requested_mode)).toEqual([
-      "hosted", "hosted", "hosted", "hosted",
+      "hosted",
+      "hosted",
+      "hosted",
+      "hosted",
     ]);
     expect(grants.rows.map((row) => row.granted_mode)).toEqual([
-      "hosted", "hosted", "hosted", "hosted",
+      "hosted",
+      "hosted",
+      "hosted",
+      "hosted",
     ]);
   });
 
@@ -637,11 +731,19 @@ describeDb("webhook handler behaviour", () => {
       login: "UnsignedTrialOwner",
       type: "Organization",
     };
-    expect((await post("installation", {
-      action: "created",
-      installation: { id: 8250, account, suspended_at: null },
-      repositories: [],
-    }, "trial-missing-sender")).status).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "created",
+            installation: { id: 8250, account, suspended_at: null },
+            repositories: [],
+          },
+          "trial-missing-sender",
+        )
+      ).status,
+    ).toBe(200);
 
     const grants = await pool.query<{
       requested_mode: string;
@@ -666,54 +768,84 @@ describeDb("webhook handler behaviour", () => {
       repositories: [],
       sender: { id: 778, login: "installer", type: "User" },
     };
-    expect((await post("installation", installation, "trial-dark-created")).status)
-      .toBe(200);
-    expect((await pool.query<{ requested_mode: string; granted_mode: string; subscription_mode: string }>(`
+    expect(
+      (await post("installation", installation, "trial-dark-created")).status,
+    ).toBe(200);
+    expect(
+      (
+        await pool.query<{
+          requested_mode: string;
+          granted_mode: string;
+          subscription_mode: string;
+        }>(`
       SELECT trial.requested_mode, trial.granted_mode, entitlement.subscription_mode
       FROM self_service_trial_grants trial
       JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
-    `)).rows[0]).toEqual({
+    `)
+      ).rows[0],
+    ).toEqual({
       requested_mode: "hosted",
       granted_mode: "byok",
       subscription_mode: "byok",
     });
 
     expect(await activateHostedInferenceRelease(pool, releaseSha)).toBe(true);
-    expect((await pool.query<{ granted_mode: string; subscription_mode: string }>(`
+    expect(
+      (
+        await pool.query<{ granted_mode: string; subscription_mode: string }>(`
       SELECT trial.granted_mode, entitlement.subscription_mode
       FROM self_service_trial_grants trial
       JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
-    `)).rows[0]).toEqual({
+    `)
+      ).rows[0],
+    ).toEqual({
       granted_mode: "hosted",
       subscription_mode: "hosted",
     });
-    expect((await post("installation", installation, "trial-dark-reinstall")).status)
-      .toBe(200);
-    expect((await pool.query<{ count: number }>(
-      "SELECT count(*)::int AS count FROM self_service_trial_grants",
-    )).rows[0]!.count).toBe(1);
+    expect(
+      (await post("installation", installation, "trial-dark-reinstall")).status,
+    ).toBe(200);
+    expect(
+      (
+        await pool.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM self_service_trial_grants",
+        )
+      ).rows[0]!.count,
+    ).toBe(1);
   });
 
   test("installation racing exact release activation always receives hosted access", async () => {
     const releaseSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     process.env.POSTIL_RELEASE_SHA = releaseSha;
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
-    const account = { id: 9270, login: "RacingTrialOwner", type: "Organization" };
+    const account = {
+      id: 9270,
+      login: "RacingTrialOwner",
+      type: "Organization",
+    };
     const [response] = await Promise.all([
-      post("installation", {
-        action: "created",
-        installation: { id: 8270, account, suspended_at: null },
-        repositories: [],
-        sender: { id: 779, login: "installer", type: "User" },
-      }, "trial-racing-created"),
+      post(
+        "installation",
+        {
+          action: "created",
+          installation: { id: 8270, account, suspended_at: null },
+          repositories: [],
+          sender: { id: 779, login: "installer", type: "User" },
+        },
+        "trial-racing-created",
+      ),
       activateHostedInferenceRelease(pool, releaseSha),
     ]);
     expect(response.status).toBe(200);
-    expect((await pool.query<{ granted_mode: string; subscription_mode: string }>(`
+    expect(
+      (
+        await pool.query<{ granted_mode: string; subscription_mode: string }>(`
       SELECT trial.granted_mode, entitlement.subscription_mode
       FROM self_service_trial_grants trial
       JOIN organization_entitlements entitlement ON entitlement.org_id = trial.org_id
-    `)).rows[0]).toEqual({
+    `)
+      ).rows[0],
+    ).toEqual({
       granted_mode: "hosted",
       subscription_mode: "hosted",
     });
@@ -721,38 +853,105 @@ describeDb("webhook handler behaviour", () => {
 
   test("suspended installation waits to grant its trial until unsuspended", async () => {
     const account = { id: 9191, login: "PausedCustomer", type: "Organization" };
-    expect((await post("installation", {
-      action: "created",
-      installation: { id: 8181, account, suspended_at: "2026-07-18T00:00:00Z" },
-      repositories: [],
-    }, "trial-suspended-created")).status).toBe(200);
-    expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(0);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "created",
+            installation: {
+              id: 8181,
+              account,
+              suspended_at: "2026-07-18T00:00:00Z",
+            },
+            repositories: [],
+          },
+          "trial-suspended-created",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await pool.query("SELECT 1 FROM organization_entitlements")).rowCount,
+    ).toBe(0);
 
-    expect((await post("installation", {
-      action: "unsuspend",
-      installation: { id: 8181, account, suspended_at: null },
-      sender: { id: 7002, login: "installer", type: "User" },
-    }, "trial-unsuspended")).status).toBe(200);
-    expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(1);
-    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(1);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "unsuspend",
+            installation: { id: 8181, account, suspended_at: null },
+            sender: { id: 7002, login: "installer", type: "User" },
+          },
+          "trial-unsuspended",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await pool.query("SELECT 1 FROM organization_entitlements")).rowCount,
+    ).toBe(1);
+    expect(
+      (await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'"))
+        .rowCount,
+    ).toBe(1);
 
-    expect((await post("installation", {
-      action: "suspend",
-      installation: { id: 8181, account, suspended_at: "2026-07-18T01:00:00Z" },
-    }, "trial-suspended-again")).status).toBe(200);
-    expect((await post("installation", {
-      action: "suspend",
-      installation: { id: 8181, account, suspended_at: "2026-07-18T01:00:00Z" },
-    }, "trial-suspended-repeat")).status).toBe(200);
-    expect((await post("installation", {
-      action: "unsuspend",
-      installation: { id: 8181, account, suspended_at: null },
-      sender: { id: 7002, login: "installer", type: "User" },
-    }, "trial-restored-again")).status).toBe(200);
-    expect((await post("installation", {
-      action: "deleted",
-      installation: { id: 8181, account },
-    }, "trial-installation-removed")).status).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "suspend",
+            installation: {
+              id: 8181,
+              account,
+              suspended_at: "2026-07-18T01:00:00Z",
+            },
+          },
+          "trial-suspended-again",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "suspend",
+            installation: {
+              id: 8181,
+              account,
+              suspended_at: "2026-07-18T01:00:00Z",
+            },
+          },
+          "trial-suspended-repeat",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "unsuspend",
+            installation: { id: 8181, account, suspended_at: null },
+            sender: { id: 7002, login: "installer", type: "User" },
+          },
+          "trial-restored-again",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "deleted",
+            installation: { id: 8181, account },
+          },
+          "trial-installation-removed",
+        )
+      ).status,
+    ).toBe(200);
 
     const notifications = await pool.query<{
       idempotency_key: string;
@@ -788,30 +987,57 @@ describeDb("webhook handler behaviour", () => {
         visibility: "admins",
       },
     ]);
-    expect((await post("installation", {
-      action: "suspend",
-      installation: { id: 8181, account, suspended_at: "2026-07-18T02:00:00Z" },
-    }, "trial-suspended-after-removal")).status).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "suspend",
+            installation: {
+              id: 8181,
+              account,
+              suspended_at: "2026-07-18T02:00:00Z",
+            },
+          },
+          "trial-suspended-after-removal",
+        )
+      ).status,
+    ).toBe(200);
     expect((await pool.query("SELECT 1 FROM installations")).rowCount).toBe(0);
   });
 
   test("hosted pause starts a BYOK trial without consuming hosted inference", async () => {
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
-    expect((await post("installation", {
-      action: "created",
-      installation: {
-        id: 8282,
-        account: { id: 9292, login: "WaitingCustomer", type: "Organization" },
-        suspended_at: null,
-      },
-      repositories: [],
-      sender: { id: 7003, login: "installer", type: "User" },
-    }, "trial-hosted-paused")).status).toBe(200);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "created",
+            installation: {
+              id: 8282,
+              account: {
+                id: 9292,
+                login: "WaitingCustomer",
+                type: "Organization",
+              },
+              suspended_at: null,
+            },
+            repositories: [],
+            sender: { id: 7003, login: "installer", type: "User" },
+          },
+          "trial-hosted-paused",
+        )
+      ).status,
+    ).toBe(200);
     const entitlement = await pool.query<{ subscription_mode: string }>(
       "SELECT subscription_mode FROM organization_entitlements",
     );
     expect(entitlement.rows).toEqual([{ subscription_mode: "byok" }]);
-    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(1);
+    expect(
+      (await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'"))
+        .rowCount,
+    ).toBe(1);
   });
 
   test("expired trials transition once and queue one audited owner alert", async () => {
@@ -866,7 +1092,10 @@ describeDb("webhook handler behaviour", () => {
        WHERE kind = 'operator-alert' AND payload ->> 'event' = 'trial_expired'`,
     );
     await reconcileOperatorAlertDeliveries(getDb());
-    const delivered = await pool.query<{ status: string; delivered_at: Date | null }>(
+    const delivered = await pool.query<{
+      status: string;
+      delivered_at: Date | null;
+    }>(
       `SELECT status, delivered_at FROM operator_alert_deliveries
        WHERE event = 'trial_expired'`,
     );
@@ -876,18 +1105,35 @@ describeDb("webhook handler behaviour", () => {
 
   test("trial setup does not enqueue email when operator alerts are not configured", async () => {
     delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
-    expect((await post("installation", {
-      action: "created",
-      installation: {
-        id: 8383,
-        account: { id: 9393, login: "SelfHostedCustomer", type: "Organization" },
-        suspended_at: null,
-      },
-      repositories: [],
-      sender: { id: 7004, login: "installer", type: "User" },
-    }, "trial-without-operator-alerts")).status).toBe(200);
-    expect((await pool.query("SELECT 1 FROM organization_entitlements")).rowCount).toBe(1);
-    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'")).rowCount).toBe(0);
+    expect(
+      (
+        await post(
+          "installation",
+          {
+            action: "created",
+            installation: {
+              id: 8383,
+              account: {
+                id: 9393,
+                login: "SelfHostedCustomer",
+                type: "Organization",
+              },
+              suspended_at: null,
+            },
+            repositories: [],
+            sender: { id: 7004, login: "installer", type: "User" },
+          },
+          "trial-without-operator-alerts",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await pool.query("SELECT 1 FROM organization_entitlements")).rowCount,
+    ).toBe(1);
+    expect(
+      (await pool.query("SELECT 1 FROM jobs WHERE kind = 'operator-alert'"))
+        .rowCount,
+    ).toBe(0);
   });
 
   test("pull_request synchronize neutralizes superseded review check-runs", async () => {
@@ -925,10 +1171,12 @@ describeDb("webhook handler behaviour", () => {
     );
 
     expect(res.status).toBe(200);
-    const review = await pool.query<{ status: string; finished_at: Date | null }>(
-      "SELECT status, finished_at FROM reviews WHERE id = $1",
-      [old.rows[0]!.id],
-    );
+    const review = await pool.query<{
+      status: string;
+      finished_at: Date | null;
+    }>("SELECT status, finished_at FROM reviews WHERE id = $1", [
+      old.rows[0]!.id,
+    ]);
     expect(review.rows[0]!.status).toBe("stale");
     expect(review.rows[0]!.finished_at).toBeInstanceOf(Date);
     expect(
@@ -1001,20 +1249,28 @@ describeDb("webhook handler behaviour", () => {
       };
       const deliveryId = `release-dark-${action}`;
 
-      expect((await post("pull_request", {
-        action,
-        installation: { id: installationId },
-        repository: {
-          id: githubRepoId,
-          full_name: `octo/${action}`,
-          private: false,
-        },
-        pull_request: {
-          number: 17,
-          head: { sha: `${action}-head` },
-          base: { sha: `${action}-base` },
-        },
-      }, deliveryId)).status).toBe(200);
+      expect(
+        (
+          await post(
+            "pull_request",
+            {
+              action,
+              installation: { id: installationId },
+              repository: {
+                id: githubRepoId,
+                full_name: `octo/${action}`,
+                private: false,
+              },
+              pull_request: {
+                number: 17,
+                head: { sha: `${action}-head` },
+                base: { sha: `${action}-base` },
+              },
+            },
+            deliveryId,
+          )
+        ).status,
+      ).toBe(200);
 
       const receipt = await pool.query<{
         completed: boolean;
@@ -1031,7 +1287,9 @@ describeDb("webhook handler behaviour", () => {
       );
       expect(receipt.rows[0]).toEqual({ completed: true, dispatch_done: true });
 
-      const claimed = await claimJob(pool, `release-dark-${action}`, ["review"]);
+      const claimed = await claimJob(pool, `release-dark-${action}`, [
+        "review",
+      ]);
       expect(claimed?.kind).toBe("review");
       await runClaimedJob(claimed!, `release-dark-${action}`);
       const deferred = await pool.query<{
@@ -1069,11 +1327,15 @@ describeDb("webhook handler behaviour", () => {
         staged: false,
         release_sha: null,
       });
-      expect((await pool.query(
-        `SELECT count(*)::int AS count FROM jobs
+      expect(
+        (
+          await pool.query(
+            `SELECT count(*)::int AS count FROM jobs
           WHERE kind = 'review' AND payload->>'headSha' = $1`,
-        [`${action}-head`],
-      )).rows[0]!.count).toBe(1);
+            [`${action}-head`],
+          )
+        ).rows[0]!.count,
+      ).toBe(1);
     });
   }
 
@@ -1094,16 +1356,18 @@ describeDb("webhook handler behaviour", () => {
     const respond = await pool.query<{ id: string }>(
       `INSERT INTO jobs (kind, payload)
        VALUES ('respond', $1::jsonb) RETURNING id`,
-      [JSON.stringify({
-        installationId: 251,
-        sourceInstallationId: inst,
-        sourceOrgId: orgId,
-        githubRepoId: 7879,
-        repoFullName: "octo/closing",
-        number: 7,
-        isPr: true,
-        sourceHeadSha: "closing-head",
-      })],
+      [
+        JSON.stringify({
+          installationId: 251,
+          sourceInstallationId: inst,
+          sourceOrgId: orgId,
+          githubRepoId: 7879,
+          repoFullName: "octo/closing",
+          number: 7,
+          isPr: true,
+          sourceHeadSha: "closing-head",
+        }),
+      ],
     );
     await pool.query(
       `INSERT INTO respond_deliveries
@@ -1122,16 +1386,24 @@ describeDb("webhook handler behaviour", () => {
       baseSha: "base",
     };
 
-    expect((await post("pull_request", {
-      action: "closed",
-      installation: { id: 251 },
-      repository: { id: 7879, full_name: "octo/closing", private: false },
-      pull_request: {
-        number: 7,
-        head: { sha: "closing-head" },
-        base: { sha: "base" },
-      },
-    }, "delivery-close-1")).status).toBe(200);
+    expect(
+      (
+        await post(
+          "pull_request",
+          {
+            action: "closed",
+            installation: { id: 251 },
+            repository: { id: 7879, full_name: "octo/closing", private: false },
+            pull_request: {
+              number: 7,
+              head: { sha: "closing-head" },
+              base: { sha: "base" },
+            },
+          },
+          "delivery-close-1",
+        )
+      ).status,
+    ).toBe(200);
 
     const state = await pool.query(
       `SELECT review.status AS review_status, job.status AS job_status,
@@ -1163,50 +1435,100 @@ describeDb("webhook handler behaviour", () => {
     await seedRepo(inst, 7979, "octo/private", true);
     const repository = { id: 7979, full_name: "octo/private", private: true };
 
-    expect((await post("pull_request", {
-      action: "opened",
-      installation: { id: 260 },
-      repository,
-      pull_request: { number: 7, head: { sha: "head" }, base: { sha: "base" } },
-    }, "private-pull")).status).toBe(200);
-    expect((await post("check_run", {
-      action: "rerequested",
-      installation: { id: 260 },
-      repository,
-      check_run: {
-        name: "postil/gate",
-        head_sha: "head",
-        pull_requests: [{ number: 7, head: { sha: "head" }, base: { sha: "base" } }],
-      },
-    }, "private-rerequest")).status).toBe(200);
+    expect(
+      (
+        await post(
+          "pull_request",
+          {
+            action: "opened",
+            installation: { id: 260 },
+            repository,
+            pull_request: {
+              number: 7,
+              head: { sha: "head" },
+              base: { sha: "base" },
+            },
+          },
+          "private-pull",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(
+          "check_run",
+          {
+            action: "rerequested",
+            installation: { id: 260 },
+            repository,
+            check_run: {
+              name: "postil/gate",
+              head_sha: "head",
+              pull_requests: [
+                { number: 7, head: { sha: "head" }, base: { sha: "base" } },
+              ],
+            },
+          },
+          "private-rerequest",
+        )
+      ).status,
+    ).toBe(200);
     const comment = {
       body: "@postil please help",
       user: { login: "maintainer", type: "User" },
       author_association: "MEMBER",
     };
-    expect((await post("issue_comment", {
-      action: "created",
-      installation: { id: 260 },
-      repository,
-      sender: { login: "maintainer", type: "User" },
-      comment,
-      issue: { number: 7, pull_request: {} },
-    }, "private-issue-comment")).status).toBe(200);
-    expect((await post("pull_request_review_comment", {
-      action: "created",
-      installation: { id: 260 },
-      repository,
-      sender: { login: "maintainer", type: "User" },
-      comment: { ...comment, path: "src/app.ts", line: 2 },
-      pull_request: { number: 7 },
-    }, "private-review-comment")).status).toBe(200);
-    expect((await post("issues", {
-      action: "opened",
-      installation: { id: 260 },
-      repository,
-      sender: { login: "maintainer", type: "User" },
-      issue: { number: 8, body: "@postil please help", author_association: "MEMBER" },
-    }, "private-issue")).status).toBe(200);
+    expect(
+      (
+        await post(
+          "issue_comment",
+          {
+            action: "created",
+            installation: { id: 260 },
+            repository,
+            sender: { login: "maintainer", type: "User" },
+            comment,
+            issue: { number: 7, pull_request: {} },
+          },
+          "private-issue-comment",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(
+          "pull_request_review_comment",
+          {
+            action: "created",
+            installation: { id: 260 },
+            repository,
+            sender: { login: "maintainer", type: "User" },
+            comment: { ...comment, path: "src/app.ts", line: 2 },
+            pull_request: { number: 7 },
+          },
+          "private-review-comment",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(
+          "issues",
+          {
+            action: "opened",
+            installation: { id: 260 },
+            repository,
+            sender: { login: "maintainer", type: "User" },
+            issue: {
+              number: 8,
+              body: "@postil please help",
+              author_association: "MEMBER",
+            },
+          },
+          "private-issue",
+        )
+      ).status,
+    ).toBe(200);
     const [jobs, reviews] = await Promise.all([
       pool.query<{ c: number }>(
         "SELECT count(*)::int AS c FROM jobs WHERE kind <> 'webhook-dispatch'",
@@ -1226,12 +1548,16 @@ describeDb("webhook handler behaviour", () => {
     await seedUser(501, "admin", orgId, "admin");
     await seedCompletedApprovalReview(repoId);
 
-    expect((await approvalComment("private-approval", undefined, true)).status).toBe(200);
+    expect(
+      (await approvalComment("private-approval", undefined, true)).status,
+    ).toBe(200);
     const approvals = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM finding_approvals WHERE revoked_at IS NULL",
     );
     expect(approvals.rows[0]!.c).toBe(1);
-    expect((await queuedWebhookCommentBodies())[0]).toContain("Approval recorded by @admin");
+    expect((await queuedWebhookCommentBodies())[0]).toContain(
+      "Approval recorded by @admin",
+    );
   });
 
   test("installation_repositories removed completes in-flight review check-runs then deletes", async () => {
@@ -1250,7 +1576,9 @@ describeDb("webhook handler behaviour", () => {
       {
         action: "removed",
         installation: { id: 300 },
-        repositories_removed: [{ id: 8888, full_name: "octo/gone", private: false }],
+        repositories_removed: [
+          { id: 8888, full_name: "octo/gone", private: false },
+        ],
       },
       "delivery-removed-1",
     );
@@ -1259,8 +1587,13 @@ describeDb("webhook handler behaviour", () => {
     // Both the gate and review check-runs failed before the repo row and its
     // cascaded review were deleted.
     expect(completedCheckRuns).toHaveLength(2);
-    expect(completedCheckRuns.map((c) => c.conclusion).sort()).toEqual(["failure", "failure"]);
-    expect(completedCheckRuns.every((c) => c.repoFullName === "octo/gone")).toBe(true);
+    expect(completedCheckRuns.map((c) => c.conclusion).sort()).toEqual([
+      "failure",
+      "failure",
+    ]);
+    expect(
+      completedCheckRuns.every((c) => c.repoFullName === "octo/gone"),
+    ).toBe(true);
     expect(
       completedCheckRuns.every((c) =>
         /^https:\/\/postil\.dev\/orgs\/octo\/runs\/[0-9a-f-]+$/.test(
@@ -1286,13 +1619,18 @@ describeDb("webhook handler behaviour", () => {
       {
         action: "removed",
         installation: { id: 301 },
-        repositories_removed: [{ id: 8889, full_name: "octo/.github", private: true }],
+        repositories_removed: [
+          { id: 8889, full_name: "octo/.github", private: true },
+        ],
       },
       "delivery-shared-removed",
     );
 
     expect(res.status).toBe(200);
-    const snapshots = await pool.query<{ c: number; source_repository_id: string | null }>(
+    const snapshots = await pool.query<{
+      c: number;
+      source_repository_id: string | null;
+    }>(
       `SELECT count(*)::int AS c, max(source_repository_id)::text AS source_repository_id
          FROM org_config_snapshots WHERE org_id = $1`,
       [orgId],
@@ -1373,12 +1711,27 @@ describeDb("webhook handler behaviour", () => {
     const res = await approvalComment("approval-success");
 
     expect(res.status).toBe(200);
-    const approvals = await pool.query<{ finding_id: string; source: string; revoked_at: Date | null }>(
-      "SELECT finding_id, source, revoked_at FROM finding_approvals WHERE review_id = $1",
+    const approvals = await pool.query<{
+      finding_id: string;
+      source: string;
+      verb: string;
+      finding_model: string | null;
+      finding_scorer_model: string | null;
+      revoked_at: Date | null;
+    }>(
+      `SELECT finding_id, source, verb, finding_model, finding_scorer_model, revoked_at
+         FROM finding_approvals WHERE review_id = $1`,
       [reviewId],
     );
     expect(approvals.rows).toEqual([
-      { finding_id: "kind-blocker", source: "github", revoked_at: null },
+      {
+        finding_id: "kind-blocker",
+        source: "github",
+        verb: "approve",
+        finding_model: null,
+        finding_scorer_model: null,
+        revoked_at: null,
+      },
     ]);
     const review = await pool.query<{ gate_failing: boolean }>(
       "SELECT gate_failing FROM reviews WHERE id = $1",
@@ -1402,27 +1755,76 @@ describeDb("webhook handler behaviour", () => {
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedUser(501, "admin", orgId, "admin");
-    const reviewId = await seedCompletedApprovalReview(repoId, approvalEnvelope({
-      findings: [{
-        id: "kind-blocker", path: "src/app.ts", line: 10, severity: "error", kind: "risk",
-        confidence: 0.9, title: "Incorrect finding", body: "The branch is unreachable.",
-      }],
+    const originalEnvelope = approvalEnvelope({
+      findings: [
+        {
+          id: "kind-blocker",
+          path: "src/app.ts",
+          line: 10,
+          severity: "error",
+          kind: "humanEscalation",
+          confidence: 0.9,
+          title: "Incorrect finding",
+          body: "The branch is unreachable.",
+        },
+      ],
       counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
-    }));
-    await pool.query("UPDATE reviews SET author_github_id = 501 WHERE id = $1", [reviewId]);
+      scorerModel: "openai/gpt-5.4-mini",
+    });
+    const reviewId = await seedCompletedApprovalReview(
+      repoId,
+      originalEnvelope,
+    );
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 501 WHERE id = $1",
+      [reviewId],
+    );
 
     expect((await dismissalComment("dismissal-success")).status).toBe(200);
     const dismissal = await pool.query<{
-      verb: string; reason_tag: string; author_self_dismissal: boolean; finding_model: string;
-    }>("SELECT verb, reason_tag, author_self_dismissal, finding_model FROM finding_approvals WHERE review_id = $1", [reviewId]);
-    expect(dismissal.rows).toEqual([{
-      verb: "dismiss", reason_tag: "false-positive", author_self_dismissal: true,
-      finding_model: "deepseek/deepseek-v4-pro",
-    }]);
-    expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(false);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      verb: string;
+      reason_tag: string;
+      author_self_dismissal: boolean;
+      finding_kind: string;
+      finding_severity: string;
+      finding_confidence: number;
+      finding_model: string;
+      finding_scorer_model: string;
+    }>(
+      `SELECT verb, reason_tag, author_self_dismissal, finding_kind,
+               finding_severity, finding_confidence, finding_model, finding_scorer_model
+          FROM finding_approvals WHERE review_id = $1`,
+      [reviewId],
+    );
+    expect(dismissal.rows).toEqual([
+      {
+        verb: "dismiss",
+        reason_tag: "false-positive",
+        author_self_dismissal: true,
+        finding_kind: "humanEscalation",
+        finding_severity: "error",
+        finding_confidence: 0.9,
+        finding_model: "deepseek/deepseek-v4-pro",
+        finding_scorer_model: "openai/gpt-5.4-mini",
+      },
+    ]);
+    const storedReview = (
+      await pool.query<{ gate_failing: boolean; envelope: unknown }>(
+        "SELECT gate_failing, envelope FROM reviews WHERE id = $1",
+        [reviewId],
+      )
+    ).rows[0]!;
+    expect(storedReview.gate_failing).toBe(false);
+    expect(storedReview.envelope).toEqual(originalEnvelope);
+    const confirmation = (await queuedWebhookCommentBodies()).at(-1)!;
+    expect(confirmation).toContain(
+      "Dismissal recorded by @admin for finding kind-blocker",
+    );
+    expect(confirmation).toContain("on commit head-sha: false-positive");
+    expect(confirmation).toContain(
       "The pull request author dismissed this finding.",
     );
+    expect(confirmation).not.toContain("resolve this thread");
   });
 
   test("dismissal infers a finding id only from its finding-comment reply", async () => {
@@ -1437,20 +1839,48 @@ describeDb("webhook handler behaviour", () => {
       [reviewId],
     );
 
-    expect((await post("pull_request_review_comment", {
-      action: "created",
-      installation: { id: 700 },
-      repository: { id: 7000, full_name: "octo/approvals", private: false },
-      sender: { id: 501, login: "admin", type: "User" },
-      comment: {
-        id: 8801, in_reply_to_id: 8800, body: "@postil dismiss -- out-of-scope: this policy does not apply",
-        user: { id: 501, login: "admin", type: "User" }, author_association: "MEMBER",
-      },
-      pull_request: { number: 9 },
-    }, "dismissal-reply-inference")).status).toBe(200);
-    expect((await pool.query<{ finding_id: string; reason_tag: string }>(
-      "SELECT finding_id, reason_tag FROM finding_approvals WHERE review_id = $1", [reviewId],
-    )).rows).toEqual([{ finding_id: "kind-blocker", reason_tag: "out-of-scope" }]);
+    expect(
+      (
+        await post(
+          "pull_request_review_comment",
+          {
+            action: "created",
+            installation: { id: 700 },
+            repository: {
+              id: 7000,
+              full_name: "octo/approvals",
+              private: false,
+            },
+            sender: { id: 501, login: "admin", type: "User" },
+            comment: {
+              id: 8801,
+              in_reply_to_id: 8800,
+              body: "@postil dismiss -- out-of-scope: this policy does not apply",
+              user: { id: 501, login: "admin", type: "User" },
+              author_association: "MEMBER",
+            },
+            pull_request: { number: 9 },
+          },
+          "dismissal-reply-inference",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await pool.query<{ finding_id: string; reason_tag: string }>(
+          "SELECT finding_id, reason_tag FROM finding_approvals WHERE review_id = $1",
+          [reviewId],
+        )
+      ).rows,
+    ).toEqual([{ finding_id: "kind-blocker", reason_tag: "out-of-scope" }]);
+    expect(
+      (
+        await pool.query<{ current_state: string }>(
+          "SELECT current_state FROM finding_publications WHERE review_id = $1",
+          [reviewId],
+        )
+      ).rows,
+    ).toEqual([{ current_state: "inline" }]);
   });
 
   test("dismissal rejects a same-pull-request review that is queued or running", async () => {
@@ -1460,13 +1890,80 @@ describeDb("webhook handler behaviour", () => {
     await seedUser(501, "admin", orgId, "admin");
     await seedCompletedApprovalReview(repoId);
     await pool.query(
-      "INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status) VALUES ($1, 9, 'next-head', 'base-sha', 'queued')",
+      "INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status) VALUES ($1, 9, 'head-sha', 'base-sha', 'queued')",
       [repoId],
     );
 
     expect((await dismissalComment("dismissal-race")).status).toBe(200);
-    expect((await pool.query<{ c: number }>("SELECT count(*)::int AS c FROM finding_approvals")).rows[0]!.c).toBe(0);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("review is in progress");
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals",
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "review is in progress",
+    );
+  });
+
+  test("dismissal ignores an in-flight review for a different head", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    await pool.query(
+      "INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status) VALUES ($1, 9, 'next-head', 'base-sha', 'running')",
+      [repoId],
+    );
+
+    expect((await dismissalComment("dismissal-other-head")).status).toBe(200);
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals WHERE verb = 'dismiss' AND revoked_at IS NULL",
+        )
+      ).rows[0]!.c,
+    ).toBe(1);
+  });
+
+  test("dismissal rejects operational sentinel findings", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(
+      repoId,
+      approvalEnvelope({
+        findings: [
+          {
+            id: "kind-blocker",
+            path: ".postil/provider",
+            line: 1,
+            severity: "error",
+            kind: "uncertainty",
+            confidence: 1,
+            title: "Provider unavailable",
+            body: "Postil could not complete the review.",
+          },
+        ],
+        counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+        gate: { failOn: "error", failing: true, block_on_kinds: [] },
+      }),
+    );
+
+    expect((await dismissalComment("dismissal-sentinel")).status).toBe(200);
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals",
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "operational",
+    );
   });
 
   test("approval command accepts the truncated finding id shown in gate summaries", async () => {
@@ -1491,7 +1988,9 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(approvals.rows).toEqual([{ finding_id: fullId }]);
     const replies = await queuedWebhookCommentBodies();
-    expect(replies[0]).toContain(`Approval recorded by @admin for finding ${fullId}`);
+    expect(replies[0]).toContain(
+      `Approval recorded by @admin for finding ${fullId}`,
+    );
   });
 
   test("approval command rejects a finding id prefix matching several findings", async () => {
@@ -1529,7 +2028,9 @@ describeDb("webhook handler behaviour", () => {
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     const reviewId = await seedCompletedApprovalReview(repoId);
 
-    expect((await approvalComment("approval-without-session")).status).toBe(200);
+    expect((await approvalComment("approval-without-session")).status).toBe(
+      200,
+    );
 
     const approval = await pool.query<{
       actor_github_id: string;
@@ -1561,10 +2062,14 @@ describeDb("webhook handler behaviour", () => {
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedUser(501, "admin", orgId, "admin");
-    await pool.query("UPDATE sessions SET expires_at = now() - interval '1 hour'");
+    await pool.query(
+      "UPDATE sessions SET expires_at = now() - interval '1 hour'",
+    );
     const reviewId = await seedCompletedApprovalReview(repoId);
 
-    expect((await approvalComment("approval-expired-session")).status).toBe(200);
+    expect((await approvalComment("approval-expired-session")).status).toBe(
+      200,
+    );
 
     const approvals = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
@@ -1580,15 +2085,18 @@ describeDb("webhook handler behaviour", () => {
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
     await seedCompletedApprovalReview(repoId);
 
-    const res = await approvalComment("approval-free-form", "@postil can you explain this?");
+    const res = await approvalComment(
+      "approval-free-form",
+      "@postil can you explain this?",
+    );
 
     expect(res.status).toBe(200);
     const approvals = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
-    const jobs = await pool.query<{ payload: { trigger: Record<string, unknown> } }>(
-      "SELECT payload FROM jobs WHERE kind = 'respond'",
-    );
+    const jobs = await pool.query<{
+      payload: { trigger: Record<string, unknown> };
+    }>("SELECT payload FROM jobs WHERE kind = 'respond'");
     expect(approvals.rows[0]!.c).toBe(0);
     expect(jobs.rows).toHaveLength(1);
     expect(jobs.rows[0]!.payload.trigger).toEqual({
@@ -1610,36 +2118,46 @@ describeDb("webhook handler behaviour", () => {
     await pool.query(
       `INSERT INTO jobs (kind, payload)
        VALUES ('respond', $1::jsonb)`,
-      [JSON.stringify({
-        installationId: 707,
-        sourceInstallationId: inst,
-        sourceOrgId: orgId,
-        githubRepoId: 7007,
-        repoFullName: "octo/retry-ack",
-        number: 9,
-        isPr: false,
-        comment: "@postil explain this",
-        sourceDeliveryId: "retry-safe-ack",
-      })],
+      [
+        JSON.stringify({
+          installationId: 707,
+          sourceInstallationId: inst,
+          sourceOrgId: orgId,
+          githubRepoId: 7007,
+          repoFullName: "octo/retry-ack",
+          number: 9,
+          isPr: false,
+          comment: "@postil explain this",
+          sourceDeliveryId: "retry-safe-ack",
+        }),
+      ],
     );
 
-    expect((await post(
-      "issue_comment",
-      {
-        action: "created",
-        installation: { id: 707 },
-        repository: { id: 7007, full_name: "octo/retry-ack", private: false },
-        sender: { id: 507, login: "reviewer", type: "User" },
-        comment: {
-          id: 9101,
-          body: "@postil explain this",
-          user: { id: 507, login: "reviewer", type: "User" },
-          author_association: "MEMBER",
-        },
-        issue: { number: 9 },
-      },
-      "retry-safe-ack",
-    )).status).toBe(200);
+    expect(
+      (
+        await post(
+          "issue_comment",
+          {
+            action: "created",
+            installation: { id: 707 },
+            repository: {
+              id: 7007,
+              full_name: "octo/retry-ack",
+              private: false,
+            },
+            sender: { id: 507, login: "reviewer", type: "User" },
+            comment: {
+              id: 9101,
+              body: "@postil explain this",
+              user: { id: 507, login: "reviewer", type: "User" },
+              author_association: "MEMBER",
+            },
+            issue: { number: 9 },
+          },
+          "retry-safe-ack",
+        )
+      ).status,
+    ).toBe(200);
 
     const jobs = await pool.query<{ kind: string; count: number }>(
       `SELECT kind, count(*)::int AS count FROM jobs
@@ -1663,7 +2181,10 @@ describeDb("webhook handler behaviour", () => {
     );
 
     expect(res.status).toBe(200);
-    const jobs = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+    const jobs = await pool.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+    }>(
       "SELECT kind, payload FROM jobs WHERE kind <> 'webhook-dispatch' ORDER BY id",
     );
     expect(jobs.rows).toEqual([
@@ -1683,7 +2204,8 @@ describeDb("webhook handler behaviour", () => {
             webhookEvent: "issue_comment",
             webhookAction: "created",
             sourceCommentId: 123456,
-            sourceUrl: "https://github.com/octo/approvals/pull/9#issuecomment-123456",
+            sourceUrl:
+              "https://github.com/octo/approvals/pull/9#issuecomment-123456",
             requestedByGithubId: 501,
             requestedByLogin: "admin",
           },
@@ -1714,7 +2236,9 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS count FROM jobs WHERE kind = 'github-reaction'",
     );
     expect(reactionCount.rows[0]!.count).toBe(1);
-    const reactionJob = await claimJob(getPool(), "reaction-test", ["github-reaction"]);
+    const reactionJob = await claimJob(getPool(), "reaction-test", [
+      "github-reaction",
+    ]);
     expect(reactionJob?.kind).toBe("github-reaction");
     await runClaimedJob(reactionJob!, "reaction-test", "worker");
     expect(addedReactions).toEqual([
@@ -1740,7 +2264,8 @@ describeDb("webhook handler behaviour", () => {
         sender: { id: 502, login: "reviewer", type: "User" },
         comment: {
           id: 654321,
-          html_url: "https://github.com/octo/threaded/pull/5#discussion_r654321",
+          html_url:
+            "https://github.com/octo/threaded/pull/5#discussion_r654321",
           body: "@postil review the current head",
           user: { id: 502, login: "reviewer", type: "User" },
           author_association: "MEMBER",
@@ -1753,9 +2278,9 @@ describeDb("webhook handler behaviour", () => {
     );
 
     expect(res.status).toBe(200);
-    const jobs = await pool.query<{ payload: { trigger: Record<string, unknown> } }>(
-      "SELECT payload FROM jobs WHERE kind = 'review'",
-    );
+    const jobs = await pool.query<{
+      payload: { trigger: Record<string, unknown> };
+    }>("SELECT payload FROM jobs WHERE kind = 'review'");
     expect(jobs.rows[0]!.payload.trigger).toEqual({
       source: "requested_review",
       webhookDeliveryId: "review-thread-command",
@@ -1840,28 +2365,32 @@ describeDb("webhook handler behaviour", () => {
     const inst = await seedInstallation(orgId, 705);
     await seedRepo(inst, 7005, "octo/threaded-thanks");
 
-    expect((await post(
-      "pull_request_review_comment",
-      {
-        action: "created",
-        installation: { id: 705 },
-        repository: {
-          id: 7005,
-          full_name: "octo/threaded-thanks",
-          private: false,
-        },
-        sender: { id: 505, login: "reviewer", type: "User" },
-        comment: {
-          id: 8901,
-          in_reply_to_id: 8800,
-          body: "Thanks again!",
-          user: { id: 505, login: "reviewer", type: "User" },
-          author_association: "MEMBER",
-        },
-        pull_request: { number: 6 },
-      },
-      "review-thread-gratitude",
-    )).status).toBe(200);
+    expect(
+      (
+        await post(
+          "pull_request_review_comment",
+          {
+            action: "created",
+            installation: { id: 705 },
+            repository: {
+              id: 7005,
+              full_name: "octo/threaded-thanks",
+              private: false,
+            },
+            sender: { id: 505, login: "reviewer", type: "User" },
+            comment: {
+              id: 8901,
+              in_reply_to_id: 8800,
+              body: "Thanks again!",
+              user: { id: 505, login: "reviewer", type: "User" },
+              author_association: "MEMBER",
+            },
+            pull_request: { number: 6 },
+          },
+          "review-thread-gratitude",
+        )
+      ).status,
+    ).toBe(200);
 
     const jobs = await pool.query<{
       kind: string;
@@ -1884,24 +2413,32 @@ describeDb("webhook handler behaviour", () => {
     await seedRepo(inst, 7006, "octo/human-thread");
     reviewCommentRoot = { ...reviewCommentRoot, userLogin: "another-reviewer" };
 
-    expect((await post(
-      "pull_request_review_comment",
-      {
-        action: "created",
-        installation: { id: 706 },
-        repository: { id: 7006, full_name: "octo/human-thread", private: false },
-        sender: { id: 506, login: "reviewer", type: "User" },
-        comment: {
-          id: 9001,
-          in_reply_to_id: 8800,
-          body: "Why is this needed?",
-          user: { id: 506, login: "reviewer", type: "User" },
-          author_association: "MEMBER",
-        },
-        pull_request: { number: 7 },
-      },
-      "human-thread-reply",
-    )).status).toBe(200);
+    expect(
+      (
+        await post(
+          "pull_request_review_comment",
+          {
+            action: "created",
+            installation: { id: 706 },
+            repository: {
+              id: 7006,
+              full_name: "octo/human-thread",
+              private: false,
+            },
+            sender: { id: 506, login: "reviewer", type: "User" },
+            comment: {
+              id: 9001,
+              in_reply_to_id: 8800,
+              body: "Why is this needed?",
+              user: { id: 506, login: "reviewer", type: "User" },
+              author_association: "MEMBER",
+            },
+            pull_request: { number: 7 },
+          },
+          "human-thread-reply",
+        )
+      ).status,
+    ).toBe(200);
 
     const jobs = await pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM jobs
@@ -1937,7 +2474,11 @@ describeDb("webhook handler behaviour", () => {
       {
         action: "created",
         installation: { id: 710 },
-        repository: { id: 7010, full_name: "octo/finding-feedback", private: false },
+        repository: {
+          id: 7010,
+          full_name: "octo/finding-feedback",
+          private: false,
+        },
         sender: { id: 510, login: "reviewer", type: "User" },
         comment: {
           id: commentId,
@@ -1963,36 +2504,82 @@ describeDb("webhook handler behaviour", () => {
     const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
     const publicationId = await seedPublishedFinding(repoId);
 
-    expect((await feedbackReply("finding-feedback-wrong", 9101, "This finding is wrong.")).status)
-      .toBe(200);
-    expect((await feedbackReply("finding-feedback-risk", 9102, "We accept this risk.")).status)
-      .toBe(200);
-    expect((await feedbackReply("finding-feedback-scope", 9103, "This is outside the scope of this pull request.")).status)
-      .toBe(200);
-    expect((await feedbackReply("finding-feedback-author", 9104, "This is unhelpful.", {
-      sender: { id: 511, login: "pull-request-author", type: "User" },
-      comment: {
-        id: 9104,
-        in_reply_to_id: 8800,
-        body: "This is unhelpful.",
-        created_at: "2026-08-24T12:34:56Z",
-        user: { id: 511, login: "pull-request-author", type: "User" },
-        author_association: "NONE",
-      },
-    })).status).toBe(200);
-    expect((await feedbackReply("finding-feedback-first-time-author", 9105, "This is still unhelpful.", {
-      sender: { id: 511, login: "pull-request-author", type: "User" },
-      comment: {
-        id: 9105,
-        in_reply_to_id: 8800,
-        body: "This is still unhelpful.",
-        created_at: "2026-08-24T12:34:56Z",
-        user: { id: 511, login: "pull-request-author", type: "User" },
-        author_association: "FIRST_TIME_CONTRIBUTOR",
-      },
-    })).status).toBe(200);
-    expect((await feedbackReply("finding-feedback-replay", 9101, "This finding is wrong.")).status)
-      .toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "finding-feedback-wrong",
+          9101,
+          "This finding is wrong.",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "finding-feedback-risk",
+          9102,
+          "We accept this risk.",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "finding-feedback-scope",
+          9103,
+          "This is outside the scope of this pull request.",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "finding-feedback-author",
+          9104,
+          "This is unhelpful.",
+          {
+            sender: { id: 511, login: "pull-request-author", type: "User" },
+            comment: {
+              id: 9104,
+              in_reply_to_id: 8800,
+              body: "This is unhelpful.",
+              created_at: "2026-08-24T12:34:56Z",
+              user: { id: 511, login: "pull-request-author", type: "User" },
+              author_association: "NONE",
+            },
+          },
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "finding-feedback-first-time-author",
+          9105,
+          "This is still unhelpful.",
+          {
+            sender: { id: 511, login: "pull-request-author", type: "User" },
+            comment: {
+              id: 9105,
+              in_reply_to_id: 8800,
+              body: "This is still unhelpful.",
+              created_at: "2026-08-24T12:34:56Z",
+              user: { id: 511, login: "pull-request-author", type: "User" },
+              author_association: "FIRST_TIME_CONTRIBUTOR",
+            },
+          },
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "finding-feedback-replay",
+          9101,
+          "This finding is wrong.",
+        )
+      ).status,
+    ).toBe(200);
 
     const feedback = await pool.query<{
       finding_publication_id: string;
@@ -2050,14 +2637,20 @@ describeDb("webhook handler behaviour", () => {
       }),
     ]);
 
-    const state = await pool.query<{ gate_failing: boolean; approval_count: number }>(`
+    const state = await pool.query<{
+      gate_failing: boolean;
+      approval_count: number;
+    }>(
+      `
       SELECT review.gate_failing,
              (SELECT count(*)::int FROM finding_approvals WHERE review_id = review.id) AS approval_count
         FROM reviews review
        WHERE review.id = (
          SELECT review_id FROM finding_publications WHERE id = $1
        )
-    `, [publicationId]);
+    `,
+      [publicationId],
+    );
     expect(state.rows).toEqual([{ gate_failing: true, approval_count: 0 }]);
   });
 
@@ -2069,24 +2662,38 @@ describeDb("webhook handler behaviour", () => {
       repoId,
       "operational-feedback",
       approvalEnvelope({
-        findings: [{
-          id: "operational-feedback",
-          path: ".postil/operational",
-          line: 1,
-          severity: "error",
-          kind: "uncertainty",
-          confidence: 1,
-          title: "Model provider unavailable",
-          body: "Provider returned an invalid response.",
-        }],
+        findings: [
+          {
+            id: "operational-feedback",
+            path: ".postil/operational",
+            line: 1,
+            severity: "error",
+            kind: "uncertainty",
+            confidence: 1,
+            title: "Model provider unavailable",
+            body: "Provider returned an invalid response.",
+          },
+        ],
         counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
       }),
     );
 
-    expect((await feedbackReply("operational-feedback", 9104, "This is a false positive.")).status)
-      .toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "operational-feedback",
+          9104,
+          "This is a false positive.",
+        )
+      ).status,
+    ).toBe(200);
 
-    const state = await pool.query<{ feedback_count: number; approval_count: number; gate_failing: boolean }>(`
+    const state = await pool.query<{
+      feedback_count: number;
+      approval_count: number;
+      gate_failing: boolean;
+    }>(
+      `
       SELECT
         (SELECT count(*)::int FROM finding_feedback WHERE finding_publication_id = $1) AS feedback_count,
         (SELECT count(*)::int FROM finding_approvals WHERE review_id = publication.review_id) AS approval_count,
@@ -2094,8 +2701,12 @@ describeDb("webhook handler behaviour", () => {
       FROM finding_publications publication
       JOIN reviews review ON review.id = publication.review_id
       WHERE publication.id = $1
-    `, [publicationId]);
-    expect(state.rows).toEqual([{ feedback_count: 1, approval_count: 0, gate_failing: true }]);
+    `,
+      [publicationId],
+    );
+    expect(state.rows).toEqual([
+      { feedback_count: 1, approval_count: 0, gate_failing: true },
+    ]);
   });
 
   test("records historical private-repository feedback without inference entitlement", async () => {
@@ -2104,25 +2715,41 @@ describeDb("webhook handler behaviour", () => {
     const repoId = await seedRepo(inst, 7011, "octo/private-feedback", true);
     const publicationId = await seedPublishedFinding(repoId);
 
-    expect((await feedbackReply("private-finding-feedback", 9150, "This is unhelpful.", {
-      installation: { id: 711 },
-      repository: {
-        id: 7011,
-        full_name: "octo/private-feedback",
-        private: true,
-      },
-    })).status).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "private-finding-feedback",
+          9150,
+          "This is unhelpful.",
+          {
+            installation: { id: 711 },
+            repository: {
+              id: 7011,
+              full_name: "octo/private-feedback",
+              private: true,
+            },
+          },
+        )
+      ).status,
+    ).toBe(200);
 
-    const feedback = await pool.query<{ finding_publication_id: string; body: string }>(
+    const feedback = await pool.query<{
+      finding_publication_id: string;
+      body: string;
+    }>(
       `SELECT finding_publication_id, body
          FROM finding_feedback
         WHERE source_github_comment_id = '9150'`,
     );
-    expect(feedback.rows).toEqual([{
-      finding_publication_id: String(publicationId),
-      body: "This is unhelpful.",
-    }]);
-    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'respond'")).rowCount).toBe(0);
+    expect(feedback.rows).toEqual([
+      {
+        finding_publication_id: String(publicationId),
+        body: "This is unhelpful.",
+      },
+    ]);
+    expect(
+      (await pool.query("SELECT 1 FROM jobs WHERE kind = 'respond'")).rowCount,
+    ).toBe(0);
   });
 
   test("does not capture commands, questions, gratitude, unrelated roots, or ineligible replies", async () => {
@@ -2131,37 +2758,85 @@ describeDb("webhook handler behaviour", () => {
     const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
     await seedPublishedFinding(repoId);
 
-    expect((await feedbackReply("feedback-question", 9201, "Why is this finding here?")).status).toBe(200);
-    expect((await feedbackReply("feedback-gratitude", 9202, "Thanks again!")).status).toBe(200);
-    expect((await feedbackReply("feedback-command", 9203, "@postil review current head")).status).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "feedback-question",
+          9201,
+          "Why is this finding here?",
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await feedbackReply("feedback-gratitude", 9202, "Thanks again!")).status,
+    ).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "feedback-command",
+          9203,
+          "@postil review current head",
+        )
+      ).status,
+    ).toBe(200);
 
     reviewCommentRoot = { ...reviewCommentRoot, userLogin: "another-reviewer" };
-    expect((await feedbackReply("feedback-unrelated", 9204, "This finding is wrong.")).status).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "feedback-unrelated",
+          9204,
+          "This finding is wrong.",
+        )
+      ).status,
+    ).toBe(200);
     reviewCommentRoot = { ...reviewCommentRoot, userLogin: "postil-dev[bot]" };
 
-    expect((await feedbackReply("feedback-unauthorized", 9205, "This finding is wrong.", {
-      comment: {
-        id: 9205,
-        in_reply_to_id: 8800,
-        body: "This finding is wrong.",
-        created_at: "2026-08-24T12:34:56Z",
-        user: { id: 510, login: "reviewer", type: "User" },
-        author_association: "NONE",
-      },
-    })).status).toBe(200);
-    expect((await feedbackReply("feedback-first-time-unauthorized", 9207, "This finding is wrong.", {
-      comment: {
-        id: 9207,
-        in_reply_to_id: 8800,
-        body: "This finding is wrong.",
-        created_at: "2026-08-24T12:34:56Z",
-        user: { id: 510, login: "reviewer", type: "User" },
-        author_association: "FIRST_TIME_CONTRIBUTOR",
-      },
-    })).status).toBe(200);
-    expect((await feedbackReply("feedback-bot", 9206, "This finding is wrong.", {
-      sender: { id: 510, login: "reviewer[bot]", type: "Bot" },
-    })).status).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "feedback-unauthorized",
+          9205,
+          "This finding is wrong.",
+          {
+            comment: {
+              id: 9205,
+              in_reply_to_id: 8800,
+              body: "This finding is wrong.",
+              created_at: "2026-08-24T12:34:56Z",
+              user: { id: 510, login: "reviewer", type: "User" },
+              author_association: "NONE",
+            },
+          },
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await feedbackReply(
+          "feedback-first-time-unauthorized",
+          9207,
+          "This finding is wrong.",
+          {
+            comment: {
+              id: 9207,
+              in_reply_to_id: 8800,
+              body: "This finding is wrong.",
+              created_at: "2026-08-24T12:34:56Z",
+              user: { id: 510, login: "reviewer", type: "User" },
+              author_association: "FIRST_TIME_CONTRIBUTOR",
+            },
+          },
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await feedbackReply("feedback-bot", 9206, "This finding is wrong.", {
+          sender: { id: 510, login: "reviewer[bot]", type: "Bot" },
+        })
+      ).status,
+    ).toBe(200);
 
     const feedback = await pool.query<{ count: number }>(
       "SELECT count(*)::int AS count FROM finding_feedback",
@@ -2224,7 +2899,10 @@ describeDb("webhook handler behaviour", () => {
     );
 
     expect(res.status).toBe(200);
-    const jobs = await pool.query<{ kind: string; payload: Record<string, unknown> }>(
+    const jobs = await pool.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+    }>(
       "SELECT kind, payload FROM jobs WHERE kind <> 'webhook-dispatch' ORDER BY id",
     );
     expect(jobs.rows).toEqual([
@@ -2252,7 +2930,9 @@ describeDb("webhook handler behaviour", () => {
     expect(postedComments[0]).toEqual({
       repoFullName: "octo/issues",
       number: 4,
-      body: expect.stringContaining("Review commands only work on pull requests."),
+      body: expect.stringContaining(
+        "Review commands only work on pull requests.",
+      ),
     });
     expect(postedComments[0]?.body).toContain("<!-- postil-respond-job:");
   });
@@ -2272,7 +2952,32 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
     expect(approvals.rows[0]!.c).toBe(0);
-    expect((await queuedWebhookCommentBodies())[0]).toContain("head is new-head");
+    expect((await queuedWebhookCommentBodies())[0]).toContain(
+      "head is new-head",
+    );
+  });
+
+  test("dismissal rejects a stale pull request head", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    pullRequestHeadSha = "new-head";
+
+    expect((await dismissalComment("dismissal-head-mismatch")).status).toBe(
+      200,
+    );
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals",
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+    expect((await queuedWebhookCommentBodies())[0]).toContain(
+      "head is new-head",
+    );
   });
 
   test("approval command rejects missing findings", async () => {
@@ -2282,7 +2987,10 @@ describeDb("webhook handler behaviour", () => {
     await seedUser(501, "admin", orgId, "admin");
     await seedCompletedApprovalReview(repoId);
 
-    const res = await approvalComment("approval-missing", "@postil approve no-such-id -- reviewed");
+    const res = await approvalComment(
+      "approval-missing",
+      "@postil approve no-such-id -- reviewed",
+    );
 
     expect(res.status).toBe(200);
     const approvals = await pool.query<{ c: number }>(
@@ -2300,7 +3008,9 @@ describeDb("webhook handler behaviour", () => {
 
     liveMembershipUserId = 0;
     expect((await approvalComment("approval-unverified")).status).toBe(200);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "could not verify",
+    );
 
     liveMembershipUserId = 501;
     liveMembershipRole = "member";
@@ -2313,6 +3023,26 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
     expect(approvals.rows[0]!.c).toBe(0);
+  });
+
+  test("dismissal rejects a live organization member who is not an admin", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedCompletedApprovalReview(repoId);
+    liveMembershipRole = "member";
+
+    expect((await dismissalComment("dismissal-member")).status).toBe(200);
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals",
+        )
+      ).rows[0]!.c,
+    ).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "requires an organization admin",
+    );
   });
 
   test("approval command revokes a cached actor who left the organization", async () => {
@@ -2340,7 +3070,9 @@ describeDb("webhook handler behaviour", () => {
         )
       ).rows[0]!.c,
     ).toBe(0);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "could not verify",
+    );
   });
 
   test("approval command applies a live admin demotion before authorizing", async () => {
@@ -2374,7 +3106,9 @@ describeDb("webhook handler behaviour", () => {
     await seedCompletedApprovalReview(repoId);
     liveMembershipStatus = 503;
 
-    expect((await approvalComment("approval-membership-outage")).status).toBe(200);
+    expect((await approvalComment("approval-membership-outage")).status).toBe(
+      200,
+    );
 
     expect(
       (
@@ -2401,7 +3135,9 @@ describeDb("webhook handler behaviour", () => {
     await seedCompletedApprovalReview(repoId);
     liveMembershipOrgId = 12345;
 
-    expect((await approvalComment("approval-membership-mismatch")).status).toBe(200);
+    expect((await approvalComment("approval-membership-mismatch")).status).toBe(
+      200,
+    );
 
     expect(
       (
@@ -2427,19 +3163,52 @@ describeDb("webhook handler behaviour", () => {
     const reviewId = await seedCompletedApprovalReview(repoId);
 
     expect((await approvalComment("approval-first-delivery")).status).toBe(200);
-    expect((await approvalComment("approval-replayed-comment")).status).toBe(200);
+    expect((await approvalComment("approval-replayed-comment")).status).toBe(
+      200,
+    );
 
     const approvals = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
       [reviewId],
     );
     expect(approvals.rows[0]!.c).toBe(1);
-    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("already approved");
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "already approved",
+    );
+  });
+
+  test("dismissal replay cannot create a second decision", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    expect((await dismissalComment("dismissal-first-delivery")).status).toBe(
+      200,
+    );
+    expect((await dismissalComment("dismissal-replayed-comment")).status).toBe(
+      200,
+    );
+
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+          [reviewId],
+        )
+      ).rows[0]!.c,
+    ).toBe(1);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "already dismissed",
+    );
   });
 
   test("approval command recognizes a personal-account owner without an organization lookup", async () => {
     const orgId = await seedOrg();
-    await pool.query("UPDATE organizations SET github_org_id = 501 WHERE id = $1", [orgId]);
+    await pool.query(
+      "UPDATE organizations SET github_org_id = 501 WHERE id = $1",
+      [orgId],
+    );
     const inst = await seedInstallation(orgId, 700, "User");
     const repoId = await seedRepo(inst, 7000, "admin/approvals");
     await seedUser(501, "admin", orgId, "admin");
@@ -2500,10 +3269,12 @@ describeDb("webhook handler behaviour", () => {
       "SELECT count(*)::int AS c FROM finding_approvals",
     );
     expect(approvals.rows[0]!.c).toBe(0);
-    expect((await queuedWebhookCommentBodies())[0]).toContain("severity-blocking");
+    expect((await queuedWebhookCommentBodies())[0]).toContain(
+      "severity-blocking",
+    );
   });
 
-  test("approval command rejects previously revoked approvals", async () => {
+  test("approval command reissues a previously revoked approval", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
@@ -2529,8 +3300,57 @@ describeDb("webhook handler behaviour", () => {
     const active = await pool.query<{ c: number }>(
       "SELECT count(*)::int AS c FROM finding_approvals WHERE revoked_at IS NULL",
     );
-    expect(active.rows[0]!.c).toBe(0);
-    expect((await queuedWebhookCommentBodies())[0]).toContain("revoked");
+    expect(active.rows[0]!.c).toBe(1);
+    expect(
+      (
+        await pool.query<{ c: number }>(
+          "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+          [reviewId],
+        )
+      ).rows[0]!.c,
+    ).toBe(2);
+    expect((await queuedWebhookCommentBodies())[0]).toContain(
+      "Approval recorded",
+    );
+  });
+
+  test("dismissal can be revoked and reissued without losing its audit history", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    const userId = await seedUser(501, "admin", orgId, "admin");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+
+    expect((await dismissalComment("dismissal-before-revoke")).status).toBe(
+      200,
+    );
+    await pool.query(
+      `UPDATE finding_approvals
+          SET revoked_at = now(), revoked_by_user_id = $2
+        WHERE review_id = $1 AND verb = 'dismiss' AND revoked_at IS NULL`,
+      [reviewId, userId],
+    );
+    expect(
+      (
+        await dismissalComment(
+          "dismissal-after-revoke",
+          "@postil dismiss kind-blocker -- accepted-risk: the organization accepts this exact risk",
+          123457,
+        )
+      ).status,
+    ).toBe(200);
+
+    const rows = await pool.query<{ reason_tag: string; active: boolean }>(
+      `SELECT reason_tag, revoked_at IS NULL AS active
+         FROM finding_approvals
+        WHERE review_id = $1
+        ORDER BY revoked_at NULLS LAST, created_at, id`,
+      [reviewId],
+    );
+    expect(rows.rows).toEqual([
+      { reason_tag: "false-positive", active: false },
+      { reason_tag: "accepted-risk", active: true },
+    ]);
   });
 
   test("approval for an old head does not carry to a new commit review", async () => {
@@ -2661,7 +3481,11 @@ describeDb("webhook handler behaviour", () => {
       {
         action: "rerequested",
         installation: { id: overrides.installationId ?? 500 },
-        repository: overrides.repo ?? { id: 5555, full_name: "octo/gate", private: false },
+        repository: overrides.repo ?? {
+          id: 5555,
+          full_name: "octo/gate",
+          private: false,
+        },
         check_run: {
           name: overrides.name ?? "postil/gate",
           head_sha: overrides.headSha ?? "deadbeef",
@@ -2672,7 +3496,12 @@ describeDb("webhook handler behaviour", () => {
                   {
                     number: prNumber,
                     head: { sha: overrides.headSha ?? "deadbeef" },
-                    base: { sha: overrides.baseSha === undefined ? "basesha" : overrides.baseSha },
+                    base: {
+                      sha:
+                        overrides.baseSha === undefined
+                          ? "basesha"
+                          : overrides.baseSha,
+                    },
                   },
                 ],
         },
@@ -2695,9 +3524,7 @@ describeDb("webhook handler behaviour", () => {
         headSha: string;
         trigger: Record<string, unknown>;
       };
-    }>(
-      "SELECT payload FROM jobs WHERE kind = 'review'",
-    );
+    }>("SELECT payload FROM jobs WHERE kind = 'review'");
     expect(jobs.rows).toHaveLength(1);
     expect(jobs.rows[0]!.payload.prNumber).toBe(42);
     expect(jobs.rows[0]!.payload.headSha).toBe("deadbeef");
@@ -2736,9 +3563,9 @@ describeDb("webhook handler behaviour", () => {
     );
 
     expect(res.status).toBe(200);
-    const jobs = await pool.query<{ payload: { trigger: Record<string, unknown> } }>(
-      "SELECT payload FROM jobs WHERE kind = 'review'",
-    );
+    const jobs = await pool.query<{
+      payload: { trigger: Record<string, unknown> };
+    }>("SELECT payload FROM jobs WHERE kind = 'review'");
     expect(jobs.rows[0]!.payload.trigger).toEqual({
       source: "github_check_rerun",
       webhookDeliveryId: "delivery-suite-rerequest",

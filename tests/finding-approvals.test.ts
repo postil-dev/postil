@@ -96,9 +96,13 @@ describe("finding approval scope", () => {
       "human-finding",
     ]);
     expect(state.effectiveGate.failing).toBe(true);
-    expect(findKindBlockingState(state, "human-finding")?.findingId).toBe("human-finding");
+    expect(findKindBlockingState(state, "human-finding")?.findingId).toBe(
+      "human-finding",
+    );
     expect(findKindBlockingState(state, "risk-finding")).toBeNull();
-    expect(findDismissibleFindingState(state, "risk-finding")?.findingId).toBe("risk-finding");
+    expect(findDismissibleFindingState(state, "risk-finding")?.findingId).toBe(
+      "risk-finding",
+    );
   });
 
   test("ignores legacy approvals for non-human kind blockers", async () => {
@@ -114,9 +118,11 @@ describe("finding approval scope", () => {
     );
 
     expect(state.effectiveGate.failing).toBe(true);
-    expect(state.effectiveGate.blockers.some((entry) => entry.finding.id === "risk-finding")).toBe(
-      true,
-    );
+    expect(
+      state.effectiveGate.blockers.some(
+        (entry) => entry.finding.id === "risk-finding",
+      ),
+    ).toBe(true);
   });
 
   test("partitions dismissals from approvals while preserving dismissed finding status", async () => {
@@ -132,12 +138,25 @@ describe("finding approval scope", () => {
     } as ApprovalRow;
     const state = await getReviewApprovalState(approvalDb([dismissal]), review);
 
-    expect(state.findingStates.map((entry) => entry.findingId)).toEqual(["human-finding"]);
-    expect(state.dismissalFindingStates.find((entry) => entry.findingId === "risk-finding"))
-      .toMatchObject({ activeApproval: null, activeDismissal: dismissal, blocking: false });
+    expect(state.findingStates.map((entry) => entry.findingId)).toEqual([
+      "human-finding",
+    ]);
+    expect(
+      state.dismissalFindingStates.find(
+        (entry) => entry.findingId === "risk-finding",
+      ),
+    ).toMatchObject({
+      activeApproval: null,
+      activeDismissal: dismissal,
+      blocking: false,
+    });
     expect(state.effectiveGate.failing).toBe(true);
-    expect(formatRemainingGateBlockers(state.effectiveGate, state.dismissalFindingStates))
-      .toContain("Dismissed by @author: false-positive; pull request author");
+    expect(
+      formatRemainingGateBlockers(
+        state.effectiveGate,
+        state.dismissalFindingStates,
+      ),
+    ).toContain("Dismissed by @author: false-positive; pull request author");
   });
 
   test("a passing gate summary retains the dismissal audit", async () => {
@@ -160,14 +179,21 @@ describe("finding approval scope", () => {
         confidenceBuckets: [0, 0, 0, 0, 1],
       },
     };
-    const state = await getReviewApprovalState(approvalDb([dismissal]), riskOnlyReview);
+    const state = await getReviewApprovalState(
+      approvalDb([dismissal]),
+      riskOnlyReview,
+    );
 
     expect(state.effectiveGate.failing).toBe(false);
-    expect(formatRemainingGateBlockers(state.effectiveGate, state.dismissalFindingStates))
-      .toBe(
-        "No blocking findings remain.\n\nDismissed findings:\n" +
-          "- Fix the risk risk-finding (Dismissed by @maintainer: accepted-risk)",
-      );
+    expect(
+      formatRemainingGateBlockers(
+        state.effectiveGate,
+        state.dismissalFindingStates,
+      ),
+    ).toBe(
+      "No blocking findings remain.\n\nDismissed findings:\n" +
+        "- Fix the risk risk-finding (Dismissed by @maintainer: accepted-risk)",
+    );
   });
 
   test("a revoked dismissal leaves the finding eligible for re-issue", async () => {
@@ -179,8 +205,34 @@ describe("finding approval scope", () => {
       id: "revoked-dismissal",
     } as ApprovalRow;
     const state = await getReviewApprovalState(approvalDb([revoked]), review);
-    expect(state.dismissalFindingStates.find((entry) => entry.findingId === "risk-finding"))
-      .toMatchObject({ activeDismissal: null, latestDismissal: revoked, dismissible: true });
+    expect(
+      state.dismissalFindingStates.find(
+        (entry) => entry.findingId === "risk-finding",
+      ),
+    ).toMatchObject({
+      activeDismissal: null,
+      latestDismissal: revoked,
+      dismissible: true,
+    });
+  });
+
+  test("a revoked approval leaves the kind blocker eligible for re-issue", async () => {
+    const revoked = {
+      findingId: "human-finding",
+      verb: "approve",
+      revokedAt: new Date(),
+      createdAt: new Date(),
+      id: "revoked-approval",
+    } as ApprovalRow;
+    const state = await getReviewApprovalState(approvalDb([revoked]), review);
+
+    expect(
+      state.findingStates.find((entry) => entry.findingId === "human-finding"),
+    ).toMatchObject({
+      activeApproval: null,
+      latestApproval: revoked,
+      blocking: true,
+    });
   });
 });
 
@@ -214,7 +266,10 @@ const hexEnvelope: Envelope = {
 
 describe("finding id prefix resolution", () => {
   async function hexState() {
-    return getReviewApprovalState(approvalDb([]), { ...review, envelope: hexEnvelope });
+    return getReviewApprovalState(approvalDb([]), {
+      ...review,
+      envelope: hexEnvelope,
+    });
   }
 
   test("resolves a full id and an unambiguous prefix", async () => {

@@ -3,7 +3,10 @@ import { after, NextResponse } from "next/server";
 
 import { and, eq, inArray } from "drizzle-orm";
 
-import { readBoundedWebhookBody, verifyWebhookSignature } from "@/lib/crypto/webhook";
+import {
+  readBoundedWebhookBody,
+  verifyWebhookSignature,
+} from "@/lib/crypto/webhook";
 import {
   enqueueCustomerNotification,
   installationRemovedNotification,
@@ -41,7 +44,6 @@ import {
   getReviewApprovalState,
   hasInFlightReviewForPr,
   hasNewerCompletedReviewForHead,
-  hasNewerReviewForPr,
   insertFindingApproval,
   lockActiveReviewState,
   lockReviewApprovalState,
@@ -213,20 +215,31 @@ export async function POST(request: Request): Promise<NextResponse> {
   const bodyResult = await readBoundedWebhookBody(request);
   if (!bodyResult.ok) {
     return NextResponse.json(
-      { error: bodyResult.status === 413 ? "payload too large" : "invalid body" },
+      {
+        error: bodyResult.status === 413 ? "payload too large" : "invalid body",
+      },
       { status: bodyResult.status },
     );
   }
   const rawBody = bodyResult.body;
   const signature = request.headers.get("x-hub-signature-256");
-  if (!verifyWebhookSignature(rawBody, signature, requireEnv("GITHUB_WEBHOOK_SECRET"))) {
+  if (
+    !verifyWebhookSignature(
+      rawBody,
+      signature,
+      requireEnv("GITHUB_WEBHOOK_SECRET"),
+    )
+  ) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
   const deliveryId = request.headers.get("x-github-delivery");
   const event = request.headers.get("x-github-event");
   if (!deliveryId || !event) {
-    return NextResponse.json({ error: "missing delivery headers" }, { status: 400 });
+    return NextResponse.json(
+      { error: "missing delivery headers" },
+      { status: 400 },
+    );
   }
 
   let payload: unknown;
@@ -262,11 +275,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
   if (process.env.NODE_ENV !== "test") {
     after(async () => {
-      await drainWebhookDispatch(deliveryId, `webhook:${deliveryId}`).catch((err) => {
-        console.error(
-          `webhook dispatch scheduling failed for delivery ${deliveryId}: ${redactSecrets(err)}`,
-        );
-      });
+      await drainWebhookDispatch(deliveryId, `webhook:${deliveryId}`).catch(
+        (err) => {
+          console.error(
+            `webhook dispatch scheduling failed for delivery ${deliveryId}: ${redactSecrets(err)}`,
+          );
+        },
+      );
     });
   }
   if (acceptance === "inflight") {
@@ -284,7 +299,10 @@ export async function dispatchWebhookDelivery(
   const triggerFollowupDrain = options.triggerFollowupDrain ?? true;
   switch (event) {
     case "installation":
-      await handleInstallation(payload as InstallationEventPayload, options.deliveryId);
+      await handleInstallation(
+        payload as InstallationEventPayload,
+        options.deliveryId,
+      );
       break;
     case "installation_repositories":
       await handleInstallationRepositories(payload as InstallationEventPayload);
@@ -378,10 +396,16 @@ async function handleInstallation(
               schema.organizations,
               eq(schema.organizations.id, schema.installations.orgId),
             )
-            .where(eq(schema.installations.githubInstallationId, installation.id))
+            .where(
+              eq(schema.installations.githubInstallationId, installation.id),
+            )
             .limit(1)
         )[0];
-        await recordEnabledRepositoryRemovals(tx, installation.id, "github_uninstall");
+        await recordEnabledRepositoryRemovals(
+          tx,
+          installation.id,
+          "github_uninstall",
+        );
         if (existing?.orgId !== null && existing?.orgId !== undefined) {
           await tx
             .delete(schema.orgConfigSnapshots)
@@ -409,7 +433,9 @@ async function handleInstallation(
         }
         await tx
           .delete(schema.installations)
-          .where(eq(schema.installations.githubInstallationId, installation.id));
+          .where(
+            eq(schema.installations.githubInstallationId, installation.id),
+          );
       });
       break;
     case "suspend":
@@ -533,7 +559,10 @@ async function completeRunningReviewsForRemovedRepos(
       orgSlug: schema.organizations.slug,
     })
     .from(schema.reviews)
-    .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
+    .innerJoin(
+      schema.repositories,
+      eq(schema.repositories.id, schema.reviews.repositoryId),
+    )
     .innerJoin(
       schema.installations,
       eq(schema.installations.id, schema.repositories.installationId),
@@ -550,7 +579,8 @@ async function completeRunningReviewsForRemovedRepos(
     );
   if (stuck.length === 0) return;
 
-  const message = "repository removed from the installation before the review completed";
+  const message =
+    "repository removed from the installation before the review completed";
   let token: string;
   try {
     token = await getInstallationToken(githubInstallationId);
@@ -564,7 +594,12 @@ async function completeRunningReviewsForRemovedRepos(
     await db
       .update(schema.reviews)
       .set({ status: "failed", errorMessage: message, finishedAt: new Date() })
-      .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")));
+      .where(
+        and(
+          eq(schema.reviews.id, review.id),
+          eq(schema.reviews.status, "running"),
+        ),
+      );
     await failCheckRuns(
       token,
       review.repoFullName,
@@ -594,7 +629,11 @@ async function handlePullRequest(
   const installationId = payload.installation?.id;
   if (!pr || !repo || !installationId) return;
   const token = await getInstallationToken(installationId);
-  const live = await getPullRequestReviewContext(token, repo.full_name, pr.number);
+  const live = await getPullRequestReviewContext(
+    token,
+    repo.full_name,
+    pr.number,
+  );
   const headSha = pr.head?.sha;
   const baseSha = pr.base?.sha;
   if (action === "closed") {
@@ -602,7 +641,13 @@ async function handlePullRequest(
   } else if (!live.open || live.merged || live.draft) {
     return;
   }
-  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) return;
+  if (
+    !headSha ||
+    !baseSha ||
+    headSha !== live.headSha ||
+    baseSha !== live.baseSha
+  )
+    return;
 
   const db = getDb();
   const installation = (
@@ -621,9 +666,14 @@ async function handlePullRequest(
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
-  if (!installation || installation.suspended || installation.orgId === null) return;
+  if (!installation || installation.suspended || installation.orgId === null)
+    return;
 
-  const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
+  const repoRow = await upsertRepository(
+    installation.id,
+    repo,
+    "github_pull_request",
+  );
   if (!repoRow?.enabled) return;
   if (action === "closed") {
     await cancelPullRequestPublication(getPool(), {
@@ -647,10 +697,12 @@ async function handlePullRequest(
     return;
   }
   if (
-    !(await canProcessRepositoryInference(db, {
-      orgId: installation.orgId,
-      repositoryPrivate: repo.private,
-    })).allowed
+    !(
+      await canProcessRepositoryInference(db, {
+        orgId: installation.orgId,
+        repositoryPrivate: repo.private,
+      })
+    ).allowed
   ) {
     console.log(`private review skipped: ${repo.full_name} requires billing`);
     return;
@@ -666,27 +718,34 @@ async function handlePullRequest(
     orgSlug: installation.orgSlug,
   });
 
-  await enqueueReviewJob({
-    installationId,
-    sourceInstallationId: installation.id,
-    sourceOrgId: installation.orgId,
-    githubRepoId: repo.id,
-    repoFullName: repo.full_name,
-    repositoryPrivate: repo.private,
-    prNumber: pr.number,
-    ...(typeof pr.user?.id === "number" ? { authorGithubId: pr.user.id } : {}),
-    ...(pr.user?.login ? { authorLogin: pr.user.login } : {}),
-    headSha,
-    baseSha,
-    sourceDeliveryId,
-    ...(["edited", "reopened"].includes(action) ? { forceFullReview: true } : {}),
-    trigger: {
-      source: "automatic_pull_request",
-      webhookDeliveryId: sourceDeliveryId,
-      webhookEvent: "pull_request",
-      webhookAction: action,
+  await enqueueReviewJob(
+    {
+      installationId,
+      sourceInstallationId: installation.id,
+      sourceOrgId: installation.orgId,
+      githubRepoId: repo.id,
+      repoFullName: repo.full_name,
+      repositoryPrivate: repo.private,
+      prNumber: pr.number,
+      ...(typeof pr.user?.id === "number"
+        ? { authorGithubId: pr.user.id }
+        : {}),
+      ...(pr.user?.login ? { authorLogin: pr.user.login } : {}),
+      headSha,
+      baseSha,
+      sourceDeliveryId,
+      ...(["edited", "reopened"].includes(action)
+        ? { forceFullReview: true }
+        : {}),
+      trigger: {
+        source: "automatic_pull_request",
+        webhookDeliveryId: sourceDeliveryId,
+        webhookEvent: "pull_request",
+        webhookAction: action,
+      },
     },
-  }, triggerFollowupDrain);
+    triggerFollowupDrain,
+  );
 }
 
 /**
@@ -717,7 +776,11 @@ async function enqueueReviewJob(
 async function enabledRepoForRerequest(
   installationId: number | undefined,
   repo: RepoSummary | undefined,
-): Promise<{ sourceInstallationId: number; sourceOrgId: number; githubRepoId: number } | null> {
+): Promise<{
+  sourceInstallationId: number;
+  sourceOrgId: number;
+  githubRepoId: number;
+} | null> {
   if (!installationId || !repo) return null;
   const db = getDb();
   const installation = (
@@ -731,8 +794,13 @@ async function enabledRepoForRerequest(
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
-  if (!installation || installation.suspended || installation.orgId === null) return null;
-  const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
+  if (!installation || installation.suspended || installation.orgId === null)
+    return null;
+  const repoRow = await upsertRepository(
+    installation.id,
+    repo,
+    "github_pull_request",
+  );
   if (!repoRow?.enabled) return null;
   const allowed = (
     await canProcessRepositoryInference(db, {
@@ -740,11 +808,13 @@ async function enabledRepoForRerequest(
       repositoryPrivate: repo.private,
     })
   ).allowed;
-  return allowed ? {
-    sourceInstallationId: installation.id,
-    sourceOrgId: installation.orgId,
-    githubRepoId: repo.id,
-  } : null;
+  return allowed
+    ? {
+        sourceInstallationId: installation.id,
+        sourceOrgId: installation.orgId,
+        githubRepoId: repo.id,
+      }
+    : null;
 }
 
 /**
@@ -796,24 +866,27 @@ async function handleCheckRerequest(
   const authority = await enabledRepoForRerequest(installationId, repo);
   if (!authority) return;
 
-  await enqueueReviewJob({
-    installationId,
-    ...authority,
-    repoFullName: repo.full_name,
-    repositoryPrivate: repo.private,
-    prNumber: pr.number,
-    headSha,
-    baseSha,
-    sourceDeliveryId,
-    forceFullReview: true,
-    trigger: {
-      source: "github_check_rerun",
-      webhookDeliveryId: sourceDeliveryId,
-      webhookEvent: label,
-      webhookAction: "rerequested",
-      ...(checkName ? { checkName } : {}),
+  await enqueueReviewJob(
+    {
+      installationId,
+      ...authority,
+      repoFullName: repo.full_name,
+      repositoryPrivate: repo.private,
+      prNumber: pr.number,
+      headSha,
+      baseSha,
+      sourceDeliveryId,
+      forceFullReview: true,
+      trigger: {
+        source: "github_check_rerun",
+        webhookDeliveryId: sourceDeliveryId,
+        webhookEvent: label,
+        webhookAction: "rerequested",
+        ...(checkName ? { checkName } : {}),
+      },
     },
-  }, triggerFollowupDrain);
+    triggerFollowupDrain,
+  );
 }
 
 /** Handle GitHub's "Re-run" button on our own check-runs. */
@@ -871,7 +944,11 @@ async function enabledRepoForMention(
   installationId: number | undefined,
   repo: RepoSummary | undefined,
   requireInference = true,
-): Promise<{ sourceInstallationId: number; sourceOrgId: number; githubRepoId: number } | null> {
+): Promise<{
+  sourceInstallationId: number;
+  sourceOrgId: number;
+  githubRepoId: number;
+} | null> {
   if (!installationId || !repo) return null;
   const db = getDb();
   const installation = (
@@ -885,31 +962,42 @@ async function enabledRepoForMention(
       .where(eq(schema.installations.githubInstallationId, installationId))
       .limit(1)
   )[0];
-  if (!installation || installation.suspended || installation.orgId === null) return null;
+  if (!installation || installation.suspended || installation.orgId === null)
+    return null;
   // Defense in depth: require the repo row to belong to the claimed
   // installation, matching the worker path (review.ts / respond.ts both join
   // the repo via installationId). Without the join, a signature-valid payload
   // claiming installation A plus a repo row owned by installation B would pass
   // the enabled check; here we reject that mismatch at the webhook gate rather
   // than relying solely on GitHub's downstream token scoping.
-  const repoRow = await upsertRepository(installation.id, repo, "github_pull_request");
+  const repoRow = await upsertRepository(
+    installation.id,
+    repo,
+    "github_pull_request",
+  );
   if (!repoRow?.enabled) return null;
-  const allowed = !requireInference || (
-    await canProcessRepositoryInference(db, {
-      orgId: installation.orgId,
-      repositoryPrivate: repo.private,
-    })
-  ).allowed;
-  return allowed ? {
-    sourceInstallationId: installation.id,
-    sourceOrgId: installation.orgId,
-    githubRepoId: repo.id,
-  } : null;
+  const allowed =
+    !requireInference ||
+    (
+      await canProcessRepositoryInference(db, {
+        orgId: installation.orgId,
+        repositoryPrivate: repo.private,
+      })
+    ).allowed;
+  return allowed
+    ? {
+        sourceInstallationId: installation.id,
+        sourceOrgId: installation.orgId,
+        githubRepoId: repo.id,
+      }
+    : null;
 }
 
 /** Skip our own comments and other bots to avoid mention loops. */
 function isBot(user: GithubUser | undefined): boolean {
-  return user?.type === "Bot" || Boolean(user?.login && user.login.endsWith("[bot]"));
+  return (
+    user?.type === "Bot" || Boolean(user?.login && user.login.endsWith("[bot]"))
+  );
 }
 
 /**
@@ -918,10 +1006,16 @@ function isBot(user: GithubUser | undefined): boolean {
  * any drive-by commenter burn the budget by spamming @postil on a public
  * repo. Anything outside this set is dropped silently.
  */
-const RESPOND_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const RESPOND_ALLOWED_ASSOCIATIONS = new Set([
+  "OWNER",
+  "MEMBER",
+  "COLLABORATOR",
+]);
 
 function mayTriggerRespond(authorAssociation: string | undefined): boolean {
-  return Boolean(authorAssociation && RESPOND_ALLOWED_ASSOCIATIONS.has(authorAssociation));
+  return Boolean(
+    authorAssociation && RESPOND_ALLOWED_ASSOCIATIONS.has(authorAssociation),
+  );
 }
 
 /**
@@ -940,7 +1034,11 @@ async function enqueueRespond(
   triggerFollowupDrain: boolean,
 ): Promise<"admitted" | "duplicate" | "rate_limited"> {
   const cap = respondHourlyCap();
-  const admitted = await enqueueRespondJobWithinHourlyCap(getPool(), payload, cap);
+  const admitted = await enqueueRespondJobWithinHourlyCap(
+    getPool(),
+    payload,
+    cap,
+  );
   if (admitted.rateLimited) {
     console.warn(
       `respond job skipped: installation ${payload.installationId} exceeded ${cap} respond jobs/hour`,
@@ -948,7 +1046,9 @@ async function enqueueRespond(
     return "rate_limited";
   }
   if (admitted.id === null) {
-    console.log(`respond job skipped: delivery ${payload.sourceDeliveryId} already enqueued`);
+    console.log(
+      `respond job skipped: delivery ${payload.sourceDeliveryId} already enqueued`,
+    );
     return "duplicate";
   }
   if (triggerFollowupDrain) triggerQueueDrain("respond");
@@ -958,7 +1058,11 @@ async function enqueueRespond(
 async function enqueueConversationReaction(
   payload: CommentEventPayload,
   sourceDeliveryId: string,
-  authority: { sourceInstallationId: number; sourceOrgId: number; githubRepoId: number },
+  authority: {
+    sourceInstallationId: number;
+    sourceOrgId: number;
+    githubRepoId: number;
+  },
   commentKind: "issue_comment" | "pull_request_review_comment",
   content: "+1" | "eyes",
 ): Promise<void> {
@@ -971,7 +1075,8 @@ async function enqueueConversationReaction(
     !Number.isSafeInteger(commentId) ||
     commentId === undefined ||
     commentId <= 0
-  ) return;
+  )
+    return;
   await enqueueGithubReactionJobOnce(getPool(), {
     installationId,
     ...authority,
@@ -994,9 +1099,10 @@ async function recordFindingFeedbackReply(
   const actor = comment?.user;
   const author = payload.pull_request?.user;
   const githubCommentId = comment?.id;
-  const observedAt = typeof comment?.created_at === "string"
-    ? new Date(comment.created_at)
-    : null;
+  const observedAt =
+    typeof comment?.created_at === "string"
+      ? new Date(comment.created_at)
+      : null;
   if (
     !Number.isSafeInteger(githubCommentId) ||
     githubCommentId === undefined ||
@@ -1019,7 +1125,8 @@ async function recordFindingFeedbackReply(
     body.length > 65_535 ||
     sourceDeliveryId.trim().length === 0 ||
     sourceDeliveryId.length > 200
-  ) return;
+  )
+    return;
   await insertGithubFindingFeedbackReply(getDb(), {
     findingPublicationId,
     githubCommentId,
@@ -1047,17 +1154,22 @@ async function handleIssueComment(
       "issue_comment",
       triggerFollowupDrain,
     )
-  ) return;
+  )
+    return;
   if (
     typeof body !== "string" ||
     !isAcceptableConversationRequest(body) ||
     !mentionsPostil(body) ||
     isBot(payload.comment?.user) ||
     isBot(payload.sender)
-  ) return;
+  )
+    return;
   if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.issue || !payload.repository) return;
-  const authority = await enabledRepoForMention(payload.installation?.id, payload.repository);
+  const authority = await enabledRepoForMention(
+    payload.installation?.id,
+    payload.repository,
+  );
   if (!authority) return;
   if (isGratitudeOnly(body)) {
     await enqueueConversationReaction(
@@ -1089,30 +1201,33 @@ async function handleIssueComment(
     }
     return;
   }
-  const admission = await enqueueRespond({
-    installationId: payload.installation!.id,
-    ...authority,
-    repoFullName: payload.repository.full_name,
-    repositoryPrivate: payload.repository.private,
-    number: payload.issue.number,
-    // GitHub sends issue_comment for PR conversation comments too; the
-    // pull_request marker distinguishes them.
-    isPr: payload.issue.pull_request != null,
-    ...(payload.issue.pull_request != null
-      ? {
-          sourceHeadSha: (
-            await getPullRequestReviewContext(
-              await getInstallationToken(payload.installation!.id),
-              payload.repository.full_name,
-              payload.issue.number,
-            )
-          ).headSha,
-        }
-      : {}),
-    comment: body,
-    sourceDeliveryId,
-    trigger: respondTrigger(payload, sourceDeliveryId, "issue_comment"),
-  }, false);
+  const admission = await enqueueRespond(
+    {
+      installationId: payload.installation!.id,
+      ...authority,
+      repoFullName: payload.repository.full_name,
+      repositoryPrivate: payload.repository.private,
+      number: payload.issue.number,
+      // GitHub sends issue_comment for PR conversation comments too; the
+      // pull_request marker distinguishes them.
+      isPr: payload.issue.pull_request != null,
+      ...(payload.issue.pull_request != null
+        ? {
+            sourceHeadSha: (
+              await getPullRequestReviewContext(
+                await getInstallationToken(payload.installation!.id),
+                payload.repository.full_name,
+                payload.issue.number,
+              )
+            ).headSha,
+          }
+        : {}),
+      comment: body,
+      sourceDeliveryId,
+      trigger: respondTrigger(payload, sourceDeliveryId, "issue_comment"),
+    },
+    false,
+  );
   if (admission === "rate_limited") return;
   await enqueueConversationReaction(
     payload,
@@ -1144,17 +1259,21 @@ async function handleReviewComment(
       "pull_request_review_comment",
       triggerFollowupDrain,
     )
-  ) return;
+  )
+    return;
   if (typeof body !== "string") return;
   const explicitMention = mentionsPostil(body);
   if (explicitMention && !isAcceptableConversationRequest(body)) return;
   const inReplyToId = payload.comment?.in_reply_to_id;
   if (
     (!explicitMention &&
-      (!Number.isSafeInteger(inReplyToId) || inReplyToId === undefined || inReplyToId <= 0)) ||
+      (!Number.isSafeInteger(inReplyToId) ||
+        inReplyToId === undefined ||
+        inReplyToId <= 0)) ||
     isBot(payload.comment?.user) ||
     isBot(payload.sender)
-  ) return;
+  )
+    return;
   if (!payload.pull_request || !payload.repository) return;
   const mayRespond = mayTriggerRespond(payload.comment?.author_association);
   const authority = await enabledRepoForMention(
@@ -1164,12 +1283,13 @@ async function handleReviewComment(
   );
   if (!authority) return;
   if (explicitMention && !mayRespond) return;
-  const inferenceAllowed = async (): Promise<boolean> => (
-    await canProcessRepositoryInference(getDb(), {
-      orgId: authority.sourceOrgId,
-      repositoryPrivate: payload.repository!.private,
-    })
-  ).allowed;
+  const inferenceAllowed = async (): Promise<boolean> =>
+    (
+      await canProcessRepositoryInference(getDb(), {
+        orgId: authority.sourceOrgId,
+        repositoryPrivate: payload.repository!.private,
+      })
+    ).allowed;
   if (explicitMention && !(await inferenceAllowed())) return;
   if (explicitMention && isPostilReviewCommand(body)) {
     await enqueueMentionReview(
@@ -1210,17 +1330,21 @@ async function handleReviewComment(
     } else {
       const actorGithubId = payload.comment?.user?.id;
       const prAuthorGithubId = payload.pull_request.user?.id;
-      const actorIsPrAuthor = Number.isSafeInteger(actorGithubId) &&
+      const actorIsPrAuthor =
+        Number.isSafeInteger(actorGithubId) &&
         actorGithubId !== undefined &&
         actorGithubId > 0 &&
         actorGithubId === prAuthorGithubId;
       if (!mayRespond && !actorIsPrAuthor) return;
-      const findingPublicationId = await findPublishedFindingForGithubReply(getDb(), {
-        githubInstallationId: payload.installation!.id,
-        githubRepoId: payload.repository.id,
-        prNumber: payload.pull_request.number,
-        githubCommentId: root.inReplyToId ?? root.id,
-      });
+      const findingPublicationId = await findPublishedFindingForGithubReply(
+        getDb(),
+        {
+          githubInstallationId: payload.installation!.id,
+          githubRepoId: payload.repository.id,
+          prNumber: payload.pull_request.number,
+          githubCommentId: root.inReplyToId ?? root.id,
+        },
+      );
       if (findingPublicationId === null) return;
       await recordFindingFeedbackReply(
         findingPublicationId,
@@ -1256,28 +1380,36 @@ async function handleReviewComment(
     !Number.isSafeInteger(sourceCommentId) ||
     sourceCommentId === undefined ||
     sourceCommentId <= 0
-  ) return;
-  const admission = await enqueueRespond({
-    installationId: payload.installation!.id,
-    ...authority,
-    repoFullName: payload.repository.full_name,
-    repositoryPrivate: payload.repository.private,
-    number: payload.pull_request.number,
-    isPr: true,
-    sourceHeadSha: (
-      await getPullRequestReviewContext(
-        token,
-        payload.repository.full_name,
-        payload.pull_request.number,
-      )
-    ).headSha,
-    comment: body!,
-    commentAnchor: anchor,
-    ...(threadContext ? { threadContext } : {}),
-    replyToReviewCommentId: inReplyToId ?? sourceCommentId,
-    sourceDeliveryId,
-    trigger: respondTrigger(payload, sourceDeliveryId, "pull_request_review_comment"),
-  }, false);
+  )
+    return;
+  const admission = await enqueueRespond(
+    {
+      installationId: payload.installation!.id,
+      ...authority,
+      repoFullName: payload.repository.full_name,
+      repositoryPrivate: payload.repository.private,
+      number: payload.pull_request.number,
+      isPr: true,
+      sourceHeadSha: (
+        await getPullRequestReviewContext(
+          token,
+          payload.repository.full_name,
+          payload.pull_request.number,
+        )
+      ).headSha,
+      comment: body!,
+      commentAnchor: anchor,
+      ...(threadContext ? { threadContext } : {}),
+      replyToReviewCommentId: inReplyToId ?? sourceCommentId,
+      sourceDeliveryId,
+      trigger: respondTrigger(
+        payload,
+        sourceDeliveryId,
+        "pull_request_review_comment",
+      ),
+    },
+    false,
+  );
   if (admission === "rate_limited") return;
   await enqueueConversationReaction(
     payload,
@@ -1302,7 +1434,9 @@ function respondTrigger(
     ...(typeof payload.comment?.id === "number"
       ? { sourceCommentId: payload.comment.id }
       : {}),
-    ...(payload.comment?.html_url ? { sourceUrl: payload.comment.html_url } : {}),
+    ...(payload.comment?.html_url
+      ? { sourceUrl: payload.comment.html_url }
+      : {}),
     ...(typeof payload.comment?.user?.id === "number"
       ? { requestedByGithubId: payload.comment.user.id }
       : {}),
@@ -1328,45 +1462,55 @@ async function enqueueMentionReview(
     !Number.isSafeInteger(commentId) ||
     commentId === undefined ||
     commentId <= 0
-  ) return;
+  )
+    return;
   const token = await getInstallationToken(installationId);
-  const context = await getPullRequestReviewContext(token, repo.full_name, prNumber);
+  const context = await getPullRequestReviewContext(
+    token,
+    repo.full_name,
+    prNumber,
+  );
   if (!context.open || context.merged || context.draft) return;
   const authority = await enabledRepoForMention(installationId, repo);
   if (!authority) return;
   // Admit both durable jobs before waking a web drain so the short reaction
   // can be claimed ahead of the model-backed review.
-  await enqueueReviewJob({
-    installationId,
-    ...authority,
-    repoFullName: repo.full_name,
-    repositoryPrivate: repo.private,
-    prNumber,
-    ...(context.authorGithubId !== undefined
-      ? { authorGithubId: context.authorGithubId }
-      : {}),
-    ...(context.authorLogin ? { authorLogin: context.authorLogin } : {}),
-    headSha: context.headSha,
-    baseSha: context.baseSha,
-    sourceDeliveryId,
-    forceFullReview: true,
-    trigger: {
-      source: "requested_review",
-      webhookDeliveryId: sourceDeliveryId,
-      webhookEvent,
-      webhookAction: "created",
-      ...(typeof payload.comment?.id === "number"
-        ? { sourceCommentId: payload.comment.id }
+  await enqueueReviewJob(
+    {
+      installationId,
+      ...authority,
+      repoFullName: repo.full_name,
+      repositoryPrivate: repo.private,
+      prNumber,
+      ...(context.authorGithubId !== undefined
+        ? { authorGithubId: context.authorGithubId }
         : {}),
-      ...(payload.comment?.html_url ? { sourceUrl: payload.comment.html_url } : {}),
-      ...(typeof payload.comment?.user?.id === "number"
-        ? { requestedByGithubId: payload.comment.user.id }
-        : {}),
-      ...(payload.comment?.user?.login
-        ? { requestedByLogin: payload.comment.user.login }
-        : {}),
+      ...(context.authorLogin ? { authorLogin: context.authorLogin } : {}),
+      headSha: context.headSha,
+      baseSha: context.baseSha,
+      sourceDeliveryId,
+      forceFullReview: true,
+      trigger: {
+        source: "requested_review",
+        webhookDeliveryId: sourceDeliveryId,
+        webhookEvent,
+        webhookAction: "created",
+        ...(typeof payload.comment?.id === "number"
+          ? { sourceCommentId: payload.comment.id }
+          : {}),
+        ...(payload.comment?.html_url
+          ? { sourceUrl: payload.comment.html_url }
+          : {}),
+        ...(typeof payload.comment?.user?.id === "number"
+          ? { requestedByGithubId: payload.comment.user.id }
+          : {}),
+        ...(payload.comment?.user?.login
+          ? { requestedByLogin: payload.comment.user.login }
+          : {}),
+      },
     },
-  }, false);
+    false,
+  );
   await enqueueGithubReactionJobOnce(getPool(), {
     installationId,
     ...authority,
@@ -1426,14 +1570,24 @@ async function handleFindingDecisionCommand(
   if (!publicationAuthority) return true;
 
   if (!command.ok) {
-    await queueWebhookComment(payload, command.error, sourceDeliveryId, triggerFollowupDrain);
+    await queueWebhookComment(
+      payload,
+      command.error,
+      sourceDeliveryId,
+      triggerFollowupDrain,
+    );
     return true;
   }
   const dismissal = dismissalCommand?.ok ? dismissalCommand : null;
 
   const token = await getInstallationToken(installationId);
   const db = getDb();
-  const review = await loadLatestCompletedReviewForPr(db, installationId, repo.id, prNumber);
+  const review = await loadLatestCompletedReviewForPr(
+    db,
+    installationId,
+    repo.id,
+    prNumber,
+  );
   if (!review) {
     await queueWebhookComment(
       payload,
@@ -1457,7 +1611,12 @@ async function handleFindingDecisionCommand(
   let requestedFindingId = command.ok ? command.findingId : null;
   if (verb === "dismiss" && command.ok && !requestedFindingId) {
     const replyTo = payload.comment?.in_reply_to_id;
-    if (commentKind !== "pull_request_review_comment" || !Number.isSafeInteger(replyTo) || !replyTo || replyTo <= 0) {
+    if (
+      commentKind !== "pull_request_review_comment" ||
+      !Number.isSafeInteger(replyTo) ||
+      !replyTo ||
+      replyTo <= 0
+    ) {
       await queueWebhookComment(
         payload,
         "Dismissal rejected: include a finding id, or reply directly to the finding comment.",
@@ -1466,10 +1625,18 @@ async function handleFindingDecisionCommand(
       );
       return true;
     }
-    const publication = (await db.select({ findingId: schema.findingPublications.findingId })
-      .from(schema.findingPublications)
-      .where(and(eq(schema.findingPublications.reviewId, review.id), eq(schema.findingPublications.githubCommentId, String(replyTo))))
-      .limit(1))[0];
+    const publication = (
+      await db
+        .select({ findingId: schema.findingPublications.findingId })
+        .from(schema.findingPublications)
+        .where(
+          and(
+            eq(schema.findingPublications.reviewId, review.id),
+            eq(schema.findingPublications.githubCommentId, String(replyTo)),
+          ),
+        )
+        .limit(1)
+    )[0];
     if (!publication) {
       await queueWebhookComment(
         payload,
@@ -1482,7 +1649,11 @@ async function handleFindingDecisionCommand(
     requestedFindingId = publication.findingId;
   }
 
-  const currentHeadSha = await getPullRequestHeadSha(token, repo.full_name, prNumber);
+  const currentHeadSha = await getPullRequestHeadSha(
+    token,
+    repo.full_name,
+    prNumber,
+  );
   if (currentHeadSha !== review.headSha) {
     await queueWebhookComment(
       payload,
@@ -1531,14 +1702,15 @@ async function handleFindingDecisionCommand(
   let effectiveFailing: boolean | null = null;
   try {
     if (verb === "dismiss" && authorGithubId === null) {
-      authorGithubId = (
-        await getPullRequestReviewContext(token, repo.full_name, prNumber)
-      ).authorGithubId ?? null;
+      authorGithubId =
+        (await getPullRequestReviewContext(token, repo.full_name, prNumber))
+          .authorGithubId ?? null;
     }
     const state = await getReviewApprovalState(db, review);
-    const resolution = verb === "dismiss"
-      ? resolveDismissibleFindingId(state, requestedFindingId!)
-      : resolveApprovableFindingId(state, requestedFindingId!);
+    const resolution =
+      verb === "dismiss"
+        ? resolveDismissibleFindingId(state, requestedFindingId!)
+        : resolveApprovableFindingId(state, requestedFindingId!);
     if (!resolution.ok && resolution.reason === "ambiguous") {
       await queueWebhookComment(
         payload,
@@ -1548,16 +1720,26 @@ async function handleFindingDecisionCommand(
       );
       return true;
     }
-    const findingId = resolution.ok ? resolution.findingId : requestedFindingId!;
-    const finding = verb === "dismiss"
-      ? findDismissibleFindingState(state, findingId)
-      : findKindBlockingState(state, findingId);
-    if (!finding || (verb === "dismiss" ? finding.activeDismissal || finding.activeApproval : !finding.blocking || finding.activeApproval || finding.activeDismissal || finding.latestApproval?.revokedAt)) {
+    const findingId = resolution.ok
+      ? resolution.findingId
+      : requestedFindingId!;
+    const finding =
+      verb === "dismiss"
+        ? findDismissibleFindingState(state, findingId)
+        : findKindBlockingState(state, findingId);
+    if (
+      !finding ||
+      (verb === "dismiss"
+        ? finding.activeDismissal || finding.activeApproval
+        : !finding.blocking ||
+          finding.activeApproval ||
+          finding.activeDismissal)
+    ) {
       await queueWebhookComment(
         payload,
         verb === "dismiss"
           ? "Dismissal rejected: that finding is absent, operational, already dismissed, or has an active approval."
-          : "Approval rejected: that finding is absent, already approved, revoked, or no longer kind-blocking.",
+          : "Approval rejected: that finding is absent, already approved, or no longer kind-blocking.",
         sourceDeliveryId,
         triggerFollowupDrain,
       );
@@ -1576,23 +1758,31 @@ async function handleFindingDecisionCommand(
     await db.transaction(async (tx) => {
       await lockActiveReviewState(tx, review);
       await lockReviewApprovalState(tx, review.id);
-      if (await hasNewerReviewForPr(tx, review)) {
-        throw new Error("a newer review exists");
+      if (await hasNewerCompletedReviewForHead(tx, review)) {
+        throw new Error("a newer completed review exists for this commit");
       }
       if (await hasInFlightReviewForPr(tx, review)) {
         throw new Error("a review is in progress");
       }
       const lockedState = await getReviewApprovalState(tx, review);
-      const lockedFinding = verb === "dismiss"
-        ? findDismissibleFindingState(lockedState, findingId)
-        : findKindBlockingState(lockedState, findingId);
+      const lockedFinding =
+        verb === "dismiss"
+          ? findDismissibleFindingState(lockedState, findingId)
+          : findKindBlockingState(lockedState, findingId);
       if (
         !lockedFinding ||
         (verb === "dismiss"
-          ? Boolean(lockedFinding.activeDismissal || lockedFinding.activeApproval)
-          : !lockedFinding.blocking || lockedFinding.activeApproval || lockedFinding.activeDismissal || lockedFinding.latestApproval?.revokedAt || lockedFinding.severityBlocking)
+          ? Boolean(
+              lockedFinding.activeDismissal || lockedFinding.activeApproval,
+            )
+          : !lockedFinding.blocking ||
+            lockedFinding.activeApproval ||
+            lockedFinding.activeDismissal ||
+            lockedFinding.severityBlocking)
       ) {
-        throw new Error("the finding changed while the approval was being recorded");
+        throw new Error(
+          "the finding changed while the approval was being recorded",
+        );
       }
       await insertFindingApproval(tx, {
         reviewId: review.id,
@@ -1600,12 +1790,15 @@ async function handleFindingDecisionCommand(
         actor,
         rationale: command.rationale,
         verb,
-        ...(verb === "dismiss" ? {
-          reasonTag: dismissal!.reasonTag,
-          authorSelfDismissal: authorGithubId === Number(actor.githubId),
-          finding: lockedFinding.finding,
-          findingModel: review.envelope!.modelUsed,
-        } : {}),
+        ...(verb === "dismiss"
+          ? {
+              reasonTag: dismissal!.reasonTag,
+              authorSelfDismissal: authorGithubId === Number(actor.githubId),
+              finding: lockedFinding.finding,
+              findingGeneratorModel: review.envelope!.modelUsed,
+              findingScorerModel: review.envelope!.scorerModel,
+            }
+          : {}),
         source: "github",
         sourceCommentId: null,
         sourceUrl: payload.comment?.html_url ?? null,
@@ -1628,7 +1821,12 @@ async function handleFindingDecisionCommand(
       const gateEnabled = review.orgId
         ? await lockOrganizationGateMode(tx, review.orgId)
         : false;
-      await updateStoredEffectiveGate(tx, review.id, effectiveFailing, gateEnabled);
+      await updateStoredEffectiveGate(
+        tx,
+        review.id,
+        effectiveFailing,
+        gateEnabled,
+      );
       await enqueueGateStateSync(tx, review);
       await enqueueWebhookComment(tx, {
         installationId,
@@ -1638,9 +1836,10 @@ async function handleFindingDecisionCommand(
         isPr: true,
         sourceHeadSha: review.headSha,
         sourceDeliveryId,
-        body: verb === "dismiss"
-          ? `Dismissal recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}: ${dismissal!.reasonTag}. ${authorGithubId === Number(actor.githubId) ? "The pull request author dismissed this finding. " : ""}The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}. You may now resolve this thread.`
-          : `Approval recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
+        body:
+          verb === "dismiss"
+            ? `Dismissal recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}: ${dismissal!.reasonTag}. ${authorGithubId === Number(actor.githubId) ? "The pull request author dismissed this finding. " : ""}The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`
+            : `Approval recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
       });
     });
   } catch (err) {
@@ -1653,10 +1852,13 @@ async function handleFindingDecisionCommand(
       );
       return true;
     }
-    if (err instanceof Error && err.message === "a newer review exists") {
+    if (
+      err instanceof Error &&
+      err.message === "a newer completed review exists for this commit"
+    ) {
       await queueWebhookComment(
         payload,
-        `${decisionLabel} rejected: a newer review exists for this pull request.`,
+        `${decisionLabel} rejected: a newer completed review exists for this commit.`,
         sourceDeliveryId,
         triggerFollowupDrain,
       );
@@ -1702,13 +1904,16 @@ async function queueWebhookComment(
   if (!repo || !installationId || !number) return;
   const authority = await enabledRepoForMention(installationId, repo, false);
   if (!authority) return;
-  const isPr = payload.issue?.pull_request != null || payload.pull_request != null;
+  const isPr =
+    payload.issue?.pull_request != null || payload.pull_request != null;
   const sourceHeadSha = isPr
-    ? (await getPullRequestReviewContext(
-        await getInstallationToken(installationId),
-        repo.full_name,
-        number,
-      )).headSha
+    ? (
+        await getPullRequestReviewContext(
+          await getInstallationToken(installationId),
+          repo.full_name,
+          number,
+        )
+      ).headSha
     : undefined;
   const inserted = await enqueueWebhookComment(getDb(), {
     installationId,
@@ -1740,7 +1945,12 @@ async function enqueueWebhookComment(
 }
 
 function isUniqueConstraintError(err: unknown): boolean {
-  return typeof err === "object" && err !== null && "code" in err && err.code === "23505";
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    err.code === "23505"
+  );
 }
 
 async function handleIssues(
@@ -1759,26 +1969,31 @@ async function handleIssues(
     payload.repository,
   );
   if (!authority) return;
-  await enqueueRespond({
-    installationId: payload.installation!.id,
-    sourceInstallationId: authority.sourceInstallationId,
-    sourceOrgId: authority.sourceOrgId,
-    githubRepoId: authority.githubRepoId,
-    repoFullName: payload.repository.full_name,
-    repositoryPrivate: payload.repository.private,
-    number: payload.issue.number,
-    isPr: false,
-    comment: body!,
-    sourceDeliveryId,
-    trigger: {
-      source: "github_mention",
-      webhookDeliveryId: sourceDeliveryId,
-      webhookEvent: "issues",
-      webhookAction: "opened",
-      ...(typeof payload.sender?.id === "number"
-        ? { requestedByGithubId: payload.sender.id }
-        : {}),
-      ...(payload.sender?.login ? { requestedByLogin: payload.sender.login } : {}),
+  await enqueueRespond(
+    {
+      installationId: payload.installation!.id,
+      sourceInstallationId: authority.sourceInstallationId,
+      sourceOrgId: authority.sourceOrgId,
+      githubRepoId: authority.githubRepoId,
+      repoFullName: payload.repository.full_name,
+      repositoryPrivate: payload.repository.private,
+      number: payload.issue.number,
+      isPr: false,
+      comment: body!,
+      sourceDeliveryId,
+      trigger: {
+        source: "github_mention",
+        webhookDeliveryId: sourceDeliveryId,
+        webhookEvent: "issues",
+        webhookAction: "opened",
+        ...(typeof payload.sender?.id === "number"
+          ? { requestedByGithubId: payload.sender.id }
+          : {}),
+        ...(payload.sender?.login
+          ? { requestedByLogin: payload.sender.login }
+          : {}),
+      },
     },
-  }, triggerFollowupDrain);
+    triggerFollowupDrain,
+  );
 }
