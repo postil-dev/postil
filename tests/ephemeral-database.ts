@@ -35,11 +35,14 @@ export interface EphemeralDatabase {
  * POSTIL_TEST_DATABASE_URL, replays the full drizzle migration chain onto
  * it, and returns a pool bound to it plus a drop() to tear it down. `label`
  * becomes part of the database name, so a leaked database (a crashed run
- * that skipped afterAll) is identifiable by which suite created it.
+ * that skipped afterAll) is identifiable by which suite created it. Set
+ * POSTIL_KEEP_TEST_DATABASE=1 to close connections without dropping the
+ * database when preserving a failing test state for diagnosis.
  */
 export async function createEphemeralDatabase(label: string): Promise<EphemeralDatabase> {
   const baseUrl = process.env.POSTIL_TEST_DATABASE_URL;
   if (!baseUrl) throw new Error("POSTIL_TEST_DATABASE_URL is not set");
+  const keepDatabase = process.env.POSTIL_KEEP_TEST_DATABASE === "1";
 
   const databaseName = `postil_${label}_${process.pid}_${Date.now()}`;
   const admin = new Client({ connectionString: baseUrl });
@@ -81,7 +84,11 @@ export async function createEphemeralDatabase(label: string): Promise<EphemeralD
     url: url.toString(),
     async drop() {
       await pool.end();
-      await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      if (keepDatabase) {
+        console.error(`Preserved test database ${databaseName}`);
+      } else {
+        await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      }
       await admin.end();
     },
   };
