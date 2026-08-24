@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.8.28",
+    date: "August 24, 2026",
+    summary:
+      "Reviews recover from rebased incremental baselines and intermittent provider routing metadata without failing the pull request.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "An incremental review whose stored baseline is no longer an ancestor of the pull-request head restarts as a full review instead of failing.",
+      },
+      {
+        label: "Fixed",
+        text: "A routed model response that temporarily omits the upstream provider identity is retried before the review reports a provider failure.",
+      },
+    ],
+  },
+  {
     version: "0.8.27",
     date: "August 20, 2026",
     summary:
