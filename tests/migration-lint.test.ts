@@ -215,6 +215,37 @@ describe("migration lint", () => {
     }
   });
 
+  test("assigns each migration number only once", async () => {
+    const migrationsDir = join(import.meta.dir, "..", "drizzle");
+    const migrationNumbers = (await readdir(migrationsDir))
+      .map((file) => file.match(/^(\d+)_.*\.sql$/)?.[1])
+      .filter((number): number is string => number !== undefined);
+    const journal = JSON.parse(
+      await readFile(join(migrationsDir, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ tag: string }> };
+    const journalNumbers = journal.entries
+      .map((entry) => entry.tag.match(/^(\d+)_/)?.[1])
+      .filter((number): number is string => number !== undefined);
+
+    expect(new Set(migrationNumbers).size).toBe(migrationNumbers.length);
+    expect(new Set(journalNumbers).size).toBe(journalNumbers.length);
+  });
+
+  test("finding feedback migration keeps source identities and rows immutable", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0050_harsh_warpath.sql"),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE TABLE "finding_feedback"');
+    expect(migration).toContain('"finding_publication_id" bigint NOT NULL');
+    expect(migration).toContain('"source" IN (\'reply\', \'reaction\')');
+    expect(migration).toContain('"suggested_reason_tag" IN (\'false-positive\', \'accepted-risk\', \'out-of-scope\')');
+    expect(migration).toContain('CREATE UNIQUE INDEX "finding_feedback_github_reply_idx"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "finding_feedback_github_reaction_idx"');
+    expect(migration).toContain('CREATE TRIGGER "finding_feedback_guard_immutable"');
+  });
+
   test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
     const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"), "utf8");
 

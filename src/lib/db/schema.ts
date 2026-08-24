@@ -516,6 +516,62 @@ export const findingPublications = pgTable(
   ],
 );
 
+/** Immutable feedback attached to a published finding, never a gate decision. */
+export const findingFeedback = pgTable(
+  "finding_feedback",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    findingPublicationId: bigint("finding_publication_id", { mode: "number" })
+      .notNull()
+      .references(() => findingPublications.id, { onDelete: "cascade" }),
+    source: text("source", { enum: ["reply", "reaction"] }).notNull(),
+    sourceGithubCommentId: bigint("source_github_comment_id", { mode: "number" }),
+    sourceGithubReactionId: bigint("source_github_reaction_id", { mode: "number" }),
+    body: text("body"),
+    actorGithubId: bigint("actor_github_id", { mode: "number" }).notNull(),
+    actorLoginSnapshot: text("actor_login_snapshot").notNull(),
+    prAuthorGithubId: bigint("pr_author_github_id", { mode: "number" }).notNull(),
+    prAuthorLoginSnapshot: text("pr_author_login_snapshot").notNull(),
+    actorIsPrAuthor: boolean("actor_is_pr_author").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    sourceDeliveryId: text("source_delivery_id"),
+    suggestedReasonTag: text("suggested_reason_tag"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("finding_feedback_publication_observed_idx").on(
+      t.findingPublicationId,
+      t.observedAt,
+    ),
+    uniqueIndex("finding_feedback_github_reply_idx")
+      .on(t.sourceGithubCommentId)
+      .where(sql`${t.source} = 'reply'`),
+    uniqueIndex("finding_feedback_github_reaction_idx")
+      .on(t.sourceGithubReactionId)
+      .where(sql`${t.source} = 'reaction'`),
+    check(
+      "finding_feedback_source_check",
+      sql`${t.source} IN ('reply', 'reaction')`,
+    ),
+    check(
+      "finding_feedback_identity_check",
+      sql`(${t.source} = 'reply' AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NULL AND ${t.body} IS NOT NULL AND length(btrim(${t.body})) BETWEEN 1 AND 65535 AND length(btrim(${t.sourceDeliveryId})) BETWEEN 1 AND 200) OR (${t.source} = 'reaction' AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} BETWEEN 1 AND 9007199254740991 AND ${t.body} IS NULL AND ${t.sourceDeliveryId} IS NULL)`,
+    ),
+    check(
+      "finding_feedback_actor_check",
+      sql`${t.actorGithubId} BETWEEN 1 AND 9007199254740991 AND length(btrim(${t.actorLoginSnapshot})) BETWEEN 1 AND 100 AND ${t.prAuthorGithubId} BETWEEN 1 AND 9007199254740991 AND length(btrim(${t.prAuthorLoginSnapshot})) BETWEEN 1 AND 100 AND ${t.actorIsPrAuthor} = (${t.actorGithubId} = ${t.prAuthorGithubId})`,
+    ),
+    check(
+      "finding_feedback_suggested_reason_check",
+      sql`${t.suggestedReasonTag} IS NULL OR ${t.suggestedReasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope')`,
+    ),
+  ],
+);
+
 export const findingApprovals = pgTable(
   "finding_approvals",
   {
