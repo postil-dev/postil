@@ -222,12 +222,14 @@ describe("migration lint", () => {
       .filter((number): number is string => number !== undefined);
     const journal = JSON.parse(
       await readFile(join(migrationsDir, "meta", "_journal.json"), "utf8"),
-    ) as { entries: Array<{ tag: string }> };
+    ) as { entries: Array<{ idx: number; tag: string }> };
+    const journalIndexes = journal.entries.map((entry) => entry.idx);
     const journalNumbers = journal.entries
       .map((entry) => entry.tag.match(/^(\d+)_/)?.[1])
       .filter((number): number is string => number !== undefined);
 
     expect(new Set(migrationNumbers).size).toBe(migrationNumbers.length);
+    expect(new Set(journalIndexes).size).toBe(journalIndexes.length);
     expect(new Set(journalNumbers).size).toBe(journalNumbers.length);
   });
 
