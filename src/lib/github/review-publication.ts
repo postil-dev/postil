@@ -1570,9 +1570,7 @@ function largestCheckRunAnnotationChunk(
 ): readonly GitHubCheckRunAnnotationIntent[] {
   const maximumLength = Math.min(
     MAX_ANNOTATIONS_PER_REQUEST,
-    remaining.length > MAX_ANNOTATIONS_PER_REQUEST
-      ? remaining.length
-      : remaining.length - 1,
+    remaining.length,
   );
   for (let length = maximumLength; length >= 1; length -= 1) {
     const chunk = remaining.slice(0, length);

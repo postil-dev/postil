@@ -1603,6 +1603,97 @@ describe("GitHub owned check-run completion", () => {
     expect(state.remoteAnnotations).toHaveLength(64);
   });
 
+  test("appends every remaining annotation before a smaller terminal patch", async () => {
+    const control = "\u0001";
+    const summary = control.repeat(65_535);
+    const fullAnnotation = {
+      path: control.repeat(4_096),
+      startLine: 1,
+      endLine: 1,
+      annotationLevel: "warning" as const,
+      message: control.repeat(65_535),
+      title: control.repeat(255),
+      rawDetails: control.repeat(65_535),
+    };
+    const annotations = Array.from({ length: 5 }, () => ({ ...fullAnnotation }));
+    const apiAnnotation = (annotation: typeof fullAnnotation) => ({
+      path: annotation.path,
+      start_line: annotation.startLine,
+      end_line: annotation.endLine,
+      annotation_level: annotation.annotationLevel,
+      message: annotation.message,
+      title: annotation.title,
+      raw_details: annotation.rawDetails,
+    });
+    const intermediateBody = (rawDetails: string) => ({
+      status: "in_progress",
+      output: {
+        title: checkRunCompletionIntent.title,
+        summary,
+        annotations: [
+          ...annotations.slice(0, 4).map(apiAnnotation),
+          apiAnnotation({ ...fullAnnotation, rawDetails }),
+        ],
+      },
+      details_url: CHECK_DETAILS_URL,
+    });
+    const oneByteBody = intermediateBody(control);
+    const remainingBytes = 4 * 1024 * 1024 -
+      Buffer.byteLength(JSON.stringify(oneByteBody));
+    const rawDetails = control.repeat(1 + Math.floor(remainingBytes / 6));
+    annotations[4] = { ...fullAnnotation, rawDetails };
+    expect(Buffer.byteLength(JSON.stringify(intermediateBody(rawDetails))))
+      .toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(Buffer.byteLength(JSON.stringify({
+      ...intermediateBody(rawDetails),
+      status: "completed",
+      conclusion: "success",
+    }))).toBeGreaterThan(4 * 1024 * 1024);
+
+    const intent = {
+      ...checkRunCompletionIntent,
+      summary,
+      annotations,
+    };
+    const remoteAnnotations: Array<Record<string, unknown>> = [];
+    const patches: Array<Record<string, unknown>> = [];
+    let remoteRun = checkRun();
+    globalThis.fetch = (async (input, init) => {
+      const method = init?.method ?? "GET";
+      if (isCheckRunAnnotationsRequest(input)) {
+        return Response.json(remoteAnnotations);
+      }
+      if (method === "GET") return Response.json(remoteRun);
+      const body = JSON.parse(String(init?.body)) as {
+        status: string;
+        conclusion?: string;
+        details_url?: string;
+        output: {
+          title: string;
+          summary: string;
+          annotations?: Array<Record<string, unknown>>;
+        };
+      };
+      patches.push(body);
+      remoteAnnotations.push(...(body.output.annotations ?? []));
+      remoteRun = checkRun({
+        status: body.status,
+        conclusion: body.conclusion ?? null,
+        details_url: body.details_url,
+        output: { title: body.output.title, summary: body.output.summary },
+      });
+      return Response.json(remoteRun);
+    }) as typeof fetch;
+
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", intent),
+    ).resolves.toBeUndefined();
+    expect(patches.map((patch) =>
+      (patch.output as { annotations?: unknown[] }).annotations?.length ?? 0
+    )).toEqual([5, 0]);
+    expect(remoteAnnotations).toHaveLength(5);
+  });
+
   test("resumes an exact 50-annotation prefix without duplicating it", async () => {
     const intent = {
       ...checkRunCompletionIntent,
