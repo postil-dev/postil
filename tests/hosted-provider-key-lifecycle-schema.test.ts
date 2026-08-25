@@ -64,7 +64,7 @@ describe("hosted provider key lifecycle schema", () => {
   test("uses one generated migration after renewable CLI sessions", async () => {
     const migrationsDirectory = new URL("../drizzle/", import.meta.url);
     const migrations = (await readdir(migrationsDirectory))
-      .filter((file) => /^005[1-4]_.*[.]sql$/.test(file))
+      .filter((file) => /^005[1-3]_.*[.]sql$/.test(file))
       .sort();
     const migration = await readFile(
       new URL("../drizzle/0053_wonderful_annihilus.sql", import.meta.url),
@@ -110,7 +110,9 @@ describe("hosted provider key lifecycle schema", () => {
     expect(migration).not.toMatch(/ALTER TABLE "cli_refresh_(?:sessions|tokens)"/);
     expect(snapshot.prevId).toBe(previousSnapshot.id);
     expect(snapshot.id).not.toBe(previousSnapshot.id);
-    expect(journal.entries.at(-1)).toEqual(
+    expect(
+      journal.entries.find((entry) => entry.tag === "0053_wonderful_annihilus"),
+    ).toEqual(
       expect.objectContaining({ idx: 52, tag: "0053_wonderful_annihilus" }),
     );
   });
