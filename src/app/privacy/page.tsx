@@ -69,12 +69,12 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Finding feedback</strong>: eligible non-command replies to
-            Postil finding threads, including the reply text, GitHub comment
-            ID, commenter and pull-request author IDs and login snapshots,
-            whether the commenter is the pull-request author, the reply time,
-            and a suggested feedback category when the wording matches one.
-            Feedback is used to evaluate finding quality. It never approves or
-            dismisses a finding and never changes the merge gate.
+            Postil finding threads, including the reply text, GitHub comment ID,
+            commenter and pull-request author IDs and login snapshots, whether
+            the commenter is the pull-request author, the reply time, and a
+            suggested feedback category when the wording matches one. Feedback
+            is used to evaluate finding quality. It never approves or dismisses
+            a finding and never changes the merge gate.
           </li>
         </ul>
 
@@ -85,9 +85,9 @@ export default function PrivacyPage() {
           uses the previous envelope as its baseline. Uninstalling the GitHub
           App revokes repository access and stops future processing. It does not
           delete review history. Finding feedback is retained with its
-          associated review history and is removed when that history is
-          deleted. A verified organization administrator can request an export
-          or deletion of organization data by emailing{" "}
+          associated review history and is removed when that history is deleted.
+          A verified organization administrator can request an export or
+          deletion of organization data by emailing{" "}
           <a href="mailto:hello@postil.dev">hello@postil.dev</a>. Billing
           records required for accounting, tax, fraud prevention, or disputes
           are retained only for those purposes.
@@ -110,6 +110,11 @@ export default function PrivacyPage() {
           and expire within an hour. The GitHub App private key is provided via
           environment configuration and is never written to the database or to
           logs.
+        </p>
+        <p>
+          CLI access tokens expire after 12 hours. CLI refresh tokens are stored
+          only as digests, rotate on use, and keep a CLI session active for 180
+          days after each successful refresh.
         </p>
 
         <h2>Subprocessors</h2>
@@ -183,20 +188,20 @@ export default function PrivacyPage() {
           linked to an account or retained as a durable browser identity.
           PostHog forms that rotating daily identifier from the project,
           hostname, IP address, and the browser user agent each event reports,
-          then discards the raw IP address. DNT and Global Privacy
-          Control disable browser and request analytics. Session replay, person
+          then discards the raw IP address. DNT and Global Privacy Control
+          disable browser and request analytics. Session replay, person
           profiles, surveys, heatmaps, and autocaptured clicks are disabled.
           Browser event payloads discard query strings and persistent device or
           session identifiers. Server-side request telemetry records the public
           path, referrer origin, bounded campaign labels, user agent, and
           Cloudflare country and bot classification when present; it does not
           send IP addresses, request identifiers, arbitrary query strings, or
-          protected dashboard paths. Operational monitoring
-          sends fixed event names and scrubbed exception stacks with
-          project-relative code locations. It excludes request content, source
-          code, repository names, prompts, model output, credentials, email
-          addresses, and absolute file paths. Authentication sets one
-          first-party session cookie after sign-in; analytics do not use it.
+          protected dashboard paths. Operational monitoring sends fixed event
+          names and scrubbed exception stacks with project-relative code
+          locations. It excludes request content, source code, repository names,
+          prompts, model output, credentials, email addresses, and absolute file
+          paths. Authentication sets one first-party session cookie after
+          sign-in; analytics do not use it.
         </p>
 
         <h2>Where data is processed (residency)</h2>

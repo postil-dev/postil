@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
-import { claimDeviceAuthorizationToken } from "@/lib/cli-auth";
+import { claimDeviceAuthorizationToken, readCliJsonBody } from "@/lib/cli-auth";
 import { resolveHostedGatewayDefaultModel } from "@/lib/cli-gateway";
 import { getDb, schema } from "@/lib/db";
 import { publicOrigin } from "@/lib/oauth";
@@ -31,7 +31,10 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const org = (
     await db
-      .select({ slug: schema.organizations.slug, name: schema.organizations.name })
+      .select({
+        slug: schema.organizations.slug,
+        name: schema.organizations.name,
+      })
       .from(schema.organizations)
       .where(eq(schema.organizations.id, result.orgId))
       .limit(1)
@@ -49,6 +52,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       status: "approved",
       token: result.token,
       expiresAt: result.expiresAt.toISOString(),
+      refreshToken: result.refreshToken,
+      refreshExpiresAt: result.refreshExpiresAt.toISOString(),
       apiBase: new URL("/api/inference/v1", publicOrigin(request)).toString(),
       org: { slug: org.slug, name: org.name },
       model: model ?? "",
@@ -58,13 +63,12 @@ export async function POST(request: Request): Promise<NextResponse> {
 }
 
 async function readDeviceCode(request: Request): Promise<string | null> {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return null;
-  }
+  const parsed = await readCliJsonBody(request);
+  if (!parsed.ok) return null;
+  const { body } = parsed;
   if (typeof body !== "object" || body === null) return null;
   const deviceCode = (body as Record<string, unknown>).deviceCode;
-  return typeof deviceCode === "string" && deviceCode.length > 0 ? deviceCode : null;
+  return typeof deviceCode === "string" && deviceCode.length > 0
+    ? deviceCode
+    : null;
 }
