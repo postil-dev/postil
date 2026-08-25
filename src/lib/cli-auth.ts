@@ -254,6 +254,7 @@ export async function createDeviceAuthorization(
 export interface DeviceAuthorizationRow {
   id: number;
   status: string;
+  decisionAllowed: boolean;
   expiresAt: Date;
   orgId: number | null;
 }
@@ -273,6 +274,11 @@ export async function findDeviceAuthorizationByUserCode(
         THEN 'expired'
         ELSE ${schema.cliDeviceAuthorizations.status}
       END`.mapWith(schema.cliDeviceAuthorizations.status),
+      decisionAllowed: sql<boolean>`
+        ${schema.cliDeviceAuthorizations.status} = 'pending'
+        AND ${schema.cliDeviceAuthorizations.expiresAt} > clock_timestamp()
+        AND ${schema.cliDeviceAuthorizations.pollCount} < ${DEVICE_AUTHORIZATION_MAX_POLLS}
+      `,
       expiresAt: schema.cliDeviceAuthorizations.expiresAt,
       orgId: schema.cliDeviceAuthorizations.orgId,
     })

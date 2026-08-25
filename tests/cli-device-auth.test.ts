@@ -412,14 +412,27 @@ describeDb("postil login device authorization", () => {
   });
 
   test("an expired code returns 410 even though it was approved", async () => {
-    const { createDeviceAuthorization } = await import("@/lib/cli-auth");
+    const {
+      createDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
     const { getDb } = await import("@/lib/db");
     const { POST: tokenPost } =
       await import("@/app/api/cli/device/token/route");
 
     const db = getDb();
     const longAgo = new Date(Date.now() - 20 * 60 * 1_000);
-    const { deviceCode } = await createDeviceAuthorization(db, longAgo);
+    const { deviceCode, userCode } = await createDeviceAuthorization(
+      db,
+      longAgo,
+    );
+    const browserRow = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(userCode),
+    );
+    expect(browserRow?.status).toBe("expired");
+    expect(browserRow?.decisionAllowed).toBe(false);
     const rows = await pool!.query<{ id: string }>(
       `SELECT id FROM cli_device_authorizations WHERE device_code_sha256 = $1`,
       [sha256(deviceCode)],
@@ -471,6 +484,7 @@ describeDb("postil login device authorization", () => {
       normalizeUserCodeInput(userCode),
     );
     expect(browserRow?.status).toBe("expired");
+    expect(browserRow?.decisionAllowed).toBe(false);
     expect(
       await approveDeviceAuthorization(db, {
         id: browserRow!.id,
