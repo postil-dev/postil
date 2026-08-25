@@ -47,17 +47,16 @@ export default function LeastUsefulNumberArticle() {
           One unchanged model, one unchanged fixture set, nine points of
           movement. On our full table, {MODELS_IN_DETECTION_BAND} of{" "}
           {SCORED_MODELS.length} models sit within {DETECTION_BAND_POINTS}{" "}
-          points of the best one. The headline metric cannot tell most of them
-          apart, and any single-run comparison between two of them is measuring
-          the weather.
+          points of the best one. The headline metric cannot tell most of
+          them apart, and a single-run comparison between two of them mostly
+          reports which run you happened to get.
         </p>
         <p>
-          This is not a claim that detection does not matter. It is a claim
-          about resolution: if your instrument moves nine points on its own,
-          you cannot report a three-point difference as a result. We had been
-          doing exactly that, including in our release gate, which blocked five
-          of seven releases by comparing one run against a baseline recorded
-          from a single lucky run at the top of the same distribution.
+          Detection still matters. The problem is resolution: an instrument
+          that moves nine points on its own cannot report a three-point
+          difference. Our release gate did exactly that, and blocked five of
+          seven releases by comparing one run against a baseline taken from a
+          single high run of the same distribution.
         </p>
 
         <h2>Silence separates them cleanly</h2>
@@ -104,8 +103,8 @@ export default function LeastUsefulNumberArticle() {
           </tbody>
         </table>
         <p>
-          Those first three are within five points of each other on detection
-          and nowhere near each other in practice. Gemma 3 interrupts nine of
+          Those first three sit within five points of each other on
+          detection and behave nothing alike. Gemma 3 interrupts nine of
           thirteen clean pull requests. Our own published table had it at 97%
           with one false positive, because the old corpus had fewer adversarial
           clean cases. Mistral Small was published at 100% detection and zero
@@ -113,20 +112,20 @@ export default function LeastUsefulNumberArticle() {
           findings and stays quiet on six of thirteen clean diffs.
         </p>
         <p>
-          We had been recommending both. That is the cost of leaving a
-          benchmark table up after the thing it measured has changed
-          underneath, and it is why every figure on the new page carries the
-          digest of the corpus it was scored against.
+          We had been recommending both. That is what a benchmark table
+          costs once its fixtures have moved on, and it is why every figure on
+          the new page carries the digest of the corpus it was scored
+          against.
         </p>
 
         <h2>A version number is not an upgrade</h2>
         <p>
           The day before we ran this, the vendor of the model we were using
           released its successor. Same family, same context window, same price.
-          It failed to produce valid structured output on eighteen of seventy
-          cases, emitted twice the reasoning tokens, and cost three times as
-          much. Upgrading on the version number alone, which is the obvious
-          move, would have been a straight downgrade with a bill attached.
+          It failed to produce valid structured output on eighteen of
+          seventy cases, emitted twice the reasoning tokens, and cost three
+          times as much. Upgrading on the version number would have bought a
+          worse reviewer at triple the price.
         </p>
 
         <h2>Cost is a reasoning budget, not a price</h2>
@@ -139,27 +138,27 @@ export default function LeastUsefulNumberArticle() {
           price.
         </p>
         <p>
-          Per-token pricing tells you almost nothing about what a review costs.
-          How much a model thinks before answering tells you nearly everything,
-          and it is not on any pricing page. You have to run it.
+          A review's cost follows how much the model reasons before
+          answering, not its per-token price. That number is on no pricing
+          page, so the only way to get it is to run the model.
         </p>
         <CostAgainstGateChart />
 
         <h2>We were measuring a route we cannot use</h2>
         <p>
-          The worst mistake of the exercise was ours, and we made it three
-          times. Our screening harness lets the router pick any endpoint.
+          We made the same mistake three times. Our screening harness lets
+          the router pick any endpoint.
           Hosted reviews cannot: they require a zero-retention endpoint, pin
           one upstream provider, and cap the price. Every number above was
           measured without those constraints, and we kept reading them as
           though they described what customers would get.
         </p>
         <p>
-          Re-running the two finalists under the real contract settled it. One
-          was unaffected. The other, which we had been about to select on the
-          strength of a rock-steady 18-second tail latency, went to 58 seconds
-          once pinned to a zero-retention provider: the endpoint the router had
-          been quietly choosing for it was one we are not allowed to use.
+          Re-running the two finalists under the real contract settled it.
+          One was unaffected. The other, which we were about to select for its
+          18-second tail latency, went to 58 seconds once pinned to a
+          zero-retention provider, because the endpoint the router had been
+          choosing for it is one we may not use.
         </p>
         <p>
           If you run a benchmark to pick a model for a constrained deployment,
@@ -196,10 +195,10 @@ export default function LeastUsefulNumberArticle() {
         <p>
           It was a model we had already rejected. In July a preflight guard
           refused it because projected qualification spend exceeded its cap, so
-          it made zero calls. The price has since fallen fivefold. The rejection
-          was filed in the same shape as a quality failure, so nobody revisited
-          it. A rejection on cost is perishable evidence and ours was not marked
-          as such.
+          it made zero calls. The price has since fallen fivefold. We filed
+          that rejection the same way we file a quality failure, so nobody
+          went back to it when the price moved. A rejection on cost expires;
+          ours did not say so.
         </p>
         <p>
           We also re-recorded our release baseline from the median of four runs
@@ -236,7 +235,8 @@ export default function LeastUsefulNumberArticle() {
           <Link href="/blog/ai-code-review-benchmarks" className="text-rust underline">
             five-point test for benchmarks
           </Link>{" "}
-          to them. The reproduction command is the part that matters.
+          to them, and re-run the command yourself if the numbers matter to a
+          decision you are making.
         </p>
       </div>
     </div>
