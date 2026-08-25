@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { getTableConfig } from "drizzle-orm/pg-core";
 
 import { hostedProviderKeys } from "@/lib/db/schema";
+import providerKeyLifecycleSnapshot from "../drizzle/meta/0053_snapshot.json";
 
 describe("hosted provider key lifecycle schema", () => {
   test("binds one restricted lifecycle row to each organization", () => {
@@ -69,12 +70,10 @@ describe("hosted provider key lifecycle schema", () => {
         "utf8",
       ),
     ) as { id: string };
-    const snapshot = JSON.parse(
-      await readFile(
-        new URL("../drizzle/meta/0053_snapshot.json", import.meta.url),
-        "utf8",
-      ),
-    ) as { id: string; prevId: string };
+    const snapshot = providerKeyLifecycleSnapshot as {
+      id: string;
+      prevId: string;
+    };
     const journal = JSON.parse(
       await readFile(
         new URL("../drizzle/meta/_journal.json", import.meta.url),
