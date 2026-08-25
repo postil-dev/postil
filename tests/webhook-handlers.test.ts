@@ -1161,7 +1161,7 @@ describeDb("webhook handler behaviour", () => {
     expect(completedCheckRuns).toEqual([]);
   });
 
-  test("an equal contradictory close completes ignored after 30s and 60s retries", async () => {
+  test("an equal contradictory close completes as ignored after 30s and 60s retries", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 254);
     const repoId = await seedRepo(inst, 7882, "octo/equal-state");

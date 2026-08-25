@@ -688,7 +688,7 @@ export type PullRequestSnapshotOrder =
   | "equal"
   | "unknown";
 
-/** Compare signed-event and live pull-request timestamps when state disagrees. */
+/** Compare signed-event and live pull-request timestamps at whole-second precision. */
 export function comparePullRequestSnapshotTimes(
   eventUpdatedAt: unknown,
   liveUpdatedAt: unknown,
