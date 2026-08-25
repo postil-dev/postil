@@ -1,5 +1,10 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
+import { OPENROUTER_EXACT_LIMIT_MAX_MICROS } from "@/lib/openrouter-management-adapter";
+import {
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+  type HostedProviderKeyLifecycleJobPayload,
+} from "@/lib/queue";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 
 export const RELEASE_V1_JOB_KINDS = [
@@ -14,7 +19,8 @@ export const PRIVATE_REVIEW_AUTHOR_CAPABILITY = "private-review-author-v1";
 const PRIVATE_REVIEW_AUTHOR_LOCK = "postil:private-review-author-v1";
 const HOSTED_INFERENCE_CAPABILITY_PREFIX = "hosted-inference-release:";
 const HOSTED_INFERENCE_DARK_PREFIX = "hosted-inference-dark:";
-const HOSTED_INFERENCE_FLEET_ACTIVE = "hosted-inference-fleet-active";
+export const HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY =
+  "hosted-inference-fleet-active";
 export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
 
 function normalizedReleaseSha(releaseSha: string): string {
@@ -56,6 +62,46 @@ export async function hostedInferenceReleaseActivated(
   return result.rows[0]?.active === true;
 }
 
+/**
+ * Hold the activation lock while one bounded managed-provider operation runs.
+ * Deploy activation and deactivation take the same lock, so provider access
+ * cannot cross a release-dark transition.
+ */
+export async function withHostedInferenceReleaseActive<T>(
+  pool: Pool,
+  releaseSha: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const capability = hostedInferenceCapability(releaseSha);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [HOSTED_INFERENCE_LOCK],
+    );
+    const active = await client.query<{ active: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $1
+       ) AND EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $2
+       ) AS active`,
+      [capability, HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY],
+    );
+    if (active.rows[0]?.active !== true) {
+      throw new HostedInferenceReleaseDarkError(releaseSha);
+    }
+    const result = await operation();
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Activate managed hosted inference for one exact release after its smoke test. */
 export async function activateHostedInferenceRelease(
   pool: Pool,
@@ -79,7 +125,7 @@ export async function activateHostedInferenceRelease(
       `INSERT INTO deployment_capabilities (name)
        VALUES ($1)
        ON CONFLICT (name) DO UPDATE SET activated_at = now()`,
-      [HOSTED_INFERENCE_FLEET_ACTIVE],
+      [HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY],
     );
     await client.query(
       `
@@ -116,7 +162,9 @@ export async function activateHostedInferenceRelease(
       WHERE grant_row.org_id = promoted.org_id
         AND grant_row.requested_mode = 'hosted'
         AND grant_row.granted_mode = 'byok'
-    `);
+    `,
+    );
+    await enqueueHostedProviderKeyLifecycleBackfill(client, releaseSha);
     const dark = await client.query<{ activated_at: Date }>(
       `SELECT min(activated_at) AS activated_at
          FROM deployment_capabilities
@@ -182,10 +230,11 @@ export async function activateHostedInferenceRelease(
       `UPDATE jobs
           SET run_after = now(),
               payload = payload - 'releaseDarkSha'
-        WHERE kind = 'review'
+        WHERE kind IN ('review', $1)
           AND status = 'queued'
           AND run_after = 'infinity'::timestamptz
           AND payload ? 'releaseDarkSha'`,
+      [HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND],
     );
     await client.query(
       "DELETE FROM deployment_capabilities WHERE name LIKE $1",
@@ -219,10 +268,9 @@ export async function deactivateHostedInferenceRelease(
       "DELETE FROM deployment_capabilities WHERE name = $1",
       [capability],
     );
-    await client.query(
-      "DELETE FROM deployment_capabilities WHERE name = $1",
-      [HOSTED_INFERENCE_FLEET_ACTIVE],
-    );
+    await client.query("DELETE FROM deployment_capabilities WHERE name = $1", [
+      HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
+    ]);
     await client.query(
       `INSERT INTO deployment_capabilities (name)
        VALUES ($1)
@@ -245,6 +293,29 @@ export async function deferHostedReviewForRelease(
   job: { id: number; lockedBy: string },
   releaseSha: string,
 ): Promise<"deferred" | "released"> {
+  return deferHostedJobForRelease(pool, job, releaseSha, "review");
+}
+
+/** Atomically park provider-key work until a verified managed release activates. */
+export async function deferHostedProviderKeyLifecycleForRelease(
+  pool: Pool,
+  job: { id: number; lockedBy: string },
+  releaseSha: string,
+): Promise<"deferred" | "released"> {
+  return deferHostedJobForRelease(
+    pool,
+    job,
+    releaseSha,
+    HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+  );
+}
+
+async function deferHostedJobForRelease(
+  pool: Pool,
+  job: { id: number; lockedBy: string },
+  releaseSha: string,
+  kind: "review" | typeof HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+): Promise<"deferred" | "released"> {
   const normalized = normalizedReleaseSha(releaseSha);
   const client = await pool.connect();
   try {
@@ -257,7 +328,7 @@ export async function deferHostedReviewForRelease(
       `SELECT EXISTS (
          SELECT 1 FROM deployment_capabilities WHERE name = $1
        ) AS active`,
-      [HOSTED_INFERENCE_FLEET_ACTIVE],
+      [HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY],
     );
     const activated = active.rows[0]?.active === true;
     const updated = await client.query(
@@ -272,9 +343,9 @@ export async function deferHostedReviewForRelease(
                 WHEN $3::boolean THEN payload - 'releaseDarkSha'
                 ELSE payload || jsonb_build_object('releaseDarkSha', $4::text)
               END
-        WHERE id = $1 AND kind = 'review'
+        WHERE id = $1 AND kind = $5
           AND status = 'running' AND locked_by = $2`,
-      [job.id, job.lockedBy, activated, normalized],
+      [job.id, job.lockedBy, activated, normalized, kind],
     );
     if ((updated.rowCount ?? 0) !== 1) {
       throw new Error("hosted review release deferral lost its queue claim");
@@ -286,6 +357,87 @@ export async function deferHostedReviewForRelease(
     throw error;
   } finally {
     client.release();
+  }
+}
+
+async function enqueueHostedProviderKeyLifecycleBackfill(
+  client: Pick<PoolClient, "query">,
+  releaseSha: string,
+): Promise<void> {
+  const payload = (orgId: string): HostedProviderKeyLifecycleJobPayload => ({
+    orgId: Number(orgId),
+    releaseSha: normalizedReleaseSha(releaseSha),
+  });
+  const candidates = await client.query<{ org_id: string }>(
+    `SELECT DISTINCT candidate.org_id::text
+       FROM (
+         SELECT entitlement.org_id
+           FROM organization_entitlements entitlement
+          WHERE entitlement.subscription_mode = 'hosted'
+            AND entitlement.status <> 'suspended'
+            AND entitlement.period_starts_at <= clock_timestamp()
+            AND entitlement.period_ends_at > clock_timestamp()
+            AND entitlement.included_usage_micros
+                + COALESCE(entitlement.overage_hard_cap_micros, 0) > 0
+            AND entitlement.included_usage_micros
+                + COALESCE(entitlement.overage_hard_cap_micros, 0) <= $1::bigint
+            AND (
+              entitlement.status = 'active'
+              OR (
+                entitlement.status = 'trialing'
+                AND entitlement.trial_ends_at > clock_timestamp()
+              )
+              OR (
+                entitlement.status = 'past_due'
+                AND entitlement.past_due_grace_ends_at > clock_timestamp()
+              )
+              OR (
+                entitlement.promotional_eligible
+                AND (
+                  entitlement.promotional_ends_at IS NULL
+                  OR entitlement.promotional_ends_at > clock_timestamp()
+                )
+              )
+            )
+         UNION
+         SELECT lifecycle.org_id
+           FROM hosted_provider_keys lifecycle
+          WHERE lifecycle.state NOT IN ('revoked', 'cancelled')
+       ) candidate
+      ORDER BY candidate.org_id::text`,
+    [OPENROUTER_EXACT_LIMIT_MAX_MICROS.toString()],
+  );
+  for (const candidate of candidates.rows) {
+    const jobPayload = payload(candidate.org_id);
+    await client.query(
+      `WITH active AS MATERIALIZED (
+         SELECT id, status
+           FROM jobs
+          WHERE kind = $1
+            AND status IN ('queued', 'running')
+            AND payload->>'orgId' = $2
+          ORDER BY id
+          FOR UPDATE
+       ), refreshed AS (
+         UPDATE jobs job
+            SET payload = $3::jsonb,
+                run_after = CASE
+                  WHEN job.status = 'queued' THEN now()
+                  ELSE job.run_after
+                END,
+                last_error = NULL
+          WHERE job.id IN (SELECT id FROM active)
+        RETURNING job.id
+       )
+       INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
+       SELECT $1, $3::jsonb, 'queued', now(), 25
+        WHERE NOT EXISTS (SELECT 1 FROM active)`,
+      [
+        HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+        candidate.org_id,
+        JSON.stringify(jobPayload),
+      ],
+    );
   }
 }
 

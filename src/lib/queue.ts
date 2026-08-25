@@ -129,6 +129,34 @@ export interface GithubReactionJobPayload extends Record<string, unknown> {
   sourceDeliveryId: string;
 }
 
+export const HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND =
+  "hosted-provider-key-lifecycle" as const;
+
+/** Reconcile one organization's managed provider key against current entitlement state. */
+export interface HostedProviderKeyLifecycleJobPayload extends Record<
+  string,
+  unknown
+> {
+  orgId: number;
+  releaseSha: string;
+}
+
+export function hostedProviderKeyLifecycleJobPayload(
+  orgId: number,
+  releaseSha: string,
+): HostedProviderKeyLifecycleJobPayload {
+  if (!Number.isSafeInteger(orgId) || orgId <= 0) {
+    throw new Error(
+      "hosted provider key lifecycle job requires a positive organization id",
+    );
+  }
+  const normalizedReleaseSha = releaseSha.trim().toLowerCase();
+  if (!/^[0-9a-f]{7,40}$/.test(normalizedReleaseSha)) {
+    throw new Error("hosted provider key lifecycle job requires a release SHA");
+  }
+  return { orgId, releaseSha: normalizedReleaseSha };
+}
+
 export interface ExternalSideEffectLease {
   id: number;
   lockedBy: string;
