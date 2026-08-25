@@ -11,8 +11,10 @@ import {
 } from "@/lib/env";
 import { runWebhookRedeliveryPass } from "@/lib/github/webhook-redelivery";
 import {
-  claimJob,
+  claimNextJob,
+  type ClaimOutcome,
   enqueueGateEnforcementSweepOnce,
+  nextClaimPollDelay,
   pruneCompletedWebhookDeliveries,
   requeueJobsOwnedBy,
   WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE,
@@ -130,34 +132,37 @@ function sleepUntilHeartbeat(ms: number): Promise<void> {
 async function claimLoop(slot: number): Promise<void> {
   let idleDelayMs = POLL_INTERVAL_MS;
   while (!shuttingDown) {
-    let job;
+    let outcome: ClaimOutcome;
     pendingClaims += 1;
     try {
-      job = await claimJob(getPool(), `${workerId}#${slot}`, PROCESSABLE_JOB_KINDS);
-      if (shuttingDown && job) {
+      outcome = await claimNextJob(getPool(), `${workerId}#${slot}`, PROCESSABLE_JOB_KINDS);
+      if (shuttingDown && outcome.status === "claimed") {
         await requeueJobsOwnedBy(
           getPool(),
           `${workerId}#${slot}`,
           "worker stopped before starting the claim",
-          [job.kind],
-          [job.id],
+          [outcome.job.kind],
+          [outcome.job.id],
         );
         return;
       }
     } catch (err) {
       console.error(`[worker ${slot}] claim error: ${redactSecrets(err)}`);
       if (shuttingDown) return;
-      await sleep(Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS));
-      idleDelayMs = Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS);
+      const backoff = nextClaimPollDelay("error", pollDelayState(idleDelayMs));
+      await sleep(backoff.sleepMs);
+      idleDelayMs = backoff.idleDelayMs;
       continue;
     } finally {
       pendingClaims -= 1;
     }
-    if (!job) {
-      await sleep(jitter(idleDelayMs));
-      idleDelayMs = Math.min(idleDelayMs * 2, IDLE_POLL_MAX_MS);
+    if (outcome.status !== "claimed") {
+      const backoff = nextClaimPollDelay(outcome.status, pollDelayState(idleDelayMs));
+      await sleep(jitter(backoff.sleepMs));
+      idleDelayMs = backoff.idleDelayMs;
       continue;
     }
+    const job = outcome.job;
     idleDelayMs = POLL_INTERVAL_MS;
     const controller = new AbortController();
     if (job.kind === "review") requeueableReviewIds.add(job.id);
@@ -230,6 +235,18 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(0);
   })();
   return shutdownPromise;
+}
+
+function pollDelayState(idleDelayMs: number): {
+  idleDelayMs: number;
+  pollIntervalMs: number;
+  idlePollMaxMs: number;
+} {
+  return {
+    idleDelayMs,
+    pollIntervalMs: POLL_INTERVAL_MS,
+    idlePollMaxMs: IDLE_POLL_MAX_MS,
+  };
 }
 
 function jitter(delayMs: number): number {

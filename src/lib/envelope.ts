@@ -424,12 +424,16 @@ export function severityBlocksGate(severity: Severity, failOn: Severity): boolea
   return SEVERITY_RANK[severity] <= SEVERITY_RANK[failOn];
 }
 
+export const OPERATIONAL_FINDING_PATHS = [
+  ".postil/operational",
+  ".postil/provider",
+  ".postil/model-output",
+] as const;
+
+const OPERATIONAL_FINDING_PATH_SET = new Set<string>(OPERATIONAL_FINDING_PATHS);
+
 export function isOperationalFinding(finding: Pick<Finding, "path">): boolean {
-  return (
-    finding.path === ".postil/operational" ||
-    finding.path === ".postil/provider" ||
-    finding.path === ".postil/model-output"
-  );
+  return OPERATIONAL_FINDING_PATH_SET.has(finding.path);
 }
 
 /** An unrecovered review failure is not a clean review verdict. */
