@@ -1,5 +1,25 @@
-import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
+import type {
+  FindingFeedbackDigestAlertPayload,
+  OperatorAlertJobPayload,
+} from "@/lib/operator-alerts";
 import type { TransactionalEmailContent } from "@/lib/transactional-email";
+
+const FINDING_FEEDBACK_DETAIL_LABEL_MAX_LENGTH = 120;
+
+export function findingFeedbackAggregateLabel(
+  aggregate: FindingFeedbackDigestAlertPayload["aggregates"][number],
+): string {
+  const label = [
+    aggregate.source,
+    aggregate.suggestedReasonTag ?? aggregate.reactionContent ?? "unclassified",
+    aggregate.model ?? "unknown-model",
+    aggregate.kind ?? "unknown-kind",
+    aggregate.severity ?? "unknown-severity",
+  ].join(" · ");
+  return label.length <= FINDING_FEEDBACK_DETAIL_LABEL_MAX_LENGTH
+    ? label
+    : `${label.slice(0, FINDING_FEEDBACK_DETAIL_LABEL_MAX_LENGTH - 1)}…`;
+}
 
 export function operatorAlertEmailContent(
   payload: OperatorAlertJobPayload,
@@ -180,6 +200,24 @@ export function operatorAlertEmailContent(
         action,
         note: "Inspect the provider event and the corresponding Postil billing state.",
         intent: "critical",
+      },
+    };
+  }
+  if (payload.event === "finding_feedback_digest") {
+    return {
+      subject: `Postil finding feedback digest: ${payload.periodStart.slice(0, 10)}`,
+      content: {
+        preheader: "Weekly aggregate of published finding feedback.",
+        category: "Feedback",
+        title: "Finding feedback digest",
+        summary: "Published finding feedback grouped by structured review dimensions.",
+        reason,
+        details: payload.aggregates.map((aggregate) => ({
+          label: findingFeedbackAggregateLabel(aggregate),
+          value: String(aggregate.count),
+        })),
+        note: `Period ${formatUtcDate(payload.periodStart)} through ${formatUtcDate(payload.periodEnd)}.`,
+        intent: "success",
       },
     };
   }

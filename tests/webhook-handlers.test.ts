@@ -74,6 +74,12 @@ let reviewCommentRoot = {
   body: "The nullable branch can return before this check.",
   userLogin: "postil-dev[bot]",
 };
+let reviewCommentReactions: Array<{
+  id: number;
+  content: "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
+  createdAt: Date;
+  user: { id: number; login: string; type?: string };
+}> = [];
 const realAppAuth = await import("@/lib/github/app-auth");
 const realChecks = await import("@/lib/github/checks");
 mock.module("@/lib/github/app-auth", () => ({
@@ -116,6 +122,7 @@ mock.module("@/lib/github/checks", () => ({
     return pullRequestReviewContext;
   },
   getPullRequestReviewComment: async () => reviewCommentRoot,
+  listPullRequestReviewCommentReactions: async () => reviewCommentReactions,
   findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
@@ -133,6 +140,12 @@ const {
 } = await import("@/lib/operator-alerts");
 const { claimJob } = await import("@/lib/queue");
 const { runClaimedJob } = await import("@/worker/runner");
+const {
+  findingFeedbackAggregates,
+  reconcileFindingFeedbackReactions,
+  scheduleFindingFeedbackReconciliationJobs,
+} = await import("@/lib/finding-feedback");
+const { scheduleFindingFeedbackDigest } = await import("@/lib/operator-alerts");
 
 async function post(event: string, body: object, deliveryId: string): Promise<Response> {
   const raw = JSON.stringify(body);
@@ -220,12 +233,12 @@ describeDb("webhook handler behaviour", () => {
             owner: { id: 7002, login: "octo" },
           });
         }
-        if (!url.includes("/orgs/octo/memberships/admin")) {
+        if (!url.includes("/orgs/octo/memberships/")) {
           throw new Error(`unexpected GitHub request: ${url}`);
         }
         membershipFetchCount += 1;
         return new Response(
-          liveMembershipStatus === 200
+          liveMembershipStatus === 200 && url.endsWith("/admin")
             ? JSON.stringify({
                 state: liveMembershipState,
                 role: liveMembershipRole,
@@ -255,6 +268,7 @@ describeDb("webhook handler behaviour", () => {
       body: "The nullable branch can return before this check.",
       userLogin: "postil-dev[bot]",
     };
+    reviewCommentReactions = [];
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
     delete process.env.POSTIL_RELEASE_SHA;
@@ -2096,6 +2110,136 @@ describeDb("webhook handler behaviour", () => {
       WHERE publication.id = $1
     `, [publicationId]);
     expect(state.rows).toEqual([{ feedback_count: 1, approval_count: 0, gate_failing: true }]);
+  });
+
+  test("reconciles eligible thumbs reactions without changing finding lifecycle or gate state", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 511, author_login = 'pull-request-author' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    reviewCommentReactions = [
+      {
+        id: 9301,
+        content: "+1",
+        createdAt: new Date("2026-08-24T12:34:56Z"),
+        user: { id: 511, login: "pull-request-author", type: "User" },
+      },
+      {
+        id: 9302,
+        content: "-1",
+        createdAt: new Date("2026-08-24T12:35:56Z"),
+        user: { id: 501, login: "admin", type: "User" },
+      },
+      {
+        id: 9303,
+        content: "eyes",
+        createdAt: new Date("2026-08-24T12:36:56Z"),
+        user: { id: 512, login: "visitor", type: "User" },
+      },
+      {
+        id: 9304,
+        content: "rocket",
+        createdAt: new Date("2026-08-24T12:37:56Z"),
+        user: { id: 513, login: "automation[bot]", type: "Bot" },
+      },
+      {
+        id: 9305,
+        content: "heart",
+        createdAt: new Date("2026-08-24T12:38:56Z"),
+        user: { id: 511, login: "pull-request-author", type: "User" },
+      },
+    ];
+
+    await expect(reconcileFindingFeedbackReactions(getDb(), publicationId)).resolves.toEqual({
+      captured: 2,
+    });
+    await expect(reconcileFindingFeedbackReactions(getDb(), publicationId)).resolves.toEqual({
+      captured: 0,
+    });
+    liveMembershipRole = "member";
+    reviewCommentReactions = [{
+      id: 9306,
+      content: "-1",
+      createdAt: new Date("2026-08-24T12:39:56Z"),
+      user: { id: 501, login: "admin", type: "User" },
+    }];
+    await expect(reconcileFindingFeedbackReactions(getDb(), publicationId)).resolves.toEqual({
+      captured: 0,
+    });
+
+    const feedback = await pool.query<{ source_github_reaction_id: string; reaction_content: string; actor_is_pr_author: boolean }>(
+      `SELECT source_github_reaction_id, reaction_content, actor_is_pr_author
+         FROM finding_feedback WHERE source = 'reaction' ORDER BY source_github_reaction_id`,
+    );
+    expect(feedback.rows).toEqual([
+      { source_github_reaction_id: "9301", reaction_content: "+1", actor_is_pr_author: true },
+      { source_github_reaction_id: "9302", reaction_content: "-1", actor_is_pr_author: false },
+    ]);
+    const control = await pool.query<{ gate_failing: boolean; current_state: string; approvals: number }>(`
+      SELECT review.gate_failing, publication.current_state,
+             (SELECT count(*)::int FROM finding_approvals WHERE review_id = review.id) AS approvals
+        FROM finding_publications publication
+        JOIN reviews review ON review.id = publication.review_id
+       WHERE publication.id = $1`, [publicationId]);
+    expect(control.rows).toEqual([{ gate_failing: true, current_state: "inline", approvals: 0 }]);
+  });
+
+  test("bounds watchdog feedback scheduling and queues one privacy-safe weekly digest", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 511, author_login = 'pull-request-author' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    await pool.query(`
+      INSERT INTO finding_publications
+        (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+      SELECT review_id, 'feedback-' || value, true, 'inline', 'inline', (8800 + value)::text
+        FROM finding_publications, generate_series(1, 205) value
+       WHERE id = $1`, [publicationId]);
+    const now = new Date("2026-08-24T12:00:00Z");
+    expect(await scheduleFindingFeedbackReconciliationJobs(pool, now)).toBe(200);
+    expect(await scheduleFindingFeedbackReconciliationJobs(pool, now)).toBe(6);
+
+    await pool.query(
+      `INSERT INTO finding_feedback
+        (finding_publication_id, source, source_github_comment_id, source_github_reaction_id,
+         reaction_content, body, actor_github_id, actor_login_snapshot,
+         pr_author_github_id, pr_author_login_snapshot, actor_is_pr_author, observed_at, source_delivery_id)
+       VALUES ($1, 'reaction', 8800, 9901, '+1', NULL, 511, 'pull-request-author',
+               511, 'pull-request-author', true, '2026-08-20T12:00:00Z', NULL)`,
+      [publicationId],
+    );
+    const aggregates = await findingFeedbackAggregates(
+      getDb(), new Date("2026-08-17T00:00:00Z"), new Date("2026-08-24T00:00:00Z"),
+    );
+    expect(aggregates).toEqual([expect.objectContaining({
+      source: "reaction", reactionContent: "+1", count: 1,
+    })]);
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.test";
+    expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("queued");
+    expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("empty");
+    await pool.query(`
+      UPDATE operator_alert_deliveries
+         SET status = 'failed', last_error = 'temporary fixture failure'
+       WHERE event = 'finding_feedback_digest'
+    `);
+    expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("queued");
+    const digest = await pool.query<{ event: string; payload: unknown }>(`
+      SELECT delivery.event, job.payload FROM operator_alert_deliveries delivery
+      JOIN jobs job ON job.kind = 'operator-alert'
+       AND job.payload->>'eventKey' = delivery.event_key
+      WHERE delivery.event LIKE 'finding_feedback_digest'`,
+    );
+    expect(digest.rows).toHaveLength(2);
+    expect(JSON.stringify(digest.rows[0]!.payload)).not.toContain("pull-request-author");
+    expect(JSON.stringify(digest.rows[0]!.payload)).not.toContain("This finding");
   });
 
   test("records historical private-repository feedback without inference entitlement", async () => {

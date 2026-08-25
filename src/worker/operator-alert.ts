@@ -4,7 +4,10 @@ import { normalizeVerificationEmail } from "@/lib/email-verification";
 import { requireEnv } from "@/lib/env";
 import { sendOperatorNotification } from "@/lib/operator-notifications";
 import { operatorAlertEmailContent } from "@/lib/operator-alert-email";
-import type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
+import {
+  MAX_FINDING_FEEDBACK_DIGEST_AGGREGATES,
+  type OperatorAlertJobPayload,
+} from "@/lib/operator-alerts";
 
 export type { OperatorAlertJobPayload } from "@/lib/operator-alerts";
 
@@ -38,6 +41,31 @@ export async function runOperatorAlertJob(
 export function validateOperatorAlertPayload(
   payload: OperatorAlertJobPayload,
 ): void {
+  if (payload.event === "finding_feedback_digest") {
+    if (
+      !/^finding-feedback-digest:\d{4}-\d{2}-\d{2}$/u.test(payload.eventKey) ||
+      payload.orgId !== null ||
+      payload.orgSlug !== null ||
+      payload.accountLogin !== null ||
+      payload.githubOwnerId !== null ||
+      !isValidDigestDate(payload.periodStart) ||
+      !isValidDigestDate(payload.periodEnd) ||
+      new Date(payload.periodStart) >= new Date(payload.periodEnd) ||
+      !Array.isArray(payload.aggregates) ||
+      payload.aggregates.length < 1 ||
+      payload.aggregates.length > MAX_FINDING_FEEDBACK_DIGEST_AGGREGATES ||
+      payload.aggregates.some((aggregate) =>
+        !Number.isSafeInteger(aggregate.count) || aggregate.count < 1 ||
+        !["reply", "reaction"].includes(aggregate.source) ||
+        !safeOptionalLabel(aggregate.suggestedReasonTag, 40) ||
+        !safeOptionalLabel(aggregate.reactionContent, 20) ||
+        !safeOptionalLabel(aggregate.model, 500) ||
+        !safeOptionalLabel(aggregate.kind, 100) ||
+        !safeOptionalLabel(aggregate.severity, 20),
+      )
+    ) throw new Error("operator alert job payload is malformed");
+    return;
+  }
   if (payload.event === "billing_anomaly") {
     const attachedOrgInvalid =
       payload.orgId !== null &&
@@ -106,6 +134,14 @@ export function validateOperatorAlertPayload(
       validateDate(payload.periodEndsAt);
     }
   }
+}
+
+function isValidDigestDate(value: string): boolean {
+  return typeof value === "string" && !Number.isNaN(new Date(value).getTime());
+}
+
+function safeOptionalLabel(value: string | null, maxLength: number): boolean {
+  return value === null || safeLabel(value, maxLength);
 }
 
 function validateInstallation(

@@ -248,6 +248,22 @@ describe("migration lint", () => {
     expect(migration).toContain('CREATE TRIGGER "finding_feedback_guard_immutable"');
   });
 
+  test("finding feedback reaction migration keeps reconciliation separate and reaction content closed", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0051_finding_feedback_reactions.sql"),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE TABLE "finding_feedback_reconciliations"');
+    expect(migration).toContain('"reaction_content" text');
+    expect(migration).toContain("IN ('+1', '-1')");
+    expect(migration).toContain('"source_github_comment_id" IS NOT NULL');
+    expect(migration).toContain('"source_github_reaction_id" IS NOT NULL');
+    expect(migration).toContain('"reaction_content" IS NOT NULL');
+    expect(migration).toContain('DROP CONSTRAINT "finding_feedback_identity_check"');
+    expect(migration).not.toContain('UPDATE "reviews"');
+    expect(migration).not.toContain('UPDATE "finding_publications"');
+  });
+
   test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
     const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"), "utf8");
 

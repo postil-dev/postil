@@ -68,13 +68,16 @@ export default function PrivacyPage() {
             for 30 days. Recovery scans do not fetch webhook request payloads.
           </li>
           <li>
-            <strong>Finding feedback</strong>: eligible non-command replies to
-            Postil finding threads, including the reply text, GitHub comment
-            ID, commenter and pull-request author IDs and login snapshots,
-            whether the commenter is the pull-request author, the reply time,
-            and a suggested feedback category when the wording matches one.
-            Feedback is used to evaluate finding quality. It never approves or
-            dismisses a finding and never changes the merge gate.
+            <strong>Finding feedback</strong>: eligible non-command replies and
+            reactions on Postil finding threads. Reply records include the text
+            and GitHub comment ID; reaction records include the GitHub reaction
+            ID and reaction type. Both include commenter and pull-request author
+            IDs and login snapshots, whether the commenter is the pull-request
+            author, the observation time, and a suggested feedback category
+            when reply wording matches one. Structured aggregates can be sent
+            in a weekly operator digest without reply text or actor identity.
+            Feedback never approves or dismisses a finding and never changes
+            the merge gate.
           </li>
         </ul>
 

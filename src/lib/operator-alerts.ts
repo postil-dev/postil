@@ -7,6 +7,11 @@ import {
   trialExpiredNotification,
 } from "@/lib/customer-notifications";
 import { optionalEnv } from "@/lib/env";
+import {
+  findingFeedbackAggregates,
+  findingFeedbackReconciliationWatermarkReached,
+  type FindingFeedbackAggregate,
+} from "@/lib/finding-feedback";
 
 export type OperatorAlertEvent =
   | "trial_started"
@@ -16,7 +21,8 @@ export type OperatorAlertEvent =
   | "subscription_past_due"
   | "subscription_paused"
   | "subscription_canceled"
-  | "billing_anomaly";
+  | "billing_anomaly"
+  | "finding_feedback_digest";
 
 interface OperatorAlertBasePayload {
   event: OperatorAlertEvent;
@@ -70,12 +76,28 @@ export interface BillingAnomalyAlertPayload {
     | "settlement_failed";
 }
 
+export interface FindingFeedbackDigestAlertPayload extends Record<string, unknown> {
+  event: "finding_feedback_digest";
+  eventKey: string;
+  orgId: null;
+  orgSlug: null;
+  accountLogin: null;
+  githubOwnerId: null;
+  periodStart: string;
+  periodEnd: string;
+  aggregates: FindingFeedbackAggregate[];
+}
+
+export const MAX_FINDING_FEEDBACK_DIGEST_AGGREGATES = 20;
+const FINDING_FEEDBACK_DIGEST_GRACE_MS = 15 * 60 * 1_000;
+
 export type OperatorAlertJobPayload =
   | TrialStartedAlertPayload
   | TrialExpiredAlertPayload
   | InstallationRemovedAlertPayload
   | SubscriptionAlertPayload
-  | BillingAnomalyAlertPayload;
+  | BillingAnomalyAlertPayload
+  | FindingFeedbackDigestAlertPayload;
 
 type AlertWriteDatabase = Pick<Database, "insert">;
 
@@ -91,7 +113,7 @@ export async function enqueueOperatorAlert(
     .values({
       eventKey: payload.eventKey,
       event: payload.event,
-      orgId: payload.orgId,
+      orgId: payload.event === "finding_feedback_digest" ? null : payload.orgId,
       githubInstallationId:
         payload.event === "trial_started" ||
         payload.event === "installation_removed"
@@ -121,7 +143,7 @@ export async function ensureOperatorAlertDelivery(
     .values({
       eventKey: payload.eventKey,
       event: payload.event,
-      orgId: payload.orgId,
+      orgId: payload.event === "finding_feedback_digest" ? null : payload.orgId,
       githubInstallationId:
         payload.event === "trial_started" ||
         payload.event === "installation_removed"
@@ -131,6 +153,109 @@ export async function ensureOperatorAlertDelivery(
       updatedAt: createdAt,
     })
     .onConflictDoNothing({ target: schema.operatorAlertDeliveries.eventKey });
+}
+
+/** Queue one privacy-safe weekly feedback digest when the completed period contains feedback. */
+export async function scheduleFindingFeedbackDigest(
+  db: Database,
+  now = new Date(),
+): Promise<"queued" | "empty" | "disabled" | "duplicate" | "pending"> {
+  if (!optionalEnv("POSTIL_OPERATOR_ALERT_EMAIL")) return "disabled";
+  const latestPeriodEnd = findingFeedbackDigestPeriodEnd(now);
+  const periodStart = await oldestUndeliveredFeedbackPeriodStart(db, latestPeriodEnd);
+  if (!periodStart) return "empty";
+  const periodEnd = new Date(periodStart.getTime() + 7 * 24 * 60 * 60 * 1_000);
+  if (now.getTime() < periodEnd.getTime() + FINDING_FEEDBACK_DIGEST_GRACE_MS) {
+    return "pending";
+  }
+  if (!(await findingFeedbackReconciliationWatermarkReached(db, periodEnd))) {
+    return "pending";
+  }
+  const aggregates = await findingFeedbackAggregates(
+    db,
+    periodStart,
+    periodEnd,
+    MAX_FINDING_FEEDBACK_DIGEST_AGGREGATES,
+  );
+  if (aggregates.length === 0) return "empty";
+  const payload: FindingFeedbackDigestAlertPayload = {
+    event: "finding_feedback_digest",
+    eventKey: `finding-feedback-digest:${periodStart.toISOString().slice(0, 10)}`,
+    orgId: null,
+    orgSlug: null,
+    accountLogin: null,
+    githubOwnerId: null,
+    periodStart: periodStart.toISOString(),
+    periodEnd: periodEnd.toISOString(),
+    aggregates,
+  };
+  return db.transaction(async (tx) => {
+    const requeued = await tx.update(schema.operatorAlertDeliveries).set({
+      status: "queued",
+      lastError: null,
+      updatedAt: now,
+    }).where(and(
+      eq(schema.operatorAlertDeliveries.eventKey, payload.eventKey),
+      eq(schema.operatorAlertDeliveries.status, "failed"),
+    )).returning({ eventKey: schema.operatorAlertDeliveries.eventKey });
+    const inserted = requeued.length > 0 ? requeued : await tx
+      .insert(schema.operatorAlertDeliveries)
+      .values({
+        eventKey: payload.eventKey,
+        event: payload.event,
+        orgId: null,
+        githubInstallationId: null,
+      })
+      .onConflictDoNothing({ target: schema.operatorAlertDeliveries.eventKey })
+      .returning({ eventKey: schema.operatorAlertDeliveries.eventKey });
+    if (inserted.length === 0) return "duplicate";
+    await tx.insert(schema.jobs).values({
+      kind: "operator-alert",
+      payload,
+      maxAttempts: 5,
+    });
+    return "queued";
+  });
+}
+
+async function oldestUndeliveredFeedbackPeriodStart(
+  db: Database,
+  latestPeriodEnd: Date,
+): Promise<Date | null> {
+  const rows = await db.execute(sql`
+    SELECT date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC') AS "periodStart"
+      FROM finding_feedback feedback
+     WHERE feedback.observed_at < ${latestPeriodEnd}
+       AND NOT EXISTS (
+         SELECT 1
+           FROM operator_alert_deliveries delivery
+          WHERE delivery.event_key = 'finding-feedback-digest:' ||
+            to_char(date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD')
+            AND delivery.status <> 'failed'
+       )
+     GROUP BY date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC')
+     ORDER BY date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC')
+     LIMIT 1
+  `);
+  const value = (rows as unknown as Array<Record<string, unknown>>)[0]?.periodStart;
+  const periodStart = value instanceof Date
+    ? value
+    : typeof value === "string"
+      ? new Date(value.endsWith("Z") ? value : `${value}Z`)
+      : null;
+  if (
+    !periodStart ||
+    Number.isNaN(periodStart.getTime()) ||
+    periodStart.getTime() >= latestPeriodEnd.getTime()
+  ) return null;
+  return periodStart;
+}
+
+export function findingFeedbackDigestPeriodEnd(value: Date): Date {
+  const start = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+  const offset = (start.getUTCDay() + 6) % 7;
+  start.setUTCDate(start.getUTCDate() - offset);
+  return start;
 }
 
 export function trialStartedAlertPayload(input: {
@@ -297,7 +422,8 @@ export async function reconcileOperatorAlertDeliveries(
           'subscription_past_due',
           'subscription_paused',
           'subscription_canceled',
-          'billing_anomaly'
+          'billing_anomaly',
+          'finding_feedback_digest'
         )
       ON CONFLICT (event_key) DO NOTHING
     )

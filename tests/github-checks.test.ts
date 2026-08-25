@@ -9,6 +9,7 @@ import {
   findPullRequestReviewCommentByMarker,
   getPullRequestReviewComment,
   getPullRequestReviewContext,
+  listPullRequestReviewCommentReactions,
   RESPOND_MARKER_MAX_PAGES,
   verifyCompletedCheckRun,
 } from "@/lib/github/checks";
@@ -78,6 +79,65 @@ describe("review request reactions", () => {
 });
 
 describe("pull-request review conversations", () => {
+  test("loads bounded reaction pages with validated immutable identities", async () => {
+    const requestedPages: Array<{ content: string | null; page: number }> = [];
+    globalThis.fetch = (async (input) => {
+      const url = new URL(String(input));
+      const page = Number(url.searchParams.get("page"));
+      const content = url.searchParams.get("content");
+      requestedPages.push({ content, page });
+      const count = content === "+1" && page === 1 ? 100 : 1;
+      return Response.json(Array.from({ length: count }, (_, index) => ({
+        id: (content === "+1" ? 1_000 : 2_000) + page * 100 + index,
+        content,
+        created_at: "2026-08-24T12:34:56Z",
+        user: {
+          id: 500 + index,
+          login: index === 0 && content === "-1" ? "dependabot[bot]" : `reviewer-${index}`,
+          type: index === 0 && content === "-1" ? "Bot" : "User",
+        },
+      })));
+    }) as typeof fetch;
+
+    const reactions = await listPullRequestReviewCommentReactions(
+      "token",
+      "octo/repo",
+      41,
+    );
+    expect(requestedPages).toEqual([
+      { content: "+1", page: 1 },
+      { content: "+1", page: 2 },
+      { content: "-1", page: 1 },
+    ]);
+    expect(reactions).toHaveLength(102);
+    expect(reactions[0]).toMatchObject({
+      id: 1_100,
+      content: "+1",
+      user: { id: 500, login: "reviewer-0", type: "User" },
+    });
+    expect(reactions[0]!.createdAt).toEqual(new Date("2026-08-24T12:34:56Z"));
+    expect(reactions.at(-1)).toMatchObject({
+      content: "-1",
+      user: { login: "dependabot[bot]", type: "Bot" },
+    });
+  });
+
+  test("rejects an unrelated reaction returned despite the server content filter", async () => {
+    globalThis.fetch = Object.assign(
+      async () => Response.json([{
+        id: 1,
+        content: "unsupported",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 2, login: "reviewer", type: "User" },
+      }]),
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    await expect(
+      listPullRequestReviewCommentReactions("token", "octo/repo", 41),
+    ).rejects.toThrow("GitHub review comment reactions response is malformed");
+  });
+
   test("loads a bounded root identity and posts a thread reply", async () => {
     const requests: Array<{ url: string; method: string; body?: unknown }> = [];
     globalThis.fetch = (async (input, init) => {
