@@ -135,6 +135,7 @@ export interface BuiltGitHubPublicationInputIdentity {
 
 interface GitHubPublicationCliPlanningDependencies {
   parsePlanBytes?: typeof parseGitHubPublicationPlanBytes;
+  afterArtifactDirectoryCreated?: (path: string) => void | Promise<void>;
 }
 
 /** Build the exact canonical artifact for every input that can change a plan. */
@@ -298,7 +299,10 @@ export async function runGitHubPublicationCliPlanning(
     directoryIdentity,
     envelopePath,
     artifactIdentity,
-  } = await createPrivateArtifact(request.workingDirectory);
+  } = await createPrivateArtifact(
+    request.workingDirectory,
+    dependencies.afterArtifactDirectoryCreated,
+  );
   try {
     const expected = request.expected;
     const inputIdentity = buildGitHubPublicationInputIdentity(request.inputIdentity);
@@ -391,7 +395,10 @@ export async function runGitHubPublicationCliPlanning(
   }
 }
 
-async function createPrivateArtifact(workingDirectory: string): Promise<{
+async function createPrivateArtifact(
+  workingDirectory: string,
+  afterDirectoryCreated?: (path: string) => void | Promise<void>,
+): Promise<{
   artifactDirectory: string;
   directoryIdentity: { dev: bigint; ino: bigint };
   envelopePath: string;
@@ -404,6 +411,7 @@ async function createPrivateArtifact(workingDirectory: string): Promise<{
   let directoryIdentity: { dev: bigint; ino: bigint } | undefined;
   let artifactIdentity: { dev: bigint; ino: bigint } | undefined;
   try {
+    await afterDirectoryCreated?.(artifactDirectory);
     const directoryStat = await lstat(artifactDirectory, { bigint: true });
     directoryIdentity = { dev: directoryStat.dev, ino: directoryStat.ino };
     const processUid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -669,7 +677,6 @@ async function rmdirOwnedPrivateDirectory(
     current.isSymbolicLink() ||
     current.dev !== identity.dev ||
     current.ino !== identity.ino ||
-    (current.mode & 0o077n) !== 0n ||
     (processUid !== undefined && current.uid !== BigInt(processUid))
   ) {
     reject("private artifact directory identity changed before cleanup");
