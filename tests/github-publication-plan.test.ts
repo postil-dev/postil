@@ -478,4 +478,3 @@ function expectRejected(value: unknown, message?: string): void {
     message ?? GitHubPublicationPlanRejectedError,
   );
 }
-

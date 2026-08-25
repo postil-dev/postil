@@ -731,4 +731,3 @@ function isJsonObject(value: unknown): value is JsonObject {
 function reject(reason: string): never {
   throw new GitHubPublicationControllerManifestRejectedError(reason);
 }
-

@@ -901,4 +901,3 @@ function assertUniqueSorted(values: readonly string[], name: string): void {
 function reject(reason: string): never {
   throw new GitHubPublicationPlanRejectedError(reason);
 }
-
