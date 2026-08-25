@@ -2944,7 +2944,7 @@ describeDb("webhook handler behaviour", () => {
     expect(approvals.rows[0]!.c).toBe(0);
   });
 
-  test("approval command revokes a cached actor who left the organization", async () => {
+  test("approval command rejects a departed actor without rewriting cached membership", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
@@ -2968,11 +2968,11 @@ describeDb("webhook handler behaviour", () => {
           [orgId],
         )
       ).rows[0]!.c,
-    ).toBe(0);
+    ).toBe(1);
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
   });
 
-  test("approval command applies a live admin demotion before authorizing", async () => {
+  test("approval command rejects a demoted admin without rewriting cached membership", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
@@ -2989,7 +2989,7 @@ describeDb("webhook handler behaviour", () => {
           [orgId],
         )
       ).rows[0]!.role,
-    ).toBe("member");
+    ).toBe("admin");
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
       "requires an organization admin",
     );
