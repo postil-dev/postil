@@ -952,17 +952,24 @@ describeDb("private monitoring durability", () => {
   });
 
   test("requires a delivered operator alert for every trial grant", async () => {
-    // The alert event key carries the organization's GitHub id, which differs
-    // from the initiating user's id for real (non-personal) organizations.
     const githubActorId = 998877;
     const githubOrgId = 556677;
-    const eventKey = `trial-started:${githubOrgId}`;
+    const otherGithubOrgId = 112233;
+    const wrongOrgEventKey = `trial-started:${githubOrgId}`;
+    const targetEventKey = "monitor-trial-started-target";
     const organization = await pool.query<{ id: string }>(
       `INSERT INTO organizations (slug, name, github_org_id)
        VALUES ('monitor-trial-alert', 'Monitor Trial Alert', $1) RETURNING id`,
       [githubOrgId],
     );
     const orgId = organization.rows[0]!.id;
+    const otherOrganization = await pool.query<{ id: string }>(
+      `INSERT INTO organizations (slug, name, github_org_id)
+       VALUES ('monitor-other-trial-alert', 'Monitor Other Trial Alert', $1)
+       RETURNING id`,
+      [otherGithubOrgId],
+    );
+    const otherOrgId = otherOrganization.rows[0]!.id;
     try {
       await pool.query(
         `INSERT INTO organization_entitlements
@@ -979,21 +986,24 @@ describeDb("private monitoring durability", () => {
       await pool.query(
         `INSERT INTO operator_alert_deliveries
            (event_key, event, org_id, status, created_at, updated_at)
-         VALUES ($1, 'trial_started', $2, 'failed',
+         VALUES ($1, 'trial_started', $2, 'delivered',
+                 now() - interval '2 days', now() - interval '2 days'),
+                ($3, 'trial_started', $4, 'failed',
                  now() - interval '2 days', now() - interval '2 days')`,
-        [eventKey, orgId],
+        [wrongOrgEventKey, otherOrgId, targetEventKey, orgId],
       );
 
       const failed = (await runDatabaseMonitoringChecks(pool)).find(
         (check) => check.key === "trial-alert-gaps",
       );
       expect(failed?.healthy).toBe(false);
+      expect(failed?.detail).toContain("1");
 
       await pool.query(
         `UPDATE operator_alert_deliveries
             SET status = 'delivered', delivered_at = now(), updated_at = now()
           WHERE event_key = $1`,
-        [eventKey],
+        [targetEventKey],
       );
       const delivered = (await runDatabaseMonitoringChecks(pool)).find(
         (check) => check.key === "trial-alert-gaps",
@@ -1001,14 +1011,15 @@ describeDb("private monitoring durability", () => {
       expect(delivered?.healthy).toBe(true);
     } finally {
       await pool.query(
-        "DELETE FROM operator_alert_deliveries WHERE event_key = $1",
-        [eventKey],
+        "DELETE FROM operator_alert_deliveries WHERE event_key = ANY($1::text[])",
+        [[wrongOrgEventKey, targetEventKey]],
       );
       await pool.query(
         "DELETE FROM self_service_trial_grants WHERE org_id = $1",
         [orgId],
       );
       await pool.query("DELETE FROM organizations WHERE id = $1", [orgId]);
+      await pool.query("DELETE FROM organizations WHERE id = $1", [otherOrgId]);
     }
   });
 
