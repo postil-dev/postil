@@ -3035,7 +3035,7 @@
         },
         "hosted_provider_keys_credentials_match_state": {
           "name": "hosted_provider_keys_credentials_match_state",
-          "value": "(\n        \"hosted_provider_keys\".\"state\" = 'provisioning'\n        AND \"hosted_provider_keys\".\"sealed_runtime_key\" IS NULL\n        AND \"hosted_provider_keys\".\"provider_key_hash\" IS NULL\n      ) OR (\n        \"hosted_provider_keys\".\"state\" = 'active'\n        AND \"hosted_provider_keys\".\"sealed_runtime_key\" IS NOT NULL\n        AND \"hosted_provider_keys\".\"provider_key_hash\" IS NOT NULL\n      ) OR (\n        \"hosted_provider_keys\".\"state\" IN ('revocation_pending', 'revoked', 'orphaned')\n        AND \"hosted_provider_keys\".\"sealed_runtime_key\" IS NULL\n        AND \"hosted_provider_keys\".\"provider_key_hash\" IS NOT NULL\n      )"
+          "value": "(\n        \"hosted_provider_keys\".\"state\" = 'provisioning'\n        AND \"hosted_provider_keys\".\"sealed_runtime_key\" IS NULL\n        AND \"hosted_provider_keys\".\"provider_key_hash\" IS NULL\n      ) OR (\n        \"hosted_provider_keys\".\"state\" = 'active'\n        AND \"hosted_provider_keys\".\"sealed_runtime_key\" IS NOT NULL\n        AND \"hosted_provider_keys\".\"provider_key_hash\" IS NOT NULL\n      ) OR (\n        \"hosted_provider_keys\".\"state\" IN ('revocation_pending', 'revoked')\n        AND \"hosted_provider_keys\".\"sealed_runtime_key\" IS NULL\n        AND \"hosted_provider_keys\".\"provider_key_hash\" IS NOT NULL\n      ) OR (\n        \"hosted_provider_keys\".\"state\" = 'orphaned'\n        AND \"hosted_provider_keys\".\"sealed_runtime_key\" IS NULL\n      )"
         }
       },
       "isRLSEnabled": false

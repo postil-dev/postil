@@ -20,9 +20,12 @@ CREATE TABLE "hosted_provider_keys" (
         AND "hosted_provider_keys"."sealed_runtime_key" IS NOT NULL
         AND "hosted_provider_keys"."provider_key_hash" IS NOT NULL
       ) OR (
-        "hosted_provider_keys"."state" IN ('revocation_pending', 'revoked', 'orphaned')
+        "hosted_provider_keys"."state" IN ('revocation_pending', 'revoked')
         AND "hosted_provider_keys"."sealed_runtime_key" IS NULL
         AND "hosted_provider_keys"."provider_key_hash" IS NOT NULL
+      ) OR (
+        "hosted_provider_keys"."state" = 'orphaned'
+        AND "hosted_provider_keys"."sealed_runtime_key" IS NULL
       ))
 );
 --> statement-breakpoint

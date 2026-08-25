@@ -58,6 +58,11 @@ describeDb("hosted provider key lifecycle migration", () => {
       {
         state: "orphaned",
         sealedRuntimeKey: null,
+        providerKeyHash: null,
+      },
+      {
+        state: "orphaned",
+        sealedRuntimeKey: null,
         providerKeyHash: "orphaned-provider-hash",
       },
     ] as const;

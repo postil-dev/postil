@@ -964,9 +964,12 @@ export const hostedProviderKeys = pgTable(
         AND ${t.sealedRuntimeKey} IS NOT NULL
         AND ${t.providerKeyHash} IS NOT NULL
       ) OR (
-        ${t.state} IN ('revocation_pending', 'revoked', 'orphaned')
+        ${t.state} IN ('revocation_pending', 'revoked')
         AND ${t.sealedRuntimeKey} IS NULL
         AND ${t.providerKeyHash} IS NOT NULL
+      ) OR (
+        ${t.state} = 'orphaned'
+        AND ${t.sealedRuntimeKey} IS NULL
       )`,
     ),
   ],
