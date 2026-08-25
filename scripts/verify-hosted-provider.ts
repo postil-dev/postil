@@ -1,5 +1,32 @@
 import { optionalEnv, requireEnv } from "@/lib/env";
 
+const PROVIDER_PREFLIGHT_ATTEMPTS = 3;
+const PROVIDER_PREFLIGHT_RETRY_WINDOW_MS = 10_000;
+
+function providerStatusError(status: number): Error {
+  return new Error(`hosted provider preflight failed with status ${status}`);
+}
+
+function retryAfterMilliseconds(value: string | null, nowMs: number): number | undefined {
+  if (value === null) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1_000;
+  if (!/^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/i.test(trimmed)) {
+    return undefined;
+  }
+  const retryAtMs = Date.parse(trimmed);
+  if (!Number.isFinite(retryAtMs)) return undefined;
+  return Math.max(0, retryAtMs - nowMs);
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function defaultRetryDelayMilliseconds(attempt: number): number {
+  return attempt === 0 ? 500 : 1_000;
+}
+
 /** Resolve the same hosted provider credential aliases as the review worker. */
 export function hostedProviderApiKeyFromEnv(): string {
   return optionalEnv("MODEL_API_KEY") ??
@@ -16,39 +43,69 @@ export async function verifyHostedProvider(input: {
   maxPromptPrice: number;
   maxCompletionPrice: number;
   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  sleepImpl?: (milliseconds: number) => Promise<void>;
+  nowMs?: () => number;
 }): Promise<void> {
-  const response = await (input.fetchImpl ?? fetch)(
-    `${input.apiBase.replace(/\/$/, "")}/chat/completions`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${input.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: input.model,
-        // Reasoning-capable endpoints may spend a small completion budget
-        // before emitting visible text. Keep the probe bounded but large
-        // enough to prove a usable text response.
-        max_tokens: 128,
-        temperature: 0,
-        provider: {
-          data_collection: "deny",
-          zdr: true,
-          order: [input.providerName],
-          allow_fallbacks: false,
-          max_price: {
-            prompt: input.maxPromptPrice,
-            completion: input.maxCompletionPrice,
-          },
+  const fetchProvider = input.fetchImpl ?? fetch;
+  const sleepBeforeRetry = input.sleepImpl ?? sleep;
+  const nowMs = input.nowMs ?? Date.now;
+  const retryWindowStartedAtMs = nowMs();
+  let response: Response | undefined;
+
+  for (let attempt = 0; attempt < PROVIDER_PREFLIGHT_ATTEMPTS; attempt += 1) {
+    response = await fetchProvider(
+      `${input.apiBase.replace(/\/$/, "")}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${input.apiKey}`,
+          "content-type": "application/json",
         },
-        messages: [{ role: "user", content: "Reply with exactly: ready" }],
-      }),
-      signal: AbortSignal.timeout(30_000),
-    },
-  );
+        body: JSON.stringify({
+          model: input.model,
+          // Reasoning-capable endpoints may spend a small completion budget
+          // before emitting visible text. Keep the probe bounded but large
+          // enough to prove a usable text response.
+          max_tokens: 128,
+          temperature: 0,
+          provider: {
+            data_collection: "deny",
+            zdr: true,
+            order: [input.providerName],
+            allow_fallbacks: false,
+            max_price: {
+              prompt: input.maxPromptPrice,
+              completion: input.maxCompletionPrice,
+            },
+          },
+          messages: [{ role: "user", content: "Reply with exactly: ready" }],
+        }),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+
+    if (response.ok) break;
+    if (response.status !== 429 || attempt === PROVIDER_PREFLIGHT_ATTEMPTS - 1) {
+      throw providerStatusError(response.status);
+    }
+
+    const currentTimeMs = nowMs();
+    const retryDelayMs = retryAfterMilliseconds(
+      response.headers.get("retry-after"),
+      currentTimeMs,
+    ) ?? defaultRetryDelayMilliseconds(attempt);
+    const elapsedMs = Math.max(0, currentTimeMs - retryWindowStartedAtMs);
+    if (retryDelayMs > PROVIDER_PREFLIGHT_RETRY_WINDOW_MS - elapsedMs) {
+      throw providerStatusError(response.status);
+    }
+    await sleepBeforeRetry(retryDelayMs);
+  }
+
+  if (response === undefined) {
+    throw new Error("hosted provider preflight did not make a provider request");
+  }
   if (!response.ok) {
-    throw new Error(`hosted provider preflight failed with status ${response.status}`);
+    throw providerStatusError(response.status);
   }
   const payload = (await response.json()) as {
     model?: unknown;
