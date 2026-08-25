@@ -11,11 +11,9 @@ In deploy.yml, `vendor/postil` is populated by fetching the
 `postil-dev/postil-cli` release named by `hostedCliRelease` in
 `src/data/public-cli-release.json` and verifying its Sigstore signature before
 the Docker build runs. That file is the only place the pinned release is
-named. The
-`POSTIL_CLI_REV` build arg only records which release the binary should match,
-for provenance/labels. For local/dev builds, build `postil` from source
-yourself and place the binary here. Keeping the pin in one place, the image,
-avoids the historical failure mode of the CLI revision drifting across the
-worker, the Action, and the docs.
+named. The `POSTIL_CLI_REV` build arg records the matching release for
+provenance labels. For local/dev builds, build `postil` from source yourself
+and place the binary here. The single checked-in authority keeps the worker,
+the Action, and the documentation aligned.
 
 This directory intentionally contains no binary in source control.
