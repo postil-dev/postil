@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -304,6 +304,22 @@ describe("GitHub publication CLI planner", () => {
     }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(
       "private envelope artifact identity changed before cleanup",
     );
+  });
+
+  test("removes its private directory when initialization fails", async () => {
+    const workingDirectory = await temporaryDirectory();
+    await expect(runGitHubPublicationCliPlanning({
+      execute: async () => executionResult(0),
+      environment: {},
+      workingDirectory,
+      expected,
+      inputIdentity,
+    }, {
+      afterArtifactDirectoryCreated: async (artifactDirectory) => {
+        await chmod(artifactDirectory, 0o755);
+      },
+    })).rejects.toThrow("private artifact directory is not owner-only");
+    await expectNoControllerArtifacts(workingDirectory);
   });
 
   test("rejects exit, envelope, and advisory contradictions", async () => {
