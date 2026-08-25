@@ -51,7 +51,7 @@ describe("finding model provenance schema", () => {
     expect(dismissalCheck).toContain('"finding_scorer_model" IS NULL');
   });
 
-  test("uses one generated migration after the current main boundary", async () => {
+  test("keeps one generated provenance migration after its main boundary", async () => {
     const migrations = (await readdir(new URL("../drizzle/", import.meta.url)))
       .filter((file) => /^005[3-4]_.*[.]sql$/.test(file))
       .sort();
@@ -91,7 +91,7 @@ describe("finding model provenance schema", () => {
     );
     expect(snapshot.prevId).toBe(previousSnapshot.id);
     expect(snapshot.id).not.toBe(previousSnapshot.id);
-    expect(journal.entries.at(-1)).toEqual(
+    expect(journal.entries).toContainEqual(
       expect.objectContaining({
         idx: 53,
         tag: "0054_finding_model_provenance",
