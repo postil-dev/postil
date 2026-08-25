@@ -77,6 +77,34 @@ describe("GitHub publication plan", () => {
     expectRejected(plan, "target SHA");
   });
 
+  test("accepts GitHub repository grammar and rejects traversal segments", () => {
+    const accepted = validPlan();
+    accepted.repository.fullName = "owner_emu/.github";
+    resignIntent(accepted);
+    expect(parseGitHubPublicationPlan(accepted, {
+      ...expected,
+      repositoryFullName: "owner_emu/.github",
+    })).toEqual(accepted);
+
+    for (const fullName of [
+      "../repo",
+      "acme/.",
+      "acme/..",
+      "acme/repo/name",
+      "acme/%2e%2e",
+      "acme space/repo",
+      "acme/repo space",
+      "-acme/repo",
+      "acme--team/repo",
+      `acme/${"r".repeat(101)}`,
+    ]) {
+      const malformed = validPlan();
+      malformed.repository.fullName = fullName;
+      resignIntent(malformed);
+      expectRejected(malformed, "repository full name");
+    }
+  });
+
   test("rejects a lifecycle digest that omits canonical null and empty fields", () => {
     const plan = validPlan();
     plan.lifecycleReceipt.digest = jsonDigest({
@@ -124,6 +152,32 @@ describe("GitHub publication plan", () => {
     resignDesired(unsafeUrl, 1);
     resignManifestAndIntent(unsafeUrl);
     expectRejected(unsafeUrl, "HTTP or HTTPS");
+  });
+
+  test("accepts bounded HTTP details URLs and rejects embedded credentials", () => {
+    const prefix = "http://example.test/";
+    const exactUrl = prefix + "x".repeat(2_048 - Buffer.byteLength(prefix));
+    const accepted = validPlan();
+    accepted.operations[0]!.detailsUrl = exactUrl;
+    accepted.operations[1]!.detailsUrl = exactUrl;
+    resignDesired(accepted, 0);
+    resignDesired(accepted, 1);
+    resignManifestAndIntent(accepted);
+    expect(parseGitHubPublicationPlan(accepted, expected)).toEqual(accepted);
+
+    for (const detailsUrl of [
+      `${exactUrl}x`,
+      "https://user@example.test/run",
+      "https://user:password@example.test/run",
+    ]) {
+      const rejected = validPlan();
+      rejected.operations[0]!.detailsUrl = detailsUrl;
+      rejected.operations[1]!.detailsUrl = detailsUrl;
+      resignDesired(rejected, 0);
+      resignDesired(rejected, 1);
+      resignManifestAndIntent(rejected);
+      expectRejected(rejected);
+    }
   });
 
   test("rejects desired-payload substitution", () => {
@@ -245,6 +299,123 @@ describe("GitHub publication plan", () => {
     resignDesired(comments, 1);
     resignManifestAndIntent(comments);
     expectRejected(comments, "starts after");
+  });
+
+  test("accepts 64 comments and annotations at the exact text and path bounds", () => {
+    const reviewPlan = validTwoOperationPlan();
+    const reviewOperation = reviewPlan.operations[1]!;
+    const reviewMarkerValue = reviewOperation.reconciliation.markers[0];
+    reviewOperation.payload.body = reviewMarkerValue +
+      "x".repeat(128 * 1024 - Buffer.byteLength(reviewMarkerValue));
+    reviewOperation.payload.comments = Array.from(
+      { length: 64 },
+      (_, index) => ({
+        path: index === 0 ? "p".repeat(4_096) : `src/file-${index}.ts`,
+        line: index + 1,
+        side: "RIGHT",
+        body: `Finding ${index}`,
+      }),
+    );
+    resignDesired(reviewPlan, 1);
+    resignManifestAndIntent(reviewPlan);
+    expect(parseGitHubPublicationPlan(reviewPlan, expected)).toEqual(reviewPlan);
+
+    const checkPlan = validPlan();
+    checkPlan.operations[1]!.annotations = Array.from(
+      { length: 64 },
+      (_, index) => ({
+        path: index === 0 ? "p".repeat(4_096) : `src/file-${index}.ts`,
+        startLine: index + 1,
+        endLine: index + 1,
+        annotationLevel: "warning",
+        title: `Finding ${index}`,
+        message: `Review finding ${index}`,
+      }),
+    );
+    checkPlan.operations[1]!.summary = "s".repeat(65_535);
+    resignDesired(checkPlan, 1);
+    resignManifestAndIntent(checkPlan);
+    expect(parseGitHubPublicationPlan(checkPlan, expected)).toEqual(checkPlan);
+  });
+
+  test("rejects the first comment, annotation, text, and path beyond plan limits", () => {
+    const comments = validTwoOperationPlan();
+    comments.operations[1]!.payload.comments = Array.from(
+      { length: 65 },
+      (_, index) => ({
+        path: `src/file-${index}.ts`,
+        line: index + 1,
+        side: "RIGHT",
+        body: `Finding ${index}`,
+      }),
+    );
+    resignDesired(comments, 1);
+    resignManifestAndIntent(comments);
+    expectRejected(comments);
+
+    const annotations = validPlan();
+    annotations.operations[1]!.annotations = Array.from(
+      { length: 65 },
+      (_, index) => ({
+        path: `src/file-${index}.ts`,
+        startLine: index + 1,
+        endLine: index + 1,
+        annotationLevel: "warning",
+        title: `Finding ${index}`,
+        message: `Review finding ${index}`,
+      }),
+    );
+    resignDesired(annotations, 1);
+    resignManifestAndIntent(annotations);
+    expectRejected(annotations);
+
+    const checkSummary = validPlan();
+    checkSummary.operations[1]!.summary = "s".repeat(65_536);
+    resignDesired(checkSummary, 1);
+    resignManifestAndIntent(checkSummary);
+    expectRejected(checkSummary);
+
+    const gateSummary = validPlan();
+    gateSummary.gateAnalysis.summary = "s".repeat(65_536);
+    resignIntent(gateSummary);
+    expectRejected(gateSummary);
+
+    for (const [field, value] of [
+      ["body", "x".repeat(128 * 1024 + 1)],
+      ["path", "p".repeat(4_097)],
+    ] as const) {
+      const plan = validTwoOperationPlan();
+      if (field === "body") {
+        plan.operations[1]!.payload.body = value;
+      } else {
+        plan.operations[1]!.payload.comments = [{
+          path: value,
+          line: 1,
+          side: "RIGHT",
+          body: "Finding",
+        }];
+      }
+      resignDesired(plan, 1);
+      resignManifestAndIntent(plan);
+      expectRejected(plan);
+    }
+  });
+
+  test("rejects a composite review whose escaped JSON exceeds 4 MiB", () => {
+    const plan = validTwoOperationPlan();
+    plan.operations[1]!.payload.comments = Array.from(
+      { length: 31 },
+      (_, index) => ({
+        path: `src/file-${index}.ts`,
+        line: index + 1,
+        side: "RIGHT",
+        body: "\\".repeat(128 * 1024),
+      }),
+    );
+    resignDesired(plan, 1);
+    resignManifestAndIntent(plan);
+
+    expectRejected(plan, "GitHub request byte limit");
   });
 });
 
