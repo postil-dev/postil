@@ -9,7 +9,7 @@ import {
   normalizeUserCodeInput,
 } from "@/lib/cli-auth";
 import { getDb, schema } from "@/lib/db";
-import { getVerifiedSessionUser } from "@/lib/session";
+import { getVerifiedSessionUser, loginRedirectPath } from "@/lib/session";
 import { approveDeviceAuthorizationAction, denyDeviceAuthorizationAction } from "./actions";
 
 export const metadata: Metadata = {
@@ -30,13 +30,12 @@ export default async function CliAuthorizePage({
   // and GitHub organization membership, same as every other account page.
   const verification = await getVerifiedSessionUser();
   if (!verification.ok) {
-    const next = params.code
-      ? `/cli/authorize?code=${encodeURIComponent(params.code)}`
-      : "/cli/authorize";
     redirect(
-      verification.reason === "verification_unavailable"
-        ? `/login?next=${encodeURIComponent(next)}&error=membership_verification`
-        : `/login?next=${encodeURIComponent(next)}`,
+      await loginRedirectPath(
+        verification.reason === "verification_unavailable"
+          ? "membership_verification"
+          : undefined,
+      ),
     );
   }
   const user = verification.user;
@@ -73,7 +72,7 @@ export default async function CliAuthorizePage({
       />
     );
   }
-  if (row.expiresAt <= new Date()) {
+  if (row.status === "expired") {
     return (
       <StatusCard
         title="Code expired"

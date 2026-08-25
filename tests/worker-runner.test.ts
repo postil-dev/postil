@@ -10,6 +10,12 @@ const OLD_ENV = { ...process.env };
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
+const finiteRetrySchedules: Array<{
+  id: number;
+  attempts: number;
+  maxAttempts: number;
+  delayMs: number;
+}> = [];
 const failureFollowups: Array<Record<string, unknown>> = [];
 const permanentFailures: number[] = [];
 const retriedIndefinitely: Array<{ id: number; error: string }> = [];
@@ -38,6 +44,7 @@ let webhookDeliveryToLoad:
   | { deliveryId: string; event: string; action: string | null; payload: unknown }
   | undefined;
 let webhookDispatchError: Error | undefined;
+let webhookDispatchOptions: Record<string, unknown> | undefined;
 const webhookDeliveriesCompleted: string[] = [];
 let reviewTiming:
   | { queuedAt: Date; startedAt: Date; lease?: ClaimedJob }
@@ -50,6 +57,7 @@ const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
 class MockReviewPublicationReconciliationError extends Error {}
+class MockBoundedJobRetryError extends Error {}
 class MockPermanentJobError extends Error {
   permanent = true;
 }
@@ -109,6 +117,8 @@ mock.module("@/lib/customer-notification-email", () => ({
 
 mock.module("@/lib/queue", () => ({
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
+  isBoundedJobRetryError: (error: unknown) =>
+    error instanceof MockBoundedJobRetryError,
   isPermanentJobError: (error: unknown) =>
     error instanceof MockPermanentJobError,
   claimJob: async (
@@ -147,6 +157,23 @@ mock.module("@/lib/queue", () => ({
     if (options?.failureFollowup) {
       failureFollowups.push(options.failureFollowup.payload);
     }
+    if (
+      job.kind === "webhook-dispatch" &&
+      webhookDispatchError instanceof MockBoundedJobRetryError &&
+      !options?.permanent &&
+      job.attempts < job.maxAttempts
+    ) {
+      finiteRetrySchedules.push({
+        id: job.id,
+        attempts: job.attempts,
+        maxAttempts: job.maxAttempts,
+        delayMs: Math.min(
+          30_000 * 2 ** Math.max(job.attempts - 1, 0),
+          15 * 60_000,
+        ),
+      });
+      return "retried";
+    }
     return "failed";
   },
   retryJobIndefinitely: async (
@@ -174,7 +201,12 @@ mock.module("@/worker/watchdog", () => ({
 }));
 
 mock.module("@/lib/github/webhook-handler", () => ({
-  dispatchWebhookDelivery: async () => {
+  dispatchWebhookDelivery: async (
+    _event: string,
+    _payload: unknown,
+    options: Record<string, unknown>,
+  ) => {
+    webhookDispatchOptions = options;
     if (webhookDispatchError) throw webhookDispatchError;
   },
 }));
@@ -284,6 +316,7 @@ beforeEach(() => {
   jobs.length = 0;
   completed.length = 0;
   failed.length = 0;
+  finiteRetrySchedules.length = 0;
   failureFollowups.length = 0;
   permanentFailures.length = 0;
   retriedIndefinitely.length = 0;
@@ -307,6 +340,7 @@ beforeEach(() => {
   webhookDeliveryLoadError = undefined;
   webhookDeliveryToLoad = undefined;
   webhookDispatchError = undefined;
+  webhookDispatchOptions = undefined;
   webhookDeliveriesCompleted.length = 0;
   reviewTiming = undefined;
   reviewProcessGroup = undefined;
@@ -442,8 +476,9 @@ describe("drainQueueOnce", () => {
     expect(worker).toContain("activeControllers.set(job.id, controller)");
     expect(worker).toContain("requeueableReviewIds.add(job.id)");
     expect(worker).toContain("requeueableReviewIds.delete(job.id)");
-    expect(worker).toContain("if (shuttingDown && job)");
-    expect(worker).toContain("[job.id]");
+    // A claim that lands during shutdown is requeued before it is started.
+    expect(worker).toContain('if (shuttingDown && outcome.status === "claimed")');
+    expect(worker).toContain("[outcome.job.id]");
     expect(shutdown).toContain("controller.abort()");
     expect(shutdown).toContain("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)");
     expect(shutdown).toContain(
@@ -612,6 +647,69 @@ describe("drainQueueOnce", () => {
     ]);
     expect(failed).toEqual([]);
     expect(operationalWarnings).toEqual(["job_retrying"]);
+  });
+
+  test("passes the claimed attempt into webhook state evaluation", async () => {
+    const job = reviewJob(24);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-24" };
+    job.attempts = 3;
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-24",
+      event: "pull_request",
+      action: "reopened",
+      payload: {},
+    };
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDispatchOptions).toEqual({
+      deliveryId: "delivery-24",
+      triggerFollowupDrain: false,
+      attempt: 3,
+    });
+    expect(webhookDeliveriesCompleted).toEqual(["delivery-24"]);
+    expect(completed).toEqual([24]);
+    expect(retriedIndefinitely).toEqual([]);
+    expect(failed).toEqual([]);
+  });
+
+  test("uses finite queue backoff for equal-second webhook ambiguity", async () => {
+    webhookDispatchError = new MockBoundedJobRetryError(
+      "GitHub pull request octo/repo#7 has not converged for closed",
+    );
+
+    for (const attempts of [1, 2]) {
+      const job = reviewJob(24 + attempts);
+      job.kind = "webhook-dispatch";
+      job.payload = { deliveryId: `delivery-${24 + attempts}` };
+      job.attempts = attempts;
+      webhookDeliveryToLoad = {
+        deliveryId: `delivery-${24 + attempts}`,
+        event: "pull_request",
+        action: "closed",
+        payload: {},
+      };
+      await runClaimedJob(job, "worker 0", "worker");
+    }
+
+    expect(webhookDeliveriesCompleted).toEqual([]);
+    expect(failed).toEqual([
+      {
+        id: 25,
+        error: "GitHub pull request octo/repo#7 has not converged for closed",
+      },
+      {
+        id: 26,
+        error: "GitHub pull request octo/repo#7 has not converged for closed",
+      },
+    ]);
+    expect(finiteRetrySchedules).toEqual([
+      { id: 25, attempts: 1, maxAttempts: 3, delayMs: 30_000 },
+      { id: 26, attempts: 2, maxAttempts: 3, delayMs: 60_000 },
+    ]);
+    expect(retriedIndefinitely).toEqual([]);
+    expect(operationalWarnings).toEqual(["job_retrying", "job_retrying"]);
   });
 
   test("completes a webhook delivery whose forge target stays gone", async () => {

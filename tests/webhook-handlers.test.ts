@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
+import type { PullRequestReviewContext } from "@/lib/github/checks";
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   signWebhookBody,
@@ -60,7 +61,7 @@ let liveMembershipOrgId = 999;
 let liveMembershipOrgLogin = "octo";
 let membershipFetchCount = 0;
 let pullRequestReviewContextFetchCount = 0;
-let pullRequestReviewContext = {
+let pullRequestReviewContext: PullRequestReviewContext = {
   open: true,
   merged: false,
   headSha: "head-sha",
@@ -68,6 +69,7 @@ let pullRequestReviewContext = {
   draft: false,
   authorGithubId: 501,
   authorLogin: "admin",
+  updatedAt: "2026-08-24T12:34:56Z",
 };
 let reviewCommentRoot = {
   id: 8800,
@@ -147,9 +149,9 @@ const {
 } = await import("@/lib/finding-feedback");
 const { scheduleFindingFeedbackDigest } = await import("@/lib/operator-alerts");
 
-async function post(event: string, body: object, deliveryId: string): Promise<Response> {
+async function accept(event: string, body: object, deliveryId: string): Promise<Response> {
   const raw = JSON.stringify(body);
-  const response = await POST(
+  return POST(
     new Request("https://postil.dev/api/webhooks/github", {
       method: "POST",
       body: raw,
@@ -161,6 +163,10 @@ async function post(event: string, body: object, deliveryId: string): Promise<Re
       },
     }),
   );
+}
+
+async function post(event: string, body: object, deliveryId: string): Promise<Response> {
+  const response = await accept(event, body, deliveryId);
   const result = (await response.clone().json()) as { queued?: boolean };
   if (result.queued) {
     const job = await claimJob(getPool(), "webhook-handler-test", ["webhook-dispatch"]);
@@ -262,6 +268,7 @@ describeDb("webhook handler behaviour", () => {
       draft: false,
       authorGithubId: 501,
       authorLogin: "admin",
+      updatedAt: "2026-08-24T12:34:56Z",
     };
     reviewCommentRoot = {
       id: 8800,
@@ -338,6 +345,22 @@ describeDb("webhook handler behaviour", () => {
       [installationId, githubRepoId, fullName, privateRepository],
     );
     return Number(repo.rows[0]!.id);
+  }
+
+  async function runPendingWebhookDispatch(
+    deliveryId: string,
+    workerId: string,
+  ): Promise<void> {
+    await pool.query(
+      `UPDATE jobs
+          SET run_after = now()
+        WHERE kind = 'webhook-dispatch'
+          AND payload->>'deliveryId' = $1`,
+      [deliveryId],
+    );
+    const job = await claimJob(pool, workerId, ["webhook-dispatch"]);
+    expect(job?.kind).toBe("webhook-dispatch");
+    await runClaimedJob(job!, workerId, "web");
   }
 
   async function seedSharedSnapshot(
@@ -997,6 +1020,606 @@ describeDb("webhook handler behaviour", () => {
     });
   });
 
+  test("a newer reopened event retries until the live action converges", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 252);
+    await seedRepo(inst, 7880, "octo/reopened");
+    pullRequestReviewContext = {
+      open: false,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:55Z",
+    };
+
+    const response = await post(
+      "pull_request",
+      {
+        action: "reopened",
+        installation: { id: 252 },
+        repository: { id: 7880, full_name: "octo/reopened", private: false },
+        pull_request: {
+          number: 9,
+          head: { sha: "same-head" },
+          base: { sha: "base" },
+          updated_at: "2026-08-24T12:34:56Z",
+        },
+      },
+      "delivery-reopened-lagging",
+    );
+
+    expect(response.status).toBe(200);
+    const deferred = await pool.query<{
+      deliveryCompleted: boolean;
+      dispatchStatus: string;
+      attempts: number;
+      reviewJobs: number;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS "deliveryCompleted",
+              dispatch.status AS "dispatchStatus",
+              dispatch.attempts,
+              (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS "reviewJobs"
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-reopened-lagging'`,
+    );
+    expect(deferred.rows[0]).toEqual({
+      deliveryCompleted: false,
+      dispatchStatus: "queued",
+      attempts: 1,
+      reviewJobs: 0,
+    });
+
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      open: true,
+      updatedAt: "2026-08-24T12:34:56Z",
+    };
+    await runPendingWebhookDispatch(
+      "delivery-reopened-lagging",
+      "webhook-reopened-retry",
+    );
+
+    const completed = await pool.query<{
+      deliveryCompleted: boolean;
+      dispatchStatus: string;
+      reviewStatus: string;
+      forceFullReview: boolean;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS "deliveryCompleted",
+              dispatch.status AS "dispatchStatus",
+              review.status AS "reviewStatus",
+              (review.payload->>'forceFullReview')::boolean AS "forceFullReview"
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+         JOIN jobs review
+           ON review.kind = 'review'
+          AND review.payload->>'sourceDeliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-reopened-lagging'`,
+    );
+    expect(completed.rows[0]).toEqual({
+      deliveryCompleted: true,
+      dispatchStatus: "done",
+      reviewStatus: "queued",
+      forceFullReview: true,
+    });
+  });
+
+  test("an older closed event preserves the newer live pull request", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 253);
+    const repoId = await seedRepo(inst, 7881, "octo/stale-close");
+    await pool.query(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status, queued_at, started_at)
+       VALUES ($1, 10, 'same-head', 'base', 'running', now(), now())`,
+      [repoId],
+    );
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:56Z",
+    };
+
+    expect(
+      (
+        await post(
+          "pull_request",
+          {
+            action: "closed",
+            installation: { id: 253 },
+            repository: { id: 7881, full_name: "octo/stale-close", private: false },
+            pull_request: {
+              number: 10,
+              head: { sha: "same-head" },
+              base: { sha: "base" },
+              updated_at: "2026-08-24T12:34:55Z",
+            },
+          },
+          "delivery-stale-close",
+        )
+      ).status,
+    ).toBe(200);
+
+    const state = await pool.query<{
+      deliveryCompleted: boolean;
+      dispatchStatus: string;
+      reviewStatus: string;
+      reviewJobs: number;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS "deliveryCompleted",
+              dispatch.status AS "dispatchStatus",
+              (SELECT status FROM reviews WHERE repository_id = $1) AS "reviewStatus",
+              (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS "reviewJobs"
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-stale-close'`,
+      [repoId],
+    );
+    expect(state.rows[0]).toEqual({
+      deliveryCompleted: true,
+      dispatchStatus: "done",
+      reviewStatus: "running",
+      reviewJobs: 0,
+    });
+    expect(completedCheckRuns).toEqual([]);
+  });
+
+  test("an equal contradictory close completes as ignored after 30s and 60s retries", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 254);
+    const repoId = await seedRepo(inst, 7882, "octo/equal-state");
+    await pool.query(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status, queued_at, started_at)
+       VALUES ($1, 11, 'same-head', 'base', 'running', now(), now())`,
+      [repoId],
+    );
+    const respond = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload)
+       VALUES ('respond', $1::jsonb) RETURNING id`,
+      [JSON.stringify({
+        installationId: 254,
+        sourceInstallationId: inst,
+        sourceOrgId: orgId,
+        githubRepoId: 7882,
+        repoFullName: "octo/equal-state",
+        number: 11,
+        isPr: true,
+        sourceHeadSha: "same-head",
+      })],
+    );
+    await pool.query(
+      `INSERT INTO respond_deliveries
+         (job_id, repository_id, source_org_id, source_installation_id,
+          source_github_installation_id, source_github_repo_id, repo_full_name,
+          issue_number, is_pr, source_head_sha, body)
+       VALUES ($1, $2, $3, $4, 254, 7882, 'octo/equal-state', 11, true,
+               'same-head', 'queued reply')`,
+      [respond.rows[0]!.id, repoId, orgId, inst],
+    );
+    const repositoryVersion = await pool.query<{ version: string }>(
+      "SELECT xmin::text AS version FROM repositories WHERE id = $1",
+      [repoId],
+    );
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:56.100Z",
+    };
+
+    expect(
+      (
+        await accept(
+          "pull_request",
+          {
+            action: "closed",
+            installation: { id: 254 },
+            repository: { id: 7882, full_name: "octo/equal-state", private: false },
+            pull_request: {
+              number: 11,
+              head: { sha: "same-head" },
+              base: { sha: "base" },
+              updated_at: "2026-08-24T12:34:56.900Z",
+            },
+          },
+          "delivery-equal-state",
+        )
+      ).status,
+    ).toBe(200);
+
+    await pool.query(
+      `UPDATE jobs
+          SET created_at = now() - interval '2 hours'
+        WHERE kind = 'webhook-dispatch'
+          AND payload->>'deliveryId' = 'delivery-equal-state'`,
+    );
+    await runPendingWebhookDispatch("delivery-equal-state", "webhook-equal-first");
+
+    let state = await pool.query<{
+      status: string;
+      attempts: number;
+      completed: boolean;
+      delayMs: number;
+      lastError: string | null;
+    }>(
+      `SELECT dispatch.status, dispatch.attempts,
+              delivery.completed_at IS NOT NULL AS completed,
+              round(extract(epoch FROM (dispatch.run_after - clock_timestamp())) * 1000)::int
+                AS "delayMs",
+              dispatch.last_error AS "lastError"
+         FROM jobs dispatch
+         JOIN webhook_deliveries delivery
+           ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+        WHERE dispatch.kind = 'webhook-dispatch'
+          AND delivery.delivery_id = 'delivery-equal-state'`,
+    );
+    expect(state.rows[0]).toMatchObject({
+      status: "queued",
+      attempts: 1,
+      completed: false,
+      lastError: "GitHub pull request octo/equal-state#11 has not converged for closed",
+    });
+    expect(state.rows[0]!.delayMs).toBeGreaterThanOrEqual(28_000);
+    expect(state.rows[0]!.delayMs).toBeLessThanOrEqual(30_000);
+
+    await runPendingWebhookDispatch("delivery-equal-state", "webhook-equal-second");
+    state = await pool.query<{
+      status: string;
+      attempts: number;
+      completed: boolean;
+      delayMs: number;
+      lastError: string | null;
+    }>(
+      `SELECT dispatch.status, dispatch.attempts,
+              delivery.completed_at IS NOT NULL AS completed,
+              round(extract(epoch FROM (dispatch.run_after - clock_timestamp())) * 1000)::int
+                AS "delayMs",
+              dispatch.last_error AS "lastError"
+         FROM jobs dispatch
+         JOIN webhook_deliveries delivery
+           ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+        WHERE dispatch.kind = 'webhook-dispatch'
+          AND delivery.delivery_id = 'delivery-equal-state'`,
+    );
+    expect(state.rows[0]).toMatchObject({
+      status: "queued",
+      attempts: 2,
+      completed: false,
+      lastError: "GitHub pull request octo/equal-state#11 has not converged for closed",
+    });
+    expect(state.rows[0]!.delayMs).toBeGreaterThanOrEqual(58_000);
+    expect(state.rows[0]!.delayMs).toBeLessThanOrEqual(60_000);
+
+    await runPendingWebhookDispatch("delivery-equal-state", "webhook-equal-terminal");
+    state = await pool.query<{
+      status: string;
+      attempts: number;
+      completed: boolean;
+      delayMs: number;
+      lastError: string | null;
+    }>(
+      `SELECT dispatch.status, dispatch.attempts,
+              delivery.completed_at IS NOT NULL AS completed,
+              round(extract(epoch FROM (dispatch.run_after - clock_timestamp())) * 1000)::int
+                AS "delayMs",
+              dispatch.last_error AS "lastError"
+         FROM jobs dispatch
+         JOIN webhook_deliveries delivery
+           ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+        WHERE dispatch.kind = 'webhook-dispatch'
+          AND delivery.delivery_id = 'delivery-equal-state'`,
+    );
+    expect(state.rows[0]).toMatchObject({
+      status: "done",
+      attempts: 3,
+      completed: true,
+      lastError: null,
+    });
+    expect(pullRequestReviewContextFetchCount).toBe(3);
+    const sideEffects = await pool.query<{
+      repositoryVersion: string;
+      reviewStatus: string;
+      reviewFinished: boolean;
+      respondStatus: string;
+      deliveryState: string;
+      reviewJobs: number;
+    }>(
+      `SELECT
+         (SELECT xmin::text FROM repositories WHERE id = $1) AS "repositoryVersion",
+         (SELECT status FROM reviews WHERE repository_id = $1) AS "reviewStatus",
+         (SELECT finished_at IS NOT NULL FROM reviews WHERE repository_id = $1)
+           AS "reviewFinished",
+         (SELECT status FROM jobs WHERE id = $2) AS "respondStatus",
+         (SELECT state FROM respond_deliveries WHERE job_id = $2) AS "deliveryState",
+         (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS "reviewJobs"`,
+      [repoId, respond.rows[0]!.id],
+    );
+    expect(sideEffects.rows[0]).toEqual({
+      repositoryVersion: repositoryVersion.rows[0]!.version,
+      reviewStatus: "running",
+      reviewFinished: false,
+      respondStatus: "queued",
+      deliveryState: "prepared",
+      reviewJobs: 0,
+    });
+    expect(completedCheckRuns).toEqual([]);
+  });
+
+  test("a newer event timestamp does not delay an already converged event", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 255);
+    await seedRepo(inst, 7883, "octo/converged");
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:56Z",
+    };
+
+    expect(
+      (
+        await post(
+          "pull_request",
+          {
+            action: "opened",
+            installation: { id: 255 },
+            repository: { id: 7883, full_name: "octo/converged", private: false },
+            pull_request: {
+              number: 12,
+              head: { sha: "same-head" },
+              base: { sha: "base" },
+              updated_at: "2026-08-24T12:34:57Z",
+            },
+          },
+          "delivery-converged",
+        )
+      ).status,
+    ).toBe(200);
+
+    const result = await pool.query<{ attempts: number; status: string; reviews: number }>(
+      `SELECT dispatch.attempts, dispatch.status,
+              (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS reviews
+         FROM jobs dispatch
+        WHERE dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = 'delivery-converged'`,
+    );
+    expect(result.rows[0]).toEqual({ attempts: 1, status: "done", reviews: 1 });
+  });
+
+  test("a newer ref snapshot retries until the live refs converge", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 256);
+    await seedRepo(inst, 7884, "octo/ref-convergence");
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "old-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:55Z",
+    };
+
+    expect(
+      (
+        await post(
+          "pull_request",
+          {
+            action: "synchronize",
+            installation: { id: 256 },
+            repository: { id: 7884, full_name: "octo/ref-convergence", private: false },
+            pull_request: {
+              number: 13,
+              head: { sha: "new-head" },
+              base: { sha: "base" },
+              updated_at: "2026-08-24T12:34:56Z",
+            },
+          },
+          "delivery-ref-convergence",
+        )
+      ).status,
+    ).toBe(200);
+
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      headSha: "new-head",
+      updatedAt: "2026-08-24T12:34:56Z",
+    };
+    await runPendingWebhookDispatch(
+      "delivery-ref-convergence",
+      "webhook-ref-convergence",
+    );
+    const jobs = await pool.query<{ headSha: string }>(
+      `SELECT payload->>'headSha' AS "headSha"
+         FROM jobs
+        WHERE kind = 'review'`,
+    );
+    expect(jobs.rows).toEqual([{ headSha: "new-head" }]);
+  });
+
+  test("non-newer contradictory refs fail closed with bounded equal-time retries", async () => {
+    const orgId = await seedOrg();
+    const cases = [
+      {
+        name: "live-newer",
+        installationId: 258,
+        githubRepoId: 7886,
+        eventUpdatedAt: "2026-08-24T12:34:55Z",
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+        expectedAttempts: 1,
+      },
+      {
+        name: "unknown",
+        installationId: 259,
+        githubRepoId: 7887,
+        eventUpdatedAt: "2026-08-24",
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+        expectedAttempts: 1,
+      },
+      {
+        name: "equal",
+        installationId: 260,
+        githubRepoId: 7888,
+        eventUpdatedAt: "2026-08-24T12:34:56.900Z",
+        liveUpdatedAt: "2026-08-24T12:34:56.100Z",
+        expectedAttempts: 3,
+      },
+    ];
+
+    for (const item of cases) {
+      const installation = await seedInstallation(orgId, item.installationId);
+      await seedRepo(
+        installation,
+        item.githubRepoId,
+        `octo/ref-${item.name}`,
+      );
+      pullRequestReviewContext = {
+        open: true,
+        merged: false,
+        headSha: "live-head",
+        baseSha: "base",
+        draft: false,
+        updatedAt: item.liveUpdatedAt,
+      };
+      const deliveryId = `delivery-ref-${item.name}`;
+      expect(
+        (
+          await post(
+            "pull_request",
+            {
+              action: "synchronize",
+              installation: { id: item.installationId },
+              repository: {
+                id: item.githubRepoId,
+                full_name: `octo/ref-${item.name}`,
+                private: false,
+              },
+              pull_request: {
+                number: 15,
+                head: { sha: "event-head" },
+                base: { sha: "base" },
+                updated_at: item.eventUpdatedAt,
+              },
+            },
+            deliveryId,
+          )
+        ).status,
+      ).toBe(200);
+
+      if (item.name === "equal") {
+        await runPendingWebhookDispatch(deliveryId, "webhook-ref-equal-second");
+        await runPendingWebhookDispatch(deliveryId, "webhook-ref-equal-terminal");
+      }
+
+      const state = await pool.query<{
+        status: string;
+        attempts: number;
+        completed: boolean;
+      }>(
+        `SELECT dispatch.status, dispatch.attempts,
+                delivery.completed_at IS NOT NULL AS completed
+           FROM jobs dispatch
+           JOIN webhook_deliveries delivery
+             ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+          WHERE dispatch.kind = 'webhook-dispatch'
+            AND delivery.delivery_id = $1`,
+        [deliveryId],
+      );
+      expect(state.rows[0]).toEqual({
+        status: "done",
+        attempts: item.expectedAttempts,
+        completed: true,
+      });
+    }
+
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'review'")).rowCount).toBe(
+      0,
+    );
+  });
+
+  test("unknown timestamp ordering keeps contradictory events ignored", async () => {
+    const cases = [
+      {
+        deliveryId: "delivery-missing-event-time",
+        eventUpdatedAt: undefined,
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+      },
+      {
+        deliveryId: "delivery-malformed-event-time",
+        eventUpdatedAt: "not-a-timestamp",
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+      },
+      {
+        deliveryId: "delivery-missing-live-time",
+        eventUpdatedAt: "2026-08-24T12:34:56Z",
+        liveUpdatedAt: undefined,
+      },
+    ];
+
+    for (const item of cases) {
+      pullRequestReviewContext = {
+        open: false,
+        merged: false,
+        headSha: "same-head",
+        baseSha: "base",
+        draft: false,
+        ...(item.liveUpdatedAt ? { updatedAt: item.liveUpdatedAt } : {}),
+      };
+      expect(
+        (
+          await post(
+            "pull_request",
+            {
+              action: "reopened",
+              installation: { id: 257 },
+              repository: { id: 7885, full_name: "octo/unknown-time", private: false },
+              pull_request: {
+                number: 14,
+                head: { sha: "same-head" },
+                base: { sha: "base" },
+                ...(item.eventUpdatedAt === undefined
+                  ? {}
+                  : { updated_at: item.eventUpdatedAt }),
+              },
+            },
+            item.deliveryId,
+          )
+        ).status,
+      ).toBe(200);
+    }
+
+    const states = await pool.query<{ status: string; attempts: number; completed: boolean }>(
+      `SELECT dispatch.status, dispatch.attempts,
+              delivery.completed_at IS NOT NULL AS completed
+         FROM jobs dispatch
+         JOIN webhook_deliveries delivery
+           ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+        WHERE dispatch.kind = 'webhook-dispatch'
+        ORDER BY delivery.delivery_id`,
+    );
+    expect(states.rows).toEqual([
+      { status: "done", attempts: 1, completed: true },
+      { status: "done", attempts: 1, completed: true },
+      { status: "done", attempts: 1, completed: true },
+    ]);
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'review'")).rowCount).toBe(0);
+  });
+
   for (const action of ["opened", "synchronize"] as const) {
     test(`signed pull_request ${action} stays queued through exact release activation`, async () => {
       const releaseSha = action === "opened" ? "1".repeat(40) : "2".repeat(40);
@@ -1422,16 +2045,22 @@ describeDb("webhook handler behaviour", () => {
         confidence: 0.9, title: "Incorrect finding", body: "The branch is unreachable.",
       }],
       counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      scorerModel: "scorer/webhook",
     }));
     await pool.query("UPDATE reviews SET author_github_id = 501 WHERE id = $1", [reviewId]);
 
     expect((await dismissalComment("dismissal-success")).status).toBe(200);
     const dismissal = await pool.query<{
-      verb: string; reason_tag: string; author_self_dismissal: boolean; finding_model: string;
-    }>("SELECT verb, reason_tag, author_self_dismissal, finding_model FROM finding_approvals WHERE review_id = $1", [reviewId]);
+      verb: string;
+      reason_tag: string;
+      author_self_dismissal: boolean;
+      finding_model: string;
+      finding_scorer_model: string;
+    }>("SELECT verb, reason_tag, author_self_dismissal, finding_model, finding_scorer_model FROM finding_approvals WHERE review_id = $1", [reviewId]);
     expect(dismissal.rows).toEqual([{
       verb: "dismiss", reason_tag: "false-positive", author_self_dismissal: true,
       finding_model: "deepseek/deepseek-v4-pro",
+      finding_scorer_model: "scorer/webhook",
     }]);
     expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(false);
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
@@ -2459,7 +3088,7 @@ describeDb("webhook handler behaviour", () => {
     expect(approvals.rows[0]!.c).toBe(0);
   });
 
-  test("approval command revokes a cached actor who left the organization", async () => {
+  test("approval command rejects a departed actor without rewriting cached membership", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
@@ -2483,11 +3112,11 @@ describeDb("webhook handler behaviour", () => {
           [orgId],
         )
       ).rows[0]!.c,
-    ).toBe(0);
+    ).toBe(1);
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
   });
 
-  test("approval command applies a live admin demotion before authorizing", async () => {
+  test("approval command rejects a demoted admin without rewriting cached membership", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
@@ -2504,7 +3133,7 @@ describeDb("webhook handler behaviour", () => {
           [orgId],
         )
       ).rows[0]!.role,
-    ).toBe("member");
+    ).toBe("admin");
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
       "requires an organization admin",
     );

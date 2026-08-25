@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  setSystemTime,
+  test,
+} from "bun:test";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,7 +35,9 @@ describeDb("postil login device authorization", () => {
     await adminClient.query(`CREATE DATABASE "${databaseName}"`);
     const databaseUrl = new URL(TEST_URL!);
     databaseUrl.pathname = `/${databaseName}`;
-    const migrationClient = new Client({ connectionString: databaseUrl.toString() });
+    const migrationClient = new Client({
+      connectionString: databaseUrl.toString(),
+    });
     await migrationClient.connect();
     const migrationsDir = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDir))
@@ -48,6 +57,10 @@ describeDb("postil login device authorization", () => {
       INSERT INTO organizations (slug, name) VALUES ('cli-login-org', 'CLI Login Org') RETURNING id;
     `);
     orgId = Number(org.rows[0]?.id);
+    await migrationClient.query(
+      `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'admin')`,
+      [orgId, userId],
+    );
     await migrationClient.end();
 
     // getDb() is a lazy singleton keyed off DATABASE_URL at first call, so
@@ -60,7 +73,11 @@ describeDb("postil login device authorization", () => {
   afterAll(async () => {
     await pool?.end();
     if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+      if (process.env.POSTIL_KEEP_TEST_DATABASE !== "1") {
+        await adminClient.query(
+          `DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`,
+        );
+      }
       await adminClient.end();
     }
   }, 30_000);
@@ -87,14 +104,21 @@ describeDb("postil login device authorization", () => {
   });
 
   test("a pending code returns 428 and an approved one returns a redeemable token", async () => {
-    const { approveDeviceAuthorization, findDeviceAuthorizationByUserCode, normalizeUserCodeInput } =
-      await import("@/lib/cli-auth");
+    const {
+      approveDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
     const { getDb } = await import("@/lib/db");
-    const { POST: startPost } = await import("@/app/api/cli/device/start/route");
-    const { POST: tokenPost } = await import("@/app/api/cli/device/token/route");
+    const { POST: startPost } =
+      await import("@/app/api/cli/device/start/route");
+    const { POST: tokenPost } =
+      await import("@/app/api/cli/device/token/route");
 
     const start = await startPost(
-      new Request("https://postil.dev/api/cli/device/start", { method: "POST" }),
+      new Request("https://postil.dev/api/cli/device/start", {
+        method: "POST",
+      }),
     );
     const { deviceCode, userCode } = (await start.json()) as {
       deviceCode: string;
@@ -106,9 +130,16 @@ describeDb("postil login device authorization", () => {
     expect(await pending.json()).toEqual({ status: "pending" });
 
     const db = getDb();
-    const row = await findDeviceAuthorizationByUserCode(db, normalizeUserCodeInput(userCode));
+    const row = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(userCode),
+    );
     expect(row).not.toBeNull();
-    const approved = await approveDeviceAuthorization(db, { id: row!.id, userId, orgId });
+    const approved = await approveDeviceAuthorization(db, {
+      id: row!.id,
+      userId,
+      orgId,
+    });
     expect(approved).toBe(true);
 
     const claimed = await tokenPost(deviceTokenRequest(deviceCode));
@@ -116,32 +147,208 @@ describeDb("postil login device authorization", () => {
     const claimedBody = (await claimed.json()) as Record<string, unknown>;
     expect(claimedBody.status).toBe("approved");
     expect(claimedBody.token).toMatch(/^pcli_[A-Za-z0-9_-]{43}$/);
+    expect(claimedBody.refreshToken).toMatch(/^pclr_[A-Za-z0-9_-]{43}$/);
     expect(claimedBody.apiBase).toBe("https://postil.dev/api/inference/v1");
-    expect(claimedBody.org).toEqual({ slug: "cli-login-org", name: "CLI Login Org" });
+    expect(claimedBody.org).toEqual({
+      slug: "cli-login-org",
+      name: "CLI Login Org",
+    });
     expect(typeof claimedBody.expiresAt).toBe("string");
+    expect(typeof claimedBody.refreshExpiresAt).toBe("string");
+    expect(
+      new Date(claimedBody.refreshExpiresAt as string).getTime(),
+    ).toBeGreaterThan(new Date(claimedBody.expiresAt as string).getTime());
 
-    // A device code is redeemable exactly once.
+    const familyBeforeReplay = await pool!.query<{
+      sessions: string;
+      access_tokens: string;
+      refresh_tokens: string;
+    }>(
+      `SELECT count(DISTINCT session.id)::text AS sessions,
+              count(DISTINCT access.id)::text AS access_tokens,
+              count(DISTINCT refresh.id)::text AS refresh_tokens
+       FROM cli_tokens access
+       JOIN cli_refresh_sessions session ON session.id = access.refresh_session_id
+       JOIN cli_refresh_tokens refresh ON refresh.session_id = session.id
+       WHERE access.token_sha256 = $1`,
+      [sha256(claimedBody.token as string)],
+    );
+
+    // A response-loss retry reconstructs the exact persisted pair briefly.
     const replay = await tokenPost(deviceTokenRequest(deviceCode));
-    expect(replay.status).toBe(410);
-    expect(await replay.json()).toEqual({ status: "expired" });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(claimedBody);
+    const familyAfterReplay = await pool!.query<{
+      sessions: string;
+      access_tokens: string;
+      refresh_tokens: string;
+    }>(
+      `SELECT count(DISTINCT session.id)::text AS sessions,
+              count(DISTINCT access.id)::text AS access_tokens,
+              count(DISTINCT refresh.id)::text AS refresh_tokens
+       FROM cli_tokens access
+       JOIN cli_refresh_sessions session ON session.id = access.refresh_session_id
+       JOIN cli_refresh_tokens refresh ON refresh.session_id = session.id
+       WHERE access.token_sha256 = $1`,
+      [sha256(claimedBody.token as string)],
+    );
+    expect(familyBeforeReplay.rows).toEqual([
+      { sessions: "1", access_tokens: "1", refresh_tokens: "1" },
+    ]);
+    expect(familyAfterReplay.rows).toEqual(familyBeforeReplay.rows);
+  });
+
+  test("initial issuance recovery is issuer-bound and expires without duplicating rows", async () => {
+    const {
+      approveDeviceAuthorization,
+      claimDeviceAuthorizationToken,
+      CLI_DEVICE_ISSUANCE_REPLAY_GRACE_MS,
+      createDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const db = getDb();
+    const started = await createDeviceAuthorization(db);
+    const authorization = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(started.userCode),
+    );
+    expect(
+      await approveDeviceAuthorization(db, {
+        id: authorization!.id,
+        userId,
+        orgId,
+      }),
+    ).toBe(true);
+
+    const issued = await claimDeviceAuthorizationToken(
+      db,
+      started.deviceCode,
+      "https://postil.dev",
+    );
+    expect(issued.status).toBe("approved");
+    if (issued.status !== "approved") throw new Error("claim did not issue");
+
+    expect(
+      await claimDeviceAuthorizationToken(
+        db,
+        started.deviceCode,
+        "https://other.example",
+      ),
+    ).toEqual({ status: "expired" });
+
+    await pool!.query(
+      `UPDATE cli_refresh_sessions session
+       SET created_at = clock_timestamp() - $2::double precision * interval '1 millisecond',
+           last_used_at = clock_timestamp() - $2::double precision * interval '1 millisecond'
+       FROM cli_tokens access
+       WHERE access.refresh_session_id = session.id AND access.token_sha256 = $1`,
+      [sha256(issued.token), CLI_DEVICE_ISSUANCE_REPLAY_GRACE_MS + 1_000],
+    );
+    await pool!.query(
+      `UPDATE cli_refresh_tokens refresh
+       SET created_at = session.created_at
+       FROM cli_refresh_sessions session
+       WHERE refresh.session_id = session.id
+         AND refresh.token_sha256 = $1`,
+      [sha256(issued.refreshToken)],
+    );
+    await pool!.query(
+      `UPDATE cli_tokens
+       SET created_at = clock_timestamp() - $2::double precision * interval '1 millisecond'
+       WHERE token_sha256 = $1`,
+      [sha256(issued.token), CLI_DEVICE_ISSUANCE_REPLAY_GRACE_MS + 1_000],
+    );
+    const before = await refreshFamilyRows(issued.refreshToken);
+    expect(
+      await claimDeviceAuthorizationToken(
+        db,
+        started.deviceCode,
+        "https://postil.dev",
+      ),
+    ).toEqual({ status: "expired" });
+    expect(await refreshFamilyRows(issued.refreshToken)).toEqual(before);
+
+    expect(
+      await claimDeviceAuthorizationToken(
+        db,
+        `${"x".repeat(42)}y`,
+        "https://postil.dev",
+      ),
+    ).toEqual({ status: "expired" });
+  });
+
+  test("simultaneous initial claims converge on the same credential pair", async () => {
+    const {
+      approveDeviceAuthorization,
+      claimDeviceAuthorizationToken,
+      createDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const db = getDb();
+    const started = await createDeviceAuthorization(db);
+    const authorization = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(started.userCode),
+    );
+    expect(
+      await approveDeviceAuthorization(db, {
+        id: authorization!.id,
+        userId,
+        orgId,
+      }),
+    ).toBe(true);
+
+    const [first, second] = await Promise.all([
+      claimDeviceAuthorizationToken(
+        db,
+        started.deviceCode,
+        "https://postil.dev",
+      ),
+      claimDeviceAuthorizationToken(
+        db,
+        started.deviceCode,
+        "https://postil.dev",
+      ),
+    ]);
+    expect(first.status).toBe("approved");
+    expect(second).toEqual(first);
+    if (first.status !== "approved") throw new Error("claim did not issue");
+    const state = await refreshFamilyRows(first.refreshToken);
+    expect(state.session).toHaveLength(1);
+    expect(state.access).toHaveLength(1);
+    expect(state.refresh).toHaveLength(1);
   });
 
   test("a denied code reports denial and cannot later be claimed", async () => {
-    const { denyDeviceAuthorization, findDeviceAuthorizationByUserCode, normalizeUserCodeInput } =
-      await import("@/lib/cli-auth");
+    const {
+      denyDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
     const { getDb } = await import("@/lib/db");
-    const { POST: startPost } = await import("@/app/api/cli/device/start/route");
-    const { POST: tokenPost } = await import("@/app/api/cli/device/token/route");
+    const { POST: startPost } =
+      await import("@/app/api/cli/device/start/route");
+    const { POST: tokenPost } =
+      await import("@/app/api/cli/device/token/route");
 
     const start = await startPost(
-      new Request("https://postil.dev/api/cli/device/start", { method: "POST" }),
+      new Request("https://postil.dev/api/cli/device/start", {
+        method: "POST",
+      }),
     );
     const { deviceCode, userCode } = (await start.json()) as {
       deviceCode: string;
       userCode: string;
     };
     const db = getDb();
-    const row = await findDeviceAuthorizationByUserCode(db, normalizeUserCodeInput(userCode));
+    const row = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(userCode),
+    );
     expect(await denyDeviceAuthorization(db, { id: row!.id })).toBe(true);
 
     const denied = await tokenPost(deviceTokenRequest(deviceCode));
@@ -149,14 +356,83 @@ describeDb("postil login device authorization", () => {
     expect(await denied.json()).toEqual({ status: "denied" });
   });
 
-  test("an expired code returns 410 even though it was approved", async () => {
-    const { createDeviceAuthorization } = await import("@/lib/cli-auth");
+  test("an approved code cannot be claimed after administrator authority is lost", async () => {
+    const {
+      approveDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
     const { getDb } = await import("@/lib/db");
-    const { POST: tokenPost } = await import("@/app/api/cli/device/token/route");
+    const { POST: startPost } =
+      await import("@/app/api/cli/device/start/route");
+    const { POST: tokenPost } =
+      await import("@/app/api/cli/device/token/route");
+    const start = await startPost(
+      new Request("https://postil.dev/api/cli/device/start", {
+        method: "POST",
+      }),
+    );
+    const { deviceCode, userCode } = (await start.json()) as {
+      deviceCode: string;
+      userCode: string;
+    };
+    const db = getDb();
+    const authorization = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(userCode),
+    );
+    expect(
+      await approveDeviceAuthorization(db, {
+        id: authorization!.id,
+        userId,
+        orgId,
+      }),
+    ).toBe(true);
+    const tokensBefore = await pool!.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM cli_tokens WHERE user_id = $1 AND org_id = $2`,
+      [userId, orgId],
+    );
+    await pool!.query(
+      `UPDATE org_members SET role = 'member' WHERE org_id = $1 AND user_id = $2`,
+      [orgId, userId],
+    );
+
+    const denied = await tokenPost(deviceTokenRequest(deviceCode));
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ status: "denied" });
+    const tokens = await pool!.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM cli_tokens WHERE user_id = $1 AND org_id = $2`,
+      [userId, orgId],
+    );
+    expect(tokens.rows[0]?.count).toBe(tokensBefore.rows[0]?.count);
+    await pool!.query(
+      `UPDATE org_members SET role = 'admin' WHERE org_id = $1 AND user_id = $2`,
+      [orgId, userId],
+    );
+  });
+
+  test("an expired code returns 410 even though it was approved", async () => {
+    const {
+      createDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const { POST: tokenPost } =
+      await import("@/app/api/cli/device/token/route");
 
     const db = getDb();
     const longAgo = new Date(Date.now() - 20 * 60 * 1_000);
-    const { deviceCode } = await createDeviceAuthorization(db, longAgo);
+    const { deviceCode, userCode } = await createDeviceAuthorization(
+      db,
+      longAgo,
+    );
+    const browserRow = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(userCode),
+    );
+    expect(browserRow?.status).toBe("expired");
+    expect(browserRow?.decisionAllowed).toBe(false);
     const rows = await pool!.query<{ id: string }>(
       `SELECT id FROM cli_device_authorizations WHERE device_code_sha256 = $1`,
       [sha256(deviceCode)],
@@ -175,40 +451,97 @@ describeDb("postil login device authorization", () => {
     expect(await expired.json()).toEqual({ status: "expired" });
   });
 
-  test("polling past 200 attempts returns 410", async () => {
-    const { createDeviceAuthorization } = await import("@/lib/cli-auth");
+  test("repeated polling at the cap returns 410 without writing", async () => {
+    const {
+      approveDeviceAuthorization,
+      createDeviceAuthorization,
+      denyDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
     const { getDb } = await import("@/lib/db");
-    const { POST: tokenPost } = await import("@/app/api/cli/device/token/route");
+    const { POST: tokenPost } =
+      await import("@/app/api/cli/device/token/route");
 
     const db = getDb();
-    const { deviceCode } = await createDeviceAuthorization(db);
+    const { deviceCode, userCode } = await createDeviceAuthorization(db);
     await pool!.query(
       `UPDATE cli_device_authorizations SET poll_count = 200 WHERE device_code_sha256 = $1`,
       [sha256(deviceCode)],
     );
 
-    const overCap = await tokenPost(deviceTokenRequest(deviceCode));
-    expect(overCap.status).toBe(410);
-    expect(await overCap.json()).toEqual({ status: "expired" });
+    const before = await pool!.query<{
+      poll_count: number;
+      status: string;
+      xmin: string;
+    }>(
+      `SELECT poll_count, status, xmin::text AS xmin
+       FROM cli_device_authorizations WHERE device_code_sha256 = $1`,
+      [sha256(deviceCode)],
+    );
+    const browserRow = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(userCode),
+    );
+    expect(browserRow?.status).toBe("expired");
+    expect(browserRow?.decisionAllowed).toBe(false);
+    expect(
+      await approveDeviceAuthorization(db, {
+        id: browserRow!.id,
+        userId,
+        orgId,
+      }),
+    ).toBe(false);
+    expect(await denyDeviceAuthorization(db, { id: browserRow!.id })).toBe(
+      false,
+    );
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const overCap = await tokenPost(deviceTokenRequest(deviceCode));
+      expect(overCap.status).toBe(410);
+      expect(await overCap.json()).toEqual({ status: "expired" });
+    }
+    const after = await pool!.query<{
+      poll_count: number;
+      status: string;
+      xmin: string;
+    }>(
+      `SELECT poll_count, status, xmin::text AS xmin
+       FROM cli_device_authorizations WHERE device_code_sha256 = $1`,
+      [sha256(deviceCode)],
+    );
+    expect(before.rows).toEqual([
+      { poll_count: 200, status: "pending", xmin: expect.any(String) },
+    ]);
+    expect(after.rows).toEqual(before.rows);
   });
 
   test("logout revokes the token and is idempotent", async () => {
-    const { approveDeviceAuthorization, findDeviceAuthorizationByUserCode, normalizeUserCodeInput } =
-      await import("@/lib/cli-auth");
+    const {
+      approveDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
     const { getDb } = await import("@/lib/db");
-    const { POST: startPost } = await import("@/app/api/cli/device/start/route");
-    const { POST: tokenPost } = await import("@/app/api/cli/device/token/route");
+    const { POST: startPost } =
+      await import("@/app/api/cli/device/start/route");
+    const { POST: tokenPost } =
+      await import("@/app/api/cli/device/token/route");
     const { POST: logoutPost } = await import("@/app/api/cli/logout/route");
 
     const start = await startPost(
-      new Request("https://postil.dev/api/cli/device/start", { method: "POST" }),
+      new Request("https://postil.dev/api/cli/device/start", {
+        method: "POST",
+      }),
     );
     const { deviceCode, userCode } = (await start.json()) as {
       deviceCode: string;
       userCode: string;
     };
     const db = getDb();
-    const row = await findDeviceAuthorizationByUserCode(db, normalizeUserCodeInput(userCode));
+    const row = await findDeviceAuthorizationByUserCode(
+      db,
+      normalizeUserCodeInput(userCode),
+    );
     await approveDeviceAuthorization(db, { id: row!.id, userId, orgId });
     const claimed = await tokenPost(deviceTokenRequest(deviceCode));
     const { token } = (await claimed.json()) as { token: string };
@@ -219,6 +552,7 @@ describeDb("postil login device authorization", () => {
       `SELECT revoked_at FROM cli_tokens WHERE token_sha256 = $1`,
       [sha256(token)],
     );
+    expect(revoked.rows).toHaveLength(1);
     expect(revoked.rows[0]?.revoked_at).not.toBeNull();
 
     // Idempotent: logging out an already-revoked token still returns 204.
@@ -230,6 +564,571 @@ describeDb("postil login device authorization", () => {
     );
     expect(missingAuth.status).toBe(401);
   });
+
+  test("rate-limits rapid sequential refresh without writes and revokes prior access", async () => {
+    const { refreshCliSession, CLI_REFRESH_MIN_INTERVAL_MS } =
+      await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const credentials = await mintApprovedCredentials();
+    await makeRefreshDue(credentials.refreshToken);
+
+    const refreshed = await refreshCliSession(
+      getDb(),
+      credentials.refreshToken,
+    );
+    expect(refreshed.status).toBe("approved");
+    if (refreshed.status !== "approved") {
+      throw new Error("refresh fixture did not mint credentials");
+    }
+    const priorAccess = await pool!.query<{ revoked_at: Date | null }>(
+      `SELECT revoked_at FROM cli_tokens WHERE token_sha256 = $1`,
+      [sha256(credentials.token)],
+    );
+    expect(priorAccess.rows).toHaveLength(1);
+    expect(priorAccess.rows[0]?.revoked_at).not.toBeNull();
+
+    const before = await refreshFamilyRows(refreshed.refreshToken);
+    const blocked = await refreshCliSession(getDb(), refreshed.refreshToken);
+    const after = await refreshFamilyRows(refreshed.refreshToken);
+
+    expect(blocked.status).toBe("rate_limited");
+    if (blocked.status !== "rate_limited") {
+      throw new Error("rapid refresh was not rate limited");
+    }
+    expect(blocked.retryAfterSeconds).toBeGreaterThan(0);
+    expect(blocked.retryAfterSeconds).toBeLessThanOrEqual(
+      CLI_REFRESH_MIN_INTERVAL_MS / 1_000,
+    );
+    expect(after).toEqual(before);
+    expect(
+      before.refresh.filter((row) => row.consumed_at === null),
+    ).toHaveLength(1);
+    expect(before.access.filter((row) => row.revoked_at === null)).toHaveLength(
+      1,
+    );
+  });
+
+  test("replays the just-consumed token exactly without writes", async () => {
+    const { refreshCliSession } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const credentials = await mintApprovedCredentials();
+    await makeRefreshDue(credentials.refreshToken);
+    const refreshed = await refreshCliSession(
+      getDb(),
+      credentials.refreshToken,
+    );
+    expect(refreshed.status).toBe("approved");
+    if (refreshed.status !== "approved") {
+      throw new Error("refresh fixture did not mint credentials");
+    }
+
+    const before = await refreshFamilyRows(credentials.refreshToken);
+    const replay = await refreshCliSession(getDb(), credentials.refreshToken);
+    const after = await refreshFamilyRows(credentials.refreshToken);
+
+    expect(replay).toEqual(refreshed);
+    expect(after).toEqual(before);
+  });
+
+  test("serializes simultaneous rotations into one rotation and one stable replay", async () => {
+    const { refreshCliSession } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const credentials = await mintApprovedCredentials();
+    await makeRefreshDue(credentials.refreshToken);
+
+    const [first, second] = await Promise.all([
+      refreshCliSession(getDb(), credentials.refreshToken),
+      refreshCliSession(getDb(), credentials.refreshToken),
+    ]);
+    expect(first.status).toBe("approved");
+    expect(second).toEqual(first);
+    const state = await refreshFamilyRows(credentials.refreshToken);
+    expect(state.refresh).toHaveLength(2);
+    expect(
+      state.refresh.filter((row) => row.consumed_at === null),
+    ).toHaveLength(1);
+    expect(state.access).toHaveLength(2);
+    expect(state.access.filter((row) => row.revoked_at === null)).toHaveLength(
+      1,
+    );
+  });
+
+  test("retains credential history and lets a stale refresh revoke its family", async () => {
+    const { refreshCliSession, CLI_REFRESH_REPLAY_GRACE_MS } =
+      await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    let credentials = await mintApprovedCredentials();
+    const staleRefreshToken = credentials.refreshToken;
+
+    for (let rotation = 0; rotation < 5; rotation += 1) {
+      await makeRefreshDue(credentials.refreshToken);
+      const refreshed = await refreshCliSession(
+        getDb(),
+        credentials.refreshToken,
+      );
+      expect(refreshed.status).toBe("approved");
+      if (refreshed.status !== "approved") {
+        throw new Error("refresh fixture did not mint credentials");
+      }
+      credentials = {
+        token: refreshed.token,
+        refreshToken: refreshed.refreshToken,
+      };
+    }
+
+    const state = await refreshFamilyRows(credentials.refreshToken);
+    expect(state.refresh).toHaveLength(6);
+    expect(
+      state.refresh.filter((row) => row.consumed_at === null),
+    ).toHaveLength(1);
+    expect(state.refresh.filter((row) => row.consumed_at !== null)).toHaveLength(
+      5,
+    );
+    expect(state.access).toHaveLength(6);
+    expect(state.access.filter((row) => row.revoked_at === null)).toHaveLength(
+      1,
+    );
+
+    await pool!.query(
+      `UPDATE cli_refresh_tokens
+       SET created_at = clock_timestamp() - (($2 + 1000) * interval '1 millisecond'),
+           consumed_at = clock_timestamp() - ($2 * interval '1 millisecond')
+       WHERE token_sha256 = $1`,
+      [sha256(staleRefreshToken), CLI_REFRESH_REPLAY_GRACE_MS + 1_000],
+    );
+    expect(await refreshCliSession(getDb(), staleRefreshToken)).toEqual({
+      status: "invalid",
+    });
+
+    const revoked = await refreshFamilyRows(credentials.refreshToken);
+    expect(revoked.refresh).toHaveLength(6);
+    expect(revoked.access).toHaveLength(6);
+    expect(revoked.session[0]?.revoked_at).toEqual(expect.any(Date));
+    expect(revoked.access.every((row) => row.revoked_at !== null)).toBe(true);
+  });
+
+  test("uses the PostgreSQL clock and rejects replay timestamps beyond its bounds", async () => {
+    const {
+      refreshCliSession,
+      CLI_REFRESH_CONSUMED_FUTURE_TOLERANCE_MS,
+      CLI_REFRESH_REPLAY_GRACE_MS,
+      CLI_REFRESH_SESSION_TTL_MS,
+      CLI_TOKEN_TTL_MS,
+    } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const credentials = await mintApprovedCredentials();
+    await makeRefreshDue(credentials.refreshToken);
+    const before = await pool!.query<{ database_now: Date }>(
+      `SELECT clock_timestamp() AS database_now`,
+    );
+    const refreshed = await refreshCliSession(
+      getDb(),
+      credentials.refreshToken,
+    );
+    const after = await pool!.query<{ database_now: Date }>(
+      `SELECT clock_timestamp() AS database_now`,
+    );
+    expect(refreshed.status).toBe("approved");
+    if (refreshed.status !== "approved") {
+      throw new Error("refresh fixture did not mint credentials");
+    }
+    const issued = await pool!.query<{
+      consumed_at: Date;
+      access_created_at: Date;
+      access_expires_at: Date;
+      refresh_created_at: Date;
+      refresh_expires_at: Date;
+    }>(
+      `SELECT original.consumed_at,
+              access.created_at AS access_created_at,
+              access.expires_at AS access_expires_at,
+              replacement.created_at AS refresh_created_at,
+              replacement.expires_at AS refresh_expires_at
+       FROM cli_refresh_tokens original
+       JOIN cli_tokens access ON access.token_sha256 = $2
+       JOIN cli_refresh_tokens replacement ON replacement.token_sha256 = $3
+       WHERE original.token_sha256 = $1`,
+      [
+        sha256(credentials.refreshToken),
+        sha256(refreshed.token),
+        sha256(refreshed.refreshToken),
+      ],
+    );
+    const row = issued.rows[0]!;
+    const databaseBefore = before.rows[0]!.database_now.getTime();
+    const databaseAfter = after.rows[0]!.database_now.getTime();
+    expect(row.consumed_at.getTime()).toBeGreaterThanOrEqual(databaseBefore);
+    expect(row.consumed_at.getTime()).toBeLessThanOrEqual(databaseAfter);
+    expect(row.access_created_at).toEqual(row.consumed_at);
+    expect(row.refresh_created_at).toEqual(row.consumed_at);
+    expect(
+      row.access_expires_at.getTime() - row.access_created_at.getTime(),
+    ).toBe(CLI_TOKEN_TTL_MS);
+    expect(
+      row.refresh_expires_at.getTime() - row.refresh_created_at.getTime(),
+    ).toBe(CLI_REFRESH_SESSION_TTL_MS);
+
+    await pool!.query(
+      `UPDATE cli_refresh_tokens
+       SET consumed_at = clock_timestamp() + ($2 * interval '1 millisecond')
+       WHERE token_sha256 = $1`,
+      [
+        sha256(credentials.refreshToken),
+        CLI_REFRESH_CONSUMED_FUTURE_TOLERANCE_MS + 1_000,
+      ],
+    );
+    expect(await refreshCliSession(getDb(), credentials.refreshToken)).toEqual({
+      status: "invalid",
+    });
+
+    const stale = await mintApprovedCredentials();
+    await makeRefreshDue(stale.refreshToken);
+    const staleRotation = await refreshCliSession(getDb(), stale.refreshToken);
+    expect(staleRotation.status).toBe("approved");
+    await pool!.query(
+      `UPDATE cli_refresh_tokens
+       SET created_at = clock_timestamp() - (($2 + 1000) * interval '1 millisecond'),
+           consumed_at = clock_timestamp() - ($2 * interval '1 millisecond')
+       WHERE token_sha256 = $1`,
+      [sha256(stale.refreshToken), CLI_REFRESH_REPLAY_GRACE_MS + 1_000],
+    );
+    expect(await refreshCliSession(getDb(), stale.refreshToken)).toEqual({
+      status: "invalid",
+    });
+  });
+
+  test("expired and revoked refresh sessions cannot mint replacement credentials", async () => {
+    const { refreshCliSession } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const expired = await mintApprovedCredentials();
+    await pool!.query(
+      `UPDATE cli_refresh_sessions session
+       SET created_at = now() - interval '2 seconds',
+           expires_at = now() - interval '1 second'
+       FROM cli_refresh_tokens refresh
+       WHERE refresh.session_id = session.id AND refresh.token_sha256 = $1`,
+      [sha256(expired.refreshToken)],
+    );
+    expect(await refreshCliSession(getDb(), expired.refreshToken)).toEqual({
+      status: "invalid",
+    });
+
+    const revoked = await mintApprovedCredentials();
+    await pool!.query(
+      `UPDATE cli_refresh_sessions session
+       SET revoked_at = now()
+       FROM cli_refresh_tokens refresh
+       WHERE refresh.session_id = session.id AND refresh.token_sha256 = $1`,
+      [sha256(revoked.refreshToken)],
+    );
+    expect(await refreshCliSession(getDb(), revoked.refreshToken)).toEqual({
+      status: "invalid",
+    });
+  });
+
+  test("a removed or demoted administrator loses the entire refresh family", async () => {
+    const { refreshCliSession, resolveCliToken } =
+      await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const credentials = await mintApprovedCredentials();
+    await pool!.query(
+      `UPDATE org_members SET role = 'member' WHERE org_id = $1 AND user_id = $2`,
+      [orgId, userId],
+    );
+
+    expect(await resolveCliToken(getDb(), credentials.token)).toBeNull();
+    const revoked = await pool!.query<{
+      revoked_at: Date | null;
+      active_tokens: string;
+    }>(
+      `SELECT session.revoked_at,
+              count(token.id) FILTER (WHERE token.revoked_at IS NULL)::text AS active_tokens
+       FROM cli_refresh_sessions session
+       LEFT JOIN cli_tokens token ON token.refresh_session_id = session.id
+       JOIN cli_refresh_tokens refresh ON refresh.session_id = session.id
+       WHERE refresh.token_sha256 = $1
+       GROUP BY session.id`,
+      [sha256(credentials.refreshToken)],
+    );
+    expect(revoked.rows[0]?.revoked_at).not.toBeNull();
+    expect(revoked.rows[0]?.active_tokens).toBe("0");
+    expect(await refreshCliSession(getDb(), credentials.refreshToken)).toEqual({
+      status: "invalid",
+    });
+
+    await pool!.query(
+      `UPDATE org_members SET role = 'admin' WHERE org_id = $1 AND user_id = $2`,
+      [orgId, userId],
+    );
+
+    const removed = await mintApprovedCredentials();
+    await pool!.query(
+      `DELETE FROM org_members WHERE org_id = $1 AND user_id = $2`,
+      [orgId, userId],
+    );
+    expect(await refreshCliSession(getDb(), removed.refreshToken)).toEqual({
+      status: "invalid",
+    });
+    const removedFamily = await pool!.query<{ revoked_at: Date | null }>(
+      `SELECT session.revoked_at
+       FROM cli_refresh_sessions session
+       JOIN cli_refresh_tokens refresh ON refresh.session_id = session.id
+       WHERE refresh.token_sha256 = $1`,
+      [sha256(removed.refreshToken)],
+    );
+    expect(removedFamily.rows[0]?.revoked_at).not.toBeNull();
+    await pool!.query(
+      `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'admin')`,
+      [orgId, userId],
+    );
+  });
+
+  test("bearer resolution revokes families with expired or revoked sessions", async () => {
+    const { resolveCliToken } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+
+    const expired = await mintApprovedCredentials();
+    await pool!.query(
+      `UPDATE cli_refresh_sessions session
+       SET created_at = now() - interval '2 seconds',
+           expires_at = now() - interval '1 second'
+       FROM cli_refresh_tokens refresh
+       WHERE refresh.session_id = session.id AND refresh.token_sha256 = $1`,
+      [sha256(expired.refreshToken)],
+    );
+    expect(await resolveCliToken(getDb(), expired.token)).toBeNull();
+    const expiredState = await pool!.query<{
+      session_revoked_at: Date | null;
+      token_revoked_at: Date | null;
+    }>(
+      `SELECT session.revoked_at AS session_revoked_at,
+              token.revoked_at AS token_revoked_at
+       FROM cli_refresh_sessions session
+       JOIN cli_refresh_tokens refresh ON refresh.session_id = session.id
+       JOIN cli_tokens token ON token.refresh_session_id = session.id
+       WHERE refresh.token_sha256 = $1 AND token.token_sha256 = $2`,
+      [sha256(expired.refreshToken), sha256(expired.token)],
+    );
+    expect(expiredState.rows).toHaveLength(1);
+    expect(expiredState.rows[0]?.session_revoked_at).not.toBeNull();
+    expect(expiredState.rows[0]?.token_revoked_at).not.toBeNull();
+
+    const revoked = await mintApprovedCredentials();
+    await pool!.query(
+      `UPDATE cli_refresh_sessions session
+       SET revoked_at = now()
+       FROM cli_refresh_tokens refresh
+       WHERE refresh.session_id = session.id AND refresh.token_sha256 = $1`,
+      [sha256(revoked.refreshToken)],
+    );
+    expect(await resolveCliToken(getDb(), revoked.token)).toBeNull();
+    const revokedAccess = await pool!.query<{ revoked_at: Date | null }>(
+      `SELECT revoked_at FROM cli_tokens WHERE token_sha256 = $1`,
+      [sha256(revoked.token)],
+    );
+    expect(revokedAccess.rows).toHaveLength(1);
+    expect(revokedAccess.rows[0]?.revoked_at).not.toBeNull();
+  });
+
+  test("bearer authorization ignores the web process clock", async () => {
+    const { resolveCliToken } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const credentials = await mintApprovedCredentials();
+
+    setSystemTime(new Date("2999-01-01T00:00:00.000Z"));
+    try {
+      expect(await resolveCliToken(getDb(), credentials.token)).toEqual({
+        id: expect.any(Number),
+        userId,
+        orgId,
+        refreshSessionId: expect.any(Number),
+      });
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("logout revokes a refresh family while legacy tokens remain individually revocable", async () => {
+    const { refreshCliSession } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const { POST: logoutPost } = await import("@/app/api/cli/logout/route");
+    const credentials = await mintApprovedCredentials();
+    await makeRefreshDue(credentials.refreshToken);
+    const refreshed = await refreshCliSession(
+      getDb(),
+      credentials.refreshToken,
+    );
+    expect(refreshed.status).toBe("approved");
+    if (refreshed.status !== "approved")
+      throw new Error("refresh fixture did not mint credentials");
+
+    const familyLogout = await logoutPost(logoutRequest(credentials.token));
+    expect(familyLogout.status).toBe(204);
+    const family = await pool!.query<{
+      revoked_at: Date | null;
+      active_tokens: string;
+    }>(
+      `SELECT session.revoked_at,
+              count(token.id) FILTER (WHERE token.revoked_at IS NULL)::text AS active_tokens
+       FROM cli_refresh_sessions session
+       LEFT JOIN cli_tokens token ON token.refresh_session_id = session.id
+       JOIN cli_refresh_tokens refresh ON refresh.session_id = session.id
+       WHERE refresh.token_sha256 = $1
+       GROUP BY session.id`,
+      [sha256(refreshed.refreshToken)],
+    );
+    expect(family.rows[0]?.revoked_at).not.toBeNull();
+    expect(family.rows[0]?.active_tokens).toBe("0");
+    expect(await refreshCliSession(getDb(), refreshed.refreshToken)).toEqual({
+      status: "invalid",
+    });
+
+    const legacyToken = `pcli_${Buffer.from(`legacy-${Math.random()}`).toString("base64url").padEnd(43, "a").slice(0, 43)}`;
+    await pool!.query(
+      `INSERT INTO cli_tokens (token_sha256, user_id, org_id, scope, expires_at)
+       VALUES ($1, $2, $3, 'inference', now() + interval '12 hours')`,
+      [sha256(legacyToken), userId, orgId],
+    );
+    const legacyLogout = await logoutPost(logoutRequest(legacyToken));
+    expect(legacyLogout.status).toBe(204);
+    const legacy = await pool!.query<{
+      revoked_at: Date | null;
+      refresh_session_id: string | null;
+    }>(
+      `SELECT revoked_at, refresh_session_id FROM cli_tokens WHERE token_sha256 = $1`,
+      [sha256(legacyToken)],
+    );
+    expect(legacy.rows[0]).toEqual({
+      revoked_at: expect.any(Date),
+      refresh_session_id: null,
+    });
+  });
+
+  async function makeRefreshDue(refreshToken: string): Promise<void> {
+    await pool!.query(
+      `UPDATE cli_refresh_sessions session
+       SET last_used_at = clock_timestamp() - interval '2 hours'
+       FROM cli_refresh_tokens refresh
+       WHERE refresh.session_id = session.id AND refresh.token_sha256 = $1`,
+      [sha256(refreshToken)],
+    );
+  }
+
+  async function refreshFamilyRows(refreshToken: string): Promise<{
+    session: Array<{
+      id: string;
+      created_at: Date;
+      expires_at: Date;
+      last_used_at: Date | null;
+      revoked_at: Date | null;
+    }>;
+    refresh: Array<{
+      id: string;
+      token_sha256: string;
+      created_at: Date;
+      expires_at: Date;
+      consumed_at: Date | null;
+    }>;
+    access: Array<{
+      id: string;
+      token_sha256: string;
+      created_at: Date;
+      expires_at: Date;
+      revoked_at: Date | null;
+    }>;
+  }> {
+    const family = await pool!.query<{ session_id: string }>(
+      `SELECT session_id FROM cli_refresh_tokens WHERE token_sha256 = $1`,
+      [sha256(refreshToken)],
+    );
+    const sessionId = family.rows[0]?.session_id;
+    if (!sessionId) throw new Error("refresh fixture family was not found");
+    const [session, refresh, access] = await Promise.all([
+      pool!.query(
+        `SELECT id::text, created_at, expires_at, last_used_at, revoked_at
+         FROM cli_refresh_sessions WHERE id = $1`,
+        [sessionId],
+      ),
+      pool!.query(
+        `SELECT id::text, encode(token_sha256, 'hex') AS token_sha256,
+                created_at, expires_at, consumed_at
+         FROM cli_refresh_tokens
+         WHERE session_id = $1
+         ORDER BY id`,
+        [sessionId],
+      ),
+      pool!.query(
+        `SELECT id::text, encode(token_sha256, 'hex') AS token_sha256,
+                created_at, expires_at, revoked_at
+         FROM cli_tokens
+         WHERE refresh_session_id = $1
+         ORDER BY id`,
+        [sessionId],
+      ),
+    ]);
+    return {
+      session: session.rows as Array<{
+        id: string;
+        created_at: Date;
+        expires_at: Date;
+        last_used_at: Date | null;
+        revoked_at: Date | null;
+      }>,
+      refresh: refresh.rows as Array<{
+        id: string;
+        token_sha256: string;
+        created_at: Date;
+        expires_at: Date;
+        consumed_at: Date | null;
+      }>,
+      access: access.rows as Array<{
+        id: string;
+        token_sha256: string;
+        created_at: Date;
+        expires_at: Date;
+        revoked_at: Date | null;
+      }>,
+    };
+  }
+
+  async function mintApprovedCredentials(): Promise<{
+    token: string;
+    refreshToken: string;
+  }> {
+    const {
+      approveDeviceAuthorization,
+      findDeviceAuthorizationByUserCode,
+      normalizeUserCodeInput,
+    } = await import("@/lib/cli-auth");
+    const { getDb } = await import("@/lib/db");
+    const { POST: startPost } =
+      await import("@/app/api/cli/device/start/route");
+    const { POST: tokenPost } =
+      await import("@/app/api/cli/device/token/route");
+    const start = await startPost(
+      new Request("https://postil.dev/api/cli/device/start", {
+        method: "POST",
+      }),
+    );
+    const { deviceCode, userCode } = (await start.json()) as {
+      deviceCode: string;
+      userCode: string;
+    };
+    const row = await findDeviceAuthorizationByUserCode(
+      getDb(),
+      normalizeUserCodeInput(userCode),
+    );
+    expect(
+      await approveDeviceAuthorization(getDb(), { id: row!.id, userId, orgId }),
+    ).toBe(true);
+    const claimed = await tokenPost(deviceTokenRequest(deviceCode));
+    expect(claimed.status).toBe(200);
+    const body = (await claimed.json()) as {
+      token: string;
+      refreshToken: string;
+    };
+    return body;
+  }
 });
 
 function deviceTokenRequest(deviceCode: string): Request {

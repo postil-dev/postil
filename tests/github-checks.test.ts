@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   addCommentReaction,
+  comparePullRequestSnapshotTimes,
   completeExpectedCheckRun,
   createCheckRun,
   findCheckRunByExternalId,
@@ -9,7 +10,7 @@ import {
   findPullRequestReviewCommentByMarker,
   getPullRequestReviewComment,
   getPullRequestReviewContext,
-  listPullRequestReviewCommentReactions,
+  parsePullRequestUpdatedAt,
   RESPOND_MARKER_MAX_PAGES,
   verifyCompletedCheckRun,
 } from "@/lib/github/checks";
@@ -258,12 +259,67 @@ describe("respond delivery marker lookup", () => {
 });
 
 describe("pull-request review context", () => {
+  test("classifies update timestamps without collapsing malformed input into missing", () => {
+    expect(parsePullRequestUpdatedAt(undefined)).toEqual({ kind: "missing" });
+    expect(parsePullRequestUpdatedAt(null)).toEqual({ kind: "malformed" });
+    expect(parsePullRequestUpdatedAt("not-a-timestamp")).toEqual({
+      kind: "malformed",
+    });
+    for (const looseDate of ["08/24/2026", "2026-08-24", "0"]) {
+      expect(parsePullRequestUpdatedAt(looseDate)).toEqual({ kind: "malformed" });
+    }
+    expect(parsePullRequestUpdatedAt("2026-02-29T12:34:56Z")).toEqual({
+      kind: "malformed",
+    });
+    expect(parsePullRequestUpdatedAt("2024-02-29T12:34:56Z")).toEqual({
+      kind: "valid",
+      seconds: 1_709_210_096,
+    });
+    expect(parsePullRequestUpdatedAt("2026-08-24T12:34:56.999Z")).toEqual(
+      parsePullRequestUpdatedAt("2026-08-24T12:34:56Z"),
+    );
+  });
+
+  test("orders valid timestamps by parsed seconds and fails closed otherwise", () => {
+    expect(
+      comparePullRequestSnapshotTimes(
+        "2026-08-24T12:34:57Z",
+        "2026-08-24T12:34:56Z",
+      ),
+    ).toBe("event_newer");
+    expect(
+      comparePullRequestSnapshotTimes(
+        "2026-08-24T12:34:55Z",
+        "2026-08-24T12:34:56Z",
+      ),
+    ).toBe("live_newer");
+    expect(
+      comparePullRequestSnapshotTimes(
+        "2026-08-24T12:34:56.100Z",
+        "2026-08-24T12:34:56.900Z",
+      ),
+    ).toBe("equal");
+    expect(comparePullRequestSnapshotTimes(undefined, "2026-08-24T12:34:56Z")).toBe(
+      "unknown",
+    );
+    expect(
+      comparePullRequestSnapshotTimes("not-a-timestamp", "2026-08-24T12:34:56Z"),
+    ).toBe("unknown");
+    expect(
+      comparePullRequestSnapshotTimes("08/24/2026", "2026-08-24T12:34:56Z"),
+    ).toBe("unknown");
+    expect(
+      comparePullRequestSnapshotTimes("2026-08-24T12:34:56Z", "2026-08-24"),
+    ).toBe("unknown");
+  });
+
   test("loads immutable refs and optional author identity", async () => {
     globalThis.fetch = (async (_input) =>
       Response.json({
         state: "open",
         merged: false,
         draft: false,
+        updated_at: "2026-08-24T12:34:56Z",
         head: { sha: "head-sha" },
         base: { sha: "base-sha" },
         user: { id: 42, login: "octocat" },
@@ -277,10 +333,35 @@ describe("pull-request review context", () => {
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
+      updatedAt: "2026-08-24T12:34:56Z",
       authorGithubId: 42,
       authorLogin: "octocat",
     });
   });
+
+  for (const updatedAt of [undefined, "not-a-timestamp"] as const) {
+    test(`omits a ${updatedAt === undefined ? "missing" : "malformed"} update timestamp`, async () => {
+      globalThis.fetch = (async (_input) =>
+        Response.json({
+          state: "open",
+          merged: false,
+          draft: false,
+          head: { sha: "head-sha" },
+          base: { sha: "base-sha" },
+          ...(updatedAt === undefined ? {} : { updated_at: updatedAt }),
+        })) as typeof fetch;
+
+      await expect(
+        getPullRequestReviewContext("token", "octo/repo", 7),
+      ).resolves.toEqual({
+        open: true,
+        merged: false,
+        headSha: "head-sha",
+        baseSha: "base-sha",
+        draft: false,
+      });
+    });
+  }
 
   test("normalizes only a complete bounded author identity", async () => {
     globalThis.fetch = (async (_input) =>

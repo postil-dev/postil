@@ -82,10 +82,13 @@ The bounded web drain uses the latency-sensitive capability list. The long-runni
 worker adds maintenance jobs such as repository-rule discovery, keeping those jobs
 away from request-serving processes.
 The claim query also caps how many `review` and `respond` jobs one organization
-runs at once, so a single organization opening many pull requests cannot occupy
-every slot. Cheap kinds carry no cap, and the limit is best-effort: concurrent
-claim loops read the running count independently, so an organization can exceed
-it by up to the number of loops.
+runs at once, which reduces how much of the fleet a single organization opening
+many pull requests occupies. Cheap kinds carry no cap, and the limit is
+best-effort: concurrent claim loops read the running count independently, so an
+organization can exceed it by up to the number of loops. A claim that finds only
+capped work reports it as deferred rather than as an empty queue, so the poll
+loop holds its interval instead of backing off toward the idle ceiling while a
+ready backlog waits.
 Release job kinds are also staged in PostgreSQL with an infinite `run_after` until
 the deploy workflow confirms that every managed web and worker Machine is running
 one image. Activation and inserts share a transaction advisory lock, so no job can
@@ -282,15 +285,15 @@ Published review findings have a separate durable lifecycle. CLI publication
 receipts bind each review and stable finding ID to its initial channel and
 GitHub review/comment identities. The initial record is immutable. Later
 envelopes can mark the same stable finding carried, resolved, or suppressed;
-GitHub review-thread flags can mark an inline comment resolved, outdated, or
-deleted. Comment prose, reactions, and dismissed reviews do not change finding
-state. Reviews produced by a CLI without the receipt contract record their
-unobserved findings as `unknown`. Dashboard publication counts and confidence
-metrics read this normalized state instead of assuming every envelope finding
-reached the pull request. Receipts store finding identities, GitHub object
-identifiers, and lifecycle states only. They do not store comment prose or
-provider payloads, and dashboard rendering uses the same organization
-authorization boundary as the review envelope.
+GitHub review-thread flags can mark line-level and file-level review comments
+resolved, outdated, or deleted. Comment prose, reactions, and dismissed reviews
+do not change finding state. Reviews produced by a CLI without the receipt
+contract record their unobserved findings as `unknown`. Dashboard publication
+counts and confidence metrics read this normalized state instead of assuming
+every envelope finding reached the pull request. Receipts store finding
+identities, GitHub object identifiers, and lifecycle states only. They do not
+store comment prose or provider payloads, and dashboard rendering uses the same
+organization authorization boundary as the review envelope.
 
 ## Dashboard
 

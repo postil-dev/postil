@@ -14,6 +14,7 @@ import {
   completeWebhookDelivery,
   completeJob,
   failJob,
+  isBoundedJobRetryError,
   isPermanentJobError,
   loadWebhookDelivery,
   requeueJobsOwnedBy,
@@ -139,6 +140,7 @@ async function handleJob(
         await dispatchWebhookDelivery(delivery.event, delivery.payload, {
           deliveryId: delivery.deliveryId,
           triggerFollowupDrain: processGroup === "web",
+          attempt: job.attempts,
         });
       } catch (error) {
         // A single 404 can be an installation-token propagation blip right
@@ -314,6 +316,8 @@ export async function runClaimedJob(
       job.kind === "webhook-dispatch" &&
       message.includes("webhook dispatch job payload is malformed");
     const invalidWebhookDelivery = err instanceof WebhookDeliveryStateError;
+    const boundedWebhookRetry =
+      job.kind === "webhook-dispatch" && isBoundedJobRetryError(err);
     const malformedWebhookComment =
       job.kind === "webhook-comment" &&
       message.includes("webhook comment job payload malformed");
@@ -346,7 +350,8 @@ export async function runClaimedJob(
       (job.kind === "gate-state-sync" && !malformedGateSync) ||
       (job.kind === "webhook-dispatch" &&
         !malformedWebhookDispatch &&
-        !invalidWebhookDelivery) ||
+        !invalidWebhookDelivery &&
+        !boundedWebhookRetry) ||
       (job.kind === "webhook-comment" && !malformedWebhookComment) ||
       (job.kind === "github-reaction" && !malformedGithubReaction) ||
       err instanceof ReviewPublicationReconciliationError;

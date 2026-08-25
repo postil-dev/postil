@@ -1,0 +1,5 @@
+ALTER TABLE "finding_publications" DROP CONSTRAINT "finding_publications_initial_state_check";--> statement-breakpoint
+ALTER TABLE "finding_publications" DROP CONSTRAINT "finding_publications_current_state_check";--> statement-breakpoint
+ALTER TABLE "finding_publications" ADD CONSTRAINT "finding_publications_file_comment_identity_check" CHECK (("finding_publications"."initial_state" <> 'fileComment' AND "finding_publications"."current_state" <> 'fileComment') OR "finding_publications"."github_comment_id" IS NOT NULL);--> statement-breakpoint
+ALTER TABLE "finding_publications" ADD CONSTRAINT "finding_publications_initial_state_check" CHECK ("finding_publications"."initial_state" IN ('inline', 'fileComment', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown'));--> statement-breakpoint
+ALTER TABLE "finding_publications" ADD CONSTRAINT "finding_publications_current_state_check" CHECK ("finding_publications"."current_state" IN ('inline', 'fileComment', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown'));

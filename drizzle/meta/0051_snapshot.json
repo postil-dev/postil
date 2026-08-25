@@ -1,5 +1,5 @@
 {
-  "id": "b18c5d17-7d96-456e-9076-f5f249076337",
+  "id": "f61c85d5-273c-4b1a-89d9-e4e46fc03aa6",
   "prevId": "a4398a05-a2a2-46e1-9d60-7f9628fcc168",
   "version": "7",
   "dialect": "postgresql",
@@ -1022,6 +1022,252 @@
       },
       "isRLSEnabled": false
     },
+    "public.cli_refresh_sessions": {
+      "name": "cli_refresh_sessions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "cli_refresh_sessions_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "org_id": {
+          "name": "org_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_used_at": {
+          "name": "last_used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "cli_refresh_sessions_expiry_idx": {
+          "name": "cli_refresh_sessions_expiry_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cli_refresh_sessions_user_id_users_id_fk": {
+          "name": "cli_refresh_sessions_user_id_users_id_fk",
+          "tableFrom": "cli_refresh_sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "cli_refresh_sessions_org_id_organizations_id_fk": {
+          "name": "cli_refresh_sessions_org_id_organizations_id_fk",
+          "tableFrom": "cli_refresh_sessions",
+          "tableTo": "organizations",
+          "columnsFrom": [
+            "org_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "cli_refresh_sessions_expiry_check": {
+          "name": "cli_refresh_sessions_expiry_check",
+          "value": "\"cli_refresh_sessions\".\"expires_at\" > \"cli_refresh_sessions\".\"created_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.cli_refresh_tokens": {
+      "name": "cli_refresh_tokens",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "cli_refresh_tokens_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "token_sha256": {
+          "name": "token_sha256",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "cli_refresh_tokens_token_sha256_idx": {
+          "name": "cli_refresh_tokens_token_sha256_idx",
+          "columns": [
+            {
+              "expression": "token_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cli_refresh_tokens_current_session_idx": {
+          "name": "cli_refresh_tokens_current_session_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {},
+          "where": "\"cli_refresh_tokens\".\"consumed_at\" IS NULL"
+        },
+        "cli_refresh_tokens_session_idx": {
+          "name": "cli_refresh_tokens_session_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cli_refresh_tokens_session_id_cli_refresh_sessions_id_fk": {
+          "name": "cli_refresh_tokens_session_id_cli_refresh_sessions_id_fk",
+          "tableFrom": "cli_refresh_tokens",
+          "tableTo": "cli_refresh_sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "cli_refresh_tokens_expiry_check": {
+          "name": "cli_refresh_tokens_expiry_check",
+          "value": "\"cli_refresh_tokens\".\"expires_at\" > \"cli_refresh_tokens\".\"created_at\""
+        },
+        "cli_refresh_tokens_consumed_after_created_check": {
+          "name": "cli_refresh_tokens_consumed_after_created_check",
+          "value": "\"cli_refresh_tokens\".\"consumed_at\" IS NULL OR \"cli_refresh_tokens\".\"consumed_at\" >= \"cli_refresh_tokens\".\"created_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.cli_tokens": {
       "name": "cli_tokens",
       "schema": "",
@@ -1072,6 +1318,12 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
+        },
+        "refresh_session_id": {
+          "name": "refresh_session_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -1129,6 +1381,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "cli_tokens_refresh_session_idx": {
+          "name": "cli_tokens_refresh_session_idx",
+          "columns": [
+            {
+              "expression": "refresh_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1151,6 +1418,19 @@
           "tableTo": "organizations",
           "columnsFrom": [
             "org_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "cli_tokens_refresh_session_id_cli_refresh_sessions_id_fk": {
+          "name": "cli_tokens_refresh_session_id_cli_refresh_sessions_id_fk",
+          "tableFrom": "cli_tokens",
+          "tableTo": "cli_refresh_sessions",
+          "columnsFrom": [
+            "refresh_session_id"
           ],
           "columnsTo": [
             "id"
@@ -2100,12 +2380,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "reaction_content": {
-          "name": "reaction_content",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "body": {
           "name": "body",
           "type": "text",
@@ -2248,7 +2522,7 @@
         },
         "finding_feedback_identity_check": {
           "name": "finding_feedback_identity_check",
-          "value": "(\"finding_feedback\".\"source\" = 'reply' AND \"finding_feedback\".\"source_github_comment_id\" IS NOT NULL AND \"finding_feedback\".\"source_github_comment_id\" BETWEEN 1 AND 9007199254740991 AND \"finding_feedback\".\"source_github_reaction_id\" IS NULL AND \"finding_feedback\".\"reaction_content\" IS NULL AND \"finding_feedback\".\"body\" IS NOT NULL AND length(btrim(\"finding_feedback\".\"body\")) BETWEEN 1 AND 65535 AND length(btrim(\"finding_feedback\".\"source_delivery_id\")) BETWEEN 1 AND 200) OR (\"finding_feedback\".\"source\" = 'reaction' AND \"finding_feedback\".\"source_github_comment_id\" IS NOT NULL AND \"finding_feedback\".\"source_github_comment_id\" BETWEEN 1 AND 9007199254740991 AND \"finding_feedback\".\"source_github_reaction_id\" IS NOT NULL AND \"finding_feedback\".\"source_github_reaction_id\" BETWEEN 1 AND 9007199254740991 AND \"finding_feedback\".\"reaction_content\" IS NOT NULL AND \"finding_feedback\".\"reaction_content\" IN ('+1', '-1') AND \"finding_feedback\".\"body\" IS NULL AND \"finding_feedback\".\"source_delivery_id\" IS NULL)"
+          "value": "(\"finding_feedback\".\"source\" = 'reply' AND \"finding_feedback\".\"source_github_comment_id\" BETWEEN 1 AND 9007199254740991 AND \"finding_feedback\".\"source_github_reaction_id\" IS NULL AND \"finding_feedback\".\"body\" IS NOT NULL AND length(btrim(\"finding_feedback\".\"body\")) BETWEEN 1 AND 65535 AND length(btrim(\"finding_feedback\".\"source_delivery_id\")) BETWEEN 1 AND 200) OR (\"finding_feedback\".\"source\" = 'reaction' AND \"finding_feedback\".\"source_github_comment_id\" BETWEEN 1 AND 9007199254740991 AND \"finding_feedback\".\"source_github_reaction_id\" BETWEEN 1 AND 9007199254740991 AND \"finding_feedback\".\"body\" IS NULL AND \"finding_feedback\".\"source_delivery_id\" IS NULL)"
         },
         "finding_feedback_actor_check": {
           "name": "finding_feedback_actor_check",
@@ -2257,99 +2531,6 @@
         "finding_feedback_suggested_reason_check": {
           "name": "finding_feedback_suggested_reason_check",
           "value": "\"finding_feedback\".\"suggested_reason_tag\" IS NULL OR \"finding_feedback\".\"suggested_reason_tag\" IN ('false-positive', 'accepted-risk', 'out-of-scope')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.finding_feedback_reconciliations": {
-      "name": "finding_feedback_reconciliations",
-      "schema": "",
-      "columns": {
-        "finding_publication_id": {
-          "name": "finding_publication_id",
-          "type": "bigint",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "attempt_count": {
-          "name": "attempt_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "next_reconcile_at": {
-          "name": "next_reconcile_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_attempt_at": {
-          "name": "last_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_successful_at": {
-          "name": "last_successful_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "finding_feedback_reconcile_due_idx": {
-          "name": "finding_feedback_reconcile_due_idx",
-          "columns": [
-            {
-              "expression": "next_reconcile_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "finding_feedback_reconciliations_finding_publication_id_finding_publications_id_fk": {
-          "name": "finding_feedback_reconciliations_finding_publication_id_finding_publications_id_fk",
-          "tableFrom": "finding_feedback_reconciliations",
-          "tableTo": "finding_publications",
-          "columnsFrom": [
-            "finding_publication_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "finding_feedback_reconcile_attempt_count_check": {
-          "name": "finding_feedback_reconcile_attempt_count_check",
-          "value": "\"finding_feedback_reconciliations\".\"attempt_count\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -3750,7 +3931,7 @@
       "checkConstraints": {
         "operator_alert_deliveries_event_check": {
           "name": "operator_alert_deliveries_event_check",
-          "value": "\"operator_alert_deliveries\".\"event\" IN ('trial_started', 'trial_expired', 'installation_removed', 'subscription_started', 'subscription_past_due', 'subscription_paused', 'subscription_canceled', 'billing_anomaly', 'finding_feedback_digest')"
+          "value": "\"operator_alert_deliveries\".\"event\" IN ('trial_started', 'trial_expired', 'installation_removed', 'subscription_started', 'subscription_past_due', 'subscription_paused', 'subscription_canceled', 'billing_anomaly')"
         },
         "operator_alert_deliveries_status_check": {
           "name": "operator_alert_deliveries_status_check",

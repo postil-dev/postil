@@ -19,7 +19,7 @@ async function requirePendingDeviceAuthorization(
 ): Promise<{ code: string; row: DeviceAuthorizationRow }> {
   const code = normalizeUserCodeInput(String(formData.get("code") ?? ""));
   const row = await findDeviceAuthorizationByUserCode(db, code);
-  if (!row || row.status !== "pending" || row.expiresAt <= new Date()) {
+  if (!row || row.status !== "pending" || !row.decisionAllowed) {
     throw new Error("this login code is no longer pending");
   }
   return { code, row };

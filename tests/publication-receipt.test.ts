@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import {
+  parsePublicationReceipt,
   readPublicationReceipt,
   validateReceiptAgainstEnvelope,
 } from "@/lib/publication-receipt";
@@ -65,6 +66,65 @@ async function receiptFile(value: unknown): Promise<string> {
 }
 
 describe("publication receipt contract", () => {
+  test("validates the persisted wire contract in memory", () => {
+    expect(parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:in-memory",
+      findings: [{
+        findingId: "carried-id",
+        initialOutcome: "carried",
+        commentId: "8000",
+      }],
+    })).toEqual({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:in-memory",
+      findings: [{
+        findingId: "carried-id",
+        stableIdentity: true,
+        initialOutcome: "carried",
+        inlineRejected: false,
+        commentId: "8000",
+      }],
+    });
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:unknown-field",
+      findings: [],
+      untrusted: true,
+    })).toThrow("publication receipt is invalid");
+  });
+
+  test("uses signed int64 decimal identities across the receipt wire contract", () => {
+    expect(parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:int64",
+      reviewId: "9223372036854775807",
+      findings: [{
+        findingId: "int64-comment",
+        initialOutcome: "inline",
+        commentId: "9223372036854775807",
+      }],
+    }).reviewId).toBe("9223372036854775807");
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:too-large",
+      reviewId: "9223372036854775808",
+      findings: [],
+    })).toThrow("publication receipt is invalid");
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:malformed",
+      reviewId: "not-a-decimal",
+      findings: [],
+    })).toThrow("publication receipt is invalid");
+  });
+
   test("accepts one inline and one summary-only finding with forge identities", async () => {
     const receipt = await readPublicationReceipt(
       await receiptFile({
@@ -121,6 +181,90 @@ describe("publication receipt contract", () => {
       "checkAnnotation",
       "summaryOnly",
     ]);
+  });
+
+  test("rejects a carried comment identity on the check-annotation channel", () => {
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "checkAnnotations",
+      receiptId: "github-review-v2:carried-comment",
+      findings: [{
+        findingId: "carried-id",
+        initialOutcome: "carried",
+        commentId: "8008",
+      }],
+    })).toThrow("publication receipt is invalid");
+  });
+
+  test("accepts a version 2 file-level review comment with its GitHub identity", async () => {
+    const receipt = await readPublicationReceipt(
+      await receiptFile({
+        version: 2,
+        channel: "reviewComments",
+        receiptId: "github-review-v2:file-comment",
+        reviewId: "9005",
+        findings: [
+          {
+            findingId: "file-comment-id",
+            stableIdentity: true,
+            initialOutcome: "fileComment",
+            commentId: "8005",
+          },
+        ],
+      }),
+    );
+    validateReceiptAgainstEnvelope(receipt, envelope(["file-comment-id"]));
+    expect(receipt.findings[0]).toMatchObject({
+      initialOutcome: "fileComment",
+      commentId: "8005",
+    });
+  });
+
+  test.each([
+    {
+      channel: "reviewComments",
+      finding: { findingId: "missing-comment", initialOutcome: "fileComment" },
+    },
+    {
+      channel: "checkAnnotations",
+      finding: {
+        findingId: "wrong-channel",
+        initialOutcome: "fileComment",
+        commentId: "8006",
+      },
+    },
+  ])(
+    "rejects an invalid file-level review comment receipt",
+    async ({ channel, finding }) => {
+      await expect(
+        readPublicationReceipt(
+          await receiptFile({
+            version: 2,
+            channel,
+            receiptId: "github-review-v2:invalid-file-comment",
+            findings: [finding],
+          }),
+        ),
+      ).rejects.toThrow("publication receipt is invalid");
+    },
+  );
+
+  test("rejects file-level comments in a version 1 receipt", async () => {
+    await expect(
+      readPublicationReceipt(
+        await receiptFile({
+          version: 1,
+          receiptId: "github-review-v1:file-comment",
+          findings: [
+            {
+              findingId: "version-one-file-comment",
+              initialOutcome: "fileComment",
+              commentId: "8007",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow("publication receipt is invalid");
   });
 
   test("rejects publication outcomes that contradict the version 2 channel", async () => {

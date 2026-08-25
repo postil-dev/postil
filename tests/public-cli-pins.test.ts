@@ -103,11 +103,11 @@ describe("public CLI pins", () => {
     }
 
     const vendorReadme = readFileSync("vendor/README.md", "utf8");
-    expect(vendorReadme).toContain("required `POSTIL_CLI_TAG`");
+    expect(vendorReadme).toContain("`src/data/public-cli-release.json`");
     expect(vendorReadme).not.toContain("default `v0.2.0`");
   });
 
-  test("makes deployment reject a release variable that differs from the authority", () => {
+  test("takes the deployed release from the checked-in authority alone", () => {
     const deploy = readFileSync(".github/workflows/deploy.yml", "utf8");
     expect(deploy).toContain(
       'require("./src/data/public-cli-release.json").hostedCliRelease',
@@ -118,7 +118,12 @@ describe("public CLI pins", () => {
     expect(deploy).toContain(
       'require("./src/data/public-cli-release.json").hostedCliLinuxX86_64Sha256',
     );
-    expect(deploy).toContain('[[ "${TAG}" != "${expected_tag}" ]]');
+    // The tag comes from the checked-in release authority. No repository
+    // variable duplicates it.
+    expect(deploy).toContain(
+      'TAG="$(node -e \'process.stdout.write(require("./src/data/public-cli-release.json").hostedCliRelease)\')"',
+    );
+    expect(deploy).not.toContain("vars.POSTIL_CLI_TAG");
     expect(deploy).toContain(
       '--certificate-github-workflow-sha "${expected_commit}"',
     );
