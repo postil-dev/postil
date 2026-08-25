@@ -22,15 +22,15 @@ async function main(): Promise<void> {
       await activatePrivateReviewAuthorIdentity(getPool());
     const released = await activateReleaseJobs(getPool());
     const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+    const hostedInferenceActivated = releaseSha
+      ? await activateHostedInferenceRelease(getPool(), releaseSha)
+      : null;
     const selfServiceTrials = releaseSha
       ? await backfillSelfServiceTrials(getDb(), {
           hostedInferenceEnabled: hostedInferenceEnabled(),
           releaseSha,
         })
       : { eligible: 0, granted: 0 };
-    const hostedInferenceActivated = releaseSha
-      ? await activateHostedInferenceRelease(getPool(), releaseSha)
-      : null;
     console.log(
       `release job kinds activated: released=${released} ` +
         `private_review_author=${privateReviewAuthorActivated ? "activated" : "already_active"} ` +

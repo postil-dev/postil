@@ -12,8 +12,13 @@ import {
 } from "@/lib/operator-alerts";
 import {
   HOSTED_INFERENCE_LOCK,
+  HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
   hostedInferenceCapability,
 } from "@/lib/release-job-rollout";
+import {
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+  hostedProviderKeyLifecycleJobPayload,
+} from "@/lib/queue";
 
 export const SELF_SERVICE_TRIAL_DAYS = 30;
 const SELF_SERVICE_TRIAL_DURATION_MS =
@@ -34,7 +39,7 @@ export interface SelfServiceTrialInput {
   initiatedByGithubId: number;
   subscriptionMode: "hosted" | "byok";
   hostedInferenceEnabled: boolean;
-  hostedReleaseCapability: string | null;
+  hostedReleaseSha: string | null;
 }
 
 export interface SelfServiceTrialBackfillInput {
@@ -68,11 +73,14 @@ export async function grantSelfServiceTrial(
   const trialEndsAt = new Date(now.getTime() + SELF_SERVICE_TRIAL_DURATION_MS);
   return db.transaction(async (tx) => {
     await lockHostedInferenceRelease(tx);
-    const capability = input.hostedReleaseCapability
+    const capability = input.hostedReleaseSha
       ? await tx.execute(sql`
           SELECT EXISTS (
             SELECT 1 FROM deployment_capabilities
-            WHERE name = ${input.hostedReleaseCapability}
+            WHERE name = ${hostedInferenceCapability(input.hostedReleaseSha)}
+          ) AND EXISTS (
+            SELECT 1 FROM deployment_capabilities
+            WHERE name = ${HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY}
           ) AS active
         `)
       : null;
@@ -82,7 +90,8 @@ export async function grantSelfServiceTrial(
     // Mode only. The one-trial-per-organization limit is the entitlement's
     // org_id primary key, enforced by the conflict clause below: a second
     // attempt for an organization inserts nothing and reports granted: false.
-    const hostedEligible = input.subscriptionMode === "hosted" && hostedAvailable;
+    const hostedEligible =
+      input.subscriptionMode === "hosted" && hostedAvailable;
     const grantedMode =
       input.subscriptionMode === "hosted" && !hostedEligible
         ? "byok"
@@ -119,6 +128,16 @@ export async function grantSelfServiceTrial(
       console.warn(
         `self-service hosted trial deferred until managed inference activation for organization ${input.orgId}`,
       );
+    }
+    if (grantedMode === "hosted" && input.hostedReleaseSha) {
+      await tx.insert(schema.jobs).values({
+        kind: HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+        payload: hostedProviderKeyLifecycleJobPayload(
+          input.orgId,
+          input.hostedReleaseSha,
+        ),
+        maxAttempts: 25,
+      });
     }
 
     await enqueueOperatorAlert(
@@ -232,7 +251,7 @@ export async function backfillSelfServiceTrials(
         initiatedByGithubId: candidate.githubOwnerId,
         subscriptionMode: "hosted",
         hostedInferenceEnabled: input.hostedInferenceEnabled,
-        hostedReleaseCapability: capability,
+        hostedReleaseSha: input.releaseSha,
       },
       now,
     );
@@ -246,18 +265,65 @@ export async function backfillSelfServiceTrials(
     const trialEndsAt = candidate.trialEndsAt;
     const created = await db.transaction(async (tx) => {
       await lockHostedInferenceRelease(tx);
+      const active = input.hostedInferenceEnabled
+        ? await tx.execute(sql`
+            SELECT EXISTS (
+              SELECT 1 FROM deployment_capabilities
+              WHERE name = ${capability}
+            ) AND EXISTS (
+              SELECT 1 FROM deployment_capabilities
+              WHERE name = ${HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY}
+            ) AS active
+          `)
+        : null;
+      const grantHosted = active?.rows[0]?.active === true;
       const inserted = await tx
         .insert(schema.selfServiceTrialGrants)
         .values({
           orgId: candidate.orgId,
           initiatedByGithubId: githubOwnerId,
           requestedMode: "hosted",
-          grantedMode: "byok",
+          grantedMode: grantHosted ? "hosted" : "byok",
           createdAt: now,
         })
         .onConflictDoNothing({ target: schema.selfServiceTrialGrants.orgId })
         .returning({ orgId: schema.selfServiceTrialGrants.orgId });
       if (inserted.length === 0) return false;
+      if (grantHosted) {
+        const promoted = await tx
+          .update(schema.organizationEntitlements)
+          .set({
+            subscriptionMode: "hosted",
+            updatedBy: "hosted-release-activation",
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(schema.organizationEntitlements.orgId, candidate.orgId),
+              eq(schema.organizationEntitlements.subscriptionMode, "byok"),
+              eq(schema.organizationEntitlements.status, "trialing"),
+              eq(
+                schema.organizationEntitlements.updatedBy,
+                "self-service-trial",
+              ),
+              gt(schema.organizationEntitlements.trialEndsAt, now),
+            ),
+          )
+          .returning({ orgId: schema.organizationEntitlements.orgId });
+        if (promoted.length !== 1) {
+          throw new Error(
+            "self-service trial changed during hosted activation",
+          );
+        }
+        await tx.insert(schema.jobs).values({
+          kind: HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+          payload: hostedProviderKeyLifecycleJobPayload(
+            candidate.orgId,
+            input.releaseSha,
+          ),
+          maxAttempts: 25,
+        });
+      }
       await enqueueOperatorAlert(
         tx,
         trialStartedAlertPayload({ ...candidate, githubOwnerId, trialEndsAt }),
