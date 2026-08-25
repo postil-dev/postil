@@ -14,6 +14,8 @@ import {
 const MAX_RECEIPT_BYTES = 512 * 1024;
 const MAX_RECEIPT_FINDINGS = 1_000;
 const CARRIED_MARKER = "[carried from previous review]";
+const MAX_SIGNED_INT64 = 9_223_372_036_854_775_807n;
+const DECIMAL_IDENTIFIER = /^[1-9][0-9]{0,18}$/;
 
 export const PUBLICATION_STATES = [
   "inline",
@@ -46,7 +48,10 @@ const receiptFindingSchema = z
       "unknown",
     ]),
     inlineRejected: z.boolean().default(false),
-    commentId: z.string().regex(/^[1-9][0-9]{0,19}$/).optional(),
+    commentId: z.string().regex(DECIMAL_IDENTIFIER).refine(
+      (value) => !DECIMAL_IDENTIFIER.test(value) || BigInt(value) <= MAX_SIGNED_INT64,
+      "comment identity exceeds signed 64-bit storage",
+    ).optional(),
   })
   .strict();
 
@@ -55,7 +60,10 @@ const publicationReceiptSchema = z
     version: z.union([z.literal(1), z.literal(2)]),
     channel: z.enum(["reviewComments", "checkAnnotations"]).optional(),
     receiptId: z.string().trim().min(1).max(200),
-    reviewId: z.string().regex(/^[1-9][0-9]{0,19}$/).optional(),
+    reviewId: z.string().regex(DECIMAL_IDENTIFIER).refine(
+      (value) => !DECIMAL_IDENTIFIER.test(value) || BigInt(value) <= MAX_SIGNED_INT64,
+      "review identity exceeds signed 64-bit storage",
+    ).optional(),
     findings: z.array(receiptFindingSchema).max(MAX_RECEIPT_FINDINGS),
   })
   .strict()
@@ -161,6 +169,15 @@ const publicationReceiptSchema = z
 
 export type PublicationReceipt = z.infer<typeof publicationReceiptSchema>;
 
+/** Validate an in-memory publication receipt against the persisted wire contract. */
+export function parsePublicationReceipt(value: unknown): PublicationReceipt {
+  const parsed = publicationReceiptSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`publication receipt is invalid: ${z.prettifyError(parsed.error)}`);
+  }
+  return parsed.data;
+}
+
 export async function readPublicationReceipt(path: string): Promise<PublicationReceipt> {
   const stat = await lstat(path);
   if (!stat.isFile() || stat.isSymbolicLink()) {
@@ -178,11 +195,7 @@ export async function readPublicationReceipt(path: string): Promise<PublicationR
   } catch {
     throw new Error("publication receipt is not valid JSON");
   }
-  const parsed = publicationReceiptSchema.safeParse(decoded);
-  if (!parsed.success) {
-    throw new Error(`publication receipt is invalid: ${z.prettifyError(parsed.error)}`);
-  }
-  return parsed.data;
+  return parsePublicationReceipt(decoded);
 }
 
 function envelopeFindingIds(envelope: Envelope): Set<string> {
