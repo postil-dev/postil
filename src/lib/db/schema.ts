@@ -928,7 +928,7 @@ export const hostedProviderKeys = pgTable(
     providerKeyName: text("provider_key_name").notNull(),
     sealedRuntimeKey: bytea("sealed_runtime_key"),
     providerKeyHash: text("provider_key_hash"),
-    limitMicros: bigint("limit_micros", { mode: "number" }).notNull(),
+    limitMicros: bigint("limit_micros", { mode: "bigint" }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

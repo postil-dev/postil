@@ -50,6 +50,9 @@ describe("hosted provider key lifecycle schema", () => {
         "hosted_provider_keys_state_check",
       ].sort(),
     );
+    expect(
+      hostedProviderKeys.limitMicros.mapFromDriverValue("9007199254740993"),
+    ).toBe(9_007_199_254_740_993n);
   });
 
   test("preserves migration numbering and snapshot ancestry", async () => {
