@@ -136,9 +136,9 @@ const {
 const { claimJob } = await import("@/lib/queue");
 const { runClaimedJob } = await import("@/worker/runner");
 
-async function post(event: string, body: object, deliveryId: string): Promise<Response> {
+async function accept(event: string, body: object, deliveryId: string): Promise<Response> {
   const raw = JSON.stringify(body);
-  const response = await POST(
+  return POST(
     new Request("https://postil.dev/api/webhooks/github", {
       method: "POST",
       body: raw,
@@ -150,6 +150,10 @@ async function post(event: string, body: object, deliveryId: string): Promise<Re
       },
     }),
   );
+}
+
+async function post(event: string, body: object, deliveryId: string): Promise<Response> {
+  const response = await accept(event, body, deliveryId);
   const result = (await response.clone().json()) as { queued?: boolean };
   if (result.queued) {
     const job = await claimJob(getPool(), "webhook-handler-test", ["webhook-dispatch"]);
@@ -1205,7 +1209,7 @@ describeDb("webhook handler behaviour", () => {
 
     expect(
       (
-        await post(
+        await accept(
           "pull_request",
           {
             action: "closed",
@@ -1222,6 +1226,14 @@ describeDb("webhook handler behaviour", () => {
         )
       ).status,
     ).toBe(200);
+
+    await pool.query(
+      `UPDATE jobs
+          SET created_at = now() - interval '2 hours'
+        WHERE kind = 'webhook-dispatch'
+          AND payload->>'deliveryId' = 'delivery-equal-state'`,
+    );
+    await runPendingWebhookDispatch("delivery-equal-state", "webhook-equal-first");
 
     let state = await pool.query<{
       status: string;

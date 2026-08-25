@@ -51,6 +51,7 @@ const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
 class MockReviewPublicationReconciliationError extends Error {}
+class MockBoundedJobRetryError extends Error {}
 class MockPermanentJobError extends Error {
   permanent = true;
 }
@@ -110,6 +111,8 @@ mock.module("@/lib/customer-notification-email", () => ({
 
 mock.module("@/lib/queue", () => ({
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
+  isBoundedJobRetryError: (error: unknown) =>
+    error instanceof MockBoundedJobRetryError,
   isPermanentJobError: (error: unknown) =>
     error instanceof MockPermanentJobError,
   claimJob: async (
@@ -148,7 +151,9 @@ mock.module("@/lib/queue", () => ({
     if (options?.failureFollowup) {
       failureFollowups.push(options.failureFollowup.payload);
     }
-    return "failed";
+    return job.kind === "webhook-dispatch" && error.includes("has not converged")
+      ? "retried"
+      : "failed";
   },
   retryJobIndefinitely: async (
     _pool: unknown,
@@ -644,6 +649,33 @@ describe("drainQueueOnce", () => {
     expect(completed).toEqual([24]);
     expect(retriedIndefinitely).toEqual([]);
     expect(failed).toEqual([]);
+  });
+
+  test("uses finite queue backoff for equal-second webhook ambiguity", async () => {
+    const job = reviewJob(25);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-25" };
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-25",
+      event: "pull_request",
+      action: "closed",
+      payload: {},
+    };
+    webhookDispatchError = new MockBoundedJobRetryError(
+      "GitHub pull request octo/repo#7 has not converged for closed",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDeliveriesCompleted).toEqual([]);
+    expect(failed).toEqual([
+      {
+        id: 25,
+        error: "GitHub pull request octo/repo#7 has not converged for closed",
+      },
+    ]);
+    expect(retriedIndefinitely).toEqual([]);
+    expect(operationalWarnings).toEqual(["job_retrying"]);
   });
 
   test("completes a webhook delivery whose forge target stays gone", async () => {

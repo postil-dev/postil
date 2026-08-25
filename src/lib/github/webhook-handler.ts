@@ -71,6 +71,7 @@ import {
 } from "@/lib/operator-alerts";
 import {
   acceptWebhookDelivery,
+  BoundedJobRetryError,
   cancelPullRequestPublication,
   enqueueGithubReactionJobOnce,
   enqueueRespondJobWithinHourlyCap,
@@ -146,11 +147,13 @@ function ignoreOrRetryContradictoryPullRequestSnapshot(
   evaluation: number,
 ): void {
   const order = comparePullRequestSnapshotTimes(eventUpdatedAt, liveUpdatedAt);
-  if (
-    order === "event_newer" ||
-    (order === "equal" && evaluation < PULL_REQUEST_AMBIGUITY_MAX_EVALUATIONS)
-  ) {
+  if (order === "event_newer") {
     throw new Error(
+      `GitHub pull request ${repoFullName}#${prNumber} has not converged for ${action}`,
+    );
+  }
+  if (order === "equal" && evaluation < PULL_REQUEST_AMBIGUITY_MAX_EVALUATIONS) {
+    throw new BoundedJobRetryError(
       `GitHub pull request ${repoFullName}#${prNumber} has not converged for ${action}`,
     );
   }

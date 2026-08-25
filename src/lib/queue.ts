@@ -346,6 +346,23 @@ export class WebhookDeliveryStateError extends Error {
   override name = "WebhookDeliveryStateError";
 }
 
+const BOUNDED_JOB_RETRY = Symbol.for("postil.bounded-job-retry");
+
+/** Retryable ambiguity whose caller owns a finite evaluation budget. */
+export class BoundedJobRetryError extends Error {
+  readonly [BOUNDED_JOB_RETRY] = true;
+  override name = "BoundedJobRetryError";
+}
+
+/** Structural marker survives module duplication in bundled worker runtimes. */
+export function isBoundedJobRetryError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    Reflect.get(error, BOUNDED_JOB_RETRY) === true
+  );
+}
+
 const PERMANENT_JOB_ERROR = Symbol.for("postil.permanent-job-error");
 
 /** Deterministic job failure that must not consume the queue retry budget. */
