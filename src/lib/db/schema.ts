@@ -562,6 +562,7 @@ export const findingFeedback = pgTable(
     sourceGithubReactionId: bigint("source_github_reaction_id", {
       mode: "number",
     }),
+    reactionContent: text("reaction_content", { enum: ["+1", "-1", "unknown"] }),
     body: text("body"),
     actorGithubId: bigint("actor_github_id", { mode: "number" }).notNull(),
     actorLoginSnapshot: text("actor_login_snapshot").notNull(),
@@ -594,7 +595,7 @@ export const findingFeedback = pgTable(
     ),
     check(
       "finding_feedback_identity_check",
-      sql`(${t.source} = 'reply' AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NULL AND ${t.body} IS NOT NULL AND length(btrim(${t.body})) BETWEEN 1 AND 65535 AND length(btrim(${t.sourceDeliveryId})) BETWEEN 1 AND 200) OR (${t.source} = 'reaction' AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} BETWEEN 1 AND 9007199254740991 AND ${t.body} IS NULL AND ${t.sourceDeliveryId} IS NULL)`,
+      sql`(${t.source} = 'reply' AND ${t.sourceGithubCommentId} IS NOT NULL AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NULL AND ${t.reactionContent} IS NULL AND ${t.body} IS NOT NULL AND length(btrim(${t.body})) BETWEEN 1 AND 65535 AND length(btrim(${t.sourceDeliveryId})) BETWEEN 1 AND 200) OR (${t.source} = 'reaction' AND ${t.sourceGithubCommentId} IS NOT NULL AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NOT NULL AND ${t.sourceGithubReactionId} BETWEEN 1 AND 9007199254740991 AND ${t.reactionContent} IS NOT NULL AND ${t.reactionContent} IN ('+1', '-1', 'unknown') AND ${t.body} IS NULL AND ${t.sourceDeliveryId} IS NULL)`,
     ),
     check(
       "finding_feedback_actor_check",
@@ -603,6 +604,33 @@ export const findingFeedback = pgTable(
     check(
       "finding_feedback_suggested_reason_check",
       sql`${t.suggestedReasonTag} IS NULL OR ${t.suggestedReasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope')`,
+    ),
+  ],
+);
+
+/** Durable scheduling state for feedback observation, separate from publication lifecycle. */
+export const findingFeedbackReconciliations = pgTable(
+  "finding_feedback_reconciliations",
+  {
+    findingPublicationId: bigint("finding_publication_id", { mode: "number" })
+      .primaryKey()
+      .references(() => findingPublications.id, { onDelete: "cascade" }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextReconcileAt: timestamp("next_reconcile_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    lastSuccessfulAt: timestamp("last_successful_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("finding_feedback_reconcile_due_idx").on(t.nextReconcileAt),
+    check(
+      "finding_feedback_reconcile_attempt_count_check",
+      sql`${t.attemptCount} >= 0`,
     ),
   ],
 );
@@ -1588,7 +1616,7 @@ export const operatorAlertDeliveries = pgTable(
     index("operator_alert_deliveries_org_created_idx").on(t.orgId, t.createdAt),
     check(
       "operator_alert_deliveries_event_check",
-      sql`${t.event} IN ('trial_started', 'trial_expired', 'installation_removed', 'subscription_started', 'subscription_past_due', 'subscription_paused', 'subscription_canceled', 'billing_anomaly')`,
+      sql`${t.event} IN ('trial_started', 'trial_expired', 'installation_removed', 'subscription_started', 'subscription_past_due', 'subscription_paused', 'subscription_canceled', 'billing_anomaly', 'finding_feedback_digest')`,
     ),
     check(
       "operator_alert_deliveries_status_check",

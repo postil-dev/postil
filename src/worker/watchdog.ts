@@ -10,7 +10,12 @@ import {
   PUBLICATION_RECONCILIATION_BUDGET_MS,
 } from "@/lib/queue";
 import {
+  scheduleFindingFeedbackReconciliationJobs,
+} from "@/lib/finding-feedback";
+import {
+  findingFeedbackDigestPeriodEnd,
   reconcileOperatorAlertDeliveries,
+  scheduleFindingFeedbackDigest,
   sweepExpiredSelfServiceTrials,
 } from "@/lib/operator-alerts";
 import { scheduleBillingSettlementJobs } from "@/lib/paddle-billing";
@@ -248,7 +253,18 @@ export async function watchdogPass(
     [cutoff, COALESCED_REVIEW_PAYLOAD_KEY],
   );
 
+  const scheduledFeedbackReconciliations = await scheduleFindingFeedbackReconciliationJobs(
+    pool,
+    now,
+    findingFeedbackDigestPeriodEnd(now),
+  );
+  if (scheduledFeedbackReconciliations > 0) {
+    console.log(`[finding feedback] scheduled=${scheduledFeedbackReconciliations}`);
+  }
+
   await reconcileOperatorAlertDeliveries(db);
+  const feedbackDigest = await scheduleFindingFeedbackDigest(db, now);
+  if (feedbackDigest === "queued") console.log("[finding feedback] weekly digest queued");
   const expiredTrials = await sweepExpiredSelfServiceTrials(db, now);
   if (expiredTrials.transitioned > 0) {
     console.log(

@@ -34,6 +34,7 @@ import {
   type WebhookDispatchJobPayload,
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
+import { reconcileFindingFeedbackReactions } from "@/lib/finding-feedback";
 import {
   deferHostedProviderKeyLifecycleForRelease,
   deferHostedReviewForRelease,
@@ -110,6 +111,7 @@ export const WEB_PROCESSABLE_JOB_KINDS = [
   "respond-failure-comment",
   "webhook-comment",
   "github-reaction",
+  "finding-feedback-reconciliation",
 ] as const;
 
 export const PROCESSABLE_JOB_KINDS = [
@@ -240,6 +242,18 @@ async function handleJob(
         job,
       );
       break;
+    case "finding-feedback-reconciliation": {
+      const findingPublicationId = job.payload.findingPublicationId;
+      if (
+        typeof findingPublicationId !== "number" ||
+        !Number.isSafeInteger(findingPublicationId) ||
+        findingPublicationId <= 0
+      ) {
+        throw new Error("finding feedback reconciliation job payload is malformed");
+      }
+      await reconcileFindingFeedbackReactions(getDb(), findingPublicationId);
+      break;
+    }
     case HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND:
       return runHostedProviderKeyLifecycleJob(
         job.payload as HostedProviderKeyLifecycleJobPayload,
@@ -333,6 +347,9 @@ export async function runClaimedJob(
     const malformedGithubReaction =
       job.kind === "github-reaction" &&
       message.includes("github reaction job payload is malformed");
+    const malformedFindingFeedbackReconciliation =
+      job.kind === "finding-feedback-reconciliation" &&
+      message.includes("finding feedback reconciliation job payload is malformed");
     const malformedCheckRunCleanup =
       job.kind === "check-run-cleanup" &&
       message.includes("check-run cleanup job payload is malformed");
@@ -349,6 +366,7 @@ export async function runClaimedJob(
       invalidWebhookDelivery ||
       malformedWebhookComment ||
       malformedGithubReaction ||
+      malformedFindingFeedbackReconciliation ||
       malformedCheckRunCleanup ||
       malformedHostedProviderKeyLifecycle ||
       (job.kind !== "gate-state-sync" &&

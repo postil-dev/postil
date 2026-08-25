@@ -58,7 +58,7 @@ export class CheckRunPublicationError extends Error {
   }
 }
 
-class GitHubHttpError extends Error {
+export class GitHubHttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
@@ -70,6 +70,14 @@ class GitHubHttpError extends Error {
 
 export type GithubCommentKind = "issue_comment" | "pull_request_review_comment";
 export type CommentReaction = "+1" | "eyes";
+export type PullRequestReviewReactionContent = "+1" | "-1";
+
+export interface PullRequestReviewCommentReaction {
+  id: number;
+  content: PullRequestReviewReactionContent;
+  createdAt: Date;
+  user: { id: number; login: string; type?: string };
+}
 
 export interface PullRequestReviewComment {
   id: number;
@@ -140,6 +148,64 @@ export async function getPullRequestReviewComment(
       ? { inReplyToId: value.in_reply_to_id }
       : {}),
   };
+}
+
+/** Read every bounded page of reactions for one immutable pull-request review comment. */
+export async function listPullRequestReviewCommentReactions(
+  token: string,
+  repoFullName: string,
+  commentId: number,
+  signal?: AbortSignal,
+): Promise<PullRequestReviewCommentReaction[]> {
+  if (!Number.isSafeInteger(commentId) || commentId <= 0) {
+    throw new Error("GitHub review comment reaction identity is malformed");
+  }
+  const contents: readonly PullRequestReviewReactionContent[] = ["+1", "-1"];
+  const reactions: PullRequestReviewCommentReaction[] = [];
+  const maxPages = 5;
+  const perPage = 100;
+  for (const content of contents) {
+    for (let page = 1; page <= maxPages; page += 1) {
+      const query = new URLSearchParams({ content, per_page: String(perPage), page: String(page) });
+      const response = await githubFetch(
+        token,
+        "GET",
+        `/repos/${repoFullName}/pulls/comments/${commentId}/reactions?${query}`,
+        undefined,
+        signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+          : AbortSignal.timeout(10_000),
+      );
+      const values = await response.json() as Array<{
+        id?: number;
+        content?: string;
+        created_at?: string;
+        user?: { id?: number; login?: string; type?: string };
+      }>;
+      if (!Array.isArray(values)) throw new Error("GitHub review comment reactions response is malformed");
+      for (const value of values) {
+        const createdAt = typeof value.created_at === "string" ? new Date(value.created_at) : null;
+        if (
+          !Number.isSafeInteger(value.id) || value.id === undefined || value.id <= 0 ||
+          value.content !== content ||
+          !Number.isSafeInteger(value.user?.id) || value.user?.id === undefined || value.user.id <= 0 ||
+          typeof value.user.login !== "string" ||
+          !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?$/u.test(value.user.login) ||
+          !createdAt || Number.isNaN(createdAt.getTime())
+        ) {
+          throw new Error("GitHub review comment reactions response is malformed");
+        }
+        reactions.push({
+          id: value.id,
+          content,
+          createdAt,
+          user: { id: value.user.id, login: value.user.login, ...(value.user.type ? { type: value.user.type } : {}) },
+        });
+      }
+      if (values.length < perPage) break;
+    }
+  }
+  return reactions;
 }
 
 export class AmbiguousCheckRunCreationError extends Error {

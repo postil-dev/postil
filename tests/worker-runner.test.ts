@@ -580,6 +580,7 @@ describe("drainQueueOnce", () => {
         "respond-failure-comment",
         "webhook-comment",
         "github-reaction",
+        "finding-feedback-reconciliation",
       ],
     ]);
     expect(claimOptions).toEqual([{ excludePrivateWorkerRehearsals: true }]);
