@@ -916,6 +916,62 @@ export const organizationEntitlements = pgTable(
   ],
 );
 
+/** Durable provider-key lifecycle state for one organization. */
+export const hostedProviderKeys = pgTable(
+  "hosted_provider_keys",
+  {
+    orgId: bigint("org_id", { mode: "number" })
+      .primaryKey()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    state: text("state").notNull(),
+    /** Persisted before external creation so reconciliation has a stable identity. */
+    providerKeyName: text("provider_key_name").notNull(),
+    sealedRuntimeKey: bytea("sealed_runtime_key"),
+    providerKeyHash: text("provider_key_hash"),
+    limitMicros: bigint("limit_micros", { mode: "number" }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    check(
+      "hosted_provider_keys_state_check",
+      sql`${t.state} IN ('provisioning', 'active', 'revocation_pending', 'revoked', 'orphaned')`,
+    ),
+    check(
+      "hosted_provider_keys_provider_key_name_nonempty",
+      sql`length(btrim(${t.providerKeyName})) > 0`,
+    ),
+    check(
+      "hosted_provider_keys_provider_key_hash_nonempty",
+      sql`${t.providerKeyHash} IS NULL OR length(btrim(${t.providerKeyHash})) > 0`,
+    ),
+    check(
+      "hosted_provider_keys_limit_micros_nonnegative",
+      sql`${t.limitMicros} >= 0`,
+    ),
+    check(
+      "hosted_provider_keys_credentials_match_state",
+      sql`(
+        ${t.state} = 'provisioning'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NULL
+      ) OR (
+        ${t.state} = 'active'
+        AND ${t.sealedRuntimeKey} IS NOT NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+      ) OR (
+        ${t.state} IN ('revocation_pending', 'revoked', 'orphaned')
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+      )`,
+    ),
+  ],
+);
+
 /** Optional organization email choices. Transactional safety notices bypass these flags. */
 export const organizationNotificationPreferences = pgTable(
   "organization_notification_preferences",
