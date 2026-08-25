@@ -206,6 +206,36 @@ describe("public telemetry sanitization", () => {
     expect(properties.$browser_version).toBe("139.0.1");
   });
 
+  test("holds the operating system version to a version shape", () => {
+    const properties: Record<string, unknown> = {
+      $current_url: "https://postil.dev/docs",
+      $os_version: "10.15.7",
+    };
+    sanitizePostHogEventProperties(
+      "$pageview",
+      properties,
+      "https://postil.dev",
+      "phc_test",
+      SESSION_ID,
+    );
+    expect(properties.$os_version).toBe("10.15.7");
+
+    // A label shape carries build strings and distribution names, which narrow
+    // a visitor far past the coarse device class the privacy notice describes.
+    const labelled: Record<string, unknown> = {
+      $current_url: "https://postil.dev/docs",
+      $os_version: "Ubuntu_22.04",
+    };
+    sanitizePostHogEventProperties(
+      "$pageview",
+      labelled,
+      "https://postil.dev",
+      "phc_test",
+      SESSION_ID,
+    );
+    expect(labelled.$os_version).toBeUndefined();
+  });
+
   test("drops hostile context values instead of forwarding them", () => {
     const properties: Record<string, unknown> = {
       $current_url: "https://postil.dev/docs",
@@ -485,7 +515,7 @@ describe("public telemetry path coverage", () => {
     expect(routes.filter((route) => route.includes("["))).toEqual([]);
 
     const uncovered = routes.filter(
-      (route) => !PROTECTED_ROUTE.test(route) && !isPublicTelemetryPath(route),
+      (route) => !NON_PUBLIC_ROUTE.test(route) && !isPublicTelemetryPath(route),
     );
     const report =
       uncovered.length === 0
@@ -497,7 +527,13 @@ describe("public telemetry path coverage", () => {
   });
 });
 
-const PROTECTED_ROUTE = /^\/(?:orgs\/|operator|login|reports|verify|cli\/)/;
+/**
+ * Routes that are not public marketing surface, so they are exempt from the
+ * allowlist this test enforces. Wider than the middleware's protected set on
+ * purpose: `/login` and `/verify` are reachable without a session but are still
+ * not pages whose paths should travel to an analytics processor.
+ */
+const NON_PUBLIC_ROUTE = /^\/(?:orgs\/|operator|login|reports|verify|cli\/)/;
 
 /** Every non-dynamic route the app renders, as the browser requests it. */
 function staticAppRoutes(): string[] {

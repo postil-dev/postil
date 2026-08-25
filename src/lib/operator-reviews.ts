@@ -1,8 +1,8 @@
-import { and, desc, eq, gte, ilike, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, isNull, lt, ne, not, or, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
-import type { Envelope } from "@/lib/envelope";
+import { OPERATIONAL_FINDING_PATHS, type Envelope } from "@/lib/envelope";
 import {
   HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
   reviewDisplayStatus,
@@ -60,6 +60,42 @@ export interface OperatorUsageSummary {
 
 export const OPERATOR_REVIEW_LIMIT = 100;
 
+const OPERATIONAL_ENVELOPE_PREDICATE = sql<boolean>`EXISTS (
+  SELECT 1
+    FROM jsonb_array_elements(
+      CASE WHEN jsonb_typeof(${schema.reviews.envelope} -> 'findings') = 'array'
+        THEN ${schema.reviews.envelope} -> 'findings' ELSE '[]'::jsonb END
+    ) AS finding
+   WHERE ${inArray(sql<string>`finding ->> 'path'`, OPERATIONAL_FINDING_PATHS)}
+)`;
+
+function operatorReviewStatusPredicate(status: OperatorReviewFilters["status"]) {
+  if (!status) return undefined;
+
+  const unavailable = and(
+    eq(schema.reviews.status, "failed"),
+    eq(schema.reviews.errorMessage, HOSTED_REVIEW_UNAVAILABLE_MESSAGE),
+  )!;
+  if (status === "unavailable") return unavailable;
+
+  const available = or(
+    ne(schema.reviews.status, "failed"),
+    isNull(schema.reviews.errorMessage),
+    ne(schema.reviews.errorMessage, HOSTED_REVIEW_UNAVAILABLE_MESSAGE),
+  )!;
+  if (status === "failed") {
+    return and(
+      available,
+      or(eq(schema.reviews.status, "failed"), OPERATIONAL_ENVELOPE_PREDICATE),
+    );
+  }
+
+  return and(
+    eq(schema.reviews.status, status as StoredReviewStatus),
+    not(OPERATIONAL_ENVELOPE_PREDICATE),
+  );
+}
+
 export function parseOperatorReviewFilters(
   searchParams: Record<string, string | string[] | undefined>,
 ): OperatorReviewFilters {
@@ -87,22 +123,7 @@ export async function getOperatorReviewRows(
     filters.repo
       ? ilike(schema.repositories.fullName, `%${escapeLike(filters.repo)}%`)
       : undefined,
-    filters.status === "unavailable"
-      ? and(
-          eq(schema.reviews.status, "failed"),
-          eq(schema.reviews.errorMessage, HOSTED_REVIEW_UNAVAILABLE_MESSAGE),
-        )
-      : filters.status === "failed"
-        ? and(
-            eq(schema.reviews.status, "failed"),
-            or(
-              isNull(schema.reviews.errorMessage),
-              ne(schema.reviews.errorMessage, HOSTED_REVIEW_UNAVAILABLE_MESSAGE),
-            ),
-          )
-      : filters.status
-        ? eq(schema.reviews.status, filters.status as StoredReviewStatus)
-        : undefined,
+    operatorReviewStatusPredicate(filters.status),
     filters.from ? gte(schema.reviews.queuedAt, startOfUtcDay(filters.from)) : undefined,
     filters.to ? lt(schema.reviews.queuedAt, dayAfterUtc(filters.to)) : undefined,
   ].filter(Boolean);
@@ -142,7 +163,7 @@ export async function getOperatorReviewRows(
     .limit(limit);
   return rows.map((row) => ({
     ...row,
-    status: reviewDisplayStatus(row.status, row.errorMessage),
+    status: reviewDisplayStatus(row.status, row.errorMessage, row.envelope),
   }));
 }
 

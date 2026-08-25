@@ -175,9 +175,10 @@ export default function PrivacyPage() {
           public marketing, documentation, blog, install, pricing, and
           comparison pages. Browser analytics use PostHog&apos;s cookieless mode
           to record pageviews, pageleave engagement, scroll depth, Core Web
-          Vitals, referrer origins, bounded campaign labels, and a coarse device
-          class of device type, browser name and version, and operating system
-          name and version. Postil relays these requests through its own domain,
+          Vitals, referrer origins, bounded campaign labels, the previous public
+          page in the same visit, and a coarse device class of device type,
+          browser name and version, and operating system name and version.
+          Postil relays these requests through its own domain,
           but PostHog remains the data processor. Analytics set no cookies and
           write no local or session storage; daily anonymous aggregation is not
           linked to an account or retained as a durable browser identity.

@@ -103,6 +103,13 @@ describe("reviews that never reached a verdict", () => {
     expect(gate).toContain("passing");
   });
 
+  test("renders a failed review with a failing gate as failing", () => {
+    const gate = renderToStaticMarkup(GateBadge({ status: "failed", gateFailing: true }));
+
+    expect(gate).toContain("failing");
+    expect(gate).not.toContain("passing");
+  });
+
   test("leaves an advisory run with a passing gate unchanged", () => {
     const status = reviewDisplayStatus("completed", null, ADVISORY_ENVELOPE);
     const gate = renderToStaticMarkup(GateBadge({ gateFailing: false, status }));

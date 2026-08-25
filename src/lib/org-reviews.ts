@@ -88,7 +88,7 @@ export async function getOrgReviewRows(
         : null;
       return {
         ...row,
-        status: reviewDisplayStatus(row.status, errorMessage),
+        status: reviewDisplayStatus(row.status, errorMessage, rawEnvelope),
         triggerSource: row.triggerSource as ReviewTriggerSource,
         gateFailing: envelope
           ? computeEffectiveGate(envelope, approvalIds, dismissalIds).failing

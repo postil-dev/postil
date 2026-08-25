@@ -342,7 +342,7 @@ function browserContextProperties(
     $browser: matchedString(properties.$browser, CLIENT_LABEL),
     $browser_version: sanitizedClientVersion(properties.$browser_version),
     $os: matchedString(properties.$os, CLIENT_LABEL),
-    $os_version: matchedString(properties.$os_version, CLIENT_LABEL),
+    $os_version: sanitizedClientVersion(properties.$os_version),
     $prev_pageview_pathname: sanitizedPublicPathname(properties.$prev_pageview_pathname),
   });
 }

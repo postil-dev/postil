@@ -17,8 +17,8 @@ const RETURN_TARGET_BASE = "https://postil.invalid";
 
 /**
  * Accept a same-site account path for the post-authentication redirect.
- * Keeping the allowlist aligned with middleware prevents open redirects,
- * redirect loops, and unexpected API navigation.
+ * Reusing the middleware's own predicate prevents open redirects, redirect
+ * loops, and unexpected API navigation.
  */
 export function safeReturnTarget(
   value: string | null | undefined,
@@ -45,7 +45,13 @@ export function safeReturnTarget(
   return `${url.pathname}${url.search}`;
 }
 
-function isProtectedAccountPath(pathname: string): boolean {
+/**
+ * Paths the middleware gates and the post-authentication redirect may return
+ * to. One definition: a path the middleware protects but this rejects strands
+ * the reader on the dashboard root after signing in, and the reverse is an
+ * open redirect into an ungated route.
+ */
+export function isProtectedAccountPath(pathname: string): boolean {
   return (
     pathname === "/operator" ||
     pathname.startsWith("/operator/") ||
