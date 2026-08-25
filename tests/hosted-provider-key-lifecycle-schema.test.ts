@@ -45,6 +45,20 @@ describe("hosted provider key lifecycle schema", () => {
     );
     expect(config.foreignKeys).toHaveLength(1);
     expect(config.foreignKeys[0]!.onDelete).toBe("restrict");
+
+    const snapshot = providerKeySnapshot as {
+      tables: Record<
+        string,
+        { indexes: Record<string, { where?: string }> }
+      >;
+    };
+    expect(
+      snapshot.tables["public.hosted_provider_keys"]!.indexes[
+        "hosted_provider_keys_entitlement_binding_unique"
+      ]!.where,
+    ).toBe(
+      '"hosted_provider_keys"."state" NOT IN (\'revoked\', \'cancelled\')',
+    );
   });
 
   test("uses one generated migration after renewable CLI sessions", async () => {
@@ -87,6 +101,10 @@ describe("hosted provider key lifecycle schema", () => {
     expect(migration).toContain(
       'CREATE UNIQUE INDEX "hosted_provider_keys_provider_key_hash_unique"',
     );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "hosted_provider_keys_entitlement_binding_unique" ON "hosted_provider_keys" USING btree ("org_id","entitlement_period_starts_at","entitlement_period_ends_at","limit_micros") WHERE "hosted_provider_keys"."state" NOT IN (\'revoked\', \'cancelled\')',
+    );
+    expect(migration).toContain("'rate_limited'");
     expect(migration).toContain('WHERE "hosted_provider_keys"."provider_key_hash" IS NOT NULL');
     expect(migration).toContain("DEFAULT clock_timestamp()");
     expect(migration).not.toMatch(/ALTER TABLE "cli_refresh_(?:sessions|tokens)"/);

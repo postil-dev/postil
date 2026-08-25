@@ -35,7 +35,9 @@ describeDb("hosted provider key lifecycle", () => {
   let pool: Pool;
 
   beforeAll(async () => {
-    database = await createEphemeralDatabase("hosted_provider_key_lifecycle_v2");
+    database = await createEphemeralDatabase(
+      "hosted_provider_key_lifecycle_v2",
+    );
     pool = database.pool;
   }, 60_000);
 
@@ -124,6 +126,37 @@ describeDb("hosted provider key lifecycle", () => {
       }),
     ).resolves.toMatchObject({ status: "active" });
     expect(provider.createCalls).toHaveLength(1);
+  });
+
+  test("releases pooled database clients before every provider operation", async () => {
+    const entitlement = await createEntitlement("released-provider-io");
+    const provider = new FakeProvider();
+    let assertions = 0;
+    provider.beforeProviderOperation = () => {
+      assertions += 1;
+      expect(pool.totalCount - pool.idleCount).toBe(0);
+    };
+
+    await expect(
+      reconcileHostedProviderKeyLifecycle(pool, provider.adapter, {
+        orgId: entitlement.orgId,
+        sealRuntimeKey: (runtimeKey) => Buffer.from(runtimeKey),
+      }),
+    ).resolves.toMatchObject({ status: "created" });
+    await pool.query(
+      `UPDATE organization_entitlements
+       SET status = 'suspended', updated_at = clock_timestamp()
+       WHERE org_id = $1`,
+      [entitlement.orgId],
+    );
+    await expect(
+      reconcileHostedProviderKeyLifecycle(pool, provider.adapter, {
+        orgId: entitlement.orgId,
+        sealRuntimeKey: (runtimeKey) => Buffer.from(runtimeKey),
+      }),
+    ).resolves.toMatchObject({ status: "inactive", revocationsCompleted: 1 });
+
+    expect(assertions).toBeGreaterThanOrEqual(5);
   });
 
   test("revokes the old period before activating a rollover key", async () => {
@@ -487,7 +520,7 @@ describeDb("hosted provider key lifecycle", () => {
     });
   });
 
-  test("recovers an ambiguous create by exact name and revokes it without recreation", async () => {
+  test("revokes a recovered ambiguous create before creating its successor", async () => {
     const entitlement = await createEntitlement("ambiguous-created");
     const provider = new FakeProvider();
     provider.createMode = "ambiguous-created";
@@ -497,6 +530,7 @@ describeDb("hosted provider key lifecycle", () => {
       sealRuntimeKey: (runtimeKey) => Buffer.from(runtimeKey),
     });
     const hash = provider.createCalls[0]!.hash;
+    provider.createMode = "created";
     const result = await reconcileHostedProviderKeyLifecycle(
       pool,
       provider.adapter,
@@ -506,10 +540,66 @@ describeDb("hosted provider key lifecycle", () => {
       },
     );
 
-    expect(result).toMatchObject({ status: "blocked", state: "revoked" });
-    expect(provider.createCalls).toHaveLength(1);
+    expect(result).toMatchObject({ status: "created" });
+    expect(provider.createCalls).toHaveLength(2);
     expect(provider.disableCalls).toEqual([hash]);
     expect(provider.key(hash)?.disabled).toBe(true);
+    const rows = await pool.query<{ state: string; create_intent_id: string }>(
+      `SELECT state, create_intent_id
+       FROM hosted_provider_keys
+       WHERE org_id = $1
+       ORDER BY created_at`,
+      [entitlement.orgId],
+    );
+    expect(rows.rows.map((row) => row.state)).toEqual(["revoked", "active"]);
+    expect(new Set(rows.rows.map((row) => row.create_intent_id)).size).toBe(2);
+  });
+
+  test("preserves a rate-limited intent and succeeds with a successor", async () => {
+    const entitlement = await createEntitlement("rate-limited-successor");
+    const provider = new FakeProvider();
+    provider.createMode = "retryable";
+
+    await expect(
+      reconcileHostedProviderKeyLifecycle(pool, provider.adapter, {
+        orgId: entitlement.orgId,
+        sealRuntimeKey: (runtimeKey) => Buffer.from(runtimeKey),
+      }),
+    ).resolves.toMatchObject({
+      status: "retryable",
+      operation: "create",
+      httpStatus: 429,
+    });
+    provider.createMode = "created";
+    await expect(
+      reconcileHostedProviderKeyLifecycle(pool, provider.adapter, {
+        orgId: entitlement.orgId,
+        sealRuntimeKey: (runtimeKey) => Buffer.from(runtimeKey),
+      }),
+    ).resolves.toMatchObject({ status: "created" });
+
+    expect(provider.createCalls).toHaveLength(2);
+    const rows = await pool.query<{
+      state: string;
+      create_outcome: string;
+      create_intent_id: string;
+    }>(
+      `SELECT state, create_outcome, create_intent_id
+       FROM hosted_provider_keys
+       WHERE org_id = $1
+       ORDER BY created_at`,
+      [entitlement.orgId],
+    );
+    expect(
+      rows.rows.map(({ state, create_outcome }) => ({
+        state,
+        create_outcome,
+      })),
+    ).toEqual([
+      { state: "cancelled", create_outcome: "rate_limited" },
+      { state: "active", create_outcome: "created" },
+    ]);
+    expect(new Set(rows.rows.map((row) => row.create_intent_id)).size).toBe(2);
   });
 
   test("records ownership conflict without mutating a hash owned by another intent", async () => {
@@ -610,7 +700,8 @@ describeDb("hosted provider key lifecycle", () => {
   });
 });
 
-type CreateMode = "created" | "ambiguous-absent" | "ambiguous-created";
+type CreateMode =
+  "created" | "retryable" | "ambiguous-absent" | "ambiguous-created";
 type DisableMode = "disabled" | "ambiguous-active" | "ambiguous-disabled";
 let nextFakeProviderHash = 1;
 
@@ -627,13 +718,18 @@ class FakeProvider {
   disableMode: DisableMode = "disabled";
   beforeDisable: ((hash: string) => Promise<void>) | undefined;
   afterCreate:
-    | ((input: { readonly name: string; readonly hash: string }) => Promise<void>)
+    | ((input: {
+        readonly name: string;
+        readonly hash: string;
+      }) => Promise<void>)
     | undefined;
+  beforeProviderOperation: (() => void) | undefined;
   readonly #keys = new Map<string, OpenRouterManagedKey>();
 
   readonly adapter: OpenRouterManagementAdapter = Object.freeze({
     binding: OPENROUTER_PROVIDER_BINDING,
     findKeysByExactName: async (name: string) => {
+      this.beforeProviderOperation?.();
       this.listCalls += 1;
       const matches = [...this.#keys.values()]
         .filter((key) => key.name === name)
@@ -662,6 +758,7 @@ class FakeProvider {
       };
     },
     findKeyByHash: async (hash: string) => {
+      this.beforeProviderOperation?.();
       this.listCalls += 1;
       const key = this.#keys.get(hash);
       return key
@@ -683,6 +780,7 @@ class FakeProvider {
         OpenRouterManagementAdapter["createKeyAfterPersistedIntent"]
       >[0],
     ): Promise<OpenRouterCreateKeyResult> => {
+      this.beforeProviderOperation?.();
       const hash = `provider-hash-${nextFakeProviderHash}`;
       nextFakeProviderHash += 1;
       this.createCalls.push({
@@ -695,6 +793,14 @@ class FakeProvider {
         this.inject(input.name, hash);
       }
       await this.afterCreate?.({ name: input.name, hash });
+      if (this.createMode === "retryable") {
+        this.#keys.delete(hash);
+        return {
+          status: "retryable",
+          binding: OPENROUTER_PROVIDER_BINDING,
+          httpStatus: 429,
+        };
+      }
       if (this.createMode !== "created") {
         return {
           status: "ambiguous",
@@ -712,6 +818,7 @@ class FakeProvider {
       };
     },
     disableKey: async (hash: string): Promise<OpenRouterDisableKeyResult> => {
+      this.beforeProviderOperation?.();
       this.disableCalls.push(hash);
       await this.beforeDisable?.(hash);
       const key = this.#keys.get(hash);

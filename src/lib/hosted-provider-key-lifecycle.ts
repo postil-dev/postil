@@ -37,6 +37,12 @@ export type HostedProviderKeyLifecycleResult =
       readonly operation: "create" | "revoke";
     }
   | {
+      readonly status: "retryable";
+      readonly operation: "create";
+      readonly intentId: string;
+      readonly httpStatus: 429;
+    }
+  | {
       readonly status: "rejected";
       readonly operation: "create" | "revoke";
       readonly intentId: string;
@@ -92,6 +98,8 @@ interface LifecycleInput {
   readonly orgId: number;
   readonly sealRuntimeKey: (runtimeKey: string) => Buffer | Promise<Buffer>;
 }
+
+type DatabasePool = Pick<Pool, "connect">;
 
 interface EntitlementRow {
   readonly organization_exists: boolean;
@@ -157,69 +165,79 @@ const PROVIDER_KEY_NAME_PREFIX = "postil-hosted-";
  * lifecycle timestamp.
  */
 export async function reconcileHostedProviderKeyLifecycle(
-  pool: Pick<Pool, "connect">,
+  pool: DatabasePool,
   adapter: OpenRouterManagementAdapter,
   input: LifecycleInput,
 ): Promise<HostedProviderKeyLifecycleResult> {
   validateLifecycleInput(input);
-  const client = await pool.connect();
-  try {
-    const entitlement = await readEntitlementDecision(client, input.orgId);
-    await normalizeLifecycleRows(client, input.orgId);
+  const entitlement = await withDatabaseClient(pool, (client) =>
+    readEntitlementDecision(client, input.orgId),
+  );
+  await withDatabaseClient(pool, (client) =>
+    normalizeLifecycleRows(client, input.orgId),
+  );
 
-    let revocationsCompleted = 0;
-    for (let index = 0; index < MAX_RECONCILIATIONS_PER_CALL; index += 1) {
-      const pending = await readNextRevocation(client, input.orgId);
-      if (pending) {
-        const result = await revokeProviderKey(client, adapter, pending);
-        if (result.status === "revoked") {
-          revocationsCompleted += 1;
-          continue;
-        }
-        return result;
+  let revocationsCompleted = 0;
+  for (let index = 0; index < MAX_RECONCILIATIONS_PER_CALL; index += 1) {
+    const pending = await withDatabaseClient(pool, (client) =>
+      readNextRevocation(client, input.orgId),
+    );
+    if (pending) {
+      const result = await revokeProviderKey(pool, adapter, pending);
+      if (result.status === "revoked") {
+        revocationsCompleted += 1;
+        continue;
       }
-
-      const ambiguous = await readNextAmbiguousCreate(client, input.orgId);
-      if (ambiguous) {
-        const result = await reconcileAmbiguousCreate(client, adapter, ambiguous);
-        if (result.status === "revoked") {
-          revocationsCompleted += 1;
-          continue;
-        }
-        return result;
-      }
-
-      if (!entitlement.desired) {
-        return {
-          status: "inactive",
-          reason: entitlement.reason ?? "inactive",
-          revocationsCompleted,
-        };
-      }
-
-      const intent = await persistOrReadIntent(client, entitlement.desired);
-      const terminal = terminalIntentResult(intent);
-      if (terminal) return terminal;
-
-      const leaseId = randomUUID();
-      const leased = await claimCreateLease(client, intent, leaseId);
-      if (!leased) return { status: "busy", operation: "create" };
-      try {
-        return await createWhileLeased(
-          client,
-          adapter,
-          input.sealRuntimeKey,
-          leased,
-          leaseId,
-        );
-      } finally {
-        await releaseLease(client, leased.create_intent_id, leaseId);
-      }
+      return result;
     }
-    return { status: "reconciliation-bound" };
-  } finally {
-    client.release();
+
+    const ambiguous = await withDatabaseClient(pool, (client) =>
+      readNextAmbiguousCreate(client, input.orgId),
+    );
+    if (ambiguous) {
+      const result = await reconcileAmbiguousCreate(pool, adapter, ambiguous);
+      if (result.status === "revoked") {
+        revocationsCompleted += 1;
+        continue;
+      }
+      return result;
+    }
+
+    const desired = entitlement.desired;
+    if (!desired) {
+      return {
+        status: "inactive",
+        reason: entitlement.reason ?? "inactive",
+        revocationsCompleted,
+      };
+    }
+
+    const intent = await withDatabaseClient(pool, (client) =>
+      persistOrReadIntent(client, desired),
+    );
+    const terminal = terminalIntentResult(intent);
+    if (terminal) return terminal;
+
+    const leaseId = randomUUID();
+    const leased = await withDatabaseClient(pool, (client) =>
+      claimCreateLease(client, intent, leaseId),
+    );
+    if (!leased) return { status: "busy", operation: "create" };
+    try {
+      return await createWhileLeased(
+        pool,
+        adapter,
+        input.sealRuntimeKey,
+        leased,
+        leaseId,
+      );
+    } finally {
+      await withDatabaseClient(pool, (client) =>
+        releaseLease(client, leased.create_intent_id, leaseId),
+      );
+    }
   }
+  return { status: "reconciliation-bound" };
 }
 
 /**
@@ -228,7 +246,7 @@ export async function reconcileHostedProviderKeyLifecycle(
  * dark resolver.
  */
 export async function resolveHostedProviderRuntimeCredential(
-  pool: Pick<Pool, "connect">,
+  pool: DatabasePool,
   orgId: number,
 ): Promise<HostedProviderRuntimeCredential | null> {
   if (!Number.isSafeInteger(orgId) || orgId <= 0) {
@@ -464,12 +482,7 @@ async function persistOrReadIntent(
        )
      ON CONFLICT DO NOTHING
      RETURNING ${RETURNING_COLUMNS}`,
-    [
-      intentId,
-      providerKeyName,
-      desired.orgId,
-      desired.limitMicros.toString(),
-    ],
+    [intentId, providerKeyName, desired.orgId, desired.limitMicros.toString()],
   );
   if (inserted.rows[0]) return inserted.rows[0];
   const existing = await client.query<HostedProviderKeyRow>(
@@ -477,6 +490,7 @@ async function persistOrReadIntent(
      FROM hosted_provider_keys h
      JOIN organization_entitlements e ON e.org_id = h.org_id
      WHERE h.org_id = $1
+       AND h.state NOT IN ('revoked', 'cancelled')
        AND h.entitlement_period_starts_at = e.period_starts_at
        AND h.entitlement_period_ends_at = e.period_ends_at
        AND h.limit_micros = e.included_usage_micros + COALESCE(e.overage_hard_cap_micros, 0)
@@ -556,7 +570,7 @@ async function claimCreateLease(
 }
 
 async function createWhileLeased(
-  client: PoolClient,
+  pool: DatabasePool,
   adapter: OpenRouterManagementAdapter,
   sealRuntimeKey: LifecycleInput["sealRuntimeKey"],
   row: HostedProviderKeyRow,
@@ -564,7 +578,9 @@ async function createWhileLeased(
 ): Promise<HostedProviderKeyLifecycleResult> {
   const lookup = await adapter.findKeysByExactName(row.provider_key_name);
   if (lookup.status === "one") {
-    await markOrphaned(client, row, leaseId, "name_present", null);
+    await withDatabaseClient(pool, (client) =>
+      markOrphaned(client, row, leaseId, "name_present", null),
+    );
     return {
       status: "orphaned",
       intentId: row.create_intent_id,
@@ -573,7 +589,9 @@ async function createWhileLeased(
     };
   }
   if (lookup.status === "multiple") {
-    await markOrphaned(client, row, leaseId, "name_not_unique", null);
+    await withDatabaseClient(pool, (client) =>
+      markOrphaned(client, row, leaseId, "name_not_unique", null),
+    );
     return {
       status: "orphaned",
       intentId: row.create_intent_id,
@@ -582,8 +600,9 @@ async function createWhileLeased(
     };
   }
 
-  const attempted = await client.query(
-    `UPDATE hosted_provider_keys h
+  const attempted = await withDatabaseClient(pool, (client) =>
+    client.query(
+      `UPDATE hosted_provider_keys h
      SET create_attempted_at = clock_timestamp(),
          reconciliation_required_at = clock_timestamp(),
          entitlement_updated_at = e.updated_at,
@@ -612,11 +631,14 @@ async function createWhileLeased(
            AND (e.promotional_ends_at IS NULL OR e.promotional_ends_at > clock_timestamp())
          )
        )
-     RETURNING h.create_intent_id`,
-    [row.create_intent_id, leaseId],
+       RETURNING h.create_intent_id`,
+      [row.create_intent_id, leaseId],
+    ),
   );
   if (attempted.rowCount !== 1) {
-    await markOrphaned(client, row, leaseId, "intent_changed", null);
+    await withDatabaseClient(pool, (client) =>
+      markOrphaned(client, row, leaseId, "intent_changed", null),
+    );
     return {
       status: "orphaned",
       intentId: row.create_intent_id,
@@ -631,8 +653,21 @@ async function createWhileLeased(
     limitMicros: exactOpenRouterLimitMicros(BigInt(row.limit_micros)),
     expiresAt: row.entitlement_period_ends_at,
   });
+  if (created.status === "retryable") {
+    await withDatabaseClient(pool, (client) =>
+      transitionCreateRetryable(client, row, leaseId),
+    );
+    return {
+      status: "retryable",
+      operation: "create",
+      intentId: row.create_intent_id,
+      httpStatus: created.httpStatus,
+    };
+  }
   if (created.status === "rejected") {
-    await transitionCreateRejected(client, row, leaseId);
+    await withDatabaseClient(pool, (client) =>
+      transitionCreateRejected(client, row, leaseId),
+    );
     return {
       status: "rejected",
       operation: "create",
@@ -641,7 +676,9 @@ async function createWhileLeased(
     };
   }
   if (created.status === "ambiguous") {
-    await markOrphaned(client, row, leaseId, "ambiguous", null);
+    await withDatabaseClient(pool, (client) =>
+      markOrphaned(client, row, leaseId, "ambiguous", null),
+    );
     return {
       status: "orphaned",
       intentId: row.create_intent_id,
@@ -650,14 +687,13 @@ async function createWhileLeased(
     };
   }
 
-  const hashClaim = await claimCreatedProviderHash(
-    client,
-    row,
-    leaseId,
-    created.key.hash,
+  const hashClaim = await withDatabaseClient(pool, (client) =>
+    claimCreatedProviderHash(client, row, leaseId, created.key.hash),
   );
   if (hashClaim === "ownership-conflict") {
-    await markOwnershipConflict(client, row, leaseId, created.key.hash);
+    await withDatabaseClient(pool, (client) =>
+      markOwnershipConflict(client, row, leaseId, created.key.hash),
+    );
     return {
       status: "ownership-conflict",
       intentId: row.create_intent_id,
@@ -665,13 +701,17 @@ async function createWhileLeased(
     };
   }
   if (hashClaim === "intent-changed") {
-    const recovered = await transitionKnownCreatedKeyToRevocation(
-      client,
-      row.create_intent_id,
-      created.key.hash,
+    const recovered = await withDatabaseClient(pool, (client) =>
+      transitionKnownCreatedKeyToRevocation(
+        client,
+        row.create_intent_id,
+        created.key.hash,
+      ),
     );
     if (recovered === "ownership-conflict") {
-      await markOwnershipConflict(client, row, leaseId, created.key.hash);
+      await withDatabaseClient(pool, (client) =>
+        markOwnershipConflict(client, row, leaseId, created.key.hash),
+      );
       return {
         status: "ownership-conflict",
         intentId: row.create_intent_id,
@@ -679,11 +719,15 @@ async function createWhileLeased(
       };
     }
     if (recovered === "revocation-pending") {
-      const pending = await readIntent(client, row.create_intent_id);
+      const pending = await withDatabaseClient(pool, (client) =>
+        readIntent(client, row.create_intent_id),
+      );
       if (!pending) {
-        throw new Error("hosted provider recovered revocation intent disappeared");
+        throw new Error(
+          "hosted provider recovered revocation intent disappeared",
+        );
       }
-      return revokeProviderKey(client, adapter, pending);
+      return revokeProviderKey(pool, adapter, pending);
     }
     throw new Error(
       "hosted provider create result could not persist its immutable hash",
@@ -697,33 +741,43 @@ async function createWhileLeased(
       throw new Error("sealed provider runtime key is empty");
     }
   } catch {
-    await transitionToRevocationPending(
-      client,
-      row.create_intent_id,
-      leaseId,
-      "credential_persistence_failed",
+    await withDatabaseClient(pool, (client) =>
+      transitionToRevocationPending(
+        client,
+        row.create_intent_id,
+        leaseId,
+        "credential_persistence_failed",
+      ),
     );
-    const pending = await readIntent(client, row.create_intent_id);
+    const pending = await withDatabaseClient(pool, (client) =>
+      readIntent(client, row.create_intent_id),
+    );
     if (!pending) throw new Error("hosted provider revocation intent disappeared");
-    return revokeProviderKey(client, adapter, pending);
+    return revokeProviderKey(pool, adapter, pending);
   }
 
-  const activated = await activateIfEntitlementStillMatches(
-    client,
-    row.create_intent_id,
-    leaseId,
-    sealedRuntimeKey,
-  );
-  if (!activated) {
-    await transitionToRevocationPending(
+  const activated = await withDatabaseClient(pool, (client) =>
+    activateIfEntitlementStillMatches(
       client,
       row.create_intent_id,
       leaseId,
-      "created",
+      sealedRuntimeKey,
+    ),
+  );
+  if (!activated) {
+    await withDatabaseClient(pool, (client) =>
+      transitionToRevocationPending(
+        client,
+        row.create_intent_id,
+        leaseId,
+        "created",
+      ),
     );
-    const pending = await readIntent(client, row.create_intent_id);
+    const pending = await withDatabaseClient(pool, (client) =>
+      readIntent(client, row.create_intent_id),
+    );
     if (pending?.state === "revocation_pending") {
-      return revokeProviderKey(client, adapter, pending);
+      return revokeProviderKey(pool, adapter, pending);
     }
     return {
       status: "orphaned",
@@ -890,13 +944,14 @@ async function readNextAmbiguousCreate(
 }
 
 async function reconcileAmbiguousCreate(
-  client: PoolClient,
+  pool: DatabasePool,
   adapter: OpenRouterManagementAdapter,
   row: HostedProviderKeyRow,
 ): Promise<HostedProviderKeyLifecycleResult> {
   const leaseId = randomUUID();
-  const claimed = await client.query<HostedProviderKeyRow>(
-    `UPDATE hosted_provider_keys
+  const claimed = await withDatabaseClient(pool, (client) =>
+    client.query<HostedProviderKeyRow>(
+      `UPDATE hosted_provider_keys
      SET lease_id = $2,
          lease_kind = 'create',
          lease_expires_at = clock_timestamp() + $3::interval,
@@ -906,8 +961,9 @@ async function reconcileAmbiguousCreate(
        AND create_outcome = 'ambiguous'
        AND provider_key_hash IS NULL
        AND (lease_id IS NULL OR lease_expires_at <= clock_timestamp())
-     RETURNING ${RETURNING_COLUMNS}`,
-    [row.create_intent_id, leaseId, LEASE_DURATION_SQL],
+       RETURNING ${RETURNING_COLUMNS}`,
+      [row.create_intent_id, leaseId, LEASE_DURATION_SQL],
+    ),
   );
   const leased = claimed.rows[0];
   if (!leased) return { status: "busy", operation: "create" };
@@ -922,12 +978,8 @@ async function reconcileAmbiguousCreate(
       };
     }
     if (lookup.status === "multiple") {
-      await markOrphaned(
-        client,
-        leased,
-        leaseId,
-        "name_not_unique",
-        null,
+      await withDatabaseClient(pool, (client) =>
+        markOrphaned(client, leased, leaseId, "name_not_unique", null),
       );
       return {
         status: "orphaned",
@@ -937,18 +989,12 @@ async function reconcileAmbiguousCreate(
       };
     }
     const providerKeyHash = lookup.matches[0].hash;
-    const transitioned = await claimRecoveredProviderHash(
-      client,
-      leased,
-      leaseId,
-      providerKeyHash,
+    const transitioned = await withDatabaseClient(pool, (client) =>
+      claimRecoveredProviderHash(client, leased, leaseId, providerKeyHash),
     );
     if (transitioned === "ownership-conflict") {
-      await markOwnershipConflict(
-        client,
-        leased,
-        leaseId,
-        providerKeyHash,
+      await withDatabaseClient(pool, (client) =>
+        markOwnershipConflict(client, leased, leaseId, providerKeyHash),
       );
       return {
         status: "ownership-conflict",
@@ -965,11 +1011,15 @@ async function reconcileAmbiguousCreate(
       };
     }
   } finally {
-    await releaseLease(client, leased.create_intent_id, leaseId);
+    await withDatabaseClient(pool, (client) =>
+      releaseLease(client, leased.create_intent_id, leaseId),
+    );
   }
-  const pending = await readIntent(client, leased.create_intent_id);
+  const pending = await withDatabaseClient(pool, (client) =>
+    readIntent(client, leased.create_intent_id),
+  );
   if (!pending) throw new Error("hosted provider recovered intent disappeared");
-  return revokeProviderKey(client, adapter, pending);
+  return revokeProviderKey(pool, adapter, pending);
 }
 
 async function claimRecoveredProviderHash(
@@ -1049,7 +1099,7 @@ async function readNextRevocation(
 }
 
 async function revokeProviderKey(
-  client: PoolClient,
+  pool: DatabasePool,
   adapter: OpenRouterManagementAdapter,
   row: HostedProviderKeyRow,
 ): Promise<HostedProviderKeyLifecycleResult> {
@@ -1057,8 +1107,9 @@ async function revokeProviderKey(
     throw new Error("hosted provider revocation is missing its immutable hash");
   }
   const leaseId = randomUUID();
-  const claimed = await client.query<HostedProviderKeyRow>(
-    `UPDATE hosted_provider_keys
+  const claimed = await withDatabaseClient(pool, (client) =>
+    client.query<HostedProviderKeyRow>(
+      `UPDATE hosted_provider_keys
      SET lease_id = $2,
          lease_kind = 'revoke',
          lease_expires_at = clock_timestamp() + $3::interval,
@@ -1067,8 +1118,9 @@ async function revokeProviderKey(
        AND state = 'revocation_pending'
        AND provider_key_hash IS NOT NULL
        AND (lease_id IS NULL OR lease_expires_at <= clock_timestamp())
-     RETURNING ${RETURNING_COLUMNS}`,
-    [row.create_intent_id, leaseId, LEASE_DURATION_SQL],
+       RETURNING ${RETURNING_COLUMNS}`,
+      [row.create_intent_id, leaseId, LEASE_DURATION_SQL],
+    ),
   );
   const leased = claimed.rows[0];
   if (!leased) return { status: "busy", operation: "revoke" };
@@ -1078,15 +1130,20 @@ async function revokeProviderKey(
     try {
       before = await observeProviderKey(adapter, leased.provider_key_hash!);
     } catch {
-      await recordPendingRevocation(client, leased, leaseId, "ambiguous");
+      await withDatabaseClient(pool, (client) =>
+        recordPendingRevocation(client, leased, leaseId, "ambiguous"),
+      );
       return pendingRevocationResult(leased);
     }
     if (before !== "active") {
-      return markRevoked(client, leased, leaseId, before);
+      return await withDatabaseClient(pool, (client) =>
+        markRevoked(client, leased, leaseId, before),
+      );
     }
 
-    const authorized = await client.query(
-      `UPDATE hosted_provider_keys
+    const authorized = await withDatabaseClient(pool, (client) =>
+      client.query(
+        `UPDATE hosted_provider_keys
        SET revoke_attempted_at = clock_timestamp(),
            revoke_outcome = NULL,
            updated_at = clock_timestamp()
@@ -1096,8 +1153,9 @@ async function revokeProviderKey(
          AND lease_id = $3
          AND lease_kind = 'revoke'
          AND lease_expires_at > clock_timestamp()
-       RETURNING create_intent_id`,
-      [leased.create_intent_id, leased.provider_key_hash, leaseId],
+         RETURNING create_intent_id`,
+        [leased.create_intent_id, leased.provider_key_hash, leaseId],
+      ),
     );
     if (authorized.rowCount !== 1) {
       return pendingRevocationResult(leased);
@@ -1107,24 +1165,32 @@ async function revokeProviderKey(
     try {
       mutation = await adapter.disableKey(leased.provider_key_hash!);
     } catch {
-      await recordPendingRevocation(client, leased, leaseId, "ambiguous");
+      await withDatabaseClient(pool, (client) =>
+        recordPendingRevocation(client, leased, leaseId, "ambiguous"),
+      );
       return pendingRevocationResult(leased);
     }
     let observed: "active" | "disabled" | "absent";
     try {
       observed = await observeProviderKey(adapter, leased.provider_key_hash!);
     } catch {
-      await recordPendingRevocation(client, leased, leaseId, "ambiguous");
+      await withDatabaseClient(pool, (client) =>
+        recordPendingRevocation(client, leased, leaseId, "ambiguous"),
+      );
       return pendingRevocationResult(leased);
     }
     if (observed !== "active") {
-      return markRevoked(client, leased, leaseId, observed);
+      return await withDatabaseClient(pool, (client) =>
+        markRevoked(client, leased, leaseId, observed),
+      );
     }
-    await recordPendingRevocation(
-      client,
-      leased,
-      leaseId,
-      mutation.status === "rejected" ? "rejected" : "ambiguous",
+    await withDatabaseClient(pool, (client) =>
+      recordPendingRevocation(
+        client,
+        leased,
+        leaseId,
+        mutation.status === "rejected" ? "rejected" : "ambiguous",
+      ),
     );
     if (mutation.status === "rejected") {
       return {
@@ -1136,7 +1202,9 @@ async function revokeProviderKey(
     }
     return pendingRevocationResult(leased);
   } finally {
-    await releaseLease(client, leased.create_intent_id, leaseId);
+    await withDatabaseClient(pool, (client) =>
+      releaseLease(client, leased.create_intent_id, leaseId),
+    );
   }
 }
 
@@ -1236,6 +1304,29 @@ async function transitionCreateRejected(
          updated_at = clock_timestamp()
      WHERE create_intent_id = $1
        AND state = 'provisioning'
+       AND lease_id = $2
+       AND lease_kind = 'create'`,
+    [row.create_intent_id, leaseId],
+  );
+}
+
+async function transitionCreateRetryable(
+  client: PoolClient,
+  row: HostedProviderKeyRow,
+  leaseId: string,
+): Promise<void> {
+  await client.query(
+    `UPDATE hosted_provider_keys
+     SET state = 'cancelled',
+         create_outcome = 'rate_limited',
+         reconciliation_required_at = NULL,
+         lease_id = NULL,
+         lease_kind = NULL,
+         lease_expires_at = NULL,
+         updated_at = clock_timestamp()
+     WHERE create_intent_id = $1
+       AND state = 'provisioning'
+       AND create_attempted_at IS NOT NULL
        AND lease_id = $2
        AND lease_kind = 'create'`,
     [row.create_intent_id, leaseId],
@@ -1350,6 +1441,18 @@ async function releaseLease(
        AND lease_id = $2`,
     [intentId, leaseId],
   );
+}
+
+async function withDatabaseClient<T>(
+  pool: DatabasePool,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    return await operation(client);
+  } finally {
+    client.release();
+  }
 }
 
 function validateLifecycleInput(input: LifecycleInput): void {

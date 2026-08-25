@@ -968,12 +968,14 @@ export const hostedProviderKeys = pgTable(
     uniqueIndex("hosted_provider_keys_provider_key_hash_unique")
       .on(t.providerKeyHash)
       .where(sql`${t.providerKeyHash} IS NOT NULL`),
-    uniqueIndex("hosted_provider_keys_entitlement_binding_unique").on(
-      t.orgId,
-      t.entitlementPeriodStartsAt,
-      t.entitlementPeriodEndsAt,
-      t.limitMicros,
-    ),
+    uniqueIndex("hosted_provider_keys_entitlement_binding_unique")
+      .on(
+        t.orgId,
+        t.entitlementPeriodStartsAt,
+        t.entitlementPeriodEndsAt,
+        t.limitMicros,
+      )
+      .where(sql`${t.state} NOT IN ('revoked', 'cancelled')`),
     uniqueIndex("hosted_provider_keys_active_org_unique")
       .on(t.orgId)
       .where(sql`${t.state} = 'active'`),
@@ -1010,7 +1012,7 @@ export const hostedProviderKeys = pgTable(
     ),
     check(
       "hosted_provider_keys_create_outcome_check",
-      sql`${t.createOutcome} IS NULL OR ${t.createOutcome} IN ('created', 'rejected', 'ambiguous', 'name_present', 'name_not_unique', 'credential_persistence_failed', 'intent_changed', 'ownership_conflict')`,
+      sql`${t.createOutcome} IS NULL OR ${t.createOutcome} IN ('created', 'rejected', 'rate_limited', 'ambiguous', 'name_present', 'name_not_unique', 'credential_persistence_failed', 'intent_changed', 'ownership_conflict')`,
     ),
     check(
       "hosted_provider_keys_revoke_outcome_check",
@@ -1118,8 +1120,10 @@ export const hostedProviderKeys = pgTable(
         AND ${t.sealedRuntimeKey} IS NULL
         AND ${t.providerKeyHash} IS NULL
         AND ${t.conflictingProviderKeyHash} IS NULL
-        AND ${t.createAttemptedAt} IS NULL
-        AND ${t.createOutcome} IS NULL
+        AND (
+          (${t.createAttemptedAt} IS NULL AND ${t.createOutcome} IS NULL)
+          OR (${t.createAttemptedAt} IS NOT NULL AND ${t.createOutcome} = 'rate_limited')
+        )
         AND ${t.revocationRequestedAt} IS NULL
         AND ${t.revokeOutcome} IS NULL
         AND ${t.revokedAt} IS NULL

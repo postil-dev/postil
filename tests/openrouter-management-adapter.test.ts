@@ -59,7 +59,6 @@ function adapter(
   limits: {
     requestTimeoutMs?: number;
     maxResponseBytes?: number;
-    pageSize?: number;
     maxPages?: number;
   } = {},
 ) {
@@ -67,9 +66,7 @@ function adapter(
     managementCredential: MANAGEMENT_CREDENTIAL,
     transport: async (request) => {
       const response = await transport(request);
-      return response.url === ""
-        ? responseAt(response, request.url)
-        : response;
+      return response.url === "" ? responseAt(response, request.url) : response;
     },
     limits,
   });
@@ -80,15 +77,12 @@ function mutationAdapter(
   limits: {
     requestTimeoutMs?: number;
     maxResponseBytes?: number;
-    pageSize?: number;
     maxPages?: number;
   } = {},
 ) {
   return adapter(
     async (request) =>
-      request.method === "GET"
-        ? json({ data: [] })
-        : transport(request),
+      request.method === "GET" ? json({ data: [] }) : transport(request),
     limits,
   );
 }
@@ -96,12 +90,10 @@ function mutationAdapter(
 const micros = exactOpenRouterLimitMicros;
 
 describe("OpenRouter management adapter", () => {
-  test(
-    "binds every request to OpenRouter and exposes only dark management operations",
-    async () => {
-      const requests: OpenRouterManagementRequest[] = [];
-      const client = adapter(async (request) => {
-        requests.push(request);
+  test("binds every request to OpenRouter and exposes only dark management operations", async () => {
+    const requests: OpenRouterManagementRequest[] = [];
+    const client = adapter(async (request) => {
+      requests.push(request);
         return json({ data: [] });
       });
 
@@ -129,11 +121,10 @@ describe("OpenRouter management adapter", () => {
         (requests[0] as { url: string }).url = "https://example.invalid";
       }).toThrow();
       expect(requests[0]?.headers).toEqual({
-        authorization: `Bearer ${MANAGEMENT_CREDENTIAL}`,
-        accept: "application/json",
-      });
-    },
-  );
+      authorization: `Bearer ${MANAGEMENT_CREDENTIAL}`,
+      accept: "application/json",
+    });
+  });
 
   test("distinguishes zero, one, and multiple exact opaque-name matches", async () => {
     const listed = [
@@ -142,8 +133,18 @@ describe("OpenRouter management adapter", () => {
       key({ hash: "hash-two", name: "postil-org-42" }),
       key({ hash: "hash-case", name: "POSTIL-ORG-42" }),
     ];
-    const client = adapter(async () => json({ data: listed }), {
-      pageSize: 10,
+    const client = adapter(async (request) => {
+      const url = new URL(request.url);
+      const hash = url.pathname.match(/\/keys\/(.+)$/)?.[1];
+      if (hash) {
+        const match = listed.find((candidate) => candidate.hash === hash);
+        return match
+          ? json({ data: match })
+          : json({ error: "missing" }, 404);
+      }
+      return json({
+        data: url.searchParams.get("offset") === "0" ? listed : [],
+      });
     });
 
     await expect(client.findKeysByExactName("missing")).resolves.toEqual({
@@ -194,12 +195,12 @@ describe("OpenRouter management adapter", () => {
     await expect(
       wrongDestination.findKeysByExactName("target"),
     ).rejects.toMatchObject({ code: "invalid-response" });
-    await expect(redirected.findKeysByExactName("target")).rejects.toMatchObject(
-      { code: "invalid-response" },
-    );
+    await expect(
+      redirected.findKeysByExactName("target"),
+    ).rejects.toMatchObject({ code: "invalid-response" });
   });
 
-  test("paginates with bounded offsets and scans all pages for ambiguity", async () => {
+  test("paginates by returned length until an explicit empty page", async () => {
     const offsets: string[] = [];
     const pages = [
       [
@@ -211,26 +212,45 @@ describe("OpenRouter management adapter", () => {
         key({ hash: "hash-d", name: "other-two" }),
       ],
       [key({ hash: "hash-e", name: "last" })],
+      [],
     ];
     const client = adapter(
       async (request) => {
         offsets.push(new URL(request.url).searchParams.get("offset")!);
         return json({ data: pages[offsets.length - 1] });
       },
-      { pageSize: 2, maxPages: 3 },
+      { maxPages: 4 },
     );
 
     const result = await client.findKeysByExactName("target");
 
     expect(result.status).toBe("multiple");
-    expect(offsets).toEqual(["0", "2", "4"]);
+    expect(offsets).toEqual(["0", "2", "4", "5"]);
   });
 
-  test("fails closed when pagination or page-size bounds are exhausted", async () => {
-    const fullPage = [
-      key({ hash: "hash-a", name: "target" }),
-      key({ hash: "hash-b", name: "other" }),
-    ];
+  test("continues after a short page and finds a target at its exact next offset", async () => {
+    const offsets: string[] = [];
+    const firstPage = Array.from({ length: 50 }, (_, index) =>
+      key({ hash: `first-${index}`, name: `other-${index}` }),
+    );
+    const client = adapter(async (request) => {
+      const offset = new URL(request.url).searchParams.get("offset")!;
+      offsets.push(offset);
+      if (offset === "0") return json({ data: firstPage });
+      if (offset === "50") {
+        return json({ data: [key({ hash: "target-hash", name: "target" })] });
+      }
+      return json({ data: [] });
+    });
+
+    await expect(client.findKeysByExactName("target")).resolves.toMatchObject({
+      status: "one",
+      matches: [{ hash: "target-hash" }],
+    });
+    expect(offsets).toEqual(["0", "50", "51"]);
+  });
+
+  test("fails closed when the pagination bound is exhausted", async () => {
     let boundedPage = 0;
     const bounded = adapter(
       async () => {
@@ -242,28 +262,12 @@ describe("OpenRouter management adapter", () => {
           ],
         });
       },
-      {
-        pageSize: 2,
-        maxPages: 2,
-      },
-    );
-    const oversizedPage = adapter(
-      async () =>
-        json({
-          data: [
-            ...fullPage,
-            key({ hash: "hash-c", name: "unexpected-third" }),
-          ],
-        }),
-      { pageSize: 2 },
+      { maxPages: 2 },
     );
 
     await expect(bounded.findKeysByExactName("target")).rejects.toMatchObject({
       code: "pagination-bound",
     });
-    await expect(
-      oversizedPage.findKeysByExactName("target"),
-    ).rejects.toMatchObject({ code: "invalid-response" });
   });
 
   test("rejects malformed, repeated-hash, and oversized list responses", async () => {
@@ -285,7 +289,6 @@ describe("OpenRouter management adapter", () => {
               : [],
         });
       },
-      { pageSize: 1 },
     );
     const tooLarge = adapter(
       async () =>
@@ -296,10 +299,12 @@ describe("OpenRouter management adapter", () => {
       { maxResponseBytes: 128 },
     );
 
-    await expect(malformed.findKeysByExactName("target")).rejects.toBeInstanceOf(
-      OpenRouterManagementAdapterError,
-    );
-    await expect(invalidJson.findKeysByExactName("target")).rejects.toMatchObject({
+    await expect(
+      malformed.findKeysByExactName("target"),
+    ).rejects.toBeInstanceOf(OpenRouterManagementAdapterError);
+    await expect(
+      invalidJson.findKeysByExactName("target"),
+    ).rejects.toMatchObject({
       code: "invalid-response",
     });
     await expect(
@@ -369,9 +374,7 @@ describe("OpenRouter management adapter", () => {
             hash: `created-hash-${index}`,
             name: "opaque provider name",
             limit: Number(
-              limitMicros === limits[0]
-                ? "0.300001"
-                : "2251799813.685247",
+              limitMicros === limits[0] ? "0.300001" : "2251799813.685247",
             ),
           }),
         },
@@ -411,12 +414,35 @@ describe("OpenRouter management adapter", () => {
     expect(bodies).toHaveLength(2);
   });
 
-  test(
-    "classifies timeout and every uncertain create response as ambiguous without retrying",
-    async () => {
-      let timeoutCalls = 0;
-      let timedOutTransportTerminated = false;
-      const timedOut = mutationAdapter(
+  test("compares create-response expiration instants without losing sub-millisecond precision", async () => {
+    const client = mutationAdapter(async () =>
+      json(
+        {
+          key: "runtime-key",
+          data: key({
+            hash: "created-hash",
+            name: "target",
+            expiresAt: "2026-09-01T00:00:00.000000001Z",
+          }),
+        },
+        201,
+      ),
+    );
+
+    await expect(
+      client.createKeyAfterPersistedIntent({
+        intentId: CREATE_INTENT_ID,
+        name: "target",
+        limitMicros: micros(1_000_000n),
+        expiresAt: EXPIRES_AT,
+      }),
+    ).resolves.toMatchObject({ status: "ambiguous" });
+  });
+
+  test("classifies timeout and every uncertain create response as ambiguous without retrying", async () => {
+    let timeoutCalls = 0;
+    let timedOutTransportTerminated = false;
+    const timedOut = mutationAdapter(
         async (request) => {
           timeoutCalls += 1;
           try {
@@ -501,13 +527,12 @@ describe("OpenRouter management adapter", () => {
         }),
       ).resolves.toMatchObject({
         status: "ambiguous",
-        reason: "unexpected-status",
-        httpStatus: 500,
-      });
-    },
-  );
+      reason: "unexpected-status",
+      httpStatus: 500,
+    });
+  });
 
-  test("returns definitive 4xx create rejection without retrying", async () => {
+  test("classifies rate limiting as retryable without retrying inline", async () => {
     let calls = 0;
     const client = mutationAdapter(async () => {
       calls += 1;
@@ -522,11 +547,49 @@ describe("OpenRouter management adapter", () => {
         expiresAt: EXPIRES_AT,
       }),
     ).resolves.toEqual({
-      status: "rejected",
+      status: "retryable",
       binding: OPENROUTER_PROVIDER_BINDING,
       httpStatus: 429,
     });
     expect(calls).toBe(1);
+  });
+
+  test("accepts equivalent RFC 3339 expiration spellings and rejects invalid dates", async () => {
+    const responses = ["2026-09-01T00:00:00Z", "2026-02-30T00:00:00Z"];
+    const client = mutationAdapter(async () =>
+      json(
+        {
+          key: "runtime-key",
+          data: key({
+            hash: "created-hash",
+            name: "target",
+            limit: 0.000001,
+            expiresAt: responses.shift(),
+          }),
+        },
+        201,
+      ),
+    );
+
+    await expect(
+      client.createKeyAfterPersistedIntent({
+        intentId: CREATE_INTENT_ID,
+        name: "target",
+        limitMicros: micros(1n),
+        expiresAt: EXPIRES_AT,
+      }),
+    ).resolves.toMatchObject({ status: "created" });
+    await expect(
+      client.createKeyAfterPersistedIntent({
+        intentId: CREATE_INTENT_ID,
+        name: "target",
+        limitMicros: micros(1n),
+        expiresAt: new Date("2026-02-28T00:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      status: "ambiguous",
+      reason: "invalid-response",
+    });
   });
 
   test("keeps undocumented 409 and 422 mutation outcomes ambiguous", async () => {
@@ -550,7 +613,9 @@ describe("OpenRouter management adapter", () => {
         reason: "unexpected-status",
         httpStatus,
       });
-      await expect(disableClient.disableKey("exact-hash")).resolves.toMatchObject({
+      await expect(
+        disableClient.disableKey("exact-hash"),
+      ).resolves.toMatchObject({
         status: "ambiguous",
         reason: "unexpected-status",
         httpStatus,
@@ -562,10 +627,13 @@ describe("OpenRouter management adapter", () => {
     const methods: string[] = [];
     const client = adapter(async (request) => {
       methods.push(request.method);
-      return json({
-        key: "runtime-key",
-        data: key({ hash: "created", name: "target", limit: 0.000001 }),
-      }, 201);
+      return json(
+        {
+          key: "runtime-key",
+          data: key({ hash: "created", name: "target", limit: 0.000001 }),
+        },
+        201,
+      );
     });
 
     await expect(
@@ -606,7 +674,9 @@ describe("OpenRouter management adapter", () => {
 
   test("treats disable identity mismatch and timeout as ambiguous", async () => {
     const mismatch = adapter(async () =>
-      json({ data: key({ hash: "different", name: "target", disabled: true }) }),
+      json({
+        data: key({ hash: "different", name: "target", disabled: true }),
+      }),
     );
     const timedOut = adapter(
       async (request) => {
@@ -670,9 +740,7 @@ describe("OpenRouter management adapter", () => {
     ).rejects.toThrow("intent id is invalid");
     expect(() => micros(-1n)).toThrow("nonnegative bigint");
     expect(() =>
-      (micros as (value: unknown) => unknown)(
-        Number.MAX_SAFE_INTEGER + 1,
-      ),
+      (micros as (value: unknown) => unknown)(Number.MAX_SAFE_INTEGER + 1),
     ).toThrow("nonnegative bigint");
     await expect(client.disableKey(" bad-hash ")).rejects.toThrow(
       "hash is invalid",
@@ -689,13 +757,15 @@ describe("OpenRouter management adapter", () => {
     const maximumName = "n".repeat(OPENROUTER_KEY_NAME_MAX_LENGTH);
 
     expect(OPENROUTER_KEY_NAME_MAX_LENGTH).toBe(160);
-    await expect(client.findKeysByExactName(maximumName)).resolves.toMatchObject({
+    await expect(
+      client.findKeysByExactName(maximumName),
+    ).resolves.toMatchObject({
       status: "none",
       name: maximumName,
     });
-    await expect(
-      client.findKeysByExactName(`${maximumName}x`),
-    ).rejects.toThrow("opaque string");
+    await expect(client.findKeysByExactName(`${maximumName}x`)).rejects.toThrow(
+      "opaque string",
+    );
     expect(calls).toBe(1);
   });
 
@@ -707,9 +777,6 @@ describe("OpenRouter management adapter", () => {
     );
     expect(() => adapter(transport, { maxResponseBytes: 8_388_609 })).toThrow(
       "no greater than 8388608",
-    );
-    expect(() => adapter(transport, { pageSize: 101 })).toThrow(
-      "no greater than 100",
     );
     expect(() => adapter(transport, { maxPages: 101 })).toThrow(
       "no greater than 100",

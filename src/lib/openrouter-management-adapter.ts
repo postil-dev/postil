@@ -113,6 +113,11 @@ export type OpenRouterCreateKeyResult =
       readonly expiresAt: string;
     }
   | {
+      readonly status: "retryable";
+      readonly binding: OpenRouterProviderBinding;
+      readonly httpStatus: 429;
+    }
+  | {
       readonly status: "rejected";
       readonly binding: OpenRouterProviderBinding;
       readonly httpStatus: number;
@@ -175,7 +180,6 @@ export class OpenRouterManagementAdapterError extends Error {
 interface AdapterLimits {
   readonly requestTimeoutMs: number;
   readonly maxResponseBytes: number;
-  readonly pageSize: number;
   readonly maxPages: number;
 }
 
@@ -209,14 +213,12 @@ type WireResult =
 const DEFAULT_LIMITS: AdapterLimits = Object.freeze({
   requestTimeoutMs: 8_000,
   maxResponseBytes: 1024 * 1024,
-  pageSize: 100,
   maxPages: 100,
 });
 
 const HARD_LIMITS: AdapterLimits = Object.freeze({
   requestTimeoutMs: 60_000,
   maxResponseBytes: 8 * 1024 * 1024,
-  pageSize: 100,
   maxPages: 100,
 });
 
@@ -266,17 +268,52 @@ async function findKeyByHash(
   hash: string,
 ): Promise<OpenRouterExactHashLookup> {
   validateOpaqueIdentifier(hash, "OpenRouter key hash");
-  const key = (await listManagedKeys(input, limits)).find(
-    (candidate) => candidate.hash === hash,
-  );
-  return key
-    ? { status: "present", binding: OPENROUTER_PROVIDER_BINDING, hash, key }
-    : {
-        status: "absent",
-        binding: OPENROUTER_PROVIDER_BINDING,
-        hash,
-        key: null,
-      };
+  const result = await sendManagementRequest(input, limits, {
+    method: "GET",
+    url: providerUrl(`keys/${encodeURIComponent(hash)}`),
+  });
+  const body = receivedBodyOrThrow(result, "get key by hash");
+  if (result.status !== "received") {
+    throw new OpenRouterManagementAdapterError(
+      "http",
+      "OpenRouter get key by hash returned an unknown HTTP status",
+    );
+  }
+  if (result.httpStatus === 404) {
+    return {
+      status: "absent",
+      binding: OPENROUTER_PROVIDER_BINDING,
+      hash,
+      key: null,
+    };
+  }
+  if (result.httpStatus !== 200) {
+    throw new OpenRouterManagementAdapterError(
+      "http",
+      `OpenRouter get key by hash returned HTTP ${result.httpStatus}`,
+    );
+  }
+  let key: OpenRouterManagedKey;
+  try {
+    key = parseManagedKey(parseJsonObject(body).data);
+  } catch {
+    throw new OpenRouterManagementAdapterError(
+      "invalid-response",
+      "OpenRouter get key by hash returned invalid key metadata",
+    );
+  }
+  if (key.hash !== hash) {
+    throw new OpenRouterManagementAdapterError(
+      "invalid-response",
+      "OpenRouter get key by hash returned a different key hash",
+    );
+  }
+  return {
+    status: "present",
+    binding: OPENROUTER_PROVIDER_BINDING,
+    hash,
+    key,
+  };
 }
 
 async function listManagedKeys(
@@ -286,10 +323,11 @@ async function listManagedKeys(
   const keys: OpenRouterManagedKey[] = [];
   const observedHashes = new Set<string>();
 
+  let offset = 0;
   for (let page = 0; page < limits.maxPages; page += 1) {
     const url = new URL(providerUrl("keys"));
     url.searchParams.set("include_disabled", "true");
-    url.searchParams.set("offset", String(page * limits.pageSize));
+    url.searchParams.set("offset", String(offset));
     const result = await sendManagementRequest(input, limits, {
       method: "GET",
       url: url.toString(),
@@ -304,12 +342,6 @@ async function listManagedKeys(
       );
     }
     const pageKeys = parseListResponse(body);
-    if (pageKeys.length > limits.pageSize) {
-      throw new OpenRouterManagementAdapterError(
-        "invalid-response",
-        "OpenRouter list keys returned more records than the bounded page size",
-      );
-    }
     for (const key of pageKeys) {
       if (observedHashes.has(key.hash)) {
         throw new OpenRouterManagementAdapterError(
@@ -320,9 +352,17 @@ async function listManagedKeys(
       observedHashes.add(key.hash);
       keys.push(key);
     }
-    if (pageKeys.length < limits.pageSize) {
+    if (pageKeys.length === 0) {
       return keys;
     }
+    const nextOffset = offset + pageKeys.length;
+    if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset) {
+      throw new OpenRouterManagementAdapterError(
+        "invalid-response",
+        "OpenRouter list keys pagination did not make bounded progress",
+      );
+    }
+    offset = nextOffset;
   }
 
   throw new OpenRouterManagementAdapterError(
@@ -353,6 +393,13 @@ async function createKey(
   });
   if (result.status !== "received") {
     return ambiguousMutation(result.status);
+  }
+  if (result.httpStatus === 429) {
+    return {
+      status: "retryable",
+      binding: OPENROUTER_PROVIDER_BINDING,
+      httpStatus: 429,
+    };
   }
   if (isDocumentedRejectionStatus("create", result.httpStatus)) {
     return {
@@ -601,7 +648,7 @@ function parseCreateResponse(
     value.data.limit < 0 ||
     usdNumberToMicros(value.data.limit) !== expectedLimitMicros ||
     value.data.limit_reset !== null ||
-    value.data.expires_at !== expectedExpiresAt
+    !timestampsRepresentSameInstant(value.data.expires_at, expectedExpiresAt)
   ) {
     throw new Error("OpenRouter create response did not match the request");
   }
@@ -684,8 +731,72 @@ function isDocumentedRejectionStatus(
   status: number,
 ): boolean {
   return operation === "create"
-    ? [400, 401, 403, 429].includes(status)
+    ? [400, 401, 403].includes(status)
     : [400, 401, 403, 404, 429].includes(status);
+}
+
+function timestampsRepresentSameInstant(
+  actual: unknown,
+  expected: string,
+): boolean {
+  return parseRfc3339Instant(actual) === parseRfc3339Instant(expected);
+}
+
+function parseRfc3339Instant(value: unknown): bigint {
+  if (typeof value !== "string") {
+    throw new Error("OpenRouter key expiration was not a timestamp");
+  }
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(
+      value,
+    );
+  if (!match) {
+    throw new Error("OpenRouter key expiration was not RFC 3339");
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const zone = match[8]!;
+  const zoneHour = zone === "Z" ? 0 : Number(zone.slice(1, 3));
+  const zoneMinute = zone === "Z" ? 0 : Number(zone.slice(4, 6));
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth[month - 1]! ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    zoneHour > 23 ||
+    zoneMinute > 59
+  ) {
+    throw new Error("OpenRouter key expiration was not a valid date");
+  }
+  const wholeSecond = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}${zone}`;
+  const wholeSecondMilliseconds = Date.parse(wholeSecond);
+  if (!Number.isFinite(wholeSecondMilliseconds)) {
+    throw new Error("OpenRouter key expiration was not a valid instant");
+  }
+  const fractionalNanoseconds = BigInt((match[7] ?? "").padEnd(9, "0"));
+  return BigInt(wholeSecondMilliseconds) * 1_000_000n + fractionalNanoseconds;
 }
 
 function microsToUsdJsonNumber(micros: ExactOpenRouterLimitMicros): string {

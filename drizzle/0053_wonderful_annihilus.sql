@@ -29,7 +29,7 @@ CREATE TABLE "hosted_provider_keys" (
 	CONSTRAINT "hosted_provider_keys_conflicting_hash_nonempty" CHECK ("hosted_provider_keys"."conflicting_provider_key_hash" IS NULL OR length(btrim("hosted_provider_keys"."conflicting_provider_key_hash")) > 0),
 	CONSTRAINT "hosted_provider_keys_entitlement_period_check" CHECK ("hosted_provider_keys"."entitlement_period_ends_at" > "hosted_provider_keys"."entitlement_period_starts_at"),
 	CONSTRAINT "hosted_provider_keys_limit_exact_range" CHECK ("hosted_provider_keys"."limit_micros" > 0 AND "hosted_provider_keys"."limit_micros" <= 2251799813685247),
-	CONSTRAINT "hosted_provider_keys_create_outcome_check" CHECK ("hosted_provider_keys"."create_outcome" IS NULL OR "hosted_provider_keys"."create_outcome" IN ('created', 'rejected', 'ambiguous', 'name_present', 'name_not_unique', 'credential_persistence_failed', 'intent_changed', 'ownership_conflict')),
+	CONSTRAINT "hosted_provider_keys_create_outcome_check" CHECK ("hosted_provider_keys"."create_outcome" IS NULL OR "hosted_provider_keys"."create_outcome" IN ('created', 'rejected', 'rate_limited', 'ambiguous', 'name_present', 'name_not_unique', 'credential_persistence_failed', 'intent_changed', 'ownership_conflict')),
 	CONSTRAINT "hosted_provider_keys_revoke_outcome_check" CHECK ("hosted_provider_keys"."revoke_outcome" IS NULL OR "hosted_provider_keys"."revoke_outcome" IN ('ambiguous', 'rejected', 'disabled', 'absent')),
 	CONSTRAINT "hosted_provider_keys_lease_shape" CHECK ((
         "hosted_provider_keys"."lease_id" IS NULL
@@ -125,8 +125,10 @@ CREATE TABLE "hosted_provider_keys" (
         AND "hosted_provider_keys"."sealed_runtime_key" IS NULL
         AND "hosted_provider_keys"."provider_key_hash" IS NULL
         AND "hosted_provider_keys"."conflicting_provider_key_hash" IS NULL
-        AND "hosted_provider_keys"."create_attempted_at" IS NULL
-        AND "hosted_provider_keys"."create_outcome" IS NULL
+        AND (
+          ("hosted_provider_keys"."create_attempted_at" IS NULL AND "hosted_provider_keys"."create_outcome" IS NULL)
+          OR ("hosted_provider_keys"."create_attempted_at" IS NOT NULL AND "hosted_provider_keys"."create_outcome" = 'rate_limited')
+        )
         AND "hosted_provider_keys"."revocation_requested_at" IS NULL
         AND "hosted_provider_keys"."revoke_outcome" IS NULL
         AND "hosted_provider_keys"."revoked_at" IS NULL
@@ -139,7 +141,7 @@ ALTER TABLE "organization_entitlements" ALTER COLUMN "included_usage_micros" SET
 ALTER TABLE "organization_entitlements" ALTER COLUMN "overage_hard_cap_micros" SET DEFAULT 0;--> statement-breakpoint
 ALTER TABLE "hosted_provider_keys" ADD CONSTRAINT "hosted_provider_keys_org_id_organizations_id_fk" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "hosted_provider_keys_provider_key_hash_unique" ON "hosted_provider_keys" USING btree ("provider_key_hash") WHERE "hosted_provider_keys"."provider_key_hash" IS NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "hosted_provider_keys_entitlement_binding_unique" ON "hosted_provider_keys" USING btree ("org_id","entitlement_period_starts_at","entitlement_period_ends_at","limit_micros");--> statement-breakpoint
+CREATE UNIQUE INDEX "hosted_provider_keys_entitlement_binding_unique" ON "hosted_provider_keys" USING btree ("org_id","entitlement_period_starts_at","entitlement_period_ends_at","limit_micros") WHERE "hosted_provider_keys"."state" NOT IN ('revoked', 'cancelled');--> statement-breakpoint
 CREATE UNIQUE INDEX "hosted_provider_keys_active_org_unique" ON "hosted_provider_keys" USING btree ("org_id") WHERE "hosted_provider_keys"."state" = 'active';--> statement-breakpoint
 CREATE UNIQUE INDEX "hosted_provider_keys_runtime_org_unique" ON "hosted_provider_keys" USING btree ("org_id") WHERE "hosted_provider_keys"."sealed_runtime_key" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "hosted_provider_keys_reconciliation_idx" ON "hosted_provider_keys" USING btree ("state","reconciliation_required_at");
