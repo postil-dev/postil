@@ -273,7 +273,7 @@ describe("migration lint", () => {
 
   test("finding feedback reaction migration keeps reconciliation separate and reaction content closed", async () => {
     const migration = await readFile(
-      join(import.meta.dir, "..", "drizzle", "0051_finding_feedback_reactions.sql"),
+      join(import.meta.dir, "..", "drizzle", "0055_finding_feedback_reactions.sql"),
       "utf8",
     );
     expect(migration).toContain('CREATE TABLE "finding_feedback_reconciliations"');

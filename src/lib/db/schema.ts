@@ -562,6 +562,7 @@ export const findingFeedback = pgTable(
     sourceGithubReactionId: bigint("source_github_reaction_id", {
       mode: "number",
     }),
+    reactionContent: text("reaction_content", { enum: ["+1", "-1"] }),
     body: text("body"),
     actorGithubId: bigint("actor_github_id", { mode: "number" }).notNull(),
     actorLoginSnapshot: text("actor_login_snapshot").notNull(),

@@ -2817,6 +2817,34 @@ describeDb("webhook handler behaviour", () => {
     expect(control.rows).toEqual([{ gate_failing: true, current_state: "inline", approvals: 0 }]);
   });
 
+  test("completes feedback reconciliation for a bot-authored pull request", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 4242, author_login = 'dependabot[bot]' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    reviewCommentReactions = [];
+
+    await expect(
+      reconcileFindingFeedbackReactions(getDb(), publicationId),
+    ).resolves.toEqual({ captured: 0 });
+
+    const state = await pool.query<{
+      last_successful_at: Date | null;
+      last_error: string | null;
+    }>(
+      `SELECT last_successful_at, last_error
+         FROM finding_feedback_reconciliations
+        WHERE finding_publication_id = $1`,
+      [publicationId],
+    );
+    expect(state.rows[0]?.last_successful_at).toBeInstanceOf(Date);
+    expect(state.rows[0]?.last_error).toBeNull();
+  });
+
   test("bounds watchdog feedback scheduling and queues one privacy-safe weekly digest", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 710);
@@ -2845,13 +2873,28 @@ describeDb("webhook handler behaviour", () => {
                511, 'pull-request-author', true, '2026-08-20T12:00:00Z', NULL)`,
       [publicationId],
     );
+    await pool.query(
+      `UPDATE reviews
+          SET envelope = jsonb_set(envelope, '{modelUsed}', to_jsonb($2::text))
+        WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)`,
+      [publicationId, "m".repeat(600)],
+    );
     const aggregates = await findingFeedbackAggregates(
       getDb(), new Date("2026-08-17T00:00:00Z"), new Date("2026-08-24T00:00:00Z"),
     );
     expect(aggregates).toEqual([expect.objectContaining({
-      source: "reaction", reactionContent: "+1", count: 1,
+      source: "reaction",
+      reactionContent: "+1",
+      model: "m".repeat(500),
+      count: 1,
     })]);
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.test";
+    expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("pending");
+    await pool.query(
+      `UPDATE finding_feedback_reconciliations
+          SET last_successful_at = $1, last_error = NULL`,
+      [now],
+    );
     expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("queued");
     expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("empty");
     await pool.query(`

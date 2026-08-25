@@ -222,7 +222,7 @@ async function oldestUndeliveredFeedbackPeriodStart(
   db: Database,
   latestPeriodEnd: Date,
 ): Promise<Date | null> {
-  const rows = await db.execute(sql`
+  const result = await db.execute(sql`
     SELECT date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC') AS "periodStart"
       FROM finding_feedback feedback
      WHERE feedback.observed_at < ${latestPeriodEnd}
@@ -237,7 +237,7 @@ async function oldestUndeliveredFeedbackPeriodStart(
      ORDER BY date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC')
      LIMIT 1
   `);
-  const value = (rows as unknown as Array<Record<string, unknown>>)[0]?.periodStart;
+  const value = (result.rows as Array<Record<string, unknown>>)[0]?.periodStart;
   const periodStart = value instanceof Date
     ? value
     : typeof value === "string"

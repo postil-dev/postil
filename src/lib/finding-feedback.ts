@@ -68,7 +68,9 @@ export interface FindingFeedbackAggregate {
 }
 
 function isGithubLogin(value: string): boolean {
-  return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(value);
+  return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?$/u.test(
+    value,
+  );
 }
 
 function isGithubReactionContent(value: string): value is GithubReactionContent {
@@ -201,7 +203,7 @@ export async function findingFeedbackReconciliationWatermarkReached(
   cutoff: Date,
 ): Promise<boolean> {
   const windowStart = new Date(cutoff.getTime() - RECENT_PUBLICATION_WINDOW_MS);
-  const rows = await db.execute(sql`
+  const result = await db.execute(sql`
     SELECT 1
       FROM finding_publications publication
       JOIN reviews review ON review.id = publication.review_id
@@ -214,7 +216,7 @@ export async function findingFeedbackReconciliationWatermarkReached(
        AND (reconciliation.last_successful_at IS NULL OR reconciliation.last_successful_at < ${cutoff})
      LIMIT 1
   `);
-  return (rows as unknown as Array<unknown>).length === 0;
+  return result.rows.length === 0;
 }
 
 /** Load privacy-safe feedback aggregates without reply prose or actor identity. */
@@ -225,7 +227,7 @@ export async function findingFeedbackAggregates(
   limit = 20,
 ): Promise<FindingFeedbackAggregate[]> {
   if (limit < 1 || limit > 20) throw new Error("feedback aggregate limit must be in 1..20");
-  const rows = await db.execute(sql`
+  const result = await db.execute(sql`
     SELECT feedback.source,
            feedback.suggested_reason_tag AS "suggestedReasonTag",
            feedback.reaction_content AS "reactionContent",
@@ -249,7 +251,7 @@ export async function findingFeedbackAggregates(
               kind NULLS FIRST, severity NULLS FIRST
      LIMIT ${limit}
   `);
-  return (rows as unknown as Array<Record<string, unknown>>).map((row) => ({
+  return (result.rows as Array<Record<string, unknown>>).map((row) => ({
     source: row.source === "reaction" ? "reaction" : "reply",
     suggestedReasonTag:
       row.suggestedReasonTag === "false-positive" ||
@@ -261,7 +263,7 @@ export async function findingFeedbackAggregates(
       typeof row.reactionContent === "string" && isGithubReactionContent(row.reactionContent)
         ? row.reactionContent
         : null,
-    model: typeof row.model === "string" ? row.model : null,
+    model: typeof row.model === "string" ? row.model.slice(0, 500) : null,
     kind: typeof row.kind === "string" ? row.kind : null,
     severity: typeof row.severity === "string" ? row.severity : null,
     count: Number(row.count),
@@ -324,7 +326,9 @@ export async function reconcileFindingFeedbackReactions(
     );
     let captured = 0;
     const eligibleReactions = reactions.filter((reaction) =>
-      reaction.user.type !== "Bot" && !reaction.user.login.endsWith("[bot]"),
+      isGithubReactionContent(reaction.content) &&
+      reaction.user.type !== "Bot" &&
+      !reaction.user.login.endsWith("[bot]"),
     );
     const adminActors = new Map<string, typeof eligibleReactions[number]["user"]>();
     for (const reaction of eligibleReactions) {

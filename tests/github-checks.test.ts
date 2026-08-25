@@ -10,6 +10,7 @@ import {
   findPullRequestReviewCommentByMarker,
   getPullRequestReviewComment,
   getPullRequestReviewContext,
+  listPullRequestReviewCommentReactions,
   parsePullRequestUpdatedAt,
   RESPOND_MARKER_MAX_PAGES,
   verifyCompletedCheckRun,

@@ -124,7 +124,6 @@ export async function loadLiveApprovalActor(
   user: ApprovalGithubUser | undefined,
   repoFullName: string,
   installationToken: string,
-  requiredRole: "member" | "admin" = "member",
 ): Promise<ApprovalActor | null> {
   if (
     !user?.id ||
@@ -214,8 +213,6 @@ export async function loadLiveApprovalActor(
   ) {
     return null;
   }
-  if (requiredRole === "admin" && role !== "admin") return null;
-
   const actorUserId = await upsertApprovalActorIdentity(
     db,
     user.id,
