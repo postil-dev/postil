@@ -33,11 +33,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       # Bake the pinned CLI into the image so the worker can spawn it.
       # `src/data/public-cli-release.json` is the only place the pinned release
-      # is named. It used to be restated in a `POSTIL_CLI_TAG` repository
-      # variable that this step compared against the file, which meant every
-      # pin bump needed two edits in two systems and a deploy failed whenever
-      # someone made only the one visible in the diff. This step always runs on
-      # deploy so
+      # is named. This step always runs on deploy so
       # vendor/postil is always populated with a cosign-verified binary
       # before the image is built. The Dockerfile has no fetch fallback of
       # its own and fails the build if vendor/postil is absent, so this step

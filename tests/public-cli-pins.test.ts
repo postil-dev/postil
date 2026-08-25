@@ -118,10 +118,8 @@ describe("public CLI pins", () => {
     expect(deploy).toContain(
       'require("./src/data/public-cli-release.json").hostedCliLinuxX86_64Sha256',
     );
-    // The tag is read from the file rather than restated in a repository
-    // variable. A second copy could only ever agree or fail the deploy, and a
-    // pin bump that edited the visible one and not the invisible one did fail
-    // it. Nothing outside the repository names the release now.
+    // The tag comes from the checked-in release authority. No repository
+    // variable duplicates it.
     expect(deploy).toContain(
       'TAG="$(node -e \'process.stdout.write(require("./src/data/public-cli-release.json").hostedCliRelease)\')"',
     );
