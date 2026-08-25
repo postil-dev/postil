@@ -331,17 +331,17 @@ export async function runGitHubPublicationCliPlanning(
     );
 
     const execution = await request.execute(
-    args,
-    request.environment,
-    request.workingDirectory,
-    {
-      signal: request.signal,
-      onStderrLine: request.onStderrLine,
-      preserveOutputOnInterrupt: true,
-      maxStdoutBytes: MAX_PLAN_BYTES,
-      maxStderrBytes: MAX_DIAGNOSTIC_BYTES,
-    },
-  );
+      args,
+      request.environment,
+      request.workingDirectory,
+      {
+        signal: request.signal,
+        onStderrLine: request.onStderrLine,
+        preserveOutputOnInterrupt: true,
+        maxStdoutBytes: MAX_PLAN_BYTES,
+        maxStderrBytes: MAX_DIAGNOSTIC_BYTES,
+      },
+    );
     if (execution.timedOut) reject("CLI planning timed out");
     if (execution.interrupted) reject("CLI planning was interrupted");
     if (execution.exitCode !== 0 && execution.exitCode !== 1) {
