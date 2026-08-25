@@ -111,6 +111,13 @@ export default async function ReportsPage() {
           .orderBy(desc(schema.reviews.queuedAt))
           .limit(50);
 
+  // One display status per row, so the status badge and the gate badge on the
+  // same row cannot disagree about whether the run reached a verdict.
+  const reviewRows = reviews.map((review) => ({
+    ...review,
+    displayStatus: reviewDisplayStatus(review.status, review.errorMessage, review.envelope),
+  }));
+
   return (
     <div className="mx-auto max-w-6xl px-6 py-14">
       <ReportsHeader
@@ -167,7 +174,7 @@ export default async function ReportsPage() {
         )}
       </div>
 
-      {reviews.length > 0 && (
+      {reviewRows.length > 0 && (
         <div className="card mt-8 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -184,7 +191,7 @@ export default async function ReportsPage() {
               </tr>
             </thead>
             <tbody>
-              {reviews.map((r) => (
+              {reviewRows.map((r) => (
                 <tr key={r.id} className="border-b border-stone/60 last:border-0">
                   <td className="px-4 py-2.5 font-mono text-xs">{r.repoFullName}</td>
                   <td className="px-4 py-2.5 font-mono text-xs">
@@ -200,16 +207,10 @@ export default async function ReportsPage() {
                     <ReviewTriggerBadge source={r.triggerSource as ReviewTriggerSource} />
                   </td>
                   <td className="px-4 py-2.5">
-                    <ReviewStatusBadge
-                      status={reviewDisplayStatus(r.status, r.errorMessage)}
-                      gateFailing={r.gateFailing}
-                    />
+                    <ReviewStatusBadge status={r.displayStatus} gateFailing={r.gateFailing} />
                   </td>
                   <td className="px-4 py-2.5">
-                    <GateBadge
-                      gateFailing={r.gateFailing}
-                      status={reviewDisplayStatus(r.status, r.errorMessage)}
-                    />
+                    <GateBadge gateFailing={r.gateFailing} status={r.displayStatus} />
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs">
                     {r.silent ? (

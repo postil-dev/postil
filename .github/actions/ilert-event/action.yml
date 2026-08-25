@@ -19,6 +19,13 @@ inputs:
     description: HIGH or LOW; ignored for RESOLVE
     required: false
     default: HIGH
+  require-delivery:
+    description: >-
+      Fail when no integration key is configured instead of recording the
+      undelivered event. Set this where the delivery itself is the subject of
+      the run, such as an operator testing that paging works.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -31,13 +38,28 @@ runs:
         ALERT_KEY: ${{ inputs.alert-key }}
         DETAILS: ${{ inputs.details }}
         PRIORITY: ${{ inputs.priority }}
+        REQUIRE_DELIVERY: ${{ inputs.require-delivery }}
       run: |
         set -euo pipefail
         if [[ -z "${ILERT_INTEGRATION_KEY:-}" ]]; then
+          if [[ "${REQUIRE_DELIVERY}" == "true" ]]; then
+            # The caller is testing delivery itself. Reporting success for an
+            # event that reached nobody is the one answer that cannot be
+            # allowed here: it certifies paging that does not exist.
+            echo "::error title=External alerting is not configured::ILERT_INTEGRATION_KEY is unset, so this ${EVENT_TYPE} reached nobody. Set it in the alerting secret path and run this again."
+            {
+              echo "### Alert delivery test failed"
+              echo
+              echo "\`ILERT_INTEGRATION_KEY\` is unset, so ilert received nothing."
+              echo "Paging is not configured; the condition this run tested is unverified."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          fi
           if [[ "${EVENT_TYPE}" == "RESOLVE" ]]; then
-            # No alert can exist without a configured key, so there is
-            # nothing to resolve; exiting nonzero here would mark the run
-            # failed and re-trigger the resolve job on every following run.
+            # No alert can exist without a configured key, so there is nothing
+            # to resolve, and a resolve is never the subject of a delivery
+            # test; exiting nonzero here would mark the run failed and
+            # re-trigger the resolve job on every following run.
             echo "ILERT_INTEGRATION_KEY is not configured; nothing to resolve"
             exit 0
           fi
