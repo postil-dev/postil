@@ -86,6 +86,7 @@ export interface FindingFeedbackDigestAlertPayload extends Record<string, unknow
   periodStart: string;
   periodEnd: string;
   aggregates: FindingFeedbackAggregate[];
+  aggregatesTruncated: boolean;
 }
 
 export const MAX_FINDING_FEEDBACK_DIGEST_AGGREGATES = 20;
@@ -171,13 +172,13 @@ export async function scheduleFindingFeedbackDigest(
   if (!(await findingFeedbackReconciliationWatermarkReached(db, periodEnd))) {
     return "pending";
   }
-  const aggregates = await findingFeedbackAggregates(
+  const aggregatePage = await findingFeedbackAggregates(
     db,
     periodStart,
     periodEnd,
     MAX_FINDING_FEEDBACK_DIGEST_AGGREGATES,
   );
-  if (aggregates.length === 0) return "empty";
+  if (aggregatePage.aggregates.length === 0) return "empty";
   const payload: FindingFeedbackDigestAlertPayload = {
     event: "finding_feedback_digest",
     eventKey: `finding-feedback-digest:${periodStart.toISOString().slice(0, 10)}`,
@@ -187,7 +188,8 @@ export async function scheduleFindingFeedbackDigest(
     githubOwnerId: null,
     periodStart: periodStart.toISOString(),
     periodEnd: periodEnd.toISOString(),
-    aggregates,
+    aggregates: aggregatePage.aggregates,
+    aggregatesTruncated: aggregatePage.truncated,
   };
   return db.transaction(async (tx) => {
     const requeued = await tx.update(schema.operatorAlertDeliveries).set({
@@ -223,18 +225,18 @@ async function oldestUndeliveredFeedbackPeriodStart(
   latestPeriodEnd: Date,
 ): Promise<Date | null> {
   const result = await db.execute(sql`
-    SELECT date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC') AS "periodStart"
+    SELECT date_trunc('week', feedback.created_at AT TIME ZONE 'UTC') AS "periodStart"
       FROM finding_feedback feedback
-     WHERE feedback.observed_at < ${latestPeriodEnd}
+     WHERE feedback.created_at < ${latestPeriodEnd}
        AND NOT EXISTS (
          SELECT 1
            FROM operator_alert_deliveries delivery
           WHERE delivery.event_key = 'finding-feedback-digest:' ||
-            to_char(date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD')
+            to_char(date_trunc('week', feedback.created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD')
             AND delivery.status <> 'failed'
        )
-     GROUP BY date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC')
-     ORDER BY date_trunc('week', feedback.observed_at AT TIME ZONE 'UTC')
+     GROUP BY date_trunc('week', feedback.created_at AT TIME ZONE 'UTC')
+     ORDER BY date_trunc('week', feedback.created_at AT TIME ZONE 'UTC')
      LIMIT 1
   `);
   const value = (result.rows as Array<Record<string, unknown>>)[0]?.periodStart;
@@ -385,8 +387,9 @@ export async function reconcileOperatorAlertDeliveries(
   db: Database,
 ): Promise<void> {
   await db.execute(sql`
-    WITH recent_jobs AS MATERIALIZED (
+    WITH recent_jobs_raw AS MATERIALIZED (
       SELECT
+        jobs.id,
         CASE
           WHEN NULLIF(jobs.payload ->> 'eventKey', '') IS NOT NULL
             THEN jobs.payload ->> 'eventKey'
@@ -408,6 +411,13 @@ export async function reconcileOperatorAlertDeliveries(
       WHERE jobs.kind = 'operator-alert'
       ORDER BY jobs.id DESC
       LIMIT 1000
+    ), recent_jobs AS MATERIALIZED (
+      SELECT DISTINCT ON (event_key)
+        event_key, event, org_id, github_installation_id,
+        status, last_error, created_at
+      FROM recent_jobs_raw
+      WHERE event_key IS NOT NULL
+      ORDER BY event_key, id DESC
     ), inserted AS (
       INSERT INTO operator_alert_deliveries
         (event_key, event, org_id, github_installation_id, status, created_at, updated_at)

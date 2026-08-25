@@ -216,7 +216,9 @@ export function operatorAlertEmailContent(
           label: findingFeedbackAggregateLabel(aggregate),
           value: String(aggregate.count),
         })),
-        note: `Period ${formatUtcDate(payload.periodStart)} through ${formatUtcDate(payload.periodEnd)}.`,
+        note: payload.aggregatesTruncated
+          ? `Period ${formatUtcDate(payload.periodStart)} through ${formatUtcDate(payload.periodEnd)}. Additional aggregate groups are omitted from this digest.`
+          : `Period ${formatUtcDate(payload.periodStart)} through ${formatUtcDate(payload.periodEnd)}.`,
         intent: "success",
       },
     };

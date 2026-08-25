@@ -71,11 +71,12 @@ export default function PrivacyPage() {
             <strong>Finding feedback</strong>: eligible non-command replies and
             reactions on Postil finding threads. Reply records include the text
             and GitHub comment ID; reaction records include the GitHub reaction
-            ID and reaction type. Both include commenter and pull-request author
-            IDs and login snapshots, whether the commenter is the pull-request
-            author, the observation time, and a suggested feedback category
-            when reply wording matches one. Structured aggregates can be sent
-            in a weekly operator digest without reply text or actor identity.
+            ID and reaction type when available. Both include commenter and
+            pull-request author IDs and login snapshots, whether the commenter
+            is the pull-request author, the observation time, and a suggested
+            feedback category when reply wording matches one. Structured
+            aggregates can be sent in a weekly operator digest without reply
+            text or actor identity.
             Feedback never approves or dismisses a finding and never changes
             the merge gate.
           </li>

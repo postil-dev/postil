@@ -203,9 +203,6 @@ export async function listPullRequestReviewCommentReactions(
         });
       }
       if (values.length < perPage) break;
-      if (page === maxPages) {
-        throw new Error(`GitHub review comment reactions exceeded ${maxPages} pages for ${content}`);
-      }
     }
   }
   return reactions;

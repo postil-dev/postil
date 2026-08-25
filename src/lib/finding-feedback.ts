@@ -6,6 +6,7 @@ import { schema } from "@/lib/db";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { verifyLiveGithubAdmin } from "@/lib/github/approval-actor";
 import {
+  GitHubHttpError,
   listPullRequestReviewCommentReactions,
 } from "@/lib/github/checks";
 import type { DismissalReasonTag } from "@/lib/mentions";
@@ -15,6 +16,8 @@ const MAX_RECONCILIATIONS_PER_RUN = 200;
 const RECENT_PUBLICATION_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
 const RECONCILIATION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 const RETRY_INTERVAL_MS = 5 * 60 * 1_000;
+const MAX_RETRY_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+const MISSING_COMMENT_RECONCILIATION_INTERVAL_MS = 30 * 24 * 60 * 60 * 1_000;
 const RECONCILIATION_DEADLINE_MS = 45_000;
 const MAX_UNIQUE_REACTION_ACTORS = 24;
 const MAX_CONCURRENT_ADMIN_VERIFICATIONS = 6;
@@ -25,6 +28,7 @@ export const GITHUB_REACTION_CONTENTS = [
 ] as const;
 
 export type GithubReactionContent = (typeof GITHUB_REACTION_CONTENTS)[number];
+export type StoredGithubReactionContent = GithubReactionContent | "unknown";
 
 class FindingFeedbackReconciliationUnavailableError extends Error {
   constructor() {
@@ -60,11 +64,16 @@ export interface GithubFindingFeedbackReaction {
 export interface FindingFeedbackAggregate {
   source: "reply" | "reaction";
   suggestedReasonTag: DismissalReasonTag | null;
-  reactionContent: GithubReactionContent | null;
+  reactionContent: StoredGithubReactionContent | null;
   model: string | null;
   kind: string | null;
   severity: string | null;
   count: number;
+}
+
+export interface FindingFeedbackAggregatePage {
+  aggregates: FindingFeedbackAggregate[];
+  truncated: boolean;
 }
 
 function isGithubLogin(value: string): boolean {
@@ -169,8 +178,12 @@ export async function scheduleFindingFeedbackReconciliationJobs(
           AND review.finished_at >= $1
           AND (
             COALESCE(reconciliation.next_reconcile_at, $2::timestamptz) <= $2::timestamptz
-            OR reconciliation.last_successful_at IS NULL
-            OR ($3::timestamptz IS NOT NULL AND reconciliation.last_successful_at < $3::timestamptz)
+            OR (
+              reconciliation.last_error IS NULL
+              AND $3::timestamptz IS NOT NULL
+              AND (reconciliation.last_successful_at IS NULL
+                OR reconciliation.last_successful_at < $3::timestamptz)
+            )
           )
           AND NOT EXISTS (
             SELECT 1 FROM jobs
@@ -225,7 +238,7 @@ export async function findingFeedbackAggregates(
   periodStart: Date,
   periodEnd: Date,
   limit = 20,
-): Promise<FindingFeedbackAggregate[]> {
+): Promise<FindingFeedbackAggregatePage> {
   if (limit < 1 || limit > 20) throw new Error("feedback aggregate limit must be in 1..20");
   const result = await db.execute(sql`
     SELECT feedback.source,
@@ -242,16 +255,18 @@ export async function findingFeedbackAggregates(
         CASE WHEN jsonb_typeof(review.envelope->'findings') = 'array'
           THEN review.envelope->'findings' ELSE '[]'::jsonb END
       ) AS finding(value) ON finding.value->>'id' = publication.finding_id
-     WHERE feedback.observed_at >= ${periodStart}
-       AND feedback.observed_at < ${periodEnd}
+     WHERE feedback.created_at >= ${periodStart}
+       AND feedback.created_at < ${periodEnd}
      GROUP BY feedback.source, feedback.suggested_reason_tag, feedback.reaction_content,
               review.envelope->>'modelUsed', finding.value->>'kind', finding.value->>'severity'
      ORDER BY count(*) DESC, feedback.source, feedback.reaction_content NULLS FIRST,
               feedback.suggested_reason_tag NULLS FIRST, model NULLS FIRST,
               kind NULLS FIRST, severity NULLS FIRST
-     LIMIT ${limit}
+     LIMIT ${limit + 1}
   `);
-  return (result.rows as Array<Record<string, unknown>>).map((row) => ({
+  const rows: FindingFeedbackAggregate[] = (
+    result.rows as Array<Record<string, unknown>>
+  ).map((row) => ({
     source: row.source === "reaction" ? "reaction" : "reply",
     suggestedReasonTag:
       row.suggestedReasonTag === "false-positive" ||
@@ -260,7 +275,8 @@ export async function findingFeedbackAggregates(
         ? row.suggestedReasonTag
         : null,
     reactionContent:
-      typeof row.reactionContent === "string" && isGithubReactionContent(row.reactionContent)
+      typeof row.reactionContent === "string" &&
+      (isGithubReactionContent(row.reactionContent) || row.reactionContent === "unknown")
         ? row.reactionContent
         : null,
     model: typeof row.model === "string" ? row.model.slice(0, 500) : null,
@@ -268,6 +284,10 @@ export async function findingFeedbackAggregates(
     severity: typeof row.severity === "string" ? row.severity : null,
     count: Number(row.count),
   }));
+  return {
+    aggregates: rows.slice(0, limit),
+    truncated: rows.length > limit,
+  };
 }
 
 /** Re-read one published review comment and record eligible reactions without lifecycle mutation. */
@@ -309,12 +329,14 @@ export async function reconcileFindingFeedbackReactions(
     attemptCount: 0,
     nextReconcileAt: now,
   }).onConflictDoNothing();
-  await db.update(schema.findingFeedbackReconciliations).set({
+  const attemptRows = await db.update(schema.findingFeedbackReconciliations).set({
     attemptCount: sql`${schema.findingFeedbackReconciliations.attemptCount} + 1`,
     lastAttemptAt: now,
     lastError: null,
     updatedAt: now,
-  }).where(eq(schema.findingFeedbackReconciliations.findingPublicationId, findingPublicationId));
+  }).where(eq(schema.findingFeedbackReconciliations.findingPublicationId, findingPublicationId))
+    .returning({ attemptCount: schema.findingFeedbackReconciliations.attemptCount });
+  const attemptCount = attemptRows[0]?.attemptCount ?? 1;
   try {
     const deadline = AbortSignal.timeout(RECONCILIATION_DEADLINE_MS);
     const token = await getInstallationToken(row.installationId, deadline);
@@ -333,11 +355,14 @@ export async function reconcileFindingFeedbackReactions(
     const adminActors = new Map<string, typeof eligibleReactions[number]["user"]>();
     for (const reaction of eligibleReactions) {
       if (reaction.user.id !== row.prAuthorGithubId) {
-        adminActors.set(`${reaction.user.id}:${reaction.user.login.toLowerCase()}`, reaction.user);
+        const cacheKey = `${reaction.user.id}:${reaction.user.login.toLowerCase()}`;
+        if (
+          adminActors.has(cacheKey) ||
+          adminActors.size < MAX_UNIQUE_REACTION_ACTORS
+        ) {
+          adminActors.set(cacheKey, reaction.user);
+        }
       }
-    }
-    if (adminActors.size > MAX_UNIQUE_REACTION_ACTORS) {
-      throw new FindingFeedbackReconciliationUnavailableError();
     }
     const eligible = new Map<string, boolean>();
     await boundedMap(
@@ -372,6 +397,7 @@ export async function reconcileFindingFeedbackReactions(
       })) captured += 1;
     }
     await db.update(schema.findingFeedbackReconciliations).set({
+      attemptCount: 0,
       nextReconcileAt: new Date(now.getTime() + RECONCILIATION_INTERVAL_MS),
       lastSuccessfulAt: now,
       lastError: null,
@@ -379,8 +405,24 @@ export async function reconcileFindingFeedbackReactions(
     }).where(eq(schema.findingFeedbackReconciliations.findingPublicationId, findingPublicationId));
     return { captured };
   } catch (error) {
+    if (error instanceof GitHubHttpError && error.status === 404) {
+      await db.update(schema.findingFeedbackReconciliations).set({
+        attemptCount: 0,
+        nextReconcileAt: new Date(
+          now.getTime() + MISSING_COMMENT_RECONCILIATION_INTERVAL_MS,
+        ),
+        lastSuccessfulAt: now,
+        lastError: null,
+        updatedAt: now,
+      }).where(eq(schema.findingFeedbackReconciliations.findingPublicationId, findingPublicationId));
+      return { captured: 0 };
+    }
+    const retryInterval = Math.min(
+      RETRY_INTERVAL_MS * 2 ** Math.min(Math.max(attemptCount - 1, 0), 16),
+      MAX_RETRY_INTERVAL_MS,
+    );
     await db.update(schema.findingFeedbackReconciliations).set({
-      nextReconcileAt: new Date(now.getTime() + RETRY_INTERVAL_MS),
+      nextReconcileAt: new Date(now.getTime() + retryInterval),
       lastError: redactAndTruncate(error, 2_000),
       updatedAt: now,
     }).where(eq(schema.findingFeedbackReconciliations.findingPublicationId, findingPublicationId));

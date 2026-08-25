@@ -52,6 +52,7 @@ export function validateOperatorAlertPayload(
       !isValidDigestDate(payload.periodEnd) ||
       new Date(payload.periodStart) >= new Date(payload.periodEnd) ||
       !Array.isArray(payload.aggregates) ||
+      typeof payload.aggregatesTruncated !== "boolean" ||
       payload.aggregates.length < 1 ||
       payload.aggregates.length > MAX_FINDING_FEEDBACK_DIGEST_AGGREGATES ||
       payload.aggregates.some((aggregate) =>

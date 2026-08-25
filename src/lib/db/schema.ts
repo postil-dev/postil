@@ -562,7 +562,7 @@ export const findingFeedback = pgTable(
     sourceGithubReactionId: bigint("source_github_reaction_id", {
       mode: "number",
     }),
-    reactionContent: text("reaction_content", { enum: ["+1", "-1"] }),
+    reactionContent: text("reaction_content", { enum: ["+1", "-1", "unknown"] }),
     body: text("body"),
     actorGithubId: bigint("actor_github_id", { mode: "number" }).notNull(),
     actorLoginSnapshot: text("actor_login_snapshot").notNull(),
@@ -595,7 +595,7 @@ export const findingFeedback = pgTable(
     ),
     check(
       "finding_feedback_identity_check",
-      sql`(${t.source} = 'reply' AND ${t.sourceGithubCommentId} IS NOT NULL AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NULL AND ${t.reactionContent} IS NULL AND ${t.body} IS NOT NULL AND length(btrim(${t.body})) BETWEEN 1 AND 65535 AND length(btrim(${t.sourceDeliveryId})) BETWEEN 1 AND 200) OR (${t.source} = 'reaction' AND ${t.sourceGithubCommentId} IS NOT NULL AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NOT NULL AND ${t.sourceGithubReactionId} BETWEEN 1 AND 9007199254740991 AND ${t.reactionContent} IS NOT NULL AND ${t.reactionContent} IN ('+1', '-1') AND ${t.body} IS NULL AND ${t.sourceDeliveryId} IS NULL)`,
+      sql`(${t.source} = 'reply' AND ${t.sourceGithubCommentId} IS NOT NULL AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NULL AND ${t.reactionContent} IS NULL AND ${t.body} IS NOT NULL AND length(btrim(${t.body})) BETWEEN 1 AND 65535 AND length(btrim(${t.sourceDeliveryId})) BETWEEN 1 AND 200) OR (${t.source} = 'reaction' AND ${t.sourceGithubCommentId} IS NOT NULL AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NOT NULL AND ${t.sourceGithubReactionId} BETWEEN 1 AND 9007199254740991 AND ${t.reactionContent} IS NOT NULL AND ${t.reactionContent} IN ('+1', '-1', 'unknown') AND ${t.body} IS NULL AND ${t.sourceDeliveryId} IS NULL)`,
     ),
     check(
       "finding_feedback_actor_check",

@@ -166,6 +166,7 @@ describe("operator alert job", () => {
       githubOwnerId: null,
       periodStart: "2026-08-17T00:00:00.000Z",
       periodEnd: "2026-08-24T00:00:00.000Z",
+      aggregatesTruncated: false,
       aggregates: [{
         source: "reaction",
         suggestedReasonTag: null,
@@ -211,6 +212,7 @@ describe("operator alert job", () => {
       githubOwnerId: null,
       periodStart: "2026-08-17T00:00:00.000Z",
       periodEnd: "2026-08-24T00:00:00.000Z",
+      aggregatesTruncated: true,
       aggregates,
     });
 
@@ -218,5 +220,8 @@ describe("operator alert job", () => {
     expect(details).toHaveLength(20);
     expect(details.every((detail) => detail.label.length <= 120)).toBe(true);
     expect(details.map((detail) => detail.value)).toEqual(aggregates.map((aggregate) => String(aggregate.count)));
+    expect(sentInput?.content).toMatchObject({
+      note: expect.stringContaining("Additional aggregate groups are omitted"),
+    });
   });
 });

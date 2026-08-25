@@ -278,7 +278,7 @@ describe("migration lint", () => {
     );
     expect(migration).toContain('CREATE TABLE "finding_feedback_reconciliations"');
     expect(migration).toContain('"reaction_content" text');
-    expect(migration).toContain("IN ('+1', '-1')");
+    expect(migration).toContain("IN ('+1', '-1', 'unknown')");
     expect(migration).toContain('"source_github_comment_id" IS NOT NULL');
     expect(migration).toContain('"source_github_reaction_id" IS NOT NULL');
     expect(migration).toContain('"reaction_content" IS NOT NULL');

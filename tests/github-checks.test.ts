@@ -124,6 +124,32 @@ describe("pull-request review conversations", () => {
     });
   });
 
+  test("returns a bounded prefix when every reaction page is full", async () => {
+    const requestedPages: Array<{ content: string | null; page: number }> = [];
+    globalThis.fetch = (async (input) => {
+      const url = new URL(String(input));
+      const content = url.searchParams.get("content");
+      const page = Number(url.searchParams.get("page"));
+      requestedPages.push({ content, page });
+      return Response.json(Array.from({ length: 100 }, (_, index) => ({
+        id: (content === "+1" ? 1_000_000 : 2_000_000) + page * 100 + index,
+        content,
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 10_000 + page * 100 + index, login: `reviewer-${page}-${index}`, type: "User" },
+      })));
+    }) as typeof fetch;
+
+    const reactions = await listPullRequestReviewCommentReactions(
+      "token",
+      "octo/repo",
+      41,
+    );
+
+    expect(reactions).toHaveLength(1_000);
+    expect(requestedPages).toHaveLength(10);
+    expect(requestedPages.at(-1)).toEqual({ content: "-1", page: 5 });
+  });
+
   test("rejects an unrelated reaction returned despite the server content filter", async () => {
     globalThis.fetch = Object.assign(
       async () => Response.json([{
