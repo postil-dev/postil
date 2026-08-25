@@ -1095,7 +1095,8 @@ export async function dismissFinding(formData: FormData): Promise<void> {
       reasonTag: reasonTag as "false-positive" | "accepted-risk" | "out-of-scope",
       authorSelfDismissal: authorGithubId === Number(actor.githubId),
       finding: finding.finding,
-      findingModel: review.envelope!.modelUsed,
+      findingGeneratorModel: review.envelope!.modelUsed,
+      findingScorerModel: review.envelope!.scorerModel,
       source: "dashboard",
       binding: {
         orgId: review.orgId,

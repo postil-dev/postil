@@ -25,6 +25,7 @@ let checkError: Error | null = null;
 let liveApprovalActor: { userId: number; githubId: string; login: string; role: "admin" } | null = null;
 let dismissalActive = false;
 let inFlightReview = false;
+let findingApprovalInput: Record<string, unknown> | null = null;
 
 const approvalReview = {
   id: 7,
@@ -33,7 +34,11 @@ const approvalReview = {
   prNumber: 9,
   headSha: "a".repeat(40),
   status: "completed",
-  envelope: { version: 1 },
+  envelope: {
+    version: 1,
+    modelUsed: "generator/dashboard",
+    scorerModel: "scorer/dashboard",
+  },
   engineGateFailing: true,
   gateFailing: true,
   gateCheckRunId: 99,
@@ -156,7 +161,11 @@ mock.module("@/lib/finding-approvals", () => ({
   hasNewerCompletedReviewForHead: async () => false,
   hasNewerReviewForPr: async () => false,
   hasInFlightReviewForPr: async () => inFlightReview,
-  insertFindingApproval: async (_db: unknown, input: { verb?: string }) => {
+  insertFindingApproval: async (
+    _db: unknown,
+    input: Record<string, unknown> & { verb?: string },
+  ) => {
+    findingApprovalInput = input;
     approvalInserted = true;
     if (input.verb === "dismiss") dismissalActive = true;
     return "approval-1";
@@ -378,6 +387,7 @@ beforeEach(() => {
   checkError = null;
   liveApprovalActor = null;
   dismissalActive = false;
+  findingApprovalInput = null;
   inFlightReview = false;
 });
 
@@ -649,6 +659,10 @@ describe("organization settings actions", () => {
     expect(result.status).toBe("success");
     expect(dismissalActive).toBe(true);
     expect(gateSyncJobs).toBe(1);
+    expect(findingApprovalInput).toMatchObject({
+      findingGeneratorModel: "generator/dashboard",
+      findingScorerModel: "scorer/dashboard",
+    });
   });
 
   test("live-verifies dismissal revocation and restores the gate", async () => {
